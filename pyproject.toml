@@ -1,0 +1,15 @@
+[project]
+name = "screener"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "tradingview-screener>=3.0",
+    "click>=8.0",
+    "rich>=13.0",
+    "openscreener",
+]
+
+[project.scripts]
+screener = "main:cli"
