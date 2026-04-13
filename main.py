@@ -1,6 +1,6 @@
 import click
 
-from screener.criteria import CRITERIA
+from screener.criteria import CRITERIA, combine
 from screener.scanner import scan, MARKETS
 from screener.display import print_results, print_csv
 
@@ -21,10 +21,11 @@ def cli():
 @click.option(
     "-c",
     "--criteria",
-    "criteria_name",
+    "criteria_names",
     type=click.Choice(list(CRITERIA.keys())),
-    default="ema",
-    help="Screening criteria.",
+    multiple=True,
+    default=("ema",),
+    help="Screening criteria (repeat to combine, e.g. -c ema -c breakout).",
 )
 @click.option("-n", "--limit", default=50, help="Number of results.")
 @click.option(
@@ -35,10 +36,12 @@ def cli():
 )
 @click.option("--csv", "output_csv", is_flag=True, help="Output as CSV.")
 @click.option("--detail", is_flag=True, help="Show fundamental details (P/E, ROE, etc.).")
-def screen(market, criteria_name, limit, order_by, output_csv, detail):
+def screen(market, criteria_names, limit, order_by, output_csv, detail):
     """Screen stocks based on technical criteria."""
-    criteria_fn = CRITERIA[criteria_name]
-    filters = criteria_fn()
+    criteria_fns = [CRITERIA[name] for name in criteria_names]
+    filters = combine(*criteria_fns)()
+
+    label = "+".join(criteria_names)
 
     total, df = scan(
         market=market,
@@ -51,7 +54,7 @@ def screen(market, criteria_name, limit, order_by, output_csv, detail):
     if output_csv:
         print_csv(df)
     else:
-        print_results(df, total, market, criteria_name)
+        print_results(df, total, market, label)
 
 
 if __name__ == "__main__":
