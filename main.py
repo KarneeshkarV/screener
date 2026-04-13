@@ -27,7 +27,12 @@ def cli():
     help="Screening criteria.",
 )
 @click.option("-n", "--limit", default=50, help="Number of results.")
-@click.option("--sort", "order_by", default="volume", help="Sort by column.")
+@click.option(
+    "--sort",
+    "order_by",
+    default="setup_score",
+    help="Sort by column. Use setup_score for local composite ranking.",
+)
 @click.option("--csv", "output_csv", is_flag=True, help="Output as CSV.")
 @click.option("--detail", is_flag=True, help="Show fundamental details (P/E, ROE, etc.).")
 def screen(market, criteria_name, limit, order_by, output_csv, detail):

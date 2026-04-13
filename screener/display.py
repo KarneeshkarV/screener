@@ -12,6 +12,7 @@ COLUMN_LABELS = {
     "change": "Chg%",
     "volume": "Volume",
     "market_cap_basic": "Mkt Cap",
+    "setup_score": "Score",
     "EMA5": "EMA5",
     "EMA20": "EMA20",
     "EMA100": "EMA100",
@@ -31,6 +32,7 @@ RIGHT_ALIGN = {
     "change",
     "volume",
     "market_cap_basic",
+    "setup_score",
     "EMA5",
     "EMA20",
     "EMA100",
@@ -69,6 +71,7 @@ def _format_value(col: str, val) -> str:
     if col in ("close", "EMA5", "EMA20", "EMA100", "EMA200"):
         return f"{val:.2f}"
     if col in (
+        "setup_score",
         "price_earnings_ttm",
         "return_on_equity",
         "dividend_yield_recent",
