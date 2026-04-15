@@ -1,9 +1,10 @@
 import click
 
 from screener import history
+from screener.backtest import run_backtest
 from screener.criteria import CRITERIA, combine
 from screener.scanner import scan, MARKETS
-from screener.display import print_results, print_csv
+from screener.display import print_backtest, print_backtest_csv, print_results, print_csv
 
 
 @click.group()
@@ -73,6 +74,52 @@ def screen(market, criteria_names, limit, order_by, output_csv, detail):
         removed=removed,
         first_run=first_run,
     )
+
+
+@cli.command()
+@click.option(
+    "-m",
+    "--market",
+    type=click.Choice(list(MARKETS.keys())),
+    default=None,
+    help="Filter last-run lookup by market. Default: most recent run of any market.",
+)
+@click.option(
+    "-c",
+    "--criteria",
+    "criteria_label",
+    default=None,
+    help="Filter last-run lookup by criteria label (e.g. 'ema+breakout').",
+)
+@click.option(
+    "--scope",
+    type=click.Choice(["next", "all"]),
+    default="next",
+    help="next = from run timestamp to today; all = ~5y history up to today.",
+)
+@click.option("--hold", default=0, help="Max holding days (0 = hold to end of scope).")
+@click.option("--top", default=0, help="Use only top-N ranked tickers (0 = all).")
+@click.option("--benchmark", default=None, help="Override benchmark TV symbol.")
+@click.option("--refresh", is_flag=True, help="Force re-fetch prices, ignore Parquet cache.")
+@click.option("--csv", "output_csv", is_flag=True, help="Emit per-ticker CSV ledger.")
+def backtest(market, criteria_label, scope, hold, top, benchmark, refresh, output_csv):
+    """Backtest the last saved screener run as an equal-weighted basket."""
+    try:
+        result = run_backtest(
+            market=market,
+            criteria=criteria_label,
+            scope=scope,
+            hold_days=hold,
+            top=top or None,
+            benchmark_override=benchmark,
+            refresh=refresh,
+        )
+    except RuntimeError as e:
+        raise click.ClickException(str(e))
+    if output_csv:
+        print_backtest_csv(result)
+    else:
+        print_backtest(result)
 
 
 if __name__ == "__main__":

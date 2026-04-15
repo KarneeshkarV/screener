@@ -9,7 +9,13 @@ dependencies = [
     "click>=8.0",
     "rich>=13.0",
     "openscreener",
+    "yfinance>=0.2",
+    "pyarrow>=15.0",
+    "tvdatafeed",
 ]
+
+[tool.uv.sources]
+tvdatafeed = { git = "https://github.com/rongardF/tvdatafeed" }
 
 [project.scripts]
 screener = "main:cli"

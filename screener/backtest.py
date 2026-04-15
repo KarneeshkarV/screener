@@ -1,0 +1,192 @@
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from typing import Optional
+
+import pandas as pd
+
+from screener import history, metrics
+from screener.prices import fetch_adj_close_matrix, fetch_ohlcv
+
+
+BENCHMARKS = {
+    "us": "AMEX:SPY",
+    "india": "NSE:NIFTY",
+}
+
+
+@dataclass
+class BacktestResult:
+    run_id: int
+    run_ts: str
+    market: str
+    criteria: str
+    scope: str
+    hold_days: int
+    start_date: date
+    end_date: date
+    benchmark: str
+    tickers: list[str]
+    dropped: list[str]
+    basket_curve: pd.Series
+    basket_returns: pd.Series
+    benchmark_curve: pd.Series
+    benchmark_returns: pd.Series
+    per_ticker: pd.DataFrame
+    summary: dict
+
+
+def _parse_run_ts(run_ts: str) -> datetime:
+    try:
+        return datetime.fromisoformat(run_ts)
+    except ValueError:
+        return datetime.fromisoformat(run_ts.replace("Z", "+00:00"))
+
+
+def _resolve_scope(run_ts_str: str, scope: str) -> tuple[date, date]:
+    today = date.today()
+    if scope == "next":
+        run_dt = _parse_run_ts(run_ts_str)
+        start = run_dt.date()
+        end = today
+        if start > end:
+            start = end
+        return start, end
+    # all: last ~5 years up to today
+    end = today
+    start = end - timedelta(days=365 * 5)
+    return start, end
+
+
+def run_backtest(
+    market: Optional[str],
+    criteria: Optional[str],
+    scope: str = "next",
+    hold_days: int = 0,
+    top: Optional[int] = None,
+    benchmark_override: Optional[str] = None,
+    refresh: bool = False,
+) -> BacktestResult:
+    run = history.load_last_run(market=market, criteria=criteria)
+    if run is None:
+        raise RuntimeError(
+            "No saved screener run found. Run `screen` first to seed history."
+        )
+
+    rows = run["rows"]
+    if top:
+        rows = rows.head(top)
+    tickers = [t for t in rows["ticker"].tolist() if t]
+    if not tickers:
+        raise RuntimeError("Last run has no tickers.")
+
+    run_market = run["market"]
+    start_d, end_d = _resolve_scope(run["run_ts"], scope)
+
+    wide, failed = fetch_adj_close_matrix(tickers, start_d, end_d, run_market, refresh=refresh)
+    if wide.empty:
+        raise RuntimeError(
+            f"No price data fetched for any of {len(tickers)} tickers "
+            f"(window {start_d} → {end_d})."
+        )
+
+    wide = wide.sort_index()
+    wide = wide.ffill(limit=1)
+    first_row = wide.iloc[0]
+    valid_tickers = [c for c in wide.columns if pd.notna(first_row[c])]
+    dropped = failed + [c for c in wide.columns if c not in valid_tickers]
+    wide = wide[valid_tickers]
+    if wide.empty:
+        raise RuntimeError("All tickers lack price on the window start date.")
+    if len(wide) < 2:
+        raise RuntimeError(
+            f"Only {len(wide)} trading day(s) in window {start_d} → {end_d}. "
+            "Need ≥2 for returns. Use --scope all for a longer history."
+        )
+
+    ticker_returns = wide.pct_change()
+    if hold_days > 0:
+        mask = pd.DataFrame(False, index=ticker_returns.index, columns=ticker_returns.columns)
+        mask.iloc[1 : hold_days + 1, :] = True
+        ticker_returns = ticker_returns.where(mask, other=0.0)
+
+    basket_returns = ticker_returns.mean(axis=1, skipna=True).fillna(0.0)
+    basket_curve = (1 + basket_returns).cumprod()
+
+    benchmark_sym = benchmark_override or BENCHMARKS.get(run_market, "AMEX:SPY")
+    bench_df = fetch_ohlcv(benchmark_sym, start_d, end_d, run_market, refresh=refresh)
+    if bench_df is None or bench_df.empty:
+        bench_df = fetch_ohlcv(benchmark_sym, start_d, end_d, "us", refresh=refresh)
+
+    if bench_df is not None and not bench_df.empty:
+        bench_series = pd.Series(
+            bench_df["adj_close"].values,
+            index=pd.to_datetime(bench_df["date"]).values,
+        ).sort_index()
+        bench_series = bench_series.reindex(basket_curve.index).ffill().bfill()
+        benchmark_returns = bench_series.pct_change().fillna(0.0)
+        benchmark_curve = (1 + benchmark_returns).cumprod()
+    else:
+        benchmark_returns = pd.Series(0.0, index=basket_curve.index)
+        benchmark_curve = pd.Series(1.0, index=basket_curve.index)
+
+    per_ticker_rows = []
+    for t in valid_tickers:
+        col = wide[t].dropna()
+        if col.empty:
+            continue
+        entry = float(col.iloc[0])
+        exit_idx = min(len(col) - 1, hold_days) if hold_days > 0 else len(col) - 1
+        exit_px = float(col.iloc[exit_idx])
+        ret = exit_px / entry - 1.0 if entry > 0 else float("nan")
+        per_ticker_rows.append(
+            {
+                "ticker": t,
+                "entry_close": entry,
+                "exit_close": exit_px,
+                "return_pct": ret,
+                "trading_days": int(exit_idx),
+            }
+        )
+    per_ticker = pd.DataFrame(per_ticker_rows).sort_values(
+        "return_pct", ascending=False
+    ).reset_index(drop=True)
+
+    summary = metrics.summarise(
+        basket_curve=basket_curve,
+        basket_returns=basket_returns,
+        benchmark_curve=benchmark_curve,
+        benchmark_returns=benchmark_returns,
+        per_ticker_returns=per_ticker["return_pct"] if not per_ticker.empty else pd.Series(dtype=float),
+    )
+
+    result = BacktestResult(
+        run_id=run["id"],
+        run_ts=run["run_ts"],
+        market=run_market,
+        criteria=run["criteria"],
+        scope=scope,
+        hold_days=hold_days,
+        start_date=start_d,
+        end_date=end_d,
+        benchmark=benchmark_sym,
+        tickers=valid_tickers,
+        dropped=sorted(set(dropped)),
+        basket_curve=basket_curve,
+        basket_returns=basket_returns,
+        benchmark_curve=benchmark_curve,
+        benchmark_returns=benchmark_returns,
+        per_ticker=per_ticker,
+        summary=summary,
+    )
+
+    history.save_backtest(
+        run_id=result.run_id,
+        scope=scope,
+        start_date=start_d.isoformat(),
+        end_date=end_d.isoformat(),
+        hold_days=hold_days,
+        benchmark=benchmark_sym,
+        summary=result.summary["basket"],
+        per_ticker=per_ticker,
+    )
+    return result
