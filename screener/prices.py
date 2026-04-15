@@ -75,6 +75,10 @@ def _fetch_yfinance(tv_symbol: str, market: str, start: date, end: date) -> Opti
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
+    # De-duplicate columns that can appear under concurrent yfinance usage
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated(keep="first")]
+
     df = df.rename(
         columns={
             "Open": "open",
@@ -89,7 +93,11 @@ def _fetch_yfinance(tv_symbol: str, market: str, start: date, end: date) -> Opti
     df.index.name = "date"
     if "adj_close" not in df.columns:
         df["adj_close"] = df["close"]
-    return df[["open", "high", "low", "close", "adj_close", "volume"]].reset_index()
+    # Only keep expected columns
+    cols = [c for c in ["open", "high", "low", "close", "adj_close", "volume"] if c in df.columns]
+    if not cols:
+        return None
+    return df[cols].reset_index()
 
 
 def _fetch_tvdatafeed(tv_symbol: str, market: str, start: date, end: date) -> Optional[pd.DataFrame]:
@@ -191,7 +199,11 @@ def fetch_ohlcv(
                 return None
         else:
             if cached is not None and not cached.empty:
-                merged = pd.concat([cached, fetched], ignore_index=True)
+                try:
+                    merged = pd.concat([cached, fetched], ignore_index=True)
+                except Exception:
+                    # Column mismatch (e.g. yfinance thread-safety edge case) — use fresh fetch
+                    merged = fetched.copy()
                 merged = merged.drop_duplicates("date").sort_values("date").reset_index(drop=True)
             else:
                 merged = fetched.sort_values("date").reset_index(drop=True)
