@@ -87,7 +87,13 @@ def _format_value(col: str, val) -> str:
 
 
 def print_results(
-    df: pd.DataFrame, total: int, market: str, criteria_name: str
+    df: pd.DataFrame,
+    total: int,
+    market: str,
+    criteria_name: str,
+    added: list[str] | None = None,
+    removed: list[str] | None = None,
+    first_run: bool = False,
 ) -> None:
     console.print(
         f"\n[bold]{criteria_name.upper()}[/bold] screen on "
@@ -117,6 +123,37 @@ def print_results(
         table.add_row(*cells)
 
     console.print(table)
+    _print_diff(market, criteria_name, added or [], removed or [], first_run)
+
+
+def _print_diff(
+    market: str,
+    criteria_name: str,
+    added: list[str],
+    removed: list[str],
+    first_run: bool,
+) -> None:
+    if first_run:
+        console.print(
+            f"[dim]No prior run for {market} / {criteria_name} — saved as baseline.[/dim]"
+        )
+        return
+
+    if not added and not removed:
+        console.print("[dim]No changes since last run.[/dim]")
+        return
+
+    console.print("\n[bold]Diff vs previous run[/bold]")
+    if added:
+        console.print(
+            f"  [green]+ {', '.join(added)}[/green]  "
+            f"[dim]({len(added)} new)[/dim]"
+        )
+    if removed:
+        console.print(
+            f"  [red]- {', '.join(removed)}[/red]  "
+            f"[dim]({len(removed)} dropped)[/dim]"
+        )
 
 
 def print_csv(df: pd.DataFrame) -> None:

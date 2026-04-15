@@ -1,5 +1,6 @@
 import click
 
+from screener import history
 from screener.criteria import CRITERIA, combine
 from screener.scanner import scan, MARKETS
 from screener.display import print_results, print_csv
@@ -53,8 +54,25 @@ def screen(market, criteria_names, limit, order_by, output_csv, detail):
 
     if output_csv:
         print_csv(df)
+        return
+
+    run_id = history.save_run(market, label, total, df)
+    prev = history.previous_run(market, label, before_id=run_id)
+    if prev is None:
+        added, removed, first_run = [], [], True
     else:
-        print_results(df, total, market, label)
+        added, removed = history.diff(df, prev)
+        first_run = False
+
+    print_results(
+        df,
+        total,
+        market,
+        label,
+        added=added,
+        removed=removed,
+        first_run=first_run,
+    )
 
 
 if __name__ == "__main__":
