@@ -68,19 +68,25 @@ def run_historical_backtest(
 ) -> HistoricalBacktestResult:
     """Screen a universe as of *as_of*, then backtest matches forward.
 
+    *criteria_name* can be a single name (``"ema"``) or a ``"+"``-separated
+    combination (``"ema+breakout"``).  When combined, a ticker must pass
+    **all** constituent filters to be included.
+
     Raises ``click.ClickException`` for unsupported criteria.
     Raises ``RuntimeError`` if no matches or no price data are found.
     """
     # ── validate criteria ────────────────────────────────────────────────────
-    if criteria_name not in HIST_CRITERIA:
-        raise click.ClickException(
-            f"Unknown criterion '{criteria_name}'. "
-            f"Historical mode supports: {sorted(HIST_CRITERIA)}."
-        )
+    criteria_parts = [c.strip() for c in criteria_name.split("+")]
+    for c in criteria_parts:
+        if c not in HIST_CRITERIA:
+            raise click.ClickException(
+                f"Unknown criterion '{c}'. "
+                f"Historical mode supports: {sorted(HIST_CRITERIA)}."
+            )
 
-    need_fundamentals = criteria_name in FUND_CRITERIA
+    need_fundamentals = any(c in FUND_CRITERIA for c in criteria_parts)
 
-    eval_fn = HIST_CRITERIA[criteria_name]
+    eval_fns = [HIST_CRITERIA[c] for c in criteria_parts]
 
     # ── load universe ────────────────────────────────────────────────────────
     if universe_path:
@@ -152,11 +158,22 @@ def run_historical_backtest(
                 if close_on_asof:
                     fund_snap = fundamental_snapshot(raw_fund, as_of_ts, close_on_asof)
 
-        result = eval_fn(df, as_of_ts, fund_snap)
-        if result is None:
+        # Evaluate all criteria; ticker must pass every one.
+        all_pass = True
+        last_result = None
+        for eval_fn in eval_fns:
+            result = eval_fn(df, as_of_ts, fund_snap)
+            if result is None:
+                all_pass = False
+                break
+            last_result = result
+            if not result["passes"]:
+                all_pass = False
+                break
+        if last_result is None:
             skipped.append(ticker)
-        elif result["passes"]:
-            matches.append((ticker, result))
+        elif all_pass:
+            matches.append((ticker, last_result))
 
     matches_total = len(matches)
     click.echo(

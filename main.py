@@ -153,13 +153,14 @@ cli.add_command(backtest_last_run, name="backtest")
 @click.option(
     "-c",
     "--criteria",
-    "criteria_name",
+    "criteria_names",
     type=click.Choice(sorted(HIST_CRITERIA)),
-    default="ema",
+    multiple=True,
+    default=("ema",),
     show_default=True,
     help=(
-        "Criterion to evaluate historically. "
-        f"OHLCV-only: ema, breakout, ema_breakout. "
+        "Criteria to evaluate historically (repeat to combine, e.g. -c ema -c breakout). "
+        f"OHLCV-only: ema, breakout, ema_breakout, oversold_rsi, pullback, golden_cross. "
         f"Needs fundamentals (yfinance quarterly): {', '.join(sorted(FUND_CRITERIA))}."
     ),
 )
@@ -184,7 +185,7 @@ cli.add_command(backtest_last_run, name="backtest")
 @click.option("--benchmark", default=None, help="Override benchmark symbol (e.g. AMEX:SPY).")
 @click.option("--refresh", is_flag=True, help="Force re-fetch prices, ignore Parquet cache.")
 @click.option("--csv", "output_csv", is_flag=True, help="Emit per-ticker CSV ledger.")
-def backtest_historical(market, criteria_name, as_of, hold, top, universe, benchmark, refresh, output_csv):
+def backtest_historical(market, criteria_names, as_of, hold, top, universe, benchmark, refresh, output_csv):
     """Screen a universe as of a historical date and backtest forward.
 
     Answers: "Which stocks matched this screen on --as-of, and how did they
@@ -195,19 +196,23 @@ def backtest_historical(market, criteria_name, as_of, hold, top, universe, bench
     support historical as-of queries; this command computes criteria locally
     from downloaded price history instead.
 
-    Example:
+    Examples:
 
         uv run python main.py backtest-historical -m us -c ema \\
+            --as-of 2025-04-15 --hold 252 --top 20
+
+        uv run python main.py backtest-historical -m us -c ema -c breakout \\
             --as-of 2025-04-15 --hold 252 --top 20
     """
     from screener.historical_backtest import run_historical_backtest
 
+    criteria_label = "+".join(criteria_names)
     as_of_date = as_of.date()
 
     try:
         result = run_historical_backtest(
             market=market,
-            criteria_name=criteria_name,
+            criteria_name=criteria_label,
             as_of=as_of_date,
             hold_days=hold,
             top=top,

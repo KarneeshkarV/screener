@@ -23,24 +23,28 @@ from screener.historical_backtest import run_historical_backtest
 # Matrix definition
 # ---------------------------------------------------------------------------
 
+# Single filters + interesting combos (use "+" to combine)
+_CRITERIA = [
+    # singles
+    "ema", "breakout", "pullback", "oversold_rsi",
+    # combos — ticker must pass ALL constituent filters
+    "ema+breakout",           # EMA stack + near-52w-high
+    "ema+pullback",           # EMA stack + dip to EMA20
+    "pullback+golden_cross",  # buy-the-dip right after golden cross
+    "ema+breakout+pullback",  # triple: trend + strength + dip
+]
+# (years, as_of, hold_days) — each as_of chosen so exit ≈ today (2026-04-15).
+_HOLDS = [
+    (1, "2025-04-15", 252),
+    (3, "2023-04-17", 756),
+    (5, "2021-04-15", 1260),
+]
+
 RUNS: list[tuple[str, str, str, int]] = [
-    # (market, as_of, criteria, hold_days)
-    # OHLCV-only — go back 2 years so there is a full forward window
-    ("us",    "2023-04-15", "ema",           252),
-    ("us",    "2023-04-15", "breakout",       252),
-    ("us",    "2023-04-15", "ema_breakout",   252),
-    ("us",    "2024-04-15", "ema",           252),
-    ("us",    "2024-04-15", "breakout",       252),
-    ("us",    "2024-04-15", "ema_breakout",   252),
-    # Fundamentals — yfinance quarterly data only covers ~last 5 quarters,
-    # so use a recent as_of where 2+ quarters fall inside the 45-day lag window.
-    # as_of 2025-09-01: Q4-2024 (avail 2025-02-14) and Q1-2025 (avail 2025-05-15) ✓
-    # hold=180 keeps exit well within available data (exits ~2026-03)
-    ("us",    "2025-09-01", "value",         180),
-    ("us",    "2025-09-01", "quality",        180),
-    ("us",    "2025-09-01", "cheap_quality",  180),
-    ("us",    "2025-09-01", "dividend",       180),
-    ("us",    "2025-09-01", "momentum_value", 180),
+    (mkt, as_of, crit, hold)
+    for mkt in ("us", "india")
+    for _years, as_of, hold in _HOLDS
+    for crit in _CRITERIA
 ]
 
 TOP = 20

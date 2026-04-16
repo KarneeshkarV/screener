@@ -4,6 +4,9 @@ OHLCV-only criteria (no external data needed):
     ema          — EMA5 > EMA20 > EMA100 > EMA200 bullish stack
     breakout     — close within 10% of 52-week high + above-average volume
     ema_breakout — ema AND breakout combined
+    oversold_rsi — RSI < 35 with EMA100 > EMA200 (mean-reversion in uptrend)
+    pullback     — close within 3% of EMA20, EMA20 > EMA100 > EMA200
+    golden_cross — EMA50 crossed above EMA200 within the last 20 bars
 
 Fundamentals-augmented criteria (yfinance quarterly data required):
     value         — P/E in (0, 20]
@@ -52,10 +55,24 @@ def _slice_to_asof(ohlcv: pd.DataFrame, as_of: pd.Timestamp) -> pd.DataFrame:
 def _indicator_snapshot(df: pd.DataFrame) -> dict:
     close = pd.to_numeric(df["close"], errors="coerce").ffill()
 
-    ema5   = close.ewm(span=5,   adjust=False).mean().iloc[-1]
-    ema20  = close.ewm(span=20,  adjust=False).mean().iloc[-1]
-    ema100 = close.ewm(span=100, adjust=False).mean().iloc[-1]
-    ema200 = close.ewm(span=200, adjust=False).mean().iloc[-1]
+    ema5_s   = close.ewm(span=5,   adjust=False).mean()
+    ema20_s  = close.ewm(span=20,  adjust=False).mean()
+    ema50_s  = close.ewm(span=50,  adjust=False).mean()
+    ema100_s = close.ewm(span=100, adjust=False).mean()
+    ema200_s = close.ewm(span=200, adjust=False).mean()
+    ema5   = ema5_s.iloc[-1]
+    ema20  = ema20_s.iloc[-1]
+    ema50  = ema50_s.iloc[-1]
+    ema100 = ema100_s.iloc[-1]
+    ema200 = ema200_s.iloc[-1]
+
+    # Golden-cross detection: EMA50 now above EMA200 AND 20 bars ago it was not.
+    golden_cross_recent = False
+    if len(ema50_s) >= 21:
+        golden_cross_recent = bool(
+            ema50_s.iloc[-1] > ema200_s.iloc[-1]
+            and ema50_s.iloc[-21] <= ema200_s.iloc[-21]
+        )
 
     delta = close.diff()
     avg_gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean().iloc[-1]
@@ -79,10 +96,11 @@ def _indicator_snapshot(df: pd.DataFrame) -> dict:
 
     return {
         "close": last_close, "ema5": float(ema5), "ema20": float(ema20),
-        "ema100": float(ema100), "ema200": float(ema200),
+        "ema50": float(ema50), "ema100": float(ema100), "ema200": float(ema200),
         "rsi": float(rsi), "high_52w": high_52w, "momentum": momentum,
         "volume": last_vol, "vol_10d_avg": vol_10d_avg,
         "dollar_vol_20d": dollar_vol_20d,
+        "golden_cross_recent": golden_cross_recent,
     }
 
 
@@ -145,6 +163,50 @@ def eval_ema_breakout(
         else True
     )
     return {"passes": passes_ema and passes_high and passes_vol,
+            "score_inputs": _merge_snap(snap, fundamentals)}
+
+
+def eval_oversold_rsi(
+    ohlcv: pd.DataFrame,
+    as_of: pd.Timestamp,
+    fundamentals: Optional[dict] = None,
+) -> Optional[dict]:
+    """RSI < 35 inside an uptrend (EMA100 > EMA200) — mean-reversion buy."""
+    df = _slice_to_asof(ohlcv, as_of)
+    if len(df) < _MIN_BARS_EMA:
+        return None
+    snap = _indicator_snapshot(df)
+    passes = snap["rsi"] < 35 and snap["ema100"] > snap["ema200"] > 0
+    return {"passes": passes, "score_inputs": _merge_snap(snap, fundamentals)}
+
+
+def eval_pullback(
+    ohlcv: pd.DataFrame,
+    as_of: pd.Timestamp,
+    fundamentals: Optional[dict] = None,
+) -> Optional[dict]:
+    """Close within 3% of EMA20 with EMA20 > EMA100 > EMA200 — buy-the-dip."""
+    df = _slice_to_asof(ohlcv, as_of)
+    if len(df) < _MIN_BARS_EMA:
+        return None
+    snap = _indicator_snapshot(df)
+    e20 = snap["ema20"]
+    near_ema20 = e20 > 0 and abs(snap["close"] - e20) / e20 <= 0.03
+    uptrend = snap["ema20"] > snap["ema100"] > snap["ema200"] > 0
+    return {"passes": near_ema20 and uptrend, "score_inputs": _merge_snap(snap, fundamentals)}
+
+
+def eval_golden_cross(
+    ohlcv: pd.DataFrame,
+    as_of: pd.Timestamp,
+    fundamentals: Optional[dict] = None,
+) -> Optional[dict]:
+    """EMA50 crossed above EMA200 within the last 20 bars."""
+    df = _slice_to_asof(ohlcv, as_of)
+    if len(df) < _MIN_BARS_EMA:
+        return None
+    snap = _indicator_snapshot(df)
+    return {"passes": bool(snap["golden_cross_recent"]),
             "score_inputs": _merge_snap(snap, fundamentals)}
 
 
@@ -285,6 +347,9 @@ HIST_CRITERIA: dict[str, Callable] = {
     "ema":            eval_ema_stack,
     "breakout":       eval_breakout,
     "ema_breakout":   eval_ema_breakout,
+    "oversold_rsi":   eval_oversold_rsi,
+    "pullback":       eval_pullback,
+    "golden_cross":   eval_golden_cross,
     "value":          eval_value,
     "quality":        eval_quality,
     "cheap_quality":  eval_cheap_quality,
