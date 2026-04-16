@@ -1,0 +1,211 @@
+# Nifty 500 representative universe (static snapshot, ~2025)
+# WARNING: Survivorship bias — this is today's index membership.
+# Delisted or removed stocks are not included.
+# For point-in-time accuracy, provide a custom --universe file.
+# NSE symbols (no exchange prefix; yfinance appends .NS automatically).
+#
+# Symbol corrections vs raw NSE names:
+#   RAILVIKAS     → RVNL        (Rail Vikas Nigam)
+#   ICICIlombard  → ICICIGI     (ICICI Lombard General Insurance)
+#   ICICIPRULIFE  → ICICIPRULI  (ICICI Prudential Life)
+#   CHOLAMANDLAM  → CHOLAFIN    (Cholamandalam Investment & Finance)
+#   LTIMINDTREE   → LTIM        (LTIMindtree merged entity)
+#   TVSMOTORS     → TVSMOTOR    (TVS Motor Company)
+#   VARUNBEV/VBL  → VBL         (Varun Beverages)
+#   DALMIACEM     → DALBHARAT   (Dalmia Bharat)
+#   SHOPPERSSTOP  → SHOPERSTOP  (Shoppers Stop)
+#   AMBUJACEMENT  → AMBUJACEM   (Ambuja Cements)
+#
+# Removed (no yfinance history for as-of dates):
+#   HEXAWARE    — delisted 2020, relisted Feb 2025; <2y history
+#   MCDOWELL-N  — United Spirits; hyphen not supported by yfinance
+#   SWIGGY      — IPO November 2024; insufficient lookback
+#   ZOMATO      — intermittent yfinance data gap; add manually if needed
+
+# Large Cap — Nifty 50 core
+RELIANCE
+TCS
+HDFCBANK
+ICICIBANK
+INFY
+WIPRO
+BHARTIARTL
+ITC
+KOTAKBANK
+HCLTECH
+BAJFINANCE
+SBIN
+AXISBANK
+LT
+ULTRACEMCO
+ASIANPAINT
+MARUTI
+SUNPHARMA
+TATAMOTORS
+TATASTEEL
+ADANIENT
+ADANIPORTS
+BAJAJFINSV
+TECHM
+TITAN
+HINDUNILVR
+DIVISLAB
+DRREDDY
+CIPLA
+ONGC
+NTPC
+POWERGRID
+COALINDIA
+NESTLEIND
+INDUSINDBK
+GRASIM
+JSWSTEEL
+HINDALCO
+EICHERMOT
+APOLLOHOSP
+
+# Mid Cap — Nifty Midcap 100 components
+MUTHOOTFIN
+PIIND
+PERSISTENT
+COFORGE
+LTTS
+MPHASIS
+KPITTECH
+TATAELXSI
+TANLA
+PAYTM
+NYKAA
+DELHIVERY
+POLICYBZR
+MAPMYINDIA
+IRCTC
+RVNL
+IRFC
+RECLTD
+PFC
+NHPC
+SJVN
+CESC
+TORNTPOWER
+TATAPOWER
+ADANIGREEN
+ADANITRANS
+ADANIPOWER
+
+# Banking & Finance
+HDFCLIFE
+SBILIFE
+ICICIGI
+ICICIPRULI
+BAJAJHLDNG
+CHOLAFIN
+M&MFIN
+SHRIRAMFIN
+MANAPPURAM
+IIFL
+ANGELONE
+CDSL
+BSE
+MCX
+
+# IT & Technology
+LTIM
+OFSS
+KFINTECH
+NAUKRI
+JUSTDIAL
+
+# Pharma & Healthcare
+LUPIN
+AUROPHARMA
+TORNTPHARM
+ALKEM
+IPCALAB
+ABBOTINDIA
+PFIZER
+SANOFI
+GLAXO
+METROPOLIS
+THYROCARE
+LALPATHLAB
+
+# Auto & Auto Ancillary
+HEROMOTOCO
+BAJAJ-AUTO
+TVSMOTOR
+M&M
+ASHOKLEY
+BHARATFORG
+MOTHERSON
+BALKRISIND
+MRF
+APOLLOTYRE
+CEATLTD
+
+# FMCG & Consumer
+BRITANNIA
+DABUR
+MARICO
+GODREJCP
+COLPAL
+EMAMILTD
+TATACONSUM
+VBL
+UBL
+RADICO
+
+# Metals & Mining
+SAIL
+NMDC
+MOIL
+NATIONALUM
+VEDL
+HINDCOPPER
+
+# Infrastructure & Capital Goods
+BHEL
+TIINDIA
+SIEMENS
+ABB
+CUMMINSIND
+VOLTAS
+HAVELLS
+POLYCAB
+KEC
+THERMAX
+GRINDWELL
+SCHAEFFLER
+
+# Real Estate
+DLF
+GODREJPROP
+PRESTIGE
+OBEROIRLTY
+SOBHA
+BRIGADE
+LODHA
+
+# Oil & Gas
+BPCL
+IOC
+HINDPETRO
+PETRONET
+IGL
+MGL
+GAIL
+
+# Cement
+ACC
+SHREECEM
+RAMCOCEM
+JKCEMENT
+DALBHARAT
+HEIDELBERG
+AMBUJACEM
+
+# Retail & E-Commerce
+TRENT
+DMART
+SHOPERSTOP
+VMART

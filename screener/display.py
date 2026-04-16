@@ -158,3 +158,168 @@ def _print_diff(
 
 def print_csv(df: pd.DataFrame) -> None:
     print(df.to_csv(index=False))
+
+
+def _fmt_pct(val) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "-"
+    return f"{val * 100:+.2f}%"
+
+
+def _fmt_num(val, digits: int = 2) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "-"
+    return f"{val:.{digits}f}"
+
+
+def print_backtest(result) -> None:
+    console.print(
+        f"\n[bold]Backtest[/bold] — run #{result.run_id} "
+        f"([cyan]{result.market.upper()}[/cyan] / {result.criteria}) "
+        f"@ {result.run_ts}"
+    )
+    console.print(
+        f"  scope=[yellow]{result.scope}[/yellow]  window "
+        f"{result.start_date} → {result.end_date}  "
+        f"hold={result.hold_days or 'full'}  "
+        f"tickers={len(result.tickers)}  "
+        f"benchmark={result.benchmark}"
+    )
+    if result.dropped:
+        console.print(
+            f"  [dim]dropped {len(result.dropped)}: "
+            f"{', '.join(result.dropped[:8])}"
+            + ("…" if len(result.dropped) > 8 else "")
+            + "[/dim]"
+        )
+
+    summary = result.summary
+    table = Table(title="Summary", show_header=True, header_style="bold")
+    table.add_column("", justify="left")
+    for col in ("Total", "CAGR", "Vol", "Sharpe", "MaxDD", "Hit%", "Alpha", "Beta"):
+        table.add_column(col, justify="right")
+
+    for label, stats in (("Basket", summary["basket"]), ("Benchmark", summary["benchmark"])):
+        table.add_row(
+            label,
+            _fmt_pct(stats["total_return"]),
+            _fmt_pct(stats["cagr"]),
+            _fmt_pct(stats["vol"]),
+            _fmt_num(stats["sharpe"]),
+            _fmt_pct(stats["max_drawdown"]),
+            _fmt_pct(stats["hit_rate"]) if stats["hit_rate"] == stats["hit_rate"] else "-",
+            _fmt_pct(stats["alpha"]) if stats["alpha"] is not None else "-",
+            _fmt_num(stats["beta"]) if stats["beta"] is not None else "-",
+        )
+    console.print(table)
+
+    if result.per_ticker.empty:
+        return
+
+    pt = Table(title="Per-ticker", show_header=True, header_style="bold")
+    pt.add_column("Ticker")
+    pt.add_column("Entry", justify="right")
+    pt.add_column("Exit", justify="right")
+    pt.add_column("Return", justify="right")
+    pt.add_column("Days", justify="right")
+
+    for _, row in result.per_ticker.iterrows():
+        ret = row["return_pct"]
+        style = "green" if pd.notna(ret) and ret > 0 else ("red" if pd.notna(ret) and ret < 0 else "")
+        pt.add_row(
+            row["ticker"],
+            _fmt_num(row["entry_close"]),
+            _fmt_num(row["exit_close"]),
+            f"[{style}]{_fmt_pct(ret)}[/{style}]" if style else _fmt_pct(ret),
+            str(int(row["trading_days"])),
+        )
+    console.print(pt)
+
+
+def print_backtest_csv(result) -> None:
+    print(result.per_ticker.to_csv(index=False))
+
+
+def print_historical_backtest(result) -> None:
+    console.print(
+        f"\n[bold]Historical Backtest[/bold] — "
+        f"[cyan]{result.market.upper()}[/cyan] / {result.criteria}"
+    )
+    console.print(
+        f"  Screen as-of: [yellow]{result.as_of_date}[/yellow]  "
+        f"Entry: {result.entry_date}  Exit: {result.exit_date}  "
+        f"Hold: {result.hold_days} trading days"
+    )
+    console.print(
+        f"  Universe: {result.universe_label} ({result.universe_size} tickers)  "
+        f"Matches: {result.matches_total}  Selected: top {result.top_n}  "
+        f"Benchmark: {result.benchmark}"
+    )
+    if result.failed:
+        console.print(
+            f"  [dim]no data: {len(result.failed)} tickers[/dim]"
+        )
+    if result.skipped:
+        console.print(
+            f"  [dim]skipped (insufficient history): {len(result.skipped)} tickers[/dim]"
+        )
+    if result.dropped:
+        console.print(
+            f"  [dim]dropped (no forward data): "
+            + ", ".join(result.dropped[:8])
+            + ("…" if len(result.dropped) > 8 else "")
+            + "[/dim]"
+        )
+
+    summary = result.summary
+    table = Table(title="Summary", show_header=True, header_style="bold")
+    table.add_column("", justify="left")
+    for col in ("Total", "CAGR", "Vol", "Sharpe", "MaxDD", "Hit%", "Alpha", "Beta"):
+        table.add_column(col, justify="right")
+
+    for label, stats in (("Basket", summary["basket"]), ("Benchmark", summary["benchmark"])):
+        table.add_row(
+            label,
+            _fmt_pct(stats["total_return"]),
+            _fmt_pct(stats["cagr"]),
+            _fmt_pct(stats["vol"]),
+            _fmt_num(stats["sharpe"]),
+            _fmt_pct(stats["max_drawdown"]),
+            _fmt_pct(stats["hit_rate"]) if stats["hit_rate"] == stats["hit_rate"] else "-",
+            _fmt_pct(stats["alpha"]) if stats["alpha"] is not None else "-",
+            _fmt_num(stats["beta"]) if stats["beta"] is not None else "-",
+        )
+    console.print(table)
+
+    if result.per_ticker.empty:
+        return
+
+    pt = Table(title="Selected tickers", show_header=True, header_style="bold")
+    pt.add_column("Rank", justify="right")
+    pt.add_column("Ticker")
+    pt.add_column("Score", justify="right")
+    pt.add_column("Entry", justify="right")
+    pt.add_column("Exit", justify="right")
+    pt.add_column("Return", justify="right")
+    pt.add_column("Days", justify="right")
+
+    for _, row in result.per_ticker.iterrows():
+        ret = row.get("return_pct")
+        style = (
+            "green" if pd.notna(ret) and ret > 0
+            else ("red" if pd.notna(ret) and ret < 0 else "")
+        )
+        pt.add_row(
+            str(int(row["rank"])),
+            row["ticker"],
+            _fmt_num(row.get("score"), 4),
+            _fmt_num(row.get("entry_close")),
+            _fmt_num(row.get("exit_close")),
+            f"[{style}]{_fmt_pct(ret)}[/{style}]" if style else _fmt_pct(ret),
+            str(int(row["trading_days"])),
+        )
+    console.print(pt)
+
+
+def print_historical_backtest_csv(result) -> None:
+    print(result.per_ticker.to_csv(index=False))
