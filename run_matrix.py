@@ -23,15 +23,27 @@ from screener.historical_backtest import run_historical_backtest
 # Matrix definition
 # ---------------------------------------------------------------------------
 
-# Single filters + interesting combos (use "+" to combine)
+# Single filters + interesting combos (use "+" to combine).
+# Layered technical+fundamental combos are informed by multi-factor research
+# (value+momentum, quality+trend, cheap-quality composite).
 _CRITERIA = [
-    # singles
+    # --- pure technical (baseline for comparison) ---
     "ema", "breakout", "pullback", "oversold_rsi",
-    # combos — ticker must pass ALL constituent filters
     "ema+breakout",           # EMA stack + near-52w-high
     "ema+pullback",           # EMA stack + dip to EMA20
     "pullback+golden_cross",  # buy-the-dip right after golden cross
     "ema+breakout+pullback",  # triple: trend + strength + dip
+
+    # --- pure fundamental composites ---
+    "cheap_quality",          # Greenblatt-style: value + quality + trend-lite
+    "momentum_value",         # value + RSI 50-70 + EMA stack
+
+    # --- layered technical + fundamental (research-backed) ---
+    "value+ema",              # cheap stock in uptrend
+    "quality+ema",             # high-ROE in uptrend
+    "quality+breakout",        # high-ROE breaking out
+    "cheap_quality+breakout",  # best composite + momentum
+    "value+oversold_rsi",      # buy-the-dip on cheap names
 ]
 # (years, as_of, hold_days) — each as_of chosen so exit ≈ today (2026-04-15).
 _HOLDS = [
