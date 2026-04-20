@@ -1,0 +1,106 @@
+
+=== Preparing market=us ===
+Universe size: 395
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ANSS"}}}
+$ANSS: possibly delisted; no timezone found
+
+1 Failed download:
+['ANSS']: possibly delisted; no timezone found
+you are using nologin method, data you access may be limited
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$DFS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['DFS']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$MMC: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MMC']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  fetched 100/395 (failed 3)
+ERROR:yfinance:$K: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['K']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  fetched 200/395 (failed 4)
+ERROR:yfinance:$IPG: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['IPG']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$MRO: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MRO']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  fetched 300/395 (failed 6)
+ERROR:yfinance:$HES: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['HES']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$PEAK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['PEAK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$LSI: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['LSI']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$WRK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['WRK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  fetched 395/395 (failed 10)
+Matches: 75 / 383
+Bull-sector filter: kept 57/75
+Selected top 20: MU, GE, MPC, ETN, AMAT, CAT, FCX, AVGO, PGR, CEG, VST, QCOM, WFC, VLO, NRG, FANG, PSX, XOM, RTX, TRGP
+Forward matrix: 280 rows × 20 tickers  entry=2024-04-16
+
+Running baseline (no-exit) for us…
+Sweeping 383 combos for us…
+  50/383 combos (9.2s)
+  100/383 combos (18.0s)
+  150/383 combos (26.4s)
+  200/383 combos (34.8s)
+  250/383 combos (43.6s)
+  300/383 combos (52.5s)
+  350/383 combos (61.2s)
+  383/383 combos (67.3s)
+
+=== Preparing market=india ===
+Universe size: 162
+  fetched 100/162 (failed 0)
+  fetched 162/162 (failed 0)
+Matches: 93 / 162
+Bull-sector filter: kept 56/93
+Selected top 20: BHEL, TATAPOWER, NATIONALUM, HINDCOPPER, BAJAJ-AUTO, SAIL, NTPC, NHPC, ONGC, TATASTEEL, BHARTIARTL, SJVN, GAIL, MARUTI, TORNTPOWER, M&M, TRENT, COALINDIA, VEDL, ADANIPORTS
+Forward matrix: 277 rows × 20 tickers  entry=2024-04-16
+
+Running baseline (no-exit) for india…
+Sweeping 383 combos for india…
+  50/383 combos (8.7s)
+  100/383 combos (17.3s)
+  150/383 combos (25.9s)
+  200/383 combos (34.8s)
+  250/383 combos (43.1s)
+  300/383 combos (51.7s)
+  350/383 combos (60.3s)
+  383/383 combos (66.0s)
+
+Wrote /root/screener/_exit_combo_sweep.txt

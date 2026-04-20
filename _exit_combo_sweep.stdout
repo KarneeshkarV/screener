@@ -1,0 +1,22 @@
+
+====================================================================================================
+SUMMARY — top 5 by Sharpe per market (with baseline)
+====================================================================================================
+
+-- US --
+Combo                                                         Total  Sharpe    MaxDD    Hit%  AvgDays
+>> baseline (no exits)                                      +0.20%    0.14 -25.38% +45.00%    252.0
+stop=12%|tp=30%|trail=none|sig=none                        +10.04%    1.02  -6.12% +50.00%    106.7
+stop=12%|tp=30%|trail=20%|sig=none                          +8.98%    1.01  -5.34% +45.00%    103.0
+stop=12%|tp=20%|trail=20%|sig=none                          +7.49%    0.99  -3.66% +55.00%     79.0
+stop=12%|tp=20%|trail=none|sig=none                         +6.85%    0.89  -3.66% +55.00%     80.2
+stop=none|tp=20%|trail=20%|sig=none                         +7.42%    0.87  -3.98% +60.00%     90.0
+
+-- INDIA --
+Combo                                                         Total  Sharpe    MaxDD    Hit%  AvgDays
+>> baseline (no exits)                                      +0.51%    0.15 -26.57% +30.00%    252.0
+stop=none|tp=15%|trail=none|sig=rsi_overbought              +9.37%    1.67  -2.73% +95.00%     29.1
+stop=none|tp=15%|trail=20%|sig=rsi_overbought               +8.67%    1.56  -2.73% +90.00%     27.6
+stop=none|tp=none|trail=none|sig=rsi_overbought             +9.64%    1.55  -3.30% +95.00%     31.0
+stop=none|tp=20%|trail=none|sig=rsi_overbought              +9.64%    1.55  -3.30% +95.00%     31.0
+stop=none|tp=30%|trail=none|sig=rsi_overbought              +9.64%    1.55  -3.30% +95.00%     31.0

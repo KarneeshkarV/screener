@@ -1,0 +1,25 @@
+
+====================================================================================================================
+Exit-on-invalidation matrix  as_of=2024-04-15  hold=252  top=20
+====================================================================================================================
+Mkt    Criteria        Exit                   Match  Top   Basket    Bench   Alpha  Sharpe   MaxDD   Hit%  AvgDays
+------------------------------------------------------------------------------------------------------------------
+US     ema             ema_stack_full_break      57   20    -0.7%   +18.2%   -0.9%   -0.25   -2.1% +30.0%     14.2
+US     breakout        breakout_invalid          75   20    +7.2%   +18.2%   +5.0%    1.28   -3.0% +50.0%     75.1
+US     ema_breakout    ema_breakout_invalid      23   20    -0.9%   +18.2%   -0.9%   -0.52   -1.1% +20.0%     10.2
+US     pullback        pullback_invalid         111   20    -0.8%   +18.2%   -0.8%   -0.42   -1.9% +35.0%      6.2
+US     oversold_rsi    oversold_rsi_invalid      34   20    +0.2%   +18.2%   -0.1%    0.10   -2.5% +65.0%     20.8
+US     golden_cross    golden_cross_invalid      23   20    +4.5%   +18.2%   +1.8%    0.55   -5.6% +40.0%    121.2
+US     rsi2_oversold   rsi2_oversold_invalid     83   20    +0.4%   +18.2%   +0.3%    0.34   -1.1% +60.0%      4.7
+US     macd_cross      macd_cross_invalid         1    1    -1.0%   +18.2%   -0.9%   -0.95   -1.0%  +0.0%      1.0
+US     sma_cross       sma_cross_invalid          3    3    -1.8%   +18.2%   -1.7%   -1.57   -1.8% +33.3%      1.7
+INDIA  ema             ema_stack_full_break      56   20    +2.7%   +11.8%   +1.0%    0.50   -4.6% +30.0%     25.5
+INDIA  breakout        breakout_invalid          26   20    +1.3%   +11.8%   -2.3%    0.16   -8.7% +40.0%     42.6
+INDIA  ema_breakout    ema_breakout_invalid      24   20    +3.2%   +11.8%   +1.7%    0.55   -4.4% +40.0%     23.8
+INDIA  pullback        pullback_invalid          35   20    +2.5%   +11.8%   +2.2%    1.64   -0.6% +85.0%      7.0
+INDIA  oversold_rsi    oversold_rsi_invalid       1    1    +2.2%   +11.8%   +2.0%    0.96   -1.3% +100.0%      9.0
+INDIA  golden_cross    golden_cross_invalid       2    2    +2.1%   +11.8%   -1.2%    0.19  -23.8% +50.0%    145.0
+INDIA  rsi2_oversold   rsi2_oversold_invalid     19   19    +0.8%   +11.8%   +0.7%    0.44   -1.3% +73.7%      3.7
+INDIA  macd_cross      macd_cross_invalid         2    2    -1.9%   +11.8%   -1.8%   -0.68   -2.2%  +0.0%      7.0
+INDIA  sma_cross       sma_cross_invalid          8    8    +6.1%   +11.8%   +4.3%    0.99   -2.7% +37.5%     19.8
+

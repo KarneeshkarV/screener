@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS historical_backtests (
     take_profit     REAL,
     trailing_stop   REAL,
     exit_signals    TEXT,
+    re_entry        INTEGER,
     computed_ts     TEXT NOT NULL,
     UNIQUE(market, criteria, as_of_date, hold_days, top_n)
 );
@@ -106,9 +107,29 @@ CREATE TABLE IF NOT EXISTS historical_backtest_tickers (
     return_pct    REAL,
     trading_days  INTEGER,
     exit_reason   TEXT,
+    trades        INTEGER,
     PRIMARY KEY (historical_backtest_id, ticker)
 );
 """
+
+
+# Columns added after initial schema shipped.  Each entry is idempotently
+# applied via ALTER TABLE ADD COLUMN on existing DBs — ignored when the
+# column already exists.
+_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("historical_backtests", "re_entry", "INTEGER"),
+    ("historical_backtest_tickers", "trades", "INTEGER"),
+)
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for table, col, col_type in _MIGRATIONS:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" in str(e).lower():
+                continue
+            raise
 
 
 def _connect() -> sqlite3.Connection:
@@ -116,6 +137,7 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
+    _apply_migrations(conn)
     return conn
 
 
@@ -366,6 +388,7 @@ def save_historical_backtest(
     bench_summary: dict,
     per_ticker: pd.DataFrame,
     exit_policy: Optional["ExitPolicy"] = None,
+    re_entry: bool = False,
 ) -> int:
     """Save a historical backtest result, replacing any previous run with the
     same (market, criteria, as_of_date, hold_days, top_n) key."""
@@ -405,6 +428,7 @@ def save_historical_backtest(
                     hit_rate=?, alpha=?, beta=?,
                     bench_total_return=?, bench_cagr=?,
                     stop_loss=?, take_profit=?, trailing_stop=?, exit_signals=?,
+                    re_entry=?,
                     computed_ts=?
                 WHERE id=?
                 """,
@@ -428,6 +452,7 @@ def save_historical_backtest(
                     take_profit,
                     trailing_stop,
                     exit_signals_csv,
+                    1 if re_entry else 0,
                     computed_ts,
                     hb_id,
                 ),
@@ -440,8 +465,9 @@ def save_historical_backtest(
                      hold_days, top_n, universe_label, universe_size, matches_total,
                      benchmark, total_return, cagr, sharpe, max_drawdown,
                      hit_rate, alpha, beta, bench_total_return, bench_cagr,
-                     stop_loss, take_profit, trailing_stop, exit_signals, computed_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     stop_loss, take_profit, trailing_stop, exit_signals,
+                     re_entry, computed_ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     market,
@@ -468,6 +494,7 @@ def save_historical_backtest(
                     take_profit,
                     trailing_stop,
                     exit_signals_csv,
+                    1 if re_entry else 0,
                     computed_ts,
                 ),
             )
@@ -475,6 +502,8 @@ def save_historical_backtest(
 
         rows = []
         for _, r in per_ticker.iterrows():
+            trade_count_raw = r.get("trades")
+            trade_count = int(trade_count_raw) if pd.notna(trade_count_raw) else None
             rows.append(
                 (
                     hb_id,
@@ -486,6 +515,7 @@ def save_historical_backtest(
                     _to_float(r.get("return_pct")),
                     int(r["trading_days"]) if pd.notna(r.get("trading_days")) else 0,
                     str(r.get("exit_reason")) if r.get("exit_reason") is not None else "time",
+                    trade_count,
                 )
             )
         if rows:
@@ -493,8 +523,9 @@ def save_historical_backtest(
                 """
                 INSERT INTO historical_backtest_tickers
                     (historical_backtest_id, ticker, rank, score,
-                     entry_close, exit_close, return_pct, trading_days, exit_reason)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     entry_close, exit_close, return_pct, trading_days, exit_reason,
+                     trades)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )

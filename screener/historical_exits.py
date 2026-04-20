@@ -61,8 +61,15 @@ def _attach_indicators(ohlcv: pd.DataFrame) -> pd.DataFrame:
     close = pd.to_numeric(df["close"], errors="coerce").ffill()
     df["_close"] = close
 
-    df["_ema5"]  = close.ewm(span=5,  adjust=False).mean()
-    df["_ema20"] = close.ewm(span=20, adjust=False).mean()
+    df["_ema5"]   = close.ewm(span=5,   adjust=False).mean()
+    df["_ema20"]  = close.ewm(span=20,  adjust=False).mean()
+    df["_ema50"]  = close.ewm(span=50,  adjust=False).mean()
+    df["_ema100"] = close.ewm(span=100, adjust=False).mean()
+    df["_ema200"] = close.ewm(span=200, adjust=False).mean()
+
+    df["_sma10"] = close.rolling(10).mean()
+    df["_sma20"] = close.rolling(20).mean()
+    df["_high_52w"] = close.rolling(252, min_periods=20).max()
 
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
@@ -74,6 +81,11 @@ def _attach_indicators(ohlcv: pd.DataFrame) -> pd.DataFrame:
     avg_loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, float("nan"))
     df["_rsi"] = (100 - 100 / (1 + rs)).fillna(100.0)
+
+    ag2 = delta.clip(lower=0).ewm(alpha=1 / 2, adjust=False).mean()
+    al2 = (-delta.clip(upper=0)).ewm(alpha=1 / 2, adjust=False).mean()
+    rs2 = ag2 / al2.replace(0, float("nan"))
+    df["_rsi2"] = (100 - 100 / (1 + rs2)).fillna(100.0)
 
     bb_mid = close.rolling(20).mean()
     bb_std = close.rolling(20).std(ddof=0)
@@ -116,6 +128,18 @@ def _sig_ema_stack_break(df: pd.DataFrame, idx: int) -> bool:
     return bool(e5 < e20)
 
 
+def _sig_ema_stack_full_break(df: pd.DataFrame, idx: int) -> bool:
+    """Mirror of the `ema` entry criterion — fires when the EMA5>EMA20>EMA100>EMA200
+    bullish stack is no longer strictly ordered (any inequality broken)."""
+    e5   = df["_ema5"].iloc[idx]
+    e20  = df["_ema20"].iloc[idx]
+    e100 = df["_ema100"].iloc[idx]
+    e200 = df["_ema200"].iloc[idx]
+    if pd.isna(e5) or pd.isna(e20) or pd.isna(e100) or pd.isna(e200):
+        return False
+    return not bool(e5 > e20 > e100 > e200 > 0)
+
+
 def _sig_bb_upper_tag(df: pd.DataFrame, idx: int) -> bool:
     c, u = df["_close"].iloc[idx], df["_bb_upper"].iloc[idx]
     if pd.isna(u):
@@ -123,14 +147,109 @@ def _sig_bb_upper_tag(df: pd.DataFrame, idx: int) -> bool:
     return bool(c >= u)
 
 
+# ── criterion-invalidation signals ──────────────────────────────────────────
+# Each fires when the entry criterion of the same name is no longer satisfied.
+
+def _sig_breakout_invalid(df: pd.DataFrame, idx: int) -> bool:
+    """Entry: close within 10% of 52w high.  Exit: close drops below that band."""
+    c = df["_close"].iloc[idx]
+    h = df["_high_52w"].iloc[idx]
+    if pd.isna(c) or pd.isna(h) or h <= 0:
+        return False
+    return bool(c < h * 0.90)
+
+
+def _sig_pullback_invalid(df: pd.DataFrame, idx: int) -> bool:
+    """Entry: |close - EMA20|/EMA20 ≤ 3% and EMA20 > EMA100 > EMA200.
+    Exit: price drifts >3% from EMA20 OR the EMA20>EMA100>EMA200 trend breaks."""
+    c   = df["_close"].iloc[idx]
+    e20 = df["_ema20"].iloc[idx]
+    e100 = df["_ema100"].iloc[idx]
+    e200 = df["_ema200"].iloc[idx]
+    if pd.isna(c) or pd.isna(e20) or pd.isna(e100) or pd.isna(e200) or e20 <= 0:
+        return False
+    drift_ok = abs(c / e20 - 1.0) <= 0.03
+    trend_ok = e20 > e100 > e200 > 0
+    return not (drift_ok and trend_ok)
+
+
+def _sig_oversold_rsi_invalid(df: pd.DataFrame, idx: int) -> bool:
+    """Entry: RSI<35 in EMA100>EMA200 regime.  Exit: RSI rebounds out of oversold
+    (mean reversion complete) or the regime breaks."""
+    r    = df["_rsi"].iloc[idx]
+    e100 = df["_ema100"].iloc[idx]
+    e200 = df["_ema200"].iloc[idx]
+    if pd.isna(r) or pd.isna(e100) or pd.isna(e200):
+        return False
+    regime_ok = e100 > e200
+    return bool(r >= 50 or not regime_ok)
+
+
+def _sig_golden_cross_invalid(df: pd.DataFrame, idx: int) -> bool:
+    """Entry: EMA50 crossed above EMA200.  Exit: EMA50 back below EMA200."""
+    e50  = df["_ema50"].iloc[idx]
+    e200 = df["_ema200"].iloc[idx]
+    if pd.isna(e50) or pd.isna(e200):
+        return False
+    return bool(e50 < e200)
+
+
+def _sig_rsi2_oversold_invalid(df: pd.DataFrame, idx: int) -> bool:
+    """Entry: Connors RSI(2)<10 + rising EMA200.  Exit: RSI2 mean-reverts (>70)
+    or the EMA200 rising-regime breaks (close below EMA200)."""
+    r2   = df["_rsi2"].iloc[idx]
+    c    = df["_close"].iloc[idx]
+    e200 = df["_ema200"].iloc[idx]
+    if pd.isna(r2) or pd.isna(c) or pd.isna(e200):
+        return False
+    return bool(r2 >= 70 or c < e200)
+
+
+def _sig_macd_cross_invalid(df: pd.DataFrame, idx: int) -> bool:
+    """Entry: MACD>signal and above zero.  Exit: MACD back below signal line."""
+    m = df["_macd"].iloc[idx]
+    s = df["_macd_signal"].iloc[idx]
+    if pd.isna(m) or pd.isna(s):
+        return False
+    return bool(m < s)
+
+
+def _sig_sma_cross_invalid(df: pd.DataFrame, idx: int) -> bool:
+    """Entry: SMA10 crossed above SMA20 + price above EMA200.  Exit: SMA10<SMA20
+    OR price drops below EMA200."""
+    s10  = df["_sma10"].iloc[idx]
+    s20  = df["_sma20"].iloc[idx]
+    c    = df["_close"].iloc[idx]
+    e200 = df["_ema200"].iloc[idx]
+    if pd.isna(s10) or pd.isna(s20) or pd.isna(c) or pd.isna(e200):
+        return False
+    return bool(s10 < s20 or c < e200)
+
+
+def _sig_ema_breakout_invalid(df: pd.DataFrame, idx: int) -> bool:
+    """Entry: ema AND breakout.  Exit: EITHER the EMA stack breaks OR price
+    leaves the breakout band (>10% below 52w high)."""
+    return _sig_ema_stack_full_break(df, idx) or _sig_breakout_invalid(df, idx)
+
+
 SignalFn = Callable[[pd.DataFrame, int], bool]
 
 EXIT_SIGNALS: dict[str, SignalFn] = {
-    "rsi_overbought":  _sig_rsi_overbought,
-    "ema20_break":     _sig_ema20_break,
-    "macd_cross_down": _sig_macd_cross_down,
-    "ema_stack_break": _sig_ema_stack_break,
-    "bb_upper_tag":    _sig_bb_upper_tag,
+    "rsi_overbought":        _sig_rsi_overbought,
+    "ema20_break":           _sig_ema20_break,
+    "macd_cross_down":       _sig_macd_cross_down,
+    "ema_stack_break":       _sig_ema_stack_break,
+    "ema_stack_full_break":  _sig_ema_stack_full_break,
+    "bb_upper_tag":          _sig_bb_upper_tag,
+    # criterion-invalidation signals
+    "breakout_invalid":      _sig_breakout_invalid,
+    "pullback_invalid":      _sig_pullback_invalid,
+    "oversold_rsi_invalid":  _sig_oversold_rsi_invalid,
+    "golden_cross_invalid":  _sig_golden_cross_invalid,
+    "rsi2_oversold_invalid": _sig_rsi2_oversold_invalid,
+    "macd_cross_invalid":    _sig_macd_cross_invalid,
+    "sma_cross_invalid":     _sig_sma_cross_invalid,
+    "ema_breakout_invalid":  _sig_ema_breakout_invalid,
 }
 
 
@@ -194,3 +313,80 @@ def resolve_exit(
                 return k, f"signal:{name}"
 
     return max_bar, "time"
+
+
+# ── re-entry resolver ───────────────────────────────────────────────────────
+
+Trade = tuple[int, int, str]  # (entry_bar_rel, exit_bar_rel, reason)
+
+
+def resolve_trades(
+    ohlcv_full: pd.DataFrame,
+    entry_abs_idx: int,
+    forward_len: int,
+    policy: ExitPolicy,
+    entry_eval_fn: Callable[[int], bool],
+    cooldown_bars: int = 1,
+) -> list[Trade]:
+    """Walk the hold window and return a sequence of round-trip trades.
+
+    Bar indices in the returned tuples are relative to the initial entry
+    (bar 0 = ``entry_abs_idx``).  Trade 1 is seeded from bar 0.  Subsequent
+    trades open only on invalid→valid transitions of ``entry_eval_fn`` while
+    flat, after a ``cooldown_bars`` gap from the previous exit.
+
+    Each trade's exit is resolved by ``resolve_exit`` against a per-trade
+    ``ExitPolicy`` whose ``time_stop_bars`` is capped to the remaining hold
+    window (measured from the initial entry), so the total hold cap is
+    honoured across all trades.
+    """
+    if forward_len <= 0:
+        return [(0, 0, "time")]
+
+    # Resolve trade 1 using the original policy (its time_stop_bars is
+    # already anchored to the initial entry).
+    exit_rel, reason = resolve_exit(ohlcv_full, entry_abs_idx, forward_len, policy)
+    trades: list[Trade] = [(0, exit_rel, reason)]
+
+    # Effective hold cap from the initial entry.  None means no time-stop.
+    hold_cap = policy.time_stop_bars
+    if hold_cap is not None:
+        hold_cap = min(int(hold_cap), forward_len - 1)
+    else:
+        hold_cap = forward_len - 1
+
+    cursor = exit_rel + max(1, int(cooldown_bars))
+    prev_valid = bool(entry_eval_fn(entry_abs_idx + exit_rel))
+
+    while cursor <= hold_cap:
+        abs_idx = entry_abs_idx + cursor
+        if abs_idx >= len(ohlcv_full):
+            break
+        now_valid = bool(entry_eval_fn(abs_idx))
+        if now_valid and not prev_valid:
+            remaining = hold_cap - cursor
+            if remaining <= 0:
+                break
+            trade_policy = ExitPolicy(
+                stop_loss=policy.stop_loss,
+                take_profit=policy.take_profit,
+                trailing_stop=policy.trailing_stop,
+                signals=policy.signals,
+                time_stop_bars=remaining,
+            )
+            sub_exit_rel, sub_reason = resolve_exit(
+                ohlcv_full, abs_idx, remaining + 1, trade_policy
+            )
+            trade_entry = cursor
+            trade_exit = cursor + sub_exit_rel
+            trades.append((trade_entry, trade_exit, sub_reason))
+            cursor = trade_exit + max(1, int(cooldown_bars))
+            # Seed prev_valid from the new exit bar so the next edge-based
+            # transition is measured from there.
+            tail_idx = entry_abs_idx + trade_exit
+            prev_valid = bool(entry_eval_fn(tail_idx)) if tail_idx < len(ohlcv_full) else False
+        else:
+            prev_valid = now_valid
+            cursor += 1
+
+    return trades

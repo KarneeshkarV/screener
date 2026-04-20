@@ -1,0 +1,852 @@
+US ema             -> exit on ema_stack_full_break...
+Universe: default_us (395 tickers) | as-of: 2024-04-15 | criteria: ema | hold: 252d | top: 20
+Fetching price history…
+  50/395 fetched…
+  100/395 fetched…
+  150/395 fetched…
+HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ANSS"}}}
+$ANSS: possibly delisted; no timezone found
+
+1 Failed download:
+['ANSS']: possibly delisted; no timezone found
+you are using nologin method, data you access may be limited
+ERROR:yfinance:$DFS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['DFS']: possibly delisted; no timezone found
+ERROR:yfinance:$MMC: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MMC']: possibly delisted; no timezone found
+ERROR:yfinance:$K: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['K']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  200/395 fetched…
+  250/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$IPG: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['IPG']: possibly delisted; no timezone found
+  300/395 fetched…
+ERROR:yfinance:$MRO: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MRO']: possibly delisted; no timezone found
+ERROR:yfinance:$HES: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['HES']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$PEAK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['PEAK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$LSI: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['LSI']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  350/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$WRK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['WRK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  395/395 fetched…
+Screening…
+Matches: 75 / 383 screened (0 skipped — insufficient history, 10 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Energy, Financial Services, Industrials, Technology, Utilities
+  hottest: Energy +16.0%, Industrials +7.6%, Technology +6.7%  |  coldest: Real Estate -7.8%, Healthcare -2.2%, Consumer Cyclical +3.1%
+Bull-sector filter kept 57/75 matches (dropped 18 in bearish sectors)
+Selected top 20: MU, GE, MPC, ETN, AMAT, CAT, FCX, AVGO, PGR, CEG…
+  basket=-0.7%  bench=+18.2%  alpha=-0.9%  sharpe=-0.25  days=14.2
+US breakout        -> exit on breakout_invalid...
+Universe: default_us (395 tickers) | as-of: 2024-04-15 | criteria: breakout | hold: 252d | top: 20
+Fetching price history…
+ERROR:yfinance:$ANSS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['ANSS']: possibly delisted; no timezone found
+  50/395 fetched…
+ERROR:yfinance:$DFS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['DFS']: possibly delisted; no timezone found
+ERROR:yfinance:$MMC: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MMC']: possibly delisted; no timezone found
+  100/395 fetched…
+  150/395 fetched…
+ERROR:yfinance:$K: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['K']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  200/395 fetched…
+  250/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$IPG: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['IPG']: possibly delisted; no timezone found
+ERROR:yfinance:$MRO: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MRO']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$HES: possibly delisted; no timezone found
+  300/395 fetched…
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['HES']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$PEAK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['PEAK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$LSI: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['LSI']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  350/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$WRK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['WRK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  395/395 fetched…
+Screening…
+Matches: 110 / 383 screened (0 skipped — insufficient history, 10 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Energy, Financial Services, Industrials, Technology, Utilities
+  hottest: Energy +16.0%, Industrials +7.6%, Technology +6.7%  |  coldest: Real Estate -7.8%, Healthcare -2.2%, Consumer Cyclical +3.1%
+Bull-sector filter kept 75/110 matches (dropped 35 in bearish sectors)
+Selected top 20: PGR, NVDA, WFC, AMAT, AVGO, LRCX, KLAC, BAC, RTX, JPM…
+  basket=+7.2%  bench=+18.2%  alpha=+5.0%  sharpe=1.28  days=75.1
+US ema_breakout    -> exit on ema_breakout_invalid...
+Universe: default_us (395 tickers) | as-of: 2024-04-15 | criteria: ema_breakout | hold: 252d | top: 20
+Fetching price history…
+ERROR:yfinance:$ANSS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['ANSS']: possibly delisted; no timezone found
+  50/395 fetched…
+ERROR:yfinance:$DFS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['DFS']: possibly delisted; no timezone found
+ERROR:yfinance:$MMC: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MMC']: possibly delisted; no timezone found
+  100/395 fetched…
+  150/395 fetched…
+ERROR:yfinance:$K: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['K']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  200/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  250/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$IPG: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['IPG']: possibly delisted; no timezone found
+ERROR:yfinance:$MRO: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MRO']: possibly delisted; no timezone found
+  300/395 fetched…
+ERROR:yfinance:$HES: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['HES']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$PEAK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['PEAK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$LSI: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['LSI']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  350/395 fetched…
+ERROR:yfinance:$WRK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['WRK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  395/395 fetched…
+Screening…
+Matches: 33 / 383 screened (0 skipped — insufficient history, 10 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Energy, Financial Services, Industrials, Technology, Utilities
+  hottest: Energy +16.0%, Industrials +7.6%, Technology +6.7%  |  coldest: Real Estate -7.8%, Healthcare -2.2%, Consumer Cyclical +3.1%
+Bull-sector filter kept 23/33 matches (dropped 10 in bearish sectors)
+Selected top 20: AMAT, PGR, AVGO, WFC, TRGP, RTX, SAIA, TT, PH, SCHW…
+  basket=-0.9%  bench=+18.2%  alpha=-0.9%  sharpe=-0.52  days=10.2
+US pullback        -> exit on pullback_invalid...
+Universe: default_us (395 tickers) | as-of: 2024-04-15 | criteria: pullback | hold: 252d | top: 20
+Fetching price history…
+ERROR:yfinance:$ANSS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['ANSS']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection to remote host was lost.
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  50/395 fetched…
+ERROR:yfinance:$DFS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['DFS']: possibly delisted; no timezone found
+ERROR:yfinance:$MMC: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MMC']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection to remote host was lost.
+  100/395 fetched…
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  150/395 fetched…
+ERROR:yfinance:$K: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['K']: possibly delisted; no timezone found
+  200/395 fetched…
+  250/395 fetched…
+ERROR:yfinance:$IPG: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['IPG']: possibly delisted; no timezone found
+ERROR:yfinance:$MRO: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MRO']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  300/395 fetched…
+ERROR:yfinance:$HES: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['HES']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$PEAK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['PEAK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$LSI: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['LSI']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  350/395 fetched…
+ERROR:yfinance:$WRK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['WRK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  395/395 fetched…
+Screening…
+Matches: 163 / 383 screened (0 skipped — insufficient history, 10 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Energy, Financial Services, Industrials, Technology, Utilities
+  hottest: Energy +16.0%, Industrials +7.6%, Technology +6.7%  |  coldest: Real Estate -7.8%, Healthcare -2.2%, Consumer Cyclical +3.1%
+Bull-sector filter kept 111/163 matches (dropped 52 in bearish sectors)
+Selected top 20: PGR, CAT, NVDA, ETN, MPC, WFC, AMAT, QCOM, AVGO, CEG…
+  basket=-0.8%  bench=+18.2%  alpha=-0.8%  sharpe=-0.42  days=6.2
+US oversold_rsi    -> exit on oversold_rsi_invalid...
+Universe: default_us (395 tickers) | as-of: 2024-04-15 | criteria: oversold_rsi | hold: 252d | top: 20
+Fetching price history…
+ERROR:yfinance:$ANSS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['ANSS']: possibly delisted; no timezone found
+  50/395 fetched…
+ERROR:yfinance:$DFS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['DFS']: possibly delisted; no timezone found
+ERROR:yfinance:$MMC: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MMC']: possibly delisted; no timezone found
+  100/395 fetched…
+  150/395 fetched…
+ERROR:yfinance:$K: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['K']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  200/395 fetched…
+  250/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$IPG: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['IPG']: possibly delisted; no timezone found
+ERROR:yfinance:$MRO: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MRO']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  300/395 fetched…
+ERROR:yfinance:$HES: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['HES']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$PEAK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['PEAK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$LSI: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['LSI']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  350/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$WRK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['WRK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  395/395 fetched…
+Screening…
+Matches: 63 / 383 screened (0 skipped — insufficient history, 10 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Energy, Financial Services, Industrials, Technology, Utilities
+  hottest: Energy +16.0%, Industrials +7.6%, Technology +6.7%  |  coldest: Real Estate -7.8%, Healthcare -2.2%, Consumer Cyclical +3.1%
+Bull-sector filter kept 34/63 matches (dropped 29 in bearish sectors)
+Selected top 20: JPM, AMD, IBM, CRM, SHW, CB, FAST, BLK, INTC, CSX…
+  basket=+0.2%  bench=+18.2%  alpha=-0.1%  sharpe=0.10  days=20.8
+US golden_cross    -> exit on golden_cross_invalid...
+Universe: default_us (395 tickers) | as-of: 2024-04-15 | criteria: golden_cross | hold: 252d | top: 20
+Fetching price history…
+ERROR:yfinance:$ANSS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['ANSS']: possibly delisted; no timezone found
+  50/395 fetched…
+ERROR:yfinance:$DFS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['DFS']: possibly delisted; no timezone found
+ERROR:yfinance:$MMC: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MMC']: possibly delisted; no timezone found
+  100/395 fetched…
+  150/395 fetched…
+ERROR:yfinance:$K: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['K']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  200/395 fetched…
+  250/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$IPG: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['IPG']: possibly delisted; no timezone found
+ERROR:yfinance:$MRO: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MRO']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  300/395 fetched…
+ERROR:yfinance:$HES: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['HES']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$PEAK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['PEAK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$LSI: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['LSI']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  350/395 fetched…
+ERROR:yfinance:$WRK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['WRK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  395/395 fetched…
+Screening…
+Matches: 30 / 383 screened (0 skipped — insufficient history, 10 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Energy, Financial Services, Industrials, Technology, Utilities
+  hottest: Energy +16.0%, Industrials +7.6%, Technology +6.7%  |  coldest: Real Estate -7.8%, Healthcare -2.2%, Consumer Cyclical +3.1%
+Bull-sector filter kept 23/30 matches (dropped 7 in bearish sectors)
+Selected top 20: XOM, OXY, MMM, DVN, CVX, EOG, DE, FSLR, AR, WPM…
+  basket=+4.5%  bench=+18.2%  alpha=+1.8%  sharpe=0.55  days=121.2
+US rsi2_oversold   -> exit on rsi2_oversold_invalid...
+Universe: default_us (395 tickers) | as-of: 2024-04-15 | criteria: rsi2_oversold | hold: 252d | top: 20
+Fetching price history…
+ERROR:yfinance:$ANSS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['ANSS']: possibly delisted; no timezone found
+  50/395 fetched…
+ERROR:yfinance:$DFS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['DFS']: possibly delisted; no timezone found
+ERROR:yfinance:$MMC: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MMC']: possibly delisted; no timezone found
+  100/395 fetched…
+  150/395 fetched…
+ERROR:yfinance:$K: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['K']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  200/395 fetched…
+  250/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$IPG: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['IPG']: possibly delisted; no timezone found
+ERROR:yfinance:$MRO: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MRO']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  300/395 fetched…
+ERROR:yfinance:$HES: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['HES']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$PEAK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['PEAK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$LSI: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['LSI']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  350/395 fetched…
+ERROR:yfinance:$WRK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['WRK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection to remote host was lost.
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  395/395 fetched…
+Screening…
+Matches: 117 / 383 screened (0 skipped — insufficient history, 10 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Energy, Financial Services, Industrials, Technology, Utilities
+  hottest: Energy +16.0%, Industrials +7.6%, Technology +6.7%  |  coldest: Real Estate -7.8%, Healthcare -2.2%, Consumer Cyclical +3.1%
+Bull-sector filter kept 83/117 matches (dropped 34 in bearish sectors)
+Selected top 20: CAT, MPC, VLO, RTX, JPM, PSX, C, COP, CTAS, MRVL…
+  basket=+0.4%  bench=+18.2%  alpha=+0.3%  sharpe=0.34  days=4.7
+US macd_cross      -> exit on macd_cross_invalid...
+Universe: default_us (395 tickers) | as-of: 2024-04-15 | criteria: macd_cross | hold: 252d | top: 20
+Fetching price history…
+ERROR:yfinance:$ANSS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['ANSS']: possibly delisted; no timezone found
+  50/395 fetched…
+ERROR:yfinance:$DFS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['DFS']: possibly delisted; no timezone found
+ERROR:yfinance:$MMC: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MMC']: possibly delisted; no timezone found
+  100/395 fetched…
+  150/395 fetched…
+ERROR:yfinance:$K: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['K']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  200/395 fetched…
+  250/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$IPG: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['IPG']: possibly delisted; no timezone found
+ERROR:yfinance:$MRO: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MRO']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  300/395 fetched…
+ERROR:yfinance:$HES: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['HES']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$PEAK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['PEAK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$LSI: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['LSI']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  350/395 fetched…
+ERROR:yfinance:$WRK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['WRK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  395/395 fetched…
+Screening…
+Matches: 1 / 383 screened (0 skipped — insufficient history, 10 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Energy, Financial Services, Industrials, Technology, Utilities
+  hottest: Energy +16.0%, Industrials +7.6%, Technology +6.7%  |  coldest: Real Estate -7.8%, Healthcare -2.2%, Consumer Cyclical +3.1%
+Bull-sector filter kept 1/1 matches (dropped 0 in bearish sectors)
+Selected top 1: ROK
+  basket=-1.0%  bench=+18.2%  alpha=-0.9%  sharpe=-0.95  days=1.0
+US sma_cross       -> exit on sma_cross_invalid...
+Universe: default_us (395 tickers) | as-of: 2024-04-15 | criteria: sma_cross | hold: 252d | top: 20
+Fetching price history…
+ERROR:yfinance:$ANSS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['ANSS']: possibly delisted; no timezone found
+  50/395 fetched…
+ERROR:yfinance:$DFS: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['DFS']: possibly delisted; no timezone found
+ERROR:yfinance:$MMC: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MMC']: possibly delisted; no timezone found
+  100/395 fetched…
+  150/395 fetched…
+ERROR:yfinance:$K: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['K']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  200/395 fetched…
+  250/395 fetched…
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$IPG: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['IPG']: possibly delisted; no timezone found
+ERROR:yfinance:$MRO: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['MRO']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  300/395 fetched…
+ERROR:yfinance:$HES: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['HES']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection to remote host was lost.
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:yfinance:$PEAK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['PEAK']: possibly delisted; no timezone found
+ERROR:yfinance:$LSI: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['LSI']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  350/395 fetched…
+ERROR:yfinance:$WRK: possibly delisted; no timezone found
+ERROR:yfinance:
+1 Failed download:
+ERROR:yfinance:['WRK']: possibly delisted; no timezone found
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+ERROR:tvDatafeed.main:Connection timed out
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  395/395 fetched…
+Screening…
+Matches: 6 / 383 screened (0 skipped — insufficient history, 10 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Energy, Financial Services, Industrials, Technology, Utilities
+  hottest: Energy +16.0%, Industrials +7.6%, Technology +6.7%  |  coldest: Real Estate -7.8%, Healthcare -2.2%, Consumer Cyclical +3.1%
+Bull-sector filter kept 3/6 matches (dropped 3 in bearish sectors)
+Selected top 3: ADI, FTNT, PAYX
+  basket=-1.8%  bench=+18.2%  alpha=-1.7%  sharpe=-1.57  days=1.7
+INDIA ema             -> exit on ema_stack_full_break...
+Universe: default_india (162 tickers) | as-of: 2024-04-15 | criteria: ema | hold: 252d | top: 20
+Fetching price history…
+  50/162 fetched…
+  100/162 fetched…
+  150/162 fetched…
+  162/162 fetched…
+Screening…
+Matches: 93 / 162 screened (0 skipped — insufficient history, 0 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Communication Services, Consumer Cyclical, Energy, Industrials, Utilities
+  hottest: Utilities +19.4%, Energy +18.8%, Industrials +18.5%  |  coldest: Technology -1.1%, Consumer Defensive -0.7%, Healthcare +2.0%
+Bull-sector filter kept 56/93 matches (dropped 37 in bearish sectors)
+Selected top 20: BHEL, TATAPOWER, NATIONALUM, HINDCOPPER, BAJAJ-AUTO, SAIL, NTPC, NHPC, ONGC, TATASTEEL…
+  basket=+2.7%  bench=+11.8%  alpha=+1.0%  sharpe=0.50  days=25.5
+INDIA breakout        -> exit on breakout_invalid...
+Universe: default_india (162 tickers) | as-of: 2024-04-15 | criteria: breakout | hold: 252d | top: 20
+Fetching price history…
+  50/162 fetched…
+ERROR:tvDatafeed.main:Connection to remote host was lost.
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  100/162 fetched…
+  150/162 fetched…
+  162/162 fetched…
+Screening…
+Matches: 41 / 162 screened (0 skipped — insufficient history, 0 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Communication Services, Consumer Cyclical, Energy, Industrials, Utilities
+  hottest: Utilities +19.4%, Energy +18.8%, Industrials +18.5%  |  coldest: Technology -1.1%, Consumer Defensive -0.7%, Healthcare +2.0%
+Bull-sector filter kept 26/41 matches (dropped 15 in bearish sectors)
+Selected top 20: BHEL, TATAPOWER, NATIONALUM, SAIL, TATASTEEL, ONGC, NTPC, GAIL, MARUTI, ABB…
+  basket=+1.3%  bench=+11.8%  alpha=-2.3%  sharpe=0.16  days=42.6
+INDIA ema_breakout    -> exit on ema_breakout_invalid...
+Universe: default_india (162 tickers) | as-of: 2024-04-15 | criteria: ema_breakout | hold: 252d | top: 20
+Fetching price history…
+  50/162 fetched…
+  100/162 fetched…
+  150/162 fetched…
+  162/162 fetched…
+Screening…
+Matches: 34 / 162 screened (0 skipped — insufficient history, 0 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Communication Services, Consumer Cyclical, Energy, Industrials, Utilities
+  hottest: Utilities +19.4%, Energy +18.8%, Industrials +18.5%  |  coldest: Technology -1.1%, Consumer Defensive -0.7%, Healthcare +2.0%
+Bull-sector filter kept 24/34 matches (dropped 10 in bearish sectors)
+Selected top 20: BHEL, TATAPOWER, NATIONALUM, SAIL, TATASTEEL, ONGC, NTPC, MARUTI, GAIL, ABB…
+  basket=+3.2%  bench=+11.8%  alpha=+1.7%  sharpe=0.55  days=23.8
+INDIA pullback        -> exit on pullback_invalid...
+Universe: default_india (162 tickers) | as-of: 2024-04-15 | criteria: pullback | hold: 252d | top: 20
+Fetching price history…
+  50/162 fetched…
+  100/162 fetched…
+  150/162 fetched…
+  162/162 fetched…
+Screening…
+Matches: 75 / 162 screened (0 skipped — insufficient history, 0 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Communication Services, Consumer Cyclical, Energy, Industrials, Utilities
+  hottest: Utilities +19.4%, Energy +18.8%, Industrials +18.5%  |  coldest: Technology -1.1%, Consumer Defensive -0.7%, Healthcare +2.0%
+Bull-sector filter kept 35/75 matches (dropped 40 in bearish sectors)
+Selected top 20: BAJAJ-AUTO, TATASTEEL, BHARTIARTL, NHPC, SJVN, MARUTI, ADANIPORTS, COALINDIA, BPCL, TRENT…
+  basket=+2.5%  bench=+11.8%  alpha=+2.2%  sharpe=1.64  days=7.0
+INDIA oversold_rsi    -> exit on oversold_rsi_invalid...
+Universe: default_india (162 tickers) | as-of: 2024-04-15 | criteria: oversold_rsi | hold: 252d | top: 20
+Fetching price history…
+  50/162 fetched…
+ERROR:tvDatafeed.main:Connection to remote host was lost.
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  100/162 fetched…
+  150/162 fetched…
+  162/162 fetched…
+Screening…
+Matches: 8 / 162 screened (0 skipped — insufficient history, 0 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Communication Services, Consumer Cyclical, Energy, Industrials, Utilities
+  hottest: Utilities +19.4%, Energy +18.8%, Industrials +18.5%  |  coldest: Technology -1.1%, Consumer Defensive -0.7%, Healthcare +2.0%
+Bull-sector filter kept 1/8 matches (dropped 7 in bearish sectors)
+Selected top 1: MRF
+  basket=+2.2%  bench=+11.8%  alpha=+2.0%  sharpe=0.96  days=9.0
+INDIA golden_cross    -> exit on golden_cross_invalid...
+Universe: default_india (162 tickers) | as-of: 2024-04-15 | criteria: golden_cross | hold: 252d | top: 20
+Fetching price history…
+  50/162 fetched…
+  100/162 fetched…
+  150/162 fetched…
+  162/162 fetched…
+Screening…
+Matches: 3 / 162 screened (0 skipped — insufficient history, 0 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Communication Services, Consumer Cyclical, Energy, Industrials, Utilities
+  hottest: Utilities +19.4%, Energy +18.8%, Industrials +18.5%  |  coldest: Technology -1.1%, Consumer Defensive -0.7%, Healthcare +2.0%
+Bull-sector filter kept 2/3 matches (dropped 1 in bearish sectors)
+Selected top 2: IGL, SCHAEFFLER
+  basket=+2.1%  bench=+11.8%  alpha=-1.2%  sharpe=0.19  days=145.0
+INDIA rsi2_oversold   -> exit on rsi2_oversold_invalid...
+Universe: default_india (162 tickers) | as-of: 2024-04-15 | criteria: rsi2_oversold | hold: 252d | top: 20
+Fetching price history…
+  50/162 fetched…
+  100/162 fetched…
+  150/162 fetched…
+  162/162 fetched…
+Screening…
+Matches: 45 / 162 screened (0 skipped — insufficient history, 0 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Communication Services, Consumer Cyclical, Energy, Industrials, Utilities
+  hottest: Utilities +19.4%, Energy +18.8%, Industrials +18.5%  |  coldest: Technology -1.1%, Consumer Defensive -0.7%, Healthcare +2.0%
+Bull-sector filter kept 19/45 matches (dropped 26 in bearish sectors)
+Selected top 19: TATASTEEL, SJVN, ADANIPORTS, ADANIPOWER, RVNL, SIEMENS, LT, AMBUJACEM, HEROMOTOCO, ADANIGREEN…
+  basket=+0.8%  bench=+11.8%  alpha=+0.7%  sharpe=0.44  days=3.7
+INDIA macd_cross      -> exit on macd_cross_invalid...
+Universe: default_india (162 tickers) | as-of: 2024-04-15 | criteria: macd_cross | hold: 252d | top: 20
+Fetching price history…
+  50/162 fetched…
+ERROR:tvDatafeed.main:Connection to remote host was lost.
+ERROR:tvDatafeed.main:no data, please check the exchange and symbol
+  100/162 fetched…
+  150/162 fetched…
+  162/162 fetched…
+Screening…
+Matches: 2 / 162 screened (0 skipped — insufficient history, 0 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Communication Services, Consumer Cyclical, Energy, Industrials, Utilities
+  hottest: Utilities +19.4%, Energy +18.8%, Industrials +18.5%  |  coldest: Technology -1.1%, Consumer Defensive -0.7%, Healthcare +2.0%
+Bull-sector filter kept 2/2 matches (dropped 0 in bearish sectors)
+Selected top 2: ONGC, DELHIVERY
+  basket=-1.9%  bench=+11.8%  alpha=-1.8%  sharpe=-0.68  days=7.0
+INDIA sma_cross       -> exit on sma_cross_invalid...
+Universe: default_india (162 tickers) | as-of: 2024-04-15 | criteria: sma_cross | hold: 252d | top: 20
+Fetching price history…
+  50/162 fetched…
+  100/162 fetched…
+  150/162 fetched…
+  162/162 fetched…
+Screening…
+Matches: 12 / 162 screened (0 skipped — insufficient history, 0 no data)
+Computing bull-run sectors…
+Bull sectors (6/11): Basic Materials, Communication Services, Consumer Cyclical, Energy, Industrials, Utilities
+  hottest: Utilities +19.4%, Energy +18.8%, Industrials +18.5%  |  coldest: Technology -1.1%, Consumer Defensive -0.7%, Healthcare +2.0%
+Bull-sector filter kept 8/12 matches (dropped 4 in bearish sectors)
+Selected top 8: NMDC, BPCL, HINDPETRO, PETRONET, ADANIGREEN, TVSMOTOR, BHARATFORG, APOLLOTYRE
+  basket=+6.1%  bench=+11.8%  alpha=+4.3%  sharpe=0.99  days=19.8

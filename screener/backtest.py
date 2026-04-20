@@ -1,11 +1,11 @@
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 import pandas as pd
 
 from screener import history, metrics
-from screener.historical_exits import ExitPolicy, resolve_exit
+from screener.historical_exits import ExitPolicy, resolve_exit, resolve_trades
 from screener.prices import fetch_adj_close_matrix, fetch_ohlcv
 
 
@@ -98,6 +98,8 @@ def _forward_test_from_matrix(
     refresh: bool,
     exit_policy: Optional[ExitPolicy] = None,
     ohlcv_full: Optional[dict[str, pd.DataFrame]] = None,
+    re_entry: bool = False,
+    entry_eval_fns: Optional[dict[str, Callable[[int], bool]]] = None,
 ) -> dict:
     """Core forward-test logic: given a wide adj-close matrix, compute basket
     and benchmark curves, per-ticker returns, and summary metrics.
@@ -134,6 +136,7 @@ def _forward_test_from_matrix(
     # gets the same time-stop at hold_days so the legacy path falls out as a
     # special case of the new code.
     exit_info: dict[str, tuple[int, str]] = {}
+    trades_info: dict[str, list[tuple[int, int, str]]] = {}
     entry_ts = wide.index[0]
     for t in valid_tickers:
         forward_len = int(wide[t].notna().sum())
@@ -143,7 +146,9 @@ def _forward_test_from_matrix(
             full_df = full_df.sort_values("_date").reset_index(drop=True)
             entry_rows = full_df.index[full_df["_date"] == entry_ts]
             if len(entry_rows) == 0:
-                exit_info[t] = (min(forward_len - 1, hold_days) if hold_days > 0 else forward_len - 1, "time")
+                cap = min(forward_len - 1, hold_days) if hold_days > 0 else forward_len - 1
+                exit_info[t] = (cap, "time")
+                trades_info[t] = [(0, cap, "time")]
                 continue
             policy = exit_policy if exit_policy.time_stop_bars is not None else ExitPolicy(
                 stop_loss=exit_policy.stop_loss,
@@ -152,22 +157,34 @@ def _forward_test_from_matrix(
                 signals=exit_policy.signals,
                 time_stop_bars=hold_days if hold_days > 0 else None,
             )
-            exit_info[t] = resolve_exit(
-                full_df, int(entry_rows[0]), forward_len, policy
-            )
+            if re_entry and entry_eval_fns is not None and t in entry_eval_fns:
+                ticker_trades = resolve_trades(
+                    full_df, int(entry_rows[0]), forward_len, policy,
+                    entry_eval_fn=entry_eval_fns[t], cooldown_bars=1,
+                )
+                trades_info[t] = ticker_trades
+                first = ticker_trades[0]
+                exit_info[t] = (first[1], first[2])
+            else:
+                exit_info[t] = resolve_exit(
+                    full_df, int(entry_rows[0]), forward_len, policy
+                )
+                trades_info[t] = [(0, exit_info[t][0], exit_info[t][1])]
         else:
             cap = min(forward_len - 1, hold_days) if hold_days > 0 else forward_len - 1
             exit_info[t] = (max(cap, 0), "time")
+            trades_info[t] = [(0, max(cap, 0), "time")]
 
-    # Build per-ticker return mask: returns beyond each ticker's exit bar are
-    # zeroed (ticker is held in cash).  Matches the semantics of the original
-    # uniform mask — just per-ticker now.
+    # Build per-ticker return mask: held bars are True, cash bars False.
+    # For single-entry mode this is (entry, exit_bar]; for re-entry mode the
+    # mask is the union of each round-trip's (entry_bar, exit_bar] window.
     ticker_returns = wide.pct_change()
     mask = pd.DataFrame(False, index=ticker_returns.index, columns=ticker_returns.columns)
     for t in valid_tickers:
-        exit_bar, _ = exit_info[t]
-        if exit_bar > 0:
-            mask.iloc[1 : exit_bar + 1, mask.columns.get_loc(t)] = True
+        col_idx = mask.columns.get_loc(t)
+        for entry_rel, exit_rel, _ in trades_info[t]:
+            if exit_rel > entry_rel:
+                mask.iloc[entry_rel + 1 : exit_rel + 1, col_idx] = True
     ticker_returns = ticker_returns.where(mask, other=0.0)
 
     basket_returns = ticker_returns.mean(axis=1, skipna=True).fillna(0.0)
@@ -182,18 +199,44 @@ def _forward_test_from_matrix(
         col = wide[t].dropna()
         if col.empty:
             continue
-        entry = float(col.iloc[0])
-        exit_bar, reason = exit_info[t]
-        exit_idx = min(len(col) - 1, exit_bar)
-        exit_px = float(col.iloc[exit_idx])
-        ret = exit_px / entry - 1.0 if entry > 0 else float("nan")
+        trades = trades_info.get(t) or [(0, exit_info[t][0], exit_info[t][1])]
+        max_idx = len(col) - 1
+        first_entry_rel, _, _ = trades[0]
+        last_exit_rel, last_reason = trades[-1][1], trades[-1][2]
+        first_entry_idx = min(max_idx, first_entry_rel)
+        last_exit_idx = min(max_idx, last_exit_rel)
+        entry = float(col.iloc[first_entry_idx])
+        exit_px = float(col.iloc[last_exit_idx])
+
+        if len(trades) > 1:
+            # Compound trade-level returns so the per-ticker figure matches
+            # what the basket mask produces.
+            compounded = 1.0
+            held_days = 0
+            for entry_rel, exit_rel, _ in trades:
+                if exit_rel <= entry_rel:
+                    continue
+                e_px = float(col.iloc[min(max_idx, entry_rel)])
+                x_px = float(col.iloc[min(max_idx, exit_rel)])
+                if e_px > 0:
+                    compounded *= x_px / e_px
+                held_days += exit_rel - entry_rel
+            ret = compounded - 1.0
+            reason_label = last_reason if len(trades) == 1 else "multi"
+            trading_days = int(held_days)
+        else:
+            reason_label = last_reason
+            trading_days = int(last_exit_idx - first_entry_idx)
+            ret = exit_px / entry - 1.0 if entry > 0 else float("nan")
+
         per_ticker_rows.append({
             "ticker": t,
             "entry_close": entry,
             "exit_close": exit_px,
             "return_pct": ret,
-            "trading_days": int(exit_idx),
-            "exit_reason": reason,
+            "trading_days": trading_days,
+            "exit_reason": reason_label,
+            "trades": int(len(trades)),
         })
     per_ticker = pd.DataFrame(per_ticker_rows).sort_values(
         "return_pct", ascending=False

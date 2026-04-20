@@ -214,8 +214,19 @@ cli.add_command(backtest_last_run, name="backtest")
         f"Available: {', '.join(sorted(EXIT_SIGNALS))}."
     ),
 )
+@click.option(
+    "--re-entry",
+    "re_entry",
+    is_flag=True,
+    default=False,
+    help=(
+        "Allow re-entry when the entry criterion becomes valid again on a "
+        "later bar within the hold window. Trades compound across round trips; "
+        "default OFF preserves single-entry semantics."
+    ),
+)
 def backtest_historical(market, criteria_names, as_of, hold, top, universe, benchmark, refresh, output_csv,
-                        stop_loss, take_profit, trailing_stop, exit_signals):
+                        stop_loss, take_profit, trailing_stop, exit_signals, re_entry):
     """Screen a universe as of a historical date and backtest forward.
 
     Answers: "Which stocks matched this screen on --as-of, and how did they
@@ -253,6 +264,7 @@ def backtest_historical(market, criteria_names, as_of, hold, top, universe, benc
             take_profit=take_profit,
             trailing_stop=trailing_stop,
             exit_signals=tuple(exit_signals),
+            re_entry=re_entry,
         )
     except (RuntimeError, FileNotFoundError) as e:
         raise click.ClickException(str(e))

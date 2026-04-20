@@ -32,6 +32,32 @@ from screener.sectors import bullish_sectors, sector_map
 from screener.universes import load_universe
 
 
+def _make_entry_eval_fn(ohlcv_df, eval_fns, fund_snap):
+    """Build a per-bar boolean closure: ``fn(abs_idx) -> bool`` reports
+    whether the original entry criterion(s) are satisfied at that bar.
+
+    Sort order matches the one used inside ``_forward_test_from_matrix``
+    (by normalised ``date`` ascending) so ``abs_idx`` is the same in both
+    views and re-entry bar indices align.
+    """
+    sorted_df = ohlcv_df.copy()
+    sorted_df["_date"] = pd.to_datetime(sorted_df["date"]).dt.normalize()
+    sorted_df = sorted_df.sort_values("_date").reset_index(drop=True)
+    date_col = sorted_df["_date"]
+
+    def eval_at(abs_idx: int) -> bool:
+        if abs_idx < 0 or abs_idx >= len(sorted_df):
+            return False
+        as_of = date_col.iloc[abs_idx]
+        for fn in eval_fns:
+            res = fn(sorted_df, as_of, fund_snap)
+            if res is None or not res.get("passes", False):
+                return False
+        return True
+
+    return eval_at
+
+
 @dataclass
 class HistoricalBacktestResult:
     market: str
@@ -57,6 +83,7 @@ class HistoricalBacktestResult:
     per_ticker: pd.DataFrame
     summary: dict
     exit_policy: ExitPolicy = None  # type: ignore[assignment]
+    re_entry: bool = False
 
 
 def run_historical_backtest(
@@ -73,6 +100,7 @@ def run_historical_backtest(
     take_profit: Optional[float] = None,
     trailing_stop: Optional[float] = None,
     exit_signals: tuple[str, ...] = (),
+    re_entry: bool = False,
 ) -> HistoricalBacktestResult:
     """Screen a universe as of *as_of*, then backtest matches forward.
 
@@ -167,6 +195,7 @@ def run_historical_backtest(
     matches: list[tuple[str, dict]] = []   # (ticker, eval_result)
     skipped: list[str] = []
 
+    fund_snaps: dict[str, Optional[dict]] = {}
     for ticker, df in ohlcv_data.items():
         # Compute point-in-time fundamentals snapshot when needed
         fund_snap: Optional[dict] = None
@@ -180,12 +209,13 @@ def run_historical_backtest(
                     close_on_asof = float(on_or_before["close"].iloc[-1])
                 if close_on_asof:
                     fund_snap = fundamental_snapshot(raw_fund, as_of_ts, close_on_asof)
+        fund_snaps[ticker] = fund_snap
 
         # Evaluate all criteria; ticker must pass every one.
         all_pass = True
         last_result = None
         for eval_fn in eval_fns:
-            result = eval_fn(df, as_of_ts, fund_snap)
+            result = eval_fn(df, as_of_ts, fund_snaps[ticker])
             if result is None:
                 all_pass = False
                 break
@@ -315,6 +345,14 @@ def run_historical_backtest(
     # ── forward test ─────────────────────────────────────────────────────────
     benchmark_sym = benchmark_override or BENCHMARKS.get(market, "AMEX:SPY")
     ohlcv_for_exits = {t: ohlcv_data[t] for t in selected_tickers if t in ohlcv_data}
+
+    entry_eval_fns = None
+    if re_entry:
+        entry_eval_fns = {
+            t: _make_entry_eval_fn(ohlcv_data[t], eval_fns, fund_snaps.get(t))
+            for t in selected_tickers if t in ohlcv_data
+        }
+
     ft = _forward_test_from_matrix(
         wide,
         hold_days,
@@ -323,6 +361,8 @@ def run_historical_backtest(
         refresh,
         exit_policy=exit_policy,
         ohlcv_full=ohlcv_for_exits,
+        re_entry=re_entry,
+        entry_eval_fns=entry_eval_fns,
     )
 
     dropped = sorted(set(ft["dropped_extra"]))
@@ -371,6 +411,7 @@ def run_historical_backtest(
         bench_summary=ft["summary"]["benchmark"],
         per_ticker=per_ticker,
         exit_policy=exit_policy,
+        re_entry=re_entry,
     )
 
     return HistoricalBacktestResult(
@@ -397,4 +438,5 @@ def run_historical_backtest(
         per_ticker=per_ticker,
         summary=ft["summary"],
         exit_policy=exit_policy,
+        re_entry=re_entry,
     )

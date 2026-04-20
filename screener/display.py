@@ -285,7 +285,11 @@ def print_historical_backtest(result) -> None:
             parts.append(f"trail {policy.trailing_stop:.0%}")
         if policy.signals:
             parts.append("signals=" + ",".join(policy.signals))
+        if getattr(result, "re_entry", False):
+            parts.append("re-entry ON")
         console.print(f"  [magenta]Exits:[/magenta] " + " · ".join(parts))
+    elif getattr(result, "re_entry", False):
+        console.print("  [magenta]Exits:[/magenta] re-entry ON")
     if result.failed:
         console.print(
             f"  [dim]no data: {len(result.failed)} tickers[/dim]"
@@ -325,6 +329,7 @@ def print_historical_backtest(result) -> None:
     if result.per_ticker.empty:
         return
 
+    show_trades = getattr(result, "re_entry", False)
     pt = Table(title="Selected tickers", show_header=True, header_style="bold")
     pt.add_column("Rank", justify="right")
     pt.add_column("Ticker")
@@ -333,6 +338,8 @@ def print_historical_backtest(result) -> None:
     pt.add_column("Exit", justify="right")
     pt.add_column("Return", justify="right")
     pt.add_column("Days", justify="right")
+    if show_trades:
+        pt.add_column("Trades", justify="right")
     pt.add_column("Why")
 
     for _, row in result.per_ticker.iterrows():
@@ -341,7 +348,7 @@ def print_historical_backtest(result) -> None:
             "green" if pd.notna(ret) and ret > 0
             else ("red" if pd.notna(ret) and ret < 0 else "")
         )
-        pt.add_row(
+        cells = [
             str(int(row["rank"])),
             row["ticker"],
             _fmt_num(row.get("score"), 4),
@@ -349,8 +356,12 @@ def print_historical_backtest(result) -> None:
             _fmt_num(row.get("exit_close")),
             f"[{style}]{_fmt_pct(ret)}[/{style}]" if style else _fmt_pct(ret),
             str(int(row["trading_days"])),
-            _fmt_exit_reason(row.get("exit_reason")),
-        )
+        ]
+        if show_trades:
+            trade_count = row.get("trades")
+            cells.append(str(int(trade_count)) if pd.notna(trade_count) else "-")
+        cells.append(_fmt_exit_reason(row.get("exit_reason")))
+        pt.add_row(*cells)
     console.print(pt)
 
 
