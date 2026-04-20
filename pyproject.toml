@@ -20,5 +20,6 @@ screener = "main:cli"
 
 [dependency-groups]
 dev = [
+    "matplotlib>=3.10.8",
     "pytest>=8.0",
 ]

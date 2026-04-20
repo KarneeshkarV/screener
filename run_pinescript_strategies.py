@@ -75,7 +75,9 @@ def fetch_ohlcv(ticker, start, end, market, refresh=False):
 
 
 def load_universe(market, _unused=None):
-    _total, df = _tv_scan(market=market, filters=[], limit=500, order_by="volume")
+    from tradingview_screener import col
+    stock_only = [col("type") == "stock"]
+    _total, df = _tv_scan(market=market, filters=stock_only, limit=500, order_by="volume")
     return [str(t) for t in df["name"].dropna().tolist()]
 
 
@@ -354,7 +356,9 @@ def _run_ticker(df: pd.DataFrame, window_start: pd.Timestamp, strategy_fn) -> di
 @click.option("--years", type=int, default=3, help="Backtest window length (years).")
 @click.option("--limit", type=int, default=0, help="Cap universe size (0 = all).")
 @click.option("--refresh", is_flag=True, help="Force re-fetch OHLCV.")
-def main(market: str, years: int, limit: int, refresh: bool) -> None:
+@click.option("--trades-json", type=str, default=None,
+              help="If set, write per-strategy top-trader ticker lists to this JSON file.")
+def main(market: str, years: int, limit: int, refresh: bool, trades_json: str | None) -> None:
     today = date.today()
     window_start_ts = pd.Timestamp(today) - pd.DateOffset(years=years)
     window_start_ts = window_start_ts.normalize()
@@ -471,6 +475,34 @@ def main(market: str, years: int, limit: int, refresh: bool) -> None:
         print(f"  highest win rate:    {best_win['strategy']:<18} "
               f"win={best_win['win_rate']:.1%}  trades={best_win['trades']}")
         print()
+
+    # ── per-strategy ticker dump ────────────────────────────────────────
+    if trades_json:
+        import json
+        payload = {
+            "market": market,
+            "window_start": str(window_start_ts.date()),
+            "window_end": str(today),
+            "strategies": {},
+        }
+        for name, results in per_strat.items():
+            traded = [r for r in results if r["n_trades"] > 0]
+            traded.sort(key=lambda r: r["total_return"], reverse=True)
+            payload["strategies"][name] = {
+                "n_tickers_traded": len(traded),
+                "tickers": [
+                    {
+                        "ticker": r["ticker"],
+                        "n_trades": r["n_trades"],
+                        "wins": r["wins"],
+                        "return": round(r["total_return"], 4),
+                    }
+                    for r in traded
+                ],
+            }
+        with open(trades_json, "w") as f:
+            json.dump(payload, f, indent=2)
+        print(f"wrote traded-ticker dump → {trades_json}", file=sys.stderr)
 
 
 if __name__ == "__main__":
