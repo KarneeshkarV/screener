@@ -310,6 +310,50 @@ def strat_bb_breakout(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_ma_cross_regime(df: pd.DataFrame) -> list[Trade]:
+    """ma_cross entries gated by rsi_ema's EMA150 > EMA600 bull regime."""
+    close = df["close"].to_numpy(dtype=float)
+    mf = _ema(close, 10)
+    ms = _ema(close, 20)
+    mfp = np.concatenate(([mf[0]], mf[:-1]))
+    msp = np.concatenate(([ms[0]], ms[:-1]))
+    regime = _ema(close, 150) > _ema(close, 600)
+    entries = (mfp <= msp) & (mf > ms) & regime
+    exits   = (mfp >= msp) & (mf < ms)
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_ma_cross_st_entry(df: pd.DataFrame) -> list[Trade]:
+    """Entry = ma_cross AND supertrend bullish; exit = ma_cross bearish."""
+    close = df["close"].to_numpy(dtype=float)
+    high  = df["high"].to_numpy(dtype=float)
+    low   = df["low"].to_numpy(dtype=float)
+    mf = _ema(close, 10)
+    ms = _ema(close, 20)
+    mfp = np.concatenate(([mf[0]], mf[:-1]))
+    msp = np.concatenate(([ms[0]], ms[:-1]))
+    d = _supertrend_dir(high, low, close, period=10, mult=3.0)
+    entries = (mfp <= msp) & (mf > ms) & (d < 0)
+    exits   = (mfp >= msp) & (mf < ms)
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_ma_cross_st_exit(df: pd.DataFrame) -> list[Trade]:
+    """Entry = ma_cross bullish; exit = supertrend flips bearish."""
+    close = df["close"].to_numpy(dtype=float)
+    high  = df["high"].to_numpy(dtype=float)
+    low   = df["low"].to_numpy(dtype=float)
+    mf = _ema(close, 10)
+    ms = _ema(close, 20)
+    mfp = np.concatenate(([mf[0]], mf[:-1]))
+    msp = np.concatenate(([ms[0]], ms[:-1]))
+    d = _supertrend_dir(high, low, close, period=10, mult=3.0)
+    dp = np.concatenate(([d[0]], d[:-1]))
+    entries = (mfp <= msp) & (mf > ms)
+    exits   = (d > 0) & (dp <= 0)
+    return _walk(entries, exits, close, df["date"].values)
+
+
 STRATEGIES = {
     "supertrend":     strat_supertrend,
     "supertrend_rsi": strat_supertrend_rsi,
@@ -317,6 +361,10 @@ STRATEGIES = {
     "rsi_ema":        strat_rsi_ema,
     "ma_cross":       strat_ma_cross,
     "bb_breakout":    strat_bb_breakout,
+    # combined strategies
+    "ma_cross_regime":   strat_ma_cross_regime,
+    "ma_cross_st_entry": strat_ma_cross_st_entry,
+    "ma_cross_st_exit":  strat_ma_cross_st_exit,
 }
 
 
