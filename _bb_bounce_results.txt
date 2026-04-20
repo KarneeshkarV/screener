@@ -1,0 +1,32 @@
+
+================================================================================
+Mkt  Criteria                AvgBasket  AvgAlpha  AvgSharpe  AvgHit%   N
+--------------------------------------------------------------------------------
+US   bb_bounce                   -0.0%     -8.3%      -0.11   +53.5%   9
+INDIA bb_bounce                   +1.1%    +11.6%       0.48   +50.0%   4
+
+Per-run:
+  US   2025-04-15 ERR No tickers matched 'bb_bounce' as of 2025-04-15. Try a broader universe or a dif
+  US   2025-05-15 ERR No tickers matched 'bb_bounce' as of 2025-05-15. Try a broader universe or a dif
+  US   2025-06-16 matches=  3 basket=+1.7% alpha=+6.1% hit=+66.7%
+  US   2025-07-15 matches=  3 basket=+1.0% alpha=+7.9% hit=+66.7%
+  US   2025-08-15 ERR No tickers matched 'bb_bounce' as of 2025-08-15. Try a broader universe or a dif
+  US   2025-09-15 matches=  2 basket=-6.2% alpha=-46.4% hit=+50.0%
+  US   2025-10-15 matches=  2 basket=+12.0% alpha=+96.3% hit=+100.0%
+  US   2025-11-17 matches=  4 basket=+2.6% alpha=-1.7% hit=+50.0%
+  US   2025-12-15 matches=  1 basket=-4.9% alpha=-41.3% hit=+0.0%
+  US   2026-01-15 matches=  5 basket=-2.5% alpha=-19.2% hit=+40.0%
+  US   2026-02-16 matches=  4 basket=-0.3% alpha=+4.1% hit=+75.0%
+  US   2026-03-16 matches=  6 basket=-3.6% alpha=-80.3% hit=+33.3%
+  INDIA 2025-04-15 ERR No tickers matched 'bb_bounce' as of 2025-04-15. Try a broader universe or a dif
+  INDIA 2025-05-15 ERR No tickers matched 'bb_bounce' as of 2025-05-15. Try a broader universe or a dif
+  INDIA 2025-06-16 matches=  1 basket=+2.2% alpha=+18.9% hit=+100.0%
+  INDIA 2025-07-15 ERR No tickers matched 'bb_bounce' as of 2025-07-15. Try a broader universe or a dif
+  INDIA 2025-08-15 matches=  1 basket=+6.5% alpha=+61.6% hit=+100.0%
+  INDIA 2025-09-15 matches=  2 basket=-2.2% alpha=-25.5% hit=+0.0%
+  INDIA 2025-10-15 ERR No tickers matched 'bb_bounce' as of 2025-10-15. Try a broader universe or a dif
+  INDIA 2025-11-17 ERR No tickers matched 'bb_bounce' as of 2025-11-17. Try a broader universe or a dif
+  INDIA 2025-12-15 ERR No tickers matched 'bb_bounce' as of 2025-12-15. Try a broader universe or a dif
+  INDIA 2026-01-15 matches=  1 basket=-2.2% alpha=-8.6% hit=+0.0%
+  INDIA 2026-02-16 ERR No tickers matched 'bb_bounce' as of 2026-02-16. Try a broader universe or a dif
+  INDIA 2026-03-16 ERR No tickers matched 'bb_bounce' as of 2026-03-16. Try a broader universe or a dif

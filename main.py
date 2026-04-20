@@ -4,6 +4,7 @@ from screener import history
 from screener.backtest import run_backtest
 from screener.criteria import CRITERIA, combine
 from screener.historical_criteria import HIST_CRITERIA, FUND_CRITERIA
+from screener.historical_exits import EXIT_SIGNALS
 from screener.scanner import scan, MARKETS
 from screener.display import (
     print_backtest,
@@ -185,7 +186,36 @@ cli.add_command(backtest_last_run, name="backtest")
 @click.option("--benchmark", default=None, help="Override benchmark symbol (e.g. AMEX:SPY).")
 @click.option("--refresh", is_flag=True, help="Force re-fetch prices, ignore Parquet cache.")
 @click.option("--csv", "output_csv", is_flag=True, help="Emit per-ticker CSV ledger.")
-def backtest_historical(market, criteria_names, as_of, hold, top, universe, benchmark, refresh, output_csv):
+@click.option(
+    "--stop-loss",
+    type=float,
+    default=None,
+    help="Exit if close drops this fraction below entry (e.g. 0.08 = 8% stop).",
+)
+@click.option(
+    "--take-profit",
+    type=float,
+    default=None,
+    help="Exit if close rises this fraction above entry (e.g. 0.20 = 20% target).",
+)
+@click.option(
+    "--trailing-stop",
+    type=float,
+    default=None,
+    help="Exit if close drops this fraction below the highest close since entry.",
+)
+@click.option(
+    "--exit-signal",
+    "exit_signals",
+    type=click.Choice(sorted(EXIT_SIGNALS)),
+    multiple=True,
+    help=(
+        "Technical exit signal (repeat to enable multiple). "
+        f"Available: {', '.join(sorted(EXIT_SIGNALS))}."
+    ),
+)
+def backtest_historical(market, criteria_names, as_of, hold, top, universe, benchmark, refresh, output_csv,
+                        stop_loss, take_profit, trailing_stop, exit_signals):
     """Screen a universe as of a historical date and backtest forward.
 
     Answers: "Which stocks matched this screen on --as-of, and how did they
@@ -219,6 +249,10 @@ def backtest_historical(market, criteria_names, as_of, hold, top, universe, benc
             universe_path=universe,
             benchmark_override=benchmark,
             refresh=refresh,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            trailing_stop=trailing_stop,
+            exit_signals=tuple(exit_signals),
         )
     except (RuntimeError, FileNotFoundError) as e:
         raise click.ClickException(str(e))

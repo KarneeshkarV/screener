@@ -5,6 +5,7 @@ from typing import Optional
 import pandas as pd
 
 from screener import history, metrics
+from screener.historical_exits import ExitPolicy, resolve_exit
 from screener.prices import fetch_adj_close_matrix, fetch_ohlcv
 
 
@@ -95,12 +96,19 @@ def _forward_test_from_matrix(
     benchmark_sym: str,
     market: str,
     refresh: bool,
+    exit_policy: Optional[ExitPolicy] = None,
+    ohlcv_full: Optional[dict[str, pd.DataFrame]] = None,
 ) -> dict:
     """Core forward-test logic: given a wide adj-close matrix, compute basket
     and benchmark curves, per-ticker returns, and summary metrics.
 
     *wide* must already be sorted by date.  Tickers with no price on the first
     bar are dropped.
+
+    When *exit_policy* is provided and non-noop, per-ticker exits are resolved
+    against *ohlcv_full* (full OHLCV history including pre-entry warmup bars
+    so EMAs/RSI/MACD can be computed).  Otherwise the legacy uniform
+    ``hold_days`` cutoff applies to every ticker.
 
     Returns a dict with keys: valid_tickers, dropped, basket_curve,
     basket_returns, benchmark_curve, benchmark_returns, per_ticker, summary.
@@ -116,11 +124,51 @@ def _forward_test_from_matrix(
     start_d = wide.index[0].date() if hasattr(wide.index[0], "date") else wide.index[0]
     end_d = wide.index[-1].date() if hasattr(wide.index[-1], "date") else wide.index[-1]
 
+    use_per_ticker_exits = (
+        exit_policy is not None
+        and not exit_policy.is_noop()
+        and ohlcv_full is not None
+    )
+
+    # Per-ticker exit resolution.  If not using per-ticker exits, every ticker
+    # gets the same time-stop at hold_days so the legacy path falls out as a
+    # special case of the new code.
+    exit_info: dict[str, tuple[int, str]] = {}
+    entry_ts = wide.index[0]
+    for t in valid_tickers:
+        forward_len = int(wide[t].notna().sum())
+        if use_per_ticker_exits and t in ohlcv_full:
+            full_df = ohlcv_full[t].copy()
+            full_df["_date"] = pd.to_datetime(full_df["date"]).dt.normalize()
+            full_df = full_df.sort_values("_date").reset_index(drop=True)
+            entry_rows = full_df.index[full_df["_date"] == entry_ts]
+            if len(entry_rows) == 0:
+                exit_info[t] = (min(forward_len - 1, hold_days) if hold_days > 0 else forward_len - 1, "time")
+                continue
+            policy = exit_policy if exit_policy.time_stop_bars is not None else ExitPolicy(
+                stop_loss=exit_policy.stop_loss,
+                take_profit=exit_policy.take_profit,
+                trailing_stop=exit_policy.trailing_stop,
+                signals=exit_policy.signals,
+                time_stop_bars=hold_days if hold_days > 0 else None,
+            )
+            exit_info[t] = resolve_exit(
+                full_df, int(entry_rows[0]), forward_len, policy
+            )
+        else:
+            cap = min(forward_len - 1, hold_days) if hold_days > 0 else forward_len - 1
+            exit_info[t] = (max(cap, 0), "time")
+
+    # Build per-ticker return mask: returns beyond each ticker's exit bar are
+    # zeroed (ticker is held in cash).  Matches the semantics of the original
+    # uniform mask — just per-ticker now.
     ticker_returns = wide.pct_change()
-    if hold_days > 0:
-        mask = pd.DataFrame(False, index=ticker_returns.index, columns=ticker_returns.columns)
-        mask.iloc[1 : hold_days + 1, :] = True
-        ticker_returns = ticker_returns.where(mask, other=0.0)
+    mask = pd.DataFrame(False, index=ticker_returns.index, columns=ticker_returns.columns)
+    for t in valid_tickers:
+        exit_bar, _ = exit_info[t]
+        if exit_bar > 0:
+            mask.iloc[1 : exit_bar + 1, mask.columns.get_loc(t)] = True
+    ticker_returns = ticker_returns.where(mask, other=0.0)
 
     basket_returns = ticker_returns.mean(axis=1, skipna=True).fillna(0.0)
     basket_curve = (1 + basket_returns).cumprod()
@@ -135,7 +183,8 @@ def _forward_test_from_matrix(
         if col.empty:
             continue
         entry = float(col.iloc[0])
-        exit_idx = min(len(col) - 1, hold_days) if hold_days > 0 else len(col) - 1
+        exit_bar, reason = exit_info[t]
+        exit_idx = min(len(col) - 1, exit_bar)
         exit_px = float(col.iloc[exit_idx])
         ret = exit_px / entry - 1.0 if entry > 0 else float("nan")
         per_ticker_rows.append({
@@ -144,6 +193,7 @@ def _forward_test_from_matrix(
             "exit_close": exit_px,
             "return_pct": ret,
             "trading_days": int(exit_idx),
+            "exit_reason": reason,
         })
     per_ticker = pd.DataFrame(per_ticker_rows).sort_values(
         "return_pct", ascending=False

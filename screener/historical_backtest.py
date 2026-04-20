@@ -26,7 +26,9 @@ from screener.historical_criteria import (
     HIST_CRITERIA,
     compute_scores,
 )
+from screener.historical_exits import EXIT_SIGNALS, ExitPolicy
 from screener.prices import fetch_ohlcv
+from screener.sectors import bullish_sectors, sector_map
 from screener.universes import load_universe
 
 
@@ -54,6 +56,7 @@ class HistoricalBacktestResult:
     benchmark_returns: pd.Series
     per_ticker: pd.DataFrame
     summary: dict
+    exit_policy: ExitPolicy = None  # type: ignore[assignment]
 
 
 def run_historical_backtest(
@@ -65,6 +68,11 @@ def run_historical_backtest(
     universe_path: Optional[str] = None,
     benchmark_override: Optional[str] = None,
     refresh: bool = False,
+    bull_sector_filter: bool = True,
+    stop_loss: Optional[float] = None,
+    take_profit: Optional[float] = None,
+    trailing_stop: Optional[float] = None,
+    exit_signals: tuple[str, ...] = (),
 ) -> HistoricalBacktestResult:
     """Screen a universe as of *as_of*, then backtest matches forward.
 
@@ -87,6 +95,21 @@ def run_historical_backtest(
     need_fundamentals = any(c in FUND_CRITERIA for c in criteria_parts)
 
     eval_fns = [HIST_CRITERIA[c] for c in criteria_parts]
+
+    # ── build exit policy ────────────────────────────────────────────────────
+    for sig in exit_signals:
+        if sig not in EXIT_SIGNALS:
+            raise click.ClickException(
+                f"Unknown exit signal '{sig}'. "
+                f"Available: {sorted(EXIT_SIGNALS)}."
+            )
+    exit_policy = ExitPolicy(
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        trailing_stop=trailing_stop,
+        signals=tuple(exit_signals),
+        time_stop_bars=hold_days if hold_days > 0 else None,
+    )
 
     # ── load universe ────────────────────────────────────────────────────────
     if universe_path:
@@ -188,6 +211,47 @@ def run_historical_backtest(
             "Try a broader universe or a different criteria / date."
         )
 
+    # ── bull-sector gate ──────────────────────────────────────────────────────
+    # Universe-wide: keep only matched tickers whose sector's mean 3-month
+    # return across the universe is positive AND ≥ the median sector return.
+    if bull_sector_filter:
+        click.echo("Computing bull-run sectors…", err=True)
+        smap = sector_map(market, list(ohlcv_data.keys()))
+        bull_set, sector_mean = bullish_sectors(smap, ohlcv_data, as_of_ts)
+        if bull_set:
+            top3 = sorted(sector_mean.items(), key=lambda x: -x[1])[:3]
+            bot3 = sorted(sector_mean.items(), key=lambda x:  x[1])[:3]
+            click.echo(
+                f"Bull sectors ({len(bull_set)}/{len(sector_mean)}): "
+                + ", ".join(sorted(bull_set)),
+                err=True,
+            )
+            click.echo(
+                "  hottest: " + ", ".join(f"{s} {r:+.1%}" for s, r in top3)
+                + "  |  coldest: " + ", ".join(f"{s} {r:+.1%}" for s, r in bot3),
+                err=True,
+            )
+            before = len(matches)
+            matches = [(t, r) for t, r in matches if smap.get(t) in bull_set]
+            filtered_out = before - len(matches)
+            click.echo(
+                f"Bull-sector filter kept {len(matches)}/{before} matches "
+                f"(dropped {filtered_out} in bearish sectors)",
+                err=True,
+            )
+            matches_total = len(matches)
+            if matches_total == 0:
+                raise RuntimeError(
+                    f"All matches for '{criteria_name}' as of {as_of} were in "
+                    "bearish sectors (bull-sector filter removed every candidate)."
+                )
+        else:
+            click.echo(
+                "Bull-sector filter: insufficient history to classify sectors; "
+                "skipping filter for this run.",
+                err=True,
+            )
+
     # ── rank and select top-N ────────────────────────────────────────────────
     score_list = compute_scores([r["score_inputs"] for _, r in matches])
     ranked = sorted(
@@ -250,7 +314,16 @@ def run_historical_backtest(
 
     # ── forward test ─────────────────────────────────────────────────────────
     benchmark_sym = benchmark_override or BENCHMARKS.get(market, "AMEX:SPY")
-    ft = _forward_test_from_matrix(wide, hold_days, benchmark_sym, market, refresh)
+    ohlcv_for_exits = {t: ohlcv_data[t] for t in selected_tickers if t in ohlcv_data}
+    ft = _forward_test_from_matrix(
+        wide,
+        hold_days,
+        benchmark_sym,
+        market,
+        refresh,
+        exit_policy=exit_policy,
+        ohlcv_full=ohlcv_for_exits,
+    )
 
     dropped = sorted(set(ft["dropped_extra"]))
     final_tickers = ft["valid_tickers"]
@@ -265,6 +338,8 @@ def run_historical_backtest(
     per_ticker = ft["per_ticker"].copy()
     per_ticker.insert(1, "score", per_ticker["ticker"].map(score_map))
     per_ticker.insert(2, "rank", range(1, len(per_ticker) + 1))
+    if "exit_reason" not in per_ticker.columns:
+        per_ticker["exit_reason"] = "time"
 
     # ── exit date ─────────────────────────────────────────────────────────────
     exit_date: date
@@ -295,6 +370,7 @@ def run_historical_backtest(
         basket_summary=ft["summary"]["basket"],
         bench_summary=ft["summary"]["benchmark"],
         per_ticker=per_ticker,
+        exit_policy=exit_policy,
     )
 
     return HistoricalBacktestResult(
@@ -320,4 +396,5 @@ def run_historical_backtest(
         benchmark_returns=ft["benchmark_returns"],
         per_ticker=per_ticker,
         summary=ft["summary"],
+        exit_policy=exit_policy,
     )

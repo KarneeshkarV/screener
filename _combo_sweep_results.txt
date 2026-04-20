@@ -1,0 +1,18 @@
+
+================================================================================
+COMBO SWEEP — 10-day hold, 6 monthly windows
+Mkt    Combo                         AvgBasket  AvgAlpha  AvgSharpe  AvgHit%   N
+--------------------------------------------------------------------------------
+INDIA  breakout+macd_cross               -0.8%     -9.2%      -0.91   +40.0%   5
+INDIA  breakout+pullback                 -1.9%    -25.6%      -1.84   +37.3%   5
+INDIA  sma_cross+pullback                -2.4%    -33.2%      -1.71   +25.0%   4
+INDIA  pullback+rsi2_oversold            -3.5%    -37.6%      -3.04   +14.2%   4
+US     breakout+pullback                 +0.8%     -0.4%       1.16   +53.3%   6
+US     pullback+rsi2_oversold            +0.8%     -4.3%       0.67   +62.3%   5
+US     sma_cross+pullback                +0.6%     -4.6%       0.49   +68.3%   6
+US     breakout+macd_cross               -0.5%    -12.3%      -0.07   +62.3%   6
+
+--------------------------------------------------------------------------------
+JOINT WINNERS (positive avg basket in BOTH US and INDIA):
+  (none — no combo was positive in both markets across the 6 windows)
+

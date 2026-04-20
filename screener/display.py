@@ -172,6 +172,25 @@ def _fmt_num(val, digits: int = 2) -> str:
     return f"{val:.{digits}f}"
 
 
+_EXIT_SHORT = {
+    "time":   ("time",  "dim"),
+    "stop":   ("stop",  "red"),
+    "target": ("tgt",   "green"),
+    "trail":  ("trail", "yellow"),
+}
+
+
+def _fmt_exit_reason(reason) -> str:
+    if reason is None or (isinstance(reason, float) and pd.isna(reason)):
+        return "-"
+    reason = str(reason)
+    if reason.startswith("signal:"):
+        label = "sig:" + reason.split(":", 1)[1]
+        return f"[cyan]{label}[/cyan]"
+    short, style = _EXIT_SHORT.get(reason, (reason, ""))
+    return f"[{style}]{short}[/{style}]" if style else short
+
+
 def print_backtest(result) -> None:
     console.print(
         f"\n[bold]Backtest[/bold] — run #{result.run_id} "
@@ -255,6 +274,18 @@ def print_historical_backtest(result) -> None:
         f"Matches: {result.matches_total}  Selected: top {result.top_n}  "
         f"Benchmark: {result.benchmark}"
     )
+    policy = getattr(result, "exit_policy", None)
+    if policy is not None and not policy.is_noop():
+        parts = []
+        if policy.stop_loss is not None:
+            parts.append(f"stop {policy.stop_loss:.0%}")
+        if policy.take_profit is not None:
+            parts.append(f"target {policy.take_profit:.0%}")
+        if policy.trailing_stop is not None:
+            parts.append(f"trail {policy.trailing_stop:.0%}")
+        if policy.signals:
+            parts.append("signals=" + ",".join(policy.signals))
+        console.print(f"  [magenta]Exits:[/magenta] " + " · ".join(parts))
     if result.failed:
         console.print(
             f"  [dim]no data: {len(result.failed)} tickers[/dim]"
@@ -302,6 +333,7 @@ def print_historical_backtest(result) -> None:
     pt.add_column("Exit", justify="right")
     pt.add_column("Return", justify="right")
     pt.add_column("Days", justify="right")
+    pt.add_column("Why")
 
     for _, row in result.per_ticker.iterrows():
         ret = row.get("return_pct")
@@ -317,6 +349,7 @@ def print_historical_backtest(result) -> None:
             _fmt_num(row.get("exit_close")),
             f"[{style}]{_fmt_pct(ret)}[/{style}]" if style else _fmt_pct(ret),
             str(int(row["trading_days"])),
+            _fmt_exit_reason(row.get("exit_reason")),
         )
     console.print(pt)
 

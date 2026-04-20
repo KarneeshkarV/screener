@@ -1,0 +1,119 @@
+
+========================================================================================
+BREAKOUT WINNERS BY WINDOW (US, 10-day hold)
+Window       Picks  Wins   AvgRet  Top 5 winners
+----------------------------------------------------------------------------------------
+2025-04-15       5     4   +6.01%  NFLX(+17.9%), TDG(+7.3%), MAA(+5.4%), ABT(+0.9%)
+2025-05-15      20    12   +0.88%  ZS(+16.6%), GE(+6.8%), COST(+3.0%), NFLX(+2.3%), RTX(+2.0%)
+2025-06-16      20    16   +3.63%  GS(+14.6%), ORCL(+10.5%), NVDA(+9.1%), TXN(+9.1%), JPM(+8.3%)
+2025-07-15      20    14   +4.15%  SNPS(+13.0%), CEG(+12.0%), SCHW(+8.0%), AVGO(+7.8%), INTU(+7.5%)
+2025-08-15      20     9   -0.99%  GOOGL(+3.9%), GOOG(+3.8%), JPM(+2.8%), GE(+2.6%), BA(+2.1%)
+2025-09-15      20    11   +1.39%  INTC(+32.8%), LYFT(+9.0%), CAT(+8.3%), ABBV(+7.1%), NEM(+6.7%)
+2025-10-15      20    13   +2.66%  GOOGL(+11.9%), NVDA(+11.6%), KLAC(+10.5%), AMD(+8.6%), CAT(+8.1%)
+2025-11-17      20    16   +3.29%  GOOG(+12.5%), GOOGL(+12.4%), GM(+10.0%), MS(+8.7%), KLAC(+7.9%)
+2025-12-15      20     8   +0.97%  MU(+22.8%), MRK(+7.1%), LRCX(+4.9%), GE(+3.2%), JPM(+2.1%)
+2026-01-15      20    12   +0.82%  BKR(+9.1%), LRCX(+6.5%), ADI(+5.5%), INTC(+3.9%), WMT(+3.6%)
+2026-02-16      20     9   -1.43%  EQT(+6.7%), LIN(+4.0%), STLD(+2.9%), DG(+2.2%), JNJ(+1.9%)
+2026-03-16      20     9   -0.93%  HAL(+9.4%), AKAM(+8.5%), XOM(+6.8%), CTRA(+6.5%), DVN(+6.1%)
+
+
+========================================================================================
+TOP 20 WINNING TRADES (sorted by 10-day return)
+Window       Ticker     Return  Sector                 Industry                      
+----------------------------------------------------------------------------------------
+2025-09-15   INTC      +32.77%  Technology             Semiconductors                
+2025-12-15   MU        +22.80%  Technology             Semiconductors                
+2025-04-15   NFLX      +17.87%  Communication Services Entertainment                 
+2025-05-15   ZS        +16.57%  Technology             Software - Infrastructure     
+2025-06-16   GS        +14.61%  Financial Services     Capital Markets               
+2025-07-15   SNPS      +12.98%  Technology             Software - Infrastructure     
+2025-11-17   GOOG      +12.51%  Communication Services Internet Content & Information
+2025-11-17   GOOGL     +12.43%  Communication Services Internet Content & Information
+2025-07-15   CEG       +12.03%  Utilities              Utilities - Independent Power Producers
+2025-10-15   GOOGL     +11.94%  Communication Services Internet Content & Information
+2025-10-15   NVDA      +11.59%  Technology             Semiconductors                
+2025-10-15   KLAC      +10.52%  Technology             Semiconductor Equipment & Materials
+2025-06-16   ORCL      +10.47%  Technology             Software - Infrastructure     
+2025-11-17   GM         +9.95%  Consumer Cyclical      Auto Manufacturers            
+2026-03-16   HAL        +9.40%  Energy                 Oil & Gas Equipment & Services
+2025-06-16   NVDA       +9.11%  Technology             Semiconductors                
+2026-01-15   BKR        +9.08%  Energy                 Oil & Gas Equipment & Services
+2025-06-16   TXN        +9.05%  Technology             Semiconductors                
+2025-09-15   LYFT       +9.01%  Technology             Software - Application        
+2025-11-17   MS         +8.69%  Financial Services     Capital Markets               
+
+========================================================================================
+REPEAT WINNERS (ticker won in ≥2 windows)
+Ticker   Wins  Sector                 Industry                      
+----------------------------------------------------------------------------------------
+JPM         6  Financial Services     Banks - Diversified           
+GE          4  Industrials            Aerospace & Defense           
+NVDA        4  Technology             Semiconductors                
+JNJ         4  Healthcare             Drug Manufacturers - General  
+RTX         3  Industrials            Aerospace & Defense           
+T           3  Communication Services Telecom Services              
+GS          3  Financial Services     Capital Markets               
+KLAC        3  Technology             Semiconductor Equipment & Materials
+NEM         3  Basic Materials        Gold                          
+MS          3  Financial Services     Capital Markets               
+GOOGL       3  Communication Services Internet Content & Information
+NFLX        2  Communication Services Entertainment                 
+ZS          2  Technology             Software - Infrastructure     
+WMT         2  Consumer Defensive     Discount Stores               
+TTWO        2  Communication Services Electronic Gaming & Multimedia
+CSCO        2  Technology             Communication Equipment       
+NET         2  Technology             Software - Infrastructure     
+INTU        2  Technology             Software - Application        
+SCHW        2  Financial Services     Capital Markets               
+AVGO        2  Technology             Semiconductors                
+ETN         2  Industrials            Specialty Industrial Machinery
+C           2  Financial Services     Banks - Diversified           
+WBD         2  Communication Services Entertainment                 
+WFC         2  Financial Services     Banks - Diversified           
+GOOG        2  Communication Services Internet Content & Information
+INTC        2  Technology             Semiconductors                
+CAT         2  Industrials            Farm & Heavy Construction Machinery
+AMZN        2  Consumer Cyclical      Internet Retail               
+MU          2  Technology             Semiconductors                
+NEE         2  Utilities              Utilities - Regulated Electric
+LRCX        2  Technology             Semiconductor Equipment & Materials
+LLY         2  Healthcare             Drug Manufacturers - General  
+PH          2  Industrials            Specialty Industrial Machinery
+
+========================================================================================
+SECTOR CONCENTRATION (133 winning trades total)
+Sector                          Wins   Share
+--------------------------------------------------
+Technology                        35   26.3%
+Financial Services                20   15.0%
+Communication Services            16   12.0%
+Industrials                       16   12.0%
+Consumer Cyclical                 10    7.5%
+Healthcare                         9    6.8%
+Consumer Defensive                 6    4.5%
+Basic Materials                    6    4.5%
+Utilities                          6    4.5%
+Energy                             6    4.5%
+Real Estate                        3    2.3%
+
+TOP-10 INDUSTRIES
+Industry                                  Wins
+--------------------------------------------------
+Semiconductors                              13
+Banks - Diversified                         11
+Aerospace & Defense                          9
+Software - Infrastructure                    9
+Capital Markets                              8
+Drug Manufacturers - General                 8
+Semiconductor Equipment & Materials          6
+Internet Content & Information               6
+Entertainment                                4
+Discount Stores                              4
+
+========================================================================================
+MARKET-CAP DISTRIBUTION OF WINNERS
+  <10B          1    0.8%
+  10-50B       16   12.0%
+  50-200B      44   33.1%
+  200B-1T      57   42.9%
+  >1T          15   11.3%

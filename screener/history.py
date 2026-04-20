@@ -1,9 +1,12 @@
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from screener.historical_exits import ExitPolicy
 
 
 DB_PATH = Path.home() / ".screener" / "history.db"
@@ -84,6 +87,10 @@ CREATE TABLE IF NOT EXISTS historical_backtests (
     beta            REAL,
     bench_total_return REAL,
     bench_cagr         REAL,
+    stop_loss       REAL,
+    take_profit     REAL,
+    trailing_stop   REAL,
+    exit_signals    TEXT,
     computed_ts     TEXT NOT NULL,
     UNIQUE(market, criteria, as_of_date, hold_days, top_n)
 );
@@ -98,6 +105,7 @@ CREATE TABLE IF NOT EXISTS historical_backtest_tickers (
     exit_close    REAL,
     return_pct    REAL,
     trading_days  INTEGER,
+    exit_reason   TEXT,
     PRIMARY KEY (historical_backtest_id, ticker)
 );
 """
@@ -357,9 +365,19 @@ def save_historical_backtest(
     basket_summary: dict,
     bench_summary: dict,
     per_ticker: pd.DataFrame,
+    exit_policy: Optional["ExitPolicy"] = None,
 ) -> int:
     """Save a historical backtest result, replacing any previous run with the
     same (market, criteria, as_of_date, hold_days, top_n) key."""
+    stop_loss = _to_float(exit_policy.stop_loss) if exit_policy else None
+    take_profit = _to_float(exit_policy.take_profit) if exit_policy else None
+    trailing_stop = _to_float(exit_policy.trailing_stop) if exit_policy else None
+    exit_signals_csv = (
+        ",".join(exit_policy.signals)
+        if exit_policy and exit_policy.signals
+        else None
+    )
+
     conn = _connect()
     try:
         computed_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -385,7 +403,9 @@ def save_historical_backtest(
                     matches_total=?, benchmark=?,
                     total_return=?, cagr=?, sharpe=?, max_drawdown=?,
                     hit_rate=?, alpha=?, beta=?,
-                    bench_total_return=?, bench_cagr=?, computed_ts=?
+                    bench_total_return=?, bench_cagr=?,
+                    stop_loss=?, take_profit=?, trailing_stop=?, exit_signals=?,
+                    computed_ts=?
                 WHERE id=?
                 """,
                 (
@@ -404,6 +424,10 @@ def save_historical_backtest(
                     _to_float(basket_summary.get("beta")),
                     _to_float(bench_summary.get("total_return")),
                     _to_float(bench_summary.get("cagr")),
+                    stop_loss,
+                    take_profit,
+                    trailing_stop,
+                    exit_signals_csv,
                     computed_ts,
                     hb_id,
                 ),
@@ -415,8 +439,9 @@ def save_historical_backtest(
                     (market, criteria, as_of_date, entry_date, exit_date,
                      hold_days, top_n, universe_label, universe_size, matches_total,
                      benchmark, total_return, cagr, sharpe, max_drawdown,
-                     hit_rate, alpha, beta, bench_total_return, bench_cagr, computed_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     hit_rate, alpha, beta, bench_total_return, bench_cagr,
+                     stop_loss, take_profit, trailing_stop, exit_signals, computed_ts)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     market,
@@ -439,6 +464,10 @@ def save_historical_backtest(
                     _to_float(basket_summary.get("beta")),
                     _to_float(bench_summary.get("total_return")),
                     _to_float(bench_summary.get("cagr")),
+                    stop_loss,
+                    take_profit,
+                    trailing_stop,
+                    exit_signals_csv,
                     computed_ts,
                 ),
             )
@@ -456,6 +485,7 @@ def save_historical_backtest(
                     _to_float(r.get("exit_close")),
                     _to_float(r.get("return_pct")),
                     int(r["trading_days"]) if pd.notna(r.get("trading_days")) else 0,
+                    str(r.get("exit_reason")) if r.get("exit_reason") is not None else "time",
                 )
             )
         if rows:
@@ -463,8 +493,8 @@ def save_historical_backtest(
                 """
                 INSERT INTO historical_backtest_tickers
                     (historical_backtest_id, ticker, rank, score,
-                     entry_close, exit_close, return_pct, trading_days)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     entry_close, exit_close, return_pct, trading_days, exit_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
