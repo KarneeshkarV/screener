@@ -180,7 +180,7 @@ def simulate_ticker(
                            signal_idx_bar=bars.index[signal_idx].date()),
                 None,
             )
-        if trail_hit and (not target_hit):
+        if trail_hit:
             fill = trail_ref * _slippage_factor(cfg.slippage_bps, buy=False)
             return _SimOutcome(
                 _make_exit(entry_date, entry_fill, bar_date, fill, "trail",

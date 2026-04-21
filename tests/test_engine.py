@@ -102,6 +102,25 @@ def test_same_bar_stop_and_target_stop_wins():
     assert outcome.trade.exit_reason == "stop"
 
 
+def test_same_bar_trail_and_target_trail_wins():
+    # Entry at 100; bar5 lifts peak to 109 without hitting 10% target;
+    # bar6 hits both trail (ref=109*0.9=98.1; low=95) and target (ref=110;
+    # high=115) on the same bar — trail must win per the docstring rule.
+    bars = make_bars(
+        n=10,
+        spikes={
+            4: {"open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0},
+            5: {"open": 100.0, "high": 109.0, "low": 99.8, "close": 109.0},
+            6: {"open": 109.0, "high": 115.0, "low": 95.0, "close": 100.0},
+        },
+    )
+    cfg = _cfg(hold=10, trailing_stop=0.10, take_profit=0.10)
+    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    assert outcome.trade is not None
+    assert outcome.trade.exit_reason == "trail"
+    assert outcome.trade.exit_price == pytest.approx(109.0 * 0.9)
+
+
 def test_trailing_stop_tracks_peak():
     # Entry at 100, bar1 runs up to 120, bar2 drops to 100 → trail_ref = 120*(1-0.10)=108; low=100 hits trail
     bars = make_bars(

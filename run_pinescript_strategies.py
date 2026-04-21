@@ -64,11 +64,7 @@ def fetch_ohlcv(ticker, start, end, market, refresh=False):
     if df is None or df.empty:
         return None
     df = df.reset_index()
-    first = df.columns[0]
-    if first.lower() in {"date", "index"}:
-        df = df.rename(columns={first: "date"})
-    else:
-        df = df.rename(columns={first: "date"})
+    df = df.rename(columns={df.columns[0]: "date"})
     if "adj_close" not in df.columns:
         df["adj_close"] = df["close"]
     return df
