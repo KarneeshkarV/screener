@@ -16,6 +16,7 @@ console = Console()
 
 _METRIC_LABELS = {
     "total_return": "Total Return",
+    "invested_return": "Invested Return",
     "cagr": "CAGR",
     "vol_annual": "Volatility (ann.)",
     "sharpe": "Sharpe",
@@ -30,6 +31,7 @@ _METRIC_LABELS = {
 
 _PCT_METRICS = {
     "total_return",
+    "invested_return",
     "cagr",
     "vol_annual",
     "max_drawdown",
