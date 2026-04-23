@@ -16,7 +16,7 @@ Accuracy guarantees:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Iterable, Optional
 
@@ -33,6 +33,7 @@ from screener.backtester.pine import (
 )
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.backtester.metrics import compute_metrics
+from screener.backtester.slippage import Side, apply_slippage
 
 
 @dataclass
@@ -42,8 +43,63 @@ class _SimOutcome:
 
 
 def _slippage_factor(bps: float, buy: bool) -> float:
+    """Legacy helper kept for backwards compatibility. New code should use
+    ``cfg.slippage_model`` via :func:`_apply_slip`.
+    """
     delta = bps / 10_000.0
     return 1.0 + delta if buy else 1.0 - delta
+
+
+def _apply_slip(
+    ref_price: float,
+    side: Side,
+    cfg: BacktestConfig,
+    *,
+    shares: float = 0.0,
+    adv_shares: float = 0.0,
+    sigma_daily: float = 0.0,
+) -> float:
+    """Run ``cfg.slippage_model`` over a reference price. Falls back to the
+    configured ``FixedBpsSlippage`` when no explicit model was supplied.
+    """
+    model = cfg.slippage_model
+    if model is None:
+        # Defensive: BacktestConfig.__post_init__ should have populated it, but
+        # we don't want to crash if a caller manually bypassed dataclass init.
+        return ref_price * _slippage_factor(cfg.slippage_bps, buy=(side == "buy"))
+    return apply_slippage(
+        model,
+        ref_price,
+        side,
+        shares=shares,
+        adv=adv_shares,
+        sigma_daily=sigma_daily,
+    )
+
+
+def _trailing_liquidity(bars: pd.DataFrame, signal_idx: int, window: int = 20) -> tuple[float, float]:
+    """Return ``(adv_shares, sigma_daily)`` over the ``window`` bars ending at
+    ``signal_idx`` (inclusive). Any NaN/zero-bar edge cases collapse to 0 so
+    volume-impact slippage degrades gracefully to zero rather than NaN."""
+    if signal_idx < 0 or window <= 0:
+        return 0.0, 0.0
+    start = max(0, signal_idx - window + 1)
+    window_bars = bars.iloc[start : signal_idx + 1]
+    if window_bars.empty:
+        return 0.0, 0.0
+    vol = window_bars["volume"].astype(float)
+    adv = float(vol.mean()) if vol.size else 0.0
+    close = window_bars["close"].astype(float)
+    if close.size < 2:
+        sigma = 0.0
+    else:
+        rets = close.pct_change().dropna()
+        sigma = float(rets.std()) if rets.size else 0.0
+    if not np.isfinite(adv):
+        adv = 0.0
+    if not np.isfinite(sigma):
+        sigma = 0.0
+    return adv, sigma
 
 
 def _passes_entry_filters(
@@ -172,6 +228,54 @@ class _SlotState:
     hold_limit_idx: int
     peak: float
     exit_signal: Optional[pd.Series]
+    adv_shares: float = 0.0
+    sigma_daily: float = 0.0
+    # Parallel arrays to ``cfg.partial_exits``. ``partial_targets`` holds the
+    # absolute price at which each tier fires; ``partial_fired`` is True once
+    # the tier has been closed out so it never fires twice.
+    partial_targets: tuple[float, ...] = ()
+    partial_fractions: tuple[float, ...] = ()
+    partial_fired: list[bool] = field(default_factory=list)
+
+
+def _resolve_entry_fill(
+    bars: pd.DataFrame,
+    signal_idx: int,
+    cfg: BacktestConfig,
+) -> tuple[Optional[int], Optional[float], Optional[str]]:
+    """Resolve the entry bar index and reference fill price for a new position
+    based on ``cfg.entry_order_type``. Returns ``(entry_idx, ref_price,
+    warning)``; ``entry_idx=None`` indicates the order was not fillable in the
+    available data window.
+
+      * ``moo``   — next bar's open.
+      * ``moc``   — next bar's close.
+      * ``limit`` — limit price = signal-bar close * (1 - entry_limit_bps/1e4);
+                     first post-signal bar with low <= limit fills at
+                     min(bar.open, limit); gap-through favours the buyer.
+    """
+    if signal_idx + 1 >= len(bars):
+        return None, None, "no post-signal entry bar"
+    order = cfg.entry_order_type
+    if order == "moo":
+        entry_idx = signal_idx + 1
+        return entry_idx, float(bars.iloc[entry_idx]["open"]), None
+    if order == "moc":
+        entry_idx = signal_idx + 1
+        return entry_idx, float(bars.iloc[entry_idx]["close"]), None
+    if order == "limit":
+        if cfg.entry_limit_bps is None:
+            return None, None, "limit order requires entry_limit_bps"
+        signal_close = float(bars.iloc[signal_idx]["close"])
+        limit_price = signal_close * (1.0 - cfg.entry_limit_bps / 10_000.0)
+        for i in range(signal_idx + 1, len(bars)):
+            bar = bars.iloc[i]
+            low = float(bar["low"])
+            if low <= limit_price:
+                ref = min(float(bar["open"]), limit_price)
+                return i, ref, None
+        return None, None, "limit order never filled in available window"
+    return None, None, f"unknown entry_order_type: {order}"
 
 
 def _make_slot_state(
@@ -184,12 +288,13 @@ def _make_slot_state(
 ) -> tuple[Optional[_SlotState], Optional[str]]:
     """Build the mutable per-slot state used by both simulate_ticker and the
     event-driven loop. Returns (state, warning)."""
-    if signal_idx + 1 >= len(bars):
-        return None, "no post-signal entry bar"
-    entry_idx = signal_idx + 1
-    entry_bar = bars.iloc[entry_idx]
-    entry_open = float(entry_bar["open"])
-    entry_fill = entry_open * _slippage_factor(cfg.slippage_bps, buy=True)
+    entry_idx, entry_ref, entry_warn = _resolve_entry_fill(bars, signal_idx, cfg)
+    if entry_idx is None or entry_ref is None:
+        return None, entry_warn
+    adv_shares, sigma_daily = _trailing_liquidity(bars, signal_idx)
+    entry_fill = _apply_slip(
+        entry_ref, "buy", cfg, adv_shares=adv_shares, sigma_daily=sigma_daily
+    )
     exit_signal = None
     if exit_ast is not None:
         try:
@@ -198,6 +303,10 @@ def _make_slot_state(
             return None, f"exit eval failed: {e}"
     stop_ref = entry_fill * (1.0 - cfg.stop_loss) if cfg.stop_loss else None
     target_ref = entry_fill * (1.0 + cfg.take_profit) if cfg.take_profit else None
+    partial_targets = tuple(
+        entry_fill * (1.0 + pct) for pct, _frac in cfg.partial_exits
+    )
+    partial_fractions = tuple(frac for _pct, frac in cfg.partial_exits)
     return (
         _SlotState(
             ticker=ticker,
@@ -211,9 +320,132 @@ def _make_slot_state(
             hold_limit_idx=entry_idx + cfg.hold,
             peak=entry_fill,
             exit_signal=exit_signal,
+            adv_shares=adv_shares,
+            sigma_daily=sigma_daily,
+            partial_targets=partial_targets,
+            partial_fractions=partial_fractions,
+            partial_fired=[False] * len(partial_targets),
         ),
         None,
     )
+
+
+def _resolve_stop_fill(
+    bar_open: float, stop_ref: float, gap_fills: bool
+) -> float:
+    """Reference price for a stop-loss fill, gap-aware.
+
+    When the bar *opens* at or below the stop, the trader cannot fill at the
+    stop level — the opening print is the realistic fill and it is worse than
+    ``stop_ref``. When the bar opens above the stop but trades through it
+    intraday, the classical assumption (fill at ``stop_ref``) holds. Set
+    ``gap_fills=False`` to reproduce the legacy "always fill at stop_ref"
+    behaviour.
+    """
+    if gap_fills and bar_open <= stop_ref:
+        return bar_open
+    return stop_ref
+
+
+def _resolve_target_fill(
+    bar_open: float, target_ref: float, gap_fills: bool
+) -> float:
+    """Reference price for a take-profit fill, gap-aware.
+
+    On a gap-up through the target, the trader fills at the bar open — better
+    than ``target_ref``. Symmetric treatment to :func:`_resolve_stop_fill` to
+    avoid biasing return distributions.
+    """
+    if gap_fills and bar_open >= target_ref:
+        return bar_open
+    return target_ref
+
+
+def _maybe_credit_dividends(
+    portfolio: Portfolio,
+    state: _SlotState,
+    bars: pd.DataFrame,
+    i: int,
+    cfg: BacktestConfig,
+) -> None:
+    """Credit a cash dividend on an ex-date bar if the frame carries one.
+
+    No-op under the legacy ``price_adjustment='full'`` regime (the yfinance
+    auto_adjust path folds dividends into OHLC, so double-crediting would
+    inflate returns). Also a no-op on synthetic bars that lack a ``dividend``
+    column — all existing tests use synthetic frames.
+    """
+    if cfg.price_adjustment == "full":
+        return
+    if "dividend" not in bars.columns:
+        return
+    try:
+        div = float(bars.iloc[i]["dividend"])
+    except (KeyError, ValueError, TypeError):
+        return
+    if not math.isfinite(div) or div <= 0:
+        return
+    portfolio.credit_dividends(state.ticker, div)
+
+
+def _fire_partial_exits_at_bar(
+    state: _SlotState,
+    bars: pd.DataFrame,
+    i: int,
+    cfg: BacktestConfig,
+    portfolio: Portfolio,
+) -> None:
+    """Close tranches at pre-configured tiered price targets.
+
+    Each tier ``(profit_fraction, shares_fraction)`` converts to an absolute
+    price level at entry; when a bar's high reaches that level the sleeve is
+    sold via ``portfolio.partial_close``. After the first tier fires we raise
+    ``state.stop_ref`` to break-even (standard swing practice) so the
+    remaining runner is risk-free. Remaining tiers continue to fire on later
+    bars as the price advances.
+    """
+    if not state.partial_targets:
+        return
+    pos = portfolio.get_position(state.ticker)
+    if pos is None or pos.shares <= 0:
+        return
+    bar = bars.iloc[i]
+    bar_open = float(bar["open"])
+    high = float(bar["high"])
+    bar_date = bars.index[i].date()
+    # Remaining-shares bookkeeping: each tier's fraction is interpreted as
+    # ``fraction of the lot AT THE TIME THAT TIER FIRES``, so a ((1.0, 0.5),
+    # (2.0, 0.5)) schedule closes half at 1R, then half of the remainder at
+    # 2R (25% of the original lot).
+    for tier_idx, target_price in enumerate(state.partial_targets):
+        if state.partial_fired[tier_idx]:
+            continue
+        if high < target_price:
+            continue
+        # Gap-aware reference: if the bar opens beyond the tier, trader fills
+        # at the better open — symmetric with full-target gap-up handling.
+        ref = _resolve_target_fill(bar_open, target_price, cfg.gap_fills)
+        fill = _apply_slip(
+            ref,
+            "sell",
+            cfg,
+            adv_shares=state.adv_shares,
+            sigma_daily=state.sigma_daily,
+        )
+        frac = state.partial_fractions[tier_idx]
+        portfolio.partial_close(
+            ticker=state.ticker,
+            exit_date=bar_date,
+            exit_price=fill,
+            reason="target",
+            fraction=frac,
+            commission_bps=cfg.commission_bps,
+        )
+        state.partial_fired[tier_idx] = True
+        # After the first tier fires, raise stop to break-even (entry_fill)
+        # so the runner is risk-free.
+        if state.stop_ref is None or state.stop_ref < state.entry_fill:
+            state.stop_ref = state.entry_fill
 
 
 def _check_exit_at_bar(
@@ -231,6 +463,7 @@ def _check_exit_at_bar(
     and time exits fire on close.
     """
     bar = bars.iloc[i]
+    bar_open = float(bar["open"])
     high = float(bar["high"])
     low = float(bar["low"])
     close = float(bar["close"])
@@ -244,24 +477,35 @@ def _check_exit_at_bar(
     target_hit = state.target_ref is not None and high >= state.target_ref
     trail_hit = trail_ref is not None and low <= trail_ref
 
+    def _slip_sell(ref: float) -> float:
+        return _apply_slip(
+            ref,
+            "sell",
+            cfg,
+            adv_shares=state.adv_shares,
+            sigma_daily=state.sigma_daily,
+        )
+
     if stop_hit and target_hit:
         return (
-            state.stop_ref * _slippage_factor(cfg.slippage_bps, buy=False),
+            _slip_sell(_resolve_stop_fill(bar_open, state.stop_ref, cfg.gap_fills)),
             "stop",
         )
     if stop_hit:
         return (
-            state.stop_ref * _slippage_factor(cfg.slippage_bps, buy=False),
+            _slip_sell(_resolve_stop_fill(bar_open, state.stop_ref, cfg.gap_fills)),
             "stop",
         )
     if trail_hit:
         return (
-            trail_ref * _slippage_factor(cfg.slippage_bps, buy=False),
+            _slip_sell(_resolve_stop_fill(bar_open, trail_ref, cfg.gap_fills)),
             "trail",
         )
     if target_hit:
         return (
-            state.target_ref * _slippage_factor(cfg.slippage_bps, buy=False),
+            _slip_sell(
+                _resolve_target_fill(bar_open, state.target_ref, cfg.gap_fills)
+            ),
             "target",
         )
 
@@ -271,15 +515,9 @@ def _check_exit_at_bar(
         state.peak = high
 
     if state.exit_signal is not None and bool(state.exit_signal.iloc[i]):
-        return (
-            close * _slippage_factor(cfg.slippage_bps, buy=False),
-            "exit_expr",
-        )
+        return _slip_sell(close), "exit_expr"
     if i >= state.hold_limit_idx:
-        return (
-            close * _slippage_factor(cfg.slippage_bps, buy=False),
-            "time",
-        )
+        return _slip_sell(close), "time"
     return None
 
 
@@ -319,7 +557,13 @@ def simulate_ticker(
 
     last_bar = bars.iloc[-1]
     last_date = bars.index[-1].date()
-    fill = float(last_bar["close"]) * _slippage_factor(cfg.slippage_bps, buy=False)
+    fill = _apply_slip(
+        float(last_bar["close"]),
+        "sell",
+        cfg,
+        adv_shares=state.adv_shares,
+        sigma_daily=state.sigma_daily,
+    )
     return _SimOutcome(
         _make_exit(
             state.entry_date,
@@ -452,6 +696,10 @@ def _run_event_driven_sim(
     """
     slot_states: dict[int, Optional[_SlotState]] = {}
     slot_bars: dict[int, pd.DataFrame] = {}
+    # Per-slot re-entry budget. A slot becomes eligible for same-ticker
+    # re-entry when its position closes if ``reentries_left > 0``.
+    reentries_left: dict[int, int] = {}
+    pending_reentry: dict[int, str] = {}  # slot_id -> ticker awaiting re-entry
 
     # Initial active opens
     for slot_id, row in actives_df.iterrows():
@@ -484,6 +732,7 @@ def _run_event_driven_sim(
         )
         slot_states[slot_id] = state
         slot_bars[slot_id] = bars
+        reentries_left[slot_id] = cfg.max_reentries if cfg.allow_reentry else 0
 
     taken: set[str] = {
         s.ticker for s in slot_states.values() if s is not None
@@ -502,7 +751,46 @@ def _run_event_driven_sim(
     master_dates = sorted(day_set)
 
     for day in master_dates:
-        # Step 1: check exits for every open slot
+        # Step 0: try to re-enter any slot whose ticker is awaiting a fresh
+        # entry signal. Re-entry has priority over reserve rotation: a slot
+        # "sticks" with its original ticker until its re-entry budget runs
+        # out OR the entry signal doesn't re-fire within the horizon.
+        if pending_reentry:
+            for slot_id, ticker in list(pending_reentry.items()):
+                bars = slot_bars.get(slot_id)
+                if bars is None or bars.empty:
+                    del pending_reentry[slot_id]
+                    continue
+                signal_idx = _eligible_reserve_signal_idx(
+                    bars, day, cfg, entry_ast, lookback
+                )
+                if signal_idx is None:
+                    continue
+                new_rank = 0
+                prior = portfolio.get_position(ticker)  # always None post-close
+                # rank is preserved from initial assignment
+                new_rank = portfolio._ranks.get(ticker, 0)
+                state, warn = _make_slot_state(
+                    ticker, bars, signal_idx, cfg, exit_ast, new_rank
+                )
+                if state is None:
+                    if warn:
+                        warnings.append(f"{ticker} re-entry: {warn}")
+                    # Give up on re-entry if the entry signal triggered but
+                    # the order could not be filled (e.g., no post-signal bar)
+                    del pending_reentry[slot_id]
+                    continue
+                portfolio.assign(ticker, new_rank, day.date())
+                portfolio.open(
+                    ticker=ticker,
+                    entry_date=state.entry_date,
+                    entry_price=state.entry_fill,
+                    commission_bps=cfg.commission_bps,
+                )
+                slot_states[slot_id] = state
+                del pending_reentry[slot_id]
+
+        # Step 1: check exits (and partial-target tiers) for every open slot.
         freed: list[int] = []
         for slot_id, state in list(slot_states.items()):
             if state is None:
@@ -516,6 +804,17 @@ def _run_event_driven_sim(
                 continue
             if i < state.entry_idx + 1:
                 continue  # not yet past entry bar
+            _maybe_credit_dividends(portfolio, state, bars, i, cfg)
+            _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio)
+            # If partials closed the lot entirely (e.g. fractions summed to 1),
+            # the oldest position is gone — skip the full-exit check.
+            if portfolio.get_position(state.ticker) is None:
+                slot_states[slot_id] = None
+                freed.append(slot_id)
+                if cfg.allow_reentry and reentries_left.get(slot_id, 0) > 0:
+                    reentries_left[slot_id] -= 1
+                    pending_reentry[slot_id] = state.ticker
+                continue
             exit_ = _check_exit_at_bar(state, bars, i, cfg)
             if exit_ is None:
                 continue
@@ -529,12 +828,19 @@ def _run_event_driven_sim(
             )
             slot_states[slot_id] = None
             freed.append(slot_id)
+            if cfg.allow_reentry and reentries_left.get(slot_id, 0) > 0:
+                reentries_left[slot_id] -= 1
+                pending_reentry[slot_id] = state.ticker
 
         if not cfg.reinvest or not freed:
             continue
 
-        # Step 2: fill freed slots from the reserve queue (rank order)
+        # Step 2: fill freed slots from the reserve queue (rank order).
+        # Slots awaiting re-entry are held out of the queue so their original
+        # ticker retains the slot until its re-entry budget expires.
         for slot_id in freed:
+            if slot_id in pending_reentry:
+                continue
             while reserve_queue:
                 r = reserve_queue.pop(0)
                 ticker = r["ticker"]
@@ -577,8 +883,12 @@ def _run_event_driven_sim(
             continue
         last_bar = tail.iloc[-1]
         last_date = tail.index[-1].date()
-        fill = float(last_bar["close"]) * _slippage_factor(
-            cfg.slippage_bps, buy=False
+        fill = _apply_slip(
+            float(last_bar["close"]),
+            "sell",
+            cfg,
+            adv_shares=state.adv_shares,
+            sigma_daily=state.sigma_daily,
         )
         portfolio.close(
             ticker=state.ticker,

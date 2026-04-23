@@ -153,6 +153,72 @@ _DEFAULT_MIN_ADV = {"us": 1_000.0, "india": 100_000.0}  # avg daily dollar volum
     default=False,
     help="Disable reserve rotation (freed cash stays idle, matches legacy behavior).",
 )
+@click.option(
+    "--slippage-model",
+    type=click.Choice(["fixed", "half-spread", "vol-impact", "composite"]),
+    default="fixed",
+    help="Slippage model. 'fixed' = constant bps (legacy); 'half-spread' adds "
+    "quoted-spread cost; 'vol-impact' adds Almgren-Chriss sqrt-law impact; "
+    "'composite' sums all three.",
+)
+@click.option(
+    "--half-spread-bps",
+    type=float,
+    default=0.0,
+    help="Half-spread charged on every fill (bps). Used by half-spread/composite.",
+)
+@click.option(
+    "--vol-impact-k",
+    type=float,
+    default=0.1,
+    help="Coefficient for sqrt-law market impact (vol-impact/composite).",
+)
+@click.option(
+    "--no-gap-fills",
+    is_flag=True,
+    default=False,
+    help="Disable gap-aware stop/target fills (fills always at reference price).",
+)
+@click.option(
+    "--entry-order",
+    type=click.Choice(["moo", "moc", "limit"]),
+    default="moo",
+    help="Entry order type. moo=next-bar open (default); moc=next-bar close; "
+    "limit=limit order at close*(1 - entry_limit_bps/1e4).",
+)
+@click.option(
+    "--entry-limit-bps",
+    type=float,
+    default=None,
+    help="Discount below signal-bar close for limit entries (bps).",
+)
+@click.option(
+    "--allow-reentry",
+    is_flag=True,
+    default=False,
+    help="After a position closes, re-enter the same ticker if the entry "
+    "signal fires again (up to --max-reentries times).",
+)
+@click.option(
+    "--max-reentries",
+    type=int,
+    default=0,
+    help="Maximum number of re-entries per slot when --allow-reentry is set.",
+)
+@click.option(
+    "--partial-exit",
+    "partial_exit_args",
+    multiple=True,
+    help="Scale-out tier as 'PROFIT_FRAC:SHARES_FRAC' (e.g. 0.05:0.5 = close "
+    "half at +5%). Repeat to configure multiple tiers.",
+)
+@click.option(
+    "--price-adjustment",
+    type=click.Choice(["full", "splits_only", "none"]),
+    default="full",
+    help="Price-adjustment regime. full=legacy (yfinance auto_adjust=True); "
+    "splits_only=split-adjust OHLC and credit dividends as cash; none=raw OHLC.",
+)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
 def backtest_historical(
     market,
@@ -177,12 +243,28 @@ def backtest_historical(
     adv_window,
     reserve_multiple,
     no_reinvest,
+    slippage_model,
+    half_spread_bps,
+    vol_impact_k,
+    no_gap_fills,
+    entry_order,
+    entry_limit_bps,
+    allow_reentry,
+    max_reentries,
+    partial_exit_args,
+    price_adjustment,
     output_csv,
 ):
     """Run an accurate historical backtest with Pine-like entry/exit expressions."""
     from screener.backtester import BacktestConfig, run_backtest
     from screener.backtester.data import YFinancePriceFetcher
     from screener.backtester.display import print_backtest, print_ledger_csv
+    from screener.backtester.slippage import (
+        CompositeSlippage,
+        FixedBpsSlippage,
+        HalfSpreadSlippage,
+        VolumeImpactSlippage,
+    )
     from screener.backtester.strategies import resolve_strategy
 
     if strategy_name:
@@ -192,6 +274,34 @@ def backtest_historical(
 
     if not entry_expr:
         raise click.UsageError("--entry (or --strategy) is required.")
+
+    if slippage_model == "fixed":
+        slip_model = FixedBpsSlippage(float(slippage_bps))
+    elif slippage_model == "half-spread":
+        slip_model = HalfSpreadSlippage(float(half_spread_bps))
+    elif slippage_model == "vol-impact":
+        slip_model = VolumeImpactSlippage(float(vol_impact_k))
+    else:  # composite
+        slip_model = CompositeSlippage(
+            models=(
+                FixedBpsSlippage(float(slippage_bps)),
+                HalfSpreadSlippage(float(half_spread_bps)),
+                VolumeImpactSlippage(float(vol_impact_k)),
+            )
+        )
+
+    partial_exits: tuple[tuple[float, float], ...] = ()
+    if partial_exit_args:
+        parsed: list[tuple[float, float]] = []
+        for raw in partial_exit_args:
+            try:
+                profit_s, shares_s = raw.split(":", 1)
+                parsed.append((float(profit_s), float(shares_s)))
+            except ValueError as exc:
+                raise click.UsageError(
+                    f"--partial-exit expects PROFIT_FRAC:SHARES_FRAC, got {raw!r}"
+                ) from exc
+        partial_exits = tuple(parsed)
 
     bench = benchmark or _DEFAULT_BENCHMARK.get(market, "SPY")
     as_of_date: date = as_of.date() if isinstance(as_of, datetime) else as_of
@@ -242,9 +352,20 @@ def backtest_historical(
         avg_dollar_volume_window=int(adv_window),
         reserve_multiple=int(reserve_multiple),
         reinvest=not no_reinvest,
+        slippage_model=slip_model,
+        gap_fills=not no_gap_fills,
+        entry_order_type=entry_order,
+        entry_limit_bps=entry_limit_bps,
+        allow_reentry=bool(allow_reentry),
+        max_reentries=int(max_reentries),
+        partial_exits=partial_exits,
+        price_adjustment=price_adjustment,
     )
 
-    fetcher = click.get_current_context().obj or YFinancePriceFetcher()
+    auto_adjust = price_adjustment == "full"
+    fetcher = click.get_current_context().obj or YFinancePriceFetcher(
+        auto_adjust=auto_adjust
+    )
     result = run_backtest(cfg, fetcher)
 
     if output_csv:
