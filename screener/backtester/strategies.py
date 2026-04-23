@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass(frozen=True)
 class NamedStrategy:
     entry: str
-    exit: Optional[str]
+    exit: str | None
 
 
 STRATEGIES: dict[str, NamedStrategy] = {

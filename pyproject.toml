@@ -1,7 +1,7 @@
 [project]
 name = "screener"
 version = "0.1.0"
-description = "Add your description here"
+description = "Stock screener and historical backtester for US / India markets."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,10 +16,38 @@ dependencies = [
 ]
 
 [project.scripts]
-screener = "main:cli"
+screener = "screener.cli:cli"
 
 [dependency-groups]
 dev = [
     "matplotlib>=3.10.8",
     "pytest>=8.0",
+    "ruff>=0.6",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",  # line length enforced only in format
+    "B008",  # Click decorators evaluate defaults at import time
+    "SIM108", # collapsing if/else into ternary hurts readability here
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]
+"run_pinescript_strategies.py" = ["E402"]  # warnings.filterwarnings before imports
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

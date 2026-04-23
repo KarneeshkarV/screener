@@ -94,6 +94,7 @@ def print_results(
     added: list[str] | None = None,
     removed: list[str] | None = None,
     first_run: bool = False,
+    include_description: bool | None = None,
 ) -> None:
     console.print(
         f"\n[bold]{criteria_name.upper()}[/bold] screen on "
@@ -102,7 +103,11 @@ def print_results(
     )
 
     skip = {"ticker"}
-    if len(df.columns) > 8:
+    # Default: hide 'description' in wide tables so the row fits a typical
+    # terminal. Callers that want it either way can pass include_description.
+    if include_description is None:
+        include_description = len(df.columns) <= 8
+    if not include_description:
         skip.add("description")
     display_cols = [c for c in df.columns if c not in skip]
 

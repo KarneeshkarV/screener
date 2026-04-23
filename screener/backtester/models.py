@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Literal, Optional
+from typing import Literal
 
 import pandas as pd
 
 from screener.backtester.slippage import FixedBpsSlippage, SlippageModel
-
 
 ExitReason = Literal["stop", "target", "trail", "time", "exit_expr", "eod"]
 
@@ -19,26 +18,26 @@ class BacktestConfig:
     hold: int
     top: int
     entry_expr: str
-    exit_expr: Optional[str]
-    stop_loss: Optional[float]
-    take_profit: Optional[float]
-    trailing_stop: Optional[float]
+    exit_expr: str | None
+    stop_loss: float | None
+    take_profit: float | None
+    trailing_stop: float | None
     slippage_bps: float
     commission_bps: float
     initial_capital: float
     benchmark: str
-    tickers: Optional[tuple[str, ...]] = None
-    universe_file: Optional[str] = None
+    tickers: tuple[str, ...] | None = None
+    universe_file: str | None = None
     max_universe: int = 200
-    min_price: Optional[float] = None
-    min_avg_dollar_volume: Optional[float] = None
+    min_price: float | None = None
+    min_avg_dollar_volume: float | None = None
     avg_dollar_volume_window: int = 20
     reserve_multiple: int = 3
     reinvest: bool = True
     # Slippage is pluggable: default is a FixedBpsSlippage built from
     # ``slippage_bps`` for backwards compatibility. Richer models
     # (HalfSpread, VolumeImpact, Composite) live in ``screener.backtester.slippage``.
-    slippage_model: Optional[SlippageModel] = None
+    slippage_model: SlippageModel | None = None
     # Gap-aware stop / target fills. When True (default going forward) a bar
     # that *opens* through the stop fills at the open (worse than stop_ref);
     # symmetric for gap-ups through a target. False reproduces legacy behaviour.
@@ -47,7 +46,7 @@ class BacktestConfig:
     # close; ``limit`` = wait for bar whose low <= limit_price, fill at
     # ``min(bar.open, limit_price)``.
     entry_order_type: Literal["moo", "moc", "limit"] = "moo"
-    entry_limit_bps: Optional[float] = None
+    entry_limit_bps: float | None = None
     # Per-ticker trade lifecycle. Default preserves the historical
     # "one trade per ticker" behavior. Opt-in via allow_reentry + caps.
     allow_reentry: bool = False

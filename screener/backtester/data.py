@@ -9,12 +9,19 @@ the engine never depends directly on yfinance.
 """
 from __future__ import annotations
 
+import logging
+from collections.abc import Iterable
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterable, Optional, Protocol
+from typing import Protocol
 
 import pandas as pd
 
+logger = logging.getLogger(__name__)
+
+# Bump when the serialized frame layout changes so old caches are ignored
+# instead of silently reloaded with missing / renamed columns.
+_CACHE_VERSION = 2
 
 CACHE_DIR = Path.home() / ".screener" / "prices"
 
@@ -54,6 +61,12 @@ def tv_to_yf(symbol: str, market: str) -> str:
             return f"{rest}.NS"
         if exch == "BSE":
             return f"{rest}.BO"
+        if exch not in {"NASDAQ", "NYSE", "AMEX", "ARCA", "BATS"}:
+            logger.warning(
+                "tv_to_yf: dropping unknown exchange prefix %r on %r",
+                exch,
+                symbol,
+            )
         return rest
     if market == "india" and "." not in sym:
         return f"{sym}.NS"
@@ -62,10 +75,10 @@ def tv_to_yf(symbol: str, market: str) -> str:
 
 def _cache_path(ticker: str) -> Path:
     safe = ticker.replace("/", "_").replace(":", "_")
-    return CACHE_DIR / f"{safe}.parquet"
+    return CACHE_DIR / f"{safe}__v{_CACHE_VERSION}.parquet"
 
 
-def _load_cached(ticker: str) -> Optional[pd.DataFrame]:
+def _load_cached(ticker: str) -> pd.DataFrame | None:
     p = _cache_path(ticker)
     if not p.exists():
         return None
@@ -73,7 +86,8 @@ def _load_cached(ticker: str) -> Optional[pd.DataFrame]:
         df = pd.read_parquet(p)
         df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
         return df
-    except Exception:
+    except Exception as exc:
+        logger.warning("cache read failed for %s: %s", ticker, exc)
         return None
 
 
@@ -81,9 +95,8 @@ def _save_cache(ticker: str, df: pd.DataFrame) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     try:
         df.to_parquet(_cache_path(ticker))
-    except Exception:
-        # parquet failure is non-fatal; just skip caching
-        pass
+    except Exception as exc:
+        logger.warning("cache write failed for %s: %s", ticker, exc)
 
 
 def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -140,7 +153,7 @@ class YFinancePriceFetcher:
 
     def __init__(
         self,
-        cache_dir: Optional[Path] = None,
+        cache_dir: Path | None = None,
         auto_adjust: bool = True,
     ) -> None:
         self.cache_dir = cache_dir or CACHE_DIR
@@ -179,7 +192,8 @@ class YFinancePriceFetcher:
                 if not self.auto_adjust:
                     download_kwargs["actions"] = True
                 raw = yf.download(ticker, **download_kwargs)
-            except Exception:
+            except Exception as exc:
+                logger.warning("yfinance fetch failed for %s: %s", ticker, exc)
                 raw = pd.DataFrame()
             norm = _normalize_frame(raw)
             if norm.empty:

@@ -14,9 +14,6 @@ from __future__ import annotations
 
 from datetime import date
 
-import math
-
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -36,7 +33,6 @@ from screener.backtester.slippage import (
     VolumeImpactSlippage,
     apply_slippage,
 )
-
 from tests.conftest import make_bars
 
 

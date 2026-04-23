@@ -18,7 +18,6 @@ import math
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
-
 Side = Literal["buy", "sell"]
 
 

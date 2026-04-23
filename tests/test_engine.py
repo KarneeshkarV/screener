@@ -12,7 +12,6 @@ from screener.backtester.metrics import compute_metrics
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.pine import parse
 from screener.backtester.portfolio import Portfolio, build_equity_curve
-
 from tests.conftest import make_bars
 
 

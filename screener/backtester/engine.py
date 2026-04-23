@@ -18,12 +18,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Iterable, Optional
 
 import numpy as np
 import pandas as pd
 
-from screener.backtester.data import PriceFetcher, ensure_date, fetch_benchmark
+from screener.backtester.data import PriceFetcher, fetch_benchmark
+from screener.backtester.metrics import compute_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult, ExitReason, Trade
 from screener.backtester.pine import (
     PineError,
@@ -32,22 +32,13 @@ from screener.backtester.pine import (
     required_lookback,
 )
 from screener.backtester.portfolio import Portfolio, build_equity_curve
-from screener.backtester.metrics import compute_metrics
 from screener.backtester.slippage import Side, apply_slippage
 
 
 @dataclass
 class _SimOutcome:
-    trade: Optional[Trade]
-    warning: Optional[str]
-
-
-def _slippage_factor(bps: float, buy: bool) -> float:
-    """Legacy helper kept for backwards compatibility. New code should use
-    ``cfg.slippage_model`` via :func:`_apply_slip`.
-    """
-    delta = bps / 10_000.0
-    return 1.0 + delta if buy else 1.0 - delta
+    trade: Trade | None
+    warning: str | None
 
 
 def _apply_slip(
@@ -59,16 +50,13 @@ def _apply_slip(
     adv_shares: float = 0.0,
     sigma_daily: float = 0.0,
 ) -> float:
-    """Run ``cfg.slippage_model`` over a reference price. Falls back to the
-    configured ``FixedBpsSlippage`` when no explicit model was supplied.
+    """Run ``cfg.slippage_model`` over a reference price.
+
+    ``BacktestConfig.__post_init__`` guarantees ``slippage_model`` is set, so
+    callers do not need to special-case a missing model.
     """
-    model = cfg.slippage_model
-    if model is None:
-        # Defensive: BacktestConfig.__post_init__ should have populated it, but
-        # we don't want to crash if a caller manually bypassed dataclass init.
-        return ref_price * _slippage_factor(cfg.slippage_bps, buy=(side == "buy"))
     return apply_slippage(
-        model,
+        cfg.slippage_model,
         ref_price,
         side,
         shares=shares,
@@ -106,7 +94,7 @@ def _passes_entry_filters(
     bars: pd.DataFrame,
     as_of_ts: pd.Timestamp,
     cfg: BacktestConfig,
-) -> tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Check min-price and liquidity filters against history up to ``as_of_ts``.
 
     Applied both at initial selection (signal date) AND at reserve promotion
@@ -139,7 +127,7 @@ def select_candidates(
     as_of: pd.Timestamp,
     top_n: int,
     lookback_required: int,
-    cfg: Optional[BacktestConfig] = None,
+    cfg: BacktestConfig | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Evaluate entry AST at ``as_of`` for each ticker and rank survivors.
 
@@ -223,11 +211,11 @@ class _SlotState:
     entry_fill: float
     signal_date: date
     rank: int
-    stop_ref: Optional[float]
-    target_ref: Optional[float]
+    stop_ref: float | None
+    target_ref: float | None
     hold_limit_idx: int
     peak: float
-    exit_signal: Optional[pd.Series]
+    exit_signal: pd.Series | None
     adv_shares: float = 0.0
     sigma_daily: float = 0.0
     # Parallel arrays to ``cfg.partial_exits``. ``partial_targets`` holds the
@@ -242,7 +230,7 @@ def _resolve_entry_fill(
     bars: pd.DataFrame,
     signal_idx: int,
     cfg: BacktestConfig,
-) -> tuple[Optional[int], Optional[float], Optional[str]]:
+) -> tuple[int | None, float | None, str | None]:
     """Resolve the entry bar index and reference fill price for a new position
     based on ``cfg.entry_order_type``. Returns ``(entry_idx, ref_price,
     warning)``; ``entry_idx=None`` indicates the order was not fillable in the
@@ -285,7 +273,7 @@ def _make_slot_state(
     cfg: BacktestConfig,
     exit_ast,
     rank: int,
-) -> tuple[Optional[_SlotState], Optional[str]]:
+) -> tuple[_SlotState | None, str | None]:
     """Build the mutable per-slot state used by both simulate_ticker and the
     event-driven loop. Returns (state, warning)."""
     entry_idx, entry_ref, entry_warn = _resolve_entry_fill(bars, signal_idx, cfg)
@@ -453,7 +441,7 @@ def _check_exit_at_bar(
     bars: pd.DataFrame,
     i: int,
     cfg: BacktestConfig,
-) -> Optional[tuple[float, ExitReason]]:
+) -> tuple[float, ExitReason] | None:
     """Evaluate exit rules for ``state`` at bars[i]. Returns (fill, reason) if
     the position exits on this bar, else None. Mutates ``state.peak`` in place
     after the stop/target/trail checks (matching the original ordering).
@@ -532,6 +520,11 @@ def simulate_ticker(
     ``signal_idx`` is the positional index of the as-of/signal bar in ``bars``.
     Entry fills at bars[signal_idx + 1]['open'] (adverse slippage applied).
     Returns ``_SimOutcome`` with ``trade=None`` if no post-signal bar exists.
+
+    **Scope:** this is the single-ticker reference simulator used by the test
+    suite. The production path (:func:`run_backtest`) drives multi-slot
+    simulation via :func:`_run_event_driven_sim`; they share per-bar logic
+    through :func:`_check_exit_at_bar` and :func:`_make_slot_state`.
     """
     state, warning = _make_slot_state(
         ticker="", bars=bars, signal_idx=signal_idx, cfg=cfg, exit_ast=exit_ast, rank=0
@@ -653,7 +646,7 @@ def _eligible_reserve_signal_idx(
     cfg: BacktestConfig,
     entry_ast,
     lookback: int,
-) -> Optional[int]:
+) -> int | None:
     """Return the bar index at which a reserve can enter (signal_idx) if it
     passes filters and the entry AST as-of ``exit_day``; else None.
 
@@ -704,7 +697,7 @@ def _run_event_driven_sim(
     Force-closes any still-open slot at its last available bar with
     reason=``eod`` (matching the single-ticker simulator's end-of-data rule).
     """
-    slot_states: dict[int, Optional[_SlotState]] = {}
+    slot_states: dict[int, _SlotState | None] = {}
     slot_bars: dict[int, pd.DataFrame] = {}
     # Per-slot re-entry budget. A slot becomes eligible for same-ticker
     # re-entry when its position closes if ``reentries_left > 0``.
@@ -776,10 +769,8 @@ def _run_event_driven_sim(
                 )
                 if signal_idx is None:
                     continue
-                new_rank = 0
-                prior = portfolio.get_position(ticker)  # always None post-close
                 # rank is preserved from initial assignment
-                new_rank = portfolio._ranks.get(ticker, 0)
+                new_rank = portfolio.rank_of(ticker)
                 state, warn = _make_slot_state(
                     ticker, bars, signal_idx, cfg, exit_ast, new_rank
                 )

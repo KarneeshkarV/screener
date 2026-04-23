@@ -21,8 +21,8 @@ ticker cannot be opened twice through the legacy API.
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date
-from typing import Iterable, Optional
 
 import pandas as pd
 
@@ -52,7 +52,7 @@ class Portfolio:
     def _active_keys(self, ticker: str) -> list[tuple[str, int]]:
         return [k for k in self._open if k[0] == ticker]
 
-    def _oldest_key(self, ticker: str) -> Optional[tuple[str, int]]:
+    def _oldest_key(self, ticker: str) -> tuple[str, int] | None:
         keys = self._active_keys(ticker)
         if not keys:
             return None
@@ -185,6 +185,11 @@ class Portfolio:
         is the pro-rata share of the original entry cost, so ``return_pct`` is
         comparable to a full-close trade. The remaining sleeve continues to
         accrue PnL against its reduced entry_cost.
+
+        ``peak_price`` on the surviving sleeve is left unchanged — so the
+        trailing-stop distance carries over from the pre-partial peak. This is
+        intentional: the tranche that already ran to profit shouldn't reset
+        the runner's trail.
         """
         if not 0.0 < fraction <= 1.0:
             raise ValueError(f"fraction must be in (0, 1]; got {fraction}")
@@ -233,9 +238,14 @@ class Portfolio:
     def open_tickers(self) -> list[str]:
         return list({k[0] for k in self._open})
 
-    def get_position(self, ticker: str) -> Optional[Position]:
+    def get_position(self, ticker: str) -> Position | None:
         key = self._oldest_key(ticker)
         return self._open.get(key) if key is not None else None
+
+    def rank_of(self, ticker: str) -> int:
+        """Selection rank previously assigned to ``ticker`` via :meth:`assign`,
+        or ``0`` if the ticker was never assigned."""
+        return self._ranks.get(ticker, 0)
 
     def closed_trades(self) -> list[Trade]:
         return list(self._closed)

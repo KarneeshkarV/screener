@@ -19,10 +19,10 @@ single ``.shift(1)`` and so compare only bars ``i`` and ``i-1``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
 
-import numpy as np
 import pandas as pd
+
+from screener import indicators
 
 
 class PineError(Exception):
@@ -59,33 +59,33 @@ class Name:
 @dataclass
 class UnaryOp:
     op: str            # '-' or '+'
-    operand: "Node"
+    operand: Node
 
 
 @dataclass
 class Not:
-    operand: "Node"
+    operand: Node
 
 
 @dataclass
 class BinOp:
     op: str            # '+', '-', '*', '/'
-    left: "Node"
-    right: "Node"
+    left: Node
+    right: Node
 
 
 @dataclass
 class Compare:
     op: str            # '>', '>=', '<', '<=', '==', '!='
-    left: "Node"
-    right: "Node"
+    left: Node
+    right: Node
 
 
 @dataclass
 class BoolOp:
     op: str            # 'and' or 'or'
-    left: "Node"
-    right: "Node"
+    left: Node
+    right: Node
 
 
 @dataclass
@@ -95,7 +95,7 @@ class Call:
     col: int           # column in source (for error messages)
 
 
-Node = Union[Num, Name, UnaryOp, Not, BinOp, Compare, BoolOp, Call]
+Node = Num | Name | UnaryOp | Not | BinOp | Compare | BoolOp | Call
 
 
 # ── tokenizer ────────────────────────────────────────────────────────
@@ -159,6 +159,10 @@ def _tokenize(expr: str) -> list[Token]:
             tokens.append(Token("op", ch, i))
             i += 1
             continue
+        if ch == "!":
+            raise PineSyntaxError(
+                f"Unexpected {ch!r} at column {i}; did you mean '!='?"
+            )
         raise PineSyntaxError(f"Unexpected character {ch!r} at column {i}")
     tokens.append(Token("end", "", n))
     return tokens
@@ -311,50 +315,19 @@ def _require_int_literal(node: Node, func: str, arg: str) -> int:
 
 
 def _rsi(source: pd.Series, length: int) -> pd.Series:
-    delta = source.diff()
-    gains = delta.clip(lower=0.0)
-    losses = -delta.clip(upper=0.0)
-    # Wilder smoothing: EMA with alpha = 1/length
-    avg_gain = gains.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
-    avg_loss = losses.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-    # if avg_loss is 0 and avg_gain > 0, RSI = 100
-    rsi = rsi.where(~((avg_loss == 0) & (avg_gain > 0)), 100.0)
-    return rsi
+    return indicators.rsi(source, length)
 
 
 def _atr(bars: pd.DataFrame, length: int) -> pd.Series:
-    high = bars["high"]
-    low = bars["low"]
-    prev_close = bars["close"].shift(1)
-    tr = pd.concat(
-        [
-            (high - low).abs(),
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
+    return indicators.atr(bars["high"], bars["low"], bars["close"], length)
 
 
 def _crossover(a: pd.Series, b: pd.Series) -> pd.Series:
-    a_now = a
-    b_now = b
-    a_prev = a.shift(1)
-    b_prev = b.shift(1)
-    cond = (a_now > b_now) & (a_prev <= b_prev)
-    return cond.fillna(False)
+    return indicators.crossover(a, b)
 
 
 def _crossunder(a: pd.Series, b: pd.Series) -> pd.Series:
-    a_now = a
-    b_now = b
-    a_prev = a.shift(1)
-    b_prev = b.shift(1)
-    cond = (a_now < b_now) & (a_prev >= b_prev)
-    return cond.fillna(False)
+    return indicators.crossunder(a, b)
 
 
 def _series_from_name(name: str, bars: pd.DataFrame) -> pd.Series:
@@ -437,15 +410,15 @@ def _eval_call(node: Call, bars: pd.DataFrame):
             source_val = _as_series(source_val, bars.index)
         length = _require_int_literal(node.args[1], name, "length")
         if name == "sma":
-            return source_val.rolling(length, min_periods=length).mean()
+            return indicators.sma(source_val, length)
         if name == "ema":
-            return source_val.ewm(span=length, adjust=False, min_periods=length).mean()
+            return indicators.ema(source_val, length)
         if name == "rsi":
-            return _rsi(source_val, length)
+            return indicators.rsi(source_val, length)
         if name == "highest":
-            return source_val.rolling(length, min_periods=length).max()
+            return indicators.highest(source_val, length)
         if name == "lowest":
-            return source_val.rolling(length, min_periods=length).min()
+            return indicators.lowest(source_val, length)
     if name == "atr":
         if len(node.args) != 1:
             raise PineSyntaxError(

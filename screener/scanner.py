@@ -1,9 +1,8 @@
 import math
 import re
 
-from tradingview_screener import Query
 import pandas as pd
-
+from tradingview_screener import Query
 
 MARKETS = {
     "us": "america",
@@ -45,6 +44,23 @@ def _log_percentile(series: pd.Series) -> pd.Series:
     return _percentile(values.add(1).map(math.log))
 
 
+# Weights for the composite setup score. Positive weights reward the named
+# factor; the overextension term is subtracted. Tune as you learn — the
+# defaults prioritise trend quality and liquidity, with a small momentum /
+# price-quality nudge and a hard penalty against buying stretched extensions.
+# Weights sum to 100 on the positive side; the penalty can subtract up to 15
+# so raw scores land in roughly [-15, 100].
+SETUP_SCORE_WEIGHTS: dict[str, float] = {
+    "liquidity": 25.0,
+    "trend_strength": 30.0,
+    "momentum": 15.0,
+    "market_cap": 15.0,
+    "rsi_quality": 10.0,
+    "price_quality": 5.0,
+    "overextension_penalty": 15.0,  # subtracted
+}
+
+
 def _add_setup_score(df: pd.DataFrame) -> pd.DataFrame:
     scored = df.copy()
 
@@ -74,14 +90,15 @@ def _add_setup_score(df: pd.DataFrame) -> pd.DataFrame:
     extension = ((close - ema20) / ema20).fillna(0)
     overextension_penalty = ((extension - 0.12).clip(lower=0) / 0.25).clip(upper=1)
 
+    w = SETUP_SCORE_WEIGHTS
     scored["setup_score"] = (
-        25 * liquidity
-        + 30 * trend_strength
-        + 15 * momentum
-        + 15 * market_cap
-        + 10 * rsi_quality
-        + 5 * price_quality
-        - 15 * overextension_penalty
+        w["liquidity"] * liquidity
+        + w["trend_strength"] * trend_strength
+        + w["momentum"] * momentum
+        + w["market_cap"] * market_cap
+        + w["rsi_quality"] * rsi_quality
+        + w["price_quality"] * price_quality
+        - w["overextension_penalty"] * overextension_penalty
     ).round(2)
     return scored
 

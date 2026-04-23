@@ -5,13 +5,12 @@ Alpha/beta use a simple OLS fit via ``numpy.polyfit`` — no sklearn.
 """
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
 
 from screener.backtester.models import Trade
-
 
 TRADING_DAYS_PER_YEAR = 252
 

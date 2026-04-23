@@ -10,7 +10,6 @@ from rich.table import Table
 
 from screener.backtester.models import BacktestResult
 
-
 console = Console()
 
 

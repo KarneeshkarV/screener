@@ -1,10 +1,8 @@
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
-
 
 DB_PATH = Path.home() / ".screener" / "history.db"
 
@@ -42,7 +40,7 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _to_float(val) -> Optional[float]:
+def _to_float(val) -> float | None:
     if val is None:
         return None
     try:
@@ -55,7 +53,7 @@ def _to_float(val) -> Optional[float]:
 
 
 def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
-    run_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    run_ts = datetime.now(UTC).isoformat(timespec="seconds")
     conn = _connect()
     try:
         cur = conn.execute(
@@ -98,7 +96,7 @@ def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
         conn.close()
 
 
-def previous_run(market: str, criteria: str, before_id: int) -> Optional[pd.DataFrame]:
+def previous_run(market: str, criteria: str, before_id: int) -> pd.DataFrame | None:
     conn = _connect()
     try:
         prev = conn.execute(
@@ -121,6 +119,70 @@ def previous_run(market: str, criteria: str, before_id: int) -> Optional[pd.Data
             conn,
             params=(prev_id,),
         )
+    finally:
+        conn.close()
+
+
+def list_runs(
+    market: str | None = None,
+    criteria: str | None = None,
+    limit: int = 50,
+) -> pd.DataFrame:
+    """Return a DataFrame of recent runs (most-recent first)."""
+    conn = _connect()
+    try:
+        clauses = []
+        params: list = []
+        if market:
+            clauses.append("market = ?")
+            params.append(market)
+        if criteria:
+            clauses.append("criteria = ?")
+            params.append(criteria)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(int(limit))
+        return pd.read_sql_query(
+            f"SELECT id, run_ts, market, criteria, total_matches "
+            f"FROM runs {where} ORDER BY id DESC LIMIT ?",
+            conn,
+            params=params,
+        )
+    finally:
+        conn.close()
+
+
+def prune(keep_per_key: int) -> int:
+    """Keep only the ``keep_per_key`` most recent runs for each
+    ``(market, criteria)`` tuple. Returns the number of runs deleted.
+    """
+    if keep_per_key < 0:
+        raise ValueError("keep_per_key must be >= 0")
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id FROM runs WHERE id NOT IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY market, criteria ORDER BY id DESC
+                    ) AS rn
+                    FROM runs
+                ) WHERE rn <= ?
+            )
+            """,
+            (int(keep_per_key),),
+        ).fetchall()
+        ids = [r[0] for r in rows]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
+        # ON DELETE CASCADE handles run_rows, but enforce FK pragma first
+        # because sqlite leaves cascades off by default.
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(f"DELETE FROM run_rows WHERE run_id IN ({placeholders})", ids)
+        conn.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", ids)
+        conn.commit()
+        return len(ids)
     finally:
         conn.close()
 

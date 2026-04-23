@@ -1,6 +1,5 @@
 from tradingview_screener import col
 
-
 # ── filter building blocks ──────────────────────────────────────────
 
 

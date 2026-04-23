@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import io
-from datetime import date
 
 import pandas as pd
-import pytest
 from click.testing import CliRunner
 
-from main import cli
-
+from screener.cli import cli
 from tests.conftest import StubPriceFetcher, make_bars
 
 

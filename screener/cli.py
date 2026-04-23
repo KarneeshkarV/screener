@@ -4,8 +4,8 @@ import click
 
 from screener import history
 from screener.criteria import CRITERIA, combine
-from screener.scanner import scan, MARKETS
-from screener.display import print_results, print_csv
+from screener.display import print_csv, print_results
+from screener.scanner import MARKETS, scan
 
 
 @click.group()
@@ -378,6 +378,37 @@ def backtest_historical(
         return
 
     print_backtest(result)
+
+
+@cli.group("history")
+def history_group():
+    """Inspect and prune the screener's run history."""
+
+
+@history_group.command("ls")
+@click.option("-m", "--market", default=None, help="Filter by market.")
+@click.option("-c", "--criteria", "criteria_name", default=None, help="Filter by criteria.")
+@click.option("-n", "--limit", default=50, help="Max rows to show.")
+def history_ls(market, criteria_name, limit):
+    """List recent screen runs."""
+    df = history.list_runs(market=market, criteria=criteria_name, limit=limit)
+    if df.empty:
+        click.echo("no runs recorded")
+        return
+    click.echo(df.to_string(index=False))
+
+
+@history_group.command("prune")
+@click.option(
+    "--keep",
+    type=int,
+    default=20,
+    help="Number of recent runs to keep per (market, criteria) pair.",
+)
+def history_prune(keep):
+    """Delete old run records beyond the most recent N per (market, criteria)."""
+    deleted = history.prune(keep_per_key=keep)
+    click.echo(f"deleted {deleted} run(s); kept {keep} per (market, criteria)")
 
 
 if __name__ == "__main__":
