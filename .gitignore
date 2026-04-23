@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+*.log
+_*.txt
+matrix_*.txt
