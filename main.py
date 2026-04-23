@@ -117,10 +117,15 @@ _DEFAULT_MIN_ADV = {"us": 1_000.0, "india": 100_000.0}  # avg daily dollar volum
 @click.option(
     "--tickers",
     default=None,
-    help="Comma-separated ticker list (overrides default universe).",
+    help="Comma-separated ticker list.",
 )
 @click.option("--universe-file", default=None, help="Path to newline-separated ticker file.")
-@click.option("--max-universe", type=int, default=200, help="Cap on default universe size.")
+@click.option(
+    "--max-universe",
+    type=int,
+    default=200,
+    help="Cap supplied universe size before fetching prices. Pass 0 to disable.",
+)
 @click.option(
     "--min-price",
     type=float,

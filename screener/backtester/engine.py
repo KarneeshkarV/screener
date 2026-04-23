@@ -623,8 +623,18 @@ def _resolve_universe(cfg: BacktestConfig) -> tuple[list[str], list[str]]:
     bias; callers must supply an as-of universe explicitly.
     """
     warnings: list[str] = []
+
+    def _cap(tickers: list[str]) -> list[str]:
+        max_universe = int(cfg.max_universe)
+        if max_universe <= 0 or len(tickers) <= max_universe:
+            return tickers
+        warnings.append(
+            f"capped universe from {len(tickers)} to {max_universe} tickers"
+        )
+        return tickers[:max_universe]
+
     if cfg.tickers:
-        return list(cfg.tickers), warnings
+        return _cap(list(cfg.tickers)), warnings
     if cfg.universe_file:
         from pathlib import Path
         content = Path(cfg.universe_file).read_text()
@@ -633,7 +643,7 @@ def _resolve_universe(cfg: BacktestConfig) -> tuple[list[str], list[str]]:
             for line in content.splitlines()
             if line.strip() and not line.strip().startswith("#")
         ]
-        return tickers, warnings
+        return _cap(tickers), warnings
     raise ValueError(_NO_UNIVERSE_MSG)
 
 
