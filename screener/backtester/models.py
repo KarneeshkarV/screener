@@ -28,6 +28,11 @@ class BacktestConfig:
     tickers: Optional[tuple[str, ...]] = None
     universe_file: Optional[str] = None
     max_universe: int = 200
+    min_price: Optional[float] = None
+    min_avg_dollar_volume: Optional[float] = None
+    avg_dollar_volume_window: int = 20
+    reserve_multiple: int = 3
+    reinvest: bool = True
 
 
 @dataclass

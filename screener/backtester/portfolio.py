@@ -1,11 +1,17 @@
 """Explicit position + cash accounting for the backtester.
 
-Each slot gets ``initial_capital / slot_count`` cash at t=0. At the entry bar
-we spend ``shares * entry_price + entry_commission`` of cash to open a
-position. At exit we receive ``shares * exit_price - exit_commission`` back.
+Each slot has a fixed ``slot_capital = initial_capital / slot_count`` budget
+ceiling. At each ``open`` we spend up to ``min(slot_capital, current_cash)`` of
+cash to fill shares (the cap prevents negative cash when a slot is reused
+after a losing trade and cumulative losses have eroded the pool). At exit we
+receive ``shares * exit_price - exit_commission`` back into cash.
 
-The equity curve is cash + mark-to-market of open positions. Closed-trade
-proceeds stay as cash and are NOT redeployed.
+The equity curve is cash + mark-to-market of open positions. When the engine
+uses the event-driven reallocation path, closed-trade proceeds return to
+``_cash`` and fund subsequent ``open`` calls on the same slot (a reserve
+ticker fills the freed slot). Realized gains that exceed ``slot_capital`` stay
+as idle cash within the slot — per-slot sizing is not compounded, to keep
+sizing balanced across slots regardless of lucky-early-trade effects.
 """
 from __future__ import annotations
 
@@ -43,15 +49,16 @@ class Portfolio:
     ) -> Position:
         if ticker in self._open:
             raise ValueError(f"Position already open for {ticker}")
-        # spend up to slot_capital; commission reduces shares acquired
-        # Solve: shares * entry_price * (1 + c) = slot_capital - slack
-        # For simplicity: shares = slot_capital / (entry_price * (1 + c))
+        # spend up to min(slot_capital, current cash); commission reduces shares
+        # acquired. Cap by current cash so reserve promotion after losing trades
+        # cannot overdraw the portfolio.
         c = commission_bps / 10_000.0
         gross_per_share = entry_price * (1.0 + c)
-        shares = self.slot_capital / gross_per_share if gross_per_share > 0 else 0.0
+        budget = min(self.slot_capital, max(self._cash, 0.0))
+        shares = budget / gross_per_share if gross_per_share > 0 else 0.0
         notional = shares * entry_price
         commission = notional * c
-        entry_cost = notional + commission  # <= slot_capital by construction
+        entry_cost = notional + commission  # <= budget by construction
         self._cash -= entry_cost
         position = Position(
             ticker=ticker,

@@ -78,6 +78,8 @@ def screen(market, criteria_names, limit, order_by, output_csv, detail):
 
 
 _DEFAULT_BENCHMARK = {"us": "SPY", "india": "^NSEI"}
+_DEFAULT_MIN_PRICE = {"us": 1.0, "india": 10.0}
+_DEFAULT_MIN_ADV = {"us": 1_000.0, "india": 100_000.0}  # avg daily dollar volume
 
 
 @cli.command(name="backtest-historical")
@@ -119,6 +121,38 @@ _DEFAULT_BENCHMARK = {"us": "SPY", "india": "^NSEI"}
 )
 @click.option("--universe-file", default=None, help="Path to newline-separated ticker file.")
 @click.option("--max-universe", type=int, default=200, help="Cap on default universe size.")
+@click.option(
+    "--min-price",
+    type=float,
+    default=None,
+    help="Minimum as-of close to admit a ticker. Default: $1 (US) / ₹10 (India). "
+    "Pass 0 to disable.",
+)
+@click.option(
+    "--min-avg-dollar-volume",
+    type=float,
+    default=None,
+    help="Minimum rolling-mean dollar volume (close*volume) over --adv-window. "
+    "Default: $1,000 (US) / ₹100,000 (India). Pass 0 to disable.",
+)
+@click.option(
+    "--adv-window",
+    type=int,
+    default=20,
+    help="Lookback (bars) for average dollar-volume filter.",
+)
+@click.option(
+    "--reserve-multiple",
+    type=int,
+    default=3,
+    help="Deepen the selection pool to top*N for reserve rotation on exits.",
+)
+@click.option(
+    "--no-reinvest",
+    is_flag=True,
+    default=False,
+    help="Disable reserve rotation (freed cash stays idle, matches legacy behavior).",
+)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
 def backtest_historical(
     market,
@@ -138,6 +172,11 @@ def backtest_historical(
     tickers,
     universe_file,
     max_universe,
+    min_price,
+    min_avg_dollar_volume,
+    adv_window,
+    reserve_multiple,
+    no_reinvest,
     output_csv,
 ):
     """Run an accurate historical backtest with Pine-like entry/exit expressions."""
@@ -161,6 +200,26 @@ def backtest_historical(
     if tickers:
         ticker_tuple = tuple(t.strip() for t in tickers.split(",") if t.strip())
 
+    if not ticker_tuple and not universe_file:
+        raise click.UsageError(
+            "No universe provided: pass --tickers or --universe-file. "
+            "The TradingView current-screener fallback was removed because it "
+            "injects survivorship bias."
+        )
+
+    resolved_min_price = (
+        _DEFAULT_MIN_PRICE.get(market) if min_price is None else min_price
+    )
+    if resolved_min_price == 0:
+        resolved_min_price = None
+    resolved_min_adv = (
+        _DEFAULT_MIN_ADV.get(market)
+        if min_avg_dollar_volume is None
+        else min_avg_dollar_volume
+    )
+    if resolved_min_adv == 0:
+        resolved_min_adv = None
+
     cfg = BacktestConfig(
         market=market,
         as_of=as_of_date,
@@ -178,6 +237,11 @@ def backtest_historical(
         tickers=ticker_tuple,
         universe_file=universe_file,
         max_universe=int(max_universe),
+        min_price=resolved_min_price,
+        min_avg_dollar_volume=resolved_min_adv,
+        avg_dollar_volume_window=int(adv_window),
+        reserve_multiple=int(reserve_multiple),
+        reinvest=not no_reinvest,
     )
 
     fetcher = click.get_current_context().obj or YFinancePriceFetcher()

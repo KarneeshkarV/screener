@@ -84,6 +84,23 @@ def _exposure(
     return float(open_count.mean() / max(slot_count, 1))
 
 
+def _invested_return(trades: Iterable[Trade]) -> float:
+    """Capital-deployed-only total return.
+
+    Ignores idle cash in the denominator: sums realized PnL across all closed
+    trades and divides by total capital that actually touched the market
+    (sum of entry_cost). Exposes the dead-cash gap even when the engine's
+    reinvestment path is on — a low ratio of equity_return to invested_return
+    indicates a large share of capital sat idle.
+    """
+    trades = list(trades)
+    total_cost = sum(float(t.entry_cost) for t in trades)
+    total_pnl = sum(float(t.pnl) for t in trades)
+    if total_cost <= 0:
+        return 0.0
+    return total_pnl / total_cost
+
+
 def compute_metrics(
     equity: pd.Series,
     benchmark: pd.Series,
@@ -120,4 +137,5 @@ def compute_metrics(
         "exposure": _exposure(equity.index, trades, slot_count),
         "benchmark_return": bench_return,
         "trade_count": len(trades),
+        "invested_return": _invested_return(trades),
     }

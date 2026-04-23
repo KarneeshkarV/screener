@@ -323,6 +323,279 @@ def test_insufficient_lookback_emits_warning(stub_fetcher_factory):
 # ── metrics ──────────────────────────────────────────────────────────
 
 
+# ── universe, filters, reallocation ──────────────────────────────────
+
+
+def test_run_backtest_errors_when_no_universe_provided():
+    """The TradingView fallback was removed; no universe → ValueError."""
+    from screener.backtester.engine import _resolve_universe
+
+    cfg = _cfg(tickers=None)
+    with pytest.raises(ValueError, match="No universe provided"):
+        _resolve_universe(cfg)
+
+
+def test_min_price_filter_excludes_penny_stocks(stub_fetcher_factory):
+    # PENNY close ~ $0.50; REAL close ~ $100. Both flash the same entry signal.
+    bars_penny = make_bars(n=60, seed=1, open_base=0.5)
+    bars_real = make_bars(n=60, seed=2, open_base=100.0)
+    # Pin penny's last three closes to sub-dollar so both the filter and the
+    # sma(close, 3) comparison are deterministic.
+    for i in range(37, 40):
+        bars_penny.iat[i, bars_penny.columns.get_loc("close")] = 0.30
+    bars_penny.iat[39, bars_penny.columns.get_loc("close")] = 0.80  # > sma but still < $1
+    bars_real.iat[39, bars_real.columns.get_loc("close")] = (
+        float(bars_real.iloc[39]["close"]) + 5
+    )
+
+    fetcher = stub_fetcher_factory(
+        {"PENNY": bars_penny, "REAL": bars_real, "SPY": bars_real.copy()}
+    )
+    cfg = _cfg(
+        as_of=bars_real.index[39].date(),
+        hold=3,
+        top=5,
+        entry_expr="close > sma(close, 3)",
+        tickers=("PENNY", "REAL"),
+        min_price=1.0,
+    )
+    result = run_backtest(cfg, fetcher)
+    tickers_traded = {t.ticker for t in result.trades}
+    assert "PENNY" not in tickers_traded
+    assert "REAL" in tickers_traded
+    assert any("filtered" in w and "price/liquidity" in w for w in result.warnings)
+
+
+def test_min_avg_dollar_volume_filter_excludes_illiquid(stub_fetcher_factory):
+    bars_liquid = make_bars(n=60, seed=1, open_base=100.0)
+    bars_illiquid = make_bars(n=60, seed=2, open_base=100.0)
+    bars_liquid["volume"] = 50_000_000.0  # dollar-vol ~ 5B
+    bars_illiquid["volume"] = 1.0  # dollar-vol ~ 100
+    for b in (bars_liquid, bars_illiquid):
+        b.iat[39, b.columns.get_loc("close")] = float(b.iloc[39]["close"]) + 5
+
+    fetcher = stub_fetcher_factory(
+        {
+            "LIQ": bars_liquid,
+            "ILLIQ": bars_illiquid,
+            "SPY": bars_liquid.copy(),
+        }
+    )
+    cfg = _cfg(
+        as_of=bars_liquid.index[39].date(),
+        hold=3,
+        top=5,
+        entry_expr="close > sma(close, 3)",
+        tickers=("LIQ", "ILLIQ"),
+        min_avg_dollar_volume=1_000_000.0,
+        avg_dollar_volume_window=20,
+    )
+    result = run_backtest(cfg, fetcher)
+    tickers_traded = {t.ticker for t in result.trades}
+    assert "ILLIQ" not in tickers_traded
+    assert "LIQ" in tickers_traded
+
+
+def test_reserve_reallocation_fills_slot_on_early_exit(stub_fetcher_factory):
+    """With reinvest=True and a stop-loss exit on day 2, a reserve should be
+    opened to replace the freed slot."""
+    bars_active = make_bars(n=60, seed=1, open_base=100.0)
+    bars_reserve = make_bars(n=60, seed=2, open_base=100.0)
+    # Flatten RESERVE's series to make the entry signal deterministic at
+    # BOTH as_of (bar 39) AND the active's exit_date (bar 41).
+    for i in range(30, 60):
+        bars_reserve.iat[i, bars_reserve.columns.get_loc("open")] = 100.0
+        bars_reserve.iat[i, bars_reserve.columns.get_loc("high")] = 101.0
+        bars_reserve.iat[i, bars_reserve.columns.get_loc("low")] = 99.0
+        bars_reserve.iat[i, bars_reserve.columns.get_loc("close")] = 100.0
+    # Pump RESERVE's close at bar 41 so close > sma(close, 3) when slot frees.
+    bars_reserve.iat[41, bars_reserve.columns.get_loc("close")] = 105.0
+    # Also keep bar 39 signal true for initial selection
+    bars_reserve.iat[39, bars_reserve.columns.get_loc("close")] = 105.0
+
+    # ACTIVE: entry signal true at bar 39; entry bar 40; bar 41 stop-out.
+    bars_active.iat[39, bars_active.columns.get_loc("close")] = (
+        float(bars_active.iloc[39]["close"]) + 5
+    )
+    bars_active.iat[40, bars_active.columns.get_loc("open")] = 100.0
+    bars_active.iat[41, bars_active.columns.get_loc("open")] = 99.0
+    bars_active.iat[41, bars_active.columns.get_loc("high")] = 99.5
+    bars_active.iat[41, bars_active.columns.get_loc("low")] = 90.0
+    bars_active.iat[41, bars_active.columns.get_loc("close")] = 91.0
+    # ACTIVE ranks #1 by dollar volume, RESERVE #2.
+    bars_active["volume"] = 1_000_000.0
+    bars_reserve["volume"] = 100_000.0
+
+    fetcher = stub_fetcher_factory(
+        {
+            "ACTIVE": bars_active,
+            "RESERVE": bars_reserve,
+            "SPY": bars_reserve.copy(),
+        }
+    )
+    cfg = _cfg(
+        as_of=bars_active.index[39].date(),
+        hold=10,
+        top=1,
+        entry_expr="close > sma(close, 3)",
+        tickers=("ACTIVE", "RESERVE"),
+        stop_loss=0.05,
+        reserve_multiple=3,
+        reinvest=True,
+    )
+    result = run_backtest(cfg, fetcher)
+    trade_tickers = [t.ticker for t in result.trades]
+    # We expect both ACTIVE (stopped out) and RESERVE (opened after) to trade.
+    assert "ACTIVE" in trade_tickers
+    assert "RESERVE" in trade_tickers
+    active_trade = next(t for t in result.trades if t.ticker == "ACTIVE")
+    reserve_trade = next(t for t in result.trades if t.ticker == "RESERVE")
+    assert active_trade.exit_reason == "stop"
+    # Reserve opens on the bar AFTER active's exit_date
+    assert reserve_trade.entry_date > active_trade.exit_date
+
+
+def test_no_reinvest_matches_legacy_leaves_cash_idle(stub_fetcher_factory):
+    """With reinvest=False, a stop-out must NOT trigger reserve rotation even
+    if reserves are available."""
+    bars_active = make_bars(n=60, seed=1, open_base=100.0)
+    bars_reserve = make_bars(n=60, seed=2, open_base=100.0)
+    for i in range(30, 60):
+        bars_reserve.iat[i, bars_reserve.columns.get_loc("close")] = 100.0
+    bars_reserve.iat[39, bars_reserve.columns.get_loc("close")] = 105.0
+    bars_reserve.iat[41, bars_reserve.columns.get_loc("close")] = 105.0
+    bars_active.iat[39, bars_active.columns.get_loc("close")] = (
+        float(bars_active.iloc[39]["close"]) + 5
+    )
+    bars_active.iat[40, bars_active.columns.get_loc("open")] = 100.0
+    bars_active.iat[41, bars_active.columns.get_loc("low")] = 90.0
+    bars_active.iat[41, bars_active.columns.get_loc("close")] = 91.0
+    bars_active["volume"] = 1_000_000.0
+    bars_reserve["volume"] = 100_000.0
+
+    fetcher = stub_fetcher_factory(
+        {
+            "ACTIVE": bars_active,
+            "RESERVE": bars_reserve,
+            "SPY": bars_reserve.copy(),
+        }
+    )
+    cfg = _cfg(
+        as_of=bars_active.index[39].date(),
+        hold=10,
+        top=1,
+        entry_expr="close > sma(close, 3)",
+        tickers=("ACTIVE", "RESERVE"),
+        stop_loss=0.05,
+        reserve_multiple=3,
+        reinvest=False,
+    )
+    result = run_backtest(cfg, fetcher)
+    trade_tickers = {t.ticker for t in result.trades}
+    assert "ACTIVE" in trade_tickers
+    assert "RESERVE" not in trade_tickers
+
+
+def test_reserve_filter_rechecked_on_exit_day(stub_fetcher_factory):
+    """A reserve that was liquid at original as_of but whose price crashes
+    below min_price before the active slot frees must NOT be promoted."""
+    bars_active = make_bars(n=60, seed=1, open_base=100.0)
+    bars_crash = make_bars(n=60, seed=2, open_base=5.0)
+    bars_backup = make_bars(n=60, seed=3, open_base=100.0)
+
+    # Flatten BACKUP and CRASH so the entry signal at bar 41 is deterministic.
+    for i in range(30, 60):
+        bars_backup.iat[i, bars_backup.columns.get_loc("close")] = 100.0
+        bars_crash.iat[i, bars_crash.columns.get_loc("close")] = 5.0
+
+    # All three flash the entry signal at as_of (bar 39, close > sma(close,3)).
+    bars_active.iat[39, bars_active.columns.get_loc("close")] = (
+        float(bars_active.iloc[39]["close"]) + 5
+    )
+    bars_crash.iat[39, bars_crash.columns.get_loc("close")] = 8.0  # > min_price
+    bars_backup.iat[39, bars_backup.columns.get_loc("close")] = 105.0
+
+    # ACTIVE stops out on bar 41
+    bars_active.iat[40, bars_active.columns.get_loc("open")] = 100.0
+    bars_active.iat[41, bars_active.columns.get_loc("low")] = 90.0
+    bars_active.iat[41, bars_active.columns.get_loc("close")] = 91.0
+
+    # CRASH: by bar 41 price is $0.50 — below min_price=1 filter on exit day.
+    for i in range(40, 45):
+        bars_crash.iat[i, bars_crash.columns.get_loc("open")] = 0.5
+        bars_crash.iat[i, bars_crash.columns.get_loc("high")] = 0.6
+        bars_crash.iat[i, bars_crash.columns.get_loc("low")] = 0.4
+        bars_crash.iat[i, bars_crash.columns.get_loc("close")] = 0.5
+    # Flip close on 41 so entry signal would fire if filter weren't re-checked.
+    bars_crash.iat[41, bars_crash.columns.get_loc("close")] = 0.8
+
+    # BACKUP has a clean entry signal on bar 41 and passes filter.
+    bars_backup.iat[41, bars_backup.columns.get_loc("close")] = 105.0
+
+    # Volumes: ACTIVE > CRASH > BACKUP (ranks 1, 2, 3).
+    bars_active["volume"] = 1_000_000.0
+    bars_crash["volume"] = 500_000.0
+    bars_backup["volume"] = 100_000.0
+
+    fetcher = stub_fetcher_factory(
+        {
+            "ACTIVE": bars_active,
+            "CRASH": bars_crash,
+            "BACKUP": bars_backup,
+            "SPY": bars_backup.copy(),
+        }
+    )
+    cfg = _cfg(
+        as_of=bars_active.index[39].date(),
+        hold=10,
+        top=1,
+        entry_expr="close > sma(close, 3)",
+        tickers=("ACTIVE", "CRASH", "BACKUP"),
+        stop_loss=0.05,
+        reserve_multiple=3,
+        reinvest=True,
+        min_price=1.0,
+    )
+    result = run_backtest(cfg, fetcher)
+    trade_tickers = {t.ticker for t in result.trades}
+    assert "ACTIVE" in trade_tickers
+    # CRASH was rank-2 at as_of but fails the price filter on the exit_date
+    assert "CRASH" not in trade_tickers
+    # BACKUP is rank-3 and still passes → promoted in CRASH's place
+    assert "BACKUP" in trade_tickers
+
+
+def test_invested_return_metric_ignores_idle_cash():
+    """A single winning trade with entry_cost=$10k and pnl=$1k should yield
+    invested_return=10%, regardless of the total equity base."""
+    trade = Trade(
+        ticker="X",
+        rank=1,
+        signal_date=date(2024, 1, 2),
+        entry_date=date(2024, 1, 3),
+        entry_price=100.0,
+        exit_date=date(2024, 1, 5),
+        exit_price=110.0,
+        exit_reason="time",
+        shares=100.0,
+        entry_cost=10_000.0,
+        exit_value=11_000.0,
+        pnl=1_000.0,
+        return_pct=0.10,
+    )
+    equity = pd.Series(
+        [100_000.0, 100_500.0, 101_000.0],
+        index=pd.bdate_range("2024-01-03", periods=3),
+    )
+    bench = pd.Series(
+        [100.0, 100.0, 100.0], index=equity.index
+    )
+    m = compute_metrics(equity, bench, [trade], slot_count=10)
+    assert m["invested_return"] == pytest.approx(0.10, abs=1e-6)
+    # Total return on $100k portfolio is only 1% — exposes the dead-cash gap
+    assert m["total_return"] == pytest.approx(0.01, abs=1e-6)
+
+
 def test_metrics_on_known_ramp_series():
     n = 252
     equity = pd.Series(
