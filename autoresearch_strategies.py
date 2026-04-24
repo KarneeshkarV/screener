@@ -1428,6 +1428,74 @@ def strat_schaff_trend_cycle(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_coppock_curve_zero_cross(df: pd.DataFrame) -> list[Trade]:
+    """Coppock Curve zero-line bullish cross with SMA(100) trend filter.
+
+    Coppock (Edwin Coppock, 1965) is a momentum composite originally used on
+    monthly bars to spot long-term bottoms. Adapted to daily bars here:
+        ROC_a = 14-bar rate of change (pct)
+        ROC_b = 11-bar rate of change (pct)
+        Coppock = WMA(10) of (ROC_a + ROC_b)
+    A rising zero-line cross signals momentum flipping positive after a
+    negative regime. Distinct from TRIX/KAMA/HMA/Fisher/RVI/Vortex in the
+    journal: those are smoothed-MA or range-compression signals, this is a
+    weighted-sum-of-two-ROCs composite.
+
+    Entry: Coppock crosses above 0 on the prior bar (prev2 <= 0 < prev) and
+    prior close > SMA(100).
+    Exit: Coppock turns back below 0, or close drops below SMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n_bars = close.size
+
+    def _roc(arr: np.ndarray, length: int) -> np.ndarray:
+        shifted = np.concatenate((np.full(length, np.nan), arr[:-length]))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = np.where(
+                np.isfinite(shifted) & (shifted != 0.0),
+                100.0 * (arr - shifted) / shifted,
+                np.nan,
+            )
+        return out
+
+    roc_a = _roc(close, 14)
+    roc_b = _roc(close, 11)
+    roc_sum = roc_a + roc_b
+
+    # Weighted moving average (linear weights 1..10) of roc_sum.
+    wma_len = 10
+    weights = np.arange(1, wma_len + 1, dtype=float)
+    w_sum = weights.sum()
+    coppock = np.full(n_bars, np.nan)
+    for i in range(wma_len - 1, n_bars):
+        window = roc_sum[i - wma_len + 1 : i + 1]
+        if np.all(np.isfinite(window)):
+            coppock[i] = float(np.dot(window, weights) / w_sum)
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    cop_prev = np.concatenate(([np.nan], coppock[:-1]))
+    cop_prev2 = np.concatenate(([np.nan, np.nan], coppock[:-2]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid_entry = (
+        np.isfinite(cop_prev)
+        & np.isfinite(cop_prev2)
+        & np.isfinite(close_prev)
+        & np.isfinite(sma100_prev)
+    )
+    fresh_cross = (cop_prev2 <= 0.0) & (cop_prev > 0.0)
+    entries = valid_entry & fresh_cross & (close_prev > sma100_prev)
+
+    cop_below_zero = np.isfinite(coppock) & (coppock < 0.0)
+    below_sma20 = np.isfinite(sma20) & (close < sma20)
+    exits = cop_below_zero | below_sma20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -1450,4 +1518,5 @@ NEW_STRATEGIES: dict = {
     "hma_bullish_cross": strat_hma_bullish_cross,
     "kama_cross_trend": strat_kama_cross_trend,
     "schaff_trend_cycle": strat_schaff_trend_cycle,
+    "coppock_curve_zero_cross": strat_coppock_curve_zero_cross,
 }
