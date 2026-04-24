@@ -146,8 +146,39 @@ def strat_squeeze_breakout(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_cum_rsi2_pullback(df: pd.DataFrame) -> list[Trade]:
+    """Connors-style cumulative RSI(2) pullback inside a long-term uptrend.
+
+    Uses the *persistence* of an oversold reading rather than a single day:
+    the sum of the last 3 RSI(2) readings falling below 45 (i.e. 3-day
+    average RSI(2) < 15) identifies a multi-bar pullback, gated by price
+    above SMA(200). Exit is a quick mean-reversion target (close > SMA(5)).
+    Distinct from rsi_ema (EMA crossover), macd_rsi (MACD trigger), and
+    ibs_trend_filter (single-bar range position) — this reads multi-day
+    oversold persistence.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    rsi2 = _rsi(close, 2)
+    sma200 = _sma(close, 200)
+    sma5 = _sma(close, 5)
+
+    cum3 = pd.Series(rsi2).rolling(3, min_periods=3).sum().to_numpy()
+
+    # Reference prior-bar values so the signal is locked in at bar close.
+    cum3_prev = np.concatenate(([np.nan], cum3[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = np.isfinite(cum3_prev) & np.isfinite(sma200_prev)
+    entries = valid & (cum3_prev < 45.0) & (close_prev > sma200_prev)
+    exits = np.isfinite(sma5) & (close > sma5)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
     "squeeze_breakout": strat_squeeze_breakout,
+    "cum_rsi2_pullback": strat_cum_rsi2_pullback,
 }
