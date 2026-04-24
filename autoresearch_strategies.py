@@ -660,6 +660,75 @@ def strat_heikin_ashi_flip(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_ichimoku_kumo_breakout(df: pd.DataFrame) -> list[Trade]:
+    """Ichimoku Kinko Hyo cloud (Kumo) breakout with bullish Tenkan/Kijun state.
+
+    Ichimoku builds its cloud from 26-bar-forward-displaced midpoints of two
+    different Donchian windows:
+        Tenkan(9)  = (HH9  + LL9)  / 2
+        Kijun(26)  = (HH26 + LL26) / 2
+        SenkouA    = (Tenkan + Kijun) / 2   (plotted 26 bars ahead)
+        SenkouB(52)= (HH52 + LL52) / 2      (plotted 26 bars ahead)
+    The cloud at time t is therefore computed from bars <= t-26 — knowable at
+    today's close with no lookahead.
+
+    Entry (at today's close):
+      - prior-bar close is above prior-bar cloud upper (above the Kumo)
+      - the bar before that was at or below its cloud upper (fresh breakout)
+      - prior-bar Tenkan > Kijun (bullish TK-cross state)
+    Exit: close falls below the Kijun line (standard Ichimoku trailing exit).
+
+    Distinct from every other sandbox strategy: the 26-bar-displaced cloud is
+    a unique support/resistance object that none of Donchian (same-bar H/L
+    channel), supertrend (ATR trail), BB/KC (volatility bands), HA (synthetic
+    candles), Aroon (time-since-extreme), NR7 (compression), ADX/DMI (trend
+    magnitude), RSI/MACD/WVF/CMF (oscillators), or volume strategies capture.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    def donchian_mid(h: np.ndarray, l: np.ndarray, n: int) -> np.ndarray:
+        hh = pd.Series(h).rolling(n, min_periods=n).max().to_numpy()
+        ll = pd.Series(l).rolling(n, min_periods=n).min().to_numpy()
+        return (hh + ll) / 2.0
+
+    tenkan = donchian_mid(high, low, 9)
+    kijun = donchian_mid(high, low, 26)
+    senkou_a_raw = (tenkan + kijun) / 2.0
+    senkou_b_raw = donchian_mid(high, low, 52)
+
+    displacement = 26
+    pad = np.full(displacement, np.nan)
+    senkou_a = np.concatenate((pad, senkou_a_raw[:-displacement]))
+    senkou_b = np.concatenate((pad, senkou_b_raw[:-displacement]))
+    cloud_upper = np.maximum(senkou_a, senkou_b)
+
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    close_prev2 = np.concatenate(([np.nan, np.nan], close[:-2]))
+    cloud_upper_prev = np.concatenate(([np.nan], cloud_upper[:-1]))
+    cloud_upper_prev2 = np.concatenate(([np.nan, np.nan], cloud_upper[:-2]))
+    tenkan_prev = np.concatenate(([np.nan], tenkan[:-1]))
+    kijun_prev = np.concatenate(([np.nan], kijun[:-1]))
+
+    valid = (
+        np.isfinite(cloud_upper_prev)
+        & np.isfinite(cloud_upper_prev2)
+        & np.isfinite(tenkan_prev)
+        & np.isfinite(kijun_prev)
+        & np.isfinite(close_prev)
+        & np.isfinite(close_prev2)
+    )
+    fresh_breakout = (close_prev > cloud_upper_prev) & (
+        close_prev2 <= cloud_upper_prev2
+    )
+    tk_bullish = tenkan_prev > kijun_prev
+    entries = valid & fresh_breakout & tk_bullish
+    exits = np.isfinite(kijun) & (close < kijun)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -673,4 +742,5 @@ NEW_STRATEGIES: dict = {
     "cmf_zero_reclaim": strat_cmf_zero_reclaim,
     "aroon_cross_trend": strat_aroon_cross_trend,
     "heikin_ashi_flip": strat_heikin_ashi_flip,
+    "ichimoku_kumo_breakout": strat_ichimoku_kumo_breakout,
 }
