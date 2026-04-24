@@ -106,7 +106,48 @@ def strat_donchian_20_10_trend(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_squeeze_breakout(df: pd.DataFrame) -> list[Trade]:
+    """TTM-style squeeze: Bollinger Bands inside Keltner Channels → breakout.
+
+    A squeeze fires when BB(20, 2σ) sits entirely inside KC(20, 1.5·ATR20) —
+    a volatility contraction. Entry: the prior bar was in a squeeze AND
+    today's close breaks above yesterday's upper Keltner band, with price
+    above SMA(100) to gate direction. Exit: close falls back below the
+    20-period middle (SMA20). This targets volatility expansion, not
+    oversold dips (ibs_trend_filter) or σ-band breakouts (bb_breakout), and
+    is distinct from Donchian high-low channels and ATR-trailing supertrend.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    sma20 = _sma(close, 20)
+    std20 = _stdev(close, 20)
+    bb_upper = sma20 + 2.0 * std20
+    bb_lower = sma20 - 2.0 * std20
+
+    atr20 = _atr(high, low, close, 20)
+    kc_upper = sma20 + 1.5 * atr20
+    kc_lower = sma20 - 1.5 * atr20
+
+    sma100 = _sma(close, 100)
+
+    squeeze = (bb_upper < kc_upper) & (bb_lower > kc_lower)
+
+    # Reference prior-bar indicator values so the decision is knowable at
+    # bar close without lookahead.
+    squeeze_prev = np.concatenate(([False], squeeze[:-1]))
+    kc_upper_prev = np.concatenate(([np.nan], kc_upper[:-1]))
+
+    valid = np.isfinite(kc_upper_prev) & np.isfinite(sma100) & np.isfinite(sma20)
+    entries = valid & squeeze_prev & (close > kc_upper_prev) & (close > sma100)
+    exits = np.isfinite(sma20) & (close < sma20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
+    "squeeze_breakout": strat_squeeze_breakout,
 }
