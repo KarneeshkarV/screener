@@ -1742,6 +1742,158 @@ def strat_awesome_oscillator_saucer(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_mfi_oversold_recovery(df: pd.DataFrame) -> list[Trade]:
+    """Money Flow Index (MFI) oversold-recovery in a long-term uptrend.
+
+    Quong/Soudack MFI is a volume-weighted RSI built on the *typical price*
+    instead of the close, and on the *direction of typical-price changes*
+    (not range position or Δclose):
+        typical_t   = (high_t + low_t + close_t) / 3
+        raw_flow_t  = typical_t * volume_t
+        pos_flow_t  = raw_flow_t if typical_t > typical_{t-1} else 0
+        neg_flow_t  = raw_flow_t if typical_t < typical_{t-1} else 0
+        MFI_t       = 100 - 100 / (1 + sum(pos,14) / sum(neg,14))
+
+    An oversold MFI (<20) inside a long-term uptrend is a classic
+    volume-confirmed dip. We fire on the *recovery* (fresh cross from
+    <=20 to >20 of the prior bar) to avoid picking up falling knives, and
+    require close > SMA(200) so we only buy dips in established uptrends.
+    Exit: MFI > 80 (mean-reversion target) OR close < SMA(20) (trend break).
+
+    Distinct from every existing sandbox volume/flow strategy:
+      - CMF uses close-within-range multiplier × volume (range position).
+      - EFI uses (Δclose × volume) — price change × volume, not typical.
+      - pocket_pivot / volume_capitulation_reclaim are single-bar volume
+        events with no RSI-style accumulation/ratio geometry.
+    MFI is the only typical-price direction-weighted money-flow *ratio*
+    oscillator in the sandbox.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+
+    typical = (high + low + close) / 3.0
+    raw_flow = typical * volume
+
+    typical_prev = np.concatenate(([np.nan], typical[:-1]))
+    direction = typical - typical_prev
+    pos_flow = np.where(direction > 0, raw_flow, 0.0)
+    neg_flow = np.where(direction < 0, raw_flow, 0.0)
+
+    n = 14
+    pos_sum = pd.Series(pos_flow).rolling(n, min_periods=n).sum().to_numpy()
+    neg_sum = pd.Series(neg_flow).rolling(n, min_periods=n).sum().to_numpy()
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(neg_sum > 0, pos_sum / neg_sum, np.nan)
+    mfi = 100.0 - 100.0 / (1.0 + ratio)
+    # If neg_sum == 0 but pos_sum > 0, MFI saturates at 100.
+    mfi = np.where(
+        np.isfinite(mfi),
+        mfi,
+        np.where(np.isfinite(pos_sum) & (pos_sum > 0) & (neg_sum == 0), 100.0, np.nan),
+    )
+
+    sma200 = _sma(close, 200)
+    sma20 = _sma(close, 20)
+
+    mfi_prev = np.concatenate(([np.nan], mfi[:-1]))
+    mfi_prev2 = np.concatenate(([np.nan], mfi_prev[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    fresh_recovery = (
+        np.isfinite(mfi_prev) & np.isfinite(mfi_prev2)
+        & (mfi_prev2 <= 20.0) & (mfi_prev > 20.0)
+    )
+    trend_ok = (
+        np.isfinite(sma200_prev) & np.isfinite(close_prev)
+        & (close_prev > sma200_prev)
+    )
+    entries = fresh_recovery & trend_ok
+    exits = (
+        (np.isfinite(mfi) & (mfi > 80.0))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_tsi_signal_cross(df: pd.DataFrame) -> list[Trade]:
+    """William Blau's True Strength Index (TSI) bullish signal-line cross.
+
+    TSI double-smooths raw price momentum (Δclose) with two nested EMAs:
+        mom       = close - close.shift(1)
+        TSI       = 100 * EMA(EMA(mom, 25), 13) / EMA(EMA(|mom|, 25), 13)
+        signal    = EMA(TSI, 7)
+    Entry (prior-bar only, no lookahead):
+        TSI[t-2] <= signal[t-2]  and  TSI[t-1] > signal[t-1]
+        close[t-1] > SMA(100)[t-1]
+    Exit: TSI < signal OR close < SMA(20).
+
+    Distinct from every momentum oscillator already in the sandbox:
+      - MACD / PPO: single-EMA difference on *price* (not momentum).
+      - TRIX:       triple-EMA of price, then ROC of the smoothed price.
+      - KST:        weighted sum of SMAs of ROC across 10/15/20/30.
+      - Coppock:    WMA(10) over sum of two ROCs.
+      - Schaff:     double-smoothed stochastic of MACD (bounded 0-100).
+      - Fisher:     inverse-hyp transform of range-mid position.
+      - RVI:        (close-open)/(high-low) style, not momentum.
+      - EFI:        EMA of Δclose × volume (volume-weighted).
+      - AO:         SMA(5) - SMA(34) of median price.
+      - RSI/CRSI/CumRSI2/MFI: gains/(gains+losses) ratios.
+    TSI is the only oscillator here that applies *two nested EMAs* to raw
+    Δclose and normalizes by the same double-smoothing of |Δclose|, which
+    suppresses whipsaw while preserving the sign and magnitude of momentum
+    in a way no other indicator in the pool does.
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    mom = np.concatenate(([np.nan], np.diff(close)))
+    abs_mom = np.abs(mom)
+
+    mom_f = np.nan_to_num(mom, nan=0.0)
+    abs_f = np.nan_to_num(abs_mom, nan=0.0)
+
+    ema1_mom = _ema(mom_f, 25)
+    ema2_mom = _ema(ema1_mom, 13)
+    ema1_abs = _ema(abs_f, 25)
+    ema2_abs = _ema(ema1_abs, 13)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tsi = 100.0 * np.where(ema2_abs > 0, ema2_mom / ema2_abs, 0.0)
+    signal = _ema(tsi, 7)
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    tsi_prev1 = np.concatenate(([np.nan], tsi[:-1]))
+    tsi_prev2 = np.concatenate(([np.nan], tsi_prev1[:-1]))
+    sig_prev1 = np.concatenate(([np.nan], signal[:-1]))
+    sig_prev2 = np.concatenate(([np.nan], sig_prev1[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    cross_up = (
+        np.isfinite(tsi_prev1) & np.isfinite(tsi_prev2)
+        & np.isfinite(sig_prev1) & np.isfinite(sig_prev2)
+        & (tsi_prev2 <= sig_prev2)
+        & (tsi_prev1 > sig_prev1)
+    )
+    trend_ok = (
+        np.isfinite(sma100_prev) & np.isfinite(close_prev)
+        & (close_prev > sma100_prev)
+    )
+    entries = cross_up & trend_ok
+
+    exits = (
+        (np.isfinite(tsi) & np.isfinite(signal) & (tsi < signal))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -1769,4 +1921,6 @@ NEW_STRATEGIES: dict = {
     "elder_force_index_zero_cross": strat_elder_force_index_zero_cross,
     "awesome_oscillator_saucer": strat_awesome_oscillator_saucer,
     "pring_kst_signal_cross": strat_pring_kst_signal_cross,
+    "mfi_oversold_recovery": strat_mfi_oversold_recovery,
+    "tsi_signal_cross": strat_tsi_signal_cross,
 }
