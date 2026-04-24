@@ -516,6 +516,77 @@ def strat_cmf_zero_reclaim(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_aroon_cross_trend(df: pd.DataFrame) -> list[Trade]:
+    """Chande Aroon(25) bullish cross with Aroon Up >= 70, gated by SMA(100).
+
+    Aroon measures *how recently* (in bars) the highest high / lowest low
+    occurred within the last N bars — a time-since-extremes indicator rather
+    than a price or volume one:
+        AroonUp(N)   = 100 * (N - bars_since_HH_N) / N
+        AroonDown(N) = 100 * (N - bars_since_LL_N) / N
+    A fresh cross where AroonUp takes over AroonDown signals recent action is
+    printing new highs faster than new lows — an early trend-emergence read.
+
+    Entry (at today's close):
+      - prior bar showed a fresh bullish cross (AroonUp2 <= AroonDown2 AND
+        AroonUp1 > AroonDown1)
+      - prior bar AroonUp >= 70 (HH occurred within the latest ~30% of window)
+      - prior bar close > SMA(100)
+    Exit: AroonDown > AroonUp OR close < SMA(20).
+
+    Distinct from every other sandbox strategy: Donchian reads absolute
+    high-low levels, NR7/squeeze read range compression, ADX reads trend
+    strength magnitude, RSI/MACD/WVF are price-momentum oscillators, CMF /
+    pocket_pivot / volume_capitulation use volume. Aroon reads *time since*
+    the extreme — a geometry none of them capture.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    n = 25
+    hh_arg = (
+        pd.Series(high).rolling(n, min_periods=n).apply(np.argmax, raw=True).to_numpy()
+    )
+    ll_arg = (
+        pd.Series(low).rolling(n, min_periods=n).apply(np.argmin, raw=True).to_numpy()
+    )
+    bars_since_hh = (n - 1) - hh_arg
+    bars_since_ll = (n - 1) - ll_arg
+    aroon_up = 100.0 * (n - bars_since_hh) / n
+    aroon_dn = 100.0 * (n - bars_since_ll) / n
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    au_prev = np.concatenate(([np.nan], aroon_up[:-1]))
+    ad_prev = np.concatenate(([np.nan], aroon_dn[:-1]))
+    au_prev2 = np.concatenate(([np.nan, np.nan], aroon_up[:-2]))
+    ad_prev2 = np.concatenate(([np.nan, np.nan], aroon_dn[:-2]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = (
+        np.isfinite(au_prev)
+        & np.isfinite(ad_prev)
+        & np.isfinite(au_prev2)
+        & np.isfinite(ad_prev2)
+        & np.isfinite(sma100_prev)
+    )
+    fresh_cross = (au_prev2 <= ad_prev2) & (au_prev > ad_prev)
+    entries = (
+        valid
+        & fresh_cross
+        & (au_prev >= 70.0)
+        & (close_prev > sma100_prev)
+    )
+    exits = (
+        (np.isfinite(aroon_up) & np.isfinite(aroon_dn) & (aroon_dn > aroon_up))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -527,4 +598,5 @@ NEW_STRATEGIES: dict = {
     "adx_dmi_trend_emergence": strat_adx_dmi_trend_emergence,
     "pocket_pivot": strat_pocket_pivot,
     "cmf_zero_reclaim": strat_cmf_zero_reclaim,
+    "aroon_cross_trend": strat_aroon_cross_trend,
 }
