@@ -1496,6 +1496,69 @@ def strat_coppock_curve_zero_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_connors_rsi_pullback(df: pd.DataFrame) -> list[Trade]:
+    """Connors RSI (CRSI) deep-oversold pullback in a long-term uptrend.
+
+    CRSI = average of three components, each scaled 0..100:
+      1) RSI(close, 3)                — short-term momentum
+      2) RSI(streak, 2)               — RSI of the consecutive up/down-day run
+      3) PercentRank(1-day ROC, 100)  — today's return percentile vs last 100
+
+    Classic Larry Connors pullback: enter when CRSI < 10 (exceptional dip) and
+    close is above SMA(200) (only buy dips inside established uptrends). Exit
+    when close > SMA(5), capturing the short mean-reversion bounce. Distinct
+    from cum_rsi2_pullback (cumulative RSI2 sum), williams_vix_fix (range-
+    based percentile of highs), and plain RSI mean-revert (single oscillator).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = len(close)
+
+    rsi3 = _rsi(close, 3)
+
+    # Streak: signed count of consecutive up/down closes (0 on unchanged).
+    streak = np.zeros(n, dtype=float)
+    for i in range(1, n):
+        if close[i] > close[i - 1]:
+            streak[i] = max(streak[i - 1], 0.0) + 1.0
+        elif close[i] < close[i - 1]:
+            streak[i] = min(streak[i - 1], 0.0) - 1.0
+        else:
+            streak[i] = 0.0
+    rsi_streak = _rsi(streak, 2)
+
+    roc1 = np.zeros(n, dtype=float)
+    roc1[1:] = (close[1:] / np.where(close[:-1] != 0, close[:-1], 1e-12)) - 1.0
+
+    # Percent rank of today's ROC1 within the trailing 100-bar window.
+    pct_rank = (
+        pd.Series(roc1)
+        .rolling(100, min_periods=20)
+        .rank(pct=True)
+        .to_numpy()
+        * 100.0
+    )
+    pct_rank = np.where(np.isfinite(pct_rank), pct_rank, 50.0)
+
+    crsi = (rsi3 + rsi_streak + pct_rank) / 3.0
+
+    sma200 = _sma(close, 200)
+    sma5 = _sma(close, 5)
+
+    crsi_prev = np.concatenate(([50.0], crsi[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    entries = (
+        np.isfinite(crsi_prev)
+        & (crsi_prev < 10.0)
+        & np.isfinite(sma200_prev)
+        & (close_prev > sma200_prev)
+    )
+    exits = np.isfinite(sma5) & (close > sma5)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -1519,4 +1582,5 @@ NEW_STRATEGIES: dict = {
     "kama_cross_trend": strat_kama_cross_trend,
     "schaff_trend_cycle": strat_schaff_trend_cycle,
     "coppock_curve_zero_cross": strat_coppock_curve_zero_cross,
+    "connors_rsi_pullback": strat_connors_rsi_pullback,
 }
