@@ -1616,6 +1616,63 @@ def strat_elder_force_index_zero_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_awesome_oscillator_saucer(df: pd.DataFrame) -> list[Trade]:
+    """Bill Williams' Awesome Oscillator 'saucer' setup in a long-term uptrend.
+
+    AO = SMA(5, median) - SMA(34, median), median = (high + low) / 2.
+    The saucer is a momentum-V on the bullish side of zero: two consecutive
+    declines in the AO histogram followed by an up-tick, all above zero. In
+    the canonical four-bar window (using prior-bar values so decisions are
+    bar-close knowable):
+        AO[t-4] > AO[t-3] > AO[t-2]   # two successive declines (red bars)
+        AO[t-1] > AO[t-2]             # turn-up bar (green)
+        all four AO readings > 0
+
+    This pattern captures a pause-and-resume in an established uptrend. We
+    also require close > SMA(100) at t-1 so we only trade saucers inside a
+    broader uptrend (avoids the classic failure of saucers inside downtrends).
+    Exit: AO < 0 (momentum flipped) OR close < SMA(20). Distinct from MACD /
+    TRIX / Coppock (EMA-of-price oscillators), RSI family, Aroon (extreme
+    counters), Vortex (VM sums), and Heikin-Ashi / KAMA / HMA (price smoothers)
+    because AO uses SMAs of the bar *midpoint* and the setup is a specific
+    3-bar histogram shape rather than a single-point cross.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    median = (high + low) / 2.0
+    ao = _sma(median, 5) - _sma(median, 34)
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    ao1 = np.concatenate(([np.nan], ao[:-1]))
+    ao2 = np.concatenate(([np.nan], ao1[:-1]))
+    ao3 = np.concatenate(([np.nan], ao2[:-1]))
+    ao4 = np.concatenate(([np.nan], ao3[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    saucer = (
+        np.isfinite(ao1) & np.isfinite(ao2) & np.isfinite(ao3) & np.isfinite(ao4)
+        & (ao4 > ao3) & (ao3 > ao2)
+        & (ao1 > ao2)
+        & (ao1 > 0) & (ao2 > 0) & (ao3 > 0) & (ao4 > 0)
+    )
+    trend_ok = (
+        np.isfinite(sma100_prev) & np.isfinite(close_prev)
+        & (close_prev > sma100_prev)
+    )
+    entries = saucer & trend_ok
+    exits = (
+        (np.isfinite(ao) & (ao < 0))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -1641,4 +1698,5 @@ NEW_STRATEGIES: dict = {
     "coppock_curve_zero_cross": strat_coppock_curve_zero_cross,
     "connors_rsi_pullback": strat_connors_rsi_pullback,
     "elder_force_index_zero_cross": strat_elder_force_index_zero_cross,
+    "awesome_oscillator_saucer": strat_awesome_oscillator_saucer,
 }
