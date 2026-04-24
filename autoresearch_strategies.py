@@ -1126,6 +1126,91 @@ def strat_trix_signal_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_hma_bullish_cross(df: pd.DataFrame) -> list[Trade]:
+    """Alan Hull's Hull Moving Average (HMA) bullish cross in SMA(100) uptrend.
+
+    HMA substantially reduces moving-average lag by combining two WMAs:
+        HMA(n) = WMA( 2 * WMA(close, n/2) - WMA(close, n), sqrt(n) )
+    The nested WMA difference extrapolates the short-term trend, then a final
+    WMA smooths the result over sqrt(n). The outcome tracks price much more
+    responsively than SMA/EMA of comparable length, so HMA crosses are cleaner
+    trend-flip signals with fewer whipsaws than SMA/EMA crosses.
+
+    Entry (at today's close, prior-bar values for no lookahead):
+      - fresh bullish HMA cross: HMA16_{t-2} <= HMA49_{t-2} AND HMA16_{t-1} > HMA49_{t-1}
+      - close_{t-1} > SMA(100) (macro uptrend gate)
+    Exit: HMA16 < HMA49 OR close < SMA(20).
+
+    Distinct from every existing sandbox strategy: supertrend uses ATR-trailing
+    bands (not MAs), TRIX uses a triple-EMA rate of change, MACD/RVI/RSI/CMO/
+    Fisher/WVF/CMF are oscillators, Donchian/Ichimoku use raw H/L channels,
+    squeeze/BB use σ bands, HA/NR7 use candle geometry, Aroon/PSAR/Vortex use
+    pivots or adaptive stops. No existing strategy uses linearly-weighted
+    moving averages — HMA's nested WMA with sqrt(n) outer smoothing is a
+    genuinely different filter geometry.
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    def _wma(arr: np.ndarray, n: int) -> np.ndarray:
+        weights = np.arange(1, n + 1, dtype=float)
+        wsum = weights.sum()
+        return (
+            pd.Series(arr)
+            .rolling(n, min_periods=n)
+            .apply(lambda x: np.dot(x, weights) / wsum, raw=True)
+            .to_numpy()
+        )
+
+    def _hma(arr: np.ndarray, n: int) -> np.ndarray:
+        half = max(2, n // 2)
+        sqrt_n = max(2, int(round(np.sqrt(n))))
+        w_half = _wma(arr, half)
+        w_full = _wma(arr, n)
+        raw = 2.0 * w_half - w_full
+        # Fill warm-up NaNs with 0 for the outer WMA, then mask back to NaN
+        # where the inner WMAs were still warming up.
+        raw_mask = np.isfinite(raw)
+        raw_clean = np.where(raw_mask, raw, 0.0)
+        outer = _wma(raw_clean, sqrt_n)
+        # Any outer window that included a warm-up NaN is invalid.
+        mask_valid = (
+            pd.Series(raw_mask.astype(float))
+            .rolling(sqrt_n, min_periods=sqrt_n)
+            .sum()
+            .to_numpy()
+            == sqrt_n
+        )
+        return np.where(mask_valid, outer, np.nan)
+
+    hma_fast = _hma(close, 16)
+    hma_slow = _hma(close, 49)
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    fast_prev = np.concatenate(([np.nan], hma_fast[:-1]))
+    slow_prev = np.concatenate(([np.nan], hma_slow[:-1]))
+    fast_prev2 = np.concatenate(([np.nan, np.nan], hma_fast[:-2]))
+    slow_prev2 = np.concatenate(([np.nan, np.nan], hma_slow[:-2]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = (
+        np.isfinite(fast_prev)
+        & np.isfinite(slow_prev)
+        & np.isfinite(fast_prev2)
+        & np.isfinite(slow_prev2)
+        & np.isfinite(sma100_prev)
+        & np.isfinite(close_prev)
+    )
+    fresh_cross = (fast_prev2 <= slow_prev2) & (fast_prev > slow_prev)
+    entries = valid & fresh_cross & (close_prev > sma100_prev)
+    exits = (
+        (np.isfinite(hma_fast) & np.isfinite(hma_slow) & (hma_fast < hma_slow))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -1145,4 +1230,5 @@ NEW_STRATEGIES: dict = {
     "rvi_signal_cross": strat_rvi_signal_cross,
     "fisher_transform_zero_cross": strat_fisher_transform_zero_cross,
     "trix_signal_cross": strat_trix_signal_cross,
+    "hma_bullish_cross": strat_hma_bullish_cross,
 }
