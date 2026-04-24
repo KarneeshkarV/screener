@@ -818,6 +818,85 @@ def strat_parabolic_sar_flip_trend(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_vortex_bullish_cross(df: pd.DataFrame) -> list[Trade]:
+    """Botes/Siepman Vortex Indicator (2010) bullish cross in SMA(100) uptrend.
+
+    The Vortex Indicator measures *directional sweeps* relative to the prior
+    bar's extremes — a different geometry than DMI's +DM/-DM (today vs
+    yesterday's high-low delta, RMA-smoothed) or Aroon (time-since-extreme):
+        VM+_t = |high_t - low_{t-1}|   (upward sweep from yesterday's low)
+        VM-_t = |low_t  - high_{t-1}|  (downward sweep from yesterday's high)
+        TR_t  = max(h-l, |h-c_prev|, |l-c_prev|)
+        VI+(N) = sum(VM+, N) / sum(TR, N)
+        VI-(N) = sum(VM-, N) / sum(TR, N)
+
+    Entry (at today's close, using prior-bar values to avoid lookahead):
+      - fresh bullish cross: VI+_{t-2} <= VI-_{t-2} AND VI+_{t-1} > VI-_{t-1}
+      - prior-bar close > SMA(100) (uptrend gate)
+    Exit: VI- > VI+ (directional flip) OR close < SMA(20).
+
+    Distinct from adx_dmi_trend_emergence (Wilder DMI uses up_move/dn_move
+    deltas with RMA smoothing, plus ADX trend-strength magnitude), from
+    aroon_cross_trend (time-since-HH/LL), from donchian/ichimoku (level
+    breakouts), from the RSI/MACD/WVF/CMF oscillators, and from every volume
+    or candle strategy: VI reads the *reach* from yesterday's extremes, which
+    picks up different pivots than any of the above.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    high_prev = np.concatenate(([np.nan], high[:-1]))
+    low_prev = np.concatenate(([np.nan], low[:-1]))
+    close_prev_tr = np.concatenate(([np.nan], close[:-1]))
+
+    vm_plus = np.abs(high - low_prev)
+    vm_minus = np.abs(low - high_prev)
+    tr_raw = np.maximum.reduce([
+        high - low,
+        np.abs(high - close_prev_tr),
+        np.abs(low - close_prev_tr),
+    ])
+    vm_plus = np.nan_to_num(vm_plus, nan=0.0)
+    vm_minus = np.nan_to_num(vm_minus, nan=0.0)
+    tr_raw = np.nan_to_num(tr_raw, nan=0.0)
+
+    n = 14
+    sum_vm_plus = pd.Series(vm_plus).rolling(n, min_periods=n).sum().to_numpy()
+    sum_vm_minus = pd.Series(vm_minus).rolling(n, min_periods=n).sum().to_numpy()
+    sum_tr = pd.Series(tr_raw).rolling(n, min_periods=n).sum().to_numpy()
+
+    safe_tr = np.where(sum_tr > 0, sum_tr, np.nan)
+    vi_plus = sum_vm_plus / safe_tr
+    vi_minus = sum_vm_minus / safe_tr
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    vip_prev = np.concatenate(([np.nan], vi_plus[:-1]))
+    vim_prev = np.concatenate(([np.nan], vi_minus[:-1]))
+    vip_prev2 = np.concatenate(([np.nan, np.nan], vi_plus[:-2]))
+    vim_prev2 = np.concatenate(([np.nan, np.nan], vi_minus[:-2]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = (
+        np.isfinite(vip_prev)
+        & np.isfinite(vim_prev)
+        & np.isfinite(vip_prev2)
+        & np.isfinite(vim_prev2)
+        & np.isfinite(sma100_prev)
+        & np.isfinite(close_prev)
+    )
+    fresh_cross = (vip_prev2 <= vim_prev2) & (vip_prev > vim_prev)
+    entries = valid & fresh_cross & (close_prev > sma100_prev)
+    exits = (
+        (np.isfinite(vi_plus) & np.isfinite(vi_minus) & (vi_minus > vi_plus))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -833,4 +912,5 @@ NEW_STRATEGIES: dict = {
     "heikin_ashi_flip": strat_heikin_ashi_flip,
     "ichimoku_kumo_breakout": strat_ichimoku_kumo_breakout,
     "parabolic_sar_flip_trend": strat_parabolic_sar_flip_trend,
+    "vortex_bullish_cross": strat_vortex_bullish_cross,
 }
