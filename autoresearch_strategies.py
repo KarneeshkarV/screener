@@ -587,6 +587,79 @@ def strat_aroon_cross_trend(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_heikin_ashi_flip(df: pd.DataFrame) -> list[Trade]:
+    """Heikin-Ashi bullish-body flip after a bearish run, gated by SMA(100).
+
+    Heikin-Ashi transforms raw OHLC into smoothed synthetic candles:
+        HA_close = (open + high + low + close) / 4
+        HA_open  = (prev HA_open + prev HA_close) / 2
+        HA_high  = max(high, HA_open, HA_close)
+        HA_low   = min(low,  HA_open, HA_close)
+    A bullish HA bar has HA_close > HA_open; a series of bullish HA bars marks
+    a trend. The cleanest signal is the *flip* — the first bullish HA bar after
+    a string of bearish ones — filtered for a meaningful body so noise doesn't
+    trigger it.
+
+    Entry (at today's close, using prior-bar HA values to avoid lookahead):
+      - prior bar was HA bullish (HA_close > HA_open) with body > 30% of range
+      - the bar before that (prev-prev) was HA bearish (HA_close <= HA_open)
+      - prior-bar close > SMA(100) (uptrend gate)
+    Exit: HA turns bearish (HA_close < HA_open) OR close < SMA(20).
+
+    Distinct from every other sandbox strategy: this reads a synthetic
+    smoothed candle transformation rather than price levels (Donchian), band
+    width (squeeze/BB), range position (IBS), range compression (NR7),
+    oscillators (RSI/MACD/WVF/Aroon/ADX), volume flows (CMF/pocket_pivot/
+    volume_capitulation), or momentum magnitude. HA's recursive open makes
+    it a genuinely different input space.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    open_ = df["open"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    n = close.shape[0]
+    ha_close = (open_ + high + low + close) / 4.0
+    ha_open = np.empty(n, dtype=float)
+    if n > 0:
+        ha_open[0] = (open_[0] + close[0]) / 2.0
+        for i in range(1, n):
+            ha_open[i] = (ha_open[i - 1] + ha_close[i - 1]) / 2.0
+    ha_high = np.maximum.reduce([high, ha_open, ha_close])
+    ha_low = np.minimum.reduce([low, ha_open, ha_close])
+
+    ha_body = ha_close - ha_open
+    ha_range = np.where((ha_high - ha_low) > 0, ha_high - ha_low, np.nan)
+    body_frac = np.abs(ha_body) / ha_range
+    body_frac = np.nan_to_num(body_frac, nan=0.0)
+
+    bullish = ha_body > 0
+    bearish = ha_body <= 0
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    bullish_prev = np.concatenate(([False], bullish[:-1]))
+    bearish_prev2 = np.concatenate(([False, False], bearish[:-2]))
+    body_frac_prev = np.concatenate(([0.0], body_frac[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = np.isfinite(close_prev) & np.isfinite(sma100_prev)
+    entries = (
+        valid
+        & bullish_prev
+        & bearish_prev2
+        & (body_frac_prev > 0.3)
+        & (close_prev > sma100_prev)
+    )
+    exits = (
+        (ha_close < ha_open)
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -599,4 +672,5 @@ NEW_STRATEGIES: dict = {
     "pocket_pivot": strat_pocket_pivot,
     "cmf_zero_reclaim": strat_cmf_zero_reclaim,
     "aroon_cross_trend": strat_aroon_cross_trend,
+    "heikin_ashi_flip": strat_heikin_ashi_flip,
 }
