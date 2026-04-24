@@ -56,7 +56,10 @@ invoke_claude() {
   # stdout+stderr to the runlog, then prints the full agent output on stdout
   # so the caller can grep HYPOTHESIS.
   local prompt="$1"
-  claude -p --dangerously-skip-permissions "$prompt" 2>&1 | tee -a "$RUNLOG"
+  claude -p \
+    --permission-mode=acceptEdits \
+    --allowedTools=Edit,Write,Read,Bash,WebSearch,WebFetch,Grep,Glob \
+    "$prompt" 2>&1 | tee -a "$RUNLOG"
 }
 
 for i in $(seq 1 "$ITER"); do
