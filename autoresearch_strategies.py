@@ -463,6 +463,59 @@ def strat_pocket_pivot(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_cmf_zero_reclaim(df: pd.DataFrame) -> list[Trade]:
+    """Chaikin Money Flow (CMF) zero-line reclaim inside a long-term uptrend.
+
+    CMF(N) = sum(MFV, N) / sum(volume, N), where
+    MFV = volume * ((close - low) - (high - close)) / (high - low).
+    It measures N-bar accumulation/distribution by weighting close-within-range
+    by volume — a sustained money-flow reading rather than a single-bar event.
+    A CMF flip from <= 0 to > 0 signals that net selling has turned to net
+    buying; inside an established uptrend this is a high-conviction continuation.
+
+    Entry (at today's close):
+      - prior-bar CMF(20) <= 0 AND current-bar CMF(20) > 0 (zero-line reclaim)
+      - close > SMA(100) (uptrend gate)
+    Exit: CMF(20) falls back below 0 OR close < SMA(20).
+
+    Distinct from:
+      - volume_capitulation_reclaim (single-bar volume spike reclaim),
+      - pocket_pivot (single-day up-volume > recent down-volume max),
+      - ibs_trend_filter (single-bar range position, no volume),
+      - cum_rsi2_pullback (multi-day RSI persistence, no volume).
+    This is the only sandbox strategy that reads a multi-bar money-flow
+    oscillator combining range position with volume.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+
+    rng = high - low
+    safe_rng = np.where(rng > 0, rng, np.nan)
+    mf_mult = ((close - low) - (high - close)) / safe_rng
+    mf_mult = np.nan_to_num(mf_mult, nan=0.0)
+    mf_vol = mf_mult * volume
+
+    n = 20
+    sum_mfv = pd.Series(mf_vol).rolling(n, min_periods=n).sum().to_numpy()
+    sum_vol = pd.Series(volume).rolling(n, min_periods=n).sum().to_numpy()
+    cmf = np.where(sum_vol > 0, sum_mfv / sum_vol, np.nan)
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    cmf_prev = np.concatenate(([np.nan], cmf[:-1]))
+
+    valid = np.isfinite(cmf) & np.isfinite(cmf_prev) & np.isfinite(sma100)
+    entries = valid & (cmf_prev <= 0.0) & (cmf > 0.0) & (close > sma100)
+    exits = (
+        (np.isfinite(cmf) & (cmf < 0.0))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -473,4 +526,5 @@ NEW_STRATEGIES: dict = {
     "nr7_breakout_trend": strat_nr7_breakout_trend,
     "adx_dmi_trend_emergence": strat_adx_dmi_trend_emergence,
     "pocket_pivot": strat_pocket_pivot,
+    "cmf_zero_reclaim": strat_cmf_zero_reclaim,
 }
