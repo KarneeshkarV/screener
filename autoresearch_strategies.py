@@ -1559,6 +1559,63 @@ def strat_connors_rsi_pullback(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_elder_force_index_zero_cross(df: pd.DataFrame) -> list[Trade]:
+    """Elder's Force Index (EFI) zero-line bullish cross in a long-term uptrend.
+
+    Force Index combines direction, magnitude, and volume into one reading:
+        EFI_raw(t) = (close(t) - close(t-1)) * volume(t)
+        EFI_13    = EMA(EFI_raw, 13)     # Elder's "short-term" smoothing
+
+    A smoothed EFI(13) crossing up through zero means volume-weighted
+    momentum has flipped from net-distribution to net-accumulation. We gate
+    the signal with an SMA(100) trend filter so we only act on this flip
+    when the broader tape is already constructive (avoids the common EFI
+    failure mode: positive crosses inside a downtrend that fade fast).
+
+    Entry: EFI_13 crosses from <=0 to >0 on the prior bar AND prior close >
+    SMA(100). Exit: EFI_13 < 0 (momentum rolled over) OR close < SMA(20)
+    (short-term trend break). Distinct from CMF (range-normalised, slow),
+    Chaikin Money Flow zero-reclaim (different construction), and from
+    price-only oscillators TRIX/Coppock/Schaff — EFI uniquely weights the
+    price change by traded volume on each bar.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+    n = len(close)
+
+    prev_close = np.concatenate(([close[0]], close[:-1]))
+    efi_raw = (close - prev_close) * volume
+    efi13 = _ema(efi_raw, 13)
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    efi_prev = np.concatenate(([0.0], efi13[:-1]))
+    efi_prev2 = np.concatenate(([0.0], efi_prev[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    bullish_cross = (
+        np.isfinite(efi_prev)
+        & np.isfinite(efi_prev2)
+        & (efi_prev2 <= 0.0)
+        & (efi_prev > 0.0)
+    )
+    trend_ok = (
+        np.isfinite(sma100_prev)
+        & np.isfinite(close_prev)
+        & (close_prev > sma100_prev)
+    )
+
+    entries = bullish_cross & trend_ok
+    exits = (
+        (np.isfinite(efi13) & (efi13 < 0.0))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -1583,4 +1640,5 @@ NEW_STRATEGIES: dict = {
     "schaff_trend_cycle": strat_schaff_trend_cycle,
     "coppock_curve_zero_cross": strat_coppock_curve_zero_cross,
     "connors_rsi_pullback": strat_connors_rsi_pullback,
+    "elder_force_index_zero_cross": strat_elder_force_index_zero_cross,
 }
