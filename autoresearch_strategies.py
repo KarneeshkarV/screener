@@ -2032,6 +2032,141 @@ def strat_cci_oversold_recovery(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_chaikin_oscillator_zero_cross(df: pd.DataFrame) -> list[Trade]:
+    """Chaikin Oscillator bullish zero-line cross in SMA(100) uptrend.
+
+    The Chaikin Oscillator is MACD applied to the Accumulation/Distribution
+    Line (ADL), combining price-location-in-range with volume:
+        MFM = ((close - low) - (high - close)) / (high - low)   # -1..+1
+        MFV = MFM * volume                                       # signed flow
+        ADL = cumulative sum of MFV
+        ChaikinOsc = EMA(3, ADL) - EMA(10, ADL)
+
+    Signal (prior-bar only — no lookahead):
+        ChaikinOsc[t-2] <= 0  and  ChaikinOsc[t-1] > 0    (fresh bullish cross)
+        close[t-1] > SMA(100)[t-1]                        (trend-up gate)
+    Exit: ChaikinOsc < 0 (flow turns distribution-heavy) OR close < SMA(20).
+
+    Distinct from every volume indicator already in the sandbox:
+      - CMF sums MFV / sum(volume) over a fixed window → bounded -1..+1
+      - EFI = EMA13(Δclose × volume) → uses price change, not range location
+      - MFI is RSI of typical-price × volume → bounded 0..100 oscillator
+      - Pocket Pivot compares today's up-volume to prior down-volumes
+      - Klinger would integrate trend direction (not used here)
+    Chaikin Osc is unique: it's MACD of a *cumulative* range-weighted volume
+    series (ADL), so it measures the *acceleration* of accumulation rather
+    than a level or ratio. Zero-line crosses mark regime transitions in the
+    accumulation/distribution tug-of-war.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+
+    rng = high - low
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mfm = np.where(rng > 0, ((close - low) - (high - close)) / rng, 0.0)
+    mfv = mfm * volume
+    adl = np.cumsum(mfv)
+
+    ema3_adl = _ema(adl, 3)
+    ema10_adl = _ema(adl, 10)
+    chaikin = ema3_adl - ema10_adl
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    chaikin_prev1 = np.concatenate(([np.nan], chaikin[:-1]))
+    chaikin_prev2 = np.concatenate(([np.nan], chaikin_prev1[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    cross_up = (
+        np.isfinite(chaikin_prev1) & np.isfinite(chaikin_prev2)
+        & (chaikin_prev2 <= 0.0)
+        & (chaikin_prev1 > 0.0)
+    )
+    trend_ok = (
+        np.isfinite(sma100_prev) & np.isfinite(close_prev)
+        & (close_prev > sma100_prev)
+    )
+    entries = cross_up & trend_ok
+
+    exits = (
+        (np.isfinite(chaikin) & (chaikin < 0.0))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_obv_ema_cross(df: pd.DataFrame) -> list[Trade]:
+    """On-Balance Volume (Granville 1963) bullish cross of its own EMA(20).
+
+    OBV accumulates volume signed by daily close change:
+        OBV[t] = OBV[t-1] + volume[t] * sign(close[t] - close[t-1])
+    It is a pure volume-momentum cumulative line, mathematically distinct
+    from every other volume / flow indicator already in the sandbox:
+      - CMF / ADL / Chaikin Osc weight volume by close's *position within
+        the H-L range* ((C-L)-(H-C))/(H-L) — range-weighted.
+      - Elder Force Index multiplies Δclose × volume (signed magnitude).
+      - Pocket Pivot / Volume-capitulation compare raw volume percentiles.
+      - MFI rescales TP×volume into an RSI bounded 0-100.
+    OBV alone uses sign(Δclose) with NO magnitude — a step-wise ±volume
+    accumulator. A bullish cross of OBV above its EMA(20) flags cumulative
+    money-flow momentum turning up.
+
+    Signal-line crosses have been the strongest family in the journal
+    (TSI signal cross led OOS at 0.42). OBV's signal-line cross on
+    cumulative sign-weighted volume has no mathematical overlap with TSI
+    (price ΔΔ smoothed) or the Chaikin Osc (range-weighted ADL difference).
+
+    Entry (prior-bar only — no lookahead):
+        OBV[t-2] <= EMA20(OBV)[t-2]
+        OBV[t-1] >  EMA20(OBV)[t-1]          (fresh bullish cross)
+        close[t-1] > SMA(100)[t-1]           (uptrend gate)
+    Exit: OBV < EMA20(OBV) OR close < SMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+
+    dclose = np.concatenate(([0.0], np.diff(close)))
+    signed_vol = np.where(
+        dclose > 0, volume, np.where(dclose < 0, -volume, 0.0)
+    )
+    obv = np.cumsum(signed_vol)
+
+    obv_ema = _ema(obv, 20)
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    obv_prev1 = np.concatenate(([np.nan], obv[:-1]))
+    obv_prev2 = np.concatenate(([np.nan], obv_prev1[:-1]))
+    ema_prev1 = np.concatenate(([np.nan], obv_ema[:-1]))
+    ema_prev2 = np.concatenate(([np.nan], ema_prev1[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    cross_up = (
+        np.isfinite(obv_prev1) & np.isfinite(obv_prev2)
+        & np.isfinite(ema_prev1) & np.isfinite(ema_prev2)
+        & (obv_prev2 <= ema_prev2)
+        & (obv_prev1 > ema_prev1)
+    )
+    trend_ok = (
+        np.isfinite(sma100_prev) & np.isfinite(close_prev)
+        & (close_prev > sma100_prev)
+    )
+    entries = cross_up & trend_ok
+
+    exits = (
+        (np.isfinite(obv_ema) & (obv < obv_ema))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -2063,4 +2198,6 @@ NEW_STRATEGIES: dict = {
     "tsi_signal_cross": strat_tsi_signal_cross,
     "stochastic_oversold_recovery": strat_stochastic_oversold_recovery,
     "cci_oversold_recovery": strat_cci_oversold_recovery,
+    "chaikin_oscillator_zero_cross": strat_chaikin_oscillator_zero_cross,
+    "obv_ema_cross": strat_obv_ema_cross,
 }
