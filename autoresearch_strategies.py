@@ -1894,6 +1894,144 @@ def strat_tsi_signal_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_stochastic_oversold_recovery(df: pd.DataFrame) -> list[Trade]:
+    """Stochastic %K(14) oversold-recovery cross above 20 in an SMA(200) uptrend.
+
+    %K = 100 * (close - LowestLow14) / (HighestHigh14 - LowestLow14) — locates
+    today's close inside the trailing 14-bar high/low range. Below 20 is
+    oversold. The entry trigger is the moment %K crosses up through 20 from
+    below, gated by close > SMA(200) so dip-buys only fire in established
+    uptrends. Exit is the symmetric overbought reading (%K > 80) OR a break
+    of SMA(20) — capturing a quick reversion bounce while limiting downside.
+
+    Mathematically distinct from the strategies already in the sandbox:
+      - RSI variants (Connors, MACD-RSI, RSI-EMA, cum_rsi2): close-only
+        momentum smoothed with Wilder RMA, no high/low range.
+      - MFI: volume-weighted RSI on typical price.
+      - Williams VIX Fix: HighestClose vs Low — measures fear, not range
+        position.
+      - Aroon: time since HH/LL, not magnitude.
+      - Fisher / Schaff / Coppock: smoothed transforms / cycles.
+      - IBS: single-bar (close-low)/(high-low) — no lookback range.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    hh14 = pd.Series(high).rolling(14, min_periods=14).max().to_numpy()
+    ll14 = pd.Series(low).rolling(14, min_periods=14).min().to_numpy()
+
+    rng = hh14 - ll14
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pct_k = 100.0 * np.where(rng > 0, (close - ll14) / rng, 50.0)
+    pct_k = np.where(np.isfinite(pct_k), pct_k, 50.0)
+
+    sma200 = _sma(close, 200)
+    sma20 = _sma(close, 20)
+
+    # Reference prior-bar values so the cross is locked in by bar close
+    # (no lookahead). The entry fires the bar AFTER the cross completed.
+    pct_k_prev1 = np.concatenate(([np.nan], pct_k[:-1]))
+    pct_k_prev2 = np.concatenate(([np.nan], pct_k_prev1[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    cross_up_20 = (
+        np.isfinite(pct_k_prev1) & np.isfinite(pct_k_prev2)
+        & (pct_k_prev2 < 20.0)
+        & (pct_k_prev1 >= 20.0)
+    )
+    trend_ok = (
+        np.isfinite(sma200_prev) & np.isfinite(close_prev)
+        & (close_prev > sma200_prev)
+    )
+    entries = cross_up_20 & trend_ok
+
+    exits = (
+        (np.isfinite(pct_k) & (pct_k > 80.0))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_cci_oversold_recovery(df: pd.DataFrame) -> list[Trade]:
+    """Lambert's Commodity Channel Index(20) oversold-recovery cross above -100.
+
+    CCI measures how far typical price has deviated from its moving average,
+    normalized by the *mean absolute deviation* of TP from that average:
+        TP      = (high + low + close) / 3
+        SMA_TP  = SMA(TP, 20)
+        MD      = mean( |TP - SMA_TP| ) over trailing 20 bars
+        CCI     = (TP - SMA_TP) / (0.015 * MD)
+    Readings below -100 mark an unusual (≈1-σ via 0.015 scaling) negative
+    deviation — statistical oversold.
+
+    Entry (prior-bar only — no lookahead):
+        CCI[t-2] <= -100  and  CCI[t-1] > -100  (fresh upward recovery)
+        close[t-1] > SMA(200)[t-1]              (long-term uptrend gate)
+    Exit: CCI > +100 (overbought mean-reversion target) OR close < SMA(20).
+
+    Distinct from every other oscillator in the sandbox because it is the
+    only one that (a) operates on typical price (H+L+C)/3 rather than close
+    or Δclose, AND (b) normalizes deviations by *mean absolute deviation*
+    rather than:
+      - stdev (Bollinger / squeeze / WVF)
+      - RMA of gains-vs-losses (RSI family, Connors, MFI, CMO analogue)
+      - EMA of |Δclose| (TSI)
+      - high/low range (IBS, Stochastic, Aroon, Donchian, Williams %R)
+      - volume flow (CMF, EFI, Pocket Pivot, Klinger)
+      - EMA/SMA crossovers (MACD, TRIX, KST, Coppock, KAMA, HMA, AO)
+      - ±DI directional comparisons (ADX, Vortex).
+    MD-based normalization is mathematically unique here; the 0.015 constant
+    further scales the indicator so ±100 approximates a 1-σ deviation for
+    typical price distributions.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    tp = (high + low + close) / 3.0
+    tp_s = pd.Series(tp)
+    sma_tp = tp_s.rolling(20, min_periods=20).mean()
+    mad = tp_s.rolling(20, min_periods=20).apply(
+        lambda x: np.mean(np.abs(x - x.mean())), raw=True
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cci = np.where(
+            mad.to_numpy() > 0,
+            (tp - sma_tp.to_numpy()) / (0.015 * mad.to_numpy()),
+            0.0,
+        )
+    cci = np.where(np.isfinite(cci), cci, np.nan)
+
+    sma200 = _sma(close, 200)
+    sma20 = _sma(close, 20)
+
+    cci_prev1 = np.concatenate(([np.nan], cci[:-1]))
+    cci_prev2 = np.concatenate(([np.nan], cci_prev1[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    cross_up = (
+        np.isfinite(cci_prev1) & np.isfinite(cci_prev2)
+        & (cci_prev2 <= -100.0)
+        & (cci_prev1 > -100.0)
+    )
+    trend_ok = (
+        np.isfinite(sma200_prev) & np.isfinite(close_prev)
+        & (close_prev > sma200_prev)
+    )
+    entries = cross_up & trend_ok
+
+    exits = (
+        (np.isfinite(cci) & (cci > 100.0))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -1923,4 +2061,6 @@ NEW_STRATEGIES: dict = {
     "pring_kst_signal_cross": strat_pring_kst_signal_cross,
     "mfi_oversold_recovery": strat_mfi_oversold_recovery,
     "tsi_signal_cross": strat_tsi_signal_cross,
+    "stochastic_oversold_recovery": strat_stochastic_oversold_recovery,
+    "cci_oversold_recovery": strat_cci_oversold_recovery,
 }
