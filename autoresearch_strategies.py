@@ -1056,6 +1056,76 @@ def strat_fisher_transform_zero_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_trix_signal_cross(df: pd.DataFrame) -> list[Trade]:
+    """Jack Hutson's TRIX signal-line bullish cross in SMA(100) uptrend.
+
+    TRIX is the 1-bar rate-of-change of a triple-EMA-smoothed price series —
+    a noise-filtered momentum measure that suppresses cycles shorter than the
+    EMA window. For window N=15, signal window M=9:
+        ema1 = EMA(close, N)
+        ema2 = EMA(ema1,  N)
+        ema3 = EMA(ema2,  N)
+        TRIX = 10000 * (ema3_t - ema3_{t-1}) / ema3_{t-1}
+        Signal = EMA(TRIX, M)
+    Triple smoothing removes the leads and lags that RSI/MACD signals retain,
+    so TRIX/Signal crosses filter out most whipsaws of faster oscillators.
+
+    Entry (at today's close, prior-bar values for no lookahead):
+      - fresh bullish cross: TRIX_{t-2} <= Signal_{t-2} AND TRIX_{t-1} > Signal_{t-1}
+      - close_{t-1} > SMA(100) (uptrend gate)
+    Exit: TRIX < Signal OR close < SMA(20).
+
+    Distinct from every existing sandbox oscillator: MACD is a two-EMA diff
+    (single smoothing), RVI is close-open over high-low with SWMA, RSI/CMO
+    are up/down-move ratios, WVF is a fear proxy, Fisher is a log-reshape of
+    normalised HL midpoint, Ichimoku/Vortex/Aroon/PSAR/Donchian use price
+    geometry. TRIX's triple-EMA rate of change is a second-derivative
+    momentum signal that none of them reproduce.
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    n_ema = 15
+    ema1 = _ema(close, n_ema)
+    ema2 = _ema(ema1, n_ema)
+    ema3 = _ema(ema2, n_ema)
+
+    ema3_prev = np.concatenate(([np.nan], ema3[:-1]))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        trix = 10000.0 * (ema3 - ema3_prev) / ema3_prev
+    trix = np.where(np.isfinite(trix), trix, np.nan)
+
+    signal = _ema(np.nan_to_num(trix, nan=0.0), 9)
+    # Invalidate signal while trix itself is nan so the cross doesn't fire on
+    # the zero-imputed warm-up region.
+    signal = np.where(np.isfinite(trix), signal, np.nan)
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    trix_prev = np.concatenate(([np.nan], trix[:-1]))
+    signal_prev = np.concatenate(([np.nan], signal[:-1]))
+    trix_prev2 = np.concatenate(([np.nan, np.nan], trix[:-2]))
+    signal_prev2 = np.concatenate(([np.nan, np.nan], signal[:-2]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = (
+        np.isfinite(trix_prev)
+        & np.isfinite(signal_prev)
+        & np.isfinite(trix_prev2)
+        & np.isfinite(signal_prev2)
+        & np.isfinite(sma100_prev)
+        & np.isfinite(close_prev)
+    )
+    fresh_cross = (trix_prev2 <= signal_prev2) & (trix_prev > signal_prev)
+    entries = valid & fresh_cross & (close_prev > sma100_prev)
+    exits = (
+        (np.isfinite(trix) & np.isfinite(signal) & (trix < signal))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -1074,4 +1144,5 @@ NEW_STRATEGIES: dict = {
     "vortex_bullish_cross": strat_vortex_bullish_cross,
     "rvi_signal_cross": strat_rvi_signal_cross,
     "fisher_transform_zero_cross": strat_fisher_transform_zero_cross,
+    "trix_signal_cross": strat_trix_signal_cross,
 }
