@@ -415,6 +415,54 @@ def strat_adx_dmi_trend_emergence(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_pocket_pivot(df: pd.DataFrame) -> list[Trade]:
+    """O'Neil/Morales/Kacher Pocket Pivot — up-close on volume exceeding the
+    largest down-day volume of the trailing 10 bars, inside an SMA(50) uptrend.
+
+    Thesis: a Pocket Pivot reveals institutional accumulation — the biggest
+    volume bar of the last ~2 weeks is an up day, implying net buying is
+    overwhelming net selling. Entry fires when today's close is above the
+    prior close AND today's volume is strictly greater than every down-day
+    volume in the prior 10 bars AND close sits above SMA(50) (uptrend gate).
+    Exit on a close below SMA(20) — momentum has faded.
+
+    Distinct from volume_capitulation_reclaim which reads capitulation
+    *reversal* after heavy selling; this reads accumulation *continuation*
+    where the biggest recent volume is bullish, not bearish.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    up_day = close > close_prev
+    down_day = close < close_prev
+    # Down-day volume is kept; non-down bars get -1 so they don't dominate max.
+    down_vol = np.where(down_day, volume, -1.0)
+
+    # Largest down-day volume over the PRIOR 10 bars — shift(1) avoids lookahead.
+    max_down_vol_10 = (
+        pd.Series(down_vol).shift(1).rolling(10, min_periods=10).max().to_numpy()
+    )
+
+    sma50 = _sma(close, 50)
+    sma20 = _sma(close, 20)
+
+    valid = (
+        np.isfinite(close_prev)
+        & np.isfinite(sma50)
+        & np.isfinite(max_down_vol_10)
+    )
+    entries = (
+        valid
+        & up_day
+        & (volume > max_down_vol_10)
+        & (close > sma50)
+    )
+    exits = np.isfinite(sma20) & (close < sma20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -424,4 +472,5 @@ NEW_STRATEGIES: dict = {
     "williams_vix_fix_spike": strat_williams_vix_fix_spike,
     "nr7_breakout_trend": strat_nr7_breakout_trend,
     "adx_dmi_trend_emergence": strat_adx_dmi_trend_emergence,
+    "pocket_pivot": strat_pocket_pivot,
 }
