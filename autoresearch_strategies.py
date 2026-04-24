@@ -232,10 +232,63 @@ def strat_volume_capitulation_reclaim(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_williams_vix_fix_spike(df: pd.DataFrame) -> list[Trade]:
+    """Williams VIX Fix panic-low reversal inside a long-term uptrend.
+
+    Larry Williams' VIX Fix synthesises a VIX-like fear oscillator from price
+    only: WVF = 100 * (HighestClose_22 - Low) / HighestClose_22. A WVF spike
+    beyond its rolling Bollinger upper band marks capitulation. Gated by
+    price > SMA(200) this becomes a trend-following dip-buy using a fear
+    reading rather than momentum, range position, volatility width, RSI
+    persistence, or volume. Exit is a quick reversion trigger (close > SMA5).
+
+    Entry (at today's close):
+      - WVF on the prior bar > BB_upper(WVF, 20, 2.0) of the prior bar
+      - prior bar close > SMA(200) of the prior bar
+    Exit: close > SMA(5).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    hh_close_22 = (
+        pd.Series(close).rolling(22, min_periods=22).max().to_numpy()
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        wvf = 100.0 * (hh_close_22 - low) / hh_close_22
+    wvf = np.where(np.isfinite(wvf), wvf, np.nan)
+
+    wvf_mid = _sma(np.nan_to_num(wvf, nan=0.0), 20)
+    wvf_std = _stdev(np.nan_to_num(wvf, nan=0.0), 20)
+    wvf_bb_up = wvf_mid + 2.0 * wvf_std
+
+    sma200 = _sma(close, 200)
+    sma5 = _sma(close, 5)
+
+    wvf_prev = np.concatenate(([np.nan], wvf[:-1]))
+    wvf_bb_up_prev = np.concatenate(([np.nan], wvf_bb_up[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(wvf_prev)
+        & np.isfinite(wvf_bb_up_prev)
+        & np.isfinite(sma200_prev)
+    )
+    entries = (
+        valid
+        & (wvf_prev > wvf_bb_up_prev)
+        & (close_prev > sma200_prev)
+    )
+    exits = np.isfinite(sma5) & (close > sma5)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
     "squeeze_breakout": strat_squeeze_breakout,
     "cum_rsi2_pullback": strat_cum_rsi2_pullback,
     "volume_capitulation_reclaim": strat_volume_capitulation_reclaim,
+    "williams_vix_fix_spike": strat_williams_vix_fix_spike,
 }
