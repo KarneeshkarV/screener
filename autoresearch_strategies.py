@@ -176,9 +176,66 @@ def strat_cum_rsi2_pullback(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_volume_capitulation_reclaim(df: pd.DataFrame) -> list[Trade]:
+    """Heavy-volume down-day capitulation reclaim inside a long-term uptrend.
+
+    Reads *volume* — a dimension none of the other sandbox strategies use.
+    Thesis: a sharp, high-participation selloff within an uptrend often marks
+    short-term capitulation; the earliest confirmation is a next-day bar that
+    closes back above the capitulation bar's high.
+
+    Entry (at today's close):
+      - prior bar close dropped >= 1.5% vs the bar before (capitulation day)
+      - prior bar volume > 1.3x its 20-bar avg volume (high participation)
+      - prior bar close was above SMA(200) (long-term uptrend intact)
+      - today's close > prior bar's high (reclaim confirmation)
+    Exit: close falls below SMA(20) — momentum has failed.
+
+    Distinct from ibs_trend_filter (single-bar range position), Donchian
+    (channel breakout), squeeze_breakout (volatility expansion), and
+    cum_rsi2_pullback (multi-day RSI persistence).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+
+    sma200 = _sma(close, 200)
+    sma20 = _sma(close, 20)
+    vol_avg20 = _sma(volume, 20)
+
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    close_prev2 = np.concatenate(([np.nan, np.nan], close[:-2]))
+    high_prev = np.concatenate(([np.nan], high[:-1]))
+    vol_prev = np.concatenate(([np.nan], volume[:-1]))
+    vol_avg_prev = np.concatenate(([np.nan], vol_avg20[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pullback_pct = (close_prev - close_prev2) / close_prev2
+
+    valid = (
+        np.isfinite(close_prev2)
+        & np.isfinite(sma200_prev)
+        & np.isfinite(vol_avg_prev)
+        & (vol_avg_prev > 0)
+    )
+
+    entries = (
+        valid
+        & (pullback_pct <= -0.015)
+        & (vol_prev > 1.3 * vol_avg_prev)
+        & (close_prev > sma200_prev)
+        & (close > high_prev)
+    )
+    exits = np.isfinite(sma20) & (close < sma20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
     "squeeze_breakout": strat_squeeze_breakout,
     "cum_rsi2_pullback": strat_cum_rsi2_pullback,
+    "volume_capitulation_reclaim": strat_volume_capitulation_reclaim,
 }
