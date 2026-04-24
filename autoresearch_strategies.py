@@ -729,6 +729,95 @@ def strat_ichimoku_kumo_breakout(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_parabolic_sar_flip_trend(df: pd.DataFrame) -> list[Trade]:
+    """Wilder Parabolic SAR bullish flip in SMA(100) uptrend.
+
+    PSAR is an iterative trailing stop with an acceleration factor (AF) that
+    ratchets up 0.02 each time a new extreme point (EP) is made, capped at
+    0.20. A "flip" occurs when price penetrates the SAR, reversing the trend
+    and resetting SAR to the prior EP with AF back to 0.02.
+
+    Entry: the bar on which SAR flips from above price to below price (bear->
+    bull reversal) AND close > SMA(100). This isolates the PSAR bullish
+    reversal signal to established uptrends — filtering out whipsaws that
+    occur in downtrends or chop.
+    Exit: the next bull->bear SAR flip OR close < SMA(20) safety stop.
+
+    Distinct from Supertrend (HL2 +/- ATR*mult, constant band width),
+    Donchian (raw highest-high/lowest-low channels), Ichimoku (displaced
+    midpoints), and every MA/oscillator/candle pattern strategy above,
+    because PSAR's accelerating trailing-stop produces a different signal
+    geometry — flips occur only after price violates an adaptive stop that
+    tightens as the move extends.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = len(close)
+    if n < 3:
+        return []
+
+    af_step = 0.02
+    af_max = 0.20
+
+    flip_up = np.zeros(n, dtype=bool)
+    flip_down = np.zeros(n, dtype=bool)
+
+    # Seed starting trend from the first two bars
+    if close[1] >= close[0]:
+        trend = 1
+        sar_prev = low[0]
+        ep = high[0]
+    else:
+        trend = -1
+        sar_prev = high[0]
+        ep = low[0]
+    af = af_step
+
+    for i in range(1, n):
+        new_sar = sar_prev + af * (ep - sar_prev)
+        if trend == 1:
+            # In an uptrend SAR cannot penetrate low of prior two bars
+            if i >= 2:
+                new_sar = min(new_sar, low[i - 1], low[i - 2])
+            else:
+                new_sar = min(new_sar, low[i - 1])
+            if low[i] < new_sar:
+                trend = -1
+                new_sar = ep
+                ep = low[i]
+                af = af_step
+                flip_down[i] = True
+            else:
+                if high[i] > ep:
+                    ep = high[i]
+                    af = min(af + af_step, af_max)
+        else:
+            if i >= 2:
+                new_sar = max(new_sar, high[i - 1], high[i - 2])
+            else:
+                new_sar = max(new_sar, high[i - 1])
+            if high[i] > new_sar:
+                trend = 1
+                new_sar = ep
+                ep = high[i]
+                af = af_step
+                flip_up[i] = True
+            else:
+                if low[i] < ep:
+                    ep = low[i]
+                    af = min(af + af_step, af_max)
+        sar_prev = new_sar
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    entries = flip_up & np.isfinite(sma100) & (close > sma100)
+    exits = flip_down | (np.isfinite(sma20) & (close < sma20))
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -743,4 +832,5 @@ NEW_STRATEGIES: dict = {
     "aroon_cross_trend": strat_aroon_cross_trend,
     "heikin_ashi_flip": strat_heikin_ashi_flip,
     "ichimoku_kumo_breakout": strat_ichimoku_kumo_breakout,
+    "parabolic_sar_flip_trend": strat_parabolic_sar_flip_trend,
 }
