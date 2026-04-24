@@ -1306,6 +1306,128 @@ def strat_kama_cross_trend(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_schaff_trend_cycle(df: pd.DataFrame) -> list[Trade]:
+    """Schaff Trend Cycle (STC) oversold-to-trend bullish cross.
+
+    Doug Schaff's STC is a recursive double-smoothed stochastic applied to a
+    MACD line — it oscillates 0..100 far faster than MACD itself while staying
+    smoother than raw stochastic. Construction (length=10, fast=23, slow=50,
+    smoothing factor f=0.5):
+
+        macd_t  = EMA(close, 23) - EMA(close, 50)
+        ll1     = min(macd, 10 bars);  hh1 = max(macd, 10 bars)
+        %K1_t   = 100 * (macd_t - ll1) / (hh1 - ll1)         (guarded /0)
+        %D1_t   = %D1_{t-1} + f * (%K1_t - %D1_{t-1})        (EMA-like via f)
+        ll2     = min(%D1, 10 bars);  hh2 = max(%D1, 10 bars)
+        %K2_t   = 100 * (%D1_t - ll2) / (hh2 - ll2)
+        STC_t   = STC_{t-1} + f * (%K2_t - STC_{t-1})
+
+    Intuition: first stochastic finds where MACD sits in its own recent range
+    (normalises the trend signal); smoothing + second stochastic compresses
+    out noise and yields a bounded cycle oscillator that turns up at
+    oversold-to-trend transitions ~5 bars ahead of MACD and without the slow
+    lag of a 9-period signal line. Schaff's own thresholds are 25/75.
+
+    Entry (decisions at bar close, using prior-bar values — no lookahead):
+      - fresh bullish cross: STC_{t-2} <= 25 AND STC_{t-1} > 25
+      - close_{t-1} > SMA(100)  (macro uptrend gate)
+    Exit: STC crosses down through 75 OR close < SMA(20).
+
+    Distinct from every existing sandbox strategy: MACD_RSI uses raw MACD
+    signal-line cross, TRIX is triple-EMA ROC with its own signal line, RVI
+    is vigor-range, Fisher is a Gaussian-transformed price normalisation,
+    KAMA/HMA/Donchian/Ichimoku are different filter/channel geometries. STC's
+    recursive-double-stochastic-of-MACD construction produces a bounded cycle
+    oscillator no other strategy approximates.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n_bars = len(close)
+
+    length = 10
+    fast_len = 23
+    slow_len = 50
+    f = 0.5
+
+    ema_fast = _ema(close, fast_len)
+    ema_slow = _ema(close, slow_len)
+    macd = ema_fast - ema_slow
+
+    macd_s = pd.Series(macd)
+    ll1 = macd_s.rolling(length, min_periods=length).min().to_numpy()
+    hh1 = macd_s.rolling(length, min_periods=length).max().to_numpy()
+    rng1 = hh1 - ll1
+    k1 = np.where(
+        np.isfinite(rng1) & (rng1 > 0),
+        100.0 * (macd - ll1) / rng1,
+        np.nan,
+    )
+
+    d1 = np.full(n_bars, np.nan)
+    seeded = False
+    for i in range(n_bars):
+        if not seeded:
+            if np.isfinite(k1[i]):
+                d1[i] = k1[i]
+                seeded = True
+            continue
+        prev = d1[i - 1]
+        if np.isfinite(k1[i]):
+            d1[i] = prev + f * (k1[i] - prev)
+        else:
+            d1[i] = prev
+
+    d1_s = pd.Series(d1)
+    ll2 = d1_s.rolling(length, min_periods=length).min().to_numpy()
+    hh2 = d1_s.rolling(length, min_periods=length).max().to_numpy()
+    rng2 = hh2 - ll2
+    k2 = np.where(
+        np.isfinite(rng2) & (rng2 > 0),
+        100.0 * (d1 - ll2) / rng2,
+        np.nan,
+    )
+
+    stc = np.full(n_bars, np.nan)
+    seeded = False
+    for i in range(n_bars):
+        if not seeded:
+            if np.isfinite(k2[i]):
+                stc[i] = k2[i]
+                seeded = True
+            continue
+        prev = stc[i - 1]
+        if np.isfinite(k2[i]):
+            stc[i] = prev + f * (k2[i] - prev)
+        else:
+            stc[i] = prev
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    stc_prev = np.concatenate(([np.nan], stc[:-1]))
+    stc_prev2 = np.concatenate(([np.nan, np.nan], stc[:-2]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = (
+        np.isfinite(stc_prev)
+        & np.isfinite(stc_prev2)
+        & np.isfinite(close_prev)
+        & np.isfinite(sma100_prev)
+    )
+    fresh_cross = (stc_prev2 <= 25.0) & (stc_prev > 25.0)
+    entries = valid & fresh_cross & (close_prev > sma100_prev)
+
+    stc_cross_down_75 = (
+        np.isfinite(stc_prev)
+        & np.isfinite(stc)
+        & (stc_prev >= 75.0)
+        & (stc < 75.0)
+    )
+    exits = stc_cross_down_75 | (np.isfinite(sma20) & (close < sma20))
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -1327,4 +1449,5 @@ NEW_STRATEGIES: dict = {
     "trix_signal_cross": strat_trix_signal_cross,
     "hma_bullish_cross": strat_hma_bullish_cross,
     "kama_cross_trend": strat_kama_cross_trend,
+    "schaff_trend_cycle": strat_schaff_trend_cycle,
 }
