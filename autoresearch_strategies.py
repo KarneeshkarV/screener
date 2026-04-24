@@ -338,6 +338,83 @@ def strat_nr7_breakout_trend(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_adx_dmi_trend_emergence(df: pd.DataFrame) -> list[Trade]:
+    """Wilder DMI/ADX trend-emergence entry with +DI dominance.
+
+    Classic Wilder directional-movement system (period 14): +DI / -DI
+    measure directional pressure, ADX measures trend strength. Entry fires
+    when the prior bar shows ADX > 20 and rising (trend is strengthening)
+    AND +DI > -DI (bullish directional dominance), gated by close above
+    SMA(100). Exit when +DI falls below -DI (directional flip) or close
+    drops below SMA(20). This is the only sandbox strategy that uses
+    Wilder's DMI family — distinct from RSI-based (rsi_ema, macd_rsi,
+    cum_rsi2_pullback), band/range (ibs, donchian, squeeze, bb_breakout,
+    nr7), volume (volume_capitulation_reclaim), and the WVF fear oscillator.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    high_prev_raw = np.concatenate(([np.nan], high[:-1]))
+    low_prev_raw = np.concatenate(([np.nan], low[:-1]))
+    close_prev_tr = np.concatenate(([np.nan], close[:-1]))
+
+    up_move = high - high_prev_raw
+    dn_move = low_prev_raw - low
+    plus_dm = np.where((up_move > dn_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0.0)
+    plus_dm = np.nan_to_num(plus_dm, nan=0.0)
+    minus_dm = np.nan_to_num(minus_dm, nan=0.0)
+
+    tr_raw = np.maximum.reduce([
+        high - low,
+        np.abs(high - close_prev_tr),
+        np.abs(low - close_prev_tr),
+    ])
+    tr_raw = np.nan_to_num(tr_raw, nan=high - low)
+
+    n = 14
+    atr_n = _rma(tr_raw, n)
+    plus_di = 100.0 * _rma(plus_dm, n) / np.where(atr_n > 0, atr_n, np.nan)
+    minus_di = 100.0 * _rma(minus_dm, n) / np.where(atr_n > 0, atr_n, np.nan)
+
+    di_sum = plus_di + minus_di
+    dx = 100.0 * np.abs(plus_di - minus_di) / np.where(di_sum > 0, di_sum, np.nan)
+    adx = _rma(np.nan_to_num(dx, nan=0.0), n)
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    # Prior-bar references so the entry signal is decidable at bar close.
+    adx_prev = np.concatenate(([np.nan], adx[:-1]))
+    adx_prev2 = np.concatenate(([np.nan, np.nan], adx[:-2]))
+    plus_di_prev = np.concatenate(([np.nan], plus_di[:-1]))
+    minus_di_prev = np.concatenate(([np.nan], minus_di[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = (
+        np.isfinite(adx_prev)
+        & np.isfinite(adx_prev2)
+        & np.isfinite(plus_di_prev)
+        & np.isfinite(minus_di_prev)
+        & np.isfinite(sma100_prev)
+    )
+    entries = (
+        valid
+        & (adx_prev > 20.0)
+        & (adx_prev > adx_prev2)
+        & (plus_di_prev > minus_di_prev)
+        & (close_prev > sma100_prev)
+    )
+    exits = (
+        (np.isfinite(plus_di) & np.isfinite(minus_di) & (plus_di < minus_di))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -346,4 +423,5 @@ NEW_STRATEGIES: dict = {
     "volume_capitulation_reclaim": strat_volume_capitulation_reclaim,
     "williams_vix_fix_spike": strat_williams_vix_fix_spike,
     "nr7_breakout_trend": strat_nr7_breakout_trend,
+    "adx_dmi_trend_emergence": strat_adx_dmi_trend_emergence,
 }
