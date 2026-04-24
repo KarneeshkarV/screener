@@ -897,6 +897,165 @@ def strat_vortex_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_rvi_signal_cross(df: pd.DataFrame) -> list[Trade]:
+    """Donald Dorsey's Relative Vigor Index (RVI) bullish signal-line cross.
+
+    RVI reads whether closes tend to finish near the top of each bar's range
+    relative to the full range — a different dimension than any other
+    sandbox strategy:
+        CO_t = close_t - open_t
+        HL_t = high_t - low_t
+        SWMA1221(x)_t = (x_t + 2 x_{t-1} + 2 x_{t-2} + x_{t-3}) / 6
+        Num = SMA(SWMA1221(CO), 10)
+        Den = SMA(SWMA1221(HL), 10)
+        RVI = Num / Den
+        Signal = SWMA1221(RVI)
+    A rising RVI means bars are finishing proportionally higher inside their
+    ranges — a subtle vigor read. A signal-line cross-above is the standard
+    trigger; gating by SMA(100) keeps trades aligned with the larger trend.
+
+    Distinct from every existing sandbox strategy: the close-open body
+    normalised by high-low range is a geometry none of the RSI/MACD/CMO/
+    WVF/CMF/ADX/Aroon/Vortex oscillators capture. Heikin-Ashi rebuilds
+    synthetic candles but does not expose a body-vs-range cross signal.
+
+    Entry (at today's close, prior-bar values avoid lookahead):
+      - prior-bar RVI > prior-bar Signal AND bar-before-that RVI <= Signal
+        (fresh cross-above, no repeat firings)
+      - prior-bar close > SMA(100)
+    Exit: RVI < Signal OR close < SMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    open_ = df["open"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    co = close - open_
+    hl = high - low
+
+    def swma_1221(arr: np.ndarray) -> np.ndarray:
+        s = pd.Series(arr)
+        return (
+            (s + 2.0 * s.shift(1) + 2.0 * s.shift(2) + s.shift(3)) / 6.0
+        ).to_numpy()
+
+    num = swma_1221(co)
+    den = swma_1221(hl)
+
+    n = 10
+    num_avg = pd.Series(num).rolling(n, min_periods=n).mean().to_numpy()
+    den_avg = pd.Series(den).rolling(n, min_periods=n).mean().to_numpy()
+
+    rvi = np.where(
+        np.isfinite(den_avg) & (den_avg > 0), num_avg / den_avg, np.nan
+    )
+    signal = swma_1221(rvi)
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    rvi_prev = np.concatenate(([np.nan], rvi[:-1]))
+    signal_prev = np.concatenate(([np.nan], signal[:-1]))
+    rvi_prev2 = np.concatenate(([np.nan, np.nan], rvi[:-2]))
+    signal_prev2 = np.concatenate(([np.nan, np.nan], signal[:-2]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = (
+        np.isfinite(rvi_prev)
+        & np.isfinite(signal_prev)
+        & np.isfinite(rvi_prev2)
+        & np.isfinite(signal_prev2)
+        & np.isfinite(sma100_prev)
+        & np.isfinite(close_prev)
+    )
+    fresh_cross = (rvi_prev2 <= signal_prev2) & (rvi_prev > signal_prev)
+    entries = valid & fresh_cross & (close_prev > sma100_prev)
+    exits = (
+        (np.isfinite(rvi) & np.isfinite(signal) & (rvi < signal))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_fisher_transform_zero_cross(df: pd.DataFrame) -> list[Trade]:
+    """Ehlers Fisher Transform zero-line bullish cross in SMA(100) uptrend.
+
+    Ehlers' Fisher Transform reshapes normalised price into a near-Gaussian
+    distribution, making turning points sharper than linear RSI-style
+    oscillators. For window N=9:
+        hl_mid = (high + low) / 2
+        raw_t  = (hl_mid - rolling_min(hl_mid, N))
+                 / (rolling_max(hl_mid, N) - rolling_min(hl_mid, N))
+        x_t    = 0.66 * (raw_t - 0.5) + 0.67 * x_{t-1}, clipped to [-0.999, 0.999]
+        Fisher_t = 0.5 * ln((1 + x_t) / (1 - x_t)) + 0.5 * Fisher_{t-1}
+    The logarithmic reshape amplifies extremes, so Fisher crossing its zero
+    line marks a decisive bullish regime flip.
+
+    Entry (at today's close, prior-bar values for no lookahead):
+      - Fisher_{t-2} <= 0 AND Fisher_{t-1} > 0 (fresh zero-cross)
+      - close_{t-1} > SMA(100)
+    Exit: Fisher < 0 OR close < SMA(20).
+
+    Distinct from every existing sandbox oscillator: the log-Fisher reshape
+    of a normalised high-low midpoint produces tail-amplified signals that
+    none of RSI / MACD / CMO / WVF / CMF / ADX / Aroon / Vortex / RVI / HA /
+    Ichimoku / PSAR / Donchian capture.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = len(close)
+
+    hl_mid = (high + low) / 2.0
+    N = 9
+    maxh = pd.Series(hl_mid).rolling(N, min_periods=N).max().to_numpy()
+    minl = pd.Series(hl_mid).rolling(N, min_periods=N).min().to_numpy()
+
+    fisher = np.full(n, np.nan)
+    x_prev = 0.0
+    fish_prev = 0.0
+    for i in range(n):
+        if not (np.isfinite(maxh[i]) and np.isfinite(minl[i])):
+            continue
+        rng = maxh[i] - minl[i]
+        if rng <= 0:
+            raw = 0.5
+        else:
+            raw = (hl_mid[i] - minl[i]) / rng
+        x = 0.66 * (raw - 0.5) + 0.67 * x_prev
+        if x > 0.999:
+            x = 0.999
+        elif x < -0.999:
+            x = -0.999
+        fish = 0.5 * np.log((1.0 + x) / (1.0 - x)) + 0.5 * fish_prev
+        fisher[i] = fish
+        x_prev = x
+        fish_prev = fish
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    fisher_prev = np.concatenate(([np.nan], fisher[:-1]))
+    fisher_prev2 = np.concatenate(([np.nan, np.nan], fisher[:-2]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = (
+        np.isfinite(fisher_prev)
+        & np.isfinite(fisher_prev2)
+        & np.isfinite(sma100_prev)
+        & np.isfinite(close_prev)
+    )
+    fresh_cross = (fisher_prev2 <= 0.0) & (fisher_prev > 0.0)
+    entries = valid & fresh_cross & (close_prev > sma100_prev)
+    exits = (
+        (np.isfinite(fisher) & (fisher < 0.0))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -913,4 +1072,6 @@ NEW_STRATEGIES: dict = {
     "ichimoku_kumo_breakout": strat_ichimoku_kumo_breakout,
     "parabolic_sar_flip_trend": strat_parabolic_sar_flip_trend,
     "vortex_bullish_cross": strat_vortex_bullish_cross,
+    "rvi_signal_cross": strat_rvi_signal_cross,
+    "fisher_transform_zero_cross": strat_fisher_transform_zero_cross,
 }
