@@ -2167,6 +2167,180 @@ def strat_obv_ema_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_ultimate_oscillator_oversold(df: pd.DataFrame) -> list[Trade]:
+    """Williams (1976) Ultimate Oscillator oversold→above-30 recovery in uptrend.
+
+    UO weights BUYING PRESSURE over 3 timeframes (7/14/28) at 4:2:1, a
+    multi-timeframe oscillator designed by Williams specifically to defeat
+    the single-window whipsaws of RSI/Stochastic/CCI.
+
+        BP[t]  = close[t] - min(low[t], close[t-1])     (buying pressure)
+        TR[t]  = max(high[t], close[t-1]) - min(low[t], close[t-1])
+        A7     = rollsum7(BP) / rollsum7(TR)
+        A14    = rollsum14(BP) / rollsum14(TR)
+        A28    = rollsum28(BP) / rollsum28(TR)
+        UO     = 100 * (4*A7 + 2*A14 + A28) / 7
+
+    Mathematically distinct from every existing oscillator in the sandbox:
+      - RSI / Connors RSI: smoothed ratio of gains/losses, single window.
+      - Stochastic: (close-lowestN) / (highestN-lowestN), single window.
+      - MFI: RSI on TP×volume, single window, volume-weighted.
+      - CCI: deviation of TP from SMA scaled by MAD, single window.
+      - TSI: double-EMA of raw price changes (no range concept).
+      - Awesome / MACD / PPO: difference of two moving averages.
+    UO is the only oscillator that uses a *ratio of cumulative buying
+    pressure to true range* across THREE overlapping timeframes, weighted
+    so the fastest window dominates but the slowest provides context —
+    Williams' explicit remedy for single-window mean-reversion false signals.
+
+    Multi-TF weighting means UO is slower to reach extremes than RSI(2)
+    or Stochastic(14), so when it finally prints oversold<30 the signal
+    carries joint confirmation across 7/14/28 bars of pressure. Crossing
+    back above 30 is Williams' classic 'buy when UO reclaims 30' rule.
+
+    Entry (prior-bar only — no lookahead):
+        UO[t-1]  >  30
+        min(UO[t-28..t-2]) <= 30            (was recently oversold)
+        close[t-1] > SMA(100)[t-1]           (established uptrend)
+    Exit:
+        UO > 70 (overbought) OR close < SMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = len(close)
+
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    true_low = np.minimum(low, np.where(np.isfinite(close_prev), close_prev, low))
+    true_high = np.maximum(high, np.where(np.isfinite(close_prev), close_prev, high))
+
+    bp = close - true_low
+    tr = true_high - true_low
+
+    bp_s = pd.Series(bp)
+    tr_s = pd.Series(tr)
+
+    sum7_bp = bp_s.rolling(7, min_periods=7).sum().to_numpy()
+    sum7_tr = tr_s.rolling(7, min_periods=7).sum().to_numpy()
+    sum14_bp = bp_s.rolling(14, min_periods=14).sum().to_numpy()
+    sum14_tr = tr_s.rolling(14, min_periods=14).sum().to_numpy()
+    sum28_bp = bp_s.rolling(28, min_periods=28).sum().to_numpy()
+    sum28_tr = tr_s.rolling(28, min_periods=28).sum().to_numpy()
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        avg7 = np.where(sum7_tr > 0, sum7_bp / sum7_tr, np.nan)
+        avg14 = np.where(sum14_tr > 0, sum14_bp / sum14_tr, np.nan)
+        avg28 = np.where(sum28_tr > 0, sum28_bp / sum28_tr, np.nan)
+
+    uo = 100.0 * (4.0 * avg7 + 2.0 * avg14 + avg28) / 7.0
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    uo_prev1 = np.concatenate(([np.nan], uo[:-1]))
+    # Recent oversold check: min of UO over the previous 28 bars (excl today) <= 30
+    min_uo_prev = (
+        pd.Series(uo).shift(1).rolling(28, min_periods=5).min().to_numpy()
+    )
+    close_prev_s = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    entries = (
+        np.isfinite(uo_prev1) & (uo_prev1 > 30.0)
+        & np.isfinite(min_uo_prev) & (min_uo_prev <= 30.0)
+        & np.isfinite(sma100_prev) & np.isfinite(close_prev_s)
+        & (close_prev_s > sma100_prev)
+    )
+
+    exits = (
+        (np.isfinite(uo) & (uo > 70.0))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_nvi_fosback_trend(df: pd.DataFrame) -> list[Trade]:
+    """Negative Volume Index (Dysart 1936 / Fosback 1976) above EMA(255).
+
+    NVI is a cumulative price-drift index that ONLY updates on bars whose
+    volume DECREASED vs. the prior bar; high-volume bars are ignored. The
+    thesis (Dysart 1936, formalized by Fosback in "Stock Market Logic",
+    1976): the crowd trades on high volume, smart money trades on quiet
+    days, so price action on LOW-volume bars reflects informed accumulation.
+
+        pct[t] = (close[t] - close[t-1]) / close[t-1]   if volume[t] < volume[t-1]
+        pct[t] = 0                                       otherwise
+        NVI[t] = 1000 * prod(1 + pct[0..t])
+
+    Fosback's published rule: NVI above its EMA(255) correctly identified
+    ~95% of historical bull markets on US data 1941-1975. We use the EMA-255
+    cross as the signal (with a 100-bar trend gate for safety).
+
+    Mathematically distinct from every other volume indicator in the sandbox:
+      - OBV: accumulates FULL signed volume on every bar.
+      - CMF / ADL / Chaikin Osc: money-flow weight = position in H-L range
+        × volume, used on every bar.
+      - Elder Force Index: Δprice × FULL volume every bar.
+      - MFI: RSI of TP×volume every bar.
+      - Pocket Pivot / Volume-capitulation: volume-SPIKE breakout patterns.
+    NVI is the ONLY indicator here that UNWEIGHTS volume entirely by using
+    it as a binary gate and isolates price drift on quiet bars — Dysart's
+    smart-money hypothesis. No other strategy tests this regime.
+
+    Entry (prior-bar only — no lookahead):
+        NVI[t-2] <= EMA(NVI,255)[t-2]
+        NVI[t-1] >  EMA(NVI,255)[t-1]          (fresh bullish cross)
+        close[t-1] > SMA(100)[t-1]             (uptrend gate)
+    Exit: NVI < EMA(NVI,255) OR close < SMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+    n = len(close)
+
+    ret = np.zeros(n, dtype=float)
+    if n > 1:
+        pct = np.zeros(n, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pct[1:] = np.where(
+                close[:-1] > 0, (close[1:] - close[:-1]) / close[:-1], 0.0
+            )
+        low_vol = np.zeros(n, dtype=bool)
+        low_vol[1:] = volume[1:] < volume[:-1]
+        ret = np.where(low_vol, pct, 0.0)
+    nvi = 1000.0 * np.cumprod(1.0 + ret)
+
+    nvi_ema = _ema(nvi, 255)
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    nvi_prev1 = np.concatenate(([np.nan], nvi[:-1]))
+    nvi_prev2 = np.concatenate(([np.nan], nvi_prev1[:-1]))
+    ema_prev1 = np.concatenate(([np.nan], nvi_ema[:-1]))
+    ema_prev2 = np.concatenate(([np.nan], ema_prev1[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    cross_up = (
+        np.isfinite(nvi_prev1) & np.isfinite(nvi_prev2)
+        & np.isfinite(ema_prev1) & np.isfinite(ema_prev2)
+        & (nvi_prev2 <= ema_prev2)
+        & (nvi_prev1 > ema_prev1)
+    )
+    trend_ok = (
+        np.isfinite(sma100_prev) & np.isfinite(close_prev)
+        & (close_prev > sma100_prev)
+    )
+    entries = cross_up & trend_ok
+
+    exits = (
+        (np.isfinite(nvi_ema) & (nvi < nvi_ema))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -2200,4 +2374,6 @@ NEW_STRATEGIES: dict = {
     "cci_oversold_recovery": strat_cci_oversold_recovery,
     "chaikin_oscillator_zero_cross": strat_chaikin_oscillator_zero_cross,
     "obv_ema_cross": strat_obv_ema_cross,
+    "ultimate_oscillator_oversold": strat_ultimate_oscillator_oversold,
+    "nvi_fosback_trend": strat_nvi_fosback_trend,
 }
