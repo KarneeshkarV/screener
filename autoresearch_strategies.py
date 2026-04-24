@@ -1211,6 +1211,101 @@ def strat_hma_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_kama_cross_trend(df: pd.DataFrame) -> list[Trade]:
+    """Perry Kaufman's KAMA efficiency-ratio adaptive-MA bullish cross.
+
+    KAMA is an adaptive moving average whose smoothing constant widens or
+    tightens bar-by-bar based on the signal-to-noise ratio of recent price
+    action. For window N=10, fast=2, slow=30:
+        change_t = |close_t - close_{t-N}|
+        volat_t  = sum_{i=0..N-1} |close_{t-i} - close_{t-i-1}|
+        ER_t     = change_t / volat_t              (efficiency ratio, 0..1)
+        fast_sc  = 2 / (2 + 1) = 0.6667
+        slow_sc  = 2 / (30 + 1) ≈ 0.0645
+        SC_t     = (ER_t * (fast_sc - slow_sc) + slow_sc)^2
+        KAMA_t   = KAMA_{t-1} + SC_t * (close_t - KAMA_{t-1})
+    When markets are trending cleanly (high ER) KAMA tracks close to price;
+    when noisy (low ER) it flattens out — a self-adjusting filter that no
+    fixed-window MA (SMA/EMA/WMA/HMA/TEMA) achieves.
+
+    Entry (at today's close, prior-bar values for no lookahead):
+      - fresh bullish cross: close_{t-2} <= KAMA_{t-2} AND close_{t-1} > KAMA_{t-1}
+      - close_{t-1} > SMA(100) (macro uptrend gate)
+    Exit: close < KAMA OR close < SMA(20).
+
+    Distinct from every existing sandbox strategy: HMA is WMA-based and fixed
+    window, TRIX is triple-EMA rate of change, supertrend is ATR-band trail,
+    PSAR is an accelerating stop, Donchian/Ichimoku are H/L channels, the
+    RSI/MACD/CMO/RVI/Fisher/WVF/CMF/ADX/Aroon/Vortex family are oscillators,
+    HA/NR7 are candle-geometry, pocket_pivot/volume_capitulation/CMF are
+    volume. KAMA's efficiency-ratio-driven smoothing constant produces a
+    genuinely different filter geometry — it reshapes its own cutoff.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n_bars = len(close)
+
+    N = 10
+    fast_sc = 2.0 / (2.0 + 1.0)
+    slow_sc = 2.0 / (30.0 + 1.0)
+
+    abs_change = np.abs(np.diff(close, prepend=close[0]))
+    volat = pd.Series(abs_change).rolling(N, min_periods=N).sum().to_numpy()
+    close_n_ago = np.concatenate(
+        (np.full(N, np.nan), close[:-N])
+    )
+    change = np.abs(close - close_n_ago)
+    er = np.where(
+        np.isfinite(volat) & (volat > 0), change / volat, np.nan
+    )
+    sc = np.where(
+        np.isfinite(er),
+        (er * (fast_sc - slow_sc) + slow_sc) ** 2,
+        np.nan,
+    )
+
+    kama = np.full(n_bars, np.nan)
+    # Seed KAMA at the first bar where SC is valid, using close as starting value.
+    seeded = False
+    for i in range(n_bars):
+        if not seeded:
+            if np.isfinite(sc[i]):
+                kama[i] = close[i]
+                seeded = True
+            continue
+        prev = kama[i - 1]
+        if not np.isfinite(prev):
+            kama[i] = close[i]
+            continue
+        if np.isfinite(sc[i]):
+            kama[i] = prev + sc[i] * (close[i] - prev)
+        else:
+            kama[i] = prev
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    kama_prev = np.concatenate(([np.nan], kama[:-1]))
+    kama_prev2 = np.concatenate(([np.nan, np.nan], kama[:-2]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    close_prev2 = np.concatenate(([np.nan, np.nan], close[:-2]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = (
+        np.isfinite(kama_prev)
+        & np.isfinite(kama_prev2)
+        & np.isfinite(close_prev)
+        & np.isfinite(close_prev2)
+        & np.isfinite(sma100_prev)
+    )
+    fresh_cross = (close_prev2 <= kama_prev2) & (close_prev > kama_prev)
+    entries = valid & fresh_cross & (close_prev > sma100_prev)
+    exits = (
+        (np.isfinite(kama) & (close < kama))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -1231,4 +1326,5 @@ NEW_STRATEGIES: dict = {
     "fisher_transform_zero_cross": strat_fisher_transform_zero_cross,
     "trix_signal_cross": strat_trix_signal_cross,
     "hma_bullish_cross": strat_hma_bullish_cross,
+    "kama_cross_trend": strat_kama_cross_trend,
 }
