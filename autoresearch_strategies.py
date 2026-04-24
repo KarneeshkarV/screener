@@ -284,6 +284,60 @@ def strat_williams_vix_fix_spike(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_nr7_breakout_trend(df: pd.DataFrame) -> list[Trade]:
+    """Toby Crabel NR7 (narrowest range of 7) volatility-contraction breakout.
+
+    NR7 bar: the prior bar's high-low range is the smallest of the trailing
+    seven bars — a sign of coiling / compression. Entry fires when today's
+    close then breaks above the NR7 bar's high, confirming directional
+    release. A SMA(100) trend filter keeps trades with the larger trend.
+    Exit when close drops below SMA(20) (momentum fails).
+
+    Distinct from:
+      - squeeze_breakout (BB width vs KC width — relative volatility),
+      - donchian_20_10_trend (20-bar absolute highest-high channel),
+      - ibs_trend_filter (single-bar range position),
+      - volume_capitulation_reclaim (volume spike reclaim),
+      - cum_rsi2_pullback (multi-bar RSI persistence),
+      - williams_vix_fix_spike (price-based fear oscillator).
+    This reads absolute daily range compression, not band width or oscillator.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    day_range = high - low
+    # Rolling min of day_range over 7 bars ending at each index.
+    min_range_7 = (
+        pd.Series(day_range).rolling(7, min_periods=7).min().to_numpy()
+    )
+    is_nr7 = np.isfinite(min_range_7) & (day_range <= min_range_7 + 1e-12)
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    # Prior-bar references so entry is decidable at today's close; no lookahead.
+    is_nr7_prev = np.concatenate(([False], is_nr7[:-1]))
+    high_prev = np.concatenate(([np.nan], high[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = (
+        np.isfinite(high_prev)
+        & np.isfinite(sma100_prev)
+        & np.isfinite(close_prev)
+    )
+    entries = (
+        valid
+        & is_nr7_prev
+        & (close > high_prev)
+        & (close_prev > sma100_prev)
+    )
+    exits = np.isfinite(sma20) & (close < sma20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -291,4 +345,5 @@ NEW_STRATEGIES: dict = {
     "cum_rsi2_pullback": strat_cum_rsi2_pullback,
     "volume_capitulation_reclaim": strat_volume_capitulation_reclaim,
     "williams_vix_fix_spike": strat_williams_vix_fix_spike,
+    "nr7_breakout_trend": strat_nr7_breakout_trend,
 }
