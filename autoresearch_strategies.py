@@ -1616,6 +1616,75 @@ def strat_elder_force_index_zero_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_pring_kst_signal_cross(df: pd.DataFrame) -> list[Trade]:
+    """Martin Pring's Know Sure Thing (KST) — signal-line bullish cross in a
+    long-term uptrend.
+
+    KST aggregates momentum across four timeframes using smoothed ROC:
+        RCMA1 = SMA(10, ROC(10))
+        RCMA2 = SMA(10, ROC(15))
+        RCMA3 = SMA(10, ROC(20))
+        RCMA4 = SMA(15, ROC(30))
+        KST   = 1*RCMA1 + 2*RCMA2 + 3*RCMA3 + 4*RCMA4
+        SIG   = SMA(9, KST)
+
+    Entry: KST crosses above its 9-period signal line AND close > SMA(200)
+    (established long-term uptrend). Exit: KST crosses back below SIG, OR
+    close < SMA(20).
+
+    Distinct from Coppock (WMA of ROC14+ROC11, zero-line cross only — no
+    signal line), TRIX (triple-EMA of a single price series), Schaff Trend
+    Cycle (double-smoothed stochastic of MACD), MACD (12/26 EMA diff).
+    KST's edge is multi-timeframe ROC blending — it responds to intermediate
+    momentum shifts that single-period oscillators miss.
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    # ROC_n(t) = close[t]/close[t-n] - 1, NaN where unavailable.
+    def _roc(arr: np.ndarray, n: int) -> np.ndarray:
+        prev = np.concatenate((np.full(n, np.nan), arr[:-n])) if n > 0 else arr
+        out = np.full_like(arr, np.nan, dtype=float)
+        mask = np.isfinite(prev) & (prev != 0)
+        out[mask] = arr[mask] / prev[mask] - 1.0
+        return out
+
+    rcma1 = _sma(_roc(close, 10), 10)
+    rcma2 = _sma(_roc(close, 15), 10)
+    rcma3 = _sma(_roc(close, 20), 10)
+    rcma4 = _sma(_roc(close, 30), 15)
+    kst = 1.0 * rcma1 + 2.0 * rcma2 + 3.0 * rcma3 + 4.0 * rcma4
+    sig = _sma(kst, 9)
+
+    sma200 = _sma(close, 200)
+    sma20 = _sma(close, 20)
+
+    kst_prev = np.concatenate(([np.nan], kst[:-1]))
+    kst_prev2 = np.concatenate(([np.nan], kst_prev[:-1]))
+    sig_prev = np.concatenate(([np.nan], sig[:-1]))
+    sig_prev2 = np.concatenate(([np.nan], sig_prev[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    bullish_cross = (
+        np.isfinite(kst_prev) & np.isfinite(kst_prev2)
+        & np.isfinite(sig_prev) & np.isfinite(sig_prev2)
+        & (kst_prev2 <= sig_prev2)
+        & (kst_prev > sig_prev)
+    )
+    trend_ok = (
+        np.isfinite(close_prev) & np.isfinite(sma200_prev)
+        & (close_prev > sma200_prev)
+    )
+
+    entries = bullish_cross & trend_ok
+    exits = (
+        (np.isfinite(kst) & np.isfinite(sig) & (kst < sig))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 def strat_awesome_oscillator_saucer(df: pd.DataFrame) -> list[Trade]:
     """Bill Williams' Awesome Oscillator 'saucer' setup in a long-term uptrend.
 
@@ -1699,4 +1768,5 @@ NEW_STRATEGIES: dict = {
     "connors_rsi_pullback": strat_connors_rsi_pullback,
     "elder_force_index_zero_cross": strat_elder_force_index_zero_cross,
     "awesome_oscillator_saucer": strat_awesome_oscillator_saucer,
+    "pring_kst_signal_cross": strat_pring_kst_signal_cross,
 }
