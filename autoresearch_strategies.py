@@ -2518,6 +2518,149 @@ def strat_inverse_fisher_rsi(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_minervini_vcp_breakout(df: pd.DataFrame) -> list[Trade]:
+    """Minervini-style Volatility Contraction Pattern (VCP) breakout.
+
+    Combines Mark Minervini's "Trend Template" stage-2 alignment with an
+    explicit volatility contraction filter and 52-week-high proximity —
+    a regime that none of the prior strategies in this sandbox encodes
+    jointly:
+      - nr7_breakout_trend : single-bar narrow-range, no multi-SMA stack.
+      - donchian_20_10    : pure channel breakout, no contraction filter.
+      - squeeze_breakout  : BB-inside-KC binary squeeze, ignores 52w high.
+      - pocket_pivot      : O'Neil volume signature, not volatility-based.
+    VCP captures the "tighter, smaller pullbacks" footprint of leadership
+    stocks and demands a confirmed Stage-2 trend per Minervini ("Trade
+    Like a Stock Market Wizard", 2013, ch. 6).
+
+    Stage-2 trend template (subset of Minervini's 8 criteria):
+        close > SMA50, SMA50 > SMA150, SMA150 > SMA200, SMA200 rising
+        (vs. itself 21 bars ago), and close >= 0.85 * 252-bar high.
+
+    Volatility contraction:
+        ATR(20) / ATR(60) < 0.85    — recent range tighter than longer-range.
+
+    Entry trigger (no lookahead — all references are prior-bar values
+    except today's close, which is known at bar close):
+        Stage-2 AND contraction AND close > prior 20-bar HIGH (.shift(1)).
+
+    Exit: close < SMA(20) OR close < SMA(50) (broken trend structure).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    sma20 = _sma(close, 20)
+    sma50 = _sma(close, 50)
+    sma150 = _sma(close, 150)
+    sma200 = _sma(close, 200)
+
+    atr20 = _atr(high, low, close, 20)
+    atr60 = _atr(high, low, close, 60)
+    vol_ratio = np.where(
+        np.isfinite(atr60) & (atr60 > 0), atr20 / atr60, np.nan
+    )
+
+    high_252 = (
+        pd.Series(high).shift(1).rolling(252, min_periods=126).max().to_numpy()
+    )
+    high_20_prev = (
+        pd.Series(high).shift(1).rolling(20, min_periods=20).max().to_numpy()
+    )
+
+    sma200_lag = np.concatenate((np.full(21, np.nan), sma200[:-21]))
+    sma200_rising = (
+        np.isfinite(sma200) & np.isfinite(sma200_lag) & (sma200 > sma200_lag)
+    )
+
+    stage2 = (
+        np.isfinite(sma50) & np.isfinite(sma150) & np.isfinite(sma200)
+        & (close > sma50) & (sma50 > sma150) & (sma150 > sma200)
+        & sma200_rising
+    )
+
+    near_high = np.isfinite(high_252) & (close >= 0.85 * high_252)
+    contracted = np.isfinite(vol_ratio) & (vol_ratio < 0.85)
+    breakout = np.isfinite(high_20_prev) & (close > high_20_prev)
+
+    entries = stage2 & near_high & contracted & breakout
+
+    exits = (
+        (np.isfinite(sma20) & (close < sma20))
+        | (np.isfinite(sma50) & (close < sma50))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_dpo_zero_cross(df: pd.DataFrame) -> list[Trade]:
+    """Detrended Price Oscillator (Pring) zero-line cross in SMA(100) uptrend.
+
+    DPO subtracts a *displaced* SMA from price to strip the long-term trend
+    component and isolate short-cycle deviations. With period n=20:
+
+        DPO[t] = close[t] - SMA(close, 20)[t - (n/2 + 1)]
+               = close[t] - SMA(close, 20)[t - 11]
+
+    The displacement is purely backward (we read the SMA at a past bar),
+    so the indicator is decidable at bar close with no lookahead. A
+    bullish zero-cross — DPO going from <=0 to >0 — marks the start of an
+    upward cycle phase relative to the underlying drift.
+
+    Mathematically distinct from every oscillator already in the sandbox:
+      - MACD / TRIX / TSI / KST / Coppock / Schaff: derivatives of
+        *smoothed* momentum (EMAs of EMAs). DPO does no momentum
+        smoothing — it is raw price minus a centered SMA.
+      - Aroon / Ichimoku / Donchian: built on highest-high / lowest-low
+        windows, not deviation from a centered mean.
+      - RSI / Stoch / MFI / CCI / Williams %R / Connors RSI: range-bounded
+        oscillators on price action; DPO is unbounded and signed.
+      - Awesome / Chaikin Osc: differences of two SMAs of median price /
+        ADL. DPO is the difference between price and a single displaced
+        SMA, with no second smoothing stage.
+      - Fisher / Inverse Fisher: nonlinear S-curve transforms — DPO is
+        purely linear.
+
+    Entry (prior-bar values only — no lookahead):
+        DPO[t-2] <= 0  AND  DPO[t-1] > 0       (bullish zero-cross)
+        close[t-1] > SMA(100)[t-1]             (long-term uptrend gate)
+    Exit: DPO < 0 (cycle turns down) OR close < SMA(20) (momentum break).
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    n = 20
+    shift_amt = n // 2 + 1  # 11
+    sma_n = _sma(close, n)
+    sma_displaced = pd.Series(sma_n).shift(shift_amt).to_numpy()
+    dpo = close - sma_displaced
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    dpo_prev1 = np.concatenate(([np.nan], dpo[:-1]))
+    dpo_prev2 = np.concatenate(([np.nan], dpo_prev1[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    cross_up = (
+        np.isfinite(dpo_prev1) & np.isfinite(dpo_prev2)
+        & (dpo_prev2 <= 0.0)
+        & (dpo_prev1 > 0.0)
+    )
+    trend_ok = (
+        np.isfinite(close_prev) & np.isfinite(sma100_prev)
+        & (close_prev > sma100_prev)
+    )
+    entries = cross_up & trend_ok
+
+    exits = (
+        (np.isfinite(dpo) & (dpo < 0.0))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -2555,4 +2698,6 @@ NEW_STRATEGIES: dict = {
     "nvi_fosback_trend": strat_nvi_fosback_trend,
     "choppiness_regime_shift": strat_choppiness_regime_shift,
     "inverse_fisher_rsi": strat_inverse_fisher_rsi,
+    "minervini_vcp_breakout": strat_minervini_vcp_breakout,
+    "dpo_zero_cross": strat_dpo_zero_cross,
 }
