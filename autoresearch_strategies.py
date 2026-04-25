@@ -6974,6 +6974,101 @@ def strat_disparity_index_zero_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_bressert_dss_oversold_cross(df: pd.DataFrame) -> list[Trade]:
+    """Walter Bressert's Double Smoothed Stochastic (DSS) — fresh cross above 30.
+
+    Bressert ("The Power of Oscillator/Cycle Combinations", 1991) defined the
+    DSS as a stochastic-of-a-stochastic with EMA smoothing on each leg, which
+    eliminates the saw-tooth chop of raw %K while preserving its 0..100 bounds:
+
+        raw_K   = 100 * (close - LLV(low, N)) / (HHV(high, N) - LLV(low, N))
+        emaK    = EMA(raw_K, s1)                       # first smoothing
+        stoch2  = 100 * (emaK - LLV(emaK, N))
+                  / (HHV(emaK, N) - LLV(emaK, N))      # restochasticize
+        DSS     = EMA(stoch2, s1)                      # second smoothing
+
+    Settings N=13, s1=8 are Bressert's published values. Because the smoothing
+    is applied *inside* the stochastic envelope (not on its output), DSS is
+    structurally distinct from every existing oscillator in the sandbox:
+      - stochastic_oversold_recovery: raw %K, no smoothing.
+      - stoch_rsi_oversold_cross: stochastic of RSI (a momentum input).
+      - smi_blau_oversold_cross: signed midpoint distance, ±100 range with
+        double EMA on numerator/denominator separately.
+      - schaff_trend_cycle: double stochastic of MACD, not of price range.
+      - premier_stochastic_oscillator: 5-period stoch with Fisher transform.
+
+    Entry: fresh DSS up-cross above 30 (oversold lift) inside SMA50 > SMA200.
+    Exit: DSS crosses below 70 (lose momentum from overbought) OR close < EMA20.
+    """
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    n = close.size
+    N = 13
+    s1 = 8
+
+    h_s = pd.Series(high)
+    l_s = pd.Series(low)
+    hhv1 = h_s.rolling(N, min_periods=N).max().to_numpy()
+    llv1 = l_s.rolling(N, min_periods=N).min().to_numpy()
+    rng1 = hhv1 - llv1
+
+    raw_k = np.full(n, np.nan)
+    valid1 = np.isfinite(rng1) & (rng1 > 0)
+    raw_k[valid1] = 100.0 * (close[valid1] - llv1[valid1]) / rng1[valid1]
+
+    raw_k_filled = np.nan_to_num(raw_k, nan=0.0)
+    ema_k = _ema(raw_k_filled, s1)
+    ema_k = np.where(np.isfinite(raw_k), ema_k, np.nan)
+
+    ema_k_s = pd.Series(ema_k)
+    hhv2 = ema_k_s.rolling(N, min_periods=N).max().to_numpy()
+    llv2 = ema_k_s.rolling(N, min_periods=N).min().to_numpy()
+    rng2 = hhv2 - llv2
+
+    stoch2 = np.full(n, np.nan)
+    valid2 = np.isfinite(rng2) & (rng2 > 0) & np.isfinite(ema_k)
+    stoch2[valid2] = 100.0 * (ema_k[valid2] - llv2[valid2]) / rng2[valid2]
+
+    stoch2_filled = np.nan_to_num(stoch2, nan=0.0)
+    dss = _ema(stoch2_filled, s1)
+    dss = np.where(np.isfinite(stoch2), dss, np.nan)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    dss_p1 = np.concatenate(([np.nan], dss[:-1]))
+    dss_p2 = np.concatenate(([np.nan], dss_p1[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    warmup = np.zeros(n, dtype=bool)
+    warmup_start = min(n, 220)
+    warmup[warmup_start:] = True
+
+    valid = (
+        warmup
+        & np.isfinite(dss_p1)
+        & np.isfinite(dss_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_up_cross_30 = valid & (dss_p2 <= 30.0) & (dss_p1 > 30.0)
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_up_cross_30 & uptrend
+
+    fresh_dn_cross_70 = (
+        np.isfinite(dss_p1) & np.isfinite(dss_p2)
+        & (dss_p2 >= 70.0) & (dss_p1 < 70.0)
+    )
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = fresh_dn_cross_70 | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7069,4 +7164,5 @@ NEW_STRATEGIES: dict = {
     "chande_forecast_oscillator": strat_chande_forecast_oscillator,
     "tema_bullish_cross": strat_tema_bullish_cross,
     "disparity_index_zero_cross": strat_disparity_index_zero_cross,
+    "bressert_dss_oversold_cross": strat_bressert_dss_oversold_cross,
 }
