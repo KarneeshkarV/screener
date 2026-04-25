@@ -2341,6 +2341,183 @@ def strat_nvi_fosback_trend(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_choppiness_regime_shift(df: pd.DataFrame) -> list[Trade]:
+    """Choppiness Index regime transition: chop -> trend, gated by SMA(100) up.
+
+    The Choppiness Index (E.W. Dreiss, 1990s) is a regime detector — it
+    measures whether the market is *trending* or *consolidating*, not
+    direction:
+
+        TR[t]   = max(H-L, |H-prevC|, |L-prevC|)
+        CI(n)   = 100 * log10( sum(TR, n) / (max(H,n) - min(L,n)) ) / log10(n)
+
+    Range 0-100. CI > 61.8 = sideways/choppy (range fully filled by TR sum).
+    CI < 38.2 = strongly trending (TR sum small relative to range, i.e. price
+    moved decisively in one direction).
+
+    This is mathematically distinct from EVERY indicator already tested:
+      - It is NOT a momentum oscillator (RSI / Stoch / CCI / CMO / MFI /
+        Williams%R / UO / Fisher / RVI / TSI / KST / DPO).
+      - It is NOT a trend/cross indicator (MA cross / MACD / TRIX / Coppock
+        / KAMA / HMA / Schaff / Aroon / Vortex / DMI / ParabolicSAR /
+        Ichimoku / Donchian / NR7 / Squeeze / SuperTrend / BB).
+      - It is NOT a volume indicator (OBV / CMF / ADL / Chaikin / NVI / EFI
+        / Pocket-Pivot / Volume-capitulation).
+      - It is NOT a candle-shape pattern (IBS / HeikinAshi / WilliamsVixFix).
+      - It is NOT a centered momentum oscillator (Awesome / EFI / KST).
+    Choppiness is a *range-fill ratio* — it ignores direction entirely and
+    only measures how efficiently price has moved through its envelope. No
+    other indicator in the sandbox tests this.
+
+    Hypothesis: when CI was recently choppy (>=61.8 within last 10 bars) and
+    has just collapsed into trending (<38.2), the new trend that's emerging
+    is most likely UP if close > SMA(100) (uptrend filter — long-only).
+    Trades in this regime tend to be sustained moves rather than mean-revert
+    chop, so we ride them with a simple SMA(20) trailing exit plus a
+    "chop returned" exit if CI re-enters >61.8.
+
+    Entry (prior-bar values only, no lookahead):
+        max(CI[t-10..t-1])  >= 61.8                (was choppy recently)
+        CI[t-1]             <  38.2                (now strongly trending)
+        close[t-1]          >  SMA(100)[t-1]       (long-only uptrend gate)
+    Exit:
+        CI > 61.8                                  (regime back to chop)
+        OR close < SMA(20)                         (trend break)
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = len(close)
+
+    prev_close = np.concatenate(([close[0]], close[:-1]))
+    tr = np.maximum.reduce([
+        high - low,
+        np.abs(high - prev_close),
+        np.abs(low - prev_close),
+    ])
+
+    period = 14
+    sum_tr = (
+        pd.Series(tr).rolling(period, min_periods=period).sum().to_numpy()
+    )
+    high_n = (
+        pd.Series(high).rolling(period, min_periods=period).max().to_numpy()
+    )
+    low_n = (
+        pd.Series(low).rolling(period, min_periods=period).min().to_numpy()
+    )
+    range_n = high_n - low_n
+
+    log_n = np.log10(period)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(range_n > 0, sum_tr / range_n, np.nan)
+        ci = 100.0 * np.log10(ratio) / log_n
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    ci_prev = np.concatenate(([np.nan], ci[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    chop_recent = (
+        pd.Series(ci_prev).rolling(10, min_periods=1).max().to_numpy()
+    )
+
+    entries = (
+        np.isfinite(ci_prev) & (ci_prev < 38.2)
+        & np.isfinite(chop_recent) & (chop_recent >= 61.8)
+        & np.isfinite(sma100_prev) & np.isfinite(close_prev)
+        & (close_prev > sma100_prev)
+    )
+
+    exits = (
+        (np.isfinite(ci) & (ci > 61.8))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_inverse_fisher_rsi(df: pd.DataFrame) -> list[Trade]:
+    """Ehlers' Inverse Fisher Transform of RSI — saturated oversold reclaim.
+
+    The Inverse Fisher Transform (Ehlers, "Cybernetic Analysis for Stocks
+    and Futures", 2004) compresses any normally-distributed indicator into
+    the bounded range [-1, +1] via a sigmoid-like S-curve, so threshold
+    crossings of ±0.5 mark decisive momentum events with little midband
+    noise. Applied to a rescaled, smoothed RSI:
+
+        v[t]    = 0.1 * (RSI(14)[t] - 50)            # rescale RSI to ~[-5, 5]
+        v_s[t]  = WMA(v, 9)[t]                       # linearly-weighted MA
+        IFTR[t] = (exp(2 * v_s) - 1) / (exp(2 * v_s) + 1)
+
+    Mathematically distinct from every other oscillator already tested:
+      - Bare RSI / Stochastic / MFI / CCI / Williams %R / UO: linear
+        oscillators with unbounded or 0..100 ranges and 20/80 thresholds —
+        no sigmoid saturation.
+      - Fisher Transform of price (already in sandbox): applies the
+        FORWARD Fisher to a normalized PRICE range; the inverse Fisher
+        applied to RSI is a different transform on a different input.
+      - Connors RSI / Schaff Trend Cycle: composite oscillators built
+        from RSI/stoch averages, no Fisher math.
+      - TRIX / TSI / Coppock / KST / Awesome / RVI: smoothed momentum
+        derivatives, not S-curve transforms.
+    Ehlers' nonlinear S-curve flattens midband chop and makes the −0.5
+    line a high-conviction reclaim level — a regime not exercised by any
+    prior strategy here.
+
+    Entry (prior-bar values only — no lookahead):
+        IFTR[t-2] <= -0.5 AND IFTR[t-1] > -0.5      (oversold reclaim)
+        close[t-1] > SMA(100)[t-1]                   (uptrend gate)
+    Exit: IFTR > 0.5 (overbought saturation) OR close < SMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    rsi = _rsi(close, 14)
+    v = 0.1 * (rsi - 50.0)
+
+    period = 9
+    weights = np.arange(1, period + 1, dtype=float)
+    weights /= weights.sum()
+    v_smooth = (
+        pd.Series(v)
+        .rolling(period, min_periods=period)
+        .apply(lambda w: float(np.dot(w, weights)), raw=True)
+        .to_numpy()
+    )
+
+    z = np.clip(2.0 * v_smooth, -50.0, 50.0)
+    ez = np.exp(z)
+    iftr = np.where(np.isfinite(z), (ez - 1.0) / (ez + 1.0), np.nan)
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    iftr_prev1 = np.concatenate(([np.nan], iftr[:-1]))
+    iftr_prev2 = np.concatenate(([np.nan], iftr_prev1[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    cross_up = (
+        np.isfinite(iftr_prev1) & np.isfinite(iftr_prev2)
+        & (iftr_prev2 <= -0.5)
+        & (iftr_prev1 > -0.5)
+    )
+    trend_ok = (
+        np.isfinite(close_prev) & np.isfinite(sma100_prev)
+        & (close_prev > sma100_prev)
+    )
+    entries = cross_up & trend_ok
+
+    exits = (
+        (np.isfinite(iftr) & (iftr > 0.5))
+        | (np.isfinite(sma20) & (close < sma20))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -2376,4 +2553,6 @@ NEW_STRATEGIES: dict = {
     "obv_ema_cross": strat_obv_ema_cross,
     "ultimate_oscillator_oversold": strat_ultimate_oscillator_oversold,
     "nvi_fosback_trend": strat_nvi_fosback_trend,
+    "choppiness_regime_shift": strat_choppiness_regime_shift,
+    "inverse_fisher_rsi": strat_inverse_fisher_rsi,
 }
