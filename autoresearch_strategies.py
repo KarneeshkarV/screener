@@ -2879,6 +2879,40 @@ def strat_anchored_vwap_reclaim(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_connors_double_7s(df: pd.DataFrame) -> list[Trade]:
+    """Larry Connors' Double 7s mean-reversion in a long-term uptrend.
+
+    Classic asymmetric channel rule: in an established uptrend (close >
+    SMA(200)), buy when the close prints at the lowest level of the prior 7
+    closes (7-day closing low) — this is a shallow pullback, not a deep
+    drawdown. Exit when the close prints at the highest level of the prior 7
+    closes (7-day closing high). Uses raw closing-price extremes, so it is
+    distinct from %B (volatility σ-band), Donchian (high/low channel),
+    cum_rsi2 (oscillator persistence), and IBS (intra-bar range).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    sma200 = _sma(close, 200)
+
+    close_s = pd.Series(close)
+    # Rolling min/max of the prior 7 closes (excluding the current bar) so
+    # the entry/exit signal is fully decidable at bar close with no leak.
+    low7_prev = close_s.shift(1).rolling(7, min_periods=7).min().to_numpy()
+    high7_prev = close_s.shift(1).rolling(7, min_periods=7).max().to_numpy()
+
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+
+    entries = (
+        np.isfinite(low7_prev)
+        & np.isfinite(sma200_prev)
+        & (close <= low7_prev)
+        & (close_prev > sma200_prev)
+    )
+    exits = np.isfinite(high7_prev) & (close >= high7_prev)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -2921,4 +2955,5 @@ NEW_STRATEGIES: dict = {
     "clenow_momentum_score": strat_clenow_momentum_score,
     "bollinger_pctb_reversion": strat_bollinger_pctb_reversion,
     "anchored_vwap_reclaim": strat_anchored_vwap_reclaim,
+    "connors_double_7s": strat_connors_double_7s,
 }
