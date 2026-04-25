@@ -4894,6 +4894,72 @@ def strat_wavetrend_lb_oversold_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_alma_bullish_cross(df: pd.DataFrame) -> list[Trade]:
+    """Arnaud Legoux Moving Average (ALMA) bullish cross in SMA50>SMA200 uptrend.
+
+    ALMA applies a Gaussian-weighted kernel that is offset toward the most
+    recent bar so it tracks turns faster than EMA/SMA while still suppressing
+    high-frequency noise more aggressively than a WMA.
+
+        m = floor(offset * (N - 1));   s = N / sigma
+        w[i] = exp(-((i - m)^2) / (2 * s^2)),    i = 0..N-1
+        ALMA[t] = sum_i w[i] * close[t - N + 1 + i] / sum_i w[i]
+
+    The Gaussian peak shifted toward the right edge (offset≈0.85) gives a
+    response curve unlike the linear-WMA basis of HMA, the efficiency-ratio
+    basis of KAMA, or the CMO-volatility basis of VIDYA — all of which already
+    appear in the sandbox.
+
+    Entry (decided at bar close, prior-bar values to avoid lookahead):
+      - fresh bullish ALMA cross of close: close_{t-2} <= ALMA_{t-2} AND
+        close_{t-1} > ALMA_{t-1}
+      - SMA(50)_{t-1} > SMA(200)_{t-1} (macro uptrend gate)
+    Exit: close < EMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    def _alma(arr: np.ndarray, n: int, offset: float, sigma: float) -> np.ndarray:
+        m = int(np.floor(offset * (n - 1)))
+        s = n / float(sigma)
+        i = np.arange(n, dtype=float)
+        w = np.exp(-((i - m) ** 2) / (2.0 * s * s))
+        wsum = w.sum()
+        return (
+            pd.Series(arr)
+            .rolling(n, min_periods=n)
+            .apply(lambda x: np.dot(x, w) / wsum, raw=True)
+            .to_numpy()
+        )
+
+    alma = _alma(close, 21, 0.85, 6.0)
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    close_prev2 = np.concatenate(([np.nan, np.nan], close[:-2]))
+    alma_prev = np.concatenate(([np.nan], alma[:-1]))
+    alma_prev2 = np.concatenate(([np.nan, np.nan], alma[:-2]))
+    sma50_prev = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(alma_prev)
+        & np.isfinite(alma_prev2)
+        & np.isfinite(close_prev)
+        & np.isfinite(close_prev2)
+        & np.isfinite(sma50_prev)
+        & np.isfinite(sma200_prev)
+    )
+    fresh_cross = (close_prev2 <= alma_prev2) & (close_prev > alma_prev)
+    uptrend = sma50_prev > sma200_prev
+
+    entries = valid & fresh_cross & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -4964,4 +5030,5 @@ NEW_STRATEGIES: dict = {
     "morning_star_pullback": strat_morning_star_pullback,
     "polarized_fractal_efficiency": strat_polarized_fractal_efficiency,
     "wavetrend_lb_oversold_cross": strat_wavetrend_lb_oversold_cross,
+    "alma_bullish_cross": strat_alma_bullish_cross,
 }
