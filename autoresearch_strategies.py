@@ -5578,6 +5578,81 @@ def strat_frama_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_macd_v_oversold_reclaim(df: pd.DataFrame) -> list[Trade]:
+    """MACD-V (volatility-normalized MACD, Spiroglou 2022) — oversold-zone reclaim.
+
+    Reference: Alex Spiroglou, "MACD-V: Volatility Normalised Momentum"
+    (2022 NAAIM Wagner Award winner). The core insight is that the raw MACD
+    line scales with absolute price and asset volatility, which makes its
+    thresholds asset-specific and unstable across regimes. Dividing by ATR(26)
+    and rescaling produces a momentum oscillator with universal, stationary
+    bounds:
+
+        MACD       = EMA(close, 12) - EMA(close, 26)
+        ATR_26     = Wilder ATR over 26 bars
+        MACD-V_t   = (MACD_t / ATR_26_t) * 100
+
+    Spiroglou's published zones (validated across SPX, sector ETFs, single
+    names, FX, crypto):
+        Overbought  > +150
+        Bullish      +50 to +150
+        Neutral      -50 to +50
+        Bearish      -150 to -50
+        Oversold     < -150
+
+    The strategy fires on a *fresh reclaim of -50 from the bearish zone*: this
+    catches the moment momentum exits a downswing and re-enters neutral while
+    the macro uptrend gate remains intact. This is structurally distinct from
+    every existing oscillator in the sandbox:
+      - Raw MACD/TSI/TRIX cross zero (no vol normalization, asset-dependent
+        thresholds).
+      - Stochastic/RSI/CCI cross fixed bounds but use price-only inputs (no ATR).
+      - Premier Stochastic/Fisher transform reshape distribution but again no
+        explicit volatility normalization.
+    MACD-V is the only oscillator here whose threshold is interpretable as a
+    multiple of average daily range.
+
+    Entry (prior-bar arrays, no lookahead):
+      - MACD-V_{t-2} <= -50  AND  MACD-V_{t-1} > -50  (fresh upcross of -50)
+      - SMA50_{t-1} > SMA200_{t-1}                    (macro uptrend gate)
+    Exit: close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    ema12 = _ema(close, 12)
+    ema26 = _ema(close, 26)
+    macd = ema12 - ema26
+    atr26 = _atr(high, low, close, 26)
+
+    safe_atr = np.where(np.isfinite(atr26) & (atr26 > 0.0), atr26, np.nan)
+    macd_v = (macd / safe_atr) * 100.0
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    macd_v_p1 = np.concatenate(([np.nan], macd_v[:-1]))
+    macd_v_p2 = np.concatenate(([np.nan, np.nan], macd_v[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    fresh_reclaim = (macd_v_p2 <= -50.0) & (macd_v_p1 > -50.0)
+    uptrend = sma50_p1 > sma200_p1
+    valid = (
+        np.isfinite(macd_v_p1)
+        & np.isfinite(macd_v_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    entries = valid & fresh_reclaim & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -5657,4 +5732,5 @@ NEW_STRATEGIES: dict = {
     "premier_stochastic_oscillator": strat_premier_stochastic_oscillator,
     "mcginley_dynamic_cross": strat_mcginley_dynamic_cross,
     "frama_bullish_cross": strat_frama_bullish_cross,
+    "macd_v_oversold_reclaim": strat_macd_v_oversold_reclaim,
 }
