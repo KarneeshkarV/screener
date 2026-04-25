@@ -6188,6 +6188,104 @@ def strat_rmi_oversold_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_bill_williams_alligator_awake(df: pd.DataFrame) -> list[Trade]:
+    """Bill Williams Alligator (Trading Chaos, 1995) — bullish "awakening".
+
+    The Alligator is a trio of Wilder-smoothed (SMMA = RMA) moving averages
+    of the *median* price m_t = (high_t + low_t)/2, each *displaced forward
+    in time* so the lines visually anticipate price:
+
+        Jaw   = SMMA(m, 13)  shifted +8 bars   (slow base, "blue")
+        Teeth = SMMA(m, 8)   shifted +5 bars   (medium, "red")
+        Lips  = SMMA(m, 5)   shifted +3 bars   (fast,   "green")
+
+    A forward shift of k means the value plotted at bar t is the SMMA value
+    computed using only data through bar t-k — strictly causal at decision
+    time t. The geometric idea (Williams' "fractal market" framing) is that
+    when the three lines lie flat and intertwined, the alligator is "asleep"
+    — price is in chop with no exploitable trend. When the lines fan out and
+    order themselves with Lips > Teeth > Jaw, the alligator has "woken up
+    with its mouth open" pointing upward — a regime where directional moves
+    persist long enough for trend-following to pay. The diagnostic event is
+    the *transition* from non-bullish ordering to bullish ordering, not a
+    continuous read on the gap.
+
+    This is mathematically distinct from every MA system already registered:
+    none use the (a) Wilder-smoothed median price, (b) three-line ordering
+    constraint Lips > Teeth > Jaw simultaneously, *and* (c) the forward-
+    displacement geometry that makes the lines act as time-shifted support
+    references. KAMA / VIDYA / FRAMA / MAMA-FAMA / McGinley vary the alpha
+    of a single line; HMA / ALMA / Tillson T3 / Heikin-Ashi reshape a single
+    smoother's impulse response; Donchian / Keltner / Bollinger build
+    channels. The Alligator's contribution is regime detection through
+    multi-timeframe MA *alignment* on shifted SMMAs of the median — Williams'
+    Profitunity-system anchor.
+
+    Entry (prior-bar arrays — strictly causal):
+      - Lips_{t-1} > Teeth_{t-1} > Jaw_{t-1}   (alligator awake & bullish)
+      - NOT (Lips_{t-2} > Teeth_{t-2} > Jaw_{t-2})  (fresh awakening, not
+        a sustained-trend re-entry)
+      - SMA50_{t-1} > SMA200_{t-1}              (macro uptrend filter)
+    Exit: Lips < Teeth (mouth begins closing) OR close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = close.size
+
+    median = (high + low) / 2.0
+
+    raw_jaw = _rma(median, 13)
+    raw_teeth = _rma(median, 8)
+    raw_lips = _rma(median, 5)
+
+    def _shift_forward(arr: np.ndarray, k: int) -> np.ndarray:
+        out = np.full(n, np.nan)
+        if k < n:
+            out[k:] = arr[: n - k]
+        return out
+
+    jaw = _shift_forward(raw_jaw, 8)
+    teeth = _shift_forward(raw_teeth, 5)
+    lips = _shift_forward(raw_lips, 3)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    lips_p1 = np.concatenate(([np.nan], lips[:-1]))
+    teeth_p1 = np.concatenate(([np.nan], teeth[:-1]))
+    jaw_p1 = np.concatenate(([np.nan], jaw[:-1]))
+    lips_p2 = np.concatenate(([np.nan, np.nan], lips[:-2]))
+    teeth_p2 = np.concatenate(([np.nan, np.nan], teeth[:-2]))
+    jaw_p2 = np.concatenate(([np.nan, np.nan], jaw[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    bullish_now = (lips_p1 > teeth_p1) & (teeth_p1 > jaw_p1)
+    bullish_prev = (lips_p2 > teeth_p2) & (teeth_p2 > jaw_p2)
+    fresh_awake = bullish_now & ~bullish_prev
+
+    uptrend = sma50_p1 > sma200_p1
+    valid = (
+        np.isfinite(lips_p1)
+        & np.isfinite(teeth_p1)
+        & np.isfinite(jaw_p1)
+        & np.isfinite(lips_p2)
+        & np.isfinite(teeth_p2)
+        & np.isfinite(jaw_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    entries = valid & fresh_awake & uptrend
+    mouth_closing = np.isfinite(lips) & np.isfinite(teeth) & (lips < teeth)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = mouth_closing | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6273,4 +6371,5 @@ NEW_STRATEGIES: dict = {
     "tillson_t3_cross": strat_tillson_t3_cross,
     "ehlers_laguerre_rsi": strat_ehlers_laguerre_rsi,
     "rmi_oversold_cross": strat_rmi_oversold_cross,
+    "bill_williams_alligator_awake": strat_bill_williams_alligator_awake,
 }
