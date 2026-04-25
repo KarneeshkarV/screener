@@ -5918,6 +5918,86 @@ def strat_andean_oscillator_bull_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_tillson_t3_cross(df: pd.DataFrame) -> list[Trade]:
+    """Tillson T3 Moving Average (Tim Tillson, 1998) — close-vs-T3 fresh upcross.
+
+    Reference: Tillson, T. (1998), "Smoothing Techniques for More Accurate
+    Signals", Stocks & Commodities Magazine. T3 is constructed as a triple
+    application of a generalized-DEMA operator GD(p,b) = (1+b)*EMA(p) - b*EMA(EMA(p)).
+    The closed form via a 6-EMA chain (each EMA applied to the previous output
+    with the same length n) is:
+
+        e1 = EMA(close, n);   e2 = EMA(e1, n);   e3 = EMA(e2, n)
+        e4 = EMA(e3, n);      e5 = EMA(e4, n);   e6 = EMA(e5, n)
+        T3 = c1*e6 + c2*e5 + c3*e4 + c4*e3
+        c1 = -b^3
+        c2 = 3*b^2 + 3*b^3
+        c3 = -6*b^2 - 3*b - 3*b^3
+        c4 = 1 + 3*b + 3*b^2 + b^3        (coeffs sum to 1 → unit-DC gain)
+
+    The volume factor b ∈ (0,1) (typically 0.7) trades responsiveness against
+    smoothness: b→0 collapses T3 onto a 3-stage cascaded EMA, b→1 sharpens it
+    toward a triple-DEMA. Tillson's design goal was a smoother that responds
+    quickly to genuine trend changes while heavily attenuating bar-to-bar
+    noise — i.e. less lag than equivalent-length single EMA, less overshoot
+    than DEMA/TEMA. This is mathematically distinct from every adaptive
+    smoother already in the sandbox: McGinley (denominator damping), FRAMA
+    (fractal-dim-adaptive alpha), MAMA/FAMA (Hilbert-Transform phase-adaptive),
+    KAMA (efficiency-ratio adaptive), VIDYA (CMO-adaptive), ALMA (Gaussian
+    window), HMA (sqrt-length WMA chain), Heikin-Ashi (OHLC averaging).
+
+    Entry (prior-bar arrays, no lookahead):
+      - close_{t-2} <= T3_{t-2} AND close_{t-1} > T3_{t-1}   (fresh upcross)
+      - SMA50_{t-1} > SMA200_{t-1}                            (macro uptrend)
+    Exit: close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    n = 14
+    b = 0.7
+    b2 = b * b
+    b3 = b2 * b
+    c1 = -b3
+    c2 = 3.0 * b2 + 3.0 * b3
+    c3 = -6.0 * b2 - 3.0 * b - 3.0 * b3
+    c4 = 1.0 + 3.0 * b + 3.0 * b2 + b3
+
+    e1 = _ema(close, n)
+    e2 = _ema(e1, n)
+    e3 = _ema(e2, n)
+    e4 = _ema(e3, n)
+    e5 = _ema(e4, n)
+    e6 = _ema(e5, n)
+    t3 = c1 * e6 + c2 * e5 + c3 * e4 + c4 * e3
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    close_p1 = np.concatenate(([np.nan], close[:-1]))
+    close_p2 = np.concatenate(([np.nan, np.nan], close[:-2]))
+    t3_p1 = np.concatenate(([np.nan], t3[:-1]))
+    t3_p2 = np.concatenate(([np.nan, np.nan], t3[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    fresh_cross = (close_p2 <= t3_p2) & (close_p1 > t3_p1)
+    uptrend = sma50_p1 > sma200_p1
+    valid = (
+        np.isfinite(close_p1)
+        & np.isfinite(close_p2)
+        & np.isfinite(t3_p1)
+        & np.isfinite(t3_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    entries = valid & fresh_cross & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6000,4 +6080,5 @@ NEW_STRATEGIES: dict = {
     "macd_v_oversold_reclaim": strat_macd_v_oversold_reclaim,
     "mama_fama_cross": strat_mama_fama_cross,
     "andean_oscillator_bull_cross": strat_andean_oscillator_bull_cross,
+    "tillson_t3_cross": strat_tillson_t3_cross,
 }
