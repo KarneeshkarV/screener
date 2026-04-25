@@ -2913,6 +2913,86 @@ def strat_connors_double_7s(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_raschke_holy_grail(df: pd.DataFrame) -> list[Trade]:
+    """Linda Raschke 'Holy Grail' — buy the first pullback to EMA(20) inside
+    a strong ADX trend, on momentum recovery.
+
+    Setup (all measured on the prior closed bar so the decision is fully
+    bar-close decidable):
+      1. ADX(14) > 30  — a strong trend exists.
+      2. +DI > -DI     — directional bias is bullish.
+      3. Prior bar's low touched/pierced EMA(20) — the pullback to the
+         dynamic support has occurred.
+      4. Today's close prints above the prior bar's high — momentum
+         resumes upward through the pullback bar.
+    Exit: close drops below EMA(20) for two consecutive bars (a clean break
+    of the dynamic support that defined the setup).
+
+    This differs from adx_dmi_trend_emergence (which fires on a fresh
+    rising-ADX cross above 20 with no pullback requirement) by demanding a
+    tactical pullback-and-recovery to EMA(20) inside an already-strong trend.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    high_prev_raw = np.concatenate(([np.nan], high[:-1]))
+    low_prev_raw = np.concatenate(([np.nan], low[:-1]))
+    close_prev_tr = np.concatenate(([np.nan], close[:-1]))
+
+    up_move = high - high_prev_raw
+    dn_move = low_prev_raw - low
+    plus_dm = np.where((up_move > dn_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((dn_move > up_move) & (dn_move > 0), dn_move, 0.0)
+    plus_dm = np.nan_to_num(plus_dm, nan=0.0)
+    minus_dm = np.nan_to_num(minus_dm, nan=0.0)
+
+    tr_raw = np.maximum.reduce([
+        high - low,
+        np.abs(high - close_prev_tr),
+        np.abs(low - close_prev_tr),
+    ])
+    tr_raw = np.nan_to_num(tr_raw, nan=high - low)
+
+    n = 14
+    atr_n = _rma(tr_raw, n)
+    plus_di = 100.0 * _rma(plus_dm, n) / np.where(atr_n > 0, atr_n, np.nan)
+    minus_di = 100.0 * _rma(minus_dm, n) / np.where(atr_n > 0, atr_n, np.nan)
+    di_sum = plus_di + minus_di
+    dx = 100.0 * np.abs(plus_di - minus_di) / np.where(di_sum > 0, di_sum, np.nan)
+    adx = _rma(np.nan_to_num(dx, nan=0.0), n)
+
+    ema20 = _ema(close, 20)
+
+    # All "setup" features are read from the prior bar to keep decisions
+    # decidable strictly at today's bar close.
+    adx_prev = np.concatenate(([np.nan], adx[:-1]))
+    plus_di_prev = np.concatenate(([np.nan], plus_di[:-1]))
+    minus_di_prev = np.concatenate(([np.nan], minus_di[:-1]))
+    ema20_prev = np.concatenate(([np.nan], ema20[:-1]))
+    high_prev = np.concatenate(([np.nan], high[:-1]))
+    low_prev = np.concatenate(([np.nan], low[:-1]))
+
+    pullback_prev = low_prev <= ema20_prev  # pullback bar pierced EMA20
+    entries = (
+        np.isfinite(adx_prev)
+        & np.isfinite(plus_di_prev)
+        & np.isfinite(minus_di_prev)
+        & np.isfinite(ema20_prev)
+        & np.isfinite(high_prev)
+        & (adx_prev > 30.0)
+        & (plus_di_prev > minus_di_prev)
+        & pullback_prev
+        & (close > high_prev)
+    )
+
+    below_ema = np.isfinite(ema20) & (close < ema20)
+    below_ema_prev = np.concatenate(([False], below_ema[:-1]))
+    exits = below_ema & below_ema_prev
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -2956,4 +3036,5 @@ NEW_STRATEGIES: dict = {
     "bollinger_pctb_reversion": strat_bollinger_pctb_reversion,
     "anchored_vwap_reclaim": strat_anchored_vwap_reclaim,
     "connors_double_7s": strat_connors_double_7s,
+    "raschke_holy_grail": strat_raschke_holy_grail,
 }
