@@ -4063,6 +4063,96 @@ def strat_weinstein_stage2_breakout(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_klinger_volume_oscillator_signal_cross(df: pd.DataFrame) -> list[Trade]:
+    """Klinger Volume Oscillator (KVO) bullish signal-line cross inside an
+    SMA(50)>SMA(200) uptrend. Exit when close < EMA(20).
+
+    Stephen J. Klinger (Technical Analysis of Stocks & Commodities, Dec 1997)
+    designed the KVO to track long-term money-flow trends while remaining
+    sensitive to short-term reversals. Construction (all bar-close values):
+
+        trend_t      = +1 if (high+low+close)_t > (h+l+c)_{t-1}, else -1
+        DM_t         = high_t - low_t                          (daily range)
+        CM_t         = CM_{t-1} + DM_t          if trend_t == trend_{t-1}
+                     = DM_{t-1} + DM_t          otherwise (reset on flip)
+        VF_t (Force) = volume_t * |2*(DM_t/CM_t) - 1| * trend_t * 100
+        KVO_t        = EMA(VF, 34) - EMA(VF, 55)
+        Signal_t     = EMA(KVO, 13)
+
+    Buy on the bar where KVO crosses up through Signal (KVO_{t-1} <= Sig_{t-1}
+    and KVO_t > Sig_t), provided SMA(50) > SMA(200) at that bar. The CM
+    "cumulative-measure" term resets every time the daily H+L+C trend flips,
+    which makes the |2*DM/CM - 1| ratio a *relative* measure of how today's
+    range compares to the running streak — a unique structural feature.
+
+    This is structurally distinct from every other volume-flow play in the
+    sandbox:
+      - obv_ema_cross uses cumulative signed volume only (no range component)
+      - chaikin_oscillator_zero_cross uses A/D close-position-in-range
+        accumulation, EMA(3)-EMA(10), zero-line cross
+      - cmf_zero_reclaim is the 21-bar Chaikin Money Flow zero-reclaim
+      - elder_force_index_zero_cross is (close - close_prev) * volume EMA-13
+      - mfi_oversold_recovery is the 14-bar typical-price money-flow ratio
+      - nvi_fosback_trend conditions on negative-volume-index vs its 255-EMA
+      - pocket_pivot is a single-bar volume-spike pattern, not an oscillator
+    KVO is the only one combining {trend direction, daily range, streak-
+    reset cumulative range, volume} into a dual-EMA oscillator with its
+    own EMA(13) signal line.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+    n = len(close)
+
+    if n == 0:
+        return []
+
+    hlc = high + low + close
+    hlc_prev = np.concatenate(([np.nan], hlc[:-1]))
+    trend = np.where(hlc > hlc_prev, 1.0, -1.0)
+    trend[0] = 0.0  # undefined on first bar
+
+    dm = high - low
+
+    cm = np.zeros(n, dtype=float)
+    for i in range(1, n):
+        if trend[i] == trend[i - 1]:
+            cm[i] = cm[i - 1] + dm[i]
+        else:
+            cm[i] = dm[i - 1] + dm[i]
+
+    safe_cm = np.where(cm > 0.0, cm, np.nan)
+    vf_ratio = np.where(np.isfinite(safe_cm), 2.0 * (dm / safe_cm) - 1.0, 0.0)
+    vf = volume * np.abs(vf_ratio) * trend * 100.0
+    vf = np.nan_to_num(vf, nan=0.0, posinf=0.0, neginf=0.0)
+
+    kvo = _ema(vf, 34) - _ema(vf, 55)
+    signal = _ema(kvo, 13)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    kvo_prev = np.concatenate(([np.nan], kvo[:-1]))
+    signal_prev = np.concatenate(([np.nan], signal[:-1]))
+
+    cross_up = (
+        np.isfinite(kvo_prev)
+        & np.isfinite(signal_prev)
+        & (kvo_prev <= signal_prev)
+        & (kvo > signal)
+    )
+    uptrend = (
+        np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+    )
+
+    entries = cross_up & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -4122,4 +4212,5 @@ NEW_STRATEGIES: dict = {
     "wyckoff_spring_reclaim": strat_wyckoff_spring_reclaim,
     "williams_fractal_breakout": strat_williams_fractal_breakout,
     "weinstein_stage2_breakout": strat_weinstein_stage2_breakout,
+    "klinger_volume_oscillator_signal_cross": strat_klinger_volume_oscillator_signal_cross,
 }
