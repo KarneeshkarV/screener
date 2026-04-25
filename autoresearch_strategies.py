@@ -4434,6 +4434,146 @@ def strat_vidya_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_acceleration_bands_breakout(df: pd.DataFrame) -> list[Trade]:
+    """Price Headley Acceleration Bands upside breakout.
+
+    Headley's bands scale around each bar by (H-L)/(H+L) — a normalized,
+    *price-relative* range factor — rather than ATR (Keltner) or σ
+    (Bollinger). They expand sharply on wide-range bars and contract on
+    inside bars, giving a fundamentally different envelope shape than
+    other volatility bands already in the sandbox.
+
+    Upper raw  = high * (1 + 4 * (high - low) / (high + low))
+    Upper band = SMA20(upper raw)
+
+    Entry: today's close crosses above the prior 20-bar SMA of the upper
+    raw band, today's close > SMA200, and prior close was at/below band.
+    Exit : close < EMA(20).
+
+    Uses prior-bar values for the cross test so decision is bar-close
+    safe and free of lookahead. Distinct from:
+      - keltner_channel_breakout (ATR-scaled),
+      - bollinger / pctb (stdev-scaled),
+      - donchian_20_10_trend (raw high channel, no scaling).
+    """
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    hl_sum = high + low
+    factor = np.where(hl_sum > 0, (high - low) / hl_sum, 0.0)
+    upper_raw = high * (1.0 + 4.0 * factor)
+
+    upper_band = (
+        pd.Series(upper_raw).rolling(20, min_periods=20).mean().to_numpy()
+    )
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    upper_prev = np.concatenate(([np.nan], upper_band[:-1]))
+
+    crossed_up = (
+        np.isfinite(upper_band)
+        & np.isfinite(upper_prev)
+        & (close > upper_band)
+        & (close_prev <= upper_prev)
+    )
+    regime = np.isfinite(sma200) & (close > sma200)
+
+    entries = crossed_up & regime
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_qqe_bullish_cross(df: pd.DataFrame) -> list[Trade]:
+    """QQE (Quantitative Qualitative Estimation) bullish trailing-line cross.
+
+    QQE smooths RSI(14) with EMA(5) into RsiMa, then builds a volatility-
+    adaptive trailing band from a doubly Wilder-smoothed |ΔRsiMa| (×4.236).
+    The trailing line ratchets monotonically up under RsiMa while RsiMa
+    holds above it, and resets to RsiMa+DAR/RsiMa-DAR on regime flips.
+    A bullish QQE cross fires when RsiMa crosses up through the trailing
+    line — a *smoothed* RSI breakout with adaptive volatility cushion.
+
+    Distinct from:
+      - rsi_ema / rsi_brown_range_shift (raw RSI, no volatility band),
+      - inverse_fisher_rsi (Fisher transform of RSI, no trailing line),
+      - schaff_trend_cycle (double-smoothed stochastic, not RSI),
+      - tsi_signal_cross (true-strength index of momentum, not RSI ATR).
+
+    Entry: prior bar RsiMa was at or below trailing line, current RsiMa
+    crosses above it, and SMA50>SMA200 long-term uptrend gates direction.
+    Exit: close < EMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = len(close)
+
+    rsi_period = 14
+    smoothing = 5
+    wilder_period = 27
+    qqe_factor = 4.236
+
+    rsi = _rsi(close, rsi_period)
+    rsi_ma = _ema(rsi, smoothing)
+
+    rsi_ma_prev = np.concatenate(([np.nan], rsi_ma[:-1]))
+    delta = np.abs(rsi_ma - rsi_ma_prev)
+    delta_safe = np.where(np.isfinite(delta), delta, 0.0)
+
+    atr_rsi = _rma(delta_safe, wilder_period)
+    dar = _rma(atr_rsi, wilder_period) * qqe_factor
+
+    newlong = rsi_ma - dar
+    newshort = rsi_ma + dar
+
+    tr_level = np.full(n, np.nan)
+    seeded = False
+    for i in range(n):
+        if not (np.isfinite(rsi_ma[i]) and np.isfinite(dar[i])):
+            continue
+        if not seeded:
+            tr_level[i] = newlong[i]
+            seeded = True
+            continue
+        prev = tr_level[i - 1]
+        if not np.isfinite(prev):
+            tr_level[i] = newlong[i]
+            continue
+        prev_rsi = rsi_ma[i - 1]
+        cur_rsi = rsi_ma[i]
+        if np.isfinite(prev_rsi) and prev_rsi > prev and cur_rsi > prev:
+            tr_level[i] = max(prev, newlong[i])
+        elif np.isfinite(prev_rsi) and prev_rsi < prev and cur_rsi < prev:
+            tr_level[i] = min(prev, newshort[i])
+        elif cur_rsi > prev:
+            tr_level[i] = newlong[i]
+        else:
+            tr_level[i] = newshort[i]
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    tr_prev = np.concatenate(([np.nan], tr_level[:-1]))
+
+    cross_up = (
+        np.isfinite(rsi_ma)
+        & np.isfinite(rsi_ma_prev)
+        & np.isfinite(tr_level)
+        & np.isfinite(tr_prev)
+        & (rsi_ma_prev <= tr_prev)
+        & (rsi_ma > tr_level)
+    )
+    uptrend = np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = cross_up & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -4498,4 +4638,6 @@ NEW_STRATEGIES: dict = {
     "range_filter_buy": strat_range_filter_buy,
     "rsi_brown_range_shift": strat_rsi_brown_range_shift,
     "vidya_bullish_cross": strat_vidya_bullish_cross,
+    "acceleration_bands_breakout": strat_acceleration_bands_breakout,
+    "qqe_bullish_cross": strat_qqe_bullish_cross,
 }
