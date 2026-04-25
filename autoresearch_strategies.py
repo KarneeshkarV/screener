@@ -6366,6 +6366,104 @@ def strat_williams_ac_zero_acceleration(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_ehlers_roofing_filter(df: pd.DataFrame) -> list[Trade]:
+    """Ehlers Roofing Filter zero-up-cross — bandpass momentum (Cycle Analytics 2013).
+
+    The Roofing Filter is John F. Ehlers' canonical bandpass detrender for
+    isolating the dominant tradable cycle component of price. It is the
+    cascade of two IIR filters:
+      (1) a 2-pole HIGH-PASS filter — removes trend and cycles longer than HP
+      (2) a 2-pole SUPER SMOOTHER   — removes noise and cycles shorter than LP
+    With HP=48 and LP=10 the Roofing Filter passes only the cycle band that
+    Ehlers argues is the cleanest swing-momentum signal on daily bars.
+    Crosses of zero from below mark the start of a fresh up-cycle.
+
+    Math (Ehlers, Cycle Analytics for Traders, 2013, ch. 3 & 4):
+        a1 = (cos(0.707·2π/HP) + sin(0.707·2π/HP) − 1) / cos(0.707·2π/HP)
+        HP_t = (1 − a1/2)² · (c_t − 2 c_{t−1} + c_{t−2})
+             + 2 (1 − a1) · HP_{t−1}  −  (1 − a1)² · HP_{t−2}
+        b1 = exp(−1.414·π / LP)
+        cc = 2 b1 · cos(1.414·π / LP)
+        c2 = cc,  c3 = −b1²,  c1 = 1 − c2 − c3
+        Filt_t = c1 · (HP_t + HP_{t−1}) / 2 + c2 · Filt_{t−1} + c3 · Filt_{t−2}
+
+    No other sandbox strategy uses a 2-pole-HP-into-2-pole-SS bandpass IIR.
+    Schaff Trend Cycle is a stochastic-of-stochastic, MACD-V is volatility-
+    normalised EMA-difference, MAMA/FAMA uses a Hilbert discriminator to drive
+    adaptive EMA, Coppock is weighted rate-of-change, DPO detrends by shift,
+    Pretty-Good-Oscillator is an ATR-normalised range z-score, TRIX is a
+    triple-EMA derivative — different filters with different impulse
+    responses and different geometric triggers. The Roofing Filter is unique
+    here as a literal bandpass IIR.
+
+    Entry (prior-bar arrays — strictly causal, no lookahead):
+      - Filt_{t−2} < 0  AND  Filt_{t−1} >= 0       (fresh zero up-cross)
+      - SMA50_{t−1} > SMA200_{t−1}                  (macro uptrend filter)
+    Exit: Filt < 0  OR  close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = close.size
+
+    HP_PER = 48
+    LP_PER = 10
+
+    cos_hp = np.cos(0.707 * 2.0 * np.pi / HP_PER)
+    sin_hp = np.sin(0.707 * 2.0 * np.pi / HP_PER)
+    a1 = (cos_hp + sin_hp - 1.0) / cos_hp
+    one_minus_a1 = 1.0 - a1
+    one_minus_half_a1_sq = (1.0 - a1 / 2.0) ** 2
+    one_minus_a1_sq = one_minus_a1 ** 2
+
+    b1 = np.exp(-1.414 * np.pi / LP_PER)
+    cc = 2.0 * b1 * np.cos(1.414 * np.pi / LP_PER)
+    c2 = cc
+    c3 = -(b1 * b1)
+    c1 = 1.0 - c2 - c3
+
+    hp = np.zeros(n)
+    filt = np.zeros(n)
+    for i in range(2, n):
+        hp[i] = (
+            one_minus_half_a1_sq * (close[i] - 2.0 * close[i - 1] + close[i - 2])
+            + 2.0 * one_minus_a1 * hp[i - 1]
+            - one_minus_a1_sq * hp[i - 2]
+        )
+        filt[i] = (
+            c1 * (hp[i] + hp[i - 1]) / 2.0
+            + c2 * filt[i - 1]
+            + c3 * filt[i - 2]
+        )
+
+    warmup = max(HP_PER, LP_PER) * 2 + 5
+    filt_masked = filt.astype(float).copy()
+    filt_masked[:warmup] = np.nan
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    filt_p1 = np.concatenate(([np.nan], filt_masked[:-1]))
+    filt_p2 = np.concatenate(([np.nan, np.nan], filt_masked[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(filt_p1)
+        & np.isfinite(filt_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_zero_up = (filt_p2 < 0.0) & (filt_p1 >= 0.0)
+    uptrend = sma50_p1 > sma200_p1
+    entries = valid & fresh_zero_up & uptrend
+
+    below_zero = np.isfinite(filt_masked) & (filt_masked < 0.0)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = below_zero | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6453,4 +6551,5 @@ NEW_STRATEGIES: dict = {
     "rmi_oversold_cross": strat_rmi_oversold_cross,
     "bill_williams_alligator_awake": strat_bill_williams_alligator_awake,
     "williams_ac_zero_acceleration": strat_williams_ac_zero_acceleration,
+    "ehlers_roofing_filter": strat_ehlers_roofing_filter,
 }
