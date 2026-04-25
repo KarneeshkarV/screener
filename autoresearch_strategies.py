@@ -3286,6 +3286,58 @@ def strat_linreg_slope_signchange(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_td_sequential_buy_setup(df: pd.DataFrame) -> list[Trade]:
+    """Tom DeMark TD Sequential — bullish setup completion (count of 9).
+
+    DeMark's setup is a *count*, not a smoothed indicator. Bars where
+    close[t] < close[t-4] increment a counter; any bar where close[t] >=
+    close[t-4] resets it. When the counter reaches 9, the market has put
+    in 9 consecutive bars of close-vs-4-bars-ago weakness — the canonical
+    'sellers exhausted' signal. This is structurally different from every
+    MA-cross / oscillator strategy already in the journal because it
+    reasons about a discrete bar count, not a continuous indicator level.
+
+    To avoid catching a true falling-knife, gate by SMA(200) regime: only
+    take the buy-setup when the longer-term trend is up (close > SMA(200)).
+    The 9-count then maps to a deep pullback in an established uptrend —
+    exactly the textbook DeMark scenario.
+
+    Entry  : setup_count == 9 AND close > SMA(200) AND SMA(50) > SMA(200)
+    Exits  : close > SMA(10) (short-term momentum returns) OR
+             close < lowest_low_5 — protects against breakdown.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = len(close)
+
+    setup = np.zeros(n, dtype=int)
+    for i in range(4, n):
+        if close[i] < close[i - 4]:
+            setup[i] = setup[i - 1] + 1 if i > 0 else 1
+        else:
+            setup[i] = 0
+
+    sma200 = _sma(close, 200)
+    sma50 = _sma(close, 50)
+    sma10 = _sma(close, 10)
+
+    ll5 = pd.Series(low).shift(1).rolling(5, min_periods=5).min().to_numpy()
+
+    regime = (
+        np.isfinite(sma200)
+        & np.isfinite(sma50)
+        & (close > sma200)
+        & (sma50 > sma200)
+    )
+    entries = (setup == 9) & regime
+
+    momentum_back = np.isfinite(sma10) & (close > sma10)
+    breakdown = np.isfinite(ll5) & (close < ll5)
+    exits = momentum_back | breakdown
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3334,4 +3386,5 @@ NEW_STRATEGIES: dict = {
     "guppy_gmma_compression_release": strat_guppy_gmma_compression_release,
     "hammer_pin_bar_uptrend": strat_hammer_pin_bar_uptrend,
     "linreg_slope_signchange": strat_linreg_slope_signchange,
+    "td_sequential_buy_setup": strat_td_sequential_buy_setup,
 }
