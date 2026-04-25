@@ -4153,6 +4153,180 @@ def strat_klinger_volume_oscillator_signal_cross(df: pd.DataFrame) -> list[Trade
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_demarker_oversold_reclaim(df: pd.DataFrame) -> list[Trade]:
+    """Tom DeMark's DeMarker (DeM) oversold-reclaim cross inside an
+    SMA(50)>SMA(200) uptrend; exit when close < EMA(20).
+
+    DeMarker is a *range-extreme* oscillator — unlike RSI (close-to-close
+    deltas), CCI (typical-price vs SMA), Stoch (close inside H/L window),
+    or MFI (typical-price * volume), DeM measures whether each bar is
+    extending the prior bar's high/low *envelope* and how that compares
+    over a window. Construction (Tom DeMark, "The New Science of Technical
+    Analysis", 1994):
+
+        DeMax_t  = max(high_t  - high_{t-1}, 0)     # only count up-extension
+        DeMin_t  = max(low_{t-1} - low_t, 0)        # only count down-extension
+        DeM_t    = SMA(DeMax, n) / (SMA(DeMax, n) + SMA(DeMin, n))
+
+    Bounded 0..1; <0.30 = oversold (downside-extension dominates window),
+    >0.70 = overbought. The signal is the cross UP through 0.30 from below
+    — "downside extension exhausted, range-extension flipping back to the
+    upside." Long-only filter: SMA(50) > SMA(200).
+
+    Distinct from every oscillator already tested:
+      - RSI / CMO / TSI / RVI / Coppock / KST / Schaff / Inverse-Fisher all
+        use *close-to-close* changes (Δclose). DeM uses Δhigh and Δlow
+        independently, capturing range-envelope extension rather than
+        directional close drift.
+      - Stochastic / Stoch-RSI / Williams %R / Ultimate Oscillator place
+        close inside the H/L window. DeM compares each bar's H to PRIOR
+        bar's H (and L to prior L) — a *bar-over-bar extension* measure.
+      - CCI / MFI / Awesome / Fisher / DPO / Chaikin osc / EFI all use
+        typical price or volume-weighted variants. DeM ignores typical
+        price and volume entirely, using only H/L extensions.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = len(close)
+
+    if n == 0:
+        return []
+
+    high_prev = np.concatenate(([np.nan], high[:-1]))
+    low_prev = np.concatenate(([np.nan], low[:-1]))
+
+    demax = np.where(np.isfinite(high_prev), np.maximum(high - high_prev, 0.0), 0.0)
+    demin = np.where(np.isfinite(low_prev), np.maximum(low_prev - low, 0.0), 0.0)
+
+    period = 14
+    sma_demax = _sma(demax, period)
+    sma_demin = _sma(demin, period)
+    denom = sma_demax + sma_demin
+    with np.errstate(divide="ignore", invalid="ignore"):
+        dem = np.where(denom > 0, sma_demax / denom, np.nan)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    dem_prev = np.concatenate(([np.nan], dem[:-1]))
+    dem_prev2 = np.concatenate(([np.nan, np.nan], dem[:-2]))
+
+    cross_up = (
+        np.isfinite(dem_prev2)
+        & np.isfinite(dem_prev)
+        & (dem_prev2 < 0.30)
+        & (dem_prev >= 0.30)
+    )
+    uptrend_prev = np.concatenate(
+        ([False], (np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200))[:-1])
+    )
+
+    entries = cross_up & uptrend_prev
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_range_filter_buy(df: pd.DataFrame) -> list[Trade]:
+    """Donovan Wall's Range Filter — recursive trailing line locked above
+    or below price by ``mult * EMA(|Δclose|, n)`` (smoothed). Entry: close
+    crosses UP through the prior-bar filter while the filter itself is
+    rising and SMA(50) > SMA(200). Exit: close < EMA(20).
+
+    Construction (per the original Pine v4 publication, Donovan Wall 2019):
+
+        Δ_t          = |close_t - close_{t-1}|
+        avg_range_t  = EMA(Δ, n)                       # n = 14
+        sr_t         = EMA(avg_range, 2n-1) * mult     # mult = 2.618 ≈ φ²
+        rf_t = ┌ max(rf_{t-1}, close_t - sr_t)   if close_t > rf_{t-1}
+               │ min(rf_{t-1}, close_t + sr_t)   if close_t < rf_{t-1}
+               └ rf_{t-1}                         otherwise
+
+    The filter is *recursive* — each value depends on the prior filter
+    value — so it cannot be expressed as a moving average, KAMA, HMA, or
+    supertrend. It locks in monotonic levels (only steps up while price
+    rises, only steps down while price falls) and ignores moves smaller
+    than the smoothed-range envelope, producing a piecewise-flat trail.
+
+    Distinct from every prior strategy:
+      - Supertrend (ATR-based) flips around (high+low)/2 with ATR bands;
+        Range Filter trails *close* with EMA-of-|Δclose|.
+      - KAMA / Schaff / TRIX / HMA are smooth moving averages; the Range
+        Filter is non-monotonic locked steps.
+      - Donchian / Keltner / squeeze / Bollinger use H/L envelopes of past
+        N bars; the Range Filter uses recursive close vs. close-change EMA.
+      - Parabolic SAR accelerates with each bar in trend; Range Filter
+        does not — its lock-step is range-based, not time-based.
+
+    The cross-up + rising-filter conjunction targets fresh expansion out
+    of consolidation while the filter has just begun trending; the
+    SMA(50)>SMA(200) gate keeps it in established uptrends and the EMA20
+    exit (consistent with iter 11–13 strategies) cuts the trade once
+    short-term momentum fails.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = len(close)
+    if n == 0:
+        return []
+
+    period = 14
+    mult = 2.618
+
+    diff = np.zeros(n, dtype=float)
+    diff[1:] = np.abs(close[1:] - close[:-1])
+    avg_range = _ema(diff, period)
+    smooth_range = _ema(avg_range, period * 2 - 1) * mult
+
+    rf = np.full(n, np.nan, dtype=float)
+    start = 0
+    while start < n and not np.isfinite(smooth_range[start]):
+        start += 1
+    if start >= n:
+        return []
+    rf[start] = float(close[start])
+    for i in range(start + 1, n):
+        sr = smooth_range[i]
+        prev_rf = rf[i - 1]
+        if not np.isfinite(sr) or not np.isfinite(prev_rf):
+            rf[i] = prev_rf
+            continue
+        c = close[i]
+        if c > prev_rf:
+            rf[i] = max(prev_rf, c - sr)
+        elif c < prev_rf:
+            rf[i] = min(prev_rf, c + sr)
+        else:
+            rf[i] = prev_rf
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    rf_prev = np.concatenate(([np.nan], rf[:-1]))
+    rf_prev2 = np.concatenate(([np.nan, np.nan], rf[:-2]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+
+    cross_up = (
+        np.isfinite(rf_prev)
+        & np.isfinite(rf_prev2)
+        & np.isfinite(close_prev)
+        & (close_prev <= rf_prev)
+        & (close > rf)
+        & (rf >= rf_prev)
+        & (rf_prev >= rf_prev2)
+    )
+    uptrend = (
+        np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+    )
+
+    entries = cross_up & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -4213,4 +4387,6 @@ NEW_STRATEGIES: dict = {
     "williams_fractal_breakout": strat_williams_fractal_breakout,
     "weinstein_stage2_breakout": strat_weinstein_stage2_breakout,
     "klinger_volume_oscillator_signal_cross": strat_klinger_volume_oscillator_signal_cross,
+    "demarker_oversold_reclaim": strat_demarker_oversold_reclaim,
+    "range_filter_buy": strat_range_filter_buy,
 }
