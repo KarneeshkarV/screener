@@ -6780,6 +6780,77 @@ def strat_vw_macd_signal_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_chande_forecast_oscillator(df: pd.DataFrame) -> list[Trade]:
+    """Chande Forecast Oscillator (Tushar Chande, 'Beyond Technical Analysis' 1997).
+
+    CFO is the residual between price and its n-bar linear-regression
+    forecast, expressed as a percent of price:
+        CFO_i = 100 * (close_i − LR_forecast_i) / close_i,
+    where LR_forecast_i is the OLS regression line over the last n closes
+    evaluated at bar i (intercept + slope*(n−1)). Positive CFO means price
+    is running ahead of its statistical trend; negative means it lags.
+
+    Distinct from strat_linreg_slope_signchange (which keys on the *sign*
+    of the fitted slope). Two stocks can share the same upward slope yet
+    sit on opposite sides of their regression lines — CFO is a *level*
+    signal, capturing the moment a stalled price snaps back above its
+    own OLS fit while the longer-term trend is intact.
+
+    Entry: CFO crosses up through zero (CFO_{i-1} <= 0 < CFO_i) inside an
+        SMA50 > SMA200 long-term uptrend.
+    Exit: CFO < 0 OR close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    period = 14
+
+    x = np.arange(period, dtype=float)
+    sum_x = float(x.sum())
+    sum_x2 = float((x * x).sum())
+    denom = period * sum_x2 - sum_x * sum_x
+
+    s = pd.Series(close)
+    sum_y = s.rolling(period, min_periods=period).sum().to_numpy()
+    sum_xy = (
+        s.rolling(period, min_periods=period)
+        .apply(lambda w: float(np.dot(x, w)), raw=True)
+        .to_numpy()
+    )
+
+    slope = (period * sum_xy - sum_x * sum_y) / denom
+    intercept = (sum_y - slope * sum_x) / period
+    forecast = intercept + slope * (period - 1)
+
+    cfo = np.where(
+        (close != 0) & np.isfinite(forecast),
+        100.0 * (close - forecast) / close,
+        np.nan,
+    )
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    cfo_prev = np.concatenate(([np.nan], cfo[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(cfo_prev)
+        & np.isfinite(cfo)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_up_cross = valid & (cfo_prev <= 0.0) & (cfo > 0.0)
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_up_cross & uptrend
+
+    cfo_neg = np.isfinite(cfo) & (cfo < 0.0)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = cfo_neg | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6872,4 +6943,5 @@ NEW_STRATEGIES: dict = {
     "twiggs_money_flow": strat_twiggs_money_flow,
     "elder_impulse_bull": strat_elder_impulse_bull,
     "vw_macd_signal_cross": strat_vw_macd_signal_cross,
+    "chande_forecast_oscillator": strat_chande_forecast_oscillator,
 }
