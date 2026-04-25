@@ -5110,6 +5110,109 @@ def strat_ehlers_cog_signal_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_smi_blau_oversold_cross(df: pd.DataFrame) -> list[Trade]:
+    """William Blau's Stochastic Momentum Index (SMI) — oversold signal cross.
+
+    Blau (1993, "Momentum, Direction, and Divergence") centered the classic
+    Stochastic so it ranges -100..+100 instead of 0..100. Where %K measures
+    today's close as a fraction of the trailing high-low range, SMI measures
+    today's close *relative to the midpoint* of that range and double-smooths
+    both numerator and denominator with nested EMAs:
+
+        HH       = rolling max(high, N)
+        LL       = rolling min(low,  N)
+        midpt    = (HH + LL) / 2
+        D        = close - midpt           (signed distance from mid)
+        HLR      = HH - LL                 (range)
+        SMI      = 100 * EMA(EMA(D,   q), q) / (0.5 * EMA(EMA(HLR, q), q))
+        signal   = EMA(SMI, m)
+
+    With N=10, q=3, m=3 (Blau's classic settings) the indicator turns over
+    several bars before %K and %D, and oscillates symmetrically around zero.
+
+    Entry (prior-bar values only, no lookahead):
+      - SMI_{t-2} <= signal_{t-2} AND SMI_{t-1} > signal_{t-1}
+        (fresh upward signal-line cross)
+      - SMI_{t-1} < -40 (signal originates from oversold territory, the
+        regime where the cross has the strongest forward edge per Blau)
+      - SMA(50)_{t-1} > SMA(200)_{t-1} (macro uptrend filter)
+    Exit: close < EMA(20).
+
+    Distinct from every existing sandbox indicator:
+      - stochastic_oversold_recovery: raw %K crossing 20 from below — single
+        ratio of close-to-range, no double smoothing, no centering.
+      - stoch_rsi_oversold_cross: stochastic of RSI, not of price midpoint.
+      - tsi_signal_cross: double-EMA of Δclose / |Δclose| — momentum-based,
+        SMI is *position-in-range* based.
+      - schaff_trend_cycle: double stochastic of MACD — uses MACD as input
+        and is bounded 0..100; SMI uses raw range geometry, ±100.
+      - fisher / inverse_fisher_rsi: Gaussian transforms of normalized price.
+      - awesome_oscillator_saucer: SMA(5)-SMA(34) of median, not centered
+        in a high-low range and not double-smoothed.
+    SMI is uniquely the *signed, double-smoothed midpoint distance* in the
+    pool — no other strategy combines (a) range-centered geometry, (b) a
+    nested EMA on both numerator and denominator, and (c) ±100 bounds.
+    """
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    n = 10
+    q = 3
+    m = 3
+
+    h_s = pd.Series(high)
+    l_s = pd.Series(low)
+    hh = h_s.rolling(n, min_periods=n).max().to_numpy()
+    ll = l_s.rolling(n, min_periods=n).min().to_numpy()
+    midpt = (hh + ll) / 2.0
+    d = close - midpt
+    hlr = hh - ll
+
+    d_f = np.nan_to_num(d, nan=0.0)
+    hlr_f = np.nan_to_num(hlr, nan=0.0)
+
+    ema1_d = _ema(d_f, q)
+    ema2_d = _ema(ema1_d, q)
+    ema1_r = _ema(hlr_f, q)
+    ema2_r = _ema(ema1_r, q)
+
+    half_r = 0.5 * ema2_r
+    with np.errstate(divide="ignore", invalid="ignore"):
+        smi = 100.0 * np.where(half_r > 0, ema2_d / half_r, 0.0)
+    # Mask the bars before the rolling window is fully formed so EMA warmup
+    # noise never produces a stale cross.
+    warmup_mask = np.isfinite(hh) & np.isfinite(ll)
+    smi = np.where(warmup_mask, smi, np.nan)
+    signal = _ema(np.nan_to_num(smi, nan=0.0), m)
+    signal = np.where(warmup_mask, signal, np.nan)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    smi_p1 = np.concatenate(([np.nan], smi[:-1]))
+    smi_p2 = np.concatenate(([np.nan], smi_p1[:-1]))
+    sig_p1 = np.concatenate(([np.nan], signal[:-1]))
+    sig_p2 = np.concatenate(([np.nan], sig_p1[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(smi_p1) & np.isfinite(smi_p2)
+        & np.isfinite(sig_p1) & np.isfinite(sig_p2)
+        & np.isfinite(sma50_p1) & np.isfinite(sma200_p1)
+    )
+    fresh_cross = (smi_p2 <= sig_p2) & (smi_p1 > sig_p1)
+    oversold = smi_p1 < -40.0
+    uptrend = sma50_p1 > sma200_p1
+
+    entries = valid & fresh_cross & oversold & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -5183,4 +5286,5 @@ NEW_STRATEGIES: dict = {
     "alma_bullish_cross": strat_alma_bullish_cross,
     "pretty_good_oscillator_zero_cross": strat_pretty_good_oscillator_zero_cross,
     "ehlers_cog_signal_cross": strat_ehlers_cog_signal_cross,
+    "smi_blau_oversold_cross": strat_smi_blau_oversold_cross,
 }
