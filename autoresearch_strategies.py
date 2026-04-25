@@ -2790,6 +2790,95 @@ def strat_bollinger_pctb_reversion(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_anchored_vwap_reclaim(df: pd.DataFrame) -> list[Trade]:
+    """Anchored-VWAP reclaim from the rolling 60-bar swing-low.
+
+    For every bar t we anchor a volume-weighted average price (AVWAP) to the
+    bar with the lowest close in the trailing 60 bars and accumulate
+    typical-price·volume from that anchor through t. AVWAP is the institutional
+    reference price paid by everyone who bought since the swing low; a
+    cross-up reclaim from below means accumulation has now overwhelmed
+    distribution since the most recent capitulation point.
+
+    Entry (decided at bar close, prior bar references gate the trend):
+        close[t-1] < AVWAP[t-1]               (was below the anchored mean)
+        close[t]   >= AVWAP[t]                (reclaims it on this bar)
+        close[t-1] > SMA(200)[t-1]            (broader bull regime)
+    Exit:
+        close < AVWAP  AND  close < SMA(20)   (volume-weighted ref AND
+                                               short-term momentum both lost)
+
+    Distinct from every strategy already in the sandbox:
+      - Not a recursive EMA/SMA-derived oscillator (MACD, TRIX, TSI, KST,
+        Coppock, Schaff, Chaikin, Vortex, RVI, AwOsc, KAMA, HMA, etc.).
+      - Not a range/channel breakout (Donchian, Ichimoku, NR7, Aroon, BB,
+        squeeze, Minervini VCP) — uses a volume-weighted price level.
+      - Not a fixed-window OLS drift (Clenow) or detrended-mean (DPO,
+        Bollinger %B) — anchor floats with the rolling swing low.
+      - Not a generic OBV/CMF/EFI volume oscillator — AVWAP is a *price*
+        the average buyer paid since the anchor, not a flow accumulator.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+    n = len(close)
+
+    window = 60
+    typ = (high + low + close) / 3.0
+    pv = typ * volume
+
+    cum_pv = np.concatenate(([0.0], np.cumsum(pv)))
+    cum_v = np.concatenate(([0.0], np.cumsum(volume)))
+
+    pos_in_win = (
+        pd.Series(close)
+        .rolling(window, min_periods=window)
+        .apply(np.argmin, raw=True)
+        .to_numpy()
+    )
+
+    idx_arr = np.arange(n)
+    valid_anchor = np.isfinite(pos_in_win)
+    pos_filled = np.where(valid_anchor, pos_in_win, 0.0).astype(np.int64)
+    anchor_idx = np.clip(idx_arr - window + 1 + pos_filled, 0, n - 1)
+
+    sum_pv = cum_pv[idx_arr + 1] - cum_pv[anchor_idx]
+    sum_v = cum_v[idx_arr + 1] - cum_v[anchor_idx]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        avwap = np.where(
+            valid_anchor & (sum_v > 0.0), sum_pv / sum_v, np.nan
+        )
+
+    sma200 = _sma(close, 200)
+    sma20 = _sma(close, 20)
+
+    avwap_prev = np.concatenate(([np.nan], avwap[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid_entry = (
+        np.isfinite(avwap_prev)
+        & np.isfinite(avwap)
+        & np.isfinite(sma200_prev)
+        & np.isfinite(close_prev)
+    )
+    entries = (
+        valid_entry
+        & (close_prev < avwap_prev)
+        & (close >= avwap)
+        & (close_prev > sma200_prev)
+    )
+    exits = (
+        np.isfinite(avwap)
+        & np.isfinite(sma20)
+        & (close < avwap)
+        & (close < sma20)
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -2831,4 +2920,5 @@ NEW_STRATEGIES: dict = {
     "dpo_zero_cross": strat_dpo_zero_cross,
     "clenow_momentum_score": strat_clenow_momentum_score,
     "bollinger_pctb_reversion": strat_bollinger_pctb_reversion,
+    "anchored_vwap_reclaim": strat_anchored_vwap_reclaim,
 }
