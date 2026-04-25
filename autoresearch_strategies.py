@@ -5213,6 +5213,95 @@ def strat_smi_blau_oversold_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_gann_hilo_activator_flip(df: pd.DataFrame) -> list[Trade]:
+    """Gann HiLo Activator (GHLA) — trend-state flip from down to up.
+
+    The Gann HiLo Activator (popularised by Robert Krausz from Gann's swing
+    methods) is a binary-state trend follower built from two simple moving
+    averages: SMA(high, N) and SMA(low, N). It carries two pieces of state:
+
+      - state ∈ {+1, -1}: +1 when close last broke ABOVE the prior bar's
+        SMA(high, N); -1 when close last broke BELOW the prior bar's
+        SMA(low, N). Otherwise the state is carried forward.
+      - the active "activator" line: SMA(low, N) while state == +1,
+        SMA(high, N) while state == -1.
+
+    With N=10 the activator hugs price loosely from below in uptrends and
+    from above in downtrends, only flipping when price decisively breaches
+    the *opposite* SMA. The flip itself is the signal: the strategy enters
+    when state changes from -1 to +1 — i.e. the close has just punched
+    above the prior bar's SMA(high,10) after a stretch of being capped by
+    the SMA(high) line in a down-state.
+
+    Distinct from indicators already in the file:
+      - aroon_cross_trend / vortex_bullish_cross: built from positions of
+        rolling-window highs/lows but produce continuous oscillators; GHLA
+        outputs a discrete +1/-1 state from comparison of close to *MAs of*
+        highs/lows, not to the raw highs/lows themselves.
+      - parabolic_sar_flip_trend: PSAR's stop accelerates with each new
+        extreme; GHLA uses fixed-window SMAs of H and L, no acceleration.
+      - donchian_20_10_trend / range_filter_buy: Donchian/Range Filter
+        compare close to raw rolling highs/lows or a smoothed-deviation
+        envelope; GHLA compares close to the *means* of recent highs/lows,
+        which sits inside the raw range and reacts sooner.
+      - supertrend / keltner / acceleration_bands: ATR- or stdev-scaled
+        envelopes around price; GHLA has no volatility scaling.
+      - ma_cross / hma / kama / vidya / alma: those compare close to a
+        single MA of close; GHLA's two MAs are of high and of low (not of
+        close), and the active line switches sides based on a state
+        machine — that two-line, one-active hand-off is the unique part.
+      - heikin_ashi_flip: HA flips on smoothed open/close colour change;
+        GHLA flips on close vs SMA-of-extremes thresholds.
+
+    Entry (prior-bar values only, no lookahead):
+      - state_{t-2} == -1 AND state_{t-1} == +1 (fresh down→up flip)
+      - SMA(50)_{t-1} > SMA(200)_{t-1} (macro uptrend filter)
+    Exit: close < EMA(20).
+    """
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    n = 10
+    high_sma = _sma(high, n)
+    low_sma = _sma(low, n)
+
+    high_sma_p1 = np.concatenate(([np.nan], high_sma[:-1]))
+    low_sma_p1 = np.concatenate(([np.nan], low_sma[:-1]))
+
+    state = np.zeros(len(close), dtype=np.int8)
+    cur = 0
+    for i in range(len(close)):
+        hp = high_sma_p1[i]
+        lp = low_sma_p1[i]
+        if not (np.isfinite(hp) and np.isfinite(lp)):
+            state[i] = 0
+            continue
+        if close[i] > hp:
+            cur = 1
+        elif close[i] < lp:
+            cur = -1
+        state[i] = cur
+
+    state_p1 = np.concatenate(([0], state[:-1]))
+    state_p2 = np.concatenate(([0], state_p1[:-1]))
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    fresh_flip = (state_p2 == -1) & (state_p1 == 1)
+    uptrend = sma50_p1 > sma200_p1
+    valid = np.isfinite(sma50_p1) & np.isfinite(sma200_p1)
+
+    entries = valid & fresh_flip & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -5287,4 +5376,5 @@ NEW_STRATEGIES: dict = {
     "pretty_good_oscillator_zero_cross": strat_pretty_good_oscillator_zero_cross,
     "ehlers_cog_signal_cross": strat_ehlers_cog_signal_cross,
     "smi_blau_oversold_cross": strat_smi_blau_oversold_cross,
+    "gann_hilo_activator_flip": strat_gann_hilo_activator_flip,
 }
