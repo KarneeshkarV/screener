@@ -4367,6 +4367,73 @@ def strat_rsi_brown_range_shift(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_vidya_bullish_cross(df: pd.DataFrame) -> list[Trade]:
+    """Chande VIDYA (Variable Index Dynamic Average) bullish cross.
+
+    VIDYA is an adaptive EMA where the smoothing constant is scaled by
+    |CMO|/100 — the Chande Momentum Oscillator's absolute value. When price
+    is moving strongly (high |CMO|), VIDYA tracks closely; when price chops
+    (|CMO| near 0), VIDYA effectively freezes. This adaptive frozen-in-chop
+    behavior is distinct from KAMA (efficiency-ratio based) and Hull MA
+    (weighted-length based).
+
+    Entry: prior bar's close was at or below VIDYA(14, cmo=9) and current
+    close crosses above it, VIDYA itself is rising vs 1 bar ago, and the
+    SMA50 > SMA200 long-term uptrend regime holds.
+    Exit: close < EMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = len(close)
+
+    cmo_period = 9
+    vidya_period = 14
+
+    # Chande Momentum Oscillator on close diffs.
+    diff = np.diff(close, prepend=close[0])
+    up = np.where(diff > 0, diff, 0.0)
+    dn = np.where(diff < 0, -diff, 0.0)
+    sum_up = pd.Series(up).rolling(cmo_period, min_periods=cmo_period).sum().to_numpy()
+    sum_dn = pd.Series(dn).rolling(cmo_period, min_periods=cmo_period).sum().to_numpy()
+    denom = sum_up + sum_dn
+    cmo = np.where(denom > 0, (sum_up - sum_dn) / denom, 0.0)
+    abs_cmo = np.abs(cmo)
+
+    alpha = 2.0 / (vidya_period + 1)
+    vidya = np.full(n, np.nan)
+    seeded = False
+    for i in range(n):
+        if not np.isfinite(abs_cmo[i]):
+            continue
+        if not seeded:
+            vidya[i] = close[i]
+            seeded = True
+            continue
+        k = alpha * abs_cmo[i]
+        vidya[i] = k * close[i] + (1.0 - k) * vidya[i - 1]
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    vidya_prev = np.concatenate(([np.nan], vidya[:-1]))
+    vidya_prev2 = np.concatenate(([np.nan, np.nan], vidya[:-2]))
+
+    cross_up = (
+        np.isfinite(vidya)
+        & np.isfinite(vidya_prev)
+        & (close_prev <= vidya_prev)
+        & (close > vidya)
+    )
+    rising = np.isfinite(vidya_prev2) & (vidya > vidya_prev2)
+    uptrend = np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = cross_up & rising & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -4430,4 +4497,5 @@ NEW_STRATEGIES: dict = {
     "demarker_oversold_reclaim": strat_demarker_oversold_reclaim,
     "range_filter_buy": strat_range_filter_buy,
     "rsi_brown_range_shift": strat_rsi_brown_range_shift,
+    "vidya_bullish_cross": strat_vidya_bullish_cross,
 }
