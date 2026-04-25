@@ -3986,6 +3986,83 @@ def strat_williams_fractal_breakout(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_weinstein_stage2_breakout(df: pd.DataFrame) -> list[Trade]:
+    """Stan Weinstein Stage 2 ("advancing phase") breakout from a Stage 1 base.
+
+    Weinstein's stage analysis (*Secrets For Profiting in Bull and Bear
+    Markets*, 1988) classifies long-term price action into four stages around
+    the 30-week (≈150-bar) moving average:
+
+        Stage 1: basing   — MA flat, price oscillating around it.
+        Stage 2: advance  — MA turning up, price breaks out above MA + base
+                            high; this is the only stage Weinstein buys.
+        Stage 3: top      — MA flattening, price churning above it.
+        Stage 4: decline  — MA falling, price below.
+
+    The Stage 2 entry is structurally different from a vanilla MA cross:
+      - Vanilla MA cross (already tested as stock:ma_cross) just needs a
+        fast MA to cross a slow MA — it fires constantly in choppy markets
+        and has no requirement that the long-term trend be turning.
+      - Stage 2 requires (a) the long MA to be RISING (slope > 0 measured
+        as MA[t-1] > MA[t-21], i.e. one month of upward slope), AND (b) a
+        fresh breakout above the prior 50-bar high. The MA-rising condition
+        filters out Stage 1 chop and Stage 4 declines; the high-breakout
+        confirms the base resolution.
+
+    This is also distinct from:
+      - Donchian 20/10 (no MA-slope requirement; uses 20-bar channel).
+      - Minervini VCP (requires volatility contraction — different gate).
+      - Clenow momentum (regression-based ranking — no breakout).
+      - Pocket pivot (volume-based — no MA-slope structure).
+
+    Entry (decided at bar close, all signals shifted to prior-bar values to
+    eliminate lookahead):
+        SMA(close, 150)[t-1]      > SMA(close, 150)[t-21]   (MA rising 1mo)
+        close[t-1]                > SMA(close, 150)[t-1]    (above 30wk MA)
+        close[t-1]                > prior 50-bar highest close
+                                                            (base breakout)
+    Exit:
+        close < EMA(close, 20)                               (trend break)
+
+    Using close-of-prior-bar high in the breakout test (rather than today's
+    high) avoids any same-bar lookahead — entry is decidable at today's
+    close with strictly historical inputs.
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    sma150 = _sma(close, 150)
+    ema20 = _ema(close, 20)
+
+    sma150_prev = np.concatenate(([np.nan], sma150[:-1]))
+    sma150_lag = np.concatenate(
+        ([np.nan] * 21, sma150[:-21])
+    ) if len(sma150) > 21 else np.full_like(sma150, np.nan)
+
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+
+    # 50-bar highest CLOSE excluding today (shift(1)).
+    high_close_50 = (
+        pd.Series(close).shift(1).rolling(50, min_periods=50).max().to_numpy()
+    )
+
+    valid = (
+        np.isfinite(sma150_prev)
+        & np.isfinite(sma150_lag)
+        & np.isfinite(close_prev)
+        & np.isfinite(high_close_50)
+        & np.isfinite(ema20)
+    )
+
+    ma_rising = sma150_prev > sma150_lag
+    above_ma = close_prev > sma150_prev
+    base_breakout = close_prev > high_close_50
+
+    entries = valid & ma_rising & above_ma & base_breakout
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -4044,4 +4121,5 @@ NEW_STRATEGIES: dict = {
     "cmo_oversold_recovery": strat_cmo_oversold_recovery,
     "wyckoff_spring_reclaim": strat_wyckoff_spring_reclaim,
     "williams_fractal_breakout": strat_williams_fractal_breakout,
+    "weinstein_stage2_breakout": strat_weinstein_stage2_breakout,
 }
