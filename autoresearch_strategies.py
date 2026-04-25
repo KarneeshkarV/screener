@@ -4727,6 +4727,84 @@ def strat_morning_star_pullback(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_polarized_fractal_efficiency(df: pd.DataFrame) -> list[Trade]:
+    """Polarized Fractal Efficiency (Hannula, 1994) bullish zero-line cross.
+
+    PFE measures how *efficient* price travel is over an n-bar window by
+    comparing the straight-line distance between close[t] and close[t-n] to
+    the sum of bar-to-bar diagonal path lengths. A perfectly straight-up
+    move produces PFE → +100; choppy noise drives |PFE| → 0.
+
+      diff_n      = close[t] - close[t-n]
+      straight    = sqrt(diff_n^2 + n^2)             # diagonal of net move
+      bar_step    = sqrt((close[i]-close[i-1])^2 + 1) # per-bar diagonal
+      path_sum    = Σ bar_step over the last n bars
+      raw_PFE     = 100 * sign(diff_n) * straight / path_sum
+      PFE         = EMA(raw_PFE, 5)
+
+    Why this is distinct from existing sandbox indicators:
+      - choppiness_regime_shift: range-vs-ATR entropy gauge, *unsigned*
+        (no direction). PFE is signed — it flips polarity at zero.
+      - linreg_slope_signchange: signed regression slope; PFE measures
+        path efficiency, not slope.
+      - aroon_cross_trend / vortex_bullish_cross: time-since-extreme and
+        directional movement crosses, not bar-to-bar fractal path length.
+      - fisher_transform_zero_cross / coppock_curve / kst: oscillator
+        cross-zeros derived from price levels, not geometric path length.
+      - inverse_fisher_rsi: a Fisher transform of RSI — momentum, not
+        fractal efficiency.
+
+    Setup: PFE crosses up through zero (signed efficiency flips bullish)
+    inside an SMA50 > SMA200 uptrend. Exit on close < EMA20 — the same
+    short-term mean exit used by other zero-cross momentum strategies in
+    this sandbox so the comparison isolates the *signal*, not the exit.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n_window = 10
+    n = len(close)
+    if n < n_window + 5:
+        return []
+
+    diff_n = np.full(n, np.nan)
+    diff_n[n_window:] = close[n_window:] - close[:-n_window]
+    straight = np.sqrt(diff_n * diff_n + float(n_window) ** 2)
+
+    bar_step = np.full(n, np.nan)
+    bar_step[1:] = np.sqrt((close[1:] - close[:-1]) ** 2 + 1.0)
+    path_sum = (
+        pd.Series(bar_step).rolling(n_window, min_periods=n_window).sum().to_numpy()
+    )
+
+    sign_n = np.sign(diff_n)
+    raw_pfe = np.where(
+        np.isfinite(path_sum) & (path_sum > 0.0) & np.isfinite(straight),
+        100.0 * sign_n * straight / path_sum,
+        np.nan,
+    )
+
+    pfe = _ema(np.nan_to_num(raw_pfe, nan=0.0), 5)
+    pfe[: n_window + 4] = np.nan
+    pfe_prev = np.concatenate(([np.nan], pfe[:-1]))
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+
+    cross_up = (
+        np.isfinite(pfe)
+        & np.isfinite(pfe_prev)
+        & (pfe_prev <= 0.0)
+        & (pfe > 0.0)
+    )
+
+    entries = cross_up & uptrend
+
+    ema20 = _ema(close, 20)
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -4795,4 +4873,5 @@ NEW_STRATEGIES: dict = {
     "qqe_bullish_cross": strat_qqe_bullish_cross,
     "elder_ray_bear_reclaim": strat_elder_ray_bear_reclaim,
     "morning_star_pullback": strat_morning_star_pullback,
+    "polarized_fractal_efficiency": strat_polarized_fractal_efficiency,
 }
