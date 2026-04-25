@@ -5039,6 +5039,77 @@ def strat_pretty_good_oscillator_zero_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_ehlers_cog_signal_cross(df: pd.DataFrame) -> list[Trade]:
+    """John Ehlers' Center of Gravity (COG) oscillator — bullish signal cross.
+
+    From Ehlers' 2002 article "The Center of Gravity Oscillator." The COG is a
+    near-zero-lag oscillator built from a weighted sum of the last N closes:
+
+        COG[t] = - sum_{i=0..N-1} ((i+1) * close[t-i])
+                 / sum_{i=0..N-1}        close[t-i]
+
+    The negation flips orientation so rising COG corresponds to rising price.
+    Because the heaviest weight sits on the *oldest* bar in the window, the
+    oscillator turns over with very little lag relative to a same-length SMA,
+    making the COG-vs-its-own-3-bar-SMA crossover a low-lag momentum signal.
+
+    Distinct from indicators already in this file:
+      - rsi / stoch_rsi / cmo / cci: ratio-of-gains oscillators with their
+        own bounded ranges; COG is a weighted-mean centroid, not a momentum
+        ratio.
+      - fisher_transform / inverse_fisher_rsi: Gaussian-mapped oscillators on
+        normalized price; COG uses raw weighted sums, no transform.
+      - polarized_fractal_efficiency / linreg_slope_signchange: measure path
+        efficiency / regression slope, not a centroid.
+      - pretty_good_oscillator: PGO is a price-deviation-in-ATR-units; COG
+        is a dimensionless weighted-mean position indicator.
+      - kama / vidya / alma / hma: those are adaptive/weighted *moving
+        averages*; COG is an *oscillator* derived from a weighted centroid.
+
+    Entry (decided at bar close, prior-bar values to avoid lookahead):
+      - COG_{t-2} <= signal_{t-2} AND COG_{t-1} > signal_{t-1}
+        (fresh upward signal-line cross, signal = SMA(COG, 3))
+      - SMA(50)_{t-1} > SMA(200)_{t-1} (macro uptrend gate)
+    Exit: close < EMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = 10
+
+    s = pd.Series(close)
+    num = sum((i + 1) * s.shift(i) for i in range(n))
+    den = sum(s.shift(i) for i in range(n))
+    cog = -(num / den.replace(0.0, np.nan)).to_numpy(dtype=float)
+
+    sig = pd.Series(cog).rolling(3, min_periods=3).mean().to_numpy()
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    cog_prev = np.concatenate(([np.nan], cog[:-1]))
+    cog_prev2 = np.concatenate(([np.nan, np.nan], cog[:-2]))
+    sig_prev = np.concatenate(([np.nan], sig[:-1]))
+    sig_prev2 = np.concatenate(([np.nan, np.nan], sig[:-2]))
+    sma50_prev = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(cog_prev)
+        & np.isfinite(cog_prev2)
+        & np.isfinite(sig_prev)
+        & np.isfinite(sig_prev2)
+        & np.isfinite(sma50_prev)
+        & np.isfinite(sma200_prev)
+    )
+    fresh_cross = (cog_prev2 <= sig_prev2) & (cog_prev > sig_prev)
+    uptrend = sma50_prev > sma200_prev
+
+    entries = valid & fresh_cross & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -5111,4 +5182,5 @@ NEW_STRATEGIES: dict = {
     "wavetrend_lb_oversold_cross": strat_wavetrend_lb_oversold_cross,
     "alma_bullish_cross": strat_alma_bullish_cross,
     "pretty_good_oscillator_zero_cross": strat_pretty_good_oscillator_zero_cross,
+    "ehlers_cog_signal_cross": strat_ehlers_cog_signal_cross,
 }
