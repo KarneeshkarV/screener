@@ -6464,6 +6464,98 @@ def strat_ehlers_roofing_filter(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_ehlers_trendflex(df: pd.DataFrame) -> list[Trade]:
+    """Ehlers Trendflex zero up-cross — slope-sum normalised by adaptive RMS (S&C 2020).
+
+    Trendflex is John F. Ehlers' "is this a real trend or noise?" indicator
+    from Stocks & Commodities, January 2020 ("Reflex — A New Zero-Lag
+    Indicator"). It first denoises price with a 2-pole SuperSmoother, then
+    sums slopes of the smoothed series over the lookback window, and finally
+    normalises by an exponentially-averaged RMS of those slopes. The result
+    is a stationary signal that oscillates around zero in roughly [-2, +2].
+
+    Math (Ehlers, S&C 2020):
+        a1 = exp(-1.414·π / N)
+        cc = 2 a1 · cos(1.414·π / N)
+        SS_t = (1 − cc + a1²) · (c_t + c_{t−1})/2  +  cc · SS_{t−1}  −  a1² · SS_{t−2}
+
+        slope_t = (1/N) · Σ_{j=1..N} (SS_t − SS_{t−j})
+                = SS_t − mean(SS_{t−1}, …, SS_{t−N})
+
+        ms_t      = 0.04 · slope_t²  +  0.96 · ms_{t−1}
+        Trendflex = slope_t / sqrt(ms_t)        (else 0)
+
+    Distinct from existing sandbox indicators: Roofing Filter is a 2-pole HP
+    cascaded into a 2-pole SS bandpass; MAMA/FAMA uses a Hilbert-derived
+    discriminator to drive an adaptive EMA; Laguerre RSI uses a 4-stage
+    Laguerre filter; CoG is a windowed centroid; MACD-V is volatility-
+    normalised EMA difference; DPO is a shift-detrended SMA; Schaff Trend
+    Cycle is a stochastic-of-stochastic. Trendflex is unique here as a
+    SUPERSMOOTHER-DRIVEN SLOPE-SUM with adaptive-RMS normalisation.
+
+    Entry (prior-bar arrays — strictly causal, no lookahead):
+      - TF_{t−2} < 0  AND  TF_{t−1} >= 0          (fresh zero up-cross)
+      - SMA50_{t−1} > SMA200_{t−1}                 (macro uptrend filter)
+    Exit: TF < 0  OR  close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = close.size
+
+    PERIOD = 20
+
+    a1 = np.exp(-1.414 * np.pi / PERIOD)
+    cc = 2.0 * a1 * np.cos(1.414 * np.pi / PERIOD)
+    c2 = cc
+    c3 = -(a1 * a1)
+    c1 = 1.0 - c2 - c3
+
+    ss = np.zeros(n)
+    for i in range(2, n):
+        ss[i] = (
+            c1 * (close[i] + close[i - 1]) / 2.0
+            + c2 * ss[i - 1]
+            + c3 * ss[i - 2]
+        )
+
+    ss_shift = np.concatenate(([np.nan], ss[:-1]))
+    mean_lag = _sma(ss_shift, PERIOD)
+    slope = ss - mean_lag
+
+    ms = np.zeros(n)
+    trendflex = np.full(n, np.nan)
+    warmup = 2 * PERIOD + 5
+    for i in range(1, n):
+        s = slope[i] if np.isfinite(slope[i]) else 0.0
+        ms[i] = 0.04 * s * s + 0.96 * ms[i - 1]
+        if i >= warmup and ms[i] > 0.0 and np.isfinite(slope[i]):
+            trendflex[i] = slope[i] / np.sqrt(ms[i])
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    tf_p1 = np.concatenate(([np.nan], trendflex[:-1]))
+    tf_p2 = np.concatenate(([np.nan, np.nan], trendflex[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(tf_p1)
+        & np.isfinite(tf_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_zero_up = (tf_p2 < 0.0) & (tf_p1 >= 0.0)
+    uptrend = sma50_p1 > sma200_p1
+    entries = valid & fresh_zero_up & uptrend
+
+    below_zero = np.isfinite(trendflex) & (trendflex < 0.0)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = below_zero | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6552,4 +6644,5 @@ NEW_STRATEGIES: dict = {
     "bill_williams_alligator_awake": strat_bill_williams_alligator_awake,
     "williams_ac_zero_acceleration": strat_williams_ac_zero_acceleration,
     "ehlers_roofing_filter": strat_ehlers_roofing_filter,
+    "ehlers_trendflex": strat_ehlers_trendflex,
 }
