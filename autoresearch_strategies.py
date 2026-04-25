@@ -2661,6 +2661,135 @@ def strat_dpo_zero_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_clenow_momentum_score(df: pd.DataFrame) -> list[Trade]:
+    """Clenow 'Stocks on the Move' OLS momentum-score crossover.
+
+    Fits ordinary least squares of log(close) vs time on a 90-bar window
+    to estimate a per-bar drift (slope) and the regression R²; the
+    score is
+
+        score = (e^{252·slope} − 1) · R²
+
+    i.e., annualized exponential return rate weighted by trend
+    cleanliness. High score = strong, low-noise uptrend; this is the
+    Andreas Clenow (2015, *Stocks on the Move*) rotation criterion
+    applied here as a single-asset entry filter.
+
+    Mathematically distinct from every strategy in the sandbox:
+      - All EMA/SMA momentum derivatives (MACD, TRIX, TSI, KST, Coppock,
+        Schaff, KAMA, HMA, AwOsc, Chaikin, Vortex, RVI) are recursive
+        smoothings; this one is a closed-form OLS fit.
+      - Range-bounded oscillators (RSI, Stoch, MFI, CCI, Williams %R,
+        Connors RSI, UltimateOsc) measure short-term overbought/oversold;
+        score measures *trend quality*.
+      - Aroon/Donchian/Ichimoku/Vortex use highest-high / lowest-low
+        windows; this is purely a least-squares fit.
+      - DPO is the only existing un-smoothed price-vs-mean deviation,
+        but DPO does not estimate drift or trend cleanliness.
+      - Choppiness Index is a log-ratio range measure, not a slope.
+
+    Entry (prior-bar values only — no lookahead):
+        score[t-2] <= 0.5 AND score[t-1] > 0.5      (cross up through 50%)
+        close[t-1] > SMA(100)[t-1]                  (uptrend gate)
+    Exit: score < 0 (trend gone) OR close < SMA(50).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = len(close)
+    window = 90
+
+    positive = close > 0
+    log_close = np.full(n, np.nan, dtype=float)
+    log_close[positive] = np.log(close[positive])
+
+    xs = np.arange(window, dtype=float)
+    x_c = xs - xs.mean()
+    x_var_fixed = float((x_c ** 2).sum())
+
+    kernel = x_c[::-1].copy()
+    cov_xy = np.full(n, np.nan, dtype=float)
+    if n >= window:
+        valid = np.convolve(np.nan_to_num(log_close, nan=0.0), kernel, mode="valid")
+        cov_xy[window - 1:] = valid
+
+    y_sum = pd.Series(log_close).rolling(window, min_periods=window).sum().to_numpy()
+    y2_sum = pd.Series(log_close ** 2).rolling(window, min_periods=window).sum().to_numpy()
+    var_y = y2_sum - (y_sum ** 2) / window
+
+    with np.errstate(invalid="ignore", divide="ignore"):
+        slope = cov_xy / x_var_fixed if x_var_fixed > 0 else np.full(n, np.nan)
+        ss_res = var_y - (cov_xy ** 2) / x_var_fixed
+        r2 = np.where(var_y > 1e-12, 1.0 - ss_res / var_y, 0.0)
+    r2 = np.clip(r2, 0.0, 1.0)
+
+    annualized = np.expm1(np.clip(slope * 252.0, -5.0, 5.0))
+    score = annualized * r2
+
+    sma100 = _sma(close, 100)
+    sma50 = _sma(close, 50)
+
+    score_prev1 = np.concatenate(([np.nan], score[:-1]))
+    score_prev2 = np.concatenate(([np.nan], score_prev1[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    cross_up = (
+        np.isfinite(score_prev1) & np.isfinite(score_prev2)
+        & (score_prev2 <= 0.5)
+        & (score_prev1 > 0.5)
+    )
+    trend_ok = (
+        np.isfinite(close_prev) & np.isfinite(sma100_prev)
+        & (close_prev > sma100_prev)
+    )
+    entries = cross_up & trend_ok
+
+    exits = (
+        (np.isfinite(score) & (score < 0.0))
+        | (np.isfinite(sma50) & (close < sma50))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_bollinger_pctb_reversion(df: pd.DataFrame) -> list[Trade]:
+    """Bollinger %B mean-reversion in long-term uptrend.
+
+    %B = (close − lower) / (upper − lower) where bands are SMA(20) ± 2·σ(20).
+    A %B < 0 reading means the bar closed below the lower Bollinger band — a
+    short-term oversold extreme. We require the prior close to be above
+    SMA(100) so we only fade dips inside an established uptrend, then exit
+    on the snap-back to the middle band (%B > 0.5) OR a momentum-failure
+    drop below SMA(20).
+
+    Distinct from bb_breakout (which trades upper-band trend-follow
+    breakouts), from ibs_trend_filter (single-bar range position rather than
+    σ-bands), and from RSI/CCI oscillator variants (this measures distance
+    from a volatility-scaled mean, not relative-strength counts).
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    sma20 = _sma(close, 20)
+    std20 = _stdev(close, 20)
+    upper = sma20 + 2.0 * std20
+    lower = sma20 - 2.0 * std20
+    width = upper - lower
+    pctb = np.where(width > 0, (close - lower) / width, np.nan)
+
+    sma100 = _sma(close, 100)
+
+    pctb_prev = np.concatenate(([np.nan], pctb[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+
+    valid = np.isfinite(pctb_prev) & np.isfinite(sma100_prev)
+    entries = valid & (pctb_prev < 0.0) & (close_prev > sma100_prev)
+    exits = (np.isfinite(pctb) & (pctb > 0.5)) | (
+        np.isfinite(sma20) & (close < sma20)
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -2700,4 +2829,6 @@ NEW_STRATEGIES: dict = {
     "inverse_fisher_rsi": strat_inverse_fisher_rsi,
     "minervini_vcp_breakout": strat_minervini_vcp_breakout,
     "dpo_zero_cross": strat_dpo_zero_cross,
+    "clenow_momentum_score": strat_clenow_momentum_score,
+    "bollinger_pctb_reversion": strat_bollinger_pctb_reversion,
 }
