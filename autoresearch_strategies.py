@@ -3390,6 +3390,93 @@ def strat_keltner_channel_breakout(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_three_white_soldiers(df: pd.DataFrame) -> list[Trade]:
+    """Three White Soldiers — three consecutive strong bullish candles, each
+    closing higher than the previous, gated by an SMA(50)>SMA(200) uptrend.
+
+    Classical Nison/Bulkowski reversal-continuation pattern: three back-to-back
+    real-body bullish candles where each close is above the prior close, each
+    body is decisive (body/range >= 0.55), and upper wicks are short (close
+    near the bar high — upper_wick/range <= 0.25). The first candle must
+    re-engage upward momentum (its body close > prior bar close) so the
+    pattern is not a continuation of an already-running blow-off bar.
+
+    Why this is a distinct edge from existing sandbox candle/structure plays:
+      - hammer_pin_bar_uptrend: a *single* pin-bar with long lower wick at a
+        20-bar swing low — opposite anatomy (tiny body, deep tail).
+      - heikin_ashi_flip: smoothed HA candle colour flip — not a sequence of
+        three raw bodies, and has no body-size requirement.
+      - td_sequential_buy_setup: a 9-count of close < close[t-4] — duration
+        rule on close-to-close differences, no body anatomy.
+      - minervini_vcp_breakout: multi-week base-and-breakout structure, very
+        different time horizon and uses pivot/52-wk highs.
+      - linreg_slope_signchange / coppock / kst: smoothed momentum sign
+        flips, not bar-by-bar anatomy.
+
+    Entries/exits are decidable by bar close (open, high, low, close all
+    known); the third soldier's own close is the trigger, no lookahead.
+
+    Entry: three consecutive bars satisfy
+              body > 0 & rng > 0
+              body/rng >= 0.55
+              upper_wick/rng <= 0.25
+              close[t] > close[t-1]
+            AND SMA(50) > SMA(200) regime.
+    Exit : close < EMA(10) — short-term-mean give-back, mirrors the hammer
+            strategy's exit so the bounce thesis times out cleanly.
+    """
+    open_ = df["open"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    body = close - open_
+    rng = high - low
+    upper_wick = high - np.maximum(open_, close)
+
+    safe_rng = np.where(rng > 0.0, rng, np.nan)
+    body_pct = body / safe_rng
+    upper_pct = upper_wick / safe_rng
+
+    strong_bull = (
+        (body > 0.0)
+        & (rng > 0.0)
+        & np.isfinite(body_pct)
+        & (body_pct >= 0.55)
+        & np.isfinite(upper_pct)
+        & (upper_pct <= 0.25)
+    )
+    strong_bull = np.where(np.isfinite(strong_bull), strong_bull, False).astype(bool)
+
+    close_1 = np.concatenate(([np.nan], close[:-1]))
+    close_2 = np.concatenate(([np.nan, np.nan], close[:-2]))
+    close_3 = np.concatenate(([np.nan, np.nan, np.nan], close[:-3]))
+    bull_1 = np.concatenate(([False], strong_bull[:-1]))
+    bull_2 = np.concatenate(([False, False], strong_bull[:-2]))
+
+    higher_closes = (
+        np.isfinite(close_1)
+        & np.isfinite(close_2)
+        & np.isfinite(close_3)
+        & (close > close_1)
+        & (close_1 > close_2)
+        & (close_2 > close_3)
+    )
+
+    soldiers = strong_bull & bull_1 & bull_2 & higher_closes
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = soldiers & uptrend
+
+    ema10 = _ema(close, 10)
+    exits = np.isfinite(ema10) & (close < ema10)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3440,4 +3527,5 @@ NEW_STRATEGIES: dict = {
     "linreg_slope_signchange": strat_linreg_slope_signchange,
     "td_sequential_buy_setup": strat_td_sequential_buy_setup,
     "keltner_channel_breakout": strat_keltner_channel_breakout,
+    "three_white_soldiers": strat_three_white_soldiers,
 }
