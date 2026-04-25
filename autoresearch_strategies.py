@@ -3858,6 +3858,89 @@ def strat_cmo_oversold_recovery(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_wyckoff_spring_reclaim(df: pd.DataFrame) -> list[Trade]:
+    """Wyckoff Spring (a.k.a. shakeout / terminal-shakeout) — a *false*
+    breakdown below recent support followed by an immediate same-bar reclaim,
+    inside a longer-term uptrend (SMA(50) > SMA(200)).
+
+    Wyckoff describes the Spring as a stop-running probe below the prior
+    trading-range support: smart money lets price dip beneath the obvious
+    stops, absorbs the supply that comes out, and then closes the bar back
+    *above* the support level. The fact that price could not stay below
+    support is itself the signal — supply has been exhausted and the path of
+    least resistance reverses up. Adam Grimes ("The Art and Science of
+    Technical Analysis", 2012) calls the same structure a "failure test"
+    pattern; Linda Raschke teaches it as "Turtle Soup Plus One"; in modern
+    auction-market parlance it's a liquidity grab / sweep.
+
+    Entry conditions, all decidable at bar close (prev-bar arrays prevent
+    lookahead):
+      1. support = min(low) over the prior N bars (N=20), excluding today —
+         computed via low.shift(1).rolling(N).min() so today's low does not
+         leak into the level.
+      2. Today's low pierced support: low_t < support_t.
+      3. Today's close reclaimed support: close_t > support_t.
+      4. Today's close finished in the upper portion of today's range — IBS
+         > 0.5 — confirming the reclaim is genuine, not a weak bounce that
+         merely closed slightly above the wick low.
+      5. Trend filter: SMA(50) > SMA(200) at bar close — only fade
+         shakeouts in established uptrends, where Wyckoff accumulation
+         schematics make the most sense.
+
+    Exit: close < EMA(20) — short-term mean give-back. Same exit family as
+    the other sandbox cross/recovery plays so results are comparable.
+
+    Distinct from sandbox plays:
+      - donchian_20_10_trend / keltner_channel_breakout / squeeze_breakout
+        all enter on UPSIDE breakouts of a channel; this enters on a
+        DOWNSIDE breakout that *fails* — opposite directional signature.
+      - bollinger_pctb_reversion / vwap_zscore_reversion / cum_rsi2_pullback
+        / connors_rsi_pullback / connors_double_7s use oscillator/statistical
+        oversold readings, not a structural support-pierce-and-reclaim.
+      - williams_vix_fix_spike triggers on a volatility-of-low spike, not a
+        single-bar undercut of a horizontal price level.
+      - volume_capitulation_reclaim requires a high-volume capitulation bar
+        below SMA(20) and reclaim of the *moving average*; the Spring uses
+        a horizontal *swing-low* support and is volume-agnostic — the price
+        action itself proves absorption.
+      - hammer_pin_bar_uptrend looks at single-bar wick geometry near a
+        rising MA but does not require piercing a horizontal support level.
+      - td_sequential_buy_setup is a 9-bar count of consecutive lower closes;
+        the Spring is a one-bar event.
+
+    Hypothesis: stop-runs below visible swing lows that are immediately
+    reabsorbed should mark the end of short-term distribution and offer a
+    favourable risk/reward long entry inside an ongoing trend.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    n = 20
+    # Prior-N-bar low, excluding today — shift(1) so today's low cannot leak.
+    support = (
+        pd.Series(low).shift(1).rolling(n, min_periods=n).min().to_numpy()
+    )
+
+    pierced = np.isfinite(support) & (low < support)
+    reclaimed = np.isfinite(support) & (close > support)
+
+    rng = high - low
+    ibs = np.where(rng > 0.0, (close - low) / rng, np.nan)
+    strong_close = np.isfinite(ibs) & (ibs > 0.5)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = pierced & reclaimed & strong_close & uptrend
+
+    ema20 = _ema(close, 20)
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3914,4 +3997,5 @@ NEW_STRATEGIES: dict = {
     "mass_index_reversal_bulge": strat_mass_index_reversal_bulge,
     "stoch_rsi_oversold_cross": strat_stoch_rsi_oversold_cross,
     "cmo_oversold_recovery": strat_cmo_oversold_recovery,
+    "wyckoff_spring_reclaim": strat_wyckoff_spring_reclaim,
 }
