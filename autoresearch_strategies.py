@@ -6286,6 +6286,86 @@ def strat_bill_williams_alligator_awake(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_williams_ac_zero_acceleration(df: pd.DataFrame) -> list[Trade]:
+    """Bill Williams Acceleration/Deceleration (AC) — fresh upside acceleration.
+
+    AC is the *second derivative* indicator from Williams' Profitunity system
+    in "New Trading Dimensions" (1998). It is built on top of the Awesome
+    Oscillator (AO), but instead of reading AO levels it reads how fast AO
+    itself is changing:
+
+        median   = (high + low) / 2
+        AO_t     = SMA(median, 5)_t  -  SMA(median, 34)_t
+        AC_t     = AO_t  -  SMA(AO, 5)_t
+
+    Williams' theoretical claim is that price changes direction *after*
+    momentum changes direction, and momentum changes direction *after*
+    acceleration changes direction. So among AO-family signals, AC is the
+    earliest leading indicator in his hierarchy — it fires before AO crosses
+    zero, before MACD turns, before MA crosses. Geometrically, AO is the
+    (smoothed) first derivative of price; AC = AO − SMA(AO,5) is the
+    deviation of AO from its own running mean, which behaves like the
+    discrete second derivative (acceleration) of price.
+
+    This is mathematically distinct from every AO/MACD-family strategy
+    already registered. The Awesome Oscillator Saucer setup
+    (`awesome_oscillator_saucer`) trades a *3-bar pause-and-resume shape in
+    AO itself while AO stays positive*, i.e. a level/stall pattern in the
+    first-derivative oscillator. AC, by contrast, fires when the second
+    derivative (AO minus its own moving average) flips sign from negative to
+    positive — the exact moment deceleration ends and acceleration begins.
+    The two signals do not overlap: a saucer can occur with strongly
+    positive AC throughout (no fresh acceleration), and a fresh AC zero-up
+    cross typically occurs when AO is still well below its recent average
+    (the saucer pattern is impossible there). MACD-V / TRIX / Coppock are
+    derivatives of *EMA-of-close*, not SMA-of-median; they have different
+    noise profiles, lag structure, and trigger geometry.
+
+    Williams' canonical rule: "When AC is below zero, you need two
+    consecutive green bars (rising AC) to buy. When AC is above zero, just
+    one green bar is enough." We use a strict, testable form — fresh upside
+    zero-cross in AC (strongest version of the same logic):
+
+    Entry (prior-bar arrays — strictly causal, no lookahead):
+      - AC_{t-2} < 0  AND  AC_{t-1} >= 0           (fresh zero up-cross)
+      - AC_{t-1} > AC_{t-2}                         (rising acceleration)
+      - SMA50_{t-1} > SMA200_{t-1}                  (macro uptrend filter)
+    Exit: AC < 0 (acceleration flips back negative) OR close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    median = (high + low) / 2.0
+    ao = _sma(median, 5) - _sma(median, 34)
+    ac = ao - _sma(ao, 5)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    ac_p1 = np.concatenate(([np.nan], ac[:-1]))
+    ac_p2 = np.concatenate(([np.nan, np.nan], ac[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(ac_p1)
+        & np.isfinite(ac_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_zero_up = (ac_p2 < 0.0) & (ac_p1 >= 0.0) & (ac_p1 > ac_p2)
+    uptrend = sma50_p1 > sma200_p1
+
+    entries = valid & fresh_zero_up & uptrend
+    accel_negative = np.isfinite(ac) & (ac < 0.0)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = accel_negative | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6372,4 +6452,5 @@ NEW_STRATEGIES: dict = {
     "ehlers_laguerre_rsi": strat_ehlers_laguerre_rsi,
     "rmi_oversold_cross": strat_rmi_oversold_cross,
     "bill_williams_alligator_awake": strat_bill_williams_alligator_awake,
+    "williams_ac_zero_acceleration": strat_williams_ac_zero_acceleration,
 }
