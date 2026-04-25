@@ -72,8 +72,13 @@ def fetch_ohlcv(ticker, start, end, market, refresh=False):
 
 def load_universe(market, _unused=None):
     from tradingview_screener import col
-    stock_only = [col("type") == "stock"]
-    _total, df = _tv_scan(market=market, filters=stock_only, limit=500, order_by="volume")
+    # Price floor strips OTC sub-penny tickers that volume-rank to the top
+    # because they print huge share counts at fractional cents. Without this
+    # the US scan returns ~25% sub-$0.01 names whose +20,000% daily prints
+    # poison the basket equity.
+    price_floor = {"us": 5.0, "india": 50.0}.get(market, 5.0)
+    filters = [col("type") == "stock", col("close") >= price_floor]
+    _total, df = _tv_scan(market=market, filters=filters, limit=500, order_by="volume")
     return [str(t) for t in df["name"].dropna().tolist()]
 
 
