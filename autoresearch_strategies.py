@@ -3941,6 +3941,51 @@ def strat_wyckoff_spring_reclaim(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_williams_fractal_breakout(df: pd.DataFrame) -> list[Trade]:
+    """Bill Williams 5-bar up-fractal swing-high breakout in an SMA50>SMA200 uptrend.
+
+    An up-fractal pivot at bar p satisfies: high[p] > high[p-1], high[p-2],
+    high[p+1], high[p+2]. The pattern is confirmed only at bar p+2 (when the
+    last two right-side bars are known), so the level is shifted by +2 to
+    avoid lookahead. We forward-fill the most-recently confirmed up-fractal
+    high; entry fires when close pierces that level while the SMA50>SMA200
+    trend filter is on. Exit when close drops below EMA20. This is a
+    discrete pivot-based breakout — distinct from Donchian rolling-window
+    channels, σ-band Bollinger breakouts, and ATR-trail supertrend.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+
+    high_s = pd.Series(high)
+    is_pivot = (
+        (high_s > high_s.shift(1))
+        & (high_s > high_s.shift(2))
+        & (high_s > high_s.shift(-1))
+        & (high_s > high_s.shift(-2))
+    ).fillna(False).to_numpy()
+
+    pivot_high = np.where(is_pivot, high, np.nan)
+    # Shift by +2 so the level becomes usable only at the confirmation bar.
+    last_fractal = pd.Series(pivot_high).shift(2).ffill().to_numpy()
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    valid = (
+        ~np.isnan(last_fractal)
+        & ~np.isnan(sma50)
+        & ~np.isnan(sma200)
+        & ~np.isnan(ema20)
+    )
+    uptrend = sma50 > sma200
+
+    entries = valid & uptrend & (close > last_fractal)
+    exits = ~np.isnan(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3998,4 +4043,5 @@ NEW_STRATEGIES: dict = {
     "stoch_rsi_oversold_cross": strat_stoch_rsi_oversold_cross,
     "cmo_oversold_recovery": strat_cmo_oversold_recovery,
     "wyckoff_spring_reclaim": strat_wyckoff_spring_reclaim,
+    "williams_fractal_breakout": strat_williams_fractal_breakout,
 }
