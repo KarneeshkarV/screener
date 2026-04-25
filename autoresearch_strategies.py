@@ -6556,6 +6556,103 @@ def strat_ehlers_trendflex(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_twiggs_money_flow(df: pd.DataFrame) -> list[Trade]:
+    """Twiggs Money Flow zero up-cross — Colin Twiggs' true-range CMF variant.
+
+    Twiggs Money Flow (Colin Twiggs, IncredibleCharts ~1999) refines Chaikin
+    Money Flow with two structural changes that matter on real equity data:
+
+      1. TRUE range (gap-aware) is used in place of the current-bar high-low
+         spread. The accumulation factor becomes
+              ((close - TR_low) - (TR_high - close)) / TR
+         where TR_high = max(high, prev_close), TR_low = min(low, prev_close),
+         TR = TR_high - TR_low. Volume on overnight gap days is therefore
+         attributed to the side of the gap rather than dropped or distorted
+         by an unrepresentative intraday range.
+      2. Both the accumulation/distribution numerator and the volume
+         denominator are smoothed by EMA(21) instead of the rolling SMA(20)
+         used by Chaikin. EMA's exponential weighting gives a faster, less
+         noisy line that flips around zero on cleaner accumulation regime
+         changes.
+
+    Math:
+        TR_high_t = max(high_t, close_{t-1})
+        TR_low_t  = min(low_t,  close_{t-1})
+        TR_t      = TR_high_t - TR_low_t
+        ADV_t     = ((close_t - TR_low_t) - (TR_high_t - close_t)) / TR_t · vol_t
+        TMF_t     = EMA(ADV, 21)_t / EMA(volume, 21)_t
+
+    Distinct from existing sandbox strategies:
+      - cmf_zero_reclaim:   high-low range, SMA(20) numerator and denominator,
+                            no gap correction.
+      - klinger_volume_oscillator_signal_cross: cumulative volume force
+                            signed by trend (high+low+close direction).
+      - chaikin_oscillator_zero_cross: MACD(3,10) of the A/D line, not a
+                            money-flow ratio.
+      - obv_ema_cross:      sign-of-close-change × volume, no range weighting.
+      - elder_force_index_zero_cross: price-change × volume, no accumulation
+                            factor.
+
+    Entry (prior-bar arrays — strictly causal, no lookahead):
+      - TMF_{t-2} < 0  AND  TMF_{t-1} >= 0          (fresh zero up-cross)
+      - SMA50_{t-1} > SMA200_{t-1}                   (macro uptrend filter)
+    Exit: TMF < 0  OR  close < EMA20.
+    """
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+    n = close.size
+
+    PERIOD = 21
+
+    prev_close = np.concatenate(([np.nan], close[:-1]))
+    tr_high = np.where(np.isfinite(prev_close), np.maximum(high, prev_close), high)
+    tr_low = np.where(np.isfinite(prev_close), np.minimum(low, prev_close), low)
+    tr = tr_high - tr_low
+
+    safe_tr = np.where(tr > 0.0, tr, np.nan)
+    accum_factor = ((close - tr_low) - (tr_high - close)) / safe_tr
+    adv = accum_factor * volume
+    adv = np.where(np.isfinite(adv), adv, 0.0)
+
+    ema_adv = _ema(adv, PERIOD)
+    ema_vol = _ema(volume, PERIOD)
+
+    tmf = np.full(n, np.nan)
+    valid_ratio = (
+        np.isfinite(ema_adv)
+        & np.isfinite(ema_vol)
+        & (ema_vol > 0.0)
+    )
+    tmf[valid_ratio] = ema_adv[valid_ratio] / ema_vol[valid_ratio]
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    tmf_p1 = np.concatenate(([np.nan], tmf[:-1]))
+    tmf_p2 = np.concatenate(([np.nan, np.nan], tmf[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(tmf_p1)
+        & np.isfinite(tmf_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_zero_up = (tmf_p2 < 0.0) & (tmf_p1 >= 0.0)
+    uptrend = sma50_p1 > sma200_p1
+    entries = valid & fresh_zero_up & uptrend
+
+    below_zero = np.isfinite(tmf) & (tmf < 0.0)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = below_zero | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6645,4 +6742,5 @@ NEW_STRATEGIES: dict = {
     "williams_ac_zero_acceleration": strat_williams_ac_zero_acceleration,
     "ehlers_roofing_filter": strat_ehlers_roofing_filter,
     "ehlers_trendflex": strat_ehlers_trendflex,
+    "twiggs_money_flow": strat_twiggs_money_flow,
 }
