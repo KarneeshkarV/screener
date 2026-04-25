@@ -5998,6 +5998,112 @@ def strat_tillson_t3_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_ehlers_laguerre_rsi(df: pd.DataFrame) -> list[Trade]:
+    """Ehlers Laguerre RSI (Cybernetic Analysis for Stocks and Futures, 2004).
+
+    Ehlers' Laguerre filter is a four-stage all-pass cascade controlled by a
+    single damping factor γ ∈ (0, 1). Unlike a simple EMA chain (which is
+    just successive low-pass smoothing), the Laguerre filter encodes both
+    amplitude and *phase* response so that for the same effective lag it
+    yields a much smoother envelope than an N-stage EMA. The recurrences are:
+
+        L0_t = (1 - γ)·price_t + γ·L0_{t-1}
+        L1_t = -γ·L0_t + L0_{t-1} + γ·L1_{t-1}
+        L2_t = -γ·L1_t + L1_{t-1} + γ·L2_{t-1}
+        L3_t = -γ·L2_t + L2_{t-1} + γ·L3_{t-1}
+
+    The Laguerre RSI then accumulates pairwise differences across the four
+    stages: at each bar t define three pair-deltas Δi = Li - L(i+1) for
+    i ∈ {0,1,2}; let CU = Σ max(Δi, 0) and CD = Σ max(-Δi, 0). Then
+
+        LRSI_t = CU / (CU + CD)              ∈ [0, 1]
+
+    Conventional Ehlers thresholds: LRSI < 0.15 oversold, LRSI > 0.85
+    overbought. Because the filter has a sharp roll-off, LRSI tends to
+    "stick" at extremes during persistent moves, so a *fresh* upcross out of
+    the oversold zone (rather than a level read) is the trade-relevant
+    event — it marks the moment damping releases and price rotates back up.
+
+    This is mathematically distinct from every smoother already in the
+    sandbox (EMA/SMA/RMA, McGinley denominator-damped, FRAMA fractal-dim
+    α, MAMA/FAMA Hilbert-phase, KAMA efficiency-ratio, VIDYA CMO-adaptive,
+    ALMA Gaussian-window, HMA sqrt-WMA chain, Heikin-Ashi OHLC averaging,
+    T3 6-EMA Tillson, Coppock ROC sum) and from RSI variants already
+    registered (Wilder RSI, Connors RSI, Stoch RSI, Inverse Fisher RSI,
+    Brown range-shift RSI). It is a *phase-aware* oscillator built on
+    Laguerre polynomial impulse responses, not on momentum or smoothed
+    price differences.
+
+    Entry (prior-bar arrays only — no lookahead):
+      - LRSI_{t-2} <= 0.15 AND LRSI_{t-1} > 0.15   (fresh oversold release)
+      - SMA50_{t-1} > SMA200_{t-1}                  (macro uptrend filter)
+    Exit: close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = close.size
+
+    gamma = 0.5
+    one_m_g = 1.0 - gamma
+
+    L0 = np.zeros(n)
+    L1 = np.zeros(n)
+    L2 = np.zeros(n)
+    L3 = np.zeros(n)
+    lrsi = np.full(n, np.nan)
+
+    for i in range(n):
+        if not np.isfinite(close[i]):
+            if i > 0:
+                L0[i] = L0[i - 1]
+                L1[i] = L1[i - 1]
+                L2[i] = L2[i - 1]
+                L3[i] = L3[i - 1]
+                lrsi[i] = lrsi[i - 1]
+            continue
+        if i == 0:
+            L0[i] = close[i]
+            L1[i] = close[i]
+            L2[i] = close[i]
+            L3[i] = close[i]
+            continue
+        L0[i] = one_m_g * close[i] + gamma * L0[i - 1]
+        L1[i] = -gamma * L0[i] + L0[i - 1] + gamma * L1[i - 1]
+        L2[i] = -gamma * L1[i] + L1[i - 1] + gamma * L2[i - 1]
+        L3[i] = -gamma * L2[i] + L2[i - 1] + gamma * L3[i - 1]
+        d01 = L0[i] - L1[i]
+        d12 = L1[i] - L2[i]
+        d23 = L2[i] - L3[i]
+        cu = (d01 if d01 > 0 else 0.0) + (d12 if d12 > 0 else 0.0) + (d23 if d23 > 0 else 0.0)
+        cd = (-d01 if d01 < 0 else 0.0) + (-d12 if d12 < 0 else 0.0) + (-d23 if d23 < 0 else 0.0)
+        denom = cu + cd
+        if denom > 0:
+            lrsi[i] = cu / denom
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    lrsi_p1 = np.concatenate(([np.nan], lrsi[:-1]))
+    lrsi_p2 = np.concatenate(([np.nan, np.nan], lrsi[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    threshold = 0.15
+    fresh_release = (lrsi_p2 <= threshold) & (lrsi_p1 > threshold)
+    uptrend = sma50_p1 > sma200_p1
+    valid = (
+        np.isfinite(lrsi_p1)
+        & np.isfinite(lrsi_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    entries = valid & fresh_release & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6081,4 +6187,5 @@ NEW_STRATEGIES: dict = {
     "mama_fama_cross": strat_mama_fama_cross,
     "andean_oscillator_bull_cross": strat_andean_oscillator_bull_cross,
     "tillson_t3_cross": strat_tillson_t3_cross,
+    "ehlers_laguerre_rsi": strat_ehlers_laguerre_rsi,
 }
