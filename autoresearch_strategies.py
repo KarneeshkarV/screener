@@ -3607,6 +3607,91 @@ def strat_qstick_zero_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_mass_index_reversal_bulge(df: pd.DataFrame) -> list[Trade]:
+    """Donald Dorsey's Mass Index reversal-bulge — trend-resumption variant.
+
+    Mass Index is a pure range-volatility indicator (no direction). It
+    detects expansion-then-contraction in the high-low range, which Dorsey
+    found precedes reversals.
+
+    Construction:
+      range_t   = high - low
+      ema1_t    = EMA(range, 9)
+      ema2_t    = EMA(ema1, 9)
+      ratio_t   = ema1 / ema2
+      MI_t      = sum_{i=0..24} ratio_{t-i}     (25-bar rolling sum)
+
+    Dorsey's "reversal bulge": MI > 27 then crosses back below 26.5. The
+    indicator is direction-agnostic, so we pair it with an uptrend filter
+    to bias toward long entries on pullback reversals (trend resumptions).
+
+    Distinct from sandbox plays:
+      - Williams VIX Fix / NR7 use single-bar range collapse/expansion;
+        Mass Index uses an *EMA ratio* of range, smoothed over 25 bars,
+        and triggers on a multi-bar bulge-then-collapse, not single-bar.
+      - Volatility-band strategies (squeeze, bb_breakout, keltner) compare
+        price to volatility bands; Mass Index ignores price level entirely.
+      - Choppiness Index measures trend/range regime; Mass Index measures
+        range expansion-contraction acceleration via EMA-of-EMA ratio.
+      - ADX/DMI/Aroon are directional trend strength; Mass Index is
+        non-directional volatility-shape.
+
+    Entry: MI bulge complete in uptrend.
+      - prev MI > 27 at any point in the last `bulge_lookback` bars,
+      - current MI crossed below 26.5 this bar (prev>=26.5 & now<26.5),
+      - SMA(50) > SMA(200) (uptrend filter).
+    Exit : close < EMA(20).
+    """
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    rng = high - low
+    ema1 = _ema(rng, 9)
+    ema2 = _ema(ema1, 9)
+
+    ratio = np.where(
+        np.isfinite(ema2) & (ema2 > 0.0),
+        ema1 / ema2,
+        np.nan,
+    )
+
+    # 25-bar rolling sum of the ratio = Mass Index.
+    mi = (
+        pd.Series(ratio).rolling(25, min_periods=25).sum().to_numpy()
+    )
+
+    mi_prev = np.concatenate(([np.nan], mi[:-1]))
+
+    # Drop below 26.5 from at-or-above 26.5 (the "bulge collapse").
+    cross_down = (
+        np.isfinite(mi) & np.isfinite(mi_prev)
+        & (mi_prev >= 26.5) & (mi < 26.5)
+    )
+
+    # Confirm a recent bulge: MI exceeded 27 within the last 25 bars
+    # (use mi_prev so the lookback ends one bar before the trigger,
+    # avoiding any same-bar coupling with the cross-down test).
+    bulge = (
+        pd.Series(mi_prev > 27.0)
+        .rolling(25, min_periods=1)
+        .max()
+        .to_numpy()
+        .astype(bool)
+    )
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = cross_down & bulge & uptrend
+
+    ema20 = _ema(close, 20)
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3660,4 +3745,5 @@ NEW_STRATEGIES: dict = {
     "three_white_soldiers": strat_three_white_soldiers,
     "qstick_zero_cross": strat_qstick_zero_cross,
     "bullish_engulfing_pullback": strat_bullish_engulfing_pullback,
+    "mass_index_reversal_bulge": strat_mass_index_reversal_bulge,
 }
