@@ -3338,6 +3338,58 @@ def strat_td_sequential_buy_setup(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_keltner_channel_breakout(df: pd.DataFrame) -> list[Trade]:
+    """Keltner Channel upside breakout — long when close crosses above the
+    EMA(20) + 2.0 * ATR(10) envelope inside an SMA(200) uptrend; exit when
+    close drops back through the EMA(20) centerline.
+
+    Chester Keltner's channel is built around a moving-average centerline
+    with bands expanded by *true range* rather than standard deviation, so it
+    reacts to gap-driven volatility (Bollinger ignores gaps) and stays
+    smoother during sideways drift. An upside band penetration in an
+    established uptrend marks a fresh expansion leg — distinct edge from:
+      - bb_breakout / bollinger_pctb_reversion: σ-bands on close-only,
+        no gap component.
+      - donchian_20_10_trend: raw highest-high channel (price-based, no
+        volatility scaling).
+      - squeeze_breakout: Bollinger-inside-Keltner *compression* trigger,
+        not a band penetration.
+      - parabolic_sar / supertrend: ATR trailing stops, not channel bands.
+
+    Crossover is computed at bar close from today vs prior bar values
+    (both known by the close), so no lookahead.
+
+    Entry : close > upper_kc AND prior close <= prior upper_kc
+            AND close > SMA(200) regime filter.
+    Exit  : close < EMA(20) — give back to the channel mean.
+    """
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    ema20 = _ema(close, 20)
+    atr10 = _atr(high, low, close, 10)
+    upper_kc = ema20 + 2.0 * atr10
+
+    sma200 = _sma(close, 200)
+
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    upper_prev = np.concatenate(([np.nan], upper_kc[:-1]))
+
+    crossed_up = (
+        np.isfinite(upper_kc)
+        & np.isfinite(upper_prev)
+        & (close > upper_kc)
+        & (close_prev <= upper_prev)
+    )
+    regime = np.isfinite(sma200) & (close > sma200)
+    entries = crossed_up & regime
+
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3387,4 +3439,5 @@ NEW_STRATEGIES: dict = {
     "hammer_pin_bar_uptrend": strat_hammer_pin_bar_uptrend,
     "linreg_slope_signchange": strat_linreg_slope_signchange,
     "td_sequential_buy_setup": strat_td_sequential_buy_setup,
+    "keltner_channel_breakout": strat_keltner_channel_breakout,
 }
