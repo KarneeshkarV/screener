@@ -3061,6 +3061,89 @@ def strat_vwap_zscore_reversion(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_guppy_gmma_compression_release(df: pd.DataFrame) -> list[Trade]:
+    """Guppy Multiple Moving Averages — compression-then-release long entry.
+
+    Daryl Guppy's GMMA uses two ribbons of EMAs to read trader vs investor
+    behaviour:
+      short bundle (traders): EMA 3, 5, 8, 10, 12, 15
+      long  bundle (investors): EMA 30, 35, 40, 45, 50, 60
+
+    A high-quality bullish change-of-trend occurs when the short bundle —
+    after being *compressed* (narrow spread, indicating indecision) — fans
+    out and the *minimum* of the short bundle crosses above the *maximum* of
+    the long bundle (clean bullish stack). The compression filter weeds out
+    chop-driven crosses that the basic 'fast-EMA over slow-EMA' miss.
+
+    Entry (decided on prior bar to avoid lookahead): yesterday's
+      min(short_ribbon) > max(long_ribbon)  AND
+      yesterday's min(short_ribbon) <= max(long_ribbon) two bars ago
+        (i.e. a *fresh* cross-up, not an already-running trend), AND
+      compression on the cross day: the short-ribbon spread on the bar
+      before the cross was in its bottom 30 percent over the prior 60 bars
+      (the 'rubber band' that snaps).
+    Exit: yesterday's max(short_ribbon) < min(long_ribbon) (bundle
+      penetration — short ribbon dips back into the long ribbon).
+
+    Distinct from sandbox cousins:
+      - hma_bullish_cross / kama_cross_trend / ma_cross: single fast-vs-slow
+        crossover with no compression filter and no ribbon stack check.
+      - squeeze_breakout (TTM): BB-inside-KC volatility compression, not
+        EMA-ribbon compression — fires on price breakout, not stack flip.
+      - clenow_momentum: regression slope on close, not ribbon geometry.
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    short_periods = (3, 5, 8, 10, 12, 15)
+    long_periods = (30, 35, 40, 45, 50, 60)
+
+    short_ribbon = np.vstack([_ema(close, n) for n in short_periods])
+    long_ribbon = np.vstack([_ema(close, n) for n in long_periods])
+
+    short_min = short_ribbon.min(axis=0)
+    short_max = short_ribbon.max(axis=0)
+    long_min = long_ribbon.min(axis=0)
+    long_max = long_ribbon.max(axis=0)
+
+    # Ribbon spread normalised by close (so it scales with price).
+    short_spread = (short_max - short_min) / np.where(close > 0.0, close, np.nan)
+
+    spread_series = pd.Series(short_spread)
+    spread_q30 = spread_series.rolling(60, min_periods=60).quantile(0.30).to_numpy()
+
+    short_min_prev = np.concatenate(([np.nan], short_min[:-1]))
+    short_min_prev2 = np.concatenate(([np.nan, np.nan], short_min[:-2]))
+    short_max_prev = np.concatenate(([np.nan], short_max[:-1]))
+    long_max_prev = np.concatenate(([np.nan], long_max[:-1]))
+    long_max_prev2 = np.concatenate(([np.nan, np.nan], long_max[:-2]))
+    long_min_prev = np.concatenate(([np.nan], long_min[:-1]))
+    spread_prev2 = np.concatenate(([np.nan, np.nan], short_spread[:-2]))
+    q30_prev2 = np.concatenate(([np.nan, np.nan], spread_q30[:-2]))
+
+    fresh_cross = (
+        np.isfinite(short_min_prev)
+        & np.isfinite(long_max_prev)
+        & np.isfinite(short_min_prev2)
+        & np.isfinite(long_max_prev2)
+        & (short_min_prev > long_max_prev)
+        & (short_min_prev2 <= long_max_prev2)
+    )
+    compressed = (
+        np.isfinite(spread_prev2)
+        & np.isfinite(q30_prev2)
+        & (spread_prev2 <= q30_prev2)
+    )
+
+    entries = fresh_cross & compressed
+    exits = (
+        np.isfinite(short_max_prev)
+        & np.isfinite(long_min_prev)
+        & (short_max_prev < long_min_prev)
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3106,4 +3189,5 @@ NEW_STRATEGIES: dict = {
     "connors_double_7s": strat_connors_double_7s,
     "raschke_holy_grail": strat_raschke_holy_grail,
     "vwap_zscore_reversion": strat_vwap_zscore_reversion,
+    "guppy_gmma_compression_release": strat_guppy_gmma_compression_release,
 }
