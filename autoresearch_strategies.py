@@ -3477,6 +3477,83 @@ def strat_three_white_soldiers(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_bullish_engulfing_pullback(df: pd.DataFrame) -> list[Trade]:
+    """Bullish Engulfing candle on a short-term pullback inside SMA(50)>SMA(200)
+    uptrend. Exit on close<EMA(10).
+
+    A bullish engulfing requires a *bearish* prior bar whose body is fully
+    contained inside today's *bullish* body:
+        prev: close[t-1] < open[t-1]                  (down candle)
+        now : close[t]   > open[t]                    (up candle)
+              open[t]    <= close[t-1]                (today opens at/below
+                                                       prior close)
+              close[t]   >= open[t-1]                 (today closes at/above
+                                                       prior open)
+              body[t]    >  body[t-1]                 (strict engulfing)
+
+    The pullback context is enforced by requiring yesterday's close to sit
+    below SMA(10) — i.e. the bar being engulfed was a genuine retracement,
+    not a flat consolidation bar at trend highs. Combined with the long-term
+    SMA(50) > SMA(200) filter, the setup is a textbook trend-continuation
+    reversal.
+
+    Distinct from existing sandbox candle / pullback plays:
+      - hammer_pin_bar_uptrend: single-bar pin (tiny body, deep lower wick),
+        no requirement for an engulfed prior bar.
+      - three_white_soldiers: three consecutive *same-direction* bull bodies
+        with no engulfing relationship and no pullback context.
+      - heikin_ashi_flip: smoothed-candle colour flip on HA-transformed
+        prices, hides the raw engulfing relationship by construction.
+      - raschke_holy_grail: requires ADX>30 strong-trend regime AND a wick
+        touch of EMA(20); this strategy is purely about the two-bar body
+        relationship and a soft-pullback (close<SMA(10)) context.
+      - cum_rsi2_pullback / connors_rsi_pullback / connors_double_7s /
+        ibs_trend_filter: oscillator-based pullback identifiers, no candle
+        anatomy.
+      - bullish_engulfing is a two-bar *body-relationship* pattern not
+        captured by any close-only oscillator (RSI/MACD/CMO/TRIX/TSI/KST/
+        Coppock/DPO/Schaff/AO/Fisher/Vortex/CMF/OBV/EFI/MFI/UO).
+
+    Entries/exits are decidable by bar close (today's open and close are
+    known at close); engulfing comparison uses prior bar values only.
+    """
+    open_ = df["open"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    open_prev = np.concatenate(([np.nan], open_[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+
+    body_now = close - open_
+    body_prev = close_prev - open_prev
+
+    bear_prev = np.isfinite(body_prev) & (body_prev < 0.0)
+    bull_now = np.isfinite(body_now) & (body_now > 0.0)
+    engulf_open = np.isfinite(close_prev) & (open_ <= close_prev)
+    engulf_close = np.isfinite(open_prev) & (close >= open_prev)
+    body_grew = (
+        np.isfinite(body_now)
+        & np.isfinite(body_prev)
+        & (body_now > -body_prev)  # |body_now| > |body_prev| since body_prev<0
+    )
+
+    engulfing = bear_prev & bull_now & engulf_open & engulf_close & body_grew
+
+    sma10 = _sma(close, 10)
+    sma10_prev = np.concatenate(([np.nan], sma10[:-1]))
+    pullback_ctx = np.isfinite(sma10_prev) & (close_prev < sma10_prev)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = engulfing & pullback_ctx & uptrend
+
+    ema10 = _ema(close, 10)
+    exits = np.isfinite(ema10) & (close < ema10)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 def strat_qstick_zero_cross(df: pd.DataFrame) -> list[Trade]:
     """Q-Stick (Chande) zero-line bullish cross in an SMA(50)>SMA(200) uptrend.
 
@@ -3582,4 +3659,5 @@ NEW_STRATEGIES: dict = {
     "keltner_channel_breakout": strat_keltner_channel_breakout,
     "three_white_soldiers": strat_three_white_soldiers,
     "qstick_zero_cross": strat_qstick_zero_cross,
+    "bullish_engulfing_pullback": strat_bullish_engulfing_pullback,
 }
