@@ -4805,6 +4805,95 @@ def strat_polarized_fractal_efficiency(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_wavetrend_lb_oversold_cross(df: pd.DataFrame) -> list[Trade]:
+    """LazyBear WaveTrend Oscillator (WT) — bullish crossover from the
+    oversold zone, gated by SMA(50) > SMA(200) trend filter.
+
+    The WaveTrend Oscillator (popularised by "LazyBear" on TradingView, but
+    derived from older centred-momentum work) measures how far the *typical
+    price* (HLC3) sits from its own EMA, normalised by an EMA of the
+    *absolute* deviation — i.e. a self-scaled momentum z-score. Computation:
+
+        ap   = (high + low + close) / 3              # average / typical price
+        esa  = EMA(ap, n1=10)                        # smoothed centre line
+        d    = EMA(|ap - esa|, n1=10)                # smoothed mean abs dev
+        ci   = (ap - esa) / (0.015 * d)              # channel index, ~CCI core
+        wt1  = EMA(ci, n2=21)                        # the WaveTrend line
+        wt2  = SMA(wt1, 4)                           # signal line
+
+    Standard LazyBear setup: a long signal fires when wt1 crosses *up*
+    through wt2 while wt1 is sitting in the oversold zone (< -60).
+
+    Why this is genuinely distinct from prior sandbox indicators:
+      - MACD / TSI / KST / Coppock / TRIX / DPO: all derive from *price* or
+        *price differences*, not from the absolute-deviation normalisation
+        WT applies. WT's denominator (EMA of |ap-esa|) makes it scale-free
+        in a way EMA-difference oscillators are not.
+      - CCI (cci_oversold_recovery): single-pass typical-price deviation
+        normalised by mean-deviation, *not* double-EMA-smoothed and without
+        a separate signal-line cross.
+      - StochRSI / Stoch / Ult Osc / Inverse Fisher RSI / Fisher Transform:
+        all built on RSI or stochastic of close, not HLC3 deviation.
+      - QQE / RVI / Schaff Trend Cycle: smoothed-RSI or smoothed-stoch
+        machinery, again close-based, not deviation-z-scored HLC3.
+      - Awesome Oscillator (saucer): SMA(median, 5) - SMA(median, 34) — no
+        normalisation by absolute deviation.
+
+    Hypothesis: a fresh wt1↑wt2 cross while wt1 is still below -60 marks the
+    moment a typical-price pullback has *just* exhausted, and the trend
+    filter (50>200) ensures we are dip-buying inside the prevailing uptrend
+    rather than catching a downtrend bounce.
+
+    Exit: close < EMA(20) — same short-term mean give-back used across the
+    other oscillator-cross sandbox plays so the *signal* is the only
+    variable.
+    """
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    ap = (high + low + close) / 3.0
+    n1 = 10
+    n2 = 21
+
+    esa = _ema(ap, n1)
+    abs_dev = np.abs(ap - esa)
+    d = _ema(abs_dev, n1)
+
+    denom = 0.015 * d
+    ci = np.where(np.isfinite(denom) & (denom > 0.0), (ap - esa) / denom, np.nan)
+
+    wt1 = _ema(np.nan_to_num(ci, nan=0.0), n2)
+    # mask early bars where the inputs were not yet defined.
+    warmup = n1 + n2
+    wt1[:warmup] = np.nan
+    wt2 = _sma(wt1, 4)
+
+    wt1_prev = np.concatenate(([np.nan], wt1[:-1]))
+    wt2_prev = np.concatenate(([np.nan], wt2[:-1]))
+
+    cross_up = (
+        np.isfinite(wt1)
+        & np.isfinite(wt2)
+        & np.isfinite(wt1_prev)
+        & np.isfinite(wt2_prev)
+        & (wt1_prev <= wt2_prev)
+        & (wt1 > wt2)
+    )
+    oversold = np.isfinite(wt1) & (wt1 < -60.0)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = cross_up & oversold & uptrend
+
+    ema20 = _ema(close, 20)
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -4874,4 +4963,5 @@ NEW_STRATEGIES: dict = {
     "elder_ray_bear_reclaim": strat_elder_ray_bear_reclaim,
     "morning_star_pullback": strat_morning_star_pullback,
     "polarized_fractal_efficiency": strat_polarized_fractal_efficiency,
+    "wavetrend_lb_oversold_cross": strat_wavetrend_lb_oversold_cross,
 }
