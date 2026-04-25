@@ -2993,6 +2993,74 @@ def strat_raschke_holy_grail(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_vwap_zscore_reversion(df: pd.DataFrame) -> list[Trade]:
+    """Rolling 20-bar VWAP z-score mean reversion in a long-term uptrend.
+
+    Compute a rolling 20-bar volume-weighted average price (VWAP_20). The
+    residual = close - VWAP_20 captures short-term over/undershoot relative
+    to where the recent flow-weighted price has been. We standardise the
+    residual by its own 20-bar stdev so the entry threshold is regime
+    adaptive (a noisy, high-vol stock needs a bigger absolute residual to
+    cross -1.5σ than a quiet one). Long when price is meaningfully *below*
+    the volume-weighted mean inside a long-term uptrend; exit on reversion
+    to/above the VWAP or a regime stop.
+
+    Decision is fully bar-close decidable — VWAP_20 and its residual stdev
+    use only data up to and including bar t (close[t], volume[t]).
+
+    Distinct from sandbox cousins:
+      - anchored_vwap_reclaim: that anchors AVWAP to the rolling 60-bar
+        swing-low and triggers on a one-shot cross-up reclaim. This one
+        uses a *fixed-window* rolling VWAP and an adaptive *z-score*
+        threshold, not a level-cross event.
+      - bollinger_pctb_reversion: σ-bands around a price SMA. This uses
+        residual-from-VWAP (volume-weighted), and its stdev is of the
+        *residual itself*, not raw close.
+      - connors_double_7s: raw 7-bar closing extrema. This is a continuous
+        z-score with volume weighting, not a discrete N-bar low.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+
+    n = 20
+    pv = pd.Series(close * volume)
+    v = pd.Series(volume)
+    sum_pv = pv.rolling(n, min_periods=n).sum().to_numpy()
+    sum_v = v.rolling(n, min_periods=n).sum().to_numpy()
+    vwap_n = np.where(sum_v > 0.0, sum_pv / np.where(sum_v > 0.0, sum_v, np.nan), np.nan)
+
+    residual = close - vwap_n
+    res_std = (
+        pd.Series(residual)
+        .rolling(n, min_periods=n)
+        .std(ddof=0)
+        .to_numpy()
+    )
+    z = np.where(res_std > 0.0, residual / np.where(res_std > 0.0, res_std, np.nan), np.nan)
+
+    sma100 = _sma(close, 100)
+    sma50 = _sma(close, 50)
+
+    z_prev = np.concatenate(([np.nan], z[:-1]))
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
+    sma50_prev = np.concatenate(([np.nan], sma50[:-1]))
+
+    entries = (
+        np.isfinite(z_prev)
+        & np.isfinite(sma100_prev)
+        & np.isfinite(close_prev)
+        & (z_prev < -1.5)
+        & (close_prev > sma100_prev)
+    )
+    exits = (
+        (np.isfinite(z_prev) & (z_prev >= 0.0))
+        | (np.isfinite(sma50_prev) & np.isfinite(close_prev) & (close_prev < sma50_prev))
+    )
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3037,4 +3105,5 @@ NEW_STRATEGIES: dict = {
     "anchored_vwap_reclaim": strat_anchored_vwap_reclaim,
     "connors_double_7s": strat_connors_double_7s,
     "raschke_holy_grail": strat_raschke_holy_grail,
+    "vwap_zscore_reversion": strat_vwap_zscore_reversion,
 }
