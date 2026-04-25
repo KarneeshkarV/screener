@@ -5475,6 +5475,109 @@ def strat_mcginley_dynamic_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_frama_bullish_cross(df: pd.DataFrame) -> list[Trade]:
+    """John Ehlers' Fractal Adaptive Moving Average (FRAMA, N=16) — bullish cross.
+
+    Reference: Ehlers, "FRAMA — Fractal Adaptive Moving Average" (Stocks &
+    Commodities, 2005). The smoothing constant adapts via the fractal dimension
+    of the high-low range over the lookback window:
+
+        Split the N-bar window into two halves of length N/2.
+        N1 = (max(high[first half]) - min(low[first half])) / (N/2)
+        N2 = (max(high[second half]) - min(low[second half])) / (N/2)
+        N3 = (max(high[full N]) - min(low[full N])) / N
+        D  = (log(N1 + N2) - log(N3)) / log(2)        # Hurst fractal dim
+        alpha = exp(-4.6 * (D - 1))                    # clamped to [0.01, 1.0]
+        FRAMA_t = alpha * close_t + (1 - alpha) * FRAMA_{t-1}
+
+    When the per-bar range over the halves equals the per-bar range over the
+    whole window the price moves cleanly (D~1 -> alpha~1, fast tracking). When
+    the halves contain twice the per-bar range of the whole (zig-zag/noise),
+    D~2 -> alpha~0.01 (heavy smoothing). This range-geometry adaptation is
+    distinct from every other adaptive smoother already in the sandbox:
+      - KAMA: Kaufman efficiency-ratio (close/abs-noise) drives SC.
+      - VIDYA: Chande Momentum Oscillator drives SC.
+      - McGinley: (close/MD)^4 power-law factor in denominator.
+      - HMA / ALMA: fixed-weight WMA / Gaussian kernels (no adaptation).
+
+    Entry (prior-bar arrays, no lookahead):
+      - close_{t-2} <= FRAMA_{t-2} AND close_{t-1} > FRAMA_{t-1}  (fresh cross up)
+      - SMA50_{t-1} > SMA200_{t-1}  (macro uptrend gate)
+    Exit: close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n_bars = len(close)
+
+    N = 16
+    half = N // 2
+
+    high_s = pd.Series(high)
+    low_s = pd.Series(low)
+    hh_full = high_s.rolling(N, min_periods=N).max().to_numpy()
+    ll_full = low_s.rolling(N, min_periods=N).min().to_numpy()
+    hh_recent = high_s.rolling(half, min_periods=half).max().to_numpy()
+    ll_recent = low_s.rolling(half, min_periods=half).min().to_numpy()
+    hh_older = (
+        high_s.rolling(half, min_periods=half).max().shift(half).to_numpy()
+    )
+    ll_older = (
+        low_s.rolling(half, min_periods=half).min().shift(half).to_numpy()
+    )
+
+    frama = np.full(n_bars, np.nan)
+    log2 = np.log(2.0)
+    for i in range(n_bars):
+        if i < N - 1:
+            continue
+        n1 = (hh_older[i] - ll_older[i]) / half
+        n2 = (hh_recent[i] - ll_recent[i]) / half
+        n3 = (hh_full[i] - ll_full[i]) / N
+        if (
+            not (np.isfinite(n1) and np.isfinite(n2) and np.isfinite(n3))
+            or (n1 + n2) <= 0.0
+            or n3 <= 0.0
+        ):
+            d = 1.0
+        else:
+            d = (np.log(n1 + n2) - np.log(n3)) / log2
+        d = float(np.clip(d, 1.0, 2.0))
+        alpha = float(np.exp(-4.6 * (d - 1.0)))
+        alpha = float(np.clip(alpha, 0.01, 1.0))
+        prev = frama[i - 1]
+        if not np.isfinite(prev):
+            prev = float(np.mean(close[i - N + 1 : i + 1]))
+        frama[i] = alpha * close[i] + (1.0 - alpha) * prev
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    frama_p1 = np.concatenate(([np.nan], frama[:-1]))
+    frama_p2 = np.concatenate(([np.nan, np.nan], frama[:-2]))
+    close_p1 = np.concatenate(([np.nan], close[:-1]))
+    close_p2 = np.concatenate(([np.nan, np.nan], close[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    fresh_cross = (close_p2 <= frama_p2) & (close_p1 > frama_p1)
+    uptrend = sma50_p1 > sma200_p1
+    valid = (
+        np.isfinite(frama_p1)
+        & np.isfinite(frama_p2)
+        & np.isfinite(close_p1)
+        & np.isfinite(close_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    entries = valid & fresh_cross & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -5553,4 +5656,5 @@ NEW_STRATEGIES: dict = {
     "random_walk_index_bullish_cross": strat_random_walk_index_bullish_cross,
     "premier_stochastic_oscillator": strat_premier_stochastic_oscillator,
     "mcginley_dynamic_cross": strat_mcginley_dynamic_cross,
+    "frama_bullish_cross": strat_frama_bullish_cross,
 }
