@@ -6851,6 +6851,72 @@ def strat_chande_forecast_oscillator(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_tema_bullish_cross(df: pd.DataFrame) -> list[Trade]:
+    """Triple Exponential Moving Average (Patrick Mulloy, Stocks & Commodities
+    Jan/Feb 1994 — 'Smoothing Data With Faster Moving Averages').
+
+    TEMA compensates for the lag inherent in a single EMA by combining three
+    cascaded EMAs:
+        TEMA(n) = 3*EMA(n) - 3*EMA(EMA(n)) + EMA(EMA(EMA(n))).
+    Mulloy's identity removes the second-order lag term so the curve hugs
+    price without the over-shoot of plain EMA chains. Fast/slow TEMA crosses
+    therefore react sooner than EMA crosses while remaining smoother than
+    raw price, in principle giving cleaner trend-onset timing than the
+    EMA, DEMA, KAMA, HMA, ALMA, VIDYA, McGinley, T3 and FRAMA variants
+    already on the bench (none of those decompose into the 3·EMA − 3·EMA²
+    + EMA³ identity).
+
+    Entry: fresh up-cross of TEMA(10) above TEMA(30) inside SMA50 > SMA200.
+    Exit: TEMA(10) < TEMA(30) OR close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    def _tema(x: np.ndarray, n: int) -> np.ndarray:
+        e1 = _ema(x, n)
+        e2 = _ema(e1, n)
+        e3 = _ema(e2, n)
+        return 3.0 * e1 - 3.0 * e2 + e3
+
+    tema_fast = _tema(close, 10)
+    tema_slow = _tema(close, 30)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    fast_prev = np.concatenate(([np.nan], tema_fast[:-1]))
+    slow_prev = np.concatenate(([np.nan], tema_slow[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    n = close.size
+    warmup = np.zeros(n, dtype=bool)
+    warmup_start = min(n, 90)
+    warmup[warmup_start:] = True
+
+    valid = (
+        warmup
+        & np.isfinite(fast_prev)
+        & np.isfinite(slow_prev)
+        & np.isfinite(tema_fast)
+        & np.isfinite(tema_slow)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    fresh_up_cross = valid & (fast_prev <= slow_prev) & (tema_fast > tema_slow)
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_up_cross & uptrend
+
+    cross_down = (
+        np.isfinite(tema_fast) & np.isfinite(tema_slow) & (tema_fast < tema_slow)
+    )
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = cross_down | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6944,4 +7010,5 @@ NEW_STRATEGIES: dict = {
     "elder_impulse_bull": strat_elder_impulse_bull,
     "vw_macd_signal_cross": strat_vw_macd_signal_cross,
     "chande_forecast_oscillator": strat_chande_forecast_oscillator,
+    "tema_bullish_cross": strat_tema_bullish_cross,
 }
