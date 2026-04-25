@@ -5302,6 +5302,57 @@ def strat_gann_hilo_activator_flip(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_random_walk_index_bullish_cross(df: pd.DataFrame) -> list[Trade]:
+    """Random Walk Index (Poulos) — RWI_high crosses up through RWI_low in uptrend.
+
+    RWI compares actual price movement to what a random walk would produce
+    over the same window. RWI_high(n) = (high - low_{t-n}) / (ATR(n) * sqrt(n)),
+    RWI_low(n) = (high_{t-n} - low) / (ATR(n) * sqrt(n)). Values >1.0 mean
+    movement exceeds the noise band. Entry on a fresh RWI_high > RWI_low cross
+    with RWI_high > 1.0 inside SMA50>SMA200; exit close<EMA20. Distinct from
+    ADX/DMI (Wilder smoothing of directional movement) and Aroon (time-since
+    extremes) — RWI is a per-bar trend-vs-noise ratio.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    n = 8
+    atr_n = _atr(high, low, close, n)
+    sqrt_n = float(np.sqrt(n))
+
+    high_n = pd.Series(high).shift(n).to_numpy()
+    low_n = pd.Series(low).shift(n).to_numpy()
+
+    denom = atr_n * sqrt_n
+    safe = denom > 0
+    rwi_up = np.where(safe, (high - low_n) / np.where(safe, denom, 1.0), 0.0)
+    rwi_dn = np.where(safe, (high_n - low) / np.where(safe, denom, 1.0), 0.0)
+    rwi_up = np.nan_to_num(rwi_up, nan=0.0, posinf=0.0, neginf=0.0)
+    rwi_dn = np.nan_to_num(rwi_dn, nan=0.0, posinf=0.0, neginf=0.0)
+
+    rwi_up_p1 = np.concatenate(([0.0], rwi_up[:-1]))
+    rwi_dn_p1 = np.concatenate(([0.0], rwi_dn[:-1]))
+    rwi_up_p2 = np.concatenate(([0.0], rwi_up_p1[:-1]))
+    rwi_dn_p2 = np.concatenate(([0.0], rwi_dn_p1[:-1]))
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    fresh_cross = (rwi_up_p2 <= rwi_dn_p2) & (rwi_up_p1 > rwi_dn_p1)
+    strong_up = rwi_up_p1 > 1.0
+    uptrend = sma50_p1 > sma200_p1
+    valid = np.isfinite(sma50_p1) & np.isfinite(sma200_p1)
+
+    entries = valid & fresh_cross & strong_up & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -5377,4 +5428,5 @@ NEW_STRATEGIES: dict = {
     "ehlers_cog_signal_cross": strat_ehlers_cog_signal_cross,
     "smi_blau_oversold_cross": strat_smi_blau_oversold_cross,
     "gann_hilo_activator_flip": strat_gann_hilo_activator_flip,
+    "random_walk_index_bullish_cross": strat_random_walk_index_bullish_cross,
 }
