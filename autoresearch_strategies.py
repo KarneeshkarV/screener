@@ -6653,6 +6653,63 @@ def strat_twiggs_money_flow(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_elder_impulse_bull(df: pd.DataFrame) -> list[Trade]:
+    """Elder Impulse System (Alexander Elder, 'Come Into My Trading Room' 2002).
+
+    Elder colour-codes each bar by combining trend and momentum: GREEN when
+    BOTH the 13-EMA is rising AND the 12,26,9 MACD histogram is rising
+    (trend + momentum aligned bullish), RED when both are falling, and BLUE
+    otherwise. The system says: don't fight green/red — only take longs in a
+    fresh green-bar transition.
+
+    Entry: fresh transition into a green impulse bar (green on prior bar but
+    not on the bar before that), with SMA50 > SMA200 trend filter to keep us
+    in established uptrends only.
+    Exit: impulse turns RED (EMA13 falling AND MACD histogram falling) OR
+    close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = close.size
+
+    ema13 = _ema(close, 13)
+    ema12 = _ema(close, 12)
+    ema26 = _ema(close, 26)
+    macd = ema12 - ema26
+    macd_signal = _ema(macd, 9)
+    macd_hist = macd - macd_signal
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    ema13_prev = np.concatenate(([np.nan], ema13[:-1]))
+    hist_prev = np.concatenate(([np.nan], macd_hist[:-1]))
+
+    valid_slope = (
+        np.isfinite(ema13)
+        & np.isfinite(ema13_prev)
+        & np.isfinite(macd_hist)
+        & np.isfinite(hist_prev)
+    )
+    impulse_green = valid_slope & (ema13 > ema13_prev) & (macd_hist > hist_prev)
+    impulse_red = valid_slope & (ema13 < ema13_prev) & (macd_hist < hist_prev)
+
+    green_p1 = np.concatenate(([False], impulse_green[:-1]))
+    green_p2 = np.concatenate(([False, False], impulse_green[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = np.isfinite(sma50_p1) & np.isfinite(sma200_p1)
+    fresh_green = green_p1 & (~green_p2)
+    uptrend = sma50_p1 > sma200_p1
+    entries = valid & fresh_green & uptrend
+
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = impulse_red | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6743,4 +6800,5 @@ NEW_STRATEGIES: dict = {
     "ehlers_roofing_filter": strat_ehlers_roofing_filter,
     "ehlers_trendflex": strat_ehlers_trendflex,
     "twiggs_money_flow": strat_twiggs_money_flow,
+    "elder_impulse_bull": strat_elder_impulse_bull,
 }
