@@ -118,10 +118,10 @@ def _basket_equity(
     """Daily basket equity with a FIXED capital-slot denominator.
 
     Each held ticker gets weight ``1 / max(held, slot_count)``, so empty slots
-    earn zero and sparse strategies are not implicitly levered. This mirrors
-    engine.py's portfolio model: you size positions against a fixed capital
-    base split across ``slot_count`` slots, not against the count of names
-    currently open."""
+    earn zero and sparse strategies are not implicitly levered. A ticker with
+    multiple overlapping trades counts ONCE per day so pyramiding/re-entry
+    strategies don't double-count the same daily return.
+    """
     master = set()
     for df in ohlcv.values():
         dts = pd.to_datetime(df["date"])
@@ -138,22 +138,25 @@ def _basket_equity(
         df = ohlcv[ticker].sort_values("date").reset_index(drop=True)
         tdates = pd.to_datetime(df["date"]).to_numpy()
         closes = df["close"].to_numpy(dtype=float)
+        # Union of in-trade bar indices across all trades for this ticker, so
+        # overlapping/re-entered lots collapse to a single per-day exposure.
+        held_idx: set[int] = set()
         for tr in trades:
-            # daily returns accrue from the bar AFTER entry through the exit bar
             start_i = max(tr.entry_idx + 1, 1)
             end_i = tr.exit_idx
             if end_i < start_i:
                 continue
-            for i in range(start_i, end_i + 1):
-                d = pd.Timestamp(tdates[i])
-                if d < window_start or d > window_end:
-                    continue
-                if closes[i - 1] <= 0:
-                    continue
-                r = closes[i] / closes[i - 1] - 1.0
-                if d in return_sum.index:
-                    return_sum.loc[d] += r
-                    held.loc[d] += 1
+            held_idx.update(range(start_i, end_i + 1))
+        for i in sorted(held_idx):
+            d = pd.Timestamp(tdates[i])
+            if d < window_start or d > window_end:
+                continue
+            if closes[i - 1] <= 0:
+                continue
+            r = closes[i] / closes[i - 1] - 1.0
+            if d in return_sum.index:
+                return_sum.loc[d] += r
+                held.loc[d] += 1
 
     denom = np.maximum(held.to_numpy(dtype=float), float(max(slot_count, 1)))
     avg = pd.Series(return_sum.to_numpy() / denom, index=dates).fillna(0.0)
@@ -175,10 +178,13 @@ def _run_strategy(
             all_trades = strat_fn(df.sort_values("date").reset_index(drop=True))
         except Exception:
             continue
-        # entries in window only (indicators warm up on pre-window bars)
+        # keep any trade whose [entry, exit] interval overlaps the window;
+        # _basket_equity truncates per-day contributions, so carry-in trades
+        # opened just before window_start still contribute their in-window
+        # daily returns instead of being silently dropped.
         in_win = [
             t for t in all_trades
-            if pd.Timestamp(t.entry_date) >= window_start
+            if pd.Timestamp(t.exit_date) >= window_start
             and pd.Timestamp(t.entry_date) <= window_end
         ]
         if in_win:
@@ -216,7 +222,7 @@ def _evaluate_one(
             flat.extend(_to_metric_trades(trs))
         if eq.empty:
             return {"trade_count": 0}
-        m = compute_metrics(eq, bench, flat, slot_count=max(len(ohlcv), 1), n_trials=n_trials)
+        m = compute_metrics(eq, bench, flat, slot_count=slot_count, n_trials=n_trials)
         m["trade_count"] = n_tr
         return m
 
@@ -351,24 +357,39 @@ def evaluate(
     ts = pd.Timestamp.now().isoformat()
     commit = _git_head()
     diff = _git_diff_stat()
+    rows = [
+        {
+            "ts": ts,
+            "iteration": iteration,
+            "hypothesis": hypothesis,
+            "git_head": commit,
+            "git_diff_stat": diff,
+            "market": market,
+            "slots": slots,
+            "is_window": [str(is_start.date()), str(is_end.date())],
+            "oos_window": [str(oos_start.date()), str(oos_end.date())],
+            "n_trials": n_trials,
+            "strategy": r["strategy"],
+            "score": r["score"],
+            "is": _safe(r["is"]),
+            "oos": _safe(r["oos"]),
+        }
+        for r in results
+    ]
     with open(journal, "a") as f:
-        for r in results:
-            f.write(json.dumps({
-                "ts": ts,
-                "iteration": iteration,
-                "hypothesis": hypothesis,
-                "git_head": commit,
-                "git_diff_stat": diff,
-                "market": market,
-                "slots": slots,
-                "is_window": [str(is_start.date()), str(is_end.date())],
-                "oos_window": [str(oos_start.date()), str(oos_end.date())],
-                "n_trials": n_trials,
-                "strategy": r["strategy"],
-                "score": r["score"],
-                "is": _safe(r["is"]),
-                "oos": _safe(r["oos"]),
-            }) + "\n")
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+    # Also dump this iteration's rows to its own file so per-iter results are
+    # easy to inspect without filtering the shared journal. Overwrites if the
+    # same (iteration, market) is re-run.
+    iter_dir = Path(".autoresearch/iters")
+    iter_dir.mkdir(parents=True, exist_ok=True)
+    iter_path = iter_dir / f"iter_{iteration:03d}_{market}.jsonl"
+    with open(iter_path, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    print(f"[eval] wrote {iter_path}", file=sys.stderr)
 
     print(f"\n[eval] done in {elapsed:.1f}s — top 5 by OOS score:", file=sys.stderr)
     for r in results[:5]:
