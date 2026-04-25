@@ -6104,6 +6104,90 @@ def strat_ehlers_laguerre_rsi(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_rmi_oversold_cross(df: pd.DataFrame) -> list[Trade]:
+    """Relative Momentum Index (Altman, Stocks & Commodities, Feb 1993).
+
+    The Relative Momentum Index generalises Wilder's RSI by replacing the
+    one-bar price change with an m-bar momentum. Where RSI(n) computes
+    Wilder-smoothed averages of |close_t - close_{t-1}| split into up/down
+    sides, RMI(n, m) does the same on |close_t - close_{t-m}|. The closed
+    form is
+
+        mom_t = close_t - close_{t-m}
+        up_t  = max(mom_t, 0)
+        dn_t  = max(-mom_t, 0)
+        AvgUp_t = RMA_n(up_t),   AvgDn_t = RMA_n(dn_t)        (Wilder smoother)
+        RMI_t = 100 · AvgUp_t / (AvgUp_t + AvgDn_t)            ∈ [0, 100]
+
+    With m=1 RMI collapses to Wilder RSI; with m>1 the indicator measures
+    sustained directional drift instead of bar-by-bar tugs, so it spends
+    less time at neutral 50 during trends and the oversold readings are
+    less noise-driven. Altman's original parameters were n=20, m=5; the
+    later commonly-cited combo is n=14, m=5 — used here.
+
+    This is mathematically distinct from every RSI-family member already
+    registered: Wilder RSI (Connors_RSI_pullback, RSI_brown_range_shift,
+    Connors_double_7s, cum_RSI2_pullback all use Wilder RSI internally),
+    Stochastic RSI (stoch_rsi_oversold_cross), Inverse Fisher RSI
+    (inverse_fisher_rsi), Connors composite RSI (connors_rsi_pullback),
+    Laguerre RSI (ehlers_laguerre_rsi). The momentum-period generalisation
+    is what makes RMI a separate object, not a reparameterisation.
+
+    Entry (prior-bar arrays — no lookahead):
+      - RMI_{t-2} <= 30 AND RMI_{t-1} > 30   (fresh oversold release)
+      - SMA50_{t-1} > SMA200_{t-1}           (macro uptrend filter)
+    Exit: close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = close.size
+
+    momentum_period = 5
+    smooth_period = 14
+    threshold = 30.0
+
+    if n <= momentum_period:
+        return []
+
+    mom = np.full(n, np.nan)
+    mom[momentum_period:] = close[momentum_period:] - close[:-momentum_period]
+    up = np.where(np.isfinite(mom) & (mom > 0), mom, 0.0)
+    dn = np.where(np.isfinite(mom) & (mom < 0), -mom, 0.0)
+    # mask leading bars where momentum is undefined so RMA doesn't include zeros
+    up[:momentum_period] = np.nan
+    dn[:momentum_period] = np.nan
+
+    avg_up = _rma(up, smooth_period)
+    avg_dn = _rma(dn, smooth_period)
+
+    rmi = np.full(n, np.nan)
+    denom = avg_up + avg_dn
+    valid = np.isfinite(avg_up) & np.isfinite(avg_dn) & (denom > 0)
+    rmi[valid] = 100.0 * avg_up[valid] / denom[valid]
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    rmi_p1 = np.concatenate(([np.nan], rmi[:-1]))
+    rmi_p2 = np.concatenate(([np.nan, np.nan], rmi[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    fresh_release = (rmi_p2 <= threshold) & (rmi_p1 > threshold)
+    uptrend = sma50_p1 > sma200_p1
+    valid_arr = (
+        np.isfinite(rmi_p1)
+        & np.isfinite(rmi_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    entries = valid_arr & fresh_release & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6188,4 +6272,5 @@ NEW_STRATEGIES: dict = {
     "andean_oscillator_bull_cross": strat_andean_oscillator_bull_cross,
     "tillson_t3_cross": strat_tillson_t3_cross,
     "ehlers_laguerre_rsi": strat_ehlers_laguerre_rsi,
+    "rmi_oversold_cross": strat_rmi_oversold_cross,
 }
