@@ -3144,6 +3144,78 @@ def strat_guppy_gmma_compression_release(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_hammer_pin_bar_uptrend(df: pd.DataFrame) -> list[Trade]:
+    """Bullish hammer (pin bar) at a 20-bar swing low in an SMA(50)>SMA(200)
+    uptrend — long-only candle-pattern reversal.
+
+    A hammer is a single-bar reversal pattern with a tiny body sitting at the
+    top of the bar's range and a long lower wick that rejected a probe to new
+    lows. Quant-textbook conditions used here (Bulkowski / Nison):
+      - lower_wick >= 2.0 * body  (deep rejection from below)
+      - upper_wick <= 0.5 * body  (close near the high)
+      - body / range <= 0.35      (small real body relative to the day)
+      - body > 0 and range > 0    (avoid degenerate / doji-like bars)
+
+    Context filters that turn the pattern into a tradeable edge:
+      - Today's low equals (or undercuts) the rolling 20-bar low — the pin
+        must occur at a meaningful swing low, not mid-range.
+      - SMA(50) > SMA(200) — only buy hammers in established uptrends. This
+        is the classic 'pullback within uptrend' regime where mean-reversion
+        candles work best.
+
+    All entry conditions are evaluated on the bar's own close (open/high/low/
+    close are all known by then), so no shift is needed — the agent enters at
+    the close of the hammer day.
+
+    Exit: bar close >= SMA(10) — a small target back at the short-term mean,
+    consistent with the bounce thesis. If the bounce fails the next leg-down
+    will eventually carry close < SMA(10) again, but in practice the
+    walk-forward force-close caps the worst tail.
+
+    Distinct from sandbox cousins:
+      - ibs_trend_filter / cum_rsi2_pullback / connors_double_7s: oscillator
+        / IBS / N-day-low *triggers*, no candle-shape requirement.
+      - williams_vix_fix_spike: volatility-spike trigger, not bar anatomy.
+      - heikin_ashi_flip: smoothed HA candle flip — does not require a long
+        lower-wick rejection at a swing low.
+    """
+    open_ = df["open"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    body = np.abs(close - open_)
+    rng = high - low
+    upper_wick = high - np.maximum(open_, close)
+    lower_wick = np.minimum(open_, close) - low
+
+    safe_body = np.where(body > 0.0, body, np.nan)
+    safe_rng = np.where(rng > 0.0, rng, np.nan)
+
+    is_hammer = (
+        (lower_wick >= 2.0 * body)
+        & (upper_wick <= 0.5 * safe_body)
+        & ((body / safe_rng) <= 0.35)
+        & (body > 0.0)
+        & (rng > 0.0)
+    )
+    is_hammer = np.where(np.isfinite(is_hammer), is_hammer, False).astype(bool)
+
+    low_20 = pd.Series(low).rolling(20, min_periods=20).min().to_numpy()
+    at_swing_low = np.isfinite(low_20) & (low <= low_20)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = is_hammer & at_swing_low & uptrend
+
+    sma10 = _sma(close, 10)
+    exits = np.isfinite(sma10) & (close >= sma10)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3190,4 +3262,5 @@ NEW_STRATEGIES: dict = {
     "raschke_holy_grail": strat_raschke_holy_grail,
     "vwap_zscore_reversion": strat_vwap_zscore_reversion,
     "guppy_gmma_compression_release": strat_guppy_gmma_compression_release,
+    "hammer_pin_bar_uptrend": strat_hammer_pin_bar_uptrend,
 }
