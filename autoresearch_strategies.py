@@ -5353,6 +5353,57 @@ def strat_random_walk_index_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_premier_stochastic_oscillator(df: pd.DataFrame) -> list[Trade]:
+    """Lee Leibfarth's Premier Stochastic Oscillator (PSO).
+
+    PSO normalizes Stochastic %K to NSK = 0.1*(%K-50), double-EMA-smooths it,
+    then applies a Fisher transform: PSO = (e^SS - 1)/(e^SS + 1), producing a
+    bounded oscillator in (-1,+1) with reduced lag and clean cross signals.
+    Distinct from Stoch / StochRSI (raw bounded values), Fisher Transform of
+    price (uses normalized price, not stoch), and Inverse Fisher RSI (operates
+    on RSI). Entry: PSO crosses up through 0 inside SMA50>SMA200; exit
+    close<EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    k_len = 8
+    smooth_len = 5
+
+    high_k = pd.Series(high).rolling(k_len, min_periods=k_len).max().to_numpy()
+    low_k = pd.Series(low).rolling(k_len, min_periods=k_len).min().to_numpy()
+    rng = high_k - low_k
+    pct_k = np.where(rng > 0, (close - low_k) / np.where(rng > 0, rng, 1.0) * 100.0, 50.0)
+    pct_k = np.nan_to_num(pct_k, nan=50.0, posinf=100.0, neginf=0.0)
+
+    nsk = 0.1 * (pct_k - 50.0)
+    ema1 = _ema(nsk, smooth_len)
+    ema2 = _ema(ema1, smooth_len)
+    ss = np.clip(ema2, -50.0, 50.0)
+    expv = np.exp(ss)
+    pso = (expv - 1.0) / (expv + 1.0)
+    pso = np.nan_to_num(pso, nan=0.0, posinf=1.0, neginf=-1.0)
+
+    pso_p1 = np.concatenate(([0.0], pso[:-1]))
+    pso_p2 = np.concatenate(([0.0], pso_p1[:-1]))
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    fresh_cross = (pso_p2 <= 0.0) & (pso_p1 > 0.0)
+    uptrend = sma50_p1 > sma200_p1
+    valid = np.isfinite(sma50_p1) & np.isfinite(sma200_p1)
+
+    entries = valid & fresh_cross & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -5429,4 +5480,5 @@ NEW_STRATEGIES: dict = {
     "smi_blau_oversold_cross": strat_smi_blau_oversold_cross,
     "gann_hilo_activator_flip": strat_gann_hilo_activator_flip,
     "random_walk_index_bullish_cross": strat_random_walk_index_bullish_cross,
+    "premier_stochastic_oscillator": strat_premier_stochastic_oscillator,
 }
