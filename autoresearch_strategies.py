@@ -3777,6 +3777,87 @@ def strat_stoch_rsi_oversold_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_cmo_oversold_recovery(df: pd.DataFrame) -> list[Trade]:
+    """Chande Momentum Oscillator (CMO) recovery from oversold, in an
+    SMA(50)>SMA(200) uptrend. Tushar Chande, *The New Technical Trader* (1994).
+
+    CMO is a pure-price momentum oscillator that, unlike RSI, normalizes by
+    the *sum* of up- and down-move magnitudes rather than the smoothed
+    up/down ratio:
+
+        diff_t   = close_t - close_{t-1}
+        up_t     = max(diff_t,  0)
+        down_t   = max(-diff_t, 0)
+        Su_t     = sum_{i=0..n-1} up_{t-i}
+        Sd_t     = sum_{i=0..n-1} down_{t-i}
+        CMO_t    = 100 * (Su_t - Sd_t) / (Su_t + Sd_t)
+
+    CMO ranges in [-100, +100], not [0, 100] like RSI, so its zero line and
+    overbought/oversold lines are at -50 / 0 / +50. Because the denominator
+    is the *total* directional energy (not just down-energy), CMO can flip
+    sign faster than RSI when fresh up-moves enter the window.
+
+    Entry: CMO(14) crosses up through -50 at bar close (prev<=-50 & now>-50)
+           — i.e. the indicator is leaving the oversold zone — AND
+           SMA(50) > SMA(200) (uptrend filter, only buy dips in trends).
+    Exit : close < EMA(20) — short-term mean give-back, same exit family as
+           the other sandbox oscillator-cross plays.
+
+    Distinct from sandbox plays:
+      - rsi_ema / connors_rsi_pullback / cum_rsi2_pullback / inverse_fisher
+        all operate on RSI; CMO uses (up_sum - down_sum) / (up_sum + down_sum)
+        with NO Wilder smoothing — the recursion structure is different.
+      - stochastic_oversold_recovery / stoch_rsi_oversold_cross use a
+        min/max range normalization (stochastic), not a directional sum
+        ratio.
+      - rvi_signal_cross uses high/low *range* energy partitioned by
+        close-vs-open direction, not close-to-close differences.
+      - awesome_oscillator_saucer / coppock / kst / trix / tsi / dpo /
+        linreg_slope / qstick are momentum measures but none uses the
+        symmetric ±100-bounded directional-sum formulation; they're
+        unbounded or differently bounded.
+      - mfi_oversold_recovery weights by typical-price * volume; CMO is
+        unweighted pure close-difference.
+
+    All inputs use prev-bar arrays for the cross test, so there is no
+    lookahead — the trigger is decidable at bar close.
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    diff = np.concatenate(([0.0], np.diff(close)))
+    up = np.where(diff > 0.0, diff, 0.0)
+    down = np.where(diff < 0.0, -diff, 0.0)
+
+    n = 14
+    su = pd.Series(up).rolling(n, min_periods=n).sum().to_numpy()
+    sd = pd.Series(down).rolling(n, min_periods=n).sum().to_numpy()
+
+    denom = su + sd
+    cmo = np.where(
+        np.isfinite(denom) & (denom > 0.0),
+        100.0 * (su - sd) / denom,
+        np.nan,
+    )
+
+    cmo_prev = np.concatenate(([np.nan], cmo[:-1]))
+
+    cross_up = (
+        np.isfinite(cmo) & np.isfinite(cmo_prev)
+        & (cmo_prev <= -50.0) & (cmo > -50.0)
+    )
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = cross_up & uptrend
+
+    ema20 = _ema(close, 20)
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3832,4 +3913,5 @@ NEW_STRATEGIES: dict = {
     "bullish_engulfing_pullback": strat_bullish_engulfing_pullback,
     "mass_index_reversal_bulge": strat_mass_index_reversal_bulge,
     "stoch_rsi_oversold_cross": strat_stoch_rsi_oversold_cross,
+    "cmo_oversold_recovery": strat_cmo_oversold_recovery,
 }
