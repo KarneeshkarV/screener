@@ -4960,6 +4960,85 @@ def strat_alma_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_pretty_good_oscillator_zero_cross(df: pd.DataFrame) -> list[Trade]:
+    """Mark Johnson's Pretty Good Oscillator (PGO) — fresh bullish zero cross.
+
+    PGO normalizes the close's distance from its moving-average basis by an
+    EMA of True Range, expressing today's deviation in ATR-style units. From
+    Mark Johnson's TASC 1995 piece:
+
+        PGO[t] = (close[t] - SMA(close, n)[t]) / EMA(TR, n)[t]
+
+    A fresh upward zero cross signals that the close has just reclaimed its
+    n-bar mean, scaled to the prevailing volatility regime so the threshold
+    is meaningful across different ATR environments. Distinct from:
+      - donchian / supertrend / keltner: those use price-channel crossovers,
+        not a centered oscillator around a moving-average mean.
+      - bollinger_pctb_reversion: %B uses stdev for width, PGO uses TR.
+      - vwap_zscore_reversion: VWAP is volume-weighted intraday-anchored,
+        PGO is plain SMA.
+      - linreg_slope_signchange: PGO tracks deviation from a flat mean,
+        linreg tracks the slope itself.
+
+    Entry (decided at bar close, prior-bar values to avoid lookahead):
+      - PGO_{t-2} <= 0 AND PGO_{t-1} > 0 (fresh upward zero cross)
+      - SMA(50)_{t-1} > SMA(200)_{t-1} (macro uptrend gate)
+    Exit: close < EMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    n = 30
+    sma_n = _sma(close, n)
+
+    prev_close = np.concatenate(([np.nan], close[:-1]))
+    tr_candidates = np.stack(
+        [
+            high - low,
+            np.abs(high - prev_close),
+            np.abs(low - prev_close),
+        ],
+        axis=0,
+    )
+    # First bar has NaN prev_close, so fall back to high - low there.
+    tr = np.where(
+        np.isfinite(prev_close),
+        np.nanmax(tr_candidates, axis=0),
+        high - low,
+    )
+
+    ema_tr = _ema(tr, n)
+    pgo = np.where(
+        np.isfinite(ema_tr) & (ema_tr > 0),
+        (close - sma_n) / np.where(ema_tr > 0, ema_tr, np.nan),
+        np.nan,
+    )
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    pgo_prev = np.concatenate(([np.nan], pgo[:-1]))
+    pgo_prev2 = np.concatenate(([np.nan, np.nan], pgo[:-2]))
+    sma50_prev = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(pgo_prev)
+        & np.isfinite(pgo_prev2)
+        & np.isfinite(sma50_prev)
+        & np.isfinite(sma200_prev)
+    )
+    fresh_cross = (pgo_prev2 <= 0.0) & (pgo_prev > 0.0)
+    uptrend = sma50_prev > sma200_prev
+
+    entries = valid & fresh_cross & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -5031,4 +5110,5 @@ NEW_STRATEGIES: dict = {
     "polarized_fractal_efficiency": strat_polarized_fractal_efficiency,
     "wavetrend_lb_oversold_cross": strat_wavetrend_lb_oversold_cross,
     "alma_bullish_cross": strat_alma_bullish_cross,
+    "pretty_good_oscillator_zero_cross": strat_pretty_good_oscillator_zero_cross,
 }
