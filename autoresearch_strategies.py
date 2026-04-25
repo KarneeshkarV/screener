@@ -4327,6 +4327,46 @@ def strat_range_filter_buy(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_rsi_brown_range_shift(df: pd.DataFrame) -> list[Trade]:
+    """Constance Brown's RSI range-shift trend trigger.
+
+    Brown's observation: in uptrends RSI(14) tends to oscillate roughly within
+    40-80, while in downtrends within 20-60. A move from the lower (downtrend)
+    range up into the upper (uptrend) range signals a regime change to bullish.
+
+    Trigger: RSI(14) was <=35 within the last 20 bars (i.e. recently visited
+    downtrend territory) AND now crosses up through 60 (entering uptrend
+    range) AND price > SMA(50) (broad uptrend gate).
+    Exit: bar close drops below EMA(20).
+
+    Distinct from the existing rsi_ema (RSI vs EMA cross), stoch_rsi cross
+    (different oscillator), connors_rsi (3-component composite), and inverse
+    fisher rsi (transform-based) strategies — this one keys off Brown's
+    *range-shift* concept rather than overbought/oversold thresholds.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    rsi14 = _rsi(close, 14)
+    sma50 = _sma(close, 50)
+    ema20 = _ema(close, 20)
+
+    rsi_series = pd.Series(rsi14)
+    # Was RSI <=35 within the prior 20 bars (exclude current bar via shift).
+    was_oversold = (
+        rsi_series.shift(1).rolling(20, min_periods=5).min().to_numpy() <= 35.0
+    )
+
+    rsi_prev = np.concatenate(([np.nan], rsi14[:-1]))
+    cross_up_60 = (
+        np.isfinite(rsi_prev) & (rsi_prev <= 60.0) & (rsi14 > 60.0)
+    )
+    uptrend = np.isfinite(sma50) & (close > sma50)
+
+    entries = cross_up_60 & was_oversold & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -4389,4 +4429,5 @@ NEW_STRATEGIES: dict = {
     "klinger_volume_oscillator_signal_cross": strat_klinger_volume_oscillator_signal_cross,
     "demarker_oversold_reclaim": strat_demarker_oversold_reclaim,
     "range_filter_buy": strat_range_filter_buy,
+    "rsi_brown_range_shift": strat_rsi_brown_range_shift,
 }
