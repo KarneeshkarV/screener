@@ -5404,6 +5404,77 @@ def strat_premier_stochastic_oscillator(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_mcginley_dynamic_cross(df: pd.DataFrame) -> list[Trade]:
+    """John R. McGinley's Dynamic — an adaptive smoother that self-adjusts to
+    market velocity via a fourth-power ratio term.
+
+    Recursion (N=14):
+        MD_t = MD_{t-1} + (close_t - MD_{t-1}) / (N * (close_t / MD_{t-1})^4)
+
+    The (close/MD)^4 factor accelerates the line in fast trends (price diverges
+    above MD => ratio>1, denominator grows, BUT note: a larger denominator
+    SLOWS adjustment, while a smaller denominator (ratio<1) speeds it). The
+    asymmetric response cushions whipsaws while still tracking sustained moves.
+
+    Distinct from every adaptive-MA already in the sandbox:
+      - KAMA: efficiency-ratio (signal/noise) smoothing constant.
+      - VIDYA: Chande-CMO-driven smoothing constant.
+      - HMA: WMA-of-WMA cascade with √N final WMA, fixed window.
+      - ALMA: Gaussian-weighted offset-MA.
+    McGinley's geometry is the only one where the SC is a power-law function
+    of price/MD ratio itself — no other entry uses this dynamic.
+
+    Entry (prior-bar arrays, no lookahead):
+      - close_{t-2} <= MD_{t-2} AND close_{t-1} > MD_{t-1}  (fresh bullish cross)
+      - SMA50_{t-1} > SMA200_{t-1}  (macro uptrend gate)
+    Exit: close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n_bars = len(close)
+
+    N = 14
+    md = np.full(n_bars, np.nan)
+    if n_bars >= N:
+        seed_idx = N - 1
+        md[seed_idx] = float(np.mean(close[:N]))
+        for i in range(N, n_bars):
+            prev = md[i - 1]
+            if not np.isfinite(prev) or prev <= 0.0:
+                md[i] = close[i]
+                continue
+            ratio = close[i] / prev
+            # Clamp ratio to keep ratio**4 numerically stable on extreme bars.
+            ratio = float(np.clip(ratio, 0.5, 2.0))
+            md[i] = prev + (close[i] - prev) / (N * (ratio ** 4))
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    md_p1 = np.concatenate(([np.nan], md[:-1]))
+    md_p2 = np.concatenate(([np.nan, np.nan], md[:-2]))
+    close_p1 = np.concatenate(([np.nan], close[:-1]))
+    close_p2 = np.concatenate(([np.nan, np.nan], close[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    fresh_cross = (close_p2 <= md_p2) & (close_p1 > md_p1)
+    uptrend = sma50_p1 > sma200_p1
+    valid = (
+        np.isfinite(md_p1)
+        & np.isfinite(md_p2)
+        & np.isfinite(close_p1)
+        & np.isfinite(close_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    entries = valid & fresh_cross & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -5481,4 +5552,5 @@ NEW_STRATEGIES: dict = {
     "gann_hilo_activator_flip": strat_gann_hilo_activator_flip,
     "random_walk_index_bullish_cross": strat_random_walk_index_bullish_cross,
     "premier_stochastic_oscillator": strat_premier_stochastic_oscillator,
+    "mcginley_dynamic_cross": strat_mcginley_dynamic_cross,
 }
