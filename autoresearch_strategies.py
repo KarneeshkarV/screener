@@ -5817,6 +5817,107 @@ def strat_mama_fama_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_andean_oscillator_bull_cross(df: pd.DataFrame) -> list[Trade]:
+    """Andean Oscillator (Alex Orekhov, 2022) — one-sided EMA-envelope dispersion.
+
+    Reference: alexgrover, "Andean Oscillator", TradingView (2022). Two pairs
+    of asymmetric exponential envelopes are tracked on close and close^2 (and
+    similarly using open as a damping anchor). The upper envelopes ratchet up
+    on new highs and decay back toward the open; the lower envelopes ratchet
+    down on new lows and decay back up. Letting alpha=2/(N+1):
+
+        up1_t = max(C_t, O_t, up1_{t-1} - alpha*(up1_{t-1} - O_t))
+        up2_t = max(C_t^2, O_t^2, up2_{t-1} - alpha*(up2_{t-1} - O_t^2))
+        dn1_t = min(C_t, O_t, dn1_{t-1} + alpha*(O_t - dn1_{t-1}))
+        dn2_t = min(C_t^2, O_t^2, dn2_{t-1} + alpha*(O_t^2 - dn2_{t-1}))
+
+    Treating up1/dn1 as one-sided E[X] estimators and up2/dn2 as one-sided
+    E[X^2] estimators, the second-moment formula sigma^2 = E[X^2] - E[X]^2
+    yields two separate dispersion components:
+
+        bull_t = sqrt(max(0, dn2_t - dn1_t^2))   # range above lower envelope
+        bear_t = sqrt(max(0, up2_t - up1_t^2))   # range below upper envelope
+        signal_t = EMA(max(bull_t, bear_t), 9)
+
+    Intuition: bull rises when prices stretch ABOVE the (slowly rising) min
+    envelope — i.e. bullish thrust; bear rises when prices stretch BELOW the
+    (slowly falling) max envelope — i.e. bearish thrust. A fresh cross of
+    bull above the smoothed signal, with bull > bear, marks an emergent
+    bullish regime. This dispersion-of-extrema construction is fundamentally
+    different from every oscillator already in the sandbox (RSI/Stoch/MFI/CCI
+    rank-based, MACD/TRIX/TSI EMA-difference, RVI/Klinger/Chaikin volume,
+    Ehlers Hilbert-Transform, Aroon time-since-extreme).
+
+    Entry (prior-bar arrays, no lookahead):
+      - bull_{t-2} <= signal_{t-2} AND bull_{t-1} > signal_{t-1}  (fresh cross)
+      - bull_{t-1} > bear_{t-1}                                   (bullish regime)
+      - SMA50_{t-1} > SMA200_{t-1}                                (macro uptrend)
+    Exit: close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    open_ = df["open"].to_numpy(dtype=float)
+    n_bars = len(close)
+
+    length = 50
+    sig_len = 9
+    alpha = 2.0 / (length + 1.0)
+
+    up1 = np.zeros(n_bars)
+    up2 = np.zeros(n_bars)
+    dn1 = np.zeros(n_bars)
+    dn2 = np.zeros(n_bars)
+
+    if n_bars > 0:
+        up1[0] = max(close[0], open_[0])
+        up2[0] = max(close[0] * close[0], open_[0] * open_[0])
+        dn1[0] = min(close[0], open_[0])
+        dn2[0] = min(close[0] * close[0], open_[0] * open_[0])
+
+    for i in range(1, n_bars):
+        c = close[i]
+        o = open_[i]
+        c2 = c * c
+        o2 = o * o
+        up1[i] = max(c, o, up1[i - 1] - alpha * (up1[i - 1] - o))
+        up2[i] = max(c2, o2, up2[i - 1] - alpha * (up2[i - 1] - o2))
+        dn1[i] = min(c, o, dn1[i - 1] + alpha * (o - dn1[i - 1]))
+        dn2[i] = min(c2, o2, dn2[i - 1] + alpha * (o2 - dn2[i - 1]))
+
+    bull = np.sqrt(np.maximum(0.0, dn2 - dn1 * dn1))
+    bear = np.sqrt(np.maximum(0.0, up2 - up1 * up1))
+    signal = _ema(np.maximum(bull, bear), sig_len)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    bull_p1 = np.concatenate(([np.nan], bull[:-1]))
+    bull_p2 = np.concatenate(([np.nan, np.nan], bull[:-2]))
+    bear_p1 = np.concatenate(([np.nan], bear[:-1]))
+    sig_p1 = np.concatenate(([np.nan], signal[:-1]))
+    sig_p2 = np.concatenate(([np.nan, np.nan], signal[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    fresh_cross = (bull_p2 <= sig_p2) & (bull_p1 > sig_p1)
+    bullish_regime = bull_p1 > bear_p1
+    uptrend = sma50_p1 > sma200_p1
+    valid = (
+        np.isfinite(bull_p1)
+        & np.isfinite(bull_p2)
+        & np.isfinite(bear_p1)
+        & np.isfinite(sig_p1)
+        & np.isfinite(sig_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    entries = valid & fresh_cross & bullish_regime & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -5898,4 +5999,5 @@ NEW_STRATEGIES: dict = {
     "frama_bullish_cross": strat_frama_bullish_cross,
     "macd_v_oversold_reclaim": strat_macd_v_oversold_reclaim,
     "mama_fama_cross": strat_mama_fama_cross,
+    "andean_oscillator_bull_cross": strat_andean_oscillator_bull_cross,
 }
