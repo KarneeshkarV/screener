@@ -6710,6 +6710,76 @@ def strat_elder_impulse_bull(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_vw_macd_signal_cross(df: pd.DataFrame) -> list[Trade]:
+    """Volume-Weighted MACD (Buff Dormeier, 'Investing with Volume Analysis' 2011).
+
+    Standard MACD substitutes a Volume-Weighted MA for the EMA, so trend shifts
+    are confirmed by participation. VWMA(n) = Σ(close*vol, n) / Σ(vol, n). The
+    VW-MACD line is VWMA12 − VWMA26 and the signal is EMA9 of that line.
+    Dormeier argues volume-confirmed crosses cut whipsaw versus price-only MACD.
+
+    Entry: fresh signal-line up-cross (line crosses above signal this bar) with
+    line above zero for trend confirmation, inside SMA50 > SMA200.
+    Exit: line crosses below signal OR close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+    n = close.size
+
+    pv = close * volume
+
+    def _vwma(period: int) -> np.ndarray:
+        out = np.full(n, np.nan)
+        if n < period:
+            return out
+        pv_cum = np.cumsum(pv)
+        vol_cum = np.cumsum(volume)
+        for i in range(period - 1, n):
+            if i == period - 1:
+                num = pv_cum[i]
+                den = vol_cum[i]
+            else:
+                num = pv_cum[i] - pv_cum[i - period]
+                den = vol_cum[i] - vol_cum[i - period]
+            if den > 0:
+                out[i] = num / den
+        return out
+
+    vwma12 = _vwma(12)
+    vwma26 = _vwma(26)
+    vwmacd = vwma12 - vwma26
+    signal = _ema(vwmacd, 9)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    line_prev = np.concatenate(([np.nan], vwmacd[:-1]))
+    sig_prev = np.concatenate(([np.nan], signal[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(line_prev)
+        & np.isfinite(sig_prev)
+        & np.isfinite(vwmacd)
+        & np.isfinite(signal)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    fresh_up_cross = valid & (line_prev <= sig_prev) & (vwmacd > signal)
+    above_zero = vwmacd > 0
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_up_cross & above_zero & uptrend
+
+    cross_down = np.isfinite(vwmacd) & np.isfinite(signal) & (vwmacd < signal)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = cross_down | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -6801,4 +6871,5 @@ NEW_STRATEGIES: dict = {
     "ehlers_trendflex": strat_ehlers_trendflex,
     "twiggs_money_flow": strat_twiggs_money_flow,
     "elder_impulse_bull": strat_elder_impulse_bull,
+    "vw_macd_signal_cross": strat_vw_macd_signal_cross,
 }
