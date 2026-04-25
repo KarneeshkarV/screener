@@ -4574,6 +4574,159 @@ def strat_qqe_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_elder_ray_bear_reclaim(df: pd.DataFrame) -> list[Trade]:
+    """Elder Ray dip-buy — Bear Power turning up from below zero while EMA13 rises.
+
+    Dr. Alexander Elder's Bull/Bear Power: BullPower = high - EMA(13),
+    BearPower = low - EMA(13). The classic long setup: a rising EMA(13)
+    confirms uptrend, Bear Power negative (dip in progress), but Bear Power
+    higher than the prior bar (selling pressure waning) — i.e. the dip is
+    being absorbed. Entry adds a long-term trend gate (close > SMA(50)
+    > SMA(200)) so we only buy bears in established uptrends, and a
+    Bull Power > 0 filter so buyers are still in control. Exit: close
+    falls below EMA(13). Distinct from RSI/Stoch/MACD/Williams setups in
+    the journal because the signal is two-sided power decomposition off
+    a 13-bar EMA, not an oscillator threshold or signal-line cross.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+
+    ema13 = _ema(close, 13)
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+
+    bull_power = high - ema13
+    bear_power = low - ema13
+
+    bear_prev = np.concatenate(([np.nan], bear_power[:-1]))
+    ema13_prev = np.concatenate(([np.nan], ema13[:-1]))
+
+    valid = (
+        np.isfinite(ema13)
+        & np.isfinite(ema13_prev)
+        & np.isfinite(sma50)
+        & np.isfinite(sma200)
+        & np.isfinite(bear_prev)
+    )
+
+    rising_ema = ema13 > ema13_prev
+    uptrend = (close > sma50) & (sma50 > sma200)
+    bear_negative_rising = (bear_power < 0.0) & (bear_power > bear_prev)
+    bull_positive = bull_power > 0.0
+
+    entries = (
+        valid
+        & rising_ema
+        & uptrend
+        & bear_negative_rising
+        & bull_positive
+    )
+    exits = np.isfinite(ema13) & (close < ema13)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
+def strat_morning_star_pullback(df: pd.DataFrame) -> list[Trade]:
+    """Morning Star — classical 3-bar bullish reversal candle pattern after a
+    short-term pullback inside an SMA50>SMA200 uptrend.
+
+    The pattern (Nison) is a *reversal* signature, not a continuation:
+      Bar t-2 ("body 1"): a decisive bearish candle —
+            close[t-2] < open[t-2], (open[t-2]-close[t-2])/range[t-2] >= 0.55.
+      Bar t-1 ("star"):   a small-bodied indecision bar that gaps/opens at or
+            below the prior close —
+            |close[t-1]-open[t-1]| / range[t-1] <= 0.30
+            AND max(open[t-1], close[t-1]) <= close[t-2]   (body sits at or
+                                                            below the bear's
+                                                            close).
+      Bar t   ("body 3"): a decisive bullish candle that *reclaims* well into
+            body 1 —
+            close[t] > open[t], (close[t]-open[t])/range[t] >= 0.55,
+            close[t] > (open[t-2] + close[t-2]) / 2  (above bar1 midpoint).
+
+    Why this is distinct from existing sandbox candle/structure plays:
+      - hammer_pin_bar_uptrend: a *single* pin-bar with long lower wick at a
+        20-bar swing low — single-bar anatomy, no preceding bear+star sequence.
+      - three_white_soldiers: three *consecutive bullish* candles closing
+        higher — a continuation sequence, not a bear→indecision→bull flip.
+      - bullish_engulfing_pullback: a 2-bar engulfing — body 2 fully covers
+        body 1 with no indecision-star bar in the middle.
+      - heikin_ashi_flip / td_sequential_buy_setup: smoothed colour flips and
+        9-count duration rules — no body anatomy, no gap-down star middle.
+      - wyckoff_spring_reclaim: swing-low spike-and-reclaim across days, not
+        a 3-bar candle anatomy with a small middle body.
+
+    Regime: SMA50 > SMA200 (the bear+star+bull anatomy marks the resumption
+    of an uptrend after a pullback). Entry decision uses bar t close (no
+    lookahead — open/high/low/close of bar t are all known by close).
+
+    Exit: close < EMA20 — the resumption thesis times out cleanly when the
+    bounce loses the short-term mean.
+    """
+    open_ = df["open"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+    n = len(close)
+    if n < 3:
+        return []
+
+    rng = high - low
+    safe_rng = np.where(rng > 0.0, rng, np.nan)
+    body = close - open_
+    body_pct = np.abs(body) / safe_rng
+
+    open_1 = np.concatenate(([np.nan], open_[:-1]))
+    close_1 = np.concatenate(([np.nan], close[:-1]))
+    body_pct_1 = np.concatenate(([np.nan], body_pct[:-1]))
+
+    open_2 = np.concatenate(([np.nan, np.nan], open_[:-2]))
+    close_2 = np.concatenate(([np.nan, np.nan], close[:-2]))
+    body_pct_2 = np.concatenate(([np.nan, np.nan], body_pct[:-2]))
+
+    bear_body1 = (
+        np.isfinite(close_2)
+        & np.isfinite(open_2)
+        & (close_2 < open_2)
+        & np.isfinite(body_pct_2)
+        & (body_pct_2 >= 0.55)
+    )
+
+    star_max = np.maximum(open_1, close_1)
+    star_body = (
+        np.isfinite(body_pct_1)
+        & (body_pct_1 <= 0.30)
+        & np.isfinite(star_max)
+        & np.isfinite(close_2)
+        & (star_max <= close_2)
+    )
+
+    bull_body3 = (
+        np.isfinite(close)
+        & np.isfinite(open_)
+        & (close > open_)
+        & np.isfinite(body_pct)
+        & (body_pct >= 0.55)
+    )
+
+    body1_mid = (open_2 + close_2) / 2.0
+    reclaim_mid = np.isfinite(body1_mid) & (close > body1_mid)
+
+    pattern = bear_body1 & star_body & bull_body3 & reclaim_mid
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = pattern & uptrend
+
+    ema20 = _ema(close, 20)
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -4640,4 +4793,6 @@ NEW_STRATEGIES: dict = {
     "vidya_bullish_cross": strat_vidya_bullish_cross,
     "acceleration_bands_breakout": strat_acceleration_bands_breakout,
     "qqe_bullish_cross": strat_qqe_bullish_cross,
+    "elder_ray_bear_reclaim": strat_elder_ray_bear_reclaim,
+    "morning_star_pullback": strat_morning_star_pullback,
 }
