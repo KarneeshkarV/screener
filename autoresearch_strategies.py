@@ -6917,6 +6917,63 @@ def strat_tema_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_disparity_index_zero_cross(df: pd.DataFrame) -> list[Trade]:
+    """Disparity Index (Steve Nison, 'Beyond Candlesticks' 1994) — zero up-cross.
+
+    Disparity Index (DI) is a Japanese momentum gauge popularised in the
+    West by Nison: DI(n) = (Close - SMA(n)) / SMA(n) * 100. It expresses
+    how far price has stretched from its mean as a percentage, so a zero
+    up-cross marks the moment a stock reclaims its trailing average from
+    below — a different topology than fast/slow MA crosses (which compare
+    two smoothings of price) and different from oscillator zero crosses
+    like CMO, TSI, TRIX, CFO or DPO that operate on derivatives of price
+    rather than raw close-vs-mean residual.
+
+    Entry: fresh DI(14) up-cross above 0 inside SMA50 > SMA200 trend.
+    Exit: DI(14) < 0 OR close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    sma14 = _sma(close, 14)
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        di = np.where(
+            np.isfinite(sma14) & (sma14 > 0),
+            (close - sma14) / sma14 * 100.0,
+            np.nan,
+        )
+
+    di_prev = np.concatenate(([np.nan], di[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    n = close.size
+    warmup = np.zeros(n, dtype=bool)
+    warmup_start = min(n, 210)
+    warmup[warmup_start:] = True
+
+    valid = (
+        warmup
+        & np.isfinite(di_prev)
+        & np.isfinite(di)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    fresh_up_cross = valid & (di_prev <= 0.0) & (di > 0.0)
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_up_cross & uptrend
+
+    di_below = np.isfinite(di) & (di < 0.0)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = di_below | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7011,4 +7068,5 @@ NEW_STRATEGIES: dict = {
     "vw_macd_signal_cross": strat_vw_macd_signal_cross,
     "chande_forecast_oscillator": strat_chande_forecast_oscillator,
     "tema_bullish_cross": strat_tema_bullish_cross,
+    "disparity_index_zero_cross": strat_disparity_index_zero_cross,
 }
