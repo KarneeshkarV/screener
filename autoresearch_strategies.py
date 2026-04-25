@@ -3692,6 +3692,91 @@ def strat_mass_index_reversal_bulge(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_stoch_rsi_oversold_cross(df: pd.DataFrame) -> list[Trade]:
+    """Stochastic RSI %K/%D bullish cross out of oversold, in an SMA(50)>SMA(200)
+    uptrend. Tushar Chande & Stanley Kroll (1994).
+
+    StochRSI applies the Stochastic formula to RSI values, producing a 0..1
+    oscillator that is more sensitive than either RSI or raw Stochastic alone:
+
+        rsi_t        = RSI(close, 14)
+        stoch_rsi_t  = (rsi_t - min(rsi, 14)) / (max(rsi, 14) - min(rsi, 14))
+        %K_t         = SMA(stoch_rsi, 3)
+        %D_t         = SMA(%K, 3)
+
+    The bullish trigger is %K crossing above %D from below 0.20 — i.e. a
+    momentum-of-momentum turn while the indicator was still oversold — gated
+    by an SMA(50)>SMA(200) trend regime so we only buy oversold dips inside
+    established uptrends. Exit when close drops below EMA(20) (short-term
+    mean give-back) — same family of exits used by the other oscillator
+    cross strategies in this sandbox.
+
+    Distinct from sandbox plays:
+      - stochastic_oversold_recovery: Stochastic on raw price (high/low
+        range), no RSI compounding. StochRSI is mathematically a different
+        function — it normalizes RSI, not price.
+      - inverse_fisher_rsi: applies a sigmoid-style Fisher transform to RSI
+        and trades zero-line crosses — no min/max stochastic scaling and no
+        %K/%D smoothing pair.
+      - connors_rsi_pullback: composite of RSI(3) + RSI of streaks +
+        rolling rank of % change; not a stochastic of RSI.
+      - rsi_ema (in stock strategies): a single RSI threshold, not a
+        smoothed-cross-of-smoothed signal.
+      - rvi_signal_cross / fisher_transform_zero_cross / awesome saucer /
+        chaikin/macd-style zero-cross indicators all operate on price (or
+        body/volume) directly — none apply a stochastic to a momentum
+        oscillator's own range.
+
+    All inputs are bar-close decidable and use _prev arrays for the cross
+    test, so there is no lookahead.
+
+    Entry: prev %K <= prev %D, current %K > current %D, prev %K < 0.20,
+           SMA(50) > SMA(200).
+    Exit : close < EMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    rsi14 = _rsi(close, 14)
+
+    rsi_series = pd.Series(rsi14)
+    rsi_min = rsi_series.rolling(14, min_periods=14).min().to_numpy()
+    rsi_max = rsi_series.rolling(14, min_periods=14).max().to_numpy()
+
+    denom = rsi_max - rsi_min
+    stoch_rsi = np.where(
+        np.isfinite(denom) & (denom > 0.0),
+        (rsi14 - rsi_min) / denom,
+        np.nan,
+    )
+
+    k = _sma(stoch_rsi, 3)
+    d = _sma(k, 3)
+
+    k_prev = np.concatenate(([np.nan], k[:-1]))
+    d_prev = np.concatenate(([np.nan], d[:-1]))
+
+    cross_up = (
+        np.isfinite(k_prev)
+        & np.isfinite(d_prev)
+        & np.isfinite(k)
+        & np.isfinite(d)
+        & (k_prev <= d_prev)
+        & (k > d)
+        & (k_prev < 0.20)
+    )
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = cross_up & uptrend
+
+    ema20 = _ema(close, 20)
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3746,4 +3831,5 @@ NEW_STRATEGIES: dict = {
     "qstick_zero_cross": strat_qstick_zero_cross,
     "bullish_engulfing_pullback": strat_bullish_engulfing_pullback,
     "mass_index_reversal_bulge": strat_mass_index_reversal_bulge,
+    "stoch_rsi_oversold_cross": strat_stoch_rsi_oversold_cross,
 }
