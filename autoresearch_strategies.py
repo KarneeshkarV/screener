@@ -3216,6 +3216,76 @@ def strat_hammer_pin_bar_uptrend(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_linreg_slope_signchange(df: pd.DataFrame) -> list[Trade]:
+    """20-bar least-squares regression slope of close — long when the fitted
+    slope crosses from non-positive to positive (drift turns bullish) inside
+    an SMA(200)+SMA(50) uptrend; exit on slope flipping back negative or
+    close < SMA(20).
+
+    The OLS slope of the most recent N closes is a direct estimate of the
+    stock's short-term price drift — the *rate of change of the fitted
+    trend line*, not a moving-average comparison. A sign change from <= 0
+    to > 0 marks the precise bar at which 20-bar drift becomes bullish, a
+    classic Pring 'momentum re-emergence' tell that is structurally
+    distinct from the EMA / Hull / KAMA / TRIX / Coppock / DPO crosses
+    already in the sandbox (those compare price to a smoothed level, not
+    to a regression line).
+
+    Closed-form formula (efficient, no per-bar polyfit):
+        slope_t = (n * Σ(x·y) - Σx · Σy) / (n · Σ(x²) - (Σx)²)
+    with x = 0..n-1 inside the window.  Σx and Σ(x²) are constants; only
+    Σy and Σ(x·y) need to roll.  All inputs at bar t are known by close
+    of t — no shift / look-ahead.
+
+    Regime filters (must hold AT entry bar):
+      - close > SMA(200)  : long-only, regime ok.
+      - close > SMA(50)   : avoid buying weak rallies still under SMA(50).
+    Exit (either):
+      - slope flips negative  : 20-bar drift turned down again.
+      - close < SMA(20)       : short-term momentum failed.
+    """
+    close = df["close"].to_numpy(dtype=float)
+
+    n = 20
+    x = np.arange(n, dtype=float)
+    sum_x = float(x.sum())
+    sum_x2 = float((x * x).sum())
+    denom = n * sum_x2 - sum_x * sum_x
+
+    s = pd.Series(close)
+    sum_y = s.rolling(n, min_periods=n).sum().to_numpy()
+    sum_xy = s.rolling(n, min_periods=n).apply(
+        lambda w: float(np.dot(x, w)), raw=True
+    ).to_numpy()
+    slope = (n * sum_xy - sum_x * sum_y) / denom
+
+    slope_prev = pd.Series(slope).shift(1).to_numpy()
+    sign_cross_up = (
+        np.isfinite(slope)
+        & np.isfinite(slope_prev)
+        & (slope_prev <= 0.0)
+        & (slope > 0.0)
+    )
+
+    sma200 = _sma(close, 200)
+    sma50 = _sma(close, 50)
+    sma20 = _sma(close, 20)
+    uptrend = (
+        np.isfinite(sma200)
+        & np.isfinite(sma50)
+        & (close > sma200)
+        & (close > sma50)
+    )
+
+    entries = sign_cross_up & uptrend
+
+    slope_neg = np.isfinite(slope) & (slope < 0.0)
+    below_sma20 = np.isfinite(sma20) & (close < sma20)
+    exits = slope_neg | below_sma20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3263,4 +3333,5 @@ NEW_STRATEGIES: dict = {
     "vwap_zscore_reversion": strat_vwap_zscore_reversion,
     "guppy_gmma_compression_release": strat_guppy_gmma_compression_release,
     "hammer_pin_bar_uptrend": strat_hammer_pin_bar_uptrend,
+    "linreg_slope_signchange": strat_linreg_slope_signchange,
 }
