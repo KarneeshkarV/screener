@@ -5653,6 +5653,170 @@ def strat_macd_v_oversold_reclaim(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_mama_fama_cross(df: pd.DataFrame) -> list[Trade]:
+    """John Ehlers' MAMA/FAMA cross — Hilbert-Transform adaptive MAs.
+
+    Reference: John F. Ehlers, "MESA Adaptive Moving Average" (Stocks &
+    Commodities, 2001). Ehlers applies the Hilbert Transform to the (H+L)/2
+    series to construct an analytic signal, recovering the in-phase (I) and
+    quadrature (Q) components. From these he derives:
+      - the dominant cycle period (via arctan(Im/Re) on the analytic-signal
+        phase rotation), and
+      - the instantaneous phase angle (atan(Q1/I1)).
+    The smoothing constant alpha is then set proportional to the phase
+    rotation rate per bar:
+
+        alpha = clip(FastLimit / DeltaPhase, SlowLimit, FastLimit)
+        MAMA_t = alpha * price_t + (1 - alpha) * MAMA_{t-1}
+        FAMA_t = 0.5*alpha * MAMA_t + (1 - 0.5*alpha) * FAMA_{t-1}
+
+    With FastLimit=0.5, SlowLimit=0.05, MAMA accelerates aggressively when
+    the analytic-signal phase is rotating quickly (price trending) and damps
+    heavily when the phase rotation stalls (price cycling/ranging). FAMA
+    follows MAMA with half the alpha, producing a slower trailing line.
+
+    Distinct from every adaptive-MA already in the sandbox:
+      - KAMA: Kaufman efficiency ratio (signal/noise) drives SC.
+      - VIDYA: Chande CMO drives SC.
+      - McGinley: (close/MD)^4 power-law factor in denominator.
+      - FRAMA: range-based fractal-dimension drives SC.
+      - HMA / ALMA: fixed weights, no adaptation.
+    MAMA/FAMA is the only entry deriving its smoothing constant from the
+    rotational rate of the analytic-signal phase via the Hilbert Transform.
+
+    Entry (prior-bar arrays, no lookahead):
+      - MAMA_{t-2} <= FAMA_{t-2} AND MAMA_{t-1} > FAMA_{t-1}  (fresh cross up)
+      - SMA50_{t-1} > SMA200_{t-1}                            (macro uptrend)
+    Exit: close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n_bars = len(close)
+
+    fast_limit = 0.5
+    slow_limit = 0.05
+
+    price = (high + low) / 2.0
+    smooth = np.zeros(n_bars)
+    detrender = np.zeros(n_bars)
+    I1 = np.zeros(n_bars)
+    Q1 = np.zeros(n_bars)
+    jI = np.zeros(n_bars)
+    jQ = np.zeros(n_bars)
+    I2 = np.zeros(n_bars)
+    Q2 = np.zeros(n_bars)
+    Re = np.zeros(n_bars)
+    Im = np.zeros(n_bars)
+    period = np.zeros(n_bars)
+    smooth_period = np.zeros(n_bars)
+    phase = np.zeros(n_bars)
+    mama = np.full(n_bars, np.nan)
+    fama = np.full(n_bars, np.nan)
+
+    for i in range(n_bars):
+        if i < 6:
+            mama[i] = price[i]
+            fama[i] = price[i]
+            continue
+        smooth[i] = (
+            4.0 * price[i]
+            + 3.0 * price[i - 1]
+            + 2.0 * price[i - 2]
+            + price[i - 3]
+        ) / 10.0
+        adj = 0.075 * period[i - 1] + 0.54
+        detrender[i] = (
+            0.0962 * smooth[i]
+            + 0.5769 * smooth[i - 2]
+            - 0.5769 * smooth[i - 4]
+            - 0.0962 * smooth[i - 6]
+        ) * adj
+        Q1[i] = (
+            0.0962 * detrender[i]
+            + 0.5769 * detrender[i - 2]
+            - 0.5769 * detrender[i - 4]
+            - 0.0962 * detrender[i - 6]
+        ) * adj
+        I1[i] = detrender[i - 3]
+        jI[i] = (
+            0.0962 * I1[i]
+            + 0.5769 * I1[i - 2]
+            - 0.5769 * I1[i - 4]
+            - 0.0962 * I1[i - 6]
+        ) * adj
+        jQ[i] = (
+            0.0962 * Q1[i]
+            + 0.5769 * Q1[i - 2]
+            - 0.5769 * Q1[i - 4]
+            - 0.0962 * Q1[i - 6]
+        ) * adj
+        i2_raw = I1[i] - jQ[i]
+        q2_raw = Q1[i] + jI[i]
+        I2[i] = 0.2 * i2_raw + 0.8 * I2[i - 1]
+        Q2[i] = 0.2 * q2_raw + 0.8 * Q2[i - 1]
+        re_raw = I2[i] * I2[i - 1] + Q2[i] * Q2[i - 1]
+        im_raw = I2[i] * Q2[i - 1] - Q2[i] * I2[i - 1]
+        Re[i] = 0.2 * re_raw + 0.8 * Re[i - 1]
+        Im[i] = 0.2 * im_raw + 0.8 * Im[i - 1]
+        if Im[i] != 0.0 and Re[i] != 0.0:
+            new_period = 360.0 / np.degrees(np.arctan(Im[i] / Re[i]))
+        else:
+            new_period = period[i - 1]
+        prev_p = period[i - 1]
+        if prev_p > 0.0:
+            if new_period > 1.5 * prev_p:
+                new_period = 1.5 * prev_p
+            if new_period < 0.67 * prev_p:
+                new_period = 0.67 * prev_p
+        new_period = float(np.clip(new_period, 6.0, 50.0))
+        period[i] = 0.2 * new_period + 0.8 * prev_p
+        smooth_period[i] = 0.33 * period[i] + 0.67 * smooth_period[i - 1]
+        if I1[i] != 0.0:
+            phase[i] = np.degrees(np.arctan(Q1[i] / I1[i]))
+        else:
+            phase[i] = phase[i - 1]
+        delta_phase = phase[i - 1] - phase[i]
+        if delta_phase < 1.0:
+            delta_phase = 1.0
+        alpha = fast_limit / delta_phase
+        if alpha < slow_limit:
+            alpha = slow_limit
+        if alpha > fast_limit:
+            alpha = fast_limit
+        prev_mama = mama[i - 1] if np.isfinite(mama[i - 1]) else price[i]
+        prev_fama = fama[i - 1] if np.isfinite(fama[i - 1]) else price[i]
+        mama[i] = alpha * price[i] + (1.0 - alpha) * prev_mama
+        fama[i] = 0.5 * alpha * mama[i] + (1.0 - 0.5 * alpha) * prev_fama
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    mama_p1 = np.concatenate(([np.nan], mama[:-1]))
+    mama_p2 = np.concatenate(([np.nan, np.nan], mama[:-2]))
+    fama_p1 = np.concatenate(([np.nan], fama[:-1]))
+    fama_p2 = np.concatenate(([np.nan, np.nan], fama[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    fresh_cross = (mama_p2 <= fama_p2) & (mama_p1 > fama_p1)
+    uptrend = sma50_p1 > sma200_p1
+    valid = (
+        np.isfinite(mama_p1)
+        & np.isfinite(mama_p2)
+        & np.isfinite(fama_p1)
+        & np.isfinite(fama_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+
+    entries = valid & fresh_cross & uptrend
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -5733,4 +5897,5 @@ NEW_STRATEGIES: dict = {
     "mcginley_dynamic_cross": strat_mcginley_dynamic_cross,
     "frama_bullish_cross": strat_frama_bullish_cross,
     "macd_v_oversold_reclaim": strat_macd_v_oversold_reclaim,
+    "mama_fama_cross": strat_mama_fama_cross,
 }
