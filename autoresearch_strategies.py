@@ -3477,6 +3477,59 @@ def strat_three_white_soldiers(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_qstick_zero_cross(df: pd.DataFrame) -> list[Trade]:
+    """Q-Stick (Chande) zero-line bullish cross in an SMA(50)>SMA(200) uptrend.
+
+    Q-Stick(n) = SMA_n(close - open). It smooths the *body* of each bar,
+    measuring whether bullish bodies (close>open) or bearish bodies have
+    dominated the recent window. A bullish zero-line cross — Q-Stick going
+    from non-positive to positive at bar close — flags a regime shift in
+    intraday close-vs-open pressure that is mathematically orthogonal to
+    close-to-close momentum signals.
+
+    Distinct from sandbox plays:
+      - Single-/few-bar candle anatomy (hammer_pin_bar_uptrend,
+        three_white_soldiers, heikin_ashi_flip) reads one or two bars;
+        Q-Stick aggregates body bias over n bars and triggers on its sign.
+      - Close-to-close momentum (DPO, Coppock, KST, TRIX, TSI, AO,
+        linreg_slope, schaff) operates on close only; Q-Stick's numerator
+        is (close-open) — uses the open, which the close-only set ignores.
+      - RSI-family (RSI, Connors RSI, Stoch, Inverse Fisher, RVI) tracks
+        up/down close *moves* and their magnitudes, not body magnitude.
+      - CMF/Chaikin/MFI/EFI/OBV/NVI weight by volume; Q-Stick is unweighted
+        and pure-price.
+
+    Entry: Q-Stick(8) crosses up through 0 at bar close (prev<=0 & now>0)
+           AND SMA(50) > SMA(200).
+    Exit : close < EMA(20) — short-term-mean give-back.
+    """
+    open_ = df["open"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    body = close - open_
+    qstick = _sma(body, 8)
+
+    qstick_prev = np.concatenate(([np.nan], qstick[:-1]))
+
+    cross_up = (
+        np.isfinite(qstick_prev)
+        & np.isfinite(qstick)
+        & (qstick_prev <= 0.0)
+        & (qstick > 0.0)
+    )
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
+
+    entries = cross_up & uptrend
+
+    ema20 = _ema(close, 20)
+    exits = np.isfinite(ema20) & (close < ema20)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -3528,4 +3581,5 @@ NEW_STRATEGIES: dict = {
     "td_sequential_buy_setup": strat_td_sequential_buy_setup,
     "keltner_channel_breakout": strat_keltner_channel_breakout,
     "three_white_soldiers": strat_three_white_soldiers,
+    "qstick_zero_cross": strat_qstick_zero_cross,
 }
