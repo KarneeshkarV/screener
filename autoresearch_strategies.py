@@ -7365,6 +7365,75 @@ def strat_pmo_signal_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_adaptive_price_zone_breakout(df: pd.DataFrame) -> list[Trade]:
+    """Adaptive Price Zone (APZ) breakout — Lee Leibfarth, TASC Sep 2006.
+
+    APZ is a volatility channel built around Patrick Mulloy's DEMA so the
+    centerline tracks price faster than a single-EMA Keltner basis:
+
+        DEMA(x, N) = 2*EMA(x, N) - EMA(EMA(x, N), N)
+        center     = DEMA(close, N)
+        rangeBand  = DEMA(high-low, N)
+        upper/lower = center ± k * rangeBand
+
+    Long on a fresh bar-close breakout above the upper APZ band (prior bar
+    closed at/below the band, current close above) inside an SMA(50)>SMA(200)
+    regime. Exit when close falls below the DEMA centerline or below EMA(20).
+
+    Distinct from Keltner (EMA + ATR), Bollinger (SMA + stdev), Acceleration
+    Bands (SMA × HL%), and ALMA (Gaussian-weighted MA cross).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = len(close)
+
+    N = 20
+    BAND_K = 2.0
+
+    ema_close = _ema(close, N)
+    dema_close = 2.0 * ema_close - _ema(ema_close, N)
+
+    rng = high - low
+    ema_rng = _ema(rng, N)
+    dema_rng = 2.0 * ema_rng - _ema(ema_rng, N)
+
+    upper = dema_close + BAND_K * dema_rng
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    close_p1 = np.concatenate(([np.nan], close[:-1]))
+    close_p2 = np.concatenate(([np.nan, np.nan], close[:-2]))
+    upper_p1 = np.concatenate(([np.nan], upper[:-1]))
+    upper_p2 = np.concatenate(([np.nan, np.nan], upper[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    idx = np.arange(n)
+    warm = idx >= 60
+
+    valid = (
+        warm
+        & np.isfinite(upper_p1)
+        & np.isfinite(upper_p2)
+        & np.isfinite(close_p1)
+        & np.isfinite(close_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_breakout = valid & (close_p2 <= upper_p2) & (close_p1 > upper_p1)
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_breakout & uptrend
+
+    below_center = np.isfinite(dema_close) & (close < dema_close)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = below_center | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7465,4 +7534,5 @@ NEW_STRATEGIES: dict = {
     "trend_intensity_index": strat_trend_intensity_index,
     "volume_flow_indicator": strat_volume_flow_indicator,
     "pmo_signal_cross": strat_pmo_signal_cross,
+    "adaptive_price_zone_breakout": strat_adaptive_price_zone_breakout,
 }
