@@ -7311,6 +7311,60 @@ def strat_volume_flow_indicator(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_pmo_signal_cross(df: pd.DataFrame) -> list[Trade]:
+    """Carl Swenlin DecisionPoint Price Momentum Oscillator (StockCharts) — PMO/signal cross.
+
+    PMO = 20-EMA of [10 × 35-EMA of 1-bar percent ROC]. Signal = 10-EMA of PMO.
+    Long on a fresh PMO bullish cross above its signal line inside an
+    SMA(50)>SMA(200) uptrend. Exits on PMO<signal or close<EMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = len(close)
+
+    roc = np.zeros(n, dtype=float)
+    if n > 1:
+        prev = close[:-1]
+        roc[1:] = np.where(prev > 0, 100.0 * (close[1:] / prev - 1.0), 0.0)
+
+    smooth1 = _ema(roc, 35) * 10.0
+    pmo = _ema(smooth1, 20)
+    signal = _ema(pmo, 10)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    pmo_p1 = np.concatenate(([np.nan], pmo[:-1]))
+    pmo_p2 = np.concatenate(([np.nan, np.nan], pmo[:-2]))
+    sig_p1 = np.concatenate(([np.nan], signal[:-1]))
+    sig_p2 = np.concatenate(([np.nan, np.nan], signal[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    # Warm-up so the chained EMAs (35 → 20 → 10) have time to settle.
+    idx = np.arange(n)
+    warm = idx >= 80
+
+    valid = (
+        warm
+        & np.isfinite(pmo_p1)
+        & np.isfinite(pmo_p2)
+        & np.isfinite(sig_p1)
+        & np.isfinite(sig_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_cross = valid & (pmo_p2 <= sig_p2) & (pmo_p1 > sig_p1)
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_cross & uptrend
+
+    pmo_below = np.isfinite(pmo) & np.isfinite(signal) & (pmo < signal)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = pmo_below | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7410,4 +7464,5 @@ NEW_STRATEGIES: dict = {
     "chandelier_exit_reclaim": strat_chandelier_exit_reclaim,
     "trend_intensity_index": strat_trend_intensity_index,
     "volume_flow_indicator": strat_volume_flow_indicator,
+    "pmo_signal_cross": strat_pmo_signal_cross,
 }
