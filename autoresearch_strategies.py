@@ -7560,6 +7560,87 @@ def strat_dual_thrust_breakout(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_chande_dynamic_momentum_index(df: pd.DataFrame) -> list[Trade]:
+    """Chande/Kroll Dynamic Momentum Index — variable-period RSI fresh up-cross of 50.
+
+    From Tushar Chande & Stanley Kroll, "The New Technical Trader" (Wiley 1994),
+    chapter on adaptive indicators. Standard RSI uses a fixed 14-bar lookback.
+    The DMI varies the lookback inversely with recent realized volatility:
+    when volatility rises the lookback shortens (more responsive); when
+    volatility settles the lookback lengthens (smoother).
+
+        SD5  = rolling 5-bar stdev of close
+        ASD  = SMA(SD5, 10)                     (avg of recent stdev)
+        VI   = SD5 / ASD                         (Chande's volatility index)
+        TD   = clip(round(14 / VI), 5, 30)       per-bar adaptive lookback
+        DMI  = RSI(close) computed with per-bar lookback TD
+
+    Distinct lineage among tried sandbox strategies:
+      - rmi_oversold_cross: RMI uses a fixed momentum lag and fixed N — no
+        volatility adaptation of the lookback itself.
+      - rsi_brown_range_shift: bull/bear regime ranges of fixed-N RSI.
+      - inverse_fisher_rsi: Fisher transform of fixed-N RSI.
+      - connors_rsi_pullback: composite of three fixed-N components.
+      - vidya_bullish_cross: variable-α EMA, not a momentum oscillator.
+    None of them shrink the RSI window itself when volatility expands.
+
+    Entry: prev DMI <= 50 AND today DMI > 50, inside SMA50 > SMA200 uptrend.
+    Exit:  DMI < 50 OR close < EMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = close.size
+
+    sd5 = _stdev(close, 5)
+    asd = _sma(sd5, 10)
+    vi = np.where((asd > 0) & np.isfinite(asd) & np.isfinite(sd5), sd5 / asd, np.nan)
+
+    td_raw = np.where(vi > 0, 14.0 / vi, np.nan)
+    td = np.where(np.isfinite(td_raw), np.clip(np.round(td_raw), 5, 30), np.nan)
+
+    # Pre-compute RSI for each candidate lookback then select per bar.
+    rsi_table = np.full((26, n), np.nan, dtype=float)
+    for k, period in enumerate(range(5, 31)):
+        rsi_table[k] = _rsi(close, period)
+
+    dmi = np.full(n, np.nan, dtype=float)
+    valid_td = np.isfinite(td)
+    td_int = np.where(valid_td, td.astype(int), 0)
+    idx = np.where(valid_td, td_int - 5, 0)
+    rows = np.clip(idx, 0, 25)
+    cols = np.arange(n)
+    selected = rsi_table[rows, cols]
+    dmi = np.where(valid_td, selected, np.nan)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    dmi_p1 = np.concatenate(([np.nan], dmi[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    warmup = np.zeros(n, dtype=bool)
+    warmup_start = min(n, 220)
+    warmup[warmup_start:] = True
+
+    valid = (
+        warmup
+        & np.isfinite(dmi_p1)
+        & np.isfinite(dmi)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_cross = valid & (dmi_p1 <= 50.0) & (dmi > 50.0)
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_cross & uptrend
+
+    below_50 = np.isfinite(dmi) & (dmi < 50.0)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = below_50 | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7663,4 +7744,5 @@ NEW_STRATEGIES: dict = {
     "adaptive_price_zone_breakout": strat_adaptive_price_zone_breakout,
     "stiffness_indicator": strat_stiffness_indicator,
     "dual_thrust_breakout": strat_dual_thrust_breakout,
+    "chande_dynamic_momentum_index": strat_chande_dynamic_momentum_index,
 }
