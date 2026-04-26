@@ -7761,6 +7761,93 @@ def strat_accumulative_swing_index_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_trend_trigger_factor(df: pd.DataFrame) -> list[Trade]:
+    """Trend Trigger Factor (M.H. Pee, S&C Dec 2004) — fresh up-cross above +100.
+
+    TTF compares the buying-power range of the current N-bar window against
+    the selling-power range of the prior N-bar window. With N=15:
+
+        BuyPower  = HighestHigh(0..N-1)  - LowestLow(N..2N-1)
+        SellPower = HighestHigh(N..2N-1) - LowestLow(0..N-1)
+        TTF       = 100 * (BuyPower - SellPower) / (0.5 * (BuyPower + SellPower))
+
+    Pee's published interpretation: TTF > +100 marks an established uptrend,
+    TTF < -100 marks a downtrend. The fresh cross up through +100 captures
+    the moment the rolling high-range of the most recent N bars decisively
+    overtakes the comparable window N bars ago.
+
+    Distinct from existing sandbox strategies:
+      - Trend Intensity Index (Pee 2002) sums magnitude-weighted deviations
+        from an SMA — TTF compares HHV/LLV ranges across windows.
+      - Aroon ranks bar position of HHV/LLV — TTF works with raw range arithmetic.
+      - Random Walk Index measures range vs sqrt(N)·ATR — TTF subtracts
+        windowed BP and SP scaled by their average.
+      - Donchian breakout uses a single rolling high/low — TTF differences
+        two adjacent N-windows of HHV and LLV.
+
+    Entry: prev TTF <= 100 AND today TTF > 100, gated by SMA50 > SMA200.
+    Exit:  TTF < -100 OR close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = close.size
+    N = 15
+
+    hh = pd.Series(high).rolling(N, min_periods=N).max().to_numpy()
+    ll = pd.Series(low).rolling(N, min_periods=N).min().to_numpy()
+
+    if n > N:
+        hh_prev = np.concatenate((np.full(N, np.nan), hh[:-N]))
+        ll_prev = np.concatenate((np.full(N, np.nan), ll[:-N]))
+    else:
+        hh_prev = np.full(n, np.nan)
+        ll_prev = np.full(n, np.nan)
+
+    bp = hh - ll_prev
+    sp = hh_prev - ll
+    denom = 0.5 * (bp + sp)
+
+    valid_ttf = (
+        np.isfinite(bp)
+        & np.isfinite(sp)
+        & np.isfinite(denom)
+        & (np.abs(denom) > 1e-12)
+    )
+    ttf = np.where(valid_ttf, 100.0 * (bp - sp) / np.where(np.abs(denom) > 1e-12, denom, 1.0), np.nan)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    ttf_p1 = np.concatenate(([np.nan], ttf[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    warmup = np.zeros(n, dtype=bool)
+    warmup_start = min(n, 220)
+    warmup[warmup_start:] = True
+
+    fresh_cross_up = (
+        np.isfinite(ttf_p1)
+        & np.isfinite(ttf)
+        & (ttf_p1 <= 100.0)
+        & (ttf > 100.0)
+    )
+    uptrend = (
+        np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+        & (sma50_p1 > sma200_p1)
+    )
+    entries = warmup & fresh_cross_up & uptrend
+
+    below_neg100 = np.isfinite(ttf) & (ttf < -100.0)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = below_neg100 | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7866,4 +7953,5 @@ NEW_STRATEGIES: dict = {
     "dual_thrust_breakout": strat_dual_thrust_breakout,
     "chande_dynamic_momentum_index": strat_chande_dynamic_momentum_index,
     "accumulative_swing_index_cross": strat_accumulative_swing_index_cross,
+    "trend_trigger_factor": strat_trend_trigger_factor,
 }
