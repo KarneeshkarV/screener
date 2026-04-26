@@ -7434,6 +7434,69 @@ def strat_adaptive_price_zone_breakout(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_stiffness_indicator(df: pd.DataFrame) -> list[Trade]:
+    """Stiffness Indicator (Joe Sharp, Active Trader Magazine 2003) — fresh cross above 90.
+
+    Sharp's published rule measures the "stiffness" of an uptrend as the
+    fraction of the last 60 bars on which the close held above
+    ma100 - 0.2 * stdev(close, 60). A reading near 100 means dips have been
+    rare — the trend is uninterrupted and "stiff". Long when stiffness rises
+    above 90 (sustained-strength regime begins) inside SMA50>SMA200; exit
+    when stiffness drops below 50 (trend losing its hold) or close falls
+    below SMA(50).
+
+    Distinct from every sandbox strategy: this is a state-occupancy count
+    of price vs a single dynamic threshold over a rolling window — not a
+    moving-average crossover, not an oscillator zero-cross, not an
+    ADX/RSI/CCI mean-cross, not a candlestick pattern. The construction
+    (counting bars above a single mean-minus-σ floor) is unique here.
+
+    Entry: prev stiffness <= 90 AND today stiffness > 90 in SMA50>SMA200.
+    Exit:  stiffness < 50 OR close < SMA(50).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = close.size
+
+    ma100 = _sma(close, 100)
+    sd60 = _stdev(close, 60)
+    threshold = ma100 - 0.2 * sd60
+
+    above_raw = (np.isfinite(threshold) & (close > threshold)).astype(float)
+    above_marked = np.where(np.isfinite(threshold), above_raw, np.nan)
+    stiff_raw = (
+        pd.Series(above_marked).rolling(60, min_periods=60).sum().to_numpy()
+    )
+    stiff = stiff_raw / 60.0 * 100.0
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+
+    stiff_p1 = np.concatenate(([np.nan], stiff[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    warmup = np.zeros(n, dtype=bool)
+    warmup_start = min(n, 220)
+    warmup[warmup_start:] = True
+
+    valid = (
+        warmup
+        & np.isfinite(stiff)
+        & np.isfinite(stiff_p1)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_cross_up = valid & (stiff_p1 <= 90.0) & (stiff > 90.0)
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_cross_up & uptrend
+
+    below_50 = np.isfinite(stiff) & (stiff < 50.0)
+    below_sma50 = np.isfinite(sma50) & (close < sma50)
+    exits = below_50 | below_sma50
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7535,4 +7598,5 @@ NEW_STRATEGIES: dict = {
     "volume_flow_indicator": strat_volume_flow_indicator,
     "pmo_signal_cross": strat_pmo_signal_cross,
     "adaptive_price_zone_breakout": strat_adaptive_price_zone_breakout,
+    "stiffness_indicator": strat_stiffness_indicator,
 }
