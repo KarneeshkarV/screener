@@ -8215,6 +8215,96 @@ def strat_ehlers_decycler_oscillator(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_vpci_bullish_cross(df: pd.DataFrame) -> list[Trade]:
+    """Volume Price Confirmation Indicator (Buff Dormeier 2007, NAAIM Wagner).
+
+    VPCI is a multiplicative composite of three sub-components designed to
+    confirm trend conviction by reconciling price action with volume flow:
+
+        VWMA_n = sum(close*vol, n) / sum(vol, n)
+        VPC    = VWMA_long  - SMA(close, long)        (price-volume confirm)
+        VPR    = VWMA_short / SMA(close, short)        (price-volume ratio)
+        VM     = SMA(vol, short) / SMA(vol, long)       (volume multiplier)
+        VPCI   = VPC * VPR * VM
+
+    With short=5, long=25 (Dormeier defaults). When VPCI is rising and crosses
+    above its own SMA(8) signal line in an established uptrend, price moves
+    are being confirmed by volume — a high-conviction long signal. We additionally
+    require VPCI > 0 to avoid bear-market head-fakes. Exit on bearish cross of
+    signal line or close < SMA(50) trend break.
+
+    Reference: Buff P. Dormeier, "Investing with Volume Analysis" (2011 / 2007
+    NAAIM Wagner Award paper). Distinct from vw_macd_signal_cross (additive
+    EMA-difference of VWMA) — VPCI is a multiplicative product of three terms.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+    n_short = 5
+    n_long = 25
+
+    pv = close * volume
+    pv_s = pd.Series(pv)
+    vol_s = pd.Series(volume)
+    close_s = pd.Series(close)
+
+    vwma_short = (
+        pv_s.rolling(n_short, min_periods=n_short).sum()
+        / vol_s.rolling(n_short, min_periods=n_short).sum()
+    ).to_numpy()
+    vwma_long = (
+        pv_s.rolling(n_long, min_periods=n_long).sum()
+        / vol_s.rolling(n_long, min_periods=n_long).sum()
+    ).to_numpy()
+    sma_short = close_s.rolling(n_short, min_periods=n_short).mean().to_numpy()
+    sma_long = close_s.rolling(n_long, min_periods=n_long).mean().to_numpy()
+    vsma_short = vol_s.rolling(n_short, min_periods=n_short).mean().to_numpy()
+    vsma_long = vol_s.rolling(n_long, min_periods=n_long).mean().to_numpy()
+
+    vpc = vwma_long - sma_long
+    with np.errstate(divide="ignore", invalid="ignore"):
+        vpr = np.where(sma_short > 0, vwma_short / sma_short, np.nan)
+        vm = np.where(vsma_long > 0, vsma_short / vsma_long, np.nan)
+    vpci = vpc * vpr * vm
+
+    sig = pd.Series(vpci).rolling(8, min_periods=8).mean().to_numpy()
+    sma50 = _sma(close, 50)
+
+    vpci_p1 = np.concatenate(([np.nan], vpci[:-1]))
+    vpci_p2 = np.concatenate(([np.nan, np.nan], vpci[:-2]))
+    sig_p1 = np.concatenate(([np.nan], sig[:-1]))
+    sig_p2 = np.concatenate(([np.nan, np.nan], sig[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    close_p1 = np.concatenate(([np.nan], close[:-1]))
+
+    valid_entry = (
+        np.isfinite(vpci_p1)
+        & np.isfinite(vpci_p2)
+        & np.isfinite(sig_p1)
+        & np.isfinite(sig_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(close_p1)
+    )
+
+    fresh_up = (vpci_p1 > sig_p1) & (vpci_p2 <= sig_p2)
+    above_zero = vpci_p1 > 0
+    uptrend = close_p1 > sma50_p1
+
+    entries = valid_entry & fresh_up & above_zero & uptrend
+
+    fresh_down = (
+        np.isfinite(vpci_p1)
+        & np.isfinite(sig_p1)
+        & np.isfinite(vpci_p2)
+        & np.isfinite(sig_p2)
+        & (vpci_p1 < sig_p1)
+        & (vpci_p2 >= sig_p2)
+    )
+    below_sma50 = np.isfinite(sma50) & (close < sma50)
+    exits = fresh_down | below_sma50
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -8326,4 +8416,5 @@ NEW_STRATEGIES: dict = {
     "sushi_roll_reversal": strat_sushi_roll_reversal,
     "ehlers_cyber_cycle": strat_ehlers_cyber_cycle,
     "ehlers_decycler_oscillator": strat_ehlers_decycler_oscillator,
+    "vpci_bullish_cross": strat_vpci_bullish_cross,
 }
