@@ -7214,6 +7214,103 @@ def strat_trend_intensity_index(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_volume_flow_indicator(df: pd.DataFrame) -> list[Trade]:
+    """Volume Flow Indicator (Markos Katsanos, TASC June 2004) — VFI(130) bullish zero-cross.
+
+    VFI is a published normalized money-flow oscillator distinct from OBV,
+    CMF, TMF, KVO, and Force Index. Two filters tame OBV's flaws:
+        - noise cutoff: ignore typical-price moves smaller than
+          0.2 · stdev(log_typical, 30) · close (small bars don't count)
+        - volume cap: cap each bar's volume at 2.5 · SMA(volume, 50)
+          (extreme spikes don't dominate)
+    VFI = SMA( signed_capped_volume, 130 ) / SMA(volume, 50), then EMA(3) smooth.
+
+    Long: VFI smoothed crosses up through 0 from below inside SMA50>SMA200.
+    Exit: VFI<0 or close<EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    volume = df["volume"].to_numpy(dtype=float)
+    n = close.size
+
+    typical = (high + low + close) / 3.0
+    safe_tp = np.where(typical > 0, typical, np.nan)
+    log_tp = np.log(safe_tp)
+    inter = np.full(n, np.nan)
+    inter[1:] = log_tp[1:] - log_tp[:-1]
+
+    vinter = pd.Series(inter).rolling(30, min_periods=30).std(ddof=0).to_numpy()
+    cutoff = 0.2 * vinter * close
+
+    vave = pd.Series(volume).rolling(50, min_periods=50).mean().to_numpy()
+    vmax = vave * 2.5
+    vc = np.where(np.isfinite(vmax), np.minimum(volume, vmax), np.nan)
+
+    mf = np.full(n, np.nan)
+    mf[1:] = typical[1:] - typical[:-1]
+
+    vcp_signed = np.where(
+        np.isfinite(mf) & np.isfinite(cutoff) & np.isfinite(vc),
+        np.where(mf > cutoff, vc, np.where(mf < -cutoff, -vc, 0.0)),
+        np.nan,
+    )
+    vcp_for_sum = np.where(np.isfinite(vcp_signed), vcp_signed, 0.0)
+
+    period = 130
+    vcp_sma = (
+        pd.Series(vcp_for_sum)
+        .rolling(period, min_periods=period)
+        .mean()
+        .to_numpy()
+    )
+    vfi_raw = np.where(
+        np.isfinite(vave) & (vave > 0) & np.isfinite(vcp_sma),
+        vcp_sma / vave,
+        np.nan,
+    )
+
+    # EMA(3) of vfi_raw, starting once vfi_raw is finite, to avoid NaN propagation.
+    vfi = np.full(n, np.nan)
+    alpha = 2.0 / (3 + 1)
+    started = False
+    prev = np.nan
+    for i in range(n):
+        v = vfi_raw[i]
+        if not np.isfinite(v):
+            continue
+        if not started:
+            prev = v
+            started = True
+        else:
+            prev = alpha * v + (1 - alpha) * prev
+        vfi[i] = prev
+
+    ema20 = _ema(close, 20)
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+
+    vfi_p1 = np.concatenate(([np.nan], vfi[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    valid = (
+        np.isfinite(vfi_p1)
+        & np.isfinite(vfi)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_cross = valid & (vfi_p1 <= 0.0) & (vfi > 0.0)
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_cross & uptrend
+
+    below_zero = np.isfinite(vfi) & (vfi < 0.0)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = below_zero | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7312,4 +7409,5 @@ NEW_STRATEGIES: dict = {
     "bressert_dss_oversold_cross": strat_bressert_dss_oversold_cross,
     "chandelier_exit_reclaim": strat_chandelier_exit_reclaim,
     "trend_intensity_index": strat_trend_intensity_index,
+    "volume_flow_indicator": strat_volume_flow_indicator,
 }
