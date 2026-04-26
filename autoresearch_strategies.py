@@ -7140,6 +7140,80 @@ def strat_chandelier_exit_reclaim(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_trend_intensity_index(df: pd.DataFrame) -> list[Trade]:
+    """Trend Intensity Index (M.H. Pee, S&C 2002) — fresh up-cross of TII above 50.
+
+    TII measures directional dominance over the second half of an N-bar window.
+    For N=60, compute SMA(close, N). Over the last M=N//2=30 bars:
+
+        SDpos = sum(close - SMA) for bars where close > SMA
+        SDneg = sum(SMA - close) for bars where close < SMA
+        TII   = 100 * SDpos / (SDpos + SDneg)
+
+    TII > 50 means the recent half-window has accumulated more above-mean
+    deviation than below — an uptrend is dominant in magnitude, not just in
+    bar count. A fresh up-cross of 50 inside SMA50>SMA200 captures regime
+    emergence with price now sitting in the upper half of its 60-bar mean.
+
+    Distinct from existing sandbox strategies:
+      - Aroon counts bar position of HHV/LLV — TII sums signed close-vs-SMA
+        deviations (magnitude-weighted, not order-statistic).
+      - DPO is a single-bar detrended print — TII aggregates 30 bars of
+        sign-bucketed deviation.
+      - CFO is one-bar regression residual; TII spans a rolling window.
+      - Choppiness Index uses ATR vs range — TII uses deviation imbalance.
+
+    Entry: prev TII <= 50 AND today TII > 50 inside SMA50 > SMA200.
+    Exit:  TII < 50 OR close < EMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = close.size
+    N = 60
+    M = N // 2
+
+    sma = _sma(close, N)
+    dev = close - sma
+    pos_dev = np.where(np.isfinite(dev) & (dev > 0), dev, 0.0)
+    neg_dev = np.where(np.isfinite(dev) & (dev < 0), -dev, 0.0)
+
+    sd_pos = pd.Series(pos_dev).rolling(M, min_periods=M).sum().to_numpy()
+    sd_neg = pd.Series(neg_dev).rolling(M, min_periods=M).sum().to_numpy()
+
+    denom = sd_pos + sd_neg
+    tii = np.where(denom > 0, 100.0 * sd_pos / denom, np.nan)
+    # Mask values where SMA wasn't defined yet
+    tii = np.where(np.isfinite(sma), tii, np.nan)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    tii_p1 = np.concatenate(([np.nan], tii[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    warmup = np.zeros(n, dtype=bool)
+    warmup_start = min(n, 220)
+    warmup[warmup_start:] = True
+
+    valid = (
+        warmup
+        & np.isfinite(tii_p1)
+        & np.isfinite(tii)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_cross = valid & (tii_p1 <= 50.0) & (tii > 50.0)
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_cross & uptrend
+
+    below_50 = np.isfinite(tii) & (tii < 50.0)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = below_50 | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7237,4 +7311,5 @@ NEW_STRATEGIES: dict = {
     "disparity_index_zero_cross": strat_disparity_index_zero_cross,
     "bressert_dss_oversold_cross": strat_bressert_dss_oversold_cross,
     "chandelier_exit_reclaim": strat_chandelier_exit_reclaim,
+    "trend_intensity_index": strat_trend_intensity_index,
 }
