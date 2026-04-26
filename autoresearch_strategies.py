@@ -8305,6 +8305,72 @@ def strat_vpci_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_chande_trend_score(df: pd.DataFrame) -> list[Trade]:
+    """Tushar Chande Trend Score (Chande & Kroll, The New Technical Trader, 1994).
+
+    A multi-horizon momentum consensus vote: for each look-back N = 1..11, add
+    +1 if close > close[N] else -1. Sum across all 11 horizons gives a score
+    in [-11, +11]. Score >= +7 means at least 9-of-11 horizons agree the
+    market is up versus the look-back, an unusually strong cross-horizon
+    consensus that historically precedes follow-through.
+
+    Entry: Trend Score crosses up through +7 on prior bar AND close > SMA(50).
+    Exit: Trend Score crosses below 0 (consensus flips bearish), or close
+    closes below SMA(50) (trend break).
+
+    Distinct from chande_forecast_oscillator (linear-regression residual) and
+    chande_dynamic_momentum_index (variable-period CMO) — Trend Score is a
+    pure sign-vote across multiple horizons with no smoothing or rate term.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = len(close)
+
+    score = np.zeros(n)
+    score[:] = np.nan
+    score_accum = np.zeros(n)
+    have = np.zeros(n, dtype=bool)
+    have[10:] = True  # need close[t-11] through close[t-1]
+
+    accum = np.zeros(n)
+    for k in range(1, 12):
+        shifted = np.concatenate(([np.nan] * k, close[:-k]))
+        contrib = np.where(
+            np.isfinite(shifted),
+            np.where(close > shifted, 1.0, -1.0),
+            0.0,
+        )
+        accum = accum + contrib
+    score = np.where(have, accum, np.nan)
+
+    sma50 = _sma(close, 50)
+
+    score_p1 = np.concatenate(([np.nan], score[:-1]))
+    score_p2 = np.concatenate(([np.nan, np.nan], score[:-2]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    close_p1 = np.concatenate(([np.nan], close[:-1]))
+
+    valid_entry = (
+        np.isfinite(score_p1)
+        & np.isfinite(score_p2)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(close_p1)
+    )
+    fresh_up = (score_p1 >= 7) & (score_p2 < 7)
+    uptrend = close_p1 > sma50_p1
+    entries = valid_entry & fresh_up & uptrend
+
+    fresh_down = (
+        np.isfinite(score_p1)
+        & np.isfinite(score_p2)
+        & (score_p1 < 0)
+        & (score_p2 >= 0)
+    )
+    below_sma50 = np.isfinite(sma50) & (close < sma50)
+    exits = fresh_down | below_sma50
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -8417,4 +8483,5 @@ NEW_STRATEGIES: dict = {
     "ehlers_cyber_cycle": strat_ehlers_cyber_cycle,
     "ehlers_decycler_oscillator": strat_ehlers_decycler_oscillator,
     "vpci_bullish_cross": strat_vpci_bullish_cross,
+    "chande_trend_score": strat_chande_trend_score,
 }
