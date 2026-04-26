@@ -7497,6 +7497,69 @@ def strat_stiffness_indicator(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_dual_thrust_breakout(df: pd.DataFrame) -> list[Trade]:
+    """Dual Thrust (Michael Chalek 1995) — open-anchored prior-range breakout.
+
+    Chalek's classic CTA system projects the next bar's actionable level from
+    the dispersion of the prior N bars and the current bar's open. With
+    HH/LL/HC/LC the rolling high-of-high, low-of-low, high-of-close and
+    low-of-close over the last N=4 bars (all referenced via .shift(1) so the
+    range is fixed at yesterday's close — no lookahead), define
+
+        Range    = max(HH - LC, HC - LL)
+        BuyLine  = today_open + K1 * Range     (K1 = 0.5)
+        SellLine = today_open - K2 * Range     (K2 = 0.5)
+
+    Long-entry when the bar closes at or above the BuyLine while SMA50>SMA200
+    (regime gate makes it asymmetric / long-only despite the symmetric
+    construction). Exit when close falls below SellLine (Chalek's stop-and-
+    reverse line) OR close < EMA(20) trend break.
+
+    Distinct lineage: Dual Thrust uses *both* range-of-highs and range-of-
+    closes simultaneously (max of two) — neither Donchian (highs only),
+    Keltner/ATR (range of true range), nor Bollinger (σ of close) replicates
+    this combined dispersion measure, and the open-anchored projection is
+    unique to Chalek among sandbox strategies.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    open_ = df["open"].to_numpy(dtype=float)
+
+    N = 4
+    K1 = 0.5
+    K2 = 0.5
+
+    hh = pd.Series(high).shift(1).rolling(N, min_periods=N).max().to_numpy()
+    ll = pd.Series(low).shift(1).rolling(N, min_periods=N).min().to_numpy()
+    hc = pd.Series(close).shift(1).rolling(N, min_periods=N).max().to_numpy()
+    lc = pd.Series(close).shift(1).rolling(N, min_periods=N).min().to_numpy()
+
+    rng = np.maximum(hh - lc, hc - ll)
+
+    buy_line = open_ + K1 * rng
+    sell_line = open_ - K2 * rng
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    valid = (
+        np.isfinite(rng)
+        & np.isfinite(sma50)
+        & np.isfinite(sma200)
+        & np.isfinite(ema20)
+    )
+
+    entries = valid & (close >= buy_line) & (sma50 > sma200)
+
+    below_sell = np.isfinite(sell_line) & (close < sell_line)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = below_sell | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7599,4 +7662,5 @@ NEW_STRATEGIES: dict = {
     "pmo_signal_cross": strat_pmo_signal_cross,
     "adaptive_price_zone_breakout": strat_adaptive_price_zone_breakout,
     "stiffness_indicator": strat_stiffness_indicator,
+    "dual_thrust_breakout": strat_dual_thrust_breakout,
 }
