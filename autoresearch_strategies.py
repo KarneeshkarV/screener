@@ -7069,6 +7069,77 @@ def strat_bressert_dss_oversold_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_chandelier_exit_reclaim(df: pd.DataFrame) -> list[Trade]:
+    """Chuck LeBeau Chandelier Exit reclaim — fresh up-cross of the trailing line.
+
+    LeBeau introduced the Chandelier Exit in S&C (1992-95) as a volatility-
+    adaptive trailing stop "hung from the ceiling" of recent highs:
+
+        chandelier = HHV(close, 22) - 3 * ATR(22)
+
+    Conventional use is as a long stop. Here we invert it as a trend-restart
+    signal: when price has been BELOW the chandelier line and reclaims it on a
+    bar close, the same volatility envelope that would have stopped a long now
+    confirms a fresh resumption of the up-leg. Combined with SMA50>SMA200 the
+    setup is a textbook "weak hand shake-out / strong hand re-entry" filter.
+
+    Structurally distinct from existing strategies in the sandbox:
+      - Supertrend variants use HL2 ± k*ATR with alternating upper/lower bands
+        and a flip-direction state — Chandelier is one-sided, anchored to the
+        rolling HHV(close), not to HL2.
+      - Donchian / Keltner / Acceleration-Bands fire on price piercing a
+        channel rail; Chandelier reclaim fires on a *recovery* of an
+        ATR-discounted high, which is a different geometric event.
+      - Parabolic SAR is acceleration-driven, not HHV-anchored.
+
+    Entry: prev close <= prev chandelier AND today's close > today's chandelier
+           inside SMA50 > SMA200 (fresh reclaim, no lookahead).
+    Exit:  close < chandelier (lose the line again) OR close < EMA20.
+    """
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    close = df["close"].to_numpy(dtype=float)
+
+    n = close.size
+    N = 22
+    K = 3.0
+
+    atr = _atr(high, low, close, N)
+    hhv_close = pd.Series(close).rolling(N, min_periods=N).max().to_numpy()
+    chand = hhv_close - K * atr
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    close_p1 = np.concatenate(([np.nan], close[:-1]))
+    chand_p1 = np.concatenate(([np.nan], chand[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    warmup = np.zeros(n, dtype=bool)
+    warmup_start = min(n, 220)
+    warmup[warmup_start:] = True
+
+    valid = (
+        warmup
+        & np.isfinite(close_p1)
+        & np.isfinite(chand_p1)
+        & np.isfinite(chand)
+        & np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+    )
+    fresh_reclaim = valid & (close_p1 <= chand_p1) & (close > chand)
+    uptrend = sma50_p1 > sma200_p1
+    entries = fresh_reclaim & uptrend
+
+    lose_line = np.isfinite(chand) & (close < chand)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = lose_line | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7165,4 +7236,5 @@ NEW_STRATEGIES: dict = {
     "tema_bullish_cross": strat_tema_bullish_cross,
     "disparity_index_zero_cross": strat_disparity_index_zero_cross,
     "bressert_dss_oversold_cross": strat_bressert_dss_oversold_cross,
+    "chandelier_exit_reclaim": strat_chandelier_exit_reclaim,
 }
