@@ -8061,6 +8061,99 @@ def strat_sushi_roll_reversal(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_ehlers_cyber_cycle(df: pd.DataFrame) -> list[Trade]:
+    """Ehlers Cyber Cycle (Ehlers 2004, "Cybernetic Analysis for Stocks and Futures", Ch. 4).
+
+    Ehlers' Cyber Cycle is a 2-pole high-pass-filtered cycle component of a
+    pre-smoothed price series. The standard rule from the book is to trade
+    the crossover of the Cycle vs its 1-bar lag (Trigger = Cycle[1]). A fresh
+    up-cross marks a local trough of the cycle component — i.e. the start of a
+    new oscillation up-leg — which historically has acted as a swing-low
+    pullback signal in trending markets.
+
+    Math (Ehlers 2004, p. 34):
+        Price_t   = (high_t + low_t) / 2
+        Smooth_t  = (Price_t + 2·Price_{t-1} + 2·Price_{t-2} + Price_{t-3}) / 6
+        alpha     = 2 / (N + 1)            (N = 10 cycle period default)
+        Cycle_t   = (1 - 0.5·alpha)^2 · (Smooth_t - 2·Smooth_{t-1} + Smooth_{t-2})
+                    + 2·(1-alpha)·Cycle_{t-1}
+                    -      (1-alpha)^2 · Cycle_{t-2}
+        Trigger_t = Cycle_{t-1}
+        Buy when Cycle crosses up through Trigger (= Cycle starts rising).
+
+    Distinct from existing sandbox Ehlers strategies: Trendflex is a slope-sum
+    of the SuperSmoother normalised by adaptive RMS; Roofing Filter is a HP→SS
+    band-pass; Laguerre RSI is a 4-stage Laguerre filter; CoG is a windowed
+    centroid; MAMA/FAMA is Hilbert-discriminator adaptive EMA. Cyber Cycle is
+    a 2-pole HP filter on a 4-bar weighted average — the foundational cycle
+    component that predates Trendflex and the Roofing Filter.
+
+    Entry (prior-bar arrays — strictly causal, no lookahead):
+      - Cycle_{t-1} > Cycle_{t-2}  AND  Cycle_{t-2} <= Cycle_{t-3}  (fresh trigger up-cross)
+      - close_{t-1} > SMA100_{t-1}                                 (macro uptrend filter)
+    Exit: fresh trigger down-cross  OR  close < SMA20.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = close.size
+
+    price = (high + low) / 2.0
+
+    smooth = np.zeros(n)
+    for i in range(n):
+        if i >= 3:
+            smooth[i] = (
+                price[i] + 2.0 * price[i - 1] + 2.0 * price[i - 2] + price[i - 3]
+            ) / 6.0
+        else:
+            smooth[i] = price[i]
+
+    PERIOD = 10
+    alpha = 2.0 / (PERIOD + 1.0)
+    a = (1.0 - 0.5 * alpha) ** 2
+    b = 2.0 * (1.0 - alpha)
+    c = -((1.0 - alpha) ** 2)
+
+    cycle = np.zeros(n)
+    for i in range(n):
+        if i >= 6:
+            cycle[i] = (
+                a * (smooth[i] - 2.0 * smooth[i - 1] + smooth[i - 2])
+                + b * cycle[i - 1]
+                + c * cycle[i - 2]
+            )
+        elif i >= 2:
+            cycle[i] = (price[i] - 2.0 * price[i - 1] + price[i - 2]) / 4.0
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    cycle_p1 = np.concatenate(([np.nan], cycle[:-1]))
+    cycle_p2 = np.concatenate(([np.nan, np.nan], cycle[:-2]))
+    cycle_p3 = np.concatenate(([np.nan, np.nan, np.nan], cycle[:-3]))
+    sma100_p1 = np.concatenate(([np.nan], sma100[:-1]))
+    close_p1 = np.concatenate(([np.nan], close[:-1]))
+
+    valid = (
+        np.isfinite(cycle_p1)
+        & np.isfinite(cycle_p2)
+        & np.isfinite(cycle_p3)
+        & np.isfinite(sma100_p1)
+        & np.isfinite(close_p1)
+    )
+
+    fresh_up = (cycle_p1 > cycle_p2) & (cycle_p2 <= cycle_p3)
+    uptrend = close_p1 > sma100_p1
+    entries = valid & fresh_up & uptrend
+
+    fresh_down = (cycle_p1 < cycle_p2) & (cycle_p2 >= cycle_p3)
+    below_sma20 = np.isfinite(sma20) & (close < sma20)
+    exits = fresh_down | below_sma20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -8170,4 +8263,5 @@ NEW_STRATEGIES: dict = {
     "crabel_stretch_breakout": strat_crabel_stretch_breakout,
     "composite_index_brown": strat_composite_index_brown,
     "sushi_roll_reversal": strat_sushi_roll_reversal,
+    "ehlers_cyber_cycle": strat_ehlers_cyber_cycle,
 }
