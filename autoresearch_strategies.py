@@ -7939,6 +7939,64 @@ def strat_crabel_stretch_breakout(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_composite_index_brown(df: pd.DataFrame) -> list[Trade]:
+    """Constance Brown Composite Index (Brown, "Technical Analysis for the
+    Trading Professional", 1999). Designed to fix RSI's failure to print
+    divergences at major reversals. CI = RSI_Momentum(9) + SMA3(RSI14), where
+    RSI_Momentum = RSI14 - RSI14[9]. Long on a fresh bullish cross of CI above
+    its 13-bar SMA signal line, gated by SMA50>SMA200 trend filter. Exit on
+    bearish CI/signal cross-down.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = close.size
+    if n < 50:
+        return []
+    rsi14 = _rsi(close, 14)
+    rsi14_lag9 = np.concatenate((np.full(9, np.nan), rsi14[:-9]))
+    rsi_mom9 = rsi14 - rsi14_lag9
+    sma3_rsi = _sma(rsi14, 3)
+    ci = rsi_mom9 + sma3_rsi
+    ci_signal = _sma(ci, 13)
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+
+    ci_p1 = np.concatenate(([np.nan], ci[:-1]))
+    sig_p1 = np.concatenate(([np.nan], ci_signal[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    cross_up = (
+        np.isfinite(ci_p1)
+        & np.isfinite(sig_p1)
+        & np.isfinite(ci)
+        & np.isfinite(ci_signal)
+        & (ci_p1 <= sig_p1)
+        & (ci > ci_signal)
+    )
+    uptrend = (
+        np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+        & (sma50_p1 > sma200_p1)
+    )
+    warmup = np.zeros(n, dtype=bool)
+    warmup_start = min(n, 220)
+    warmup[warmup_start:] = True
+
+    entries = warmup & cross_up & uptrend
+
+    cross_dn = (
+        np.isfinite(ci_p1)
+        & np.isfinite(sig_p1)
+        & np.isfinite(ci)
+        & np.isfinite(ci_signal)
+        & (ci_p1 >= sig_p1)
+        & (ci < ci_signal)
+    )
+    exits = cross_dn
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -8046,4 +8104,5 @@ NEW_STRATEGIES: dict = {
     "accumulative_swing_index_cross": strat_accumulative_swing_index_cross,
     "trend_trigger_factor": strat_trend_trigger_factor,
     "crabel_stretch_breakout": strat_crabel_stretch_breakout,
+    "composite_index_brown": strat_composite_index_brown,
 }
