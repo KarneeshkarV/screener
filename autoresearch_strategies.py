@@ -7641,6 +7641,126 @@ def strat_chande_dynamic_momentum_index(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_accumulative_swing_index_cross(df: pd.DataFrame) -> list[Trade]:
+    """Wilder's Accumulative Swing Index — fresh bullish cross above its 9-EMA signal.
+
+    From J. Welles Wilder Jr., "New Concepts in Technical Trading Systems"
+    (Trend Research, Greensboro NC, 1978), Chapter 8 ("Swing Index System"),
+    pp. 87-96. Wilder's stated motivation: the daily close alone or daily
+    range alone do not capture a security's true directional change. The
+    Swing Index combines intra-bar (close - open) and inter-bar
+    (close[t] - close[t-1]) impulses with a Wilder-defined volatility range
+    factor R and the K-extreme (the larger distance from prior close to
+    today's high or low) to produce a bounded [-100, +100] per-bar swing
+    reading. Cumulating SI yields the Accumulative Swing Index (ASI), a
+    price-impulse equivalent of the OBV line — but for OHLC-derived
+    information rather than volume.
+
+        N  = (close - close[1]) + 0.5·(close - open) + 0.25·(close[1] - open[1])
+        K  = max(|high - close[1]|, |low - close[1]|)
+        Three-case R per Wilder:
+           if |H-C[1]| largest: R =  (H-C[1])   - 0.5·(L-C[1]) + 0.25·(C[1]-O[1])
+           if |L-C[1]| largest: R =  (L-C[1])   - 0.5·(H-C[1]) + 0.25·(C[1]-O[1])
+           else (H-L largest):  R =  (H-L)                      + 0.25·(C[1]-O[1])
+        T  = SMA(TR, 20)  (per-symbol scale, replaces Wilder's futures "limit move")
+        SI = clamp(50 · N / |R| · K / T, [-100, +100])
+        ASI = cumsum(SI)
+
+    Distinct lineage among the 112 tried sandbox strategies:
+      - obv_ema_cross: cumulative SIGNED VOLUME line (Granville 1963), no OHLC mix.
+      - chaikin_oscillator_zero_cross / twiggs_money_flow / cmf_zero_reclaim:
+        Accumulation/Distribution-derived volume-weighted oscillators.
+      - elder_force_index_zero_cross: |Δclose × volume|, no intra-bar OC term.
+      - fisher_transform_zero_cross: hyperbolic transform of price extremes.
+      - heikin_ashi_flip: synthetic candle direction, not normalized swing magnitude.
+    None of these implement Wilder's K/R/T-normalized swing index nor cumulate it.
+
+    Entry: prev ASI <= signal AND today ASI > signal, inside SMA50 > SMA200 uptrend.
+    Exit:  ASI < signal OR close < EMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    open_ = df["open"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = close.size
+
+    close_prev = np.concatenate(([np.nan], close[:-1]))
+    open_prev = np.concatenate(([np.nan], open_[:-1]))
+
+    abs_hc = np.abs(high - close_prev)
+    abs_lc = np.abs(low - close_prev)
+    hl = high - low
+
+    case_a = (abs_hc >= abs_lc) & (abs_hc >= hl)
+    case_b = (abs_lc > abs_hc) & (abs_lc >= hl)
+
+    r_a = (high - close_prev) - 0.5 * (low - close_prev) + 0.25 * (close_prev - open_prev)
+    r_b = (low - close_prev) - 0.5 * (high - close_prev) + 0.25 * (close_prev - open_prev)
+    r_c = (high - low) + 0.25 * (close_prev - open_prev)
+
+    r_raw = np.where(case_a, r_a, np.where(case_b, r_b, r_c))
+    r_abs = np.abs(r_raw)
+
+    n_term = (close - close_prev) + 0.5 * (close - open_) + 0.25 * (close_prev - open_prev)
+    k = np.maximum(abs_hc, abs_lc)
+
+    tr = np.maximum(np.maximum(hl, abs_hc), abs_lc)
+    t_param = pd.Series(tr).rolling(20, min_periods=20).mean().to_numpy()
+
+    valid_si = (
+        np.isfinite(r_abs)
+        & (r_abs > 0)
+        & np.isfinite(t_param)
+        & (t_param > 0)
+        & np.isfinite(n_term)
+        & np.isfinite(k)
+    )
+    si = np.where(
+        valid_si,
+        50.0 * n_term / np.where(r_abs > 0, r_abs, 1.0) * (k / np.where(t_param > 0, t_param, 1.0)),
+        0.0,
+    )
+    si = np.clip(si, -100.0, 100.0)
+    si = np.where(np.isfinite(si), si, 0.0)
+
+    asi = np.cumsum(si)
+    signal = _ema(asi, 9)
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema20 = _ema(close, 20)
+
+    asi_p1 = np.concatenate(([np.nan], asi[:-1]))
+    sig_p1 = np.concatenate(([np.nan], signal[:-1]))
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+
+    warmup = np.zeros(n, dtype=bool)
+    warmup_start = min(n, 220)
+    warmup[warmup_start:] = True
+
+    fresh_cross = (
+        np.isfinite(asi_p1)
+        & np.isfinite(sig_p1)
+        & np.isfinite(asi)
+        & np.isfinite(signal)
+        & (asi_p1 <= sig_p1)
+        & (asi > signal)
+    )
+    uptrend = (
+        np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+        & (sma50_p1 > sma200_p1)
+    )
+    entries = warmup & fresh_cross & uptrend
+
+    below_signal = np.isfinite(asi) & np.isfinite(signal) & (asi < signal)
+    below_ema20 = np.isfinite(ema20) & (close < ema20)
+    exits = below_signal | below_ema20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7745,4 +7865,5 @@ NEW_STRATEGIES: dict = {
     "stiffness_indicator": strat_stiffness_indicator,
     "dual_thrust_breakout": strat_dual_thrust_breakout,
     "chande_dynamic_momentum_index": strat_chande_dynamic_momentum_index,
+    "accumulative_swing_index_cross": strat_accumulative_swing_index_cross,
 }
