@@ -7848,6 +7848,97 @@ def strat_trend_trigger_factor(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_crabel_stretch_breakout(df: pd.DataFrame) -> list[Trade]:
+    """Crabel Stretch Breakout (Toby Crabel 1990, "Day Trading with Short
+    Term Price Patterns and Opening Range Breakout").
+
+    Stretch_N = SMA(N) of min(open-low, high-open) — the average smaller
+    distance from the open to the day's extreme. Crabel observed that
+    decisive trend bars push price beyond (open + Stretch) within the
+    session. Long when today's close exceeds today's open + prior-bar
+    Stretch_10, signalling a clean upside break of the expected stretch
+    envelope.
+
+    Distinct from sandbox strategies already tried:
+      - Dual Thrust (Chalek 1995, tried) uses K·max(HH-LC, HC-LL) over N
+        prior bars — a maximum-range envelope. Stretch averages the
+        SMALLER of the two open-extreme distances per bar, then averages
+        across N bars; very different geometry.
+      - NR7 / Donchian breakouts use HH/LL channel levels, not open-anchored
+        envelopes.
+      - Acceleration Bands / Keltner Channels use price-anchored MA bands,
+        not the open of the current bar.
+
+    Entry: prev close <= prev open + prev Stretch_10 (i.e. fresh) AND
+           today close > today open + prev Stretch_10, gated by
+           SMA50 > SMA200.
+    Exit:  close < EMA10 OR close < (HighestHigh_22 - 3·ATR14) Chandelier.
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    open_ = df["open"].to_numpy(dtype=float)
+    n = close.size
+    N = 10
+
+    open_low = open_ - low
+    high_open = high - open_
+    daily_stretch = np.minimum(open_low, high_open)
+    daily_stretch = np.where(np.isfinite(daily_stretch), daily_stretch, np.nan)
+
+    stretch = (
+        pd.Series(daily_stretch)
+        .rolling(N, min_periods=N)
+        .mean()
+        .to_numpy()
+    )
+    stretch_prev = np.concatenate(([np.nan], stretch[:-1]))
+
+    buy_point_today = open_ + stretch_prev
+
+    sma50 = _sma(close, 50)
+    sma200 = _sma(close, 200)
+    ema10 = _ema(close, 10)
+    atr14 = _atr(high, low, close, 14)
+    hh22 = pd.Series(high).rolling(22, min_periods=22).max().to_numpy()
+    chand_stop = hh22 - 3.0 * atr14
+
+    sma50_p1 = np.concatenate(([np.nan], sma50[:-1]))
+    sma200_p1 = np.concatenate(([np.nan], sma200[:-1]))
+    close_p1 = np.concatenate(([np.nan], close[:-1]))
+    open_p1 = np.concatenate(([np.nan], open_[:-1]))
+
+    warmup = np.zeros(n, dtype=bool)
+    warmup_start = min(n, 220)
+    warmup[warmup_start:] = True
+
+    breakout_today = (
+        np.isfinite(buy_point_today)
+        & np.isfinite(close)
+        & (close > buy_point_today)
+    )
+    not_breakout_yesterday = ~(
+        np.isfinite(stretch_prev)
+        & np.isfinite(close_p1)
+        & np.isfinite(open_p1)
+        & (close_p1 > open_p1 + stretch_prev)
+    )
+    fresh_breakout = breakout_today & not_breakout_yesterday
+
+    uptrend = (
+        np.isfinite(sma50_p1)
+        & np.isfinite(sma200_p1)
+        & (sma50_p1 > sma200_p1)
+    )
+    entries = warmup & fresh_breakout & uptrend
+
+    below_ema10 = np.isfinite(ema10) & (close < ema10)
+    below_chand = np.isfinite(chand_stop) & (close < chand_stop)
+    exits = below_ema10 | below_chand
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -7954,4 +8045,5 @@ NEW_STRATEGIES: dict = {
     "chande_dynamic_momentum_index": strat_chande_dynamic_momentum_index,
     "accumulative_swing_index_cross": strat_accumulative_swing_index_cross,
     "trend_trigger_factor": strat_trend_trigger_factor,
+    "crabel_stretch_breakout": strat_crabel_stretch_breakout,
 }
