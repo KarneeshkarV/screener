@@ -7997,6 +7997,70 @@ def strat_composite_index_brown(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_sushi_roll_reversal(df: pd.DataFrame) -> list[Trade]:
+    """Mark Fisher Sushi Roll Reversal (Fisher 'The Logical Trader' 2002).
+
+    Two consecutive 5-bar windows form the pattern:
+      old = bars t-9..t-5 (oldest 5)
+      new = bars t-4..t   (most recent 5 ending at current bar)
+    Bullish 5-bar outside-up reversal triggers when the new window engulfs
+    the old on BOTH sides AND closes above the old high:
+      max(high[new]) > max(high[old])  -- higher high
+      min(low[new])  < min(low[old])   -- lower low
+      close[t] > max(high[old])        -- reclaim above old window high
+
+    Filters: prior 5-bar window was actually trending down
+    (close[t-5] < close[t-10]) and long-term uptrend close > SMA(100), so
+    we buy genuine reversals inside structural uptrends.
+    Exit: close drops below the prior 5-bar lowest low (5-bar trailing floor).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    high = df["high"].to_numpy(dtype=float)
+    low = df["low"].to_numpy(dtype=float)
+    n = close.size
+    if n < 120:
+        return []
+
+    high_s = pd.Series(high)
+    low_s = pd.Series(low)
+
+    # New 5-bar window ending at t (inclusive)
+    high_new = high_s.rolling(5, min_periods=5).max().to_numpy()
+    low_new = low_s.rolling(5, min_periods=5).min().to_numpy()
+    # Old 5-bar window ending at t-5 (i.e. shifted by 5)
+    high_old = high_s.shift(5).rolling(5, min_periods=5).max().to_numpy()
+    low_old = low_s.shift(5).rolling(5, min_periods=5).min().to_numpy()
+
+    sma100 = _sma(close, 100)
+
+    close_t5 = np.concatenate((np.full(5, np.nan), close[:-5]))
+    close_t10 = np.concatenate((np.full(10, np.nan), close[:-10]))
+
+    engulf = (
+        np.isfinite(high_new)
+        & np.isfinite(low_new)
+        & np.isfinite(high_old)
+        & np.isfinite(low_old)
+        & (high_new > high_old)
+        & (low_new < low_old)
+        & (close > high_old)
+    )
+    prior_down = (
+        np.isfinite(close_t5)
+        & np.isfinite(close_t10)
+        & (close_t5 < close_t10)
+    )
+    uptrend = np.isfinite(sma100) & (close > sma100)
+
+    entries = engulf & prior_down & uptrend
+
+    # Exit when close drops below prior bar's 5-bar trailing low
+    low_new_prev = pd.Series(low_new).shift(1).to_numpy()
+    exits = np.isfinite(low_new_prev) & (close < low_new_prev)
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -8105,4 +8169,5 @@ NEW_STRATEGIES: dict = {
     "trend_trigger_factor": strat_trend_trigger_factor,
     "crabel_stretch_breakout": strat_crabel_stretch_breakout,
     "composite_index_brown": strat_composite_index_brown,
+    "sushi_roll_reversal": strat_sushi_roll_reversal,
 }
