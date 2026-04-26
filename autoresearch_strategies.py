@@ -8154,6 +8154,67 @@ def strat_ehlers_cyber_cycle(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
+def strat_ehlers_decycler_oscillator(df: pd.DataFrame) -> list[Trade]:
+    """Ehlers Decycler Oscillator (John Ehlers, Stocks & Commodities Sep 2015 "Decyclers").
+
+    Builds two two-pole high-pass filters at HPPeriod1=30 and HPPeriod2=60
+    bars. The Decycler at period P is price-HP(P) (low-pass). The Decycler
+    Oscillator = Decycler(P1) - Decycler(P2) = HP(P2) - HP(P1), which
+    bandpass-isolates cyclic content with periods between 30 and 60 bars
+    after the dominant trend has been removed. A fresh bullish zero-line
+    cross of the oscillator indicates that the mid-cycle component of price
+    has turned constructive. Gated by close > SMA(100) trend filter to keep
+    longs aligned with the broader uptrend. Exit on bearish zero cross or
+    close < SMA(20).
+    """
+    close = df["close"].to_numpy(dtype=float)
+    n = len(close)
+
+    def _hp_filter(price: np.ndarray, period: int) -> np.ndarray:
+        radians = np.sqrt(2.0) * np.pi / period
+        alpha1 = (np.cos(radians) + np.sin(radians) - 1.0) / np.cos(radians)
+        c1 = (1.0 - alpha1 / 2.0) ** 2
+        c2 = 2.0 * (1.0 - alpha1)
+        c3 = -((1.0 - alpha1) ** 2)
+        hp = np.zeros(n)
+        for i in range(2, n):
+            hp[i] = (
+                c1 * (price[i] - 2.0 * price[i - 1] + price[i - 2])
+                + c2 * hp[i - 1]
+                + c3 * hp[i - 2]
+            )
+        return hp
+
+    hp_short = _hp_filter(close, 30)
+    hp_long = _hp_filter(close, 60)
+    decy_osc = hp_long - hp_short
+
+    sma100 = _sma(close, 100)
+    sma20 = _sma(close, 20)
+
+    osc_p1 = np.concatenate(([np.nan], decy_osc[:-1]))
+    osc_p2 = np.concatenate(([np.nan, np.nan], decy_osc[:-2]))
+    sma100_p1 = np.concatenate(([np.nan], sma100[:-1]))
+    close_p1 = np.concatenate(([np.nan], close[:-1]))
+
+    valid = (
+        np.isfinite(osc_p1)
+        & np.isfinite(osc_p2)
+        & np.isfinite(sma100_p1)
+        & np.isfinite(close_p1)
+    )
+
+    fresh_up = (osc_p1 > 0) & (osc_p2 <= 0)
+    uptrend = close_p1 > sma100_p1
+    entries = valid & fresh_up & uptrend
+
+    fresh_down = (osc_p1 < 0) & (osc_p2 >= 0)
+    below_sma20 = np.isfinite(sma20) & (close < sma20)
+    exits = fresh_down | below_sma20
+
+    return _walk(entries, exits, close, df["date"].values)
+
+
 NEW_STRATEGIES: dict = {
     "ibs_trend_filter": strat_ibs_trend_filter,
     "donchian_20_10_trend": strat_donchian_20_10_trend,
@@ -8264,4 +8325,5 @@ NEW_STRATEGIES: dict = {
     "composite_index_brown": strat_composite_index_brown,
     "sushi_roll_reversal": strat_sushi_roll_reversal,
     "ehlers_cyber_cycle": strat_ehlers_cyber_cycle,
+    "ehlers_decycler_oscillator": strat_ehlers_decycler_oscillator,
 }
