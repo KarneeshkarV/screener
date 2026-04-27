@@ -299,6 +299,10 @@ def cli() -> None:
 @click.option("--iteration", type=int, default=0, help="Iteration index (for journal).")
 @click.option("--hypothesis", type=str, default="", help="One-line hypothesis from agent.")
 @click.option("--journal", type=click.Path(), default=str(JOURNAL_PATH))
+@click.option("--only", type=str, default="",
+              help="Comma-separated strategy names to evaluate (with stock:/new: prefix). "
+                   "Empty = evaluate everything. n_trials still uses the full registered count "
+                   "so DSR multi-testing penalty stays comparable across iterations.")
 def evaluate(
     market: str,
     years: int,
@@ -309,6 +313,7 @@ def evaluate(
     iteration: int,
     hypothesis: str,
     journal: str,
+    only: str,
 ) -> None:
     """Evaluate all strategies on IS+OOS and append results to the journal."""
     t0 = time.time()
@@ -323,11 +328,22 @@ def evaluate(
     for k, v in NEW_STRATEGIES.items():
         strategies[f"new:{k}"] = v
 
-    print(f"[eval] iteration={iteration}  strategies={len(strategies)}  slots={slots}  "
+    # n_trials reflects the full registered set so DSR's multi-testing penalty
+    # stays comparable across iterations even when --only narrows what we run.
+    n_trials = len(strategies)
+
+    if only.strip():
+        keep = {s.strip() for s in only.split(",") if s.strip()}
+        strategies = {k: v for k, v in strategies.items() if k in keep}
+        if not strategies:
+            print(f"[eval] iteration={iteration}  --only filter matched no strategies "
+                  f"(filter={sorted(keep)[:5]}{'...' if len(keep) > 5 else ''}); nothing to do.",
+                  file=sys.stderr)
+            return
+
+    print(f"[eval] iteration={iteration}  strategies={len(strategies)}/{n_trials}  slots={slots}  "
           f"IS {is_start.date()}→{is_end.date()}  OOS {oos_start.date()}→{oos_end.date()}",
           file=sys.stderr)
-
-    n_trials = len(strategies)
     results: list[dict] = []
     for name, fn in strategies.items():
         r = _evaluate_one(name, fn, ohlcv, bench_df, is_start, is_end,
