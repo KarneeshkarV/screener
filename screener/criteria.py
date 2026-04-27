@@ -80,6 +80,34 @@ def momentum_value():
     ]
 
 
+def intraday_momentum():
+    """Liquid movers with relative-volume surge and clean trend.
+
+    Designed for intraday trading: filters for above-average current volume
+    vs. 10d average, today moving meaningfully, price riding above the
+    short EMA, and RSI in trend-strong territory.
+    """
+    return [
+        col("relative_volume_10d_calc") >= 1.5,
+        col("volume") >= 200_000,
+        col("close") >= col("EMA20"),
+        col("EMA20") > col("EMA200"),
+        col("RSI") >= 55,
+        col("RSI") <= 80,
+        col("change") >= 1.0,
+    ]
+
+
+def intraday_breakout():
+    """Stocks breaking through 52w high intraday on volume surge."""
+    return [
+        col("close").above_pct("price_52_week_high", 0.97),
+        col("relative_volume_10d_calc") >= 2.0,
+        col("change") >= 1.5,
+        col("EMA5") > col("EMA20"),
+    ]
+
+
 # ── composition helper ──────────────────────────────────────────────
 
 
@@ -105,4 +133,6 @@ CRITERIA = {
     "undervalued": undervalued,
     "dividend": dividend,
     "momentum_value": momentum_value,
+    "intraday_momentum": intraday_momentum,
+    "intraday_breakout": intraday_breakout,
 }

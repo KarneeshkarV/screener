@@ -158,3 +158,101 @@ def _print_diff(
 
 def print_csv(df: pd.DataFrame) -> None:
     print(df.to_csv(index=False))
+
+
+_INSIDER_INDIA_COLUMNS = [
+    "name",
+    "close",
+    "promoter_pct_prev",
+    "promoter_pct_latest",
+    "promoter_change",
+    "latest_quarter",
+    "fii_pct_latest",
+    "dii_pct_latest",
+]
+
+_INSIDER_US_COLUMNS = [
+    "name",
+    "description",
+    "close",
+    "yf_net_shares_6m",
+    "yf_net_pct_6m",
+    "yf_total_held",
+    "yf_buy_trans_6m",
+    "yf_sell_trans_6m",
+]
+
+_INSIDER_LABELS = {
+    "promoter_pct_latest": "Promoter%",
+    "promoter_pct_prev": "PrevQ%",
+    "promoter_change": "ΔPP",
+    "latest_quarter": "Quarter",
+    "fii_pct_latest": "FII%",
+    "dii_pct_latest": "DII%",
+    "yf_net_shares_6m": "YF Net Shares 6m",
+    "yf_net_pct_6m": "YF Net%",
+    "yf_total_held": "Insider Held",
+    "yf_buy_trans_6m": "Buys",
+    "yf_sell_trans_6m": "Sells",
+}
+
+
+def _format_insider(col: str, val) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "-"
+    if col in {"promoter_pct_latest", "promoter_pct_prev", "fii_pct_latest", "dii_pct_latest"}:
+        return f"{float(val):.2f}%"
+    if col == "promoter_change":
+        return f"{float(val):+.2f}"
+    if col == "yf_net_pct_6m":
+        return f"{float(val) * 100:+.3f}%"
+    if col == "yf_net_shares_6m":
+        v = float(val)
+        sign = "+" if v >= 0 else ""
+        if abs(v) >= 1_000_000:
+            return f"{sign}{v / 1_000_000:.2f}M"
+        if abs(v) >= 1_000:
+            return f"{sign}{v / 1_000:.1f}K"
+        return f"{sign}{v:,.0f}"
+    if col == "yf_total_held":
+        v = float(val)
+        if v >= 1_000_000:
+            return f"{v / 1_000_000:.1f}M"
+        if v >= 1_000:
+            return f"{v / 1_000:.1f}K"
+        return f"{v:,.0f}"
+    if col in {"yf_buy_trans_6m", "yf_sell_trans_6m"}:
+        return f"{int(val)}"
+    return _format_value(col, val)
+
+
+def print_insider_results(
+    df: pd.DataFrame,
+    market: str,
+    universe_size: int,
+    match_count: int,
+) -> None:
+    label = "Promoter buys (India)" if market == "india" else "Insider buys (US)"
+    console.print(
+        f"\n[bold]{label}[/bold] — {match_count} matches from "
+        f"{universe_size} liquid tickers, showing {len(df)}\n"
+    )
+
+    columns = _INSIDER_INDIA_COLUMNS if market == "india" else _INSIDER_US_COLUMNS
+    columns = [c for c in columns if c in df.columns]
+
+    table = Table(show_header=True, header_style="bold", show_lines=False)
+    for col_name in columns:
+        label = _INSIDER_LABELS.get(col_name, COLUMN_LABELS.get(col_name, col_name))
+        justify = "right" if col_name not in {"name", "description", "latest_quarter"} else "left"
+        if col_name == "description":
+            table.add_column(label, justify=justify, min_width=12, max_width=22)
+        elif col_name == "name":
+            table.add_column(label, justify=justify, min_width=10, no_wrap=True)
+        else:
+            table.add_column(label, justify=justify, no_wrap=True)
+
+    for _, row in df.iterrows():
+        cells = [_format_insider(c, row[c]) for c in columns]
+        table.add_row(*cells)
+    console.print(table)
