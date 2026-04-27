@@ -4,6 +4,7 @@ import click
 
 from screener import history
 from screener.criteria import CRITERIA, combine
+from screener.operator.cli import register as _register_operator_cli
 from screener.scanner import scan, MARKETS
 from screener.display import print_results, print_csv
 
@@ -11,6 +12,9 @@ from screener.display import print_results, print_csv
 @click.group()
 def cli():
     """Stock screener for US and Indian markets."""
+
+
+_register_operator_cli(cli)
 
 
 @cli.command()
