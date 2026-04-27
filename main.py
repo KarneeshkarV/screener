@@ -6,11 +6,15 @@ from screener import history
 from screener.criteria import CRITERIA, combine
 from screener.scanner import scan, MARKETS
 from screener.display import print_results, print_csv
+from screener.unusual_volume.cli import unusual_volume
 
 
 @click.group()
 def cli():
     """Stock screener for US and Indian markets."""
+
+
+cli.add_command(unusual_volume)
 
 
 @cli.command()
