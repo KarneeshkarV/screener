@@ -18,6 +18,12 @@ import pandas as pd
 from rich.console import Console
 
 from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
+from .buildup import (
+    DEFAULT_MIN_SCORE as DEFAULT_BUILDUP_MIN,
+    DEFAULT_WINDOW as DEFAULT_BUILDUP_WINDOW,
+    compute_buildup_score,
+    scan_buildups,
+)
 from .delivery import load_delivery_panel, overlay_events, quiet_accumulation_events
 from .detector import (
     DEFAULT_MIN_RVOL,
@@ -192,6 +198,27 @@ def _india_symbol(tv_sym: str) -> str:
     default=50,
     help="Cap rich-table rows (sorted by strength then RVOL).",
 )
+@click.option(
+    "--buildup/--no-buildup",
+    "buildup_enabled",
+    default=False,
+    help="Score every ticker for multi-week build-up patterns and emit a "
+    "BUILDUP bucket. Adds buildup_score+flags onto detected events too.",
+)
+@click.option(
+    "--buildup-window",
+    type=int,
+    default=DEFAULT_BUILDUP_WINDOW,
+    show_default=True,
+    help="Bars of lookback for build-up scoring.",
+)
+@click.option(
+    "--buildup-min-score",
+    type=float,
+    default=DEFAULT_BUILDUP_MIN,
+    show_default=True,
+    help="Composite score floor for the BUILDUP bucket.",
+)
 def unusual_volume(
     market: str,
     as_of_arg,
@@ -208,6 +235,9 @@ def unusual_volume(
     md_path: Optional[str],
     no_output_files: bool,
     limit: int,
+    buildup_enabled: bool,
+    buildup_window: int,
+    buildup_min_score: float,
 ) -> None:
     """Detect abnormal trading volume across a market on a given day."""
     console = Console()
@@ -272,6 +302,7 @@ def unusual_volume(
             ev.symbol = _india_symbol(ev.symbol)
 
     # India delivery overlay + quiet-accumulation pass.
+    panel: pd.DataFrame = pd.DataFrame()
     if market == "india":
         india_syms = [_india_symbol(s) for s in liquid.keys()]
         try:
@@ -299,6 +330,81 @@ def unusual_volume(
     # Strength filter.
     floor_rank = _STRENGTH_RANK[strength_floor.upper()]
     events = [e for e in events if _STRENGTH_RANK[e.strength] >= floor_rank]
+
+    # Build-up overlay — annotates surviving events AND surfaces standalone
+    # build-ups (tickers with no volume spike yet but a clean accumulation
+    # footprint over the prior window).
+    if buildup_enabled:
+        delivery_for_buildup = panel if (market == "india" and not panel.empty) else None
+        bars_for_buildup = (
+            {_india_symbol(tv): df for tv, df in liquid.items()}
+            if market == "india"
+            else dict(liquid)
+        )
+        # 1) Annotate already-detected events.
+        annotated = 0
+        for ev in events:
+            score = compute_buildup_score(
+                ev.symbol,
+                bars_for_buildup.get(ev.symbol),
+                as_of,
+                delivery_panel=delivery_for_buildup,
+                window=buildup_window,
+            )
+            if score is None:
+                continue
+            ev.buildup_score = score.composite
+            ev.buildup_flags = list(score.flags)
+            annotated += 1
+        # 2) Surface standalone build-ups not already in the events list.
+        existing = {(e.symbol, e.direction) for e in events}
+        existing_syms = {e.symbol for e in events}
+        scores = scan_buildups(
+            bars_for_buildup,
+            as_of,
+            delivery_panel=delivery_for_buildup,
+            window=buildup_window,
+            min_score=buildup_min_score,
+        )
+        added = 0
+        for s in scores:
+            if s.symbol in existing_syms:
+                continue
+            bars = bars_for_buildup.get(s.symbol)
+            if bars is None or bars.empty:
+                continue
+            df_s = bars.sort_index() if isinstance(bars.index, pd.DatetimeIndex) else bars
+            last = df_s.iloc[-1]
+            prev_close = float(df_s["close"].iloc[-2]) if len(df_s) >= 2 else float(last["close"])
+            close_v = float(last["close"])
+            pct_change = (
+                (close_v - prev_close) / prev_close * 100.0 if prev_close > 0 else 0.0
+            )
+            ev = Event(
+                symbol=s.symbol,
+                date=as_of,
+                close=close_v,
+                pct_change=round(pct_change, 4),
+                volume=float(last["volume"]),
+                avg_volume_20d=0.0,
+                rvol=float("nan"),
+                rvol_5d=float("nan"),
+                rvol_50d=float("nan"),
+                rvol_90d=float("nan"),
+                z_score=float("nan"),
+                pct_rank_252d=float("nan"),
+                direction="BUILDUP",
+                strength="MODERATE",
+                buildup_score=s.composite,
+                buildup_flags=list(s.flags),
+                notes="multi-week build-up: " + ", ".join(s.flags) if s.flags else "multi-week build-up",
+            )
+            events.append(ev)
+            added += 1
+        console.print(
+            f"[dim]Build-up pass: annotated {annotated} event(s); "
+            f"added {added} standalone build-up(s) at score >= {buildup_min_score}.[/dim]"
+        )
 
     # Sector + market-cap enrichment.
     if events:

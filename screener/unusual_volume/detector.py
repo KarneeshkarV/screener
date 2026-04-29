@@ -55,6 +55,9 @@ class Event:
     sector: Optional[str] = None
     market_cap: Optional[float] = None
     notes: str = ""
+    # Build-up overlay — populated by buildup.scan_buildups, default None.
+    buildup_score: Optional[float] = None
+    buildup_flags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = asdict(self)

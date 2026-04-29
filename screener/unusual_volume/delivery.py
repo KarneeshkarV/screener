@@ -110,6 +110,15 @@ def compute_delivery_metrics(panel: pd.DataFrame) -> pd.DataFrame:
         )
     )
     panel["delivery_rvol"] = panel["DELIV_QTY"] / panel["delivery_sma_20"]
+    # Rolling mean of DELIV_PER for build-up detection — the per-bar
+    # delivery_pct is too noisy on its own; sustained-elevation over weeks is
+    # what marks accumulation.
+    panel["delivery_pct_sma_20"] = (
+        panel.groupby("SYMBOL")["DELIV_PER"]
+        .transform(
+            lambda s: s.rolling(DELIVERY_SMA_WINDOW, min_periods=5).mean()
+        )
+    )
     return panel
 
 

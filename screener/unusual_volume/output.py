@@ -96,6 +96,7 @@ def render_rich(events: list[Event], market: str, as_of, console: Console) -> No
         table.add_column("Deliv%", justify="right")
         table.add_column("DelvRVOL", justify="right")
         table.add_column("Conv", justify="right")
+    table.add_column("Build", justify="right")
     table.add_column("Sector", no_wrap=False, max_width=20)
     table.add_column("Notes", no_wrap=False, max_width=40)
 
@@ -118,6 +119,7 @@ def render_rich(events: list[Event], market: str, as_of, console: Console) -> No
                     _fmt_float(ev.conviction_score),
                 ]
             )
+        row.append(_fmt_float(ev.buildup_score, 3))
         row.extend([ev.sector or "-", ev.notes or "-"])
         table.add_row(*row)
     console.print(table)
@@ -130,6 +132,7 @@ def _color_direction(d: str) -> str:
         "REVERSAL": "[yellow]REVERSAL[/yellow]",
         "CHURN": "[dim]CHURN[/dim]",
         "QUIET_ACCUMULATION": "[cyan]QUIET ACC[/cyan]",
+        "BUILDUP": "[magenta]BUILDUP[/magenta]",
     }.get(d, d)
 
 
@@ -167,25 +170,51 @@ def write_markdown(
         buckets["QUIET_ACCUMULATION"] = [
             e for e in sorted_events if e.direction == "QUIET_ACCUMULATION"
         ]
+    buildups = [e for e in sorted_events if e.direction == "BUILDUP"]
+    if buildups:
+        buckets["BUILDUP"] = buildups
 
     for label, evs in buckets.items():
         if not evs:
             continue
         lines.append(f"## {label} ({len(evs)})")
         lines.append("")
-        if is_india:
+        if label == "BUILDUP":
+            # Build-ups don't have meaningful RVOL/Z (they failed the volume
+            # filter), so render score + flags instead.
             lines.append(
-                "| # | Ticker | Strength | Close | Chg | RVOL | Z | Deliv% | DelvRVOL | Conv | Sector |"
+                "| # | Ticker | Score | Flags | Close | Chg | Sector |"
             )
             lines.append(
-                "|---|--------|----------|------:|----:|-----:|--:|-------:|---------:|-----:|--------|"
+                "|---|--------|-----:|-------|------:|----:|--------|"
+            )
+            for i, ev in enumerate(_sort_by_buildup(evs)[:25], 1):
+                lines.append(
+                    "| " + " | ".join([
+                        str(i),
+                        f"**{ev.symbol}**",
+                        _fmt_float(ev.buildup_score, 3),
+                        ", ".join(ev.buildup_flags or []) or "-",
+                        _fmt_float(ev.close),
+                        _fmt_pct(ev.pct_change),
+                        ev.sector or "-",
+                    ]) + " |"
+                )
+            lines.append("")
+            continue
+        if is_india:
+            lines.append(
+                "| # | Ticker | Strength | Close | Chg | RVOL | Z | Deliv% | DelvRVOL | Conv | Build | Sector |"
+            )
+            lines.append(
+                "|---|--------|----------|------:|----:|-----:|--:|-------:|---------:|-----:|------:|--------|"
             )
         else:
             lines.append(
-                "| # | Ticker | Strength | Close | Chg | Volume | RVOL | Z | Sector |"
+                "| # | Ticker | Strength | Close | Chg | Volume | RVOL | Z | Build | Sector |"
             )
             lines.append(
-                "|---|--------|----------|------:|----:|-------:|-----:|--:|--------|"
+                "|---|--------|----------|------:|----:|-------:|-----:|--:|------:|--------|"
             )
         for i, ev in enumerate(evs[:25], 1):
             base = [
@@ -202,6 +231,7 @@ def write_markdown(
                     _fmt_float(ev.delivery_pct, 1),
                     _fmt_float(ev.delivery_rvol),
                     _fmt_float(ev.conviction_score),
+                    _fmt_float(ev.buildup_score, 3),
                     ev.sector or "-",
                 ]
             else:
@@ -209,8 +239,19 @@ def write_markdown(
                     _fmt_volume(ev.volume),
                     _fmt_float(ev.rvol),
                     _fmt_float(ev.z_score),
+                    _fmt_float(ev.buildup_score, 3),
                     ev.sector or "-",
                 ]
             lines.append("| " + " | ".join(row) + " |")
         lines.append("")
     Path(path).write_text("\n".join(lines))
+
+
+def _sort_by_buildup(evs: list[Event]) -> list[Event]:
+    return sorted(
+        evs,
+        key=lambda e: (
+            e.buildup_score if e.buildup_score is not None else 0.0
+        ),
+        reverse=True,
+    )
