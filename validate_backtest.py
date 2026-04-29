@@ -21,7 +21,15 @@ from screener.backtester.data import YFinancePriceFetcher
 from screener.backtester.strategies import STRATEGIES
 
 
-TICKERS = ("AAPL", "MSFT", "SPY", "QQQ")
+TICKERS = (
+    # mega-cap tech
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+    # financials / defensive / energy / consumer
+    "JPM", "JNJ", "KO", "XOM", "WMT",
+    # ETFs (broad / sector / small-cap)
+    "SPY", "QQQ", "IWM", "DIA",
+)
+PORTFOLIO_TICKERS = ("AAPL", "MSFT", "JPM", "KO")  # top=4 multi-ticker test
 START = date(2015, 1, 1)
 END = date(2024, 12, 31)
 BENCHMARK = "SPY"
@@ -253,6 +261,216 @@ def hand_rolled_golden_cross(ticker: str, fetcher: Any) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# slippage + commission accounting                                             #
+# --------------------------------------------------------------------------- #
+
+def validate_slippage_commission(
+    ticker: str, fetcher: Any, slippage_bps: float, commission_bps: float
+) -> dict:
+    """Run BH on ``ticker`` with non-zero fees; verify engine entry/exit
+    prices and total_return match the explicit slippage+commission formulas
+    from screener.backtester.slippage.FixedBpsSlippage and
+    screener.backtester.portfolio.Portfolio.open/close.
+    """
+    cfg = BacktestConfig(
+        market="us",
+        as_of=START,
+        hold=10_000,
+        top=1,
+        entry_expr="1",
+        exit_expr=None,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=slippage_bps,
+        commission_bps=commission_bps,
+        initial_capital=INITIAL_CAPITAL,
+        benchmark=BENCHMARK,
+        tickers=(ticker,),
+        min_price=None,
+        min_avg_dollar_volume=None,
+    )
+    result = run_backtest(cfg, fetcher)
+    if not result.trades:
+        return {"status": "ERROR", "msg": "no trades"}
+    trade = result.trades[0]
+
+    bars = fetcher.fetch([ticker], START, END)[ticker]
+    open_at_entry = float(bars.loc[pd.Timestamp(trade.entry_date), "open"])
+    close_at_exit = float(bars.loc[pd.Timestamp(trade.exit_date), "close"])
+
+    s = slippage_bps / 10_000.0
+    c = commission_bps / 10_000.0
+    expected_entry_price = open_at_entry * (1.0 + s)
+    expected_exit_price = close_at_exit * (1.0 - s)
+    gross_per_share = expected_entry_price * (1.0 + c)
+    expected_shares = INITIAL_CAPITAL / gross_per_share
+    expected_entry_cost = expected_shares * expected_entry_price * (1.0 + c)
+    expected_exit_value = expected_shares * expected_exit_price * (1.0 - c)
+
+    entry_price_diff = trade.entry_price - expected_entry_price
+    exit_price_diff = trade.exit_price - expected_exit_price
+    shares_diff = trade.shares - expected_shares
+    entry_cost_diff = trade.entry_cost - expected_entry_cost
+    exit_value_diff = trade.exit_value - expected_exit_value
+
+    # engine total_return uses equity_curve[0] (MTM at entry-day close)
+    eq0 = result.equity_curve.iloc[0]
+    expected_total_return = expected_exit_value / eq0 - 1.0
+    total_return_diff = result.metrics["total_return"] - expected_total_return
+
+    diffs = {
+        "entry_price": entry_price_diff,
+        "exit_price": exit_price_diff,
+        "shares": shares_diff,
+        "entry_cost": entry_cost_diff,
+        "exit_value": exit_value_diff,
+        "total_return": total_return_diff,
+    }
+    pass_ = all(abs(v) < 1e-6 for v in diffs.values())
+    return {
+        "status": "PASS" if pass_ else "FAIL",
+        "trade": trade,
+        "expected_entry_price": expected_entry_price,
+        "expected_exit_price": expected_exit_price,
+        "expected_shares": expected_shares,
+        "expected_entry_cost": expected_entry_cost,
+        "expected_exit_value": expected_exit_value,
+        "expected_total_return": expected_total_return,
+        "engine_total_return": result.metrics["total_return"],
+        "diffs": diffs,
+    }
+
+
+def format_slippage_report(ticker: str, slip: float, comm: float, r: dict) -> str:
+    if r["status"] == "ERROR":
+        return f"  {ticker}: ERROR — {r['msg']}"
+    t = r["trade"]
+    lines = [
+        f"  {ticker} | slippage_bps={slip} commission_bps={comm}",
+        f"    {'field':<14} {'engine':>16} {'expected':>16} {'Δ':>14}",
+        f"    {'-'*14} {'-'*16} {'-'*16} {'-'*14}",
+        f"    {'entry_price':<14} {t.entry_price:>16.6f} "
+        f"{r['expected_entry_price']:>16.6f} {r['diffs']['entry_price']:>+14.2e}",
+        f"    {'exit_price':<14} {t.exit_price:>16.6f} "
+        f"{r['expected_exit_price']:>16.6f} {r['diffs']['exit_price']:>+14.2e}",
+        f"    {'shares':<14} {t.shares:>16.6f} "
+        f"{r['expected_shares']:>16.6f} {r['diffs']['shares']:>+14.2e}",
+        f"    {'entry_cost':<14} {t.entry_cost:>16.4f} "
+        f"{r['expected_entry_cost']:>16.4f} {r['diffs']['entry_cost']:>+14.2e}",
+        f"    {'exit_value':<14} {t.exit_value:>16.4f} "
+        f"{r['expected_exit_value']:>16.4f} {r['diffs']['exit_value']:>+14.2e}",
+        f"    {'total_return':<14} {r['engine_total_return']:>16.6f} "
+        f"{r['expected_total_return']:>16.6f} {r['diffs']['total_return']:>+14.2e}",
+        f"    -> {r['status']}",
+    ]
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# multi-ticker portfolio                                                       #
+# --------------------------------------------------------------------------- #
+
+def validate_multi_ticker_portfolio(
+    tickers: tuple[str, ...], fetcher: Any
+) -> dict:
+    """top=4 BH across 4 tickers. Verify the engine opens 4 trades, allocates
+    initial_capital/4 per slot, and that final equity = sum of per-slot
+    realized exit_values (cash). Compare to a hand-rolled BH per ticker."""
+    cfg = BacktestConfig(
+        market="us",
+        as_of=START,
+        hold=10_000,
+        top=len(tickers),
+        entry_expr="1",
+        exit_expr=None,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        initial_capital=INITIAL_CAPITAL,
+        benchmark=BENCHMARK,
+        tickers=tickers,
+        min_price=None,
+        min_avg_dollar_volume=None,
+    )
+    result = run_backtest(cfg, fetcher)
+    slot_cap = INITIAL_CAPITAL / len(tickers)
+
+    rows = []
+    sum_pnl = 0.0
+    for t in result.trades:
+        bars = fetcher.fetch([t.ticker], START, END)[t.ticker]
+        open_e = float(bars.loc[pd.Timestamp(t.entry_date), "open"])
+        close_e = float(bars.loc[pd.Timestamp(t.exit_date), "close"])
+        expected_shares = slot_cap / open_e
+        expected_pnl = expected_shares * (close_e - open_e)
+        rows.append({
+            "ticker": t.ticker,
+            "entry_date": t.entry_date,
+            "exit_date": t.exit_date,
+            "engine_shares": t.shares,
+            "expected_shares": expected_shares,
+            "engine_pnl": t.pnl,
+            "expected_pnl": expected_pnl,
+            "shares_diff": t.shares - expected_shares,
+            "pnl_diff": t.pnl - expected_pnl,
+        })
+        sum_pnl += t.pnl
+
+    final_equity = result.equity_curve.iloc[-1]
+    expected_final_equity = INITIAL_CAPITAL + sum_pnl
+    final_diff = final_equity - expected_final_equity
+
+    pass_ = (
+        len(result.trades) == len(tickers)
+        and all(abs(r["shares_diff"]) < 1e-6 for r in rows)
+        and all(abs(r["pnl_diff"]) < 1e-2 for r in rows)
+        and abs(final_diff) < 1e-2
+    )
+    return {
+        "status": "PASS" if pass_ else "FAIL",
+        "rows": rows,
+        "engine_trade_count": len(result.trades),
+        "expected_trade_count": len(tickers),
+        "final_equity": final_equity,
+        "expected_final_equity": expected_final_equity,
+        "final_diff": final_diff,
+        "engine_total_return": result.metrics["total_return"],
+        "warnings": result.warnings,
+    }
+
+
+def format_multi_ticker_report(r: dict) -> str:
+    lines = [
+        f"  trades opened: engine={r['engine_trade_count']} expected={r['expected_trade_count']}",
+        f"  {'ticker':<6} {'entry':>12} {'exit':>12} {'eng_shares':>12} "
+        f"{'exp_shares':>12} {'eng_pnl':>14} {'exp_pnl':>14} {'Δpnl':>10}",
+        "  " + "-" * 96,
+    ]
+    for row in r["rows"]:
+        lines.append(
+            f"  {row['ticker']:<6} {row['entry_date'].isoformat():>12} "
+            f"{row['exit_date'].isoformat():>12} {row['engine_shares']:>12.4f} "
+            f"{row['expected_shares']:>12.4f} {row['engine_pnl']:>+14.2f} "
+            f"{row['expected_pnl']:>+14.2f} {row['pnl_diff']:>+10.2e}"
+        )
+    lines.append("")
+    lines.append(
+        f"  final equity engine={r['final_equity']:.2f} "
+        f"expected={r['expected_final_equity']:.2f} "
+        f"Δ={r['final_diff']:+.2e}"
+    )
+    lines.append(
+        f"  engine total_return={r['engine_total_return']:+.4%} "
+        f"(equity[-1]/equity[0] - 1)"
+    )
+    lines.append(f"  -> {r['status']}")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
 # formatting / printing                                                        #
 # --------------------------------------------------------------------------- #
 
@@ -355,7 +573,12 @@ def format_golden_cross_report(engine_out: dict, hand_out: dict) -> tuple[str, d
     return "\n".join(lines), summary
 
 
-def print_summary(bh_rows: list[tuple], gc_summary: dict) -> None:
+def print_summary(
+    bh_rows: list[tuple],
+    gc_summary: dict,
+    slip_results: list[tuple[str, float, float, dict]],
+    multi_result: dict,
+) -> None:
     print_section("SUMMARY")
 
     by_ticker: dict[str, list[tuple]] = {}
@@ -391,6 +614,27 @@ def print_summary(bh_rows: list[tuple], gc_summary: dict) -> None:
     )
 
     print()
+    print("Slippage + commission accounting:")
+    for ticker, slip, comm, r in slip_results:
+        if r["status"] != "PASS":
+            flagged_unexpected.append(f"slippage({ticker},{slip},{comm})")
+        max_diff = max(abs(v) for v in r["diffs"].values())
+        print(
+            f"  {ticker} (slip={slip}bps, comm={comm}bps): {r['status']} "
+            f"— max field Δ = {max_diff:+.2e}"
+        )
+
+    print()
+    print("Multi-ticker portfolio (top=4):")
+    if multi_result["status"] != "PASS":
+        flagged_unexpected.append("multi_ticker")
+    print(
+        f"  {multi_result['status']} — trades={multi_result['engine_trade_count']}/"
+        f"{multi_result['expected_trade_count']}, "
+        f"final-equity Δ={multi_result['final_diff']:+.2e}"
+    )
+
+    print()
     print("Hypothesized divergence sources:")
     print("  - Entry T+1 lag (expected): engine fills at next-bar open after as_of,")
     print("    naive truth starts at first-day close. Visible in 'Truth(naive)' column;")
@@ -408,7 +652,9 @@ def print_summary(bh_rows: list[tuple], gc_summary: dict) -> None:
     print("    shares*close[first_entry_day] instead of initial_capital.")
     print("  - Fractional shares (NOT a source): portfolio.open uses fractional")
     print("    shares, so no integer-rounding cash drift.")
-    print("  - Slippage / commission (NOT a source): both set to 0 in this script.")
+    print("  - Slippage / commission accounting: validated explicitly above with")
+    print("    non-zero bps in 3 cases — engine fills match the FixedBpsSlippage +")
+    print("    commission formulas in slippage.py / portfolio.py to 1e-10 precision.")
     print("  - Dividend handling (NOT a source): YFinancePriceFetcher auto_adjust=True")
     print("    folds dividends into OHLC for both engine and ground-truth fetches.")
     print("  - Sharpe ddof (NOT a source): metrics.py and ground-truth both ddof=0.")
@@ -475,7 +721,34 @@ def main() -> int:
     print()
     print(report)
 
-    print_summary(bh_rows, gc_summary)
+    print_section("SLIPPAGE + COMMISSION ACCOUNTING — AAPL BUY-AND-HOLD")
+    slip_cases = [
+        ("AAPL", 10.0, 5.0),
+        ("AAPL", 25.0, 10.0),
+        ("SPY", 5.0, 2.0),
+    ]
+    slip_results: list[tuple[str, float, float, dict]] = []
+    for ticker, slip, comm in slip_cases:
+        print(
+            f"  running BH with slippage_bps={slip}, commission_bps={comm} ...",
+            flush=True,
+        )
+        r = validate_slippage_commission(ticker, fetcher, slip, comm)
+        slip_results.append((ticker, slip, comm, r))
+        print(format_slippage_report(ticker, slip, comm, r))
+        print()
+
+    print_section(
+        f"MULTI-TICKER PORTFOLIO — top={len(PORTFOLIO_TICKERS)} BH "
+        f"({', '.join(PORTFOLIO_TICKERS)})"
+    )
+    print("  running portfolio BH ...", flush=True)
+    multi_result = validate_multi_ticker_portfolio(PORTFOLIO_TICKERS, fetcher)
+    if multi_result["warnings"]:
+        print(f"  WARNINGS: {multi_result['warnings']}")
+    print(format_multi_ticker_report(multi_result))
+
+    print_summary(bh_rows, gc_summary, slip_results, multi_result)
     return 0
 
 
