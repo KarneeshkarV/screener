@@ -261,6 +261,470 @@ def hand_rolled_golden_cross(ticker: str, fetcher: Any) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# synthetic-data fill mechanics                                                #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class SyntheticFetcher:
+    """Return pre-built bars for any requested ticker; ignore date range
+    semantics beyond simple [start, end] slicing."""
+    bars: dict[str, pd.DataFrame]
+
+    def fetch(self, tickers: Iterable[str], start: date, end: date):
+        s = pd.Timestamp(start)
+        e = pd.Timestamp(end)
+        out: dict[str, pd.DataFrame] = {}
+        for t in tickers:
+            if t not in self.bars:
+                continue
+            df = self.bars[t]
+            mask = (df.index >= s) & (df.index <= e)
+            out[t] = df.loc[mask]
+        return out
+
+
+def make_bars(
+    rows: list[tuple[float, float, float, float]],
+    start: str = "2020-01-02",
+    volume: int = 1_000_000,
+    dividends: list[float] | None = None,
+) -> pd.DataFrame:
+    """Build OHLCV from list of (open, high, low, close) tuples on bdate_range.
+    If ``dividends`` is provided (list of cash-per-share, len == len(rows)),
+    a 'dividend' column is added — required for the price_adjustment=
+    'splits_only' regime.
+    """
+    n = len(rows)
+    idx = pd.bdate_range(start=start, periods=n)
+    df = pd.DataFrame(rows, columns=["open", "high", "low", "close"], index=idx)
+    df["volume"] = volume
+    if dividends is not None:
+        assert len(dividends) == n, "dividends length must match rows length"
+        df["dividend"] = dividends
+    return df
+
+
+def _run_mechanics_case(
+    name: str,
+    bars: pd.DataFrame,
+    cfg_overrides: dict,
+    expected: dict,
+) -> dict:
+    """Run engine on synthetic bars and check entry/exit fill against
+    expectations. ``cfg_overrides`` are passed through to BacktestConfig.
+    """
+    fetcher = SyntheticFetcher({"X": bars, "SPY": bars})
+    cfg = BacktestConfig(
+        market="us",
+        as_of=bars.index[0].date(),
+        hold=cfg_overrides.pop("hold", 100),
+        top=1,
+        entry_expr="1",
+        exit_expr=cfg_overrides.pop("exit_expr", None),
+        stop_loss=cfg_overrides.pop("stop_loss", None),
+        take_profit=cfg_overrides.pop("take_profit", None),
+        trailing_stop=cfg_overrides.pop("trailing_stop", None),
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        initial_capital=INITIAL_CAPITAL,
+        benchmark="SPY",
+        tickers=("X",),
+        min_price=None,
+        min_avg_dollar_volume=None,
+        **cfg_overrides,
+    )
+    result = run_backtest(cfg, fetcher)
+    out = {"name": name, "warnings": result.warnings, "expected": expected}
+    if not result.trades:
+        out["status"] = "FAIL"
+        out["reason"] = "no trades opened"
+        return out
+    t = result.trades[0]
+    out["trade"] = t
+    out["entry_diff"] = t.entry_price - expected["entry_price"]
+    out["exit_diff"] = t.exit_price - expected["exit_price"]
+    out["reason_match"] = t.exit_reason == expected["exit_reason"]
+    if "entry_date" in expected:
+        out["entry_date_match"] = t.entry_date == expected["entry_date"]
+    else:
+        out["entry_date_match"] = True
+    out["status"] = (
+        "PASS"
+        if abs(out["entry_diff"]) < 1e-9
+        and abs(out["exit_diff"]) < 1e-9
+        and out["reason_match"]
+        and out["entry_date_match"]
+        else "FAIL"
+    )
+    return out
+
+
+def mechanics_cases() -> list[dict]:
+    """Each case: (name, bars, cfg_overrides, expected). Bars are crafted so
+    the predicted fill is exact and computable by hand from engine.py logic."""
+    cases: list[dict] = []
+
+    # 1. stop-loss intraday hit (no gap): bar opens above stop, low touches it
+    #    entry_fill=100, stop_loss=0.05 -> stop_ref=95. day3 open=99>95, low=94<=95
+    #    -> _resolve_stop_fill returns stop_ref=95
+    bars = make_bars([
+        (100.0, 101.0, 99.0, 100.0),  # d0 as_of
+        (100.0, 102.0, 99.0, 101.0),  # d1 entry @ open=100
+        (101.0, 103.0, 100.0, 102.0),  # d2
+        (99.0, 99.5, 94.0, 95.0),     # d3 stop fires @ 95
+        (95.0, 96.0, 94.5, 95.5),     # d4 filler
+    ])
+    cases.append({
+        "name": "stop_loss_intraday",
+        "bars": bars,
+        "cfg": {"stop_loss": 0.05},
+        "expected": {"entry_price": 100.0, "exit_price": 95.0, "exit_reason": "stop"},
+    })
+
+    # 2. stop-loss gap-down: bar opens below stop_ref -> fill at open
+    bars = make_bars([
+        (100.0, 101.0, 99.0, 100.0),
+        (100.0, 102.0, 99.0, 101.0),
+        (101.0, 103.0, 100.0, 102.0),
+        (90.0, 91.0, 89.0, 89.5),     # d3 open=90 <= 95 -> fill=90
+        (89.5, 90.0, 88.0, 88.5),
+    ])
+    cases.append({
+        "name": "stop_loss_gap_down",
+        "bars": bars,
+        "cfg": {"stop_loss": 0.05},
+        "expected": {"entry_price": 100.0, "exit_price": 90.0, "exit_reason": "stop"},
+    })
+
+    # 3. take-profit intraday hit (no gap): high touches target
+    #    entry=100, take_profit=0.05 -> target=105. d3 open=102<105, high=106>=105
+    #    -> _resolve_target_fill returns target_ref=105
+    bars = make_bars([
+        (100.0, 101.0, 99.0, 100.0),
+        (100.0, 102.0, 99.0, 101.0),
+        (101.0, 103.0, 100.0, 102.0),
+        (102.0, 106.0, 101.5, 105.0),
+        (105.0, 106.0, 104.0, 105.5),
+    ])
+    cases.append({
+        "name": "take_profit_intraday",
+        "bars": bars,
+        "cfg": {"take_profit": 0.05},
+        "expected": {"entry_price": 100.0, "exit_price": 105.0, "exit_reason": "target"},
+    })
+
+    # 4. take-profit gap-up: bar opens above target -> fill at open (favorable)
+    bars = make_bars([
+        (100.0, 101.0, 99.0, 100.0),
+        (100.0, 102.0, 99.0, 101.0),
+        (101.0, 103.0, 100.0, 102.0),
+        (110.0, 111.0, 109.0, 110.5),  # d3 open=110 >= 105 -> fill=110
+        (110.0, 111.0, 109.0, 110.0),
+    ])
+    cases.append({
+        "name": "take_profit_gap_up",
+        "bars": bars,
+        "cfg": {"take_profit": 0.05},
+        "expected": {"entry_price": 100.0, "exit_price": 110.0, "exit_reason": "target"},
+    })
+
+    # 5. trailing stop: peak runs to 110, then trail_ref=99 fires next bar
+    #    d1 entry=100, peak=100 (post stop-check it updates to high=102)
+    #    d2 trail_ref = 102*0.9=91.8; low=100>91.8; peak updates to 110
+    #    d3 trail_ref = 110*0.9=99; low=98<=99; open=100>99 -> fill=99
+    bars = make_bars([
+        (100.0, 101.0, 99.0, 100.0),
+        (100.0, 102.0, 99.0, 101.0),
+        (101.0, 110.0, 100.0, 109.0),
+        (100.0, 100.5, 98.0, 99.5),
+        (99.0, 99.5, 98.0, 99.0),
+    ])
+    cases.append({
+        "name": "trailing_stop",
+        "bars": bars,
+        "cfg": {"trailing_stop": 0.10},
+        "expected": {"entry_price": 100.0, "exit_price": 99.0, "exit_reason": "trail"},
+    })
+
+    # 6. time exit: hold=3, entry_idx=1, hold_limit_idx=4, fires at i=4 close
+    bars = make_bars([
+        (100.0, 101.0, 99.0, 100.0),    # d0
+        (100.0, 102.0, 99.0, 101.0),    # d1 entry
+        (101.0, 103.0, 100.0, 102.0),   # d2
+        (102.0, 103.0, 101.0, 102.5),   # d3
+        (102.5, 103.0, 101.0, 102.7),   # d4 time exit @ close=102.7
+        (102.7, 103.0, 101.0, 102.8),   # d5 filler
+    ])
+    cases.append({
+        "name": "time_exit",
+        "bars": bars,
+        "cfg": {"hold": 3},
+        "expected": {"entry_price": 100.0, "exit_price": 102.7, "exit_reason": "time"},
+    })
+
+    # 7. limit entry: signal close=100, entry_limit_bps=100 -> limit=99
+    #    d1 low=99.5>99 (skip), d2 low=98<=99 -> fill at min(open=99.5, limit=99)=99
+    #    Then hold=5 from entry_idx=2 -> hold_limit_idx=7, time exit at d7 close=100.8
+    bars = make_bars([
+        (100.0, 101.0, 99.0, 100.0),    # d0 signal close=100 -> limit=99
+        (100.0, 101.0, 99.5, 100.5),    # d1 low=99.5>99 no fill
+        (99.5, 100.0, 98.0, 99.0),      # d2 low=98<=99 fill@min(99.5,99)=99
+        (99.0, 100.0, 98.5, 99.5),      # d3
+        (99.5, 100.5, 99.0, 100.0),     # d4
+        (100.0, 101.0, 99.5, 100.5),    # d5
+        (100.5, 101.0, 100.0, 100.7),   # d6
+        (100.7, 101.0, 100.0, 100.8),   # d7 time exit
+    ])
+    cases.append({
+        "name": "limit_entry",
+        "bars": bars,
+        "cfg": {
+            "hold": 5,
+            "entry_order_type": "limit",
+            "entry_limit_bps": 100.0,
+        },
+        "expected": {
+            "entry_price": 99.0,
+            "exit_price": 100.8,
+            "exit_reason": "time",
+            "entry_date": pd.bdate_range(start="2020-01-02", periods=8)[2].date(),
+        },
+    })
+
+    return cases
+
+
+def format_mechanics_case(r: dict) -> str:
+    if r["status"] == "FAIL" and "reason" in r:
+        return f"  {r['name']:<22} FAIL — {r['reason']}"
+    t = r["trade"]
+    e = r["expected"]
+    extra = ""
+    if "entry_date" in e:
+        extra = f" entry_date={t.entry_date.isoformat()}"
+    return (
+        f"  {r['name']:<22} {r['status']} — entry={t.entry_price:>7.4f} "
+        f"(exp {e['entry_price']:>7.4f}, Δ={r['entry_diff']:+.2e}) | "
+        f"exit={t.exit_price:>7.4f} (exp {e['exit_price']:>7.4f}, "
+        f"Δ={r['exit_diff']:+.2e}) | reason={t.exit_reason}"
+        f" (exp {e['exit_reason']}){extra}"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# partial exits + splits_only dividend regime                                  #
+# --------------------------------------------------------------------------- #
+
+def validate_partial_exits() -> dict:
+    """Multi-tier scale-out: fire tier 1 at +5% (closes 50%), then a stop at
+    break-even (raised after tier 1) closes the remainder.
+
+    Verifies:
+      * engine emits 2 Trade rows, one ``target`` + one ``stop``.
+      * each shares = 0.5 * original_shares (from portfolio.partial_close
+        ``fraction = position.shares * frac``; remaining sleeve sized down).
+      * tier-1 fill uses _resolve_target_fill (intraday, no gap → target=105).
+      * tier-2 stop fires on next bar where bar_open <= entry_fill (break-even
+        raise: state.stop_ref = state.entry_fill = 100). bar opens at 99 so
+        gap-aware fill = open = 99.
+    """
+    bars = make_bars([
+        (100.0, 101.0, 99.0, 100.0),    # d0 as_of
+        (100.0, 102.0, 99.0, 101.0),    # d1 entry @ open=100
+        (101.0, 103.0, 100.0, 102.0),   # d2
+        (102.0, 106.0, 101.5, 105.0),   # d3 high=106 >= target=105 -> partial
+        (99.0, 99.5, 95.0, 96.0),       # d4 open=99 <= stop_ref=100 -> stop@99
+        (96.0, 96.5, 95.0, 95.5),       # d5 filler
+    ])
+    fetcher = SyntheticFetcher({"X": bars, "SPY": bars})
+    cfg = BacktestConfig(
+        market="us",
+        as_of=bars.index[0].date(),
+        hold=100,
+        top=1,
+        entry_expr="1",
+        exit_expr=None,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        initial_capital=INITIAL_CAPITAL,
+        benchmark="SPY",
+        tickers=("X",),
+        min_price=None,
+        min_avg_dollar_volume=None,
+        partial_exits=((0.05, 0.5),),
+    )
+    result = run_backtest(cfg, fetcher)
+    trades = result.trades
+
+    # original shares: budget=min(100k, 100k); gross_per_share=100; shares=1000
+    expected_orig_shares = INITIAL_CAPITAL / 100.0
+    expected_tier1_shares = expected_orig_shares * 0.5
+    expected_tier2_shares = expected_orig_shares - expected_tier1_shares
+
+    out: dict = {"warnings": result.warnings, "trades": trades}
+    if len(trades) != 2:
+        out["status"] = "FAIL"
+        out["reason"] = f"expected 2 trades (target + stop), got {len(trades)}"
+        return out
+
+    target_trade = trades[0]
+    stop_trade = trades[1]
+    checks = {
+        "tier1_reason": (target_trade.exit_reason, "target"),
+        "tier2_reason": (stop_trade.exit_reason, "stop"),
+        "tier1_exit_price": (target_trade.exit_price, 105.0),
+        "tier2_exit_price": (stop_trade.exit_price, 99.0),
+        "tier1_entry_price": (target_trade.entry_price, 100.0),
+        "tier2_entry_price": (stop_trade.entry_price, 100.0),
+        "tier1_shares": (target_trade.shares, expected_tier1_shares),
+        "tier2_shares": (stop_trade.shares, expected_tier2_shares),
+    }
+    diffs = {}
+    for k, (got, exp) in checks.items():
+        if isinstance(exp, str):
+            diffs[k] = 0.0 if got == exp else float("nan")
+        else:
+            diffs[k] = float(got) - float(exp)
+
+    pass_ = all(
+        (isinstance(exp, str) and got == exp) or abs(float(got) - float(exp)) < 1e-6
+        for got, exp in checks.values()
+    )
+    out["status"] = "PASS" if pass_ else "FAIL"
+    out["checks"] = checks
+    out["diffs"] = diffs
+    return out
+
+
+def format_partial_exits_report(r: dict) -> str:
+    if "reason" in r and r["status"] == "FAIL":
+        return f"  partial_exits: FAIL — {r['reason']}"
+    lines = [
+        f"  {'check':<22} {'got':>14} {'expected':>14} {'Δ':>14}",
+        f"  {'-'*22} {'-'*14} {'-'*14} {'-'*14}",
+    ]
+    for k, (got, exp) in r["checks"].items():
+        if isinstance(exp, str):
+            got_s = str(got)
+            exp_s = str(exp)
+            d_s = "OK" if got == exp else "MISS"
+            lines.append(f"  {k:<22} {got_s:>14} {exp_s:>14} {d_s:>14}")
+        else:
+            lines.append(
+                f"  {k:<22} {float(got):>14.6f} {float(exp):>14.6f} "
+                f"{r['diffs'][k]:>+14.2e}"
+            )
+    lines.append(f"  -> {r['status']}")
+    return "\n".join(lines)
+
+
+def validate_splits_only_dividend() -> dict:
+    """Verify splits_only regime credits cash dividends explicitly.
+
+    Build bars with a $1 dividend on d3. Engine's _maybe_credit_dividends
+    (engine.py:364-388) reads the 'dividend' column when
+    cfg.price_adjustment != 'full' and calls portfolio.credit_dividends,
+    which adds shares*cash to cash and bumps position.dividend_income.
+
+    Verifies:
+      * the resulting Trade.dividend_income == shares * dividend_per_share.
+      * exit_reason == 'eod' (held through to end of bars at last close).
+      * final cash impact: exit_value + dividend_income matches expected.
+    """
+    bars = make_bars(
+        [
+            (100.0, 101.0, 99.0, 100.0),    # d0 as_of
+            (100.0, 102.0, 99.0, 101.0),    # d1 entry @ open=100
+            (101.0, 103.0, 100.0, 102.0),   # d2
+            (102.0, 103.0, 101.0, 102.5),   # d3 ex-div $1.00
+            (102.5, 103.0, 101.0, 103.0),   # d4 last bar -> eod close=103
+        ],
+        dividends=[0.0, 0.0, 0.0, 1.0, 0.0],
+    )
+    fetcher = SyntheticFetcher({"X": bars, "SPY": bars})
+    cfg = BacktestConfig(
+        market="us",
+        as_of=bars.index[0].date(),
+        hold=100,
+        top=1,
+        entry_expr="1",
+        exit_expr=None,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        initial_capital=INITIAL_CAPITAL,
+        benchmark="SPY",
+        tickers=("X",),
+        min_price=None,
+        min_avg_dollar_volume=None,
+        price_adjustment="splits_only",
+    )
+    result = run_backtest(cfg, fetcher)
+
+    out: dict = {"warnings": result.warnings, "trades": result.trades}
+    if len(result.trades) != 1:
+        out["status"] = "FAIL"
+        out["reason"] = f"expected 1 trade, got {len(result.trades)}"
+        return out
+    t = result.trades[0]
+
+    expected_shares = INITIAL_CAPITAL / 100.0  # 1000
+    expected_dividend_income = expected_shares * 1.0
+    expected_exit_value = expected_shares * 103.0  # eod close
+
+    checks = {
+        "shares": (t.shares, expected_shares),
+        "entry_price": (t.entry_price, 100.0),
+        "exit_price": (t.exit_price, 103.0),
+        "exit_reason": (t.exit_reason, "eod"),
+        "dividend_income": (t.dividend_income, expected_dividend_income),
+        "exit_value": (t.exit_value, expected_exit_value),
+    }
+    diffs = {}
+    for k, (got, exp) in checks.items():
+        if isinstance(exp, str):
+            diffs[k] = 0.0 if got == exp else float("nan")
+        else:
+            diffs[k] = float(got) - float(exp)
+
+    pass_ = all(
+        (isinstance(exp, str) and got == exp) or abs(float(got) - float(exp)) < 1e-6
+        for got, exp in checks.values()
+    )
+    out["status"] = "PASS" if pass_ else "FAIL"
+    out["checks"] = checks
+    out["diffs"] = diffs
+    return out
+
+
+def format_splits_only_report(r: dict) -> str:
+    if "reason" in r and r["status"] == "FAIL":
+        return f"  splits_only_dividend: FAIL — {r['reason']}"
+    lines = [
+        f"  {'check':<20} {'got':>14} {'expected':>14} {'Δ':>14}",
+        f"  {'-'*20} {'-'*14} {'-'*14} {'-'*14}",
+    ]
+    for k, (got, exp) in r["checks"].items():
+        if isinstance(exp, str):
+            got_s = str(got)
+            exp_s = str(exp)
+            d_s = "OK" if got == exp else "MISS"
+            lines.append(f"  {k:<20} {got_s:>14} {exp_s:>14} {d_s:>14}")
+        else:
+            lines.append(
+                f"  {k:<20} {float(got):>14.6f} {float(exp):>14.6f} "
+                f"{r['diffs'][k]:>+14.2e}"
+            )
+    lines.append(f"  -> {r['status']}")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
 # slippage + commission accounting                                             #
 # --------------------------------------------------------------------------- #
 
@@ -578,6 +1042,9 @@ def print_summary(
     gc_summary: dict,
     slip_results: list[tuple[str, float, float, dict]],
     multi_result: dict,
+    mechanics_results: list[dict],
+    partial_result: dict,
+    splits_result: dict,
 ) -> None:
     print_section("SUMMARY")
 
@@ -633,6 +1100,27 @@ def print_summary(
         f"{multi_result['expected_trade_count']}, "
         f"final-equity Δ={multi_result['final_diff']:+.2e}"
     )
+
+    print()
+    print("Fill mechanics (synthetic data):")
+    n_pass = sum(1 for m in mechanics_results if m["status"] == "PASS")
+    for m in mechanics_results:
+        if m["status"] != "PASS":
+            flagged_unexpected.append(f"mechanics:{m['name']}")
+        print(f"  {m['name']:<22} {m['status']}")
+    print(f"  {n_pass}/{len(mechanics_results)} cases pass")
+
+    print()
+    print("Partial exits (scale-out + break-even raise):")
+    if partial_result["status"] != "PASS":
+        flagged_unexpected.append("partial_exits")
+    print(f"  {partial_result['status']}")
+
+    print()
+    print("Splits-only dividend regime:")
+    if splits_result["status"] != "PASS":
+        flagged_unexpected.append("splits_only_dividend")
+    print(f"  {splits_result['status']}")
 
     print()
     print("Hypothesized divergence sources:")
@@ -748,7 +1236,40 @@ def main() -> int:
         print(f"  WARNINGS: {multi_result['warnings']}")
     print(format_multi_ticker_report(multi_result))
 
-    print_summary(bh_rows, gc_summary, slip_results, multi_result)
+    print_section("FILL MECHANICS — SYNTHETIC DATA")
+    mechanics_results: list[dict] = []
+    for case in mechanics_cases():
+        r = _run_mechanics_case(
+            case["name"], case["bars"], dict(case["cfg"]), case["expected"]
+        )
+        mechanics_results.append(r)
+        print(format_mechanics_case(r))
+        if r.get("warnings"):
+            print(f"    WARNINGS: {r['warnings']}")
+
+    print_section("PARTIAL EXITS — SCALE-OUT + BREAK-EVEN RAISE (SYNTHETIC)")
+    print("  running partial-exit scenario ...", flush=True)
+    partial_result = validate_partial_exits()
+    if partial_result.get("warnings"):
+        print(f"  WARNINGS: {partial_result['warnings']}")
+    print(format_partial_exits_report(partial_result))
+
+    print_section("SPLITS-ONLY DIVIDEND REGIME (SYNTHETIC)")
+    print("  running splits_only dividend scenario ...", flush=True)
+    splits_result = validate_splits_only_dividend()
+    if splits_result.get("warnings"):
+        print(f"  WARNINGS: {splits_result['warnings']}")
+    print(format_splits_only_report(splits_result))
+
+    print_summary(
+        bh_rows,
+        gc_summary,
+        slip_results,
+        multi_result,
+        mechanics_results,
+        partial_result,
+        splits_result,
+    )
     return 0
 
 
