@@ -170,5 +170,5 @@ def test_rs_breakout_cli_runs_offline(monkeypatch):
     )
 
     assert res.exit_code == 0, res.output
-    assert "India RS Breakout Screen" in res.output
+    assert "INDIA RS Breakout Screen" in res.output
     assert "AAA" in res.output

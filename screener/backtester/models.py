@@ -27,6 +27,7 @@ class BacktestConfig:
     commission_bps: float
     initial_capital: float
     benchmark: str
+    strategy_name: Optional[str] = None
     tickers: Optional[tuple[str, ...]] = None
     universe_file: Optional[str] = None
     max_universe: int = 200

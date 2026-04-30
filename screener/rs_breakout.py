@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,6 +24,7 @@ from screener.unusual_volume.delivery import load_delivery_panel
 
 
 DEFAULT_BENCHMARK = "^NSEI"
+DEFAULT_BENCHMARKS = {"india": "^NSEI", "us": "SPY"}
 RS_WINDOW = 55
 SUPERTREND_PERIOD = 10
 SUPERTREND_MULTIPLIER = 3.0
@@ -247,6 +249,7 @@ def scan_rs_breakouts(
     as_of: date,
     delivery_panel: Optional[pd.DataFrame] = None,
     benchmark_symbol: str = DEFAULT_BENCHMARK,
+    require_delivery: bool = True,
 ) -> RsBreakoutResult:
     benchmark = normalize_bars(benchmark_bars, as_of)
     if benchmark.empty:
@@ -267,7 +270,7 @@ def scan_rs_breakouts(
             continue
         row, price_pass, delivery_pass = evaluated
         relaxed.append(row)
-        if price_pass and delivery_pass:
+        if price_pass and (delivery_pass or not require_delivery):
             full.append(row)
     return RsBreakoutResult(
         as_of=as_of,
@@ -284,17 +287,30 @@ def fetch_price_data(
     fetcher: PriceFetcher,
     benchmark: str = DEFAULT_BENCHMARK,
     history_days: int = 220,
+    max_workers: int = 8,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
     start = as_of - timedelta(days=history_days)
     end = as_of + timedelta(days=1)
     ticker_list = list(tickers)
     yf_map = {t: tv_to_yf(t, market) for t in ticker_list}
-    requested = list(yf_map.values()) + [benchmark]
-    fetched = fetcher.fetch(requested, start, end)
-    bars_by_symbol = {
-        tv_sym: fetched.get(yf_sym, pd.DataFrame()) for tv_sym, yf_sym in yf_map.items()
-    }
-    benchmark_bars = fetched.get(benchmark, pd.DataFrame())
+    benchmark_bars = fetcher.fetch([benchmark], start, end).get(benchmark, pd.DataFrame())
+    bars_by_symbol: dict[str, pd.DataFrame] = {}
+
+    def _fetch_one(tv_sym: str, yf_sym: str) -> tuple[str, pd.DataFrame]:
+        try:
+            data = fetcher.fetch([yf_sym], start, end)
+        except Exception:
+            return tv_sym, pd.DataFrame()
+        return tv_sym, data.get(yf_sym, pd.DataFrame())
+
+    with ThreadPoolExecutor(max_workers=max(1, int(max_workers))) as pool:
+        futures = [
+            pool.submit(_fetch_one, tv_sym, yf_sym)
+            for tv_sym, yf_sym in yf_map.items()
+        ]
+        for fut in as_completed(futures):
+            tv_sym, frame = fut.result()
+            bars_by_symbol[tv_sym] = frame
     return bars_by_symbol, benchmark_bars
 
 
@@ -312,9 +328,131 @@ def sort_rows(rows: Iterable[RsBreakoutRow]) -> list[RsBreakoutRow]:
     return sorted(rows, key=lambda r: (r.volume_ratio, r.rs_55), reverse=True)
 
 
-def render_result(result: RsBreakoutResult, console: Console, limit: int = 50) -> None:
+def required_history_bars() -> int:
+    return max(RS_WINDOW + 1, VOLUME_WINDOW + 1, SUPERTREND_PERIOD + 1)
+
+
+def previous_completed_week_high_series(bars: pd.DataFrame) -> pd.Series:
+    if bars.empty:
+        return pd.Series(dtype=float)
+    week_key = bars.index.to_period("W-FRI")
+    weekly_high = bars["high"].astype(float).groupby(week_key).max()
+    prev_week_high = week_key.map(weekly_high.shift(1))
+    return pd.Series(prev_week_high, index=bars.index, dtype=float, name="previous_week_high")
+
+
+def _delivery_series_for_symbol(
+    panel: Optional[pd.DataFrame],
+    symbol: str,
+    index: pd.DatetimeIndex,
+) -> pd.DataFrame:
+    empty = pd.DataFrame(
+        {
+            "delivery_pct": pd.Series(np.nan, index=index, dtype=float),
+            "previous_delivery_pct": pd.Series(np.nan, index=index, dtype=float),
+        }
+    )
+    if panel is None or panel.empty:
+        return empty
+    sym = india_symbol(symbol)
+    rows = panel[panel["SYMBOL"].astype(str).str.upper() == sym].copy()
+    if rows.empty:
+        return empty
+    rows["date"] = pd.to_datetime(rows["date"], errors="coerce").dt.normalize()
+    rows = (
+        rows.dropna(subset=["date"])
+        .sort_values("date")
+        .drop_duplicates(subset=["date"], keep="last")
+    )
+    delivery_pct = pd.to_numeric(rows["DELIV_PER"], errors="coerce")
+    series = pd.DataFrame(
+        {
+            "delivery_pct": delivery_pct.to_numpy(dtype=float),
+            "previous_delivery_pct": delivery_pct.shift(1).to_numpy(dtype=float),
+        },
+        index=pd.DatetimeIndex(rows["date"]),
+    )
+    return series.reindex(index)
+
+
+def build_signal_frame(
+    bars: pd.DataFrame,
+    benchmark_close: pd.Series,
+    *,
+    delivery_panel: Optional[pd.DataFrame] = None,
+    symbol: str = "",
+    require_delivery: bool = False,
+) -> pd.DataFrame:
+    if bars is None or bars.empty:
+        return pd.DataFrame()
+    df = bars.copy().sort_index()
+    rs = relative_strength_55(df["close"], benchmark_close)
+    st = supertrend(df)
+    avg_volume = (
+        df["volume"].astype(float).rolling(VOLUME_WINDOW, min_periods=VOLUME_WINDOW).mean().shift(1)
+    )
+    prev_week_high = previous_completed_week_high_series(df)
+    delivery = _delivery_series_for_symbol(delivery_panel, symbol, df.index)
+    out = df.copy()
+    out["rs_55"] = rs.reindex(df.index)
+    out["supertrend_value"] = st.reindex(df.index)
+    out["avg_volume_20d"] = avg_volume
+    out["volume_ratio"] = df["volume"].astype(float) / avg_volume
+    out["previous_week_high"] = prev_week_high
+    out["delivery_pct"] = delivery["delivery_pct"]
+    out["previous_delivery_pct"] = delivery["previous_delivery_pct"]
+    base_pass = (
+        (out["rs_55"] > 0)
+        & (out["close"].astype(float) > out["supertrend_value"])
+        & (out["volume_ratio"] >= VOLUME_MULTIPLIER)
+    )
+    price_pass = out["previous_week_high"].notna() & (
+        out["close"].astype(float) > out["previous_week_high"]
+    )
+    delivery_pass = (
+        out["delivery_pct"].notna()
+        & out["previous_delivery_pct"].notna()
+        & (out["delivery_pct"] > out["previous_delivery_pct"])
+    )
+    out["rs_breakout_entry"] = (
+        base_pass & price_pass & (delivery_pass if require_delivery else True)
+    ).astype(float)
+    return out
+
+
+def prepare_backtest_frames(
+    bars_by_symbol: dict[str, pd.DataFrame],
+    benchmark_bars: pd.DataFrame,
+    *,
+    market: str,
+    delivery_panel: Optional[pd.DataFrame] = None,
+) -> dict[str, pd.DataFrame]:
+    benchmark = benchmark_bars.copy()
+    if benchmark is None or benchmark.empty:
+        return {symbol: bars.copy() for symbol, bars in bars_by_symbol.items()}
+    benchmark = benchmark.sort_index()
+    benchmark_close = benchmark["close"].astype(float)
+    require_delivery = market == "india"
+    prepared: dict[str, pd.DataFrame] = {}
+    for symbol, bars in bars_by_symbol.items():
+        prepared[symbol] = build_signal_frame(
+            bars,
+            benchmark_close,
+            delivery_panel=delivery_panel,
+            symbol=symbol,
+            require_delivery=require_delivery,
+        )
+    return prepared
+
+
+def render_result(
+    result: RsBreakoutResult,
+    console: Console,
+    limit: int = 50,
+    market: str = "india",
+) -> None:
     console.print(
-        f"[bold]India RS Breakout Screen[/bold] [dim]as of {result.as_of} "
+        f"[bold]{market.upper()} RS Breakout Screen[/bold] [dim]as of {result.as_of} "
         f"vs {result.benchmark}[/dim]"
     )
     _render_bucket("Full", result.full[:limit], console)
@@ -358,9 +496,9 @@ def write_json(result: RsBreakoutResult, path: Path) -> None:
     path.write_text(json.dumps(payload, indent=2, default=str))
 
 
-def write_markdown(result: RsBreakoutResult, path: Path) -> None:
+def write_markdown(result: RsBreakoutResult, path: Path, market: str = "india") -> None:
     lines = [
-        f"# India RS Breakout Screen ({result.as_of})",
+        f"# {market.upper()} RS Breakout Screen ({result.as_of})",
         "",
         f"**Benchmark:** {result.benchmark}",
         "",

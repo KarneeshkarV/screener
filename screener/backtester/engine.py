@@ -647,6 +647,56 @@ def _resolve_universe(cfg: BacktestConfig) -> tuple[list[str], list[str]]:
     raise ValueError(_NO_UNIVERSE_MSG)
 
 
+def _prepare_strategy_bars(
+    cfg: BacktestConfig,
+    bars_by_tv: dict[str, pd.DataFrame],
+    price_panel: dict[str, pd.DataFrame],
+    tv_symbols: list[str],
+    start: date,
+    end: date,
+    fetcher: PriceFetcher,
+    warnings: list[str],
+) -> tuple[dict[str, pd.DataFrame], int]:
+    lookback_floor = 0
+    if cfg.strategy_name != "rs_breakout":
+        return bars_by_tv, lookback_floor
+
+    from screener.rs_breakout import (
+        india_symbol,
+        prepare_backtest_frames,
+        required_history_bars,
+    )
+    from screener.unusual_volume.delivery import load_delivery_panel
+
+    lookback_floor = required_history_bars()
+    benchmark_bars = price_panel.get(cfg.benchmark, pd.DataFrame())
+    if benchmark_bars is None or benchmark_bars.empty:
+        warnings.append(f"benchmark data unavailable for rs_breakout: {cfg.benchmark}")
+        return bars_by_tv, lookback_floor
+
+    delivery_panel = pd.DataFrame()
+    if cfg.market == "india":
+        history_days = max((pd.Timestamp(end) - pd.Timestamp(start)).days + 14, 40)
+        try:
+            delivery_panel = load_delivery_panel(
+                [india_symbol(s) for s in tv_symbols],
+                end,
+                history_days=history_days,
+            )
+        except Exception as exc:
+            warnings.append(f"delivery panel unavailable for rs_breakout: {exc}")
+
+    return (
+        prepare_backtest_frames(
+            bars_by_tv,
+            benchmark_bars,
+            market=cfg.market,
+            delivery_panel=delivery_panel,
+        ),
+        lookback_floor,
+    )
+
+
 def _eligible_reserve_signal_idx(
     bars: pd.DataFrame,
     exit_day: pd.Timestamp,
@@ -925,7 +975,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     warnings.extend(univ_warnings)
 
     yf_by_tv = {tv: tv_to_yf(tv, cfg.market) for tv in tv_symbols}
-    yf_symbols = list(dict.fromkeys(yf_by_tv.values()))
+    yf_symbols = list(dict.fromkeys(list(yf_by_tv.values()) + [cfg.benchmark]))
 
     # Fetch a window generous enough for lookback + hold + buffer
     start = (as_of_ts - pd.Timedelta(days=max(lookback * 2 + 30, 365))).date()
@@ -933,6 +983,10 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     price_panel = fetcher.fetch(yf_symbols, start, end)
 
     bars_by_tv = {tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols}
+    bars_by_tv, strategy_lookback = _prepare_strategy_bars(
+        cfg, bars_by_tv, price_panel, tv_symbols, start, end, fetcher, warnings
+    )
+    lookback = max(lookback, strategy_lookback)
 
     selection, sel_warnings = select_candidates(
         bars_by_tv, entry_ast, as_of_ts, cfg.top, lookback, cfg
