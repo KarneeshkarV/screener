@@ -58,6 +58,14 @@ pine-us *args:
 pine-india *args:
     @{{python}} run_pinescript_strategies.py --market india "$@"
 
+# Detect unusual-volume events. Example: just unusual-volume -m us --tickers AAPL,MSFT
+unusual-volume *args:
+    @{{python}} main.py unusual-volume "$@"
+
+# Show unusual-volume command help.
+help-unusual-volume:
+    @{{python}} main.py unusual-volume --help
+
 # Compile Python files without running tests.
 compile:
     @{{python}} -m compileall main.py run_pinescript_strategies.py screener

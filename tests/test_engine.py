@@ -13,7 +13,7 @@ from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.pine import parse
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 
-from tests.conftest import make_bars
+from tests.conftest import StubPriceFetcher, make_bars
 
 
 def _cfg(**overrides) -> BacktestConfig:
@@ -31,10 +31,34 @@ def _cfg(**overrides) -> BacktestConfig:
         commission_bps=0.0,
         initial_capital=100_000.0,
         benchmark="SPY",
+        strategy_name=None,
         tickers=None,
     )
     defaults.update(overrides)
     return BacktestConfig(**defaults)
+
+
+def _trend_bars(
+    *,
+    start: str = "2024-01-01",
+    n: int = 80,
+    start_px: float = 100.0,
+    end_px: float = 150.0,
+    volume: float = 100_000.0,
+) -> pd.DataFrame:
+    idx = pd.bdate_range(start=start, periods=n)
+    close = pd.Series(
+        np.linspace(start_px, end_px, n),
+        index=idx,
+        dtype=float,
+    )
+    openp = close.shift(1).fillna(close.iloc[0] - 1.0)
+    high = pd.concat([openp, close], axis=1).max(axis=1) + 1.0
+    low = pd.concat([openp, close], axis=1).min(axis=1) - 1.0
+    vol = pd.Series(volume, index=idx, dtype=float)
+    return pd.DataFrame(
+        {"open": openp, "high": high, "low": low, "close": close, "volume": vol}
+    )
 
 
 # ── entry/exit mechanics ──────────────────────────────────────────────
@@ -192,6 +216,75 @@ def test_commission_reduces_realized_return():
     trade_b = portfolio_b.close("AAA", outcome.trade.exit_date, outcome.trade.exit_price, "time", 50.0)
 
     assert trade_b.pnl < trade_a.pnl
+
+
+def test_run_backtest_rs_breakout_us_selects_relative_strength_breakout():
+    aaa = _trend_bars(end_px=150.0)
+    aaa.iloc[69, aaa.columns.get_loc("volume")] = 250_000.0
+    aaa.iloc[70, aaa.columns.get_loc("open")] = 151.0
+    bbb = _trend_bars(start_px=100.0, end_px=108.0)
+    spy = _trend_bars(start_px=100.0, end_px=110.0)
+    as_of = aaa.index[69].date()
+
+    fetcher = StubPriceFetcher({"AAA": aaa, "BBB": bbb, "SPY": spy})
+    cfg = _cfg(
+        as_of=as_of,
+        hold=3,
+        top=1,
+        tickers=("AAA", "BBB"),
+        strategy_name="rs_breakout",
+        entry_expr="rs_breakout_entry > 0",
+    )
+
+    result = run_backtest(cfg, fetcher)
+
+    assert result.selection["ticker"].tolist() == ["AAA"]
+    assert result.trades
+    assert result.trades[0].ticker == "AAA"
+    assert result.trades[0].entry_date == aaa.index[70].date()
+
+
+def test_run_backtest_rs_breakout_india_requires_rising_delivery(monkeypatch):
+    aaa = _trend_bars(end_px=150.0)
+    aaa.iloc[69, aaa.columns.get_loc("volume")] = 250_000.0
+    aaa.iloc[70, aaa.columns.get_loc("open")] = 151.0
+    bbb = _trend_bars(end_px=149.0)
+    bbb.iloc[69, bbb.columns.get_loc("volume")] = 250_000.0
+    nifty = _trend_bars(start_px=100.0, end_px=110.0)
+    as_of = aaa.index[69].date()
+
+    delivery_panel = pd.DataFrame(
+        [
+            {"SYMBOL": "AAA", "date": aaa.index[68].date(), "DELIV_PER": 40.0},
+            {"SYMBOL": "AAA", "date": aaa.index[69].date(), "DELIV_PER": 55.0},
+            {"SYMBOL": "BBB", "date": bbb.index[68].date(), "DELIV_PER": 55.0},
+            {"SYMBOL": "BBB", "date": bbb.index[69].date(), "DELIV_PER": 40.0},
+        ]
+    )
+
+    monkeypatch.setattr(
+        "screener.unusual_volume.delivery.load_delivery_panel",
+        lambda symbols, as_of, history_days=40: delivery_panel,
+    )
+
+    fetcher = StubPriceFetcher(
+        {"AAA.NS": aaa, "BBB.NS": bbb, "^NSEI": nifty}
+    )
+    cfg = _cfg(
+        market="india",
+        benchmark="^NSEI",
+        as_of=as_of,
+        hold=3,
+        top=2,
+        tickers=("AAA", "BBB"),
+        strategy_name="rs_breakout",
+        entry_expr="rs_breakout_entry > 0",
+    )
+
+    result = run_backtest(cfg, fetcher)
+
+    assert result.selection["ticker"].tolist() == ["AAA"]
+    assert [trade.ticker for trade in result.trades] == ["AAA"]
 
 
 # ── portfolio accounting ─────────────────────────────────────────────

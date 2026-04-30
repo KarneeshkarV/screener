@@ -158,6 +158,13 @@ def test_unknown_identifier_raises():
     assert "foo" in str(exc.value)
 
 
+def test_custom_numeric_column_is_available():
+    bars = _bars(6)
+    bars["custom_signal"] = [0, 0, 1, 1, 0, 1]
+    out = evaluate(parse("custom_signal > 0"), bars)
+    assert out.tolist() == [False, False, True, True, False, True]
+
+
 def test_unknown_function_raises():
     bars = _bars(5)
     with pytest.raises(PineNameError) as exc:

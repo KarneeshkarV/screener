@@ -6,11 +6,24 @@ from screener import history
 from screener.criteria import CRITERIA, combine
 from screener.scanner import scan, MARKETS
 from screener.display import print_results, print_csv
+from screener.rs_breakout import (
+    DEFAULT_BENCHMARKS as RS_BREAKOUT_DEFAULT_BENCHMARKS,
+    fetch_price_data as fetch_rs_breakout_price_data,
+    load_india_delivery_for_scan,
+    render_result as render_rs_breakout_result,
+    scan_rs_breakouts,
+    write_json as write_rs_breakout_json,
+    write_markdown as write_rs_breakout_markdown,
+)
+from screener.unusual_volume.cli import unusual_volume
 
 
 @click.group()
 def cli():
     """Stock screener for US and Indian markets."""
+
+
+cli.add_command(unusual_volume)
 
 
 @cli.command()
@@ -75,6 +88,158 @@ def screen(market, criteria_names, limit, order_by, output_csv, detail):
         removed=removed,
         first_run=first_run,
     )
+
+
+@cli.command(name="rs-breakout")
+@click.option(
+    "-m",
+    "--market",
+    type=click.Choice(["india", "us"]),
+    default="india",
+    show_default=True,
+    help="Market to scan. India includes delivery-percent filter; US skips delivery.",
+)
+@click.option(
+    "--as-of",
+    "as_of_arg",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Trading date to evaluate (default: today).",
+)
+@click.option(
+    "--tickers",
+    default=None,
+    help="Comma-separated ticker list. Falls back to the India universe when omitted.",
+)
+@click.option("--universe-file", default=None, help="Path to newline-separated tickers.")
+@click.option(
+    "--universe-limit",
+    type=int,
+    default=500,
+    show_default=True,
+    help="TradingView universe size. Use 0 for broad market scan.",
+)
+@click.option(
+    "--benchmark",
+    default=None,
+    help="Benchmark ticker for 55-day relative strength.",
+)
+@click.option(
+    "--history-days",
+    type=int,
+    default=220,
+    show_default=True,
+    help="Calendar days of OHLCV history to fetch.",
+)
+@click.option("-n", "--limit", type=int, default=50, show_default=True)
+@click.option("--json", "json_path", default=None, help="JSON output path.")
+@click.option("--md", "md_path", default=None, help="Markdown output path.")
+@click.option(
+    "--no-output-files",
+    is_flag=True,
+    default=False,
+    help="Skip JSON/Markdown writes.",
+)
+def rs_breakout(
+    market,
+    as_of_arg,
+    tickers,
+    universe_file,
+    universe_limit,
+    benchmark,
+    history_days,
+    limit,
+    json_path,
+    md_path,
+    no_output_files,
+):
+    """Screen Indian stocks for RS + SuperTrend + breakout/volume setups."""
+    from pathlib import Path
+
+    from rich.console import Console
+
+    from screener.backtester.data import YFinancePriceFetcher
+
+    console = Console()
+    as_of_date: date = (
+        as_of_arg.date() if isinstance(as_of_arg, datetime) else (as_of_arg or date.today())
+    )
+
+    resolved_benchmark = benchmark or RS_BREAKOUT_DEFAULT_BENCHMARKS[market]
+
+    if tickers:
+        universe = [t.strip() for t in tickers.split(",") if t.strip()]
+    elif universe_file:
+        path = Path(universe_file)
+        if not path.exists():
+            raise click.UsageError(f"--universe-file not found: {universe_file}")
+        universe = [line.strip() for line in path.read_text().splitlines() if line.strip()]
+    else:
+        universe = _load_rs_universe(market, int(universe_limit))
+
+    if not universe:
+        raise click.UsageError("Empty universe: pass --tickers or --universe-file.")
+
+    fetcher = click.get_current_context().obj or YFinancePriceFetcher()
+    console.print(
+        f"[dim]Scanning {len(universe)} {market.upper()} tickers as of {as_of_date}...[/dim]"
+    )
+    bars_by_symbol, benchmark_bars = fetch_rs_breakout_price_data(
+        universe,
+        market,
+        as_of_date,
+        fetcher,
+        benchmark=resolved_benchmark,
+        history_days=int(history_days),
+    )
+    if market == "india":
+        try:
+            delivery_panel = load_india_delivery_for_scan(universe, as_of_date)
+        except Exception as exc:
+            console.print(
+                f"[yellow]Delivery data load failed: {exc}. Full bucket may be empty.[/yellow]"
+            )
+            import pandas as pd
+
+            delivery_panel = pd.DataFrame()
+    else:
+        import pandas as pd
+
+        delivery_panel = pd.DataFrame()
+
+    result = scan_rs_breakouts(
+        bars_by_symbol,
+        benchmark_bars,
+        as_of_date,
+        delivery_panel=delivery_panel,
+        benchmark_symbol=resolved_benchmark,
+        require_delivery=market == "india",
+    )
+    render_rs_breakout_result(result, console, limit=int(limit), market=market)
+
+    if not no_output_files:
+        json_default = f"rs_breakout_{market}_{as_of_date.isoformat()}.json"
+        md_default = f"rs_breakout_{market}_{as_of_date.isoformat()}.md"
+        write_rs_breakout_json(result, Path(json_path or json_default))
+        write_rs_breakout_markdown(result, Path(md_path or md_default), market=market)
+        console.print(
+            f"\n[dim]Wrote {json_path or json_default} + {md_path or md_default}[/dim]"
+        )
+
+
+def _load_rs_universe(market: str, universe_limit: int) -> list[str]:
+    from tradingview_screener import col
+
+    price_floor = {"india": 50.0, "us": 5.0}[market]
+    requested_limit = 5000 if universe_limit == 0 else universe_limit
+    filters = [col("type") == "stock", col("close") >= price_floor]
+    _total, df = scan(
+        market=market,
+        filters=filters,
+        limit=requested_limit,
+        order_by="volume",
+    )
+    return [str(t) for t in df["name"].dropna().tolist()]
 
 
 _DEFAULT_BENCHMARK = {"us": "SPY", "india": "^NSEI"}
@@ -340,6 +505,7 @@ def backtest_historical(
         as_of=as_of_date,
         hold=int(hold),
         top=int(top),
+        strategy_name=strategy_name,
         entry_expr=entry_expr,
         exit_expr=exit_expr,
         stop_loss=stop_loss,

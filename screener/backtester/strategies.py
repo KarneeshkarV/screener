@@ -24,6 +24,10 @@ STRATEGIES: dict[str, NamedStrategy] = {
         entry="crossover(sma(close, 50), sma(close, 200))",
         exit="crossunder(sma(close, 50), sma(close, 200))",
     ),
+    "rs_breakout": NamedStrategy(
+        entry="rs_breakout_entry > 0",
+        exit=None,
+    ),
 }
 
 

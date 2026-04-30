@@ -369,6 +369,8 @@ def _series_from_name(name: str, bars: pd.DataFrame) -> pd.Series:
                 f"Series {name!r} not available in bars DataFrame"
             )
         return bars[name].astype(float)
+    if name in bars.columns:
+        return pd.to_numeric(bars[name], errors="coerce").astype(float)
     raise PineNameError(f"Unknown identifier: {name!r}")
 
 

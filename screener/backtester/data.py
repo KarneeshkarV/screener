@@ -165,7 +165,11 @@ class YFinancePriceFetcher:
                 in_range = cached.loc[
                     (cached.index >= start_ts) & (cached.index <= end_ts)
                 ]
-                if not in_range.empty and in_range.index.min() <= start_ts + pd.Timedelta(days=3):
+                if (
+                    not in_range.empty
+                    and in_range.index.min() <= start_ts + pd.Timedelta(days=3)
+                    and in_range.index.max() >= end_ts - pd.Timedelta(days=3)
+                ):
                     results[ticker] = in_range
                     continue
             try:
