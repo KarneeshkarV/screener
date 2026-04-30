@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from screener.backtester.engine import run_backtest, simulate_ticker
+from screener.backtester.engine import run_backtest, run_rolling_backtest, simulate_ticker
 from screener.backtester.metrics import compute_metrics
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.pine import parse
@@ -285,6 +285,137 @@ def test_run_backtest_rs_breakout_india_requires_rising_delivery(monkeypatch):
 
     assert result.selection["ticker"].tolist() == ["AAA"]
     assert [trade.ticker for trade in result.trades] == ["AAA"]
+
+
+def test_rolling_backtest_generates_signals_after_window_start(stub_fetcher_factory):
+    bars = make_bars(n=30, seed=4, open_base=100.0)
+    bars["entry_signal"] = 0.0
+    bars.iat[10, bars.columns.get_loc("entry_signal")] = 1.0
+    spy = make_bars(n=30, seed=5, open_base=400.0)
+    fetcher = stub_fetcher_factory({"AAA": bars, "SPY": spy})
+
+    cfg = _cfg(
+        as_of=bars.index[20].date(),
+        hold=3,
+        top=1,
+        entry_expr="entry_signal > 0",
+        tickers=("AAA",),
+    )
+    result = run_rolling_backtest(
+        cfg,
+        fetcher,
+        start_date=bars.index[0].date(),
+        end_date=bars.index[20].date(),
+    )
+
+    assert len(result.trades) == 1
+    assert result.trades[0].signal_date == bars.index[10].date()
+    assert result.trades[0].entry_date == bars.index[11].date()
+
+
+def test_rolling_backtest_refills_freed_slot_from_same_day_signal(stub_fetcher_factory):
+    active = make_bars(n=30, seed=6, open_base=100.0)
+    reserve = make_bars(n=30, seed=7, open_base=50.0)
+    spy = make_bars(n=30, seed=8, open_base=400.0)
+    active["entry_signal"] = 0.0
+    reserve["entry_signal"] = 0.0
+    active.iat[5, active.columns.get_loc("entry_signal")] = 1.0
+    # ACTIVE signal on day 5, entry day 6, hold=1 exits day 7. RESERVE should
+    # be selected from the signal evaluated on that same exit day.
+    reserve.iat[7, reserve.columns.get_loc("entry_signal")] = 1.0
+    active["volume"] = 1_000_000.0
+    reserve["volume"] = 500_000.0
+    fetcher = stub_fetcher_factory({"ACTIVE": active, "RESERVE": reserve, "SPY": spy})
+
+    cfg = _cfg(
+        as_of=active.index[15].date(),
+        hold=1,
+        top=1,
+        entry_expr="entry_signal > 0",
+        tickers=("ACTIVE", "RESERVE"),
+    )
+    result = run_rolling_backtest(
+        cfg,
+        fetcher,
+        start_date=active.index[0].date(),
+        end_date=active.index[15].date(),
+    )
+
+    by_ticker = {t.ticker: t for t in result.trades}
+    assert {"ACTIVE", "RESERVE"}.issubset(by_ticker)
+    assert by_ticker["ACTIVE"].exit_date == active.index[7].date()
+    assert by_ticker["RESERVE"].signal_date == by_ticker["ACTIVE"].exit_date
+    assert by_ticker["RESERVE"].entry_date == reserve.index[8].date()
+
+
+def test_rolling_rs_breakout_india_delivery_filter(monkeypatch):
+    aaa = _trend_bars(end_px=150.0)
+    aaa.iloc[69, aaa.columns.get_loc("volume")] = 250_000.0
+    aaa.iloc[70, aaa.columns.get_loc("open")] = 151.0
+    bbb = _trend_bars(end_px=149.0)
+    bbb.iloc[69, bbb.columns.get_loc("volume")] = 250_000.0
+    bbb.iloc[70, bbb.columns.get_loc("open")] = 150.0
+    nifty = _trend_bars(start_px=100.0, end_px=110.0)
+    signal_day = aaa.index[69].date()
+    delivery_panel = pd.DataFrame(
+        [
+            {"SYMBOL": "AAA", "date": aaa.index[68].date(), "DELIV_PER": 40.0},
+            {"SYMBOL": "AAA", "date": signal_day, "DELIV_PER": 55.0},
+            {"SYMBOL": "BBB", "date": bbb.index[68].date(), "DELIV_PER": 55.0},
+            {"SYMBOL": "BBB", "date": signal_day, "DELIV_PER": 40.0},
+        ]
+    )
+    monkeypatch.setattr(
+        "screener.unusual_volume.delivery.load_delivery_panel",
+        lambda symbols, as_of, history_days=40: delivery_panel,
+    )
+    fetcher = StubPriceFetcher({"AAA.NS": aaa, "BBB.NS": bbb, "^NSEI": nifty})
+
+    cfg = _cfg(
+        market="india",
+        benchmark="^NSEI",
+        as_of=aaa.index[75].date(),
+        hold=3,
+        top=2,
+        tickers=("AAA", "BBB"),
+        strategy_name="rs_breakout",
+        entry_expr="rs_breakout_entry > 0",
+    )
+    result = run_rolling_backtest(
+        cfg,
+        fetcher,
+        start_date=aaa.index[65].date(),
+        end_date=aaa.index[75].date(),
+    )
+
+    assert {t.ticker for t in result.trades} == {"AAA"}
+
+
+def test_rolling_rs_breakout_us_smoke():
+    aaa = _trend_bars(end_px=150.0)
+    aaa.iloc[69, aaa.columns.get_loc("volume")] = 250_000.0
+    aaa.iloc[70, aaa.columns.get_loc("open")] = 151.0
+    bbb = _trend_bars(start_px=100.0, end_px=108.0)
+    spy = _trend_bars(start_px=100.0, end_px=110.0)
+    fetcher = StubPriceFetcher({"AAA": aaa, "BBB": bbb, "SPY": spy})
+
+    cfg = _cfg(
+        as_of=aaa.index[75].date(),
+        hold=3,
+        top=1,
+        tickers=("AAA", "BBB"),
+        strategy_name="rs_breakout",
+        entry_expr="rs_breakout_entry > 0",
+    )
+    result = run_rolling_backtest(
+        cfg,
+        fetcher,
+        start_date=aaa.index[65].date(),
+        end_date=aaa.index[75].date(),
+    )
+
+    assert result.trades
+    assert result.trades[0].ticker == "AAA"
 
 
 # ── portfolio accounting ─────────────────────────────────────────────
