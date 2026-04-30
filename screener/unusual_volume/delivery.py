@@ -179,16 +179,19 @@ def quiet_accumulation_events(
     panel: pd.DataFrame,
     as_of: date,
     min_rvol_skip: float,
+    existing_events: Optional[Iterable[Event]] = None,
 ) -> list[Event]:
     """Surface 'quiet accumulation' bars: delivery RVOL >= 2 even though
     raw volume RVOL is below the unusual-volume threshold.
 
     These are events the regular detector would discard. They need to be
     re-built from scratch because we explicitly want bars that *failed*
-    the volume thresholds.
+    the volume thresholds. Symbols already emitted by the regular detector
+    are skipped so a z-score-only detector event is not duplicated.
     """
     if panel.empty:
         return []
+    existing_symbols = {ev.symbol.upper() for ev in existing_events or []}
     panel = compute_delivery_metrics(panel)
     as_of_ts = pd.Timestamp(as_of).normalize()
     out: list[Event] = []
@@ -198,6 +201,8 @@ def quiet_accumulation_events(
     ]
     for _, row in today.iterrows():
         sym = str(row["SYMBOL"]).upper()
+        if sym in existing_symbols:
+            continue
         bars = bars_by_symbol.get(sym)
         if bars is None or bars.empty:
             continue

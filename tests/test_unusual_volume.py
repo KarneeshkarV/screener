@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 
 import pandas as pd
@@ -10,13 +11,16 @@ from screener.unusual_volume import (
     detect_market,
     detect_ticker,
 )
+from screener.unusual_volume.buildup import BuildupScore
 from screener.unusual_volume.classify import classify_direction, classify_strength
+from screener.unusual_volume.cli import _standalone_buildup_event
 from screener.unusual_volume.delivery import (
     compute_delivery_metrics,
     overlay_events,
     quiet_accumulation_events,
 )
 from screener.unusual_volume.filters import _parse_ban_csv, passes_volume_floor
+from screener.unusual_volume.output import write_json
 from tests.conftest import make_bars
 
 
@@ -234,7 +238,105 @@ def test_quiet_accumulation_event():
     assert "quiet accumulation" in ev.notes.lower()
 
 
+def test_quiet_accumulation_skips_existing_detector_event():
+    bars = make_bars(start="2024-01-01", n=300, seed=8)
+    bars["volume"] = 100_000.0
+    last_date = bars.index[-1].date()
+    panel = _make_delivery_panel(
+        ["RELIANCE"],
+        n_days=30,
+        as_of=last_date,
+        deliv_qty_fn=lambda sym, offset: 20_000.0 if offset > 1 else 60_000.0,
+    )
+    existing = Event(
+        symbol="RELIANCE",
+        date=last_date,
+        close=100.0,
+        pct_change=0.0,
+        volume=100_000.0,
+        avg_volume_20d=100_000.0,
+        rvol=1.0,
+        rvol_5d=1.0,
+        rvol_50d=1.0,
+        rvol_90d=1.0,
+        z_score=2.5,
+        pct_rank_252d=0.99,
+        direction="BUYING",
+        strength="HIGH",
+    )
+    quiet = quiet_accumulation_events(
+        {"RELIANCE": bars},
+        panel,
+        last_date,
+        min_rvol_skip=DEFAULT_MIN_RVOL,
+        existing_events=[existing],
+    )
+    assert quiet == []
+
+
 def test_compute_delivery_metrics_handles_empty():
     out = compute_delivery_metrics(pd.DataFrame())
     assert out.empty
     assert "delivery_rvol" in out.columns
+
+
+def test_standalone_buildup_event_uses_as_of_bar():
+    bars = make_bars(start="2024-01-01", n=8, seed=9)
+    as_of = bars.index[4].date()
+    bars.iat[3, bars.columns.get_loc("close")] = 90.0
+    bars.iat[4, bars.columns.get_loc("close")] = 100.0
+    bars.iat[4, bars.columns.get_loc("volume")] = 1_000.0
+    bars.iat[5, bars.columns.get_loc("close")] = 500.0
+    bars.iat[5, bars.columns.get_loc("volume")] = 9_000.0
+    score = BuildupScore(
+        symbol="AAA",
+        as_of=as_of,
+        window=20,
+        range_compression=0.7,
+        updown_volume=0.6,
+        higher_lows=0.6,
+        sustained_delivery=None,
+        close_near_high=0.7,
+        composite=0.65,
+        flags=["compression"],
+    )
+    ev = _standalone_buildup_event(score, bars, as_of)
+    assert ev is not None
+    assert ev.close == 100.0
+    assert ev.volume == 1_000.0
+    assert ev.pct_change == 11.1111
+
+
+def test_write_json_sanitizes_nonfinite_metrics(tmp_path):
+    ev = Event(
+        symbol="AAA",
+        date=date(2026, 4, 24),
+        close=100.0,
+        pct_change=0.0,
+        volume=1_000.0,
+        avg_volume_20d=0.0,
+        rvol=float("nan"),
+        rvol_5d=float("nan"),
+        rvol_50d=float("nan"),
+        rvol_90d=float("nan"),
+        z_score=float("inf"),
+        pct_rank_252d=float("-inf"),
+        direction="BUILDUP",
+        strength="MODERATE",
+        market_cap=float("nan"),
+    )
+    path = tmp_path / "events.json"
+    write_json([ev], path)
+    text = path.read_text()
+    assert "NaN" not in text
+    assert "Infinity" not in text
+    payload = json.loads(
+        text,
+        parse_constant=lambda token: (_ for _ in ()).throw(
+            AssertionError(f"non-strict JSON token: {token}")
+        ),
+    )
+    assert payload[0]["rvol"] is None
+    assert payload[0]["z_score"] is None
+    assert payload[0]["pct_rank_252d"] is None
+    assert payload[0]["market_cap"] is None

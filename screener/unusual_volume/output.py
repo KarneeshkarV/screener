@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Iterable
 
@@ -144,9 +145,31 @@ def _color_strength(s: str) -> str:
     }.get(s, s)
 
 
+def _json_safe(value):
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, Real) and not isinstance(value, bool):
+        as_float = float(value)
+        if not math.isfinite(as_float):
+            return None
+        if isinstance(value, Integral):
+            return int(value)
+        return as_float
+    return value
+
+
 def write_json(events: list[Event], path: Path) -> None:
-    payload = [ev.to_dict() for ev in sort_events(events)]
-    Path(path).write_text(json.dumps(payload, indent=2, default=str))
+    payload = [_json_safe(ev.to_dict()) for ev in sort_events(events)]
+    Path(path).write_text(json.dumps(payload, indent=2, default=str, allow_nan=False))
 
 
 def write_markdown(

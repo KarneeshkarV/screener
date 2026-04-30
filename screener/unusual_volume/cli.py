@@ -19,6 +19,7 @@ from rich.console import Console
 
 from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
 from .buildup import (
+    BuildupScore,
     DEFAULT_MIN_SCORE as DEFAULT_BUILDUP_MIN,
     DEFAULT_WINDOW as DEFAULT_BUILDUP_WINDOW,
     compute_buildup_score,
@@ -103,6 +104,55 @@ def _india_symbol(tv_sym: str) -> str:
         _exch, rest = tv_sym.split(":", 1)
         return rest.upper()
     return tv_sym.upper()
+
+
+def _bars_on_or_before_as_of(bars: pd.DataFrame, as_of: date) -> pd.DataFrame:
+    if bars is None or bars.empty:
+        return pd.DataFrame()
+    df = bars.copy()
+    if not isinstance(df.index, pd.DatetimeIndex):
+        if "date" not in df.columns:
+            return pd.DataFrame()
+        df = df.set_index(pd.DatetimeIndex(pd.to_datetime(df["date"]).values))
+    df = df.sort_index()
+    return df[df.index <= pd.Timestamp(as_of).normalize()]
+
+
+def _standalone_buildup_event(
+    score: BuildupScore, bars: pd.DataFrame, as_of: date
+) -> Optional[Event]:
+    df_s = _bars_on_or_before_as_of(bars, as_of)
+    if df_s.empty:
+        return None
+    last = df_s.iloc[-1]
+    prev_close = float(df_s["close"].iloc[-2]) if len(df_s) >= 2 else float(last["close"])
+    close_v = float(last["close"])
+    pct_change = (
+        (close_v - prev_close) / prev_close * 100.0 if prev_close > 0 else 0.0
+    )
+    return Event(
+        symbol=score.symbol,
+        date=as_of,
+        close=close_v,
+        pct_change=round(pct_change, 4),
+        volume=float(last["volume"]),
+        avg_volume_20d=0.0,
+        rvol=float("nan"),
+        rvol_5d=float("nan"),
+        rvol_50d=float("nan"),
+        rvol_90d=float("nan"),
+        z_score=float("nan"),
+        pct_rank_252d=float("nan"),
+        direction="BUILDUP",
+        strength="MODERATE",
+        buildup_score=score.composite,
+        buildup_flags=list(score.flags),
+        notes=(
+            "multi-week build-up: " + ", ".join(score.flags)
+            if score.flags
+            else "multi-week build-up"
+        ),
+    )
 
 
 @click.command(name="unusual-volume")
@@ -319,7 +369,11 @@ def unusual_volume(
                 _india_symbol(tv): df for tv, df in liquid.items()
             }
             quiet = quiet_accumulation_events(
-                bars_for_quiet, panel, as_of, min_rvol_skip=min_rvol
+                bars_for_quiet,
+                panel,
+                as_of,
+                min_rvol_skip=min_rvol,
+                existing_events=events,
             )
             if quiet:
                 console.print(
@@ -373,32 +427,9 @@ def unusual_volume(
             bars = bars_for_buildup.get(s.symbol)
             if bars is None or bars.empty:
                 continue
-            df_s = bars.sort_index() if isinstance(bars.index, pd.DatetimeIndex) else bars
-            last = df_s.iloc[-1]
-            prev_close = float(df_s["close"].iloc[-2]) if len(df_s) >= 2 else float(last["close"])
-            close_v = float(last["close"])
-            pct_change = (
-                (close_v - prev_close) / prev_close * 100.0 if prev_close > 0 else 0.0
-            )
-            ev = Event(
-                symbol=s.symbol,
-                date=as_of,
-                close=close_v,
-                pct_change=round(pct_change, 4),
-                volume=float(last["volume"]),
-                avg_volume_20d=0.0,
-                rvol=float("nan"),
-                rvol_5d=float("nan"),
-                rvol_50d=float("nan"),
-                rvol_90d=float("nan"),
-                z_score=float("nan"),
-                pct_rank_252d=float("nan"),
-                direction="BUILDUP",
-                strength="MODERATE",
-                buildup_score=s.composite,
-                buildup_flags=list(s.flags),
-                notes="multi-week build-up: " + ", ".join(s.flags) if s.flags else "multi-week build-up",
-            )
+            ev = _standalone_buildup_event(s, bars, as_of)
+            if ev is None:
+                continue
             events.append(ev)
             added += 1
         console.print(
