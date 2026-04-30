@@ -18,6 +18,7 @@ def test_help_includes_backtest_historical():
     res = runner.invoke(cli, ["--help"])
     assert res.exit_code == 0
     assert "backtest-historical" in res.output
+    assert "backtest-rolling" in res.output
 
 
 def test_backtest_help_lists_flags():
@@ -41,6 +42,26 @@ def test_backtest_help_lists_flags():
         "--csv",
         "--strategy",
         "--tickers",
+    ]:
+        assert flag in res.output, f"missing flag in help: {flag}"
+
+
+def test_rolling_backtest_help_lists_core_flags():
+    runner = CliRunner()
+    res = runner.invoke(cli, ["backtest-rolling", "--help"])
+    assert res.exit_code == 0
+    for flag in [
+        "--market",
+        "--start",
+        "--end",
+        "--years",
+        "--strategy",
+        "--entry",
+        "--universe",
+        "--tickers",
+        "--hold",
+        "--top",
+        "--csv",
     ]:
         assert flag in res.output, f"missing flag in help: {flag}"
 

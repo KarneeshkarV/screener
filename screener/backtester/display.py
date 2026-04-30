@@ -27,6 +27,7 @@ _METRIC_LABELS = {
     "exposure": "Avg Exposure",
     "benchmark_return": "Benchmark Return",
     "trade_count": "Trades",
+    "unique_tickers": "Unique Tickers",
 }
 
 _PCT_METRICS = {

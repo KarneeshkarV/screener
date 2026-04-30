@@ -729,6 +729,160 @@ def _eligible_reserve_signal_idx(
     return int(np.where(history_mask)[0][-1])
 
 
+def _bar_index_on_or_before(bars: pd.DataFrame, day: pd.Timestamp) -> Optional[int]:
+    mask = bars.index <= day
+    if not mask.any():
+        return None
+    return int(np.where(mask)[0][-1])
+
+
+def _candidate_rows_for_day(
+    bars_by_ticker: dict[str, pd.DataFrame],
+    entry_signals_by_ticker: dict[str, pd.Series],
+    day: pd.Timestamp,
+    lookback_required: int,
+    cfg: BacktestConfig,
+    *,
+    exclude: set[str],
+) -> tuple[list[dict], list[str]]:
+    """Evaluate entry signals for the full universe on one trading day."""
+    rows: list[dict] = []
+    warnings: list[str] = []
+    for ticker, bars in bars_by_ticker.items():
+        if ticker in exclude or bars is None or bars.empty:
+            continue
+        signal_idx = _bar_index_on_or_before(bars, day)
+        if signal_idx is None:
+            continue
+        if signal_idx + 1 >= len(bars):
+            continue
+        history = bars.iloc[: signal_idx + 1]
+        if len(history) < lookback_required + 1:
+            continue
+        passes, _ = _passes_entry_filters(bars, day, cfg)
+        if not passes:
+            continue
+        signal = entry_signals_by_ticker.get(ticker)
+        if signal is None or signal.empty or day not in signal.index:
+            continue
+        last = signal.loc[day]
+        if pd.isna(last) or not bool(last):
+            continue
+        last_bar = history.iloc[-1]
+        close = float(last_bar["close"])
+        volume = float(last_bar["volume"])
+        rows.append(
+            {
+                "ticker": ticker,
+                "signal_idx": signal_idx,
+                "as_of_close": close,
+                "as_of_volume": volume,
+                "as_of_dollar_vol": close * volume,
+            }
+        )
+    rows.sort(key=lambda r: r["as_of_dollar_vol"], reverse=True)
+    for i, row in enumerate(rows, 1):
+        row["rank"] = i
+        row["role"] = "active"
+    return rows, warnings
+
+
+def _active_or_pending_tickers(slot_states: dict[int, Optional[_SlotState]]) -> set[str]:
+    return {s.ticker for s in slot_states.values() if s is not None}
+
+
+def _precompute_entry_signals(
+    bars_by_ticker: dict[str, pd.DataFrame],
+    entry_ast,
+    warnings: list[str],
+) -> dict[str, pd.Series]:
+    signals: dict[str, pd.Series] = {}
+    for ticker, bars in bars_by_ticker.items():
+        if bars is None or bars.empty:
+            continue
+        try:
+            signals[ticker] = evaluate(entry_ast, bars).fillna(False).astype(bool)
+        except PineError as exc:
+            warnings.append(f"entry eval failed: {ticker}: {exc}")
+    return signals
+
+
+def _close_slot_at_day(
+    *,
+    slot_id: int,
+    state: _SlotState,
+    bars: pd.DataFrame,
+    day: pd.Timestamp,
+    cfg: BacktestConfig,
+    portfolio: Portfolio,
+    slot_states: dict[int, Optional[_SlotState]],
+) -> bool:
+    """Process one slot for ``day``. Returns True if the slot became free."""
+    if day not in bars.index:
+        return False
+    i = bars.index.get_loc(day)
+    if isinstance(i, slice) or not isinstance(i, int):
+        return False
+    if i < state.entry_idx + 1:
+        return False
+    _maybe_credit_dividends(portfolio, state, bars, i, cfg)
+    _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio)
+    if portfolio.get_position(state.ticker) is None:
+        slot_states[slot_id] = None
+        return True
+    exit_ = _check_exit_at_bar(state, bars, i, cfg)
+    if exit_ is None:
+        return False
+    fill, reason = exit_
+    portfolio.close(
+        ticker=state.ticker,
+        exit_date=day.date(),
+        exit_price=fill,
+        reason=reason,
+        commission_bps=cfg.commission_bps,
+    )
+    slot_states[slot_id] = None
+    return True
+
+
+def _force_close_open_slots(
+    *,
+    slot_states: dict[int, Optional[_SlotState]],
+    slot_bars: dict[int, pd.DataFrame],
+    cfg: BacktestConfig,
+    portfolio: Portfolio,
+    end_ts: pd.Timestamp,
+) -> None:
+    for slot_id, state in list(slot_states.items()):
+        if state is None:
+            continue
+        bars = slot_bars[slot_id]
+        tail = bars.loc[
+            (bars.index > pd.Timestamp(state.entry_date)) & (bars.index <= end_ts)
+        ]
+        if tail.empty:
+            tail = bars.loc[bars.index > pd.Timestamp(state.entry_date)]
+        if tail.empty:
+            continue
+        last_bar = tail.iloc[-1]
+        last_date = tail.index[-1].date()
+        fill = _apply_slip(
+            float(last_bar["close"]),
+            "sell",
+            cfg,
+            adv_shares=state.adv_shares,
+            sigma_daily=state.sigma_daily,
+        )
+        portfolio.close(
+            ticker=state.ticker,
+            exit_date=last_date,
+            exit_price=fill,
+            reason="eod",
+            commission_bps=cfg.commission_bps,
+        )
+        slot_states[slot_id] = None
+
+
 def _run_event_driven_sim(
     *,
     portfolio: Portfolio,
@@ -1059,6 +1213,224 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
 
     metrics = compute_metrics(equity, benchmark_aligned, trades, slot_count)
+
+    return BacktestResult(
+        config=cfg,
+        trades=trades,
+        equity_curve=equity,
+        benchmark_curve=benchmark_aligned,
+        metrics=metrics,
+        warnings=warnings,
+        selection=selection,
+    )
+
+
+def run_rolling_backtest(
+    cfg: BacktestConfig,
+    fetcher: PriceFetcher,
+    *,
+    start_date: date,
+    end_date: date,
+) -> BacktestResult:
+    """Run a daily rolling simulation over ``[start_date, end_date]``.
+
+    Unlike ``run_backtest``, this does not select one signal date and rotate
+    through a precomputed reserve list. It evaluates the entry expression for
+    the whole universe on every trading day, processes exits first, then uses
+    same-day signals to fill any free slots.
+    """
+    warnings: list[str] = []
+    start_ts = pd.Timestamp(start_date).normalize()
+    end_ts = pd.Timestamp(end_date).normalize()
+    if end_ts < start_ts:
+        raise ValueError("end_date must be >= start_date")
+
+    entry_ast = parse(cfg.entry_expr)
+    exit_ast = parse(cfg.exit_expr) if cfg.exit_expr else None
+    lookback = required_lookback(entry_ast)
+    if exit_ast is not None:
+        lookback = max(lookback, required_lookback(exit_ast))
+
+    from screener.backtester.data import tv_to_yf
+
+    tv_symbols, univ_warnings = _resolve_universe(cfg)
+    warnings.extend(univ_warnings)
+    yf_by_tv = {tv: tv_to_yf(tv, cfg.market) for tv in tv_symbols}
+    yf_symbols = list(dict.fromkeys(list(yf_by_tv.values()) + [cfg.benchmark]))
+
+    warmup_days = max(lookback * 3 + 30, 365)
+    fetch_start = (start_ts - pd.Timedelta(days=warmup_days)).date()
+    fetch_end = end_ts.date()
+    price_panel = fetcher.fetch(yf_symbols, fetch_start, fetch_end)
+
+    bars_by_tv = {
+        tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
+    }
+    bars_by_tv, strategy_lookback = _prepare_strategy_bars(
+        cfg,
+        bars_by_tv,
+        price_panel,
+        tv_symbols,
+        fetch_start,
+        fetch_end,
+        fetcher,
+        warnings,
+    )
+    lookback = max(lookback, strategy_lookback)
+    entry_signals_by_tv = _precompute_entry_signals(
+        bars_by_tv, entry_ast, warnings
+    )
+
+    day_set: set[pd.Timestamp] = set()
+    for bars in bars_by_tv.values():
+        if bars is None or bars.empty:
+            continue
+        day_set.update(
+            d for d in bars.index if start_ts <= d <= end_ts
+        )
+    if not day_set:
+        calendar = pd.bdate_range(start_ts, end_ts)
+        equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
+        benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
+        benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
+        metrics = compute_metrics(equity, benchmark_aligned, [], max(cfg.top, 1))
+        metrics["unique_tickers"] = 0
+        return BacktestResult(
+            config=cfg,
+            trades=[],
+            equity_curve=equity,
+            benchmark_curve=benchmark_aligned,
+            metrics=metrics,
+            warnings=warnings + ["no trading days with price data in rolling window"],
+            selection=pd.DataFrame(),
+        )
+
+    master_dates = sorted(day_set)
+    portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
+    slot_states: dict[int, Optional[_SlotState]] = {
+        slot_id: None for slot_id in range(max(cfg.top, 1))
+    }
+    slot_bars: dict[int, pd.DataFrame] = {}
+    selection_rows: list[dict] = []
+
+    for day in master_dates:
+        free_slots: list[int] = []
+        for slot_id, state in list(slot_states.items()):
+            if state is None:
+                free_slots.append(slot_id)
+                continue
+            bars = slot_bars[slot_id]
+            if _close_slot_at_day(
+                slot_id=slot_id,
+                state=state,
+                bars=bars,
+                day=day,
+                cfg=cfg,
+                portfolio=portfolio,
+                slot_states=slot_states,
+            ):
+                free_slots.append(slot_id)
+
+        if not free_slots:
+            continue
+
+        exclude = _active_or_pending_tickers(slot_states)
+        candidates, day_warnings = _candidate_rows_for_day(
+            bars_by_tv,
+            entry_signals_by_tv,
+            day,
+            lookback,
+            cfg,
+            exclude=exclude,
+        )
+        warnings.extend(day_warnings)
+        if not candidates:
+            continue
+
+        for slot_id in free_slots:
+            opened = False
+            while candidates and not opened:
+                row = candidates.pop(0)
+                ticker = str(row["ticker"])
+                if ticker in _active_or_pending_tickers(slot_states):
+                    continue
+                bars = bars_by_tv.get(ticker, pd.DataFrame())
+                if bars is None or bars.empty:
+                    continue
+                state, warn = _make_slot_state(
+                    ticker,
+                    bars,
+                    int(row["signal_idx"]),
+                    cfg,
+                    exit_ast,
+                    int(row["rank"]),
+                )
+                if state is None:
+                    if warn:
+                        warnings.append(f"{ticker}: {warn}")
+                    continue
+                if pd.Timestamp(state.entry_date) > end_ts:
+                    continue
+                portfolio.assign(ticker, int(row["rank"]), day.date())
+                portfolio.open(
+                    ticker=ticker,
+                    entry_date=state.entry_date,
+                    entry_price=state.entry_fill,
+                    commission_bps=cfg.commission_bps,
+                )
+                slot_states[slot_id] = state
+                slot_bars[slot_id] = bars
+                selection_rows.append(
+                    {
+                        "ticker": ticker,
+                        "signal_date": day.date(),
+                        "as_of_close": row["as_of_close"],
+                        "as_of_volume": row["as_of_volume"],
+                        "as_of_dollar_vol": row["as_of_dollar_vol"],
+                        "rank": row["rank"],
+                        "role": "active",
+                    }
+                )
+                opened = True
+
+    _force_close_open_slots(
+        slot_states=slot_states,
+        slot_bars=slot_bars,
+        cfg=cfg,
+        portfolio=portfolio,
+        end_ts=end_ts,
+    )
+    trades = portfolio.closed_trades()
+
+    date_set: set[pd.Timestamp] = set(master_dates)
+    for t in trades:
+        frame = bars_by_tv.get(t.ticker)
+        if frame is None or frame.empty:
+            continue
+        dates = frame.loc[
+            (frame.index >= pd.Timestamp(t.entry_date))
+            & (frame.index <= pd.Timestamp(t.exit_date))
+        ].index
+        date_set.update(dates.tolist())
+    calendar = pd.DatetimeIndex(sorted(date_set))
+    equity = build_equity_curve(calendar, trades, bars_by_tv, cfg.initial_capital)
+    benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
+    benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
+    metrics = compute_metrics(equity, benchmark_aligned, trades, max(cfg.top, 1))
+    metrics["unique_tickers"] = len({t.ticker for t in trades})
+
+    selection = pd.DataFrame(
+        selection_rows,
+        columns=[
+            "ticker",
+            "signal_date",
+            "as_of_close",
+            "as_of_volume",
+            "as_of_dollar_vol",
+            "rank",
+            "role",
+        ],
+    )
 
     return BacktestResult(
         config=cfg,
