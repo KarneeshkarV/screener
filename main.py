@@ -21,6 +21,7 @@ from screener.rs_breakout import (
 )
 from screener.unusual_volume.cli import unusual_volume
 from screener.resilience import call_with_resilience
+from screener.backtester.optimization.cli import optimize
 
 
 @click.group()
@@ -32,6 +33,7 @@ cli.add_command(unusual_volume)
 cli.add_command(backtest_historical)
 cli.add_command(backtest_rolling)
 _register_operator_cli(cli)
+cli.add_command(optimize)
 
 
 @cli.command()
