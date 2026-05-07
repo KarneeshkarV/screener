@@ -313,6 +313,41 @@ def test_rolling_backtest_generates_signals_after_window_start(stub_fetcher_fact
     assert result.trades[0].entry_date == bars.index[11].date()
 
 
+def test_historical_and_rolling_match_for_single_signal_window(stub_fetcher_factory):
+    bars = make_bars(n=20, seed=13, open_base=100.0)
+    spy = make_bars(n=20, seed=14, open_base=400.0)
+    bars["entry_signal"] = 0.0
+    bars.iat[5, bars.columns.get_loc("entry_signal")] = 1.0
+    fetcher = stub_fetcher_factory({"AAA": bars, "SPY": spy})
+    cfg = _cfg(
+        as_of=bars.index[5].date(),
+        hold=3,
+        top=1,
+        entry_expr="entry_signal > 0",
+        tickers=("AAA",),
+    )
+
+    historical = run_backtest(cfg, fetcher)
+    rolling = run_rolling_backtest(
+        cfg,
+        fetcher,
+        start_date=bars.index[5].date(),
+        end_date=bars.index[9].date(),
+    )
+
+    assert len(historical.trades) == len(rolling.trades) == 1
+    h_trade = historical.trades[0]
+    r_trade = rolling.trades[0]
+    assert h_trade.entry_date == r_trade.entry_date == bars.index[6].date()
+    assert h_trade.exit_date == r_trade.exit_date == bars.index[9].date()
+    assert h_trade.entry_price == pytest.approx(r_trade.entry_price)
+    assert h_trade.exit_price == pytest.approx(r_trade.exit_price)
+    assert historical.equity_curve.index[0].date() == bars.index[5].date()
+    assert historical.metrics["total_return"] == pytest.approx(
+        rolling.metrics["total_return"]
+    )
+
+
 def test_rolling_backtest_refills_freed_slot_from_same_day_signal(stub_fetcher_factory):
     active = make_bars(n=30, seed=6, open_base=100.0)
     reserve = make_bars(n=30, seed=7, open_base=50.0)
@@ -346,6 +381,36 @@ def test_rolling_backtest_refills_freed_slot_from_same_day_signal(stub_fetcher_f
     assert by_ticker["ACTIVE"].exit_date == active.index[7].date()
     assert by_ticker["RESERVE"].signal_date == by_ticker["ACTIVE"].exit_date
     assert by_ticker["RESERVE"].entry_date == reserve.index[8].date()
+
+
+def test_rolling_backtest_force_closes_entry_on_window_end(stub_fetcher_factory):
+    bars = make_bars(n=12, seed=11, open_base=100.0)
+    spy = make_bars(n=12, seed=12, open_base=400.0)
+    bars["entry_signal"] = 0.0
+    bars.iat[5, bars.columns.get_loc("entry_signal")] = 1.0
+    fetcher = stub_fetcher_factory({"AAA": bars, "SPY": spy})
+
+    cfg = _cfg(
+        as_of=bars.index[6].date(),
+        hold=20,
+        top=1,
+        entry_expr="entry_signal > 0",
+        tickers=("AAA",),
+    )
+    result = run_rolling_backtest(
+        cfg,
+        fetcher,
+        start_date=bars.index[0].date(),
+        end_date=bars.index[6].date(),
+    )
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.signal_date == bars.index[5].date()
+    assert trade.entry_date == bars.index[6].date()
+    assert trade.exit_date == bars.index[6].date()
+    assert trade.exit_reason == "eod"
+    assert result.equity_curve.index[-1].date() == bars.index[6].date()
 
 
 def test_rolling_rs_breakout_india_delivery_filter(monkeypatch):

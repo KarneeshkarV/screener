@@ -374,7 +374,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     )
 
     trades = portfolio.closed_trades()
-    date_set: set[pd.Timestamp] = set()
+    date_set: set[pd.Timestamp] = {as_of_ts.normalize()}
     for trade in trades:
         frame = bars_by_tv.get(trade.ticker)
         if frame is None or frame.empty:
