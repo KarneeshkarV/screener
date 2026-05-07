@@ -39,6 +39,10 @@ from .filters import (
     passes_volume_floor,
 )
 from .output import render_rich, sort_events, write_json, write_markdown
+from .service import (
+    UnusualVolumeRequest,
+    run_unusual_volume_scan,
+)
 
 
 _DEFAULT_MIN_AVG_VOLUME = 100_000.0
@@ -298,177 +302,35 @@ def unusual_volume(
     universe = _resolve_universe(market, tickers, universe_file)
     if not universe:
         raise click.UsageError("Empty universe — pass --tickers or --universe-file.")
-    console.print(
-        f"[dim]Scanning {len(universe)} {market.upper()} tickers as of {as_of}…[/dim]"
+    request = UnusualVolumeRequest(
+        market=market,
+        as_of=as_of,
+        universe=universe,
+        min_rvol=min_rvol,
+        min_z=min_z,
+        strength_floor=strength_floor,
+        min_avg_volume=min_avg_volume,
+        min_market_cap=min_market_cap,
+        include_fno_ban=include_fno_ban,
+        deep_india=deep_india,
+        buildup_enabled=buildup_enabled,
+        buildup_window=buildup_window,
+        buildup_min_score=buildup_min_score,
     )
-
-    bars_by_tv = _fetch_bars(universe, market, as_of, console)
-    if not bars_by_tv:
+    result = run_unusual_volume_scan(request, console)
+    if not result.events and result.fetched_count == 0:
         console.print("[red]No OHLCV data fetched. Aborting.[/red]")
         sys.exit(1)
-
-    # India: drop F&O ban-list tickers up front so we don't waste downstream work.
-    ban_set: set[str] = set()
-    if market == "india" and not include_fno_ban:
-        ban_set = fetch_fno_ban_list()
-        if ban_set:
-            before = len(bars_by_tv)
-            bars_by_tv = {
-                tv_sym: df
-                for tv_sym, df in bars_by_tv.items()
-                if _india_symbol(tv_sym) not in ban_set
-            }
-            console.print(
-                f"[dim]F&O ban filter: dropped {before - len(bars_by_tv)} ticker(s) "
-                f"({len(ban_set)} symbols in ban list).[/dim]"
-            )
-
-    # Liquidity floor — runs against the full window before we hit detection.
-    liquid: dict[str, pd.DataFrame] = {
-        tv_sym: df
-        for tv_sym, df in bars_by_tv.items()
-        if passes_volume_floor(df, min_avg_volume, as_of)
-    }
-    console.print(
-        f"[dim]Volume floor (≥{int(min_avg_volume):,} 20d avg): "
-        f"{len(liquid)}/{len(bars_by_tv)} survive.[/dim]"
-    )
-    if not liquid:
+    if not result.events and result.liquid_count == 0:
         console.print("[yellow]No tickers passed the volume floor.[/yellow]")
         return
-
-    events = detect_market(liquid, as_of, min_rvol=min_rvol, min_z=min_z)
-    console.print(f"[dim]Detector emitted {len(events)} candidate events.[/dim]")
-
-    # Index events back to their TradingView symbol so India delivery / enrich
-    # can use the right key shape.
-    by_tv: dict[str, str] = {}
-    if market == "india":
-        for tv_sym in liquid.keys():
-            by_tv[_india_symbol(tv_sym)] = tv_sym
-        # Detector stored the universe symbol on the event; align it to the bare
-        # NSE symbol so it matches the bhavcopy SYMBOL column.
-        for ev in events:
-            ev.symbol = _india_symbol(ev.symbol)
-
-    # India delivery overlay + quiet-accumulation pass.
-    panel: pd.DataFrame = pd.DataFrame()
-    if market == "india":
-        india_syms = [_india_symbol(s) for s in liquid.keys()]
-        try:
-            panel = load_delivery_panel(india_syms, as_of, history_days=40)
-        except Exception as exc:
-            console.print(
-                f"[yellow]Delivery overlay failed: {exc}. Continuing without it.[/yellow]"
-            )
-            panel = pd.DataFrame()
-        if not panel.empty:
-            overlay_events(events, panel)
-            # Re-key bars by NSE symbol for quiet-accumulation pass.
-            bars_for_quiet = {
-                _india_symbol(tv): df for tv, df in liquid.items()
-            }
-            quiet = quiet_accumulation_events(
-                bars_for_quiet,
-                panel,
-                as_of,
-                min_rvol_skip=min_rvol,
-                existing_events=events,
-            )
-            if quiet:
-                console.print(
-                    f"[dim]Quiet-accumulation pass added {len(quiet)} event(s).[/dim]"
-                )
-            events.extend(quiet)
-
-    # Strength filter.
-    floor_rank = _STRENGTH_RANK[strength_floor.upper()]
-    events = [e for e in events if _STRENGTH_RANK[e.strength] >= floor_rank]
-
-    # Build-up overlay — annotates surviving events AND surfaces standalone
-    # build-ups (tickers with no volume spike yet but a clean accumulation
-    # footprint over the prior window).
-    if buildup_enabled:
-        delivery_for_buildup = panel if (market == "india" and not panel.empty) else None
-        bars_for_buildup = (
-            {_india_symbol(tv): df for tv, df in liquid.items()}
-            if market == "india"
-            else dict(liquid)
-        )
-        # 1) Annotate already-detected events.
-        annotated = 0
-        for ev in events:
-            score = compute_buildup_score(
-                ev.symbol,
-                bars_for_buildup.get(ev.symbol),
-                as_of,
-                delivery_panel=delivery_for_buildup,
-                window=buildup_window,
-            )
-            if score is None:
-                continue
-            ev.buildup_score = score.composite
-            ev.buildup_flags = list(score.flags)
-            annotated += 1
-        # 2) Surface standalone build-ups not already in the events list.
-        existing = {(e.symbol, e.direction) for e in events}
-        existing_syms = {e.symbol for e in events}
-        scores = scan_buildups(
-            bars_for_buildup,
-            as_of,
-            delivery_panel=delivery_for_buildup,
-            window=buildup_window,
-            min_score=buildup_min_score,
-        )
-        added = 0
-        for s in scores:
-            if s.symbol in existing_syms:
-                continue
-            bars = bars_for_buildup.get(s.symbol)
-            if bars is None or bars.empty:
-                continue
-            standalone = _standalone_buildup_event(s, bars, as_of)
-            if standalone is None:
-                continue
-            events.append(standalone)
-            added += 1
-        console.print(
-            f"[dim]Build-up pass: annotated {annotated} event(s); "
-            f"added {added} standalone build-up(s) at score >= {buildup_min_score}.[/dim]"
-        )
-
-    # Sector + market-cap enrichment.
-    if events:
-        sector_map = fetch_sector_map(market, [e.symbol for e in events])
-        if sector_map:
-            attach_sector(events, sector_map)
-
-    # Market-cap floor (after enrichment so we have a value to compare).
-    resolved_min_mcap = (
-        _DEFAULT_MIN_MCAP.get(market, 0.0)
-        if min_market_cap is None
-        else float(min_market_cap)
-    )
-    if resolved_min_mcap > 0:
-        before = len(events)
-        events = [
-            e for e in events if passes_market_cap(e.market_cap, resolved_min_mcap)
-        ]
-        console.print(
-            f"[dim]Market-cap floor (≥{_human_mcap(resolved_min_mcap)}): "
-            f"{len(events)}/{before} survive.[/dim]"
-        )
-
-    if market == "india" and deep_india and events:
-        console.print("[dim]Running openscreener deep enrichment for India events…[/dim]")
-        deep_enrich_india(events)
-
-    if not events:
+    if not result.events:
         console.print(
             f"[yellow]No unusual-volume events on {as_of} for {market.upper()}.[/yellow]"
         )
         return
 
+    events = result.events
     sorted_events = sort_events(events)
     render_rich(sorted_events[:limit], market, as_of, console)
 

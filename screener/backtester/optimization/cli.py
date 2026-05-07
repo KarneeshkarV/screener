@@ -6,7 +6,7 @@ import json
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, ParamSpec, TypeVar
 
 import click
 
@@ -25,6 +25,8 @@ from screener.backtester.optimization.walk_forward import walk_forward_optimize
 DEFAULT_BENCHMARK = {"us": "SPY", "india": "^NSEI"}
 DEFAULT_MIN_PRICE = {"us": 1.0, "india": 10.0}
 DEFAULT_MIN_ADV = {"us": 1_000.0, "india": 100_000.0}
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 def _parse_values(raw: str | None, cast: type = float, *, allow_none: bool = True) -> list[Any]:
@@ -151,7 +153,7 @@ def optimize() -> None:
     """Optimize and validate backtest parameters."""
 
 
-def _common_options(fn):
+def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
     options = [
         click.option("-m", "--market", type=click.Choice(["us", "india"]), default="us"),
         click.option("--start", "start_arg", type=click.DateTime(formats=["%Y-%m-%d"]), default=None),

@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from main import cli
+from screener.cli import cli as package_cli
 
 from tests.conftest import StubPriceFetcher, make_bars
 
@@ -19,6 +20,27 @@ def test_help_includes_backtest_historical():
     assert res.exit_code == 0
     assert "backtest-historical" in res.output
     assert "backtest-rolling" in res.output
+
+
+def test_package_cli_matches_main_wrapper():
+    runner = CliRunner()
+    main_res = runner.invoke(cli, ["--help"])
+    package_res = runner.invoke(package_cli, ["--help"])
+
+    assert main_res.exit_code == 0
+    assert package_res.exit_code == 0
+    for command in [
+        "screen",
+        "rs-breakout",
+        "promoter-buys",
+        "unusual-volume",
+        "backtest-historical",
+        "backtest-rolling",
+        "operator-scan",
+        "optimize",
+    ]:
+        assert command in main_res.output
+        assert command in package_res.output
 
 
 def test_backtest_help_lists_flags():

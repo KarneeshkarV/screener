@@ -5,8 +5,8 @@ from datetime import date
 import pandas as pd
 from click.testing import CliRunner
 
-import main
 from main import cli
+from screener.commands import rs_breakout as rs_breakout_cli
 from screener.rs_breakout import (
     delivery_lookup,
     evaluate_symbol,
@@ -151,7 +151,7 @@ def test_rs_breakout_cli_runs_offline(monkeypatch):
     fetcher = StubPriceFetcher({"AAA.NS": bars, "^NSEI": benchmark})
 
     monkeypatch.setattr(
-        main,
+        rs_breakout_cli,
         "load_india_delivery_for_scan",
         lambda symbols, as_of: _delivery_panel("AAA", latest=55.0, previous=45.0),
     )
