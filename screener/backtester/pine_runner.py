@@ -274,8 +274,10 @@ def strat_macd_rsi(df: pd.DataFrame) -> list[Trade]:
         lo = max(0, i - lookback)
         w = rsi[lo:i]
         if w.size:
-            if np.any(w <= 30): was_down[i] = True
-            if np.any(w >= 70): was_up[i]   = True
+            if np.any(w <= 30):
+                was_down[i] = True
+            if np.any(w >= 70):
+                was_up[i] = True
     entries = cross_over & was_down
     exits   = cross_under & was_up
     return _walk(entries, exits, close, df["date"].values)

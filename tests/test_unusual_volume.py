@@ -214,7 +214,6 @@ def test_overlay_long_holder_distribution_note():
 
 def test_quiet_accumulation_event():
     """Delivery RVOL >= 2 even when raw volume RVOL is below threshold."""
-    as_of = date(2026, 4, 24)
     bars = make_bars(start="2024-01-01", n=300, seed=7)
     # Map by index so the as-of date matches the last bar.
     bars_by_symbol = {"RELIANCE": bars}

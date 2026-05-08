@@ -1,0 +1,72 @@
+# Example screener CLI configuration.
+# Pass explicitly with: screener --config screener.yaml <command>
+log_level: INFO
+log_json: false
+
+screen:
+  market: us
+  criteria_names:
+    - ema
+  limit: 50
+  order_by: setup_score
+  cache_ttl: 15m
+
+rs-breakout:
+  market: india
+  universe_limit: 500
+  history_days: 220
+  limit: 50
+  cache_ttl: 15m
+
+unusual-volume:
+  market: us
+  strength_floor: moderate
+  min_avg_volume: 100000
+  limit: 50
+  buildup_enabled: false
+
+backtest-historical:
+  market: us
+  hold: 20
+  top: 10
+  initial_capital: 100000
+  slippage_bps: 0
+  commission_bps: 0
+  price_adjustment: full
+
+backtest-rolling:
+  market: us
+  years: 1
+  hold: 20
+  top: 10
+  initial_capital: 100000
+  price_adjustment: full
+
+operator-scan:
+  universe: fo+cash
+  only_actions: false
+  verbose: false
+
+optimize:
+  grid:
+    market: us
+    years: 1
+    hold: 10,20,30
+    top: 10
+    metric: sharpe
+    min_trades: 1
+    top_n: 10
+    workers: 1
+  walk-forward:
+    market: us
+    years: 1
+    hold: 10,20,30
+    top: 10
+    metric: sharpe
+    train_days: 252
+    test_days: 63
+  validate:
+    iterations: 5000
+    seed: 42
+    initial_capital: 100000
+    ruin_threshold: 0.5

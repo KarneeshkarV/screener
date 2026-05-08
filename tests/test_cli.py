@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import io
+import json
 from datetime import date
 
 import pandas as pd
-import pytest
 from click.testing import CliRunner
 
 from main import cli
+from screener.backtester import historical as historical_cli
+from screener.backtester.models import BacktestResult
+from screener.backtester.optimization import cli as optimize_cli
 from screener.cli import cli as package_cli
 
 from tests.conftest import StubPriceFetcher, make_bars
@@ -18,6 +21,7 @@ def test_help_includes_backtest_historical():
     runner = CliRunner()
     res = runner.invoke(cli, ["--help"])
     assert res.exit_code == 0
+    assert "--config" in res.output
     assert "backtest-historical" in res.output
     assert "backtest-rolling" in res.output
 
@@ -152,3 +156,167 @@ def test_csv_flag_emits_trade_ledger():
         assert col in df.columns
     # rank must preserve selection ordering (1, 2)
     assert sorted(df["rank"].tolist()) == list(range(1, len(df) + 1))
+
+
+def _minimal_result(cfg):
+    equity = pd.Series([cfg.initial_capital], index=pd.to_datetime([cfg.as_of]))
+    return BacktestResult(
+        config=cfg,
+        trades=[],
+        equity_curve=equity,
+        benchmark_curve=equity,
+        metrics={"total_return": 0.0, "trade_count": 0},
+    )
+
+
+def test_yaml_config_supplies_command_defaults(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_backtest(cfg, fetcher):
+        captured["cfg"] = cfg
+        return _minimal_result(cfg)
+
+    monkeypatch.setattr(historical_cli, "run_backtest", fake_run_backtest)
+    path = tmp_path / "screener.yaml"
+    path.write_text(
+        """
+backtest-historical:
+  market: us
+  as_of: "2026-04-30"
+  tickers: AAA,BBB
+  entry_expr: close > sma(close, 3)
+  hold: 7
+  top: 2
+  initial_capital: 12345
+"""
+    )
+
+    res = CliRunner().invoke(cli, ["--config", str(path), "backtest-historical"])
+
+    assert res.exit_code == 0, res.output
+    cfg = captured["cfg"]
+    assert cfg.as_of == date(2026, 4, 30)
+    assert cfg.tickers == ("AAA", "BBB")
+    assert cfg.hold == 7
+    assert cfg.top == 2
+    assert cfg.initial_capital == 12345
+
+
+def test_json_config_supplies_command_defaults(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_backtest(cfg, fetcher):
+        captured["cfg"] = cfg
+        return _minimal_result(cfg)
+
+    monkeypatch.setattr(historical_cli, "run_backtest", fake_run_backtest)
+    path = tmp_path / "screener.json"
+    path.write_text(
+        json.dumps(
+            {
+                "backtest-historical": {
+                    "market": "india",
+                    "as_of": "2026-04-30",
+                    "tickers": "AAA,BBB",
+                    "entry_expr": "close > sma(close, 3)",
+                    "hold": 9,
+                    "top": 3,
+                }
+            }
+        )
+    )
+
+    res = CliRunner().invoke(cli, ["--config", str(path), "backtest-historical"])
+
+    assert res.exit_code == 0, res.output
+    cfg = captured["cfg"]
+    assert cfg.market == "india"
+    assert cfg.hold == 9
+    assert cfg.top == 3
+
+
+def test_cli_options_override_config_defaults(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run_backtest(cfg, fetcher):
+        captured["cfg"] = cfg
+        return _minimal_result(cfg)
+
+    monkeypatch.setattr(historical_cli, "run_backtest", fake_run_backtest)
+    path = tmp_path / "screener.yaml"
+    path.write_text(
+        """
+backtest-historical:
+  market: us
+  as_of: "2026-04-30"
+  tickers: AAA
+  entry_expr: close > sma(close, 3)
+  hold: 7
+"""
+    )
+
+    res = CliRunner().invoke(
+        cli,
+        ["--config", str(path), "backtest-historical", "--hold", "5"],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert captured["cfg"].hold == 5
+
+
+def test_config_rejects_missing_file():
+    res = CliRunner().invoke(
+        cli,
+        ["--config", "missing.yaml", "backtest-historical"],
+    )
+
+    assert res.exit_code != 0
+    assert "Config file not found" in res.output
+
+
+def test_config_rejects_unsupported_extension(tmp_path):
+    path = tmp_path / "screener.txt"
+    path.write_text("{}")
+
+    res = CliRunner().invoke(
+        cli,
+        ["--config", str(path), "backtest-historical"],
+    )
+
+    assert res.exit_code != 0
+    assert "Unsupported config file extension" in res.output
+
+
+def test_nested_optimize_config_supplies_defaults(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_grid_search(cfg, fetcher, parameter_grid, **kwargs):
+        captured["cfg"] = cfg
+        captured["parameter_grid"] = parameter_grid
+        captured["kwargs"] = kwargs
+        return []
+
+    monkeypatch.setattr(optimize_cli, "grid_search", fake_grid_search)
+    path = tmp_path / "screener.yaml"
+    path.write_text(
+        """
+optimize:
+  grid:
+    market: us
+    end_arg: "2026-04-30"
+    tickers: AAA,BBB
+    entry_expr: close > sma(close, 3)
+    hold: "5,10"
+    top: 2
+    metric: total_return
+    top_n: 4
+"""
+    )
+
+    res = CliRunner().invoke(cli, ["--config", str(path), "optimize", "grid"])
+
+    assert res.exit_code == 0, res.output
+    assert captured["cfg"].tickers == ("AAA", "BBB")
+    assert captured["parameter_grid"]["hold"] == [5, 10]
+    assert captured["kwargs"]["metric"] == "total_return"
+    assert captured["kwargs"]["top_n"] == 4

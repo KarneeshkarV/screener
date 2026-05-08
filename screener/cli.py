@@ -9,12 +9,20 @@ from screener.backtester.rolling import backtest_rolling
 from screener.commands.insiders import promoter_buys
 from screener.commands.rs_breakout import rs_breakout
 from screener.commands.screen import screen
+from screener.config import load_config
 from screener.logging_config import configure_logging
 from screener.operator.cli import register as _register_operator_cli
 from screener.unusual_volume.cli import unusual_volume
 
 
 @click.group()
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="YAML or JSON config file with CLI defaults.",
+)
 @click.option(
     "--log-level",
     default="INFO",
@@ -27,8 +35,22 @@ from screener.unusual_volume.cli import unusual_volume
     default=False,
     help="Emit one JSON event per line on stderr instead of human-readable logs.",
 )
-def cli(log_level: str, log_json: bool) -> None:
+@click.pass_context
+def cli(ctx: click.Context, config_path: str | None, log_level: str, log_json: bool) -> None:
     """Stock screener for US and Indian markets."""
+    if config_path:
+        config = load_config(config_path)
+        ctx.default_map = config
+        if (
+            ctx.get_parameter_source("log_level") == click.core.ParameterSource.DEFAULT
+            and "log_level" in config
+        ):
+            log_level = str(config["log_level"])
+        if (
+            ctx.get_parameter_source("log_json") == click.core.ParameterSource.DEFAULT
+            and "log_json" in config
+        ):
+            log_json = bool(config["log_json"])
     configure_logging(level=log_level, json=log_json)
 
 

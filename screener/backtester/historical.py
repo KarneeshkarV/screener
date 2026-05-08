@@ -16,12 +16,10 @@ from screener.backtester.cli_common import (
 )
 from screener.backtester.core import (
     _SlotState,
-    _active_or_pending_tickers,
     _eligible_reserve_signal_idx,
     _make_slot_state,
     _passes_entry_filters,
     _prepare_strategy_bars,
-    _precompute_entry_signals,
     _resolve_universe,
 )
 from screener.backtester.data import PriceFetcher, YFinancePriceFetcher, fetch_benchmark
