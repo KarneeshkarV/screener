@@ -463,6 +463,21 @@ def _prepare_strategy_bars(
 ) -> tuple[dict[str, pd.DataFrame], int]:
     """Prepare strategy-specific derived bars, if needed."""
     lookback_floor = 0
+    if cfg.strategy_name == "vivek_equity_tool":
+        from screener.backtester.vivek_equity import (
+            prepare_vivek_equity_tool_frame,
+            required_history_bars,
+        )
+
+        lookback_floor = required_history_bars()
+        return (
+            {
+                symbol: prepare_vivek_equity_tool_frame(bars)
+                for symbol, bars in bars_by_tv.items()
+            },
+            lookback_floor,
+        )
+
     if cfg.strategy_name != "rs_breakout":
         return bars_by_tv, lookback_floor
 
@@ -628,4 +643,3 @@ def _force_close_open_slots(
             commission_bps=cfg.commission_bps,
         )
         slot_states[slot_id] = None
-

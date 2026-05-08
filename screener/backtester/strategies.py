@@ -28,6 +28,10 @@ STRATEGIES: dict[str, NamedStrategy] = {
         entry="rs_breakout_entry > 0",
         exit=None,
     ),
+    "vivek_equity_tool": NamedStrategy(
+        entry="vivek_equity_entry > 0",
+        exit="vivek_equity_exit > 0 or vivek_equity_close > 0",
+    ),
 }
 
 
