@@ -11,7 +11,7 @@ class NamedStrategy:
     exit: Optional[str]
 
 
-STRATEGIES: dict[str, NamedStrategy] = {
+NAMED_STRATEGIES: dict[str, NamedStrategy] = {
     "ema_trend": NamedStrategy(
         entry="close > ema(close, 20) and ema(close, 20) > ema(close, 200)",
         exit="crossunder(close, ema(close, 20))",
@@ -37,8 +37,8 @@ STRATEGIES: dict[str, NamedStrategy] = {
 
 def resolve_strategy(name: str) -> NamedStrategy:
     try:
-        return STRATEGIES[name]
+        return NAMED_STRATEGIES[name]
     except KeyError:
         raise KeyError(
-            f"Unknown strategy {name!r}. Known: {sorted(STRATEGIES)}"
+            f"Unknown strategy {name!r}. Known: {sorted(NAMED_STRATEGIES)}"
         ) from None

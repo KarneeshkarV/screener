@@ -1,13 +1,23 @@
 """Data loading helpers for the research Pine runner."""
 from __future__ import annotations
 
+from datetime import date
+
+import pandas as pd
+
 from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
 from screener.scanner import scan as _tv_scan
 
 _FETCHER = YFinancePriceFetcher()
 
 
-def fetch_ohlcv(ticker, start, end, market, refresh=False):
+def fetch_ohlcv(
+    ticker: str,
+    start: date,
+    end: date,
+    market: str,
+    refresh: bool = False,
+) -> pd.DataFrame | None:
     yf_sym = ticker if ticker.startswith("^") else tv_to_yf(ticker, market)
     fetcher = YFinancePriceFetcher(refresh=True) if refresh else _FETCHER
     frames = fetcher.fetch([yf_sym], start, end)
@@ -21,7 +31,7 @@ def fetch_ohlcv(ticker, start, end, market, refresh=False):
     return df
 
 
-def load_universe(market, _unused=None):
+def load_universe(market: str) -> list[str]:
     from tradingview_screener import col
 
     # Price floor strips OTC sub-penny tickers that volume-rank to the top.

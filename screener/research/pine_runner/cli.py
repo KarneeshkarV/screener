@@ -1,14 +1,10 @@
 """CLI for the research Pine runner."""
 from __future__ import annotations
 
-import warnings
-
 import click
 
 from screener.research.pine_runner.output import print_market_table, write_trades_json
 from screener.research.pine_runner.run import run_market
-
-warnings.filterwarnings("ignore")
 
 
 @click.command()

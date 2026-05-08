@@ -66,7 +66,7 @@ def run_market(
     fetch_start = (pd.Timestamp(today) - pd.DateOffset(years=years + 4)).date()
     fetch_end = today
 
-    tickers = load_universe(market, None)
+    tickers = load_universe(market)
     if limit and limit < len(tickers):
         tickers = tickers[:limit]
     log.info(
@@ -117,8 +117,15 @@ def run_market(
         for name, fn in STRATEGIES.items():
             try:
                 res = _run_ticker(df, window_start_ts, fn)
-            except (ValueError, KeyError, TypeError, RuntimeError, IndexError):
+            except (ValueError, KeyError, TypeError, RuntimeError, IndexError) as exc:
                 err_counts[name] += 1
+                log.debug(
+                    "backtest.strategy_error",
+                    ticker=t,
+                    strategy=name,
+                    error=str(exc),
+                    exc_info=True,
+                )
                 continue
             if res is None:
                 continue
