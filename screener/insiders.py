@@ -25,6 +25,7 @@ from typing import Optional
 import pandas as pd
 import yfinance as yf
 
+from screener.cache import cached_json_call
 from screener.resilience import call_with_resilience
 
 
@@ -58,33 +59,50 @@ def _row_value(df: pd.DataFrame, label: str, column: str) -> Optional[float]:
         return None
 
 
-def _fetch_yf_one(name: str, yf_symbol: str) -> Optional[dict]:
-    purchases = call_with_resilience(
-        "yfinance",
-        f"insider purchases {yf_symbol}",
-        lambda: yf.Ticker(yf_symbol).insider_purchases,
-        fallback=None,
-    )
-    if purchases is None:
-        return None
-    if purchases is None or purchases.empty:
-        return None
+def _fetch_yf_one(
+    name: str,
+    yf_symbol: str,
+    *,
+    cache_ttl: float | None,
+    refresh: bool,
+) -> Optional[dict]:
+    def _fetch() -> Optional[dict]:
+        purchases = call_with_resilience(
+            "yfinance",
+            f"insider purchases {yf_symbol}",
+            lambda: yf.Ticker(yf_symbol).insider_purchases,
+            fallback=None,
+        )
+        if purchases is None:
+            return None
+        if purchases is None or purchases.empty:
+            return None
 
-    return {
-        "name": name,
-        "yf_symbol": yf_symbol,
-        "yf_net_shares_6m": _row_value(purchases, "Net Shares Purchased (Sold)", "Shares"),
-        "yf_net_pct_6m": _row_value(purchases, "% Net Shares Purchased (Sold)", "Shares"),
-        "yf_total_held": _row_value(purchases, "Total Insider Shares Held", "Shares"),
-        "yf_buy_trans_6m": _row_value(purchases, "Purchases", "Trans"),
-        "yf_sell_trans_6m": _row_value(purchases, "Sales", "Trans"),
-    }
+        return {
+            "name": name,
+            "yf_symbol": yf_symbol,
+            "yf_net_shares_6m": _row_value(purchases, "Net Shares Purchased (Sold)", "Shares"),
+            "yf_net_pct_6m": _row_value(purchases, "% Net Shares Purchased (Sold)", "Shares"),
+            "yf_total_held": _row_value(purchases, "Total Insider Shares Held", "Shares"),
+            "yf_buy_trans_6m": _row_value(purchases, "Purchases", "Trans"),
+            "yf_sell_trans_6m": _row_value(purchases, "Sales", "Trans"),
+        }
+
+    return cached_json_call(
+        "yfinance_insiders",
+        ("insider_purchases", name, yf_symbol),
+        ttl_seconds=cache_ttl,
+        refresh=refresh,
+        fetch=_fetch,
+    )
 
 
 def fetch_yfinance_insiders(
     universe: pd.DataFrame,
     market: str,
     max_workers: int = 12,
+    cache_ttl: float | None = 86400,
+    refresh: bool = False,
 ) -> pd.DataFrame:
     if universe.empty:
         return pd.DataFrame()
@@ -95,7 +113,10 @@ def fetch_yfinance_insiders(
     ]
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [pool.submit(_fetch_yf_one, n, s) for n, s in jobs]
+        futures = [
+            pool.submit(_fetch_yf_one, n, s, cache_ttl=cache_ttl, refresh=refresh)
+            for n, s in jobs
+        ]
         for fut in as_completed(futures):
             r = fut.result()
             if r is not None:
@@ -137,46 +158,62 @@ class _HttpScraper:
         return {s.upper(): self.fetch_page(s) for s in symbols}
 
 
-def _fetch_openscreener_one(name: str) -> Optional[dict]:
-    try:
-        from openscreener import Stock
-    except ImportError:
-        return None
-    rows = call_with_resilience(
-        "screener-in",
-        f"shareholding {name}",
-        lambda: Stock(name, scraper=_HttpScraper()).shareholding_quarterly(),
-        fallback=None,
+def _fetch_openscreener_one(
+    name: str,
+    *,
+    cache_ttl: float | None,
+    refresh: bool,
+) -> Optional[dict]:
+    def _fetch() -> Optional[dict]:
+        try:
+            from openscreener import Stock
+        except ImportError:
+            return None
+        rows = call_with_resilience(
+            "screener-in",
+            f"shareholding {name}",
+            lambda: Stock(name, scraper=_HttpScraper()).shareholding_quarterly(),
+            fallback=None,
+        )
+        if not rows:
+            return None
+        if len(rows) < 2:
+            return None
+
+        latest, prev = rows[-1], rows[-2]
+        p_latest = latest.get("promoters")
+        p_prev = prev.get("promoters")
+        if p_latest is None or p_prev is None:
+            return None
+        try:
+            change = float(p_latest) - float(p_prev)
+        except (TypeError, ValueError):
+            return None
+
+        return {
+            "name": name,
+            "promoter_pct_latest": float(p_latest),
+            "promoter_pct_prev": float(p_prev),
+            "promoter_change": change,
+            "latest_quarter": latest.get("date"),
+            "fii_pct_latest": latest.get("fiis"),
+            "dii_pct_latest": latest.get("diis"),
+        }
+
+    return cached_json_call(
+        "openscreener_promoters",
+        ("shareholding_quarterly", name),
+        ttl_seconds=cache_ttl,
+        refresh=refresh,
+        fetch=_fetch,
     )
-    if not rows:
-        return None
-    if len(rows) < 2:
-        return None
-
-    latest, prev = rows[-1], rows[-2]
-    p_latest = latest.get("promoters")
-    p_prev = prev.get("promoters")
-    if p_latest is None or p_prev is None:
-        return None
-    try:
-        change = float(p_latest) - float(p_prev)
-    except (TypeError, ValueError):
-        return None
-
-    return {
-        "name": name,
-        "promoter_pct_latest": float(p_latest),
-        "promoter_pct_prev": float(p_prev),
-        "promoter_change": change,
-        "latest_quarter": latest.get("date"),
-        "fii_pct_latest": latest.get("fiis"),
-        "dii_pct_latest": latest.get("diis"),
-    }
 
 
 def fetch_openscreener_promoters(
     universe: pd.DataFrame,
     max_workers: int = 6,
+    cache_ttl: float | None = 7 * 86400,
+    refresh: bool = False,
 ) -> pd.DataFrame:
     """Fetch quarterly promoter % from screener.in for each Indian ticker."""
     if universe.empty:
@@ -185,7 +222,10 @@ def fetch_openscreener_promoters(
     names = universe["name"].astype(str).tolist()
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [pool.submit(_fetch_openscreener_one, n) for n in names]
+        futures = [
+            pool.submit(_fetch_openscreener_one, n, cache_ttl=cache_ttl, refresh=refresh)
+            for n in names
+        ]
         for fut in as_completed(futures):
             r = fut.result()
             if r is not None:

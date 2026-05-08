@@ -62,13 +62,13 @@ def tv_to_yf(symbol: str, market: str) -> str:
     return sym
 
 
-def _cache_path(ticker: str) -> Path:
+def _cache_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
     safe = ticker.replace("/", "_").replace(":", "_")
-    return CACHE_DIR / f"{safe}.parquet"
+    return cache_dir / f"{safe}.parquet"
 
 
-def _load_cached(ticker: str) -> Optional[pd.DataFrame]:
-    p = _cache_path(ticker)
+def _load_cached(ticker: str, cache_dir: Path = CACHE_DIR) -> Optional[pd.DataFrame]:
+    p = _cache_path(ticker, cache_dir)
     if not p.exists():
         return None
     try:
@@ -79,10 +79,10 @@ def _load_cached(ticker: str) -> Optional[pd.DataFrame]:
         return None
 
 
-def _save_cache(ticker: str, df: pd.DataFrame) -> None:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+def _save_cache(ticker: str, df: pd.DataFrame, cache_dir: Path = CACHE_DIR) -> None:
+    cache_dir.mkdir(parents=True, exist_ok=True)
     try:
-        df.to_parquet(_cache_path(ticker))
+        df.to_parquet(_cache_path(ticker, cache_dir))
     except Exception:
         # parquet failure is non-fatal; just skip caching
         pass
@@ -120,6 +120,49 @@ def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _merge_cached(existing: Optional[pd.DataFrame], new: pd.DataFrame) -> pd.DataFrame:
+    if existing is None or existing.empty:
+        merged = new.copy()
+    elif new.empty:
+        merged = existing.copy()
+    else:
+        merged = pd.concat([existing, new], axis=0)
+    if merged.empty:
+        return merged
+    merged.index = pd.to_datetime(merged.index).tz_localize(None).normalize()
+    return merged[~merged.index.duplicated(keep="last")].sort_index()
+
+
+def _has_range(df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> bool:
+    if df is None or df.empty:
+        return False
+    in_range = df.loc[(df.index >= start_ts) & (df.index <= end_ts)]
+    return (
+        not in_range.empty
+        and in_range.index.min() <= start_ts + pd.Timedelta(days=3)
+        and in_range.index.max() >= end_ts - pd.Timedelta(days=3)
+    )
+
+
+def _split_download(raw: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataFrame]:
+    if raw is None or raw.empty:
+        return {ticker: pd.DataFrame(columns=OHLCV_COLUMNS) for ticker in tickers}
+    if not isinstance(raw.columns, pd.MultiIndex):
+        ticker = tickers[0] if tickers else ""
+        return {ticker: _normalize_frame(raw)}
+
+    frames: dict[str, pd.DataFrame] = {}
+    level_values = [set(raw.columns.get_level_values(i)) for i in range(raw.columns.nlevels)]
+    for ticker in tickers:
+        frame = pd.DataFrame()
+        for level, values in enumerate(level_values):
+            if ticker in values:
+                frame = raw.xs(ticker, level=level, axis=1, drop_level=True)
+                break
+        frames[ticker] = _normalize_frame(frame)
+    return frames
+
+
 class YFinancePriceFetcher:
     """Fetches daily OHLCV from yfinance with a parquet on-disk cache.
 
@@ -144,9 +187,13 @@ class YFinancePriceFetcher:
         self,
         cache_dir: Optional[Path] = None,
         auto_adjust: bool = True,
+        batch_size: int = 75,
+        refresh: bool = False,
     ) -> None:
         self.cache_dir = cache_dir or CACHE_DIR
         self.auto_adjust = bool(auto_adjust)
+        self.batch_size = max(1, int(batch_size))
+        self.refresh = bool(refresh)
 
     def _cache_key(self, ticker: str) -> str:
         return ticker if self.auto_adjust else f"{ticker}__raw"
@@ -160,43 +207,55 @@ class YFinancePriceFetcher:
         results: dict[str, pd.DataFrame] = {}
         start_ts = pd.Timestamp(start)
         end_ts = pd.Timestamp(end)
+        cached_by_ticker: dict[str, pd.DataFrame] = {}
+        missing: dict[tuple[pd.Timestamp, pd.Timestamp], list[str]] = {}
+
         for ticker in tickers:
             cache_key = self._cache_key(ticker)
-            cached = _load_cached(cache_key)
+            cached = None if self.refresh else _load_cached(cache_key, self.cache_dir)
             if cached is not None and not cached.empty:
-                in_range = cached.loc[
-                    (cached.index >= start_ts) & (cached.index <= end_ts)
-                ]
-                if (
-                    not in_range.empty
-                    and in_range.index.min() <= start_ts + pd.Timedelta(days=3)
-                    and in_range.index.max() >= end_ts - pd.Timedelta(days=3)
-                ):
-                    results[ticker] = in_range
-                    continue
-            download_kwargs = dict(
-                start=start_ts,
-                end=end_ts + pd.Timedelta(days=1),
-                auto_adjust=self.auto_adjust,
-                progress=False,
-                threads=False,
-            )
-            if not self.auto_adjust:
-                download_kwargs["actions"] = True
-            raw = call_with_resilience(
-                "yfinance",
-                f"download {ticker}",
-                lambda: yf.download(ticker, **download_kwargs),
-                fallback=pd.DataFrame(),
-            )
-            norm = _normalize_frame(raw)
-            if norm.empty:
-                results[ticker] = norm
+                cached_by_ticker[ticker] = cached
+            if not self.refresh and cached is not None and _has_range(cached, start_ts, end_ts):
+                results[ticker] = cached.loc[(cached.index >= start_ts) & (cached.index <= end_ts)]
                 continue
-            _save_cache(cache_key, norm)
-            results[ticker] = norm.loc[
-                (norm.index >= start_ts) & (norm.index <= end_ts)
-            ]
+
+            fetch_start, fetch_end = start_ts, end_ts
+            if not self.refresh and cached is not None and not cached.empty:
+                min_cached = cached.index.min()
+                max_cached = cached.index.max()
+                if min_cached <= start_ts + pd.Timedelta(days=3) and max_cached < end_ts - pd.Timedelta(days=3):
+                    fetch_start = max_cached + pd.Timedelta(days=1)
+                elif max_cached >= end_ts - pd.Timedelta(days=3) and min_cached > start_ts + pd.Timedelta(days=3):
+                    fetch_end = min_cached - pd.Timedelta(days=1)
+            missing.setdefault((fetch_start, fetch_end), []).append(ticker)
+
+        for (fetch_start, fetch_end), group in missing.items():
+            for i in range(0, len(group), self.batch_size):
+                batch = group[i : i + self.batch_size]
+                download_kwargs = dict(
+                    start=fetch_start,
+                    end=fetch_end + pd.Timedelta(days=1),
+                    auto_adjust=self.auto_adjust,
+                    progress=False,
+                    threads=True,
+                    group_by="ticker",
+                )
+                if not self.auto_adjust:
+                    download_kwargs["actions"] = True
+                raw = call_with_resilience(
+                    "yfinance",
+                    f"download {len(batch)} ticker(s)",
+                    lambda batch=batch: yf.download(batch if len(batch) > 1 else batch[0], **download_kwargs),
+                    fallback=pd.DataFrame(),
+                )
+                downloaded = _split_download(raw, batch)
+                for ticker in batch:
+                    cache_key = self._cache_key(ticker)
+                    norm = downloaded.get(ticker, pd.DataFrame(columns=OHLCV_COLUMNS))
+                    merged = _merge_cached(cached_by_ticker.get(ticker), norm)
+                    if not merged.empty:
+                        _save_cache(cache_key, merged, self.cache_dir)
+                    results[ticker] = merged.loc[(merged.index >= start_ts) & (merged.index <= end_ts)]
         return results
 
 

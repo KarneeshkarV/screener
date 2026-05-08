@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import click
-import pandas as pd
 
+from screener.cache import parse_ttl
 from screener.display import print_csv, print_insider_results
-from screener.resilience import call_with_resilience
-from screener.scanner import MARKETS, _dedupe_listings
+from screener.scanner import MARKETS, _dedupe_listings, get_scanner_data_cached
 
 
 @click.command(name="promoter-buys")
@@ -65,6 +64,8 @@ from screener.scanner import MARKETS, _dedupe_listings
     help="Parallel enrichment workers.",
 )
 @click.option("--csv", "output_csv", is_flag=True, help="Output as CSV.")
+@click.option("--refresh", is_flag=True, help="Bypass cached TradingView/yfinance/screener.in data.")
+@click.option("--cache-ttl", default="15m", show_default=True, help="TradingView universe cache TTL, e.g. 30s, 15m, 1h, off.")
 def promoter_buys(
     market: str,
     universe_size: int,
@@ -75,6 +76,8 @@ def promoter_buys(
     min_market_cap: float | None,
     workers: int,
     output_csv: bool,
+    refresh: bool,
+    cache_ttl: str,
 ) -> None:
     """Find stocks where promoter/insider holding has increased."""
     from tradingview_screener import Query, col
@@ -105,11 +108,21 @@ def promoter_buys(
         .limit(int(universe_size))
     )
 
-    total, universe = call_with_resilience(
-        "tradingview",
-        "promoter universe",
-        query.get_scanner_data,
-        fallback=(0, pd.DataFrame()),
+    columns = ["name", "description", "close", "change", "volume", "market_cap_basic"]
+    parsed_ttl = parse_ttl(cache_ttl, default=900)
+    total, universe = get_scanner_data_cached(
+        query,
+        key_parts=(
+            "promoter_universe",
+            market,
+            [repr(f) for f in base],
+            columns,
+            int(universe_size),
+        ),
+        columns=columns,
+        operation="promoter universe",
+        cache_ttl=parsed_ttl,
+        refresh=refresh,
     )
     if not universe.empty:
         universe = _dedupe_listings(universe)
@@ -123,10 +136,19 @@ def promoter_buys(
         f"{market}). Enriching..."
     )
 
-    yf_df = fetch_yfinance_insiders(universe, market, max_workers=int(workers))
+    yf_df = fetch_yfinance_insiders(
+        universe,
+        market,
+        max_workers=int(workers),
+        refresh=refresh,
+    )
 
     if market == "india":
-        os_df = fetch_openscreener_promoters(universe, max_workers=int(workers))
+        os_df = fetch_openscreener_promoters(
+            universe,
+            max_workers=int(workers),
+            refresh=refresh,
+        )
         if os_df.empty:
             click.echo("No openscreener data returned. Falling back to yfinance only.")
             insiders = yf_df

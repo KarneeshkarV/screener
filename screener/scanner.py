@@ -4,6 +4,7 @@ import re
 from tradingview_screener import Query
 import pandas as pd
 
+from screener.cache import cache_path, is_fresh, read_frame, read_json, stable_key, write_frame, write_json
 from screener.resilience import call_with_resilience
 
 
@@ -36,6 +37,35 @@ DETAIL_COLUMNS = [
     "debt_to_equity",
     "RSI",
 ]
+
+
+def get_scanner_data_cached(
+    query: Query,
+    *,
+    key_parts: object,
+    columns: list[str],
+    operation: str = "scanner data",
+    cache_ttl: float | None = 900,
+    refresh: bool = False,
+) -> tuple[int, pd.DataFrame]:
+    key = stable_key(key_parts)
+    frame_path = cache_path("tradingview_scanner", key, "parquet")
+    meta_path = cache_path("tradingview_scanner", key, "json")
+    if not refresh and is_fresh(frame_path, cache_ttl) and is_fresh(meta_path, cache_ttl):
+        cached = read_frame(frame_path)
+        meta = read_json(meta_path, default={}) or {}
+        if cached is not None:
+            return int(meta.get("count", 0)), cached
+
+    count, df = call_with_resilience(
+        "tradingview",
+        operation,
+        query.get_scanner_data,
+        fallback=(0, pd.DataFrame(columns=columns)),
+    )
+    write_frame(frame_path, df)
+    write_json(meta_path, {"count": int(count)})
+    return count, df
 
 
 def _percentile(series: pd.Series) -> pd.Series:
@@ -111,6 +141,8 @@ def scan(
     limit: int = 50,
     order_by: str = "volume",
     detail: bool = False,
+    cache_ttl: float | None = 900,
+    refresh: bool = False,
 ) -> tuple[int, pd.DataFrame]:
     columns = list(DEFAULT_COLUMNS)
     if detail:
@@ -131,11 +163,19 @@ def scan(
         .limit(fetch_limit)
     )
 
-    count, df = call_with_resilience(
-        "tradingview",
-        "scanner data",
-        query.get_scanner_data,
-        fallback=(0, pd.DataFrame(columns=columns)),
+    count, df = get_scanner_data_cached(
+        query,
+        key_parts=(
+            "scanner",
+            market,
+            [repr(f) for f in filters],
+            columns,
+            order_by,
+            fetch_limit,
+        ),
+        columns=columns,
+        cache_ttl=cache_ttl,
+        refresh=refresh,
     )
     if order_by == "setup_score" and not df.empty:
         df = _add_setup_score(df)

@@ -13,6 +13,7 @@ from typing import Iterable, Optional
 import pandas as pd
 from tradingview_screener import Query, col
 
+from screener.cache import cached_frame_call
 from screener.resilience import call_with_resilience
 
 from .detector import Event
@@ -21,7 +22,13 @@ from .detector import Event
 _TV_MARKETS = {"us": "america", "india": "india"}
 
 
-def fetch_sector_map(market: str, symbols: Iterable[str]) -> dict[str, dict]:
+def fetch_sector_map(
+    market: str,
+    symbols: Iterable[str],
+    *,
+    cache_ttl: float | None = 86400,
+    refresh: bool = False,
+) -> dict[str, dict]:
     """Return ``{symbol: {"sector": str, "market_cap": float}}`` for every
     symbol the TradingView screener can resolve."""
     syms = sorted({s.upper() for s in symbols if s})
@@ -34,11 +41,17 @@ def fetch_sector_map(market: str, symbols: Iterable[str]) -> dict[str, dict]:
         .where(col("name").isin(syms))
         .limit(len(syms) + 50)
     )
-    _count, df = call_with_resilience(
-        "tradingview",
-        "sector enrichment",
-        query.get_scanner_data,
-        fallback=(0, pd.DataFrame()),
+    df = cached_frame_call(
+        "tradingview_sector",
+        ("sector_enrichment", market, syms),
+        ttl_seconds=cache_ttl,
+        refresh=refresh,
+        fetch=lambda: call_with_resilience(
+            "tradingview",
+            "sector enrichment",
+            lambda: query.get_scanner_data()[1],
+            fallback=pd.DataFrame(),
+        ),
     )
     out: dict[str, dict] = {}
     if df is None or df.empty:

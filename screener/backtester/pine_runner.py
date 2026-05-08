@@ -62,7 +62,8 @@ _FETCHER = YFinancePriceFetcher()
 
 def fetch_ohlcv(ticker, start, end, market, refresh=False):
     yf_sym = ticker if ticker.startswith("^") else tv_to_yf(ticker, market)
-    frames = _FETCHER.fetch([yf_sym], start, end)
+    fetcher = YFinancePriceFetcher(refresh=True) if refresh else _FETCHER
+    frames = fetcher.fetch([yf_sym], start, end)
     df = frames.get(yf_sym)
     if df is None or df.empty:
         return None

@@ -245,6 +245,7 @@ def _standalone_buildup_event(
     default=False,
     help="Skip JSON/MD writes (rich-table only).",
 )
+@click.option("--refresh", is_flag=True, help="Bypass cached yfinance and enrichment data.")
 @click.option(
     "-n",
     "--limit",
@@ -288,6 +289,7 @@ def unusual_volume(
     json_path: Optional[str],
     md_path: Optional[str],
     no_output_files: bool,
+    refresh: bool,
     limit: int,
     buildup_enabled: bool,
     buildup_window: int,
@@ -316,6 +318,7 @@ def unusual_volume(
         buildup_enabled=buildup_enabled,
         buildup_window=buildup_window,
         buildup_min_score=buildup_min_score,
+        refresh=refresh,
     )
     result = run_unusual_volume_scan(request, console)
     if not result.events and result.fetched_count == 0:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import click
 
+from screener.cache import parse_ttl
 from screener import history
 from screener.criteria import CRITERIA, combine
 from screener.display import print_csv, print_results
@@ -35,6 +36,8 @@ from screener.scanner import MARKETS, scan
 )
 @click.option("--csv", "output_csv", is_flag=True, help="Output as CSV.")
 @click.option("--detail", is_flag=True, help="Show fundamental details (P/E, ROE, etc.).")
+@click.option("--refresh", is_flag=True, help="Bypass cached TradingView data.")
+@click.option("--cache-ttl", default="15m", show_default=True, help="TradingView cache TTL, e.g. 30s, 15m, 1h, off.")
 def screen(
     market: str,
     criteria_names: tuple[str, ...],
@@ -42,6 +45,8 @@ def screen(
     order_by: str,
     output_csv: bool,
     detail: bool,
+    refresh: bool,
+    cache_ttl: str,
 ) -> None:
     """Screen stocks based on technical criteria."""
     criteria_fns = [CRITERIA[name] for name in criteria_names]
@@ -54,6 +59,8 @@ def screen(
         limit=limit,
         order_by=order_by,
         detail=detail,
+        cache_ttl=parse_ttl(cache_ttl, default=900),
+        refresh=refresh,
     )
 
     if output_csv:

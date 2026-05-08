@@ -35,6 +35,7 @@ class UnusualVolumeRequest:
     buildup_enabled: bool
     buildup_window: int
     buildup_min_score: float
+    refresh: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,39 +46,32 @@ class UnusualVolumeResult:
 
 
 def fetch_bars(
-    tickers: list[str], market: str, as_of: date, console: Console
+    tickers: list[str],
+    market: str,
+    as_of: date,
+    console: Console,
+    *,
+    refresh: bool = False,
 ) -> dict[str, pd.DataFrame]:
-    fetcher = YFinancePriceFetcher()
+    fetcher = YFinancePriceFetcher(refresh=refresh)
     start = as_of - timedelta(days=400)
     end = as_of + timedelta(days=1)
 
     yf_map = {t: tv_to_yf(t, market) for t in tickers}
+    reverse_map = {yf_sym: tv_sym for tv_sym, yf_sym in yf_map.items()}
     out: dict[str, pd.DataFrame] = {}
-
-    def _fetch_one(tv_sym: str) -> tuple[str, Optional[pd.DataFrame]]:
-        yf_sym = yf_map[tv_sym]
-        try:
-            frames = fetcher.fetch([yf_sym], start, end)
-        except Exception:
-            return tv_sym, None
-        df = frames.get(yf_sym)
-        if df is None or df.empty:
-            return tv_sym, None
-        return tv_sym, df
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futs = {pool.submit(_fetch_one, t): t for t in tickers}
-        for i, fut in enumerate(as_completed(futs), 1):
-            tv_sym, df = fut.result()
-            if df is not None and not df.empty:
-                out[tv_sym] = df
-            if i % 100 == 0:
-                console.print(
-                    f"  [{market}] fetched {i}/{len(tickers)} ({len(out)} usable)",
-                    style="dim",
-                )
+    try:
+        frames = fetcher.fetch(list(yf_map.values()), start, end)
+    except Exception:
+        return out
+    for yf_sym, df in frames.items():
+        tv_sym = reverse_map.get(yf_sym)
+        if tv_sym and df is not None and not df.empty:
+            out[tv_sym] = df
+    console.print(
+        f"  [{market}] fetched {len(frames)}/{len(tickers)} ({len(out)} usable)",
+        style="dim",
+    )
     return out
 
 
@@ -146,7 +140,13 @@ def run_unusual_volume_scan(
         f"[dim]Scanning {len(request.universe)} {request.market.upper()} "
         f"tickers as of {request.as_of}...[/dim]"
     )
-    bars_by_tv = fetch_bars(request.universe, request.market, request.as_of, console)
+    bars_by_tv = fetch_bars(
+        request.universe,
+        request.market,
+        request.as_of,
+        console,
+        refresh=request.refresh,
+    )
     if not bars_by_tv:
         return UnusualVolumeResult(events=[], fetched_count=0, liquid_count=0)
 
@@ -196,7 +196,11 @@ def run_unusual_volume_scan(
         _apply_buildup_overlay(request, liquid, panel, events, console)
 
     if events:
-        sector_map = fetch_sector_map(request.market, [e.symbol for e in events])
+        sector_map = fetch_sector_map(
+            request.market,
+            [e.symbol for e in events],
+            refresh=request.refresh,
+        )
         if sector_map:
             attach_sector(events, sector_map)
 

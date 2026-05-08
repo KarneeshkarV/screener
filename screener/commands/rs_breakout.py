@@ -10,6 +10,7 @@ import pandas as pd
 from rich.console import Console
 
 from screener.backtester.data import PriceFetcher, YFinancePriceFetcher
+from screener.cache import parse_ttl
 from screener.rs_breakout import (
     DEFAULT_BENCHMARKS,
     RsBreakoutResult,
@@ -38,6 +39,9 @@ def resolve_universe(
     tickers: str | None,
     universe_file: str | None,
     universe_limit: int,
+    *,
+    cache_ttl: float | None = 900,
+    refresh: bool = False,
 ) -> list[str]:
     if tickers:
         return [t.strip() for t in tickers.split(",") if t.strip()]
@@ -46,10 +50,16 @@ def resolve_universe(
         if not path.exists():
             raise click.UsageError(f"--universe-file not found: {universe_file}")
         return [line.strip() for line in path.read_text().splitlines() if line.strip()]
-    return load_universe(market, int(universe_limit))
+    return load_universe(market, int(universe_limit), cache_ttl=cache_ttl, refresh=refresh)
 
 
-def load_universe(market: str, universe_limit: int) -> list[str]:
+def load_universe(
+    market: str,
+    universe_limit: int,
+    *,
+    cache_ttl: float | None = 900,
+    refresh: bool = False,
+) -> list[str]:
     from tradingview_screener import col
 
     price_floor = {"india": 50.0, "us": 5.0}[market]
@@ -60,6 +70,8 @@ def load_universe(market: str, universe_limit: int) -> list[str]:
         filters=filters,
         limit=requested_limit,
         order_by="volume",
+        cache_ttl=cache_ttl,
+        refresh=refresh,
     )
     return [str(t) for t in df["name"].dropna().tolist()]
 
@@ -157,6 +169,8 @@ def write_default_outputs(
 @click.option("-n", "--limit", type=int, default=50, show_default=True)
 @click.option("--json", "json_path", default=None, help="JSON output path.")
 @click.option("--md", "md_path", default=None, help="Markdown output path.")
+@click.option("--refresh", is_flag=True, help="Bypass cached TradingView/yfinance data.")
+@click.option("--cache-ttl", default="15m", show_default=True, help="TradingView universe cache TTL, e.g. 30s, 15m, 1h, off.")
 @click.option(
     "--no-output-files",
     is_flag=True,
@@ -174,17 +188,27 @@ def rs_breakout(
     limit: int,
     json_path: str | None,
     md_path: str | None,
+    refresh: bool,
+    cache_ttl: str,
     no_output_files: bool,
 ) -> None:
     """Screen stocks for RS + SuperTrend + breakout/volume setups."""
     console = Console()
     as_of_date = as_of_arg.date() if isinstance(as_of_arg, datetime) else date.today()
     resolved_benchmark = benchmark or DEFAULT_BENCHMARKS[market]
-    universe = resolve_universe(market, tickers, universe_file, int(universe_limit))
+    parsed_ttl = parse_ttl(cache_ttl, default=900)
+    universe = resolve_universe(
+        market,
+        tickers,
+        universe_file,
+        int(universe_limit),
+        cache_ttl=parsed_ttl,
+        refresh=refresh,
+    )
     if not universe:
         raise click.UsageError("Empty universe: pass --tickers or --universe-file.")
 
-    fetcher = click.get_current_context().obj or YFinancePriceFetcher()
+    fetcher = click.get_current_context().obj or YFinancePriceFetcher(refresh=refresh)
     request = RsBreakoutRequest(
         market=market,
         as_of=as_of_date,
