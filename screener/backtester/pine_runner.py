@@ -40,7 +40,6 @@ Usage:
 """
 from __future__ import annotations
 
-import sys
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -53,7 +52,10 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
+from screener.logging_config import get_logger
 from screener.scanner import scan as _tv_scan
+
+log = get_logger("pine_runner")
 
 BENCHMARKS = {"us": "SPY", "india": "^NSEI"}
 
@@ -441,10 +443,16 @@ def main(market: str, years: int, limit: int, refresh: bool, trades_json: str | 
     tickers = load_universe(market, None)
     if limit and limit < len(tickers):
         tickers = tickers[:limit]
-    print(f"Universe:   {market} ({len(tickers)} tickers)", file=sys.stderr)
-    print(f"Window:     {window_start_ts.date()} → {today} ({years}y)", file=sys.stderr)
-    print(f"Warmup pad: {fetch_start} → {window_start_ts.date()}", file=sys.stderr)
-    print(f"Strategies: {', '.join(STRATEGIES)}", file=sys.stderr)
+    log.info(
+        "backtest.run_started",
+        market=market,
+        tickers=len(tickers),
+        window_start=str(window_start_ts.date()),
+        window_end=str(today),
+        years=years,
+        warmup_start=str(fetch_start),
+        strategies=list(STRATEGIES),
+    )
 
     # ── fetch ───────────────────────────────────────────────────────────
     ohlcv: dict[str, pd.DataFrame] = {}
@@ -460,8 +468,12 @@ def main(market: str, years: int, limit: int, refresh: bool, trades_json: str | 
             if df is not None and not df.empty:
                 ohlcv[t] = df
             if i % 50 == 0 or i == len(tickers):
-                print(f"  fetched {i}/{len(tickers)} ({len(ohlcv)} have data)",
-                      file=sys.stderr, flush=True)
+                log.info(
+                    "backtest.fetch_progress",
+                    fetched=i,
+                    total=len(tickers),
+                    with_data=len(ohlcv),
+                )
 
     # ── benchmark buy-and-hold over window ──────────────────────────────
     bench_sym = BENCHMARKS[market]
@@ -473,8 +485,7 @@ def main(market: str, years: int, limit: int, refresh: bool, trades_json: str | 
         if len(b) > 1:
             bench_return = float(b["adj_close"].iloc[-1] / b["adj_close"].iloc[0] - 1.0)
     if bench_return is None:
-        print(f"  benchmark {bench_sym} missing — alpha column will be blank",
-              file=sys.stderr)
+        log.warning("backtest.benchmark_missing", benchmark=bench_sym)
 
     # ── run every strategy on every ticker ──────────────────────────────
     per_strat: dict[str, list[dict]] = {n: [] for n in STRATEGIES}
@@ -483,14 +494,14 @@ def main(market: str, years: int, limit: int, refresh: bool, trades_json: str | 
         for name, fn in STRATEGIES.items():
             try:
                 res = _run_ticker(df, window_start_ts, fn)
-            except Exception:
+            except (ValueError, KeyError, TypeError, RuntimeError, IndexError):
                 err_counts[name] += 1
                 continue
             if res is None:
                 continue
             per_strat[name].append(res | {"ticker": t})
         if i % 100 == 0 or i == len(ohlcv):
-            print(f"  backtested {i}/{len(ohlcv)} tickers", file=sys.stderr, flush=True)
+            log.info("backtest.iter_progress", processed=i, total=len(ohlcv))
 
     # ── output table ────────────────────────────────────────────────────
     HDR = (f"{'Strategy':<18} {'Tkrs':>5} {'Trades':>7} {'Tr/Tk':>6} "
@@ -574,7 +585,7 @@ def main(market: str, years: int, limit: int, refresh: bool, trades_json: str | 
             }
         with open(trades_json, "w") as f:
             json.dump(payload, f, indent=2)
-        print(f"wrote traded-ticker dump → {trades_json}", file=sys.stderr)
+        log.info("backtest.trades_dump_written", path=trades_json)
 
 
 if __name__ == "__main__":

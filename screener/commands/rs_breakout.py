@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 import pandas as pd
+import requests
 from rich.console import Console
 
 from screener.backtester.data import PriceFetcher, YFinancePriceFetcher
@@ -97,7 +98,13 @@ def run_rs_breakout_scan(
     if request.market == "india":
         try:
             delivery_panel = load_india_delivery_for_scan(request.universe, request.as_of)
-        except Exception as exc:
+        except (
+            requests.RequestException,
+            OSError,
+            RuntimeError,
+            ValueError,
+            pd.errors.ParserError,
+        ) as exc:
             console.print(
                 f"[yellow]Delivery data load failed: {exc}. Full bucket may be empty.[/yellow]"
             )

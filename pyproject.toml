@@ -15,6 +15,7 @@ dependencies = [
     "pyarrow>=15.0",
     "jugaad-data>=0.33.1",
     "requests>=2.31",
+    "structlog>=24.1",
 ]
 
 [project.scripts]

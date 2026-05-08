@@ -89,20 +89,20 @@ def deep_enrich_india(events: list[Event]) -> None:
     """
     try:
         from openscreener import Stock
-    except Exception:
+    except ImportError:
         return
     for ev in events:
         try:
             stock = Stock(ev.symbol)
             stock.fetch()
             df = stock.shareholding_quarterly
-        except Exception:
+        except (AttributeError, RuntimeError, ConnectionError, TimeoutError):
             continue
         if df is None or (hasattr(df, "empty") and df.empty):
             continue
         try:
             promoter = _extract_promoter_pct(df)
-        except Exception:
+        except (ValueError, KeyError, IndexError, TypeError):
             continue
         if promoter is None:
             continue
@@ -126,6 +126,6 @@ def _extract_promoter_pct(df) -> Optional[float]:
                     if last is None or pd.isna(last):
                         return None
                     return float(str(last).rstrip("%"))
-    except Exception:
+    except (ValueError, KeyError, IndexError, TypeError):
         return None
     return None

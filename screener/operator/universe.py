@@ -16,12 +16,13 @@ in the final output, but their delivery + price metrics still appear.
 """
 from __future__ import annotations
 
-import logging
 from datetime import date
+
+from screener.logging_config import get_logger
 
 from .fetch import fetch_fo_bhavcopy
 
-LOG = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 
 def fno_symbols(d: date) -> list[str]:
@@ -57,8 +58,8 @@ def combined_universe(d: date, *, mode: str = "fo+cash") -> tuple[list[str], set
     if mode == "fo+cash":
         try:
             cash = cash_top_500()
-        except Exception as exc:
-            LOG.warning("cash universe load failed (%s); falling back to F&O only", exc)
+        except (ConnectionError, TimeoutError, ValueError, RuntimeError) as exc:
+            log.warning("operator.cash_universe_load_failed", error=str(exc))
             return fno, fno_set
         union = sorted(set(fno) | set(cash))
         return union, fno_set

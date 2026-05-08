@@ -17,7 +17,7 @@ def enrich_fundamentals(df: pd.DataFrame, market: str) -> pd.DataFrame:
     try:
         batch = Stock.batch(symbols)
         ratios_data = batch.fetch("ratios")
-    except Exception:
+    except (AttributeError, RuntimeError, ConnectionError, TimeoutError):
         return df
 
     rows = []

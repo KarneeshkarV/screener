@@ -23,7 +23,6 @@ cache at ``./.autoresearch/ohlcv/india/<SYMBOL>__*.parquet`` already holds
 from __future__ import annotations
 
 import io
-import logging
 import zipfile
 from datetime import date, timedelta
 from pathlib import Path
@@ -31,9 +30,10 @@ from typing import Iterable, Optional
 
 import pandas as pd
 
+from screener.logging_config import get_logger
 from screener.resilience import call_with_resilience
 
-LOG = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 CACHE_ROOT = Path.home() / ".screener" / "nse_bhavcopy"
 INDIA_OHLCV_CACHE = Path(".autoresearch/ohlcv/india")
@@ -55,8 +55,8 @@ def latest_trading_day(d: date, *, lookback: int = TRADING_DAY_LOOKBACK) -> date
         candidate = d - timedelta(days=delta)
         try:
             df = _read_cash_bhavcopy_raw(candidate)
-        except Exception as exc:
-            LOG.debug("cash bhavcopy fetch failed for %s: %s", candidate, exc)
+        except (OSError, RuntimeError, FileNotFoundError, pd.errors.ParserError) as exc:
+            log.debug("nse.bhavcopy_fetch_failed", date=str(candidate), error=str(exc))
             continue
         if df is None or df.empty:
             continue
@@ -64,7 +64,11 @@ def latest_trading_day(d: date, *, lookback: int = TRADING_DAY_LOOKBACK) -> date
         if actual is None:
             continue
         if actual != d:
-            LOG.warning("bhavcopy for %s unavailable; using %s (NSE returned data for that day)", d, actual)
+            log.warning(
+                "nse.bhavcopy_date_drift",
+                requested=str(d),
+                actual=str(actual),
+            )
         return actual
     raise RuntimeError(
         f"no NSE cash bhavcopy found within {lookback} days of {d}"
@@ -77,7 +81,7 @@ def _parse_bhavcopy_date(df: pd.DataFrame) -> Optional[date]:
     raw = str(df["DATE1"].iloc[0]).strip()
     try:
         return pd.to_datetime(raw, dayfirst=True).date()
-    except Exception:
+    except (ValueError, TypeError):
         return None
 
 
@@ -257,7 +261,7 @@ def fifty_two_week_hl(symbols: Iterable[str], as_of: date) -> pd.DataFrame:
             continue
         try:
             df = pd.read_parquet(path, columns=["date", "high", "low", "close"])
-        except Exception:
+        except (OSError, pd.errors.ParserError):
             rows.append({"SYMBOL": sym, "_52W_High": float("nan"),
                          "_52W_Low": float("nan")})
             continue

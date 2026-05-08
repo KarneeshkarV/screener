@@ -52,7 +52,7 @@ def cache_path(namespace: str, key: str, suffix: str) -> Path:
 def read_json(path: Path, default: T | None = None) -> Any | T | None:
     try:
         return json.loads(path.read_text())
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return default
 
 
@@ -66,7 +66,7 @@ def write_json(path: Path, value: Any) -> None:
 def read_frame(path: Path) -> pd.DataFrame | None:
     try:
         return pd.read_parquet(path)
-    except Exception:
+    except (OSError, pd.errors.ParserError, ValueError):
         return None
 
 

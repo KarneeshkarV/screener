@@ -159,7 +159,7 @@ def _run_one_safe(args: tuple[Any, ...]) -> GridSearchResult:
         )
     except KeyboardInterrupt:
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — process-pool worker: surface any failure as a ranked result, never crash the whole grid
         return GridSearchResult(
             params=params,
             score=float("-inf"),

@@ -54,7 +54,7 @@ def _load_one_day(dt: date) -> Optional[pd.DataFrame]:
         return None
     try:
         df = pd.read_csv(path)
-    except Exception:
+    except (OSError, pd.errors.ParserError, pd.errors.EmptyDataError):
         return None
     df.columns = [str(c).strip() for c in df.columns]
     needed = {"SYMBOL", "SERIES", "DATE1", "TTL_TRD_QNTY", "DELIV_QTY", "DELIV_PER"}

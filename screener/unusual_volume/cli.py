@@ -15,6 +15,7 @@ from typing import Optional
 
 import click
 import pandas as pd
+import requests
 from rich.console import Console
 
 from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
@@ -81,7 +82,13 @@ def _fetch_bars(
         yf_sym = yf_map[tv_sym]
         try:
             frames = fetcher.fetch([yf_sym], start, end)
-        except Exception:
+        except (
+            requests.RequestException,
+            ConnectionError,
+            TimeoutError,
+            KeyError,
+            ValueError,
+        ):
             return tv_sym, None
         df = frames.get(yf_sym)
         if df is None or df.empty:

@@ -9,13 +9,27 @@ from screener.backtester.rolling import backtest_rolling
 from screener.commands.insiders import promoter_buys
 from screener.commands.rs_breakout import rs_breakout
 from screener.commands.screen import screen
+from screener.logging_config import configure_logging
 from screener.operator.cli import register as _register_operator_cli
 from screener.unusual_volume.cli import unusual_volume
 
 
 @click.group()
-def cli() -> None:
+@click.option(
+    "--log-level",
+    default="INFO",
+    show_default=True,
+    help="Logging verbosity for diagnostic events on stderr.",
+)
+@click.option(
+    "--log-json",
+    is_flag=True,
+    default=False,
+    help="Emit one JSON event per line on stderr instead of human-readable logs.",
+)
+def cli(log_level: str, log_json: bool) -> None:
     """Stock screener for US and Indian markets."""
+    configure_logging(level=log_level, json=log_json)
 
 
 cli.add_command(screen)

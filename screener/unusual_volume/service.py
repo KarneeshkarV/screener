@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 import pandas as pd
+import requests
 from rich.console import Console
 
 from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
@@ -62,7 +63,13 @@ def fetch_bars(
     out: dict[str, pd.DataFrame] = {}
     try:
         frames = fetcher.fetch(list(yf_map.values()), start, end)
-    except Exception:
+    except (
+        requests.RequestException,
+        ConnectionError,
+        TimeoutError,
+        KeyError,
+        ValueError,
+    ):
         return out
     for yf_sym, df in frames.items():
         tv_sym = reverse_map.get(yf_sym)
@@ -244,7 +251,13 @@ def _overlay_india_delivery(
     india_syms = [india_symbol(s) for s in liquid.keys()]
     try:
         panel = load_delivery_panel(india_syms, request.as_of, history_days=40)
-    except Exception as exc:
+    except (
+        requests.RequestException,
+        OSError,
+        RuntimeError,
+        ValueError,
+        pd.errors.ParserError,
+    ) as exc:
         console.print(
             f"[yellow]Delivery overlay failed: {exc}. Continuing without it.[/yellow]"
         )

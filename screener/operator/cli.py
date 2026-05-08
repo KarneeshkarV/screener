@@ -4,11 +4,12 @@ Wired into the existing ``main.py:cli`` group at import time.
 """
 from __future__ import annotations
 
-import logging
 from datetime import date, datetime
 from pathlib import Path
 
 import click
+
+from screener.logging_config import configure_logging
 
 from .output import write_csv
 from .process import build_dataset
@@ -61,8 +62,7 @@ def operator_scan(as_of, universe, out_path, only_actions, verbose):
     Long Build-ups within 15% of the 52-week high are flagged as
     High_Momentum_Watch. Output is a single CSV.
     """
-    if verbose:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    configure_logging(level="INFO" if verbose else "WARNING")
 
     if isinstance(as_of, datetime):
         as_of = as_of.date()

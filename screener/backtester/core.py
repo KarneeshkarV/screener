@@ -503,7 +503,14 @@ def _prepare_strategy_bars(
                 end,
                 history_days=history_days,
             )
-        except Exception as exc:
+        except (
+            ConnectionError,
+            TimeoutError,
+            OSError,
+            RuntimeError,
+            ValueError,
+            pd.errors.ParserError,
+        ) as exc:
             warnings.append(f"delivery panel unavailable for rs_breakout: {exc}")
 
     return (

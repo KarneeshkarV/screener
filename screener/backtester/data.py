@@ -75,7 +75,7 @@ def _load_cached(ticker: str, cache_dir: Path = CACHE_DIR) -> Optional[pd.DataFr
         df = pd.read_parquet(p)
         df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
         return df
-    except Exception:
+    except (OSError, pd.errors.ParserError, ValueError):
         return None
 
 
@@ -83,7 +83,7 @@ def _save_cache(ticker: str, df: pd.DataFrame, cache_dir: Path = CACHE_DIR) -> N
     cache_dir.mkdir(parents=True, exist_ok=True)
     try:
         df.to_parquet(_cache_path(ticker, cache_dir))
-    except Exception:
+    except (OSError, ValueError):
         # parquet failure is non-fatal; just skip caching
         pass
 

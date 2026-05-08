@@ -16,6 +16,7 @@ from typing import Iterable, Optional
 
 import numpy as np
 import pandas as pd
+import requests
 from rich.console import Console
 from rich.table import Table
 
@@ -299,7 +300,13 @@ def fetch_price_data(
     def _fetch_one(tv_sym: str, yf_sym: str) -> tuple[str, pd.DataFrame]:
         try:
             data = fetcher.fetch([yf_sym], start, end)
-        except Exception:
+        except (
+            requests.RequestException,
+            ConnectionError,
+            TimeoutError,
+            KeyError,
+            ValueError,
+        ):
             return tv_sym, pd.DataFrame()
         return tv_sym, data.get(yf_sym, pd.DataFrame())
 

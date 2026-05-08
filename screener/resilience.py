@@ -103,7 +103,7 @@ def call_with_resilience(
     for attempt in range(max(1, config.attempts)):
         try:
             result = func()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — provider-agnostic retry wrapper; specific types live at the call site
             last_exc = exc
             if attempt < config.attempts - 1:
                 sleep(_sleep_time(config, attempt))
