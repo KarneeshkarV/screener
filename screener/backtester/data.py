@@ -157,7 +157,8 @@ def _split_download(raw: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataF
         frame = pd.DataFrame()
         for level, values in enumerate(level_values):
             if ticker in values:
-                frame = raw.xs(ticker, level=level, axis=1, drop_level=True)
+                selected = raw.xs(ticker, level=level, axis=1, drop_level=True)
+                frame = selected.to_frame() if isinstance(selected, pd.Series) else selected
                 break
         frames[ticker] = _normalize_frame(frame)
     return frames
@@ -203,6 +204,12 @@ class YFinancePriceFetcher:
     ) -> dict[str, pd.DataFrame]:
         import yfinance as yf  # lazy import so tests without yfinance still run
 
+        def download_batch(
+            batch: list[str], download_kwargs: dict[str, object]
+        ) -> pd.DataFrame:
+            target: str | list[str] = batch if len(batch) > 1 else batch[0]
+            return yf.download(target, **download_kwargs)
+
         tickers = [t for t in tickers if t]
         results: dict[str, pd.DataFrame] = {}
         start_ts = pd.Timestamp(start)
@@ -245,7 +252,7 @@ class YFinancePriceFetcher:
                 raw = call_with_resilience(
                     "yfinance",
                     f"download {len(batch)} ticker(s)",
-                    lambda batch=batch: yf.download(batch if len(batch) > 1 else batch[0], **download_kwargs),
+                    lambda: download_batch(batch, download_kwargs),
                     fallback=pd.DataFrame(),
                 )
                 downloaded = _split_download(raw, batch)
