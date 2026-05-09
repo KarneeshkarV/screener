@@ -40,7 +40,7 @@ def cash_top_500() -> list[str]:
     """
     from run_pinescript_strategies import load_universe
 
-    return load_universe("india", None)
+    return load_universe("india")
 
 
 def combined_universe(d: date, *, mode: str = "fo+cash") -> tuple[list[str], set[str]]:

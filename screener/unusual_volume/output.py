@@ -272,6 +272,6 @@ def write_markdown(events: list[Event], path: Path, market: str, as_of) -> None:
 def _sort_by_buildup(evs: list[Event]) -> list[Event]:
     return sorted(
         evs,
-        key=lambda e: (e.buildup_score if e.buildup_score is not None else 0.0),
+        key=lambda e: e.buildup_score if e.buildup_score is not None else 0.0,
         reverse=True,
     )

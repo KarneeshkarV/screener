@@ -31,5 +31,8 @@ jobs:
       - name: Run lint
         run: uv run ruff check $(git ls-files '*.py')
 
+      - name: Run format check
+        run: uv run ruff format --check $(git ls-files '*.py')
+
       - name: Run type checking
         run: uv run mypy
