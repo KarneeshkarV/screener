@@ -10,7 +10,7 @@ import pandas as pd
 import requests
 from rich.console import Console
 
-from screener.backtester.data import PriceFetcher, YFinancePriceFetcher
+from screener.backtester.data import PriceFetcher, build_price_fetcher
 from screener.cache import parse_ttl
 from screener.rs_breakout import (
     DEFAULT_BENCHMARKS,
@@ -215,7 +215,7 @@ def rs_breakout(
     if not universe:
         raise click.UsageError("Empty universe: pass --tickers or --universe-file.")
 
-    fetcher = click.get_current_context().obj or YFinancePriceFetcher(refresh=refresh)
+    fetcher = click.get_current_context().obj or build_price_fetcher(refresh=refresh)
     request = RsBreakoutRequest(
         market=market,
         as_of=as_of_date,

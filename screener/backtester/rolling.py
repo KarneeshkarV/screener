@@ -26,7 +26,7 @@ from screener.backtester.core import (
     _prepare_strategy_bars,
     _resolve_universe,
 )
-from screener.backtester.data import PriceFetcher, YFinancePriceFetcher, fetch_benchmark
+from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
 from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.metrics import compute_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
@@ -427,7 +427,7 @@ def backtest_rolling(
         price_adjustment=price_adjustment,
     )
 
-    fetcher = click.get_current_context().obj or YFinancePriceFetcher(
+    fetcher = click.get_current_context().obj or build_price_fetcher(
         auto_adjust=price_adjustment == "full"
     )
     result = run_rolling_backtest(cfg, fetcher, start_date=start_date, end_date=end_date)

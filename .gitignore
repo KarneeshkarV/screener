@@ -11,3 +11,4 @@ wheels/
 *.log
 _*.txt
 matrix_*.txt
+.env

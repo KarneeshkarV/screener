@@ -9,7 +9,7 @@ import pandas as pd
 import requests
 from rich.console import Console
 
-from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
+from screener.backtester.data import build_price_fetcher, tv_to_yf
 from .buildup import BuildupScore, compute_buildup_score, scan_buildups
 from .delivery import load_delivery_panel, overlay_events, quiet_accumulation_events
 from .detector import Event, detect_market
@@ -54,7 +54,7 @@ def fetch_bars(
     *,
     refresh: bool = False,
 ) -> dict[str, pd.DataFrame]:
-    fetcher = YFinancePriceFetcher(refresh=refresh)
+    fetcher = build_price_fetcher(refresh=refresh)
     start = as_of - timedelta(days=400)
     end = as_of + timedelta(days=1)
 

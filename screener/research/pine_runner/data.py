@@ -5,10 +5,10 @@ from datetime import date
 
 import pandas as pd
 
-from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
+from screener.backtester.data import build_price_fetcher, tv_to_yf
 from screener.scanner import scan as _tv_scan
 
-_FETCHER = YFinancePriceFetcher()
+_FETCHER = build_price_fetcher()
 
 
 def fetch_ohlcv(
@@ -19,7 +19,7 @@ def fetch_ohlcv(
     refresh: bool = False,
 ) -> pd.DataFrame | None:
     yf_sym = ticker if ticker.startswith("^") else tv_to_yf(ticker, market)
-    fetcher = YFinancePriceFetcher(refresh=True) if refresh else _FETCHER
+    fetcher = build_price_fetcher(refresh=True) if refresh else _FETCHER
     frames = fetcher.fetch([yf_sym], start, end)
     df = frames.get(yf_sym)
     if df is None or df.empty:

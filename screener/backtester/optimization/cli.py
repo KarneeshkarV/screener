@@ -143,9 +143,9 @@ def _resolve_dates(start_arg, end_arg, years) -> tuple[date, date]:
 
 
 def _fetcher():
-    from screener.backtester.data import YFinancePriceFetcher
+    from screener.backtester.data import build_price_fetcher
 
-    return click.get_current_context().obj or YFinancePriceFetcher()
+    return click.get_current_context().obj or build_price_fetcher()
 
 
 @click.group(name="optimize")

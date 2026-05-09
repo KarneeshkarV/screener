@@ -18,7 +18,7 @@ import pandas as pd
 import requests
 from rich.console import Console
 
-from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
+from screener.backtester.data import build_price_fetcher, tv_to_yf
 from .buildup import (
     BuildupScore,
     DEFAULT_MIN_SCORE as DEFAULT_BUILDUP_MIN,
@@ -61,7 +61,7 @@ def _resolve_universe(
 def _fetch_bars(
     tickers: list[str], market: str, as_of: date, console: Console
 ) -> dict[str, pd.DataFrame]:
-    fetcher = YFinancePriceFetcher()
+    fetcher = build_price_fetcher()
     start = as_of - timedelta(days=400)
     end = as_of + timedelta(days=1)
 
