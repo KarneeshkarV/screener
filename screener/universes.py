@@ -1,4 +1,5 @@
 """Current index constituent loaders used by rolling backtests."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -28,7 +29,9 @@ def _cache_path(name: UniverseName, as_of: date) -> Path:
     return CACHE_DIR / f"{name}_{as_of.isoformat()}.txt"
 
 
-def _write_cache(name: UniverseName, as_of: date, symbols: list[str], source: str) -> Path:
+def _write_cache(
+    name: UniverseName, as_of: date, symbols: list[str], source: str
+) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = _cache_path(name, as_of)
     lines = [
@@ -143,14 +146,7 @@ def _fetch_nifty50() -> tuple[list[str], str]:
     symbol_col = "Symbol" if "Symbol" in df.columns else "SYMBOL"
     if symbol_col not in df.columns:
         raise RuntimeError("Nifty 50 constituents CSV missing Symbol column")
-    symbols = (
-        df[symbol_col]
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .str.upper()
-        .tolist()
-    )
+    symbols = df[symbol_col].dropna().astype(str).str.strip().str.upper().tolist()
     return _dedupe(symbols), source
 
 

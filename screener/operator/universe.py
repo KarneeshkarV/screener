@@ -14,6 +14,7 @@ Two universes are stitched together (per user choice ``fo+cash``):
 Non-F&O cash names get blank OI columns and ``Operator_Action == None``
 in the final output, but their delivery + price metrics still appear.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -38,6 +39,7 @@ def cash_top_500() -> list[str]:
     sync with the autoresearch / scan_today.py pick pipeline.
     """
     from run_pinescript_strategies import load_universe
+
     return load_universe("india", None)
 
 

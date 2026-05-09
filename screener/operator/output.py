@@ -12,6 +12,7 @@ Rows sort by High_Momentum_Watch desc, then Operator_Action priority
 (Long Build-up first), then %_Change_Delivery desc — so the most
 actionable rows surface at the top of the file.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -74,8 +75,13 @@ def _sort(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=["_action_rank", "_hmw_rank"])
 
 
-def write_csv(df: pd.DataFrame, as_of: date, out_path: Path | None = None,
-              *, only_actions: bool = False) -> Path:
+def write_csv(
+    df: pd.DataFrame,
+    as_of: date,
+    out_path: Path | None = None,
+    *,
+    only_actions: bool = False,
+) -> Path:
     """Write ``df`` to ``daily_operator_data_YYYYMMDD.csv``.
 
     ``out_path`` overrides the default filename (still relative to CWD if not

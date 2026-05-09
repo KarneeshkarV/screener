@@ -5,6 +5,7 @@ facing tables on stdout; structlog writes diagnostic events to stderr so
 the two streams can be redirected independently. JSON output is selected
 by ``SCREENER_LOG_JSON=1`` (env) or ``configure_logging(json=True)``.
 """
+
 from __future__ import annotations
 
 import logging

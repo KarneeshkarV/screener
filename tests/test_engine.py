@@ -1,4 +1,5 @@
 """Engine + portfolio accuracy tests with offline synthetic data."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -7,7 +8,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from screener.backtester.engine import run_backtest, run_rolling_backtest, simulate_ticker
+from screener.backtester.engine import (
+    run_backtest,
+    run_rolling_backtest,
+    simulate_ticker,
+)
 from screener.backtester.metrics import compute_metrics
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.pine import parse
@@ -167,8 +172,12 @@ def test_exit_expression_triggers_at_close():
     exit_ast = parse("close < open")
     # force bar 7 to have close<open, prior bars close>=open
     for i in range(5, 7):
-        bars.iat[i, bars.columns.get_loc("close")] = float(bars.iat[i, bars.columns.get_loc("open")]) + 1.0
-    bars.iat[7, bars.columns.get_loc("close")] = float(bars.iat[7, bars.columns.get_loc("open")]) - 2.0
+        bars.iat[i, bars.columns.get_loc("close")] = (
+            float(bars.iat[i, bars.columns.get_loc("open")]) + 1.0
+        )
+    bars.iat[7, bars.columns.get_loc("close")] = (
+        float(bars.iat[7, bars.columns.get_loc("open")]) - 2.0
+    )
     cfg = _cfg(hold=20)
     outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg, exit_ast=exit_ast)
     assert outcome.trade is not None
@@ -208,12 +217,16 @@ def test_commission_reduces_realized_return():
     outcome = simulate_ticker(bars, signal_idx=3, cfg=_cfg(hold=5))
     assert outcome.trade is not None
     portfolio_a.open("AAA", outcome.trade.entry_date, outcome.trade.entry_price, 0.0)
-    trade_a = portfolio_a.close("AAA", outcome.trade.exit_date, outcome.trade.exit_price, "time", 0.0)
+    trade_a = portfolio_a.close(
+        "AAA", outcome.trade.exit_date, outcome.trade.exit_price, "time", 0.0
+    )
 
     portfolio_b = Portfolio(100_000, slot_count=1)
     portfolio_b.assign("AAA", 1, bars.index[3].date())
     portfolio_b.open("AAA", outcome.trade.entry_date, outcome.trade.entry_price, 50.0)
-    trade_b = portfolio_b.close("AAA", outcome.trade.exit_date, outcome.trade.exit_price, "time", 50.0)
+    trade_b = portfolio_b.close(
+        "AAA", outcome.trade.exit_date, outcome.trade.exit_price, "time", 50.0
+    )
 
     assert trade_b.pnl < trade_a.pnl
 
@@ -267,9 +280,7 @@ def test_run_backtest_rs_breakout_india_requires_rising_delivery(monkeypatch):
         lambda symbols, as_of, history_days=40: delivery_panel,
     )
 
-    fetcher = StubPriceFetcher(
-        {"AAA.NS": aaa, "BBB.NS": bbb, "^NSEI": nifty}
-    )
+    fetcher = StubPriceFetcher({"AAA.NS": aaa, "BBB.NS": bbb, "^NSEI": nifty})
     cfg = _cfg(
         market="india",
         benchmark="^NSEI",
@@ -431,8 +442,12 @@ def test_cash_stays_cash_after_exit_two_ticker_portfolio():
     # Force B: long hold via hold=15, open=50, close smoothly
     bars_b.iat[4, bars_b.columns.get_loc("open")] = 50.0
 
-    trade_a = _simulate_and_record(bars_a, "AAA", rank=1, hold=2, as_of_idx=3, initial=100_000, slot=2)
-    trade_b = _simulate_and_record(bars_b, "BBB", rank=2, hold=15, as_of_idx=3, initial=100_000, slot=2)
+    trade_a = _simulate_and_record(
+        bars_a, "AAA", rank=1, hold=2, as_of_idx=3, initial=100_000, slot=2
+    )
+    trade_b = _simulate_and_record(
+        bars_b, "BBB", rank=2, hold=15, as_of_idx=3, initial=100_000, slot=2
+    )
 
     calendar = pd.DatetimeIndex(
         sorted(set(bars_a.index.tolist()) | set(bars_b.index.tolist()))
@@ -482,7 +497,11 @@ def _simulate_and_record(
     p.assign(ticker, rank, bars.index[as_of_idx].date())
     p.open(ticker, outcome.trade.entry_date, outcome.trade.entry_price, 0.0)
     return p.close(
-        ticker, outcome.trade.exit_date, outcome.trade.exit_price, outcome.trade.exit_reason, 0.0
+        ticker,
+        outcome.trade.exit_date,
+        outcome.trade.exit_price,
+        outcome.trade.exit_reason,
+        0.0,
     )
 
 
@@ -567,7 +586,9 @@ def test_min_price_filter_excludes_penny_stocks(stub_fetcher_factory):
     # sma(close, 3) comparison are deterministic.
     for i in range(37, 40):
         bars_penny.iat[i, bars_penny.columns.get_loc("close")] = 0.30
-    bars_penny.iat[39, bars_penny.columns.get_loc("close")] = 0.80  # > sma but still < $1
+    bars_penny.iat[39, bars_penny.columns.get_loc("close")] = (
+        0.80  # > sma but still < $1
+    )
     bars_real.iat[39, bars_real.columns.get_loc("close")] = (
         float(bars_real.iloc[39]["close"]) + 5
     )
@@ -811,9 +832,7 @@ def test_invested_return_metric_ignores_idle_cash():
         [100_000.0, 100_500.0, 101_000.0],
         index=pd.bdate_range("2024-01-03", periods=3),
     )
-    bench = pd.Series(
-        [100.0, 100.0, 100.0], index=equity.index
-    )
+    bench = pd.Series([100.0, 100.0, 100.0], index=equity.index)
     m = compute_metrics(equity, bench, [trade], slot_count=10)
     assert m["invested_return"] == pytest.approx(0.10, abs=1e-6)
     # Total return on $100k portfolio is only 1% — exposes the dead-cash gap

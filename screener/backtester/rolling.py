@@ -1,4 +1,5 @@
 """Rolling backtest orchestration and CLI."""
+
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
@@ -116,7 +117,9 @@ def run_rolling_backtest(
     fetch_end = end_ts.date()
     price_panel = fetcher.fetch(yf_symbols, fetch_start, fetch_end)
 
-    bars_by_tv = {tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols}
+    bars_by_tv = {
+        tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
+    }
     bars_by_tv, strategy_lookback = _prepare_strategy_bars(
         cfg,
         bars_by_tv,
@@ -296,37 +299,108 @@ def run_rolling_backtest(
     default="us",
     help="Market to backtest.",
 )
-@click.option("--start", "start_arg", type=click.DateTime(formats=["%Y-%m-%d"]), default=None)
-@click.option("--end", "end_arg", type=click.DateTime(formats=["%Y-%m-%d"]), default=None)
-@click.option("--years", type=int, default=1, show_default=True, help="Trailing calendar years when --start is omitted.")
+@click.option(
+    "--start", "start_arg", type=click.DateTime(formats=["%Y-%m-%d"]), default=None
+)
+@click.option(
+    "--end", "end_arg", type=click.DateTime(formats=["%Y-%m-%d"]), default=None
+)
+@click.option(
+    "--years",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Trailing calendar years when --start is omitted.",
+)
 @click.option("--hold", type=int, default=20, help="Holding period (trading days).")
 @click.option("--top", type=int, default=10, help="Concurrent portfolio slots.")
 @click.option("--entry", "entry_expr", default=None, help="Pine-like entry expression.")
 @click.option("--exit", "exit_expr", default=None, help="Pine-like exit expression.")
-@click.option("--strategy", "strategy_name", default=None, help="Named strategy shortcut.")
-@click.option("--universe", type=click.Choice(["sp500", "nifty50"]), default=None, help="Current index universe. Defaults to sp500 for US and nifty50 for India.")
-@click.option("--no-universe-cache", is_flag=True, default=False, help="Force live constituent refresh instead of today's cache.")
+@click.option(
+    "--strategy", "strategy_name", default=None, help="Named strategy shortcut."
+)
+@click.option(
+    "--universe",
+    type=click.Choice(["sp500", "nifty50"]),
+    default=None,
+    help="Current index universe. Defaults to sp500 for US and nifty50 for India.",
+)
+@click.option(
+    "--no-universe-cache",
+    is_flag=True,
+    default=False,
+    help="Force live constituent refresh instead of today's cache.",
+)
 @click.option("--tickers", default=None, help="Comma-separated ticker list.")
-@click.option("--universe-file", default=None, help="Path to newline-separated ticker file.")
-@click.option("--max-universe", type=int, default=0, help="Cap universe size before fetching prices. Pass 0 to disable.")
-@click.option("--stop-loss", type=float, default=None, help="Stop loss (fraction, e.g. 0.08).")
+@click.option(
+    "--universe-file", default=None, help="Path to newline-separated ticker file."
+)
+@click.option(
+    "--max-universe",
+    type=int,
+    default=0,
+    help="Cap universe size before fetching prices. Pass 0 to disable.",
+)
+@click.option(
+    "--stop-loss", type=float, default=None, help="Stop loss (fraction, e.g. 0.08)."
+)
 @click.option("--take-profit", type=float, default=None, help="Take profit (fraction).")
-@click.option("--trailing-stop", type=float, default=None, help="Trailing stop (fraction).")
-@click.option("--slippage-bps", type=float, default=0.0, help="Slippage per fill (bps).")
-@click.option("--commission-bps", type=float, default=0.0, help="Commission per fill (bps).")
+@click.option(
+    "--trailing-stop", type=float, default=None, help="Trailing stop (fraction)."
+)
+@click.option(
+    "--slippage-bps", type=float, default=0.0, help="Slippage per fill (bps)."
+)
+@click.option(
+    "--commission-bps", type=float, default=0.0, help="Commission per fill (bps)."
+)
 @click.option("--initial-capital", type=float, default=100_000.0)
-@click.option("--benchmark", default=None, help="Benchmark symbol (default: SPY for US, ^NSEI for India).")
-@click.option("--min-price", type=float, default=None, help="Minimum signal-day close. Pass 0 to disable.")
-@click.option("--min-avg-dollar-volume", type=float, default=None, help="Minimum rolling mean dollar volume. Pass 0 to disable.")
-@click.option("--adv-window", type=int, default=20, help="Lookback bars for average dollar-volume filter.")
-@click.option("--slippage-model", type=click.Choice(["fixed", "half-spread", "vol-impact", "composite"]), default="fixed")
+@click.option(
+    "--benchmark",
+    default=None,
+    help="Benchmark symbol (default: SPY for US, ^NSEI for India).",
+)
+@click.option(
+    "--min-price",
+    type=float,
+    default=None,
+    help="Minimum signal-day close. Pass 0 to disable.",
+)
+@click.option(
+    "--min-avg-dollar-volume",
+    type=float,
+    default=None,
+    help="Minimum rolling mean dollar volume. Pass 0 to disable.",
+)
+@click.option(
+    "--adv-window",
+    type=int,
+    default=20,
+    help="Lookback bars for average dollar-volume filter.",
+)
+@click.option(
+    "--slippage-model",
+    type=click.Choice(["fixed", "half-spread", "vol-impact", "composite"]),
+    default="fixed",
+)
 @click.option("--half-spread-bps", type=float, default=0.0)
 @click.option("--vol-impact-k", type=float, default=0.1)
 @click.option("--no-gap-fills", is_flag=True, default=False)
-@click.option("--entry-order", type=click.Choice(["moo", "moc", "limit"]), default="moo")
+@click.option(
+    "--entry-order", type=click.Choice(["moo", "moc", "limit"]), default="moo"
+)
 @click.option("--entry-limit-bps", type=float, default=None)
-@click.option("--partial-exit", "partial_exit_args", multiple=True, help="Scale-out tier as PROFIT_FRAC:SHARES_FRAC.")
-@click.option("--price-adjustment", type=click.Choice(["full", "splits_only", "none"]), default="full")
+@click.option(
+    "--partial-exit",
+    "partial_exit_args",
+    multiple=True,
+    help="Scale-out tier as PROFIT_FRAC:SHARES_FRAC.",
+)
+@click.option(
+    "--price-adjustment",
+    type=click.Choice(["full", "splits_only", "none"]),
+    default="full",
+)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
 def backtest_rolling(
     market,
@@ -373,7 +447,9 @@ def backtest_rolling(
         market, min_price, min_avg_dollar_volume
     )
 
-    end_date = end_arg.date() if isinstance(end_arg, datetime) else (end_arg or date.today())
+    end_date = (
+        end_arg.date() if isinstance(end_arg, datetime) else (end_arg or date.today())
+    )
     start_date = (
         start_arg.date()
         if isinstance(start_arg, datetime)
@@ -393,9 +469,7 @@ def backtest_rolling(
             use_cache=not no_universe_cache,
         )
         ticker_tuple = loaded.symbols
-        universe_note = (
-            f"{loaded.name}: {len(loaded.symbols)} symbols from {loaded.source}; cache={loaded.cached_path}"
-        )
+        universe_note = f"{loaded.name}: {len(loaded.symbols)} symbols from {loaded.source}; cache={loaded.cached_path}"
 
     cfg = BacktestConfig(
         market=market,
@@ -430,13 +504,17 @@ def backtest_rolling(
     fetcher = click.get_current_context().obj or build_price_fetcher(
         auto_adjust=price_adjustment == "full"
     )
-    result = run_rolling_backtest(cfg, fetcher, start_date=start_date, end_date=end_date)
+    result = run_rolling_backtest(
+        cfg, fetcher, start_date=start_date, end_date=end_date
+    )
     if output_csv:
         print_ledger_csv(result)
         return
 
     console = Console()
-    console.print(f"[dim]Rolling window: {start_date.isoformat()} to {end_date.isoformat()}[/dim]")
+    console.print(
+        f"[dim]Rolling window: {start_date.isoformat()} to {end_date.isoformat()}[/dim]"
+    )
     if universe_note:
         console.print(f"[dim]Universe: {universe_note}[/dim]")
     print_backtest(result)

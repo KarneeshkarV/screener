@@ -29,24 +29,39 @@ from tests.conftest import make_bars
 
 def test_direction_buying():
     # close > open AND close in upper third of range
-    assert classify_direction(open_px=100, high=110, low=99, close=109, prev_close=100) == "BUYING"
+    assert (
+        classify_direction(open_px=100, high=110, low=99, close=109, prev_close=100)
+        == "BUYING"
+    )
 
 
 def test_direction_selling():
-    assert classify_direction(open_px=100, high=101, low=90, close=91, prev_close=100) == "SELLING"
+    assert (
+        classify_direction(open_px=100, high=101, low=90, close=91, prev_close=100)
+        == "SELLING"
+    )
 
 
 def test_direction_churn_small_change():
-    assert classify_direction(open_px=100, high=102, low=99, close=100.3, prev_close=100) == "CHURN"
+    assert (
+        classify_direction(open_px=100, high=102, low=99, close=100.3, prev_close=100)
+        == "CHURN"
+    )
 
 
 def test_direction_reversal_gap_up_close_down():
     # gap up 3%, but bar closes below prev_close → reversal
-    assert classify_direction(open_px=103, high=104, low=98, close=99, prev_close=100) == "REVERSAL"
+    assert (
+        classify_direction(open_px=103, high=104, low=98, close=99, prev_close=100)
+        == "REVERSAL"
+    )
 
 
 def test_direction_reversal_gap_down_close_up():
-    assert classify_direction(open_px=97, high=104, low=96.5, close=103, prev_close=100) == "REVERSAL"
+    assert (
+        classify_direction(open_px=97, high=104, low=96.5, close=103, prev_close=100)
+        == "REVERSAL"
+    )
 
 
 def test_strength_tiers():
@@ -115,16 +130,18 @@ def test_detector_handles_short_history():
 def test_passes_volume_floor_drops_thin_names():
     bars = make_bars(n=60, seed=6)
     # Force volumes well below 1M
-    assert passes_volume_floor(bars, min_avg_volume=1_000_000, as_of=bars.index[-1].date()) is False
-    assert passes_volume_floor(bars, min_avg_volume=1_000, as_of=bars.index[-1].date()) is True
+    assert (
+        passes_volume_floor(bars, min_avg_volume=1_000_000, as_of=bars.index[-1].date())
+        is False
+    )
+    assert (
+        passes_volume_floor(bars, min_avg_volume=1_000, as_of=bars.index[-1].date())
+        is True
+    )
 
 
 def test_parse_ban_csv():
-    text = (
-        "Securities in Ban For Trade Date 27-APR-2026:\n"
-        "1,SAIL\n"
-        "2,FOO\n"
-    )
+    text = "Securities in Ban For Trade Date 27-APR-2026:\n1,SAIL\n2,FOO\n"
     assert _parse_ban_csv(text) == {"SAIL", "FOO"}
 
 

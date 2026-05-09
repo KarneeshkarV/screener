@@ -19,6 +19,7 @@ only continue to work: they target the oldest-open position (FIFO) and the
 ``raise_if_exists=True`` flag preserves the historical invariant that a single
 ticker cannot be opened twice through the legacy API.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -264,7 +265,7 @@ def build_equity_curve(
     events: list[tuple[pd.Timestamp, int, int, Trade]] = []
     for seq, t in enumerate(trades):
         events.append((pd.Timestamp(t.entry_date), 1, seq, t))  # 1 = open
-        events.append((pd.Timestamp(t.exit_date), 0, seq, t))   # 0 = close (first)
+        events.append((pd.Timestamp(t.exit_date), 0, seq, t))  # 0 = close (first)
     events.sort(key=lambda e: (e[0], e[1], e[2]))
 
     cash = float(initial_capital)

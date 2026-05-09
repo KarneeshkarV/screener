@@ -16,6 +16,7 @@ For India we use openscreener as the primary signal (this is the canonical
 source for "promoter holding") and yfinance as a secondary cross-check.
 For US the yfinance feed is the only signal.
 """
+
 from __future__ import annotations
 
 import urllib.request
@@ -81,9 +82,15 @@ def _fetch_yf_one(
         return {
             "name": name,
             "yf_symbol": yf_symbol,
-            "yf_net_shares_6m": _row_value(purchases, "Net Shares Purchased (Sold)", "Shares"),
-            "yf_net_pct_6m": _row_value(purchases, "% Net Shares Purchased (Sold)", "Shares"),
-            "yf_total_held": _row_value(purchases, "Total Insider Shares Held", "Shares"),
+            "yf_net_shares_6m": _row_value(
+                purchases, "Net Shares Purchased (Sold)", "Shares"
+            ),
+            "yf_net_pct_6m": _row_value(
+                purchases, "% Net Shares Purchased (Sold)", "Shares"
+            ),
+            "yf_total_held": _row_value(
+                purchases, "Total Insider Shares Held", "Shares"
+            ),
             "yf_buy_trans_6m": _row_value(purchases, "Purchases", "Trans"),
             "yf_sell_trans_6m": _row_value(purchases, "Sales", "Trans"),
         }
@@ -223,7 +230,9 @@ def fetch_openscreener_promoters(
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [
-            pool.submit(_fetch_openscreener_one, n, cache_ttl=cache_ttl, refresh=refresh)
+            pool.submit(
+                _fetch_openscreener_one, n, cache_ttl=cache_ttl, refresh=refresh
+            )
             for n in names
         ]
         for fut in as_completed(futures):

@@ -3,6 +3,7 @@
 
 Usage: uv run python scripts/scan_morning_star_us.py <strategy_name>
 """
+
 from __future__ import annotations
 
 import sys
@@ -32,8 +33,10 @@ MARKET = "us"
 
 STRAT_NAME = sys.argv[1] if len(sys.argv) > 1 else "morning_star_pullback"
 if STRAT_NAME not in NEW_STRATEGIES:
-    print(f"Unknown strategy '{STRAT_NAME}'. Available example: morning_star_pullback",
-          file=sys.stderr)
+    print(
+        f"Unknown strategy '{STRAT_NAME}'. Available example: morning_star_pullback",
+        file=sys.stderr,
+    )
     sys.exit(2)
 STRAT_FN = NEW_STRATEGIES[STRAT_NAME]
 
@@ -94,31 +97,41 @@ def main():
                 last_close = float(last["close"])
                 last_date = pd.Timestamp(last["date"]).date()
                 gain_since = (last_close / float(tr.entry_px) - 1.0) * 100.0
-                hits.append({
-                    "ticker": ticker,
-                    "entry_date": str(ed.date()),
-                    "entry_px": float(tr.entry_px),
-                    "last_close": last_close,
-                    "last_date": str(last_date),
-                    "days_since": (today - ed).days,
-                    "gain_since_entry_pct": gain_since,
-                })
+                hits.append(
+                    {
+                        "ticker": ticker,
+                        "entry_date": str(ed.date()),
+                        "entry_px": float(tr.entry_px),
+                        "last_close": last_close,
+                        "last_date": str(last_date),
+                        "days_since": (today - ed).days,
+                        "gain_since_entry_pct": gain_since,
+                    }
+                )
 
     hits.sort(key=lambda r: (r["days_since"], -r["gain_since_entry_pct"]))
 
-    print(f"\n=== US {STRAT_NAME} fresh entries "
-          f"(last {LOOKBACK_DAYS}d, as of {today.date()}) ===")
+    print(
+        f"\n=== US {STRAT_NAME} fresh entries "
+        f"(last {LOOKBACK_DAYS}d, as of {today.date()}) ==="
+    )
     if not hits:
         print("  (no fresh signals)")
     else:
-        print(f"{'#':>3}  {'TICKER':<8}  {'ENTRY':<11}  "
-              f"{'ENTRY_PX':>9}  {'LAST':>9}  {'GAIN%':>7}  {'DAYS':>4}")
+        print(
+            f"{'#':>3}  {'TICKER':<8}  {'ENTRY':<11}  "
+            f"{'ENTRY_PX':>9}  {'LAST':>9}  {'GAIN%':>7}  {'DAYS':>4}"
+        )
         for i, h in enumerate(hits, 1):
-            print(f"{i:>3}  {h['ticker']:<8}  {h['entry_date']:<11}  "
-                  f"{h['entry_px']:>9.2f}  {h['last_close']:>9.2f}  "
-                  f"{h['gain_since_entry_pct']:>+6.2f}%  {h['days_since']:>4}")
-    print(f"\n[done] {len(hits)} fresh {STRAT_NAME} signals across "
-          f"{len(ohlcv)} US tickers")
+            print(
+                f"{i:>3}  {h['ticker']:<8}  {h['entry_date']:<11}  "
+                f"{h['entry_px']:>9.2f}  {h['last_close']:>9.2f}  "
+                f"{h['gain_since_entry_pct']:>+6.2f}%  {h['days_since']:>4}"
+            )
+    print(
+        f"\n[done] {len(hits)} fresh {STRAT_NAME} signals across "
+        f"{len(ohlcv)} US tickers"
+    )
 
 
 if __name__ == "__main__":

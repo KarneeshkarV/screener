@@ -7,6 +7,7 @@ mapper that translates TradingView-style tickers to yfinance tickers.
 Tests inject a ``StubPriceFetcher`` that returns pre-built synthetic frames;
 the engine never depends directly on yfinance.
 """
+
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -155,13 +156,17 @@ def _split_download(raw: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataF
         return {ticker: _normalize_frame(raw)}
 
     frames: dict[str, pd.DataFrame] = {}
-    level_values = [set(raw.columns.get_level_values(i)) for i in range(raw.columns.nlevels)]
+    level_values = [
+        set(raw.columns.get_level_values(i)) for i in range(raw.columns.nlevels)
+    ]
     for ticker in tickers:
         frame = pd.DataFrame()
         for level, values in enumerate(level_values):
             if ticker in values:
                 selected = raw.xs(ticker, level=level, axis=1, drop_level=True)
-                frame = selected.to_frame() if isinstance(selected, pd.Series) else selected
+                frame = (
+                    selected.to_frame() if isinstance(selected, pd.Series) else selected
+                )
                 break
         frames[ticker] = _normalize_frame(frame)
     return frames
@@ -225,17 +230,27 @@ class YFinancePriceFetcher:
             cached = None if self.refresh else _load_cached(cache_key, self.cache_dir)
             if cached is not None and not cached.empty:
                 cached_by_ticker[ticker] = cached
-            if not self.refresh and cached is not None and _has_range(cached, start_ts, end_ts):
-                results[ticker] = cached.loc[(cached.index >= start_ts) & (cached.index <= end_ts)]
+            if (
+                not self.refresh
+                and cached is not None
+                and _has_range(cached, start_ts, end_ts)
+            ):
+                results[ticker] = cached.loc[
+                    (cached.index >= start_ts) & (cached.index <= end_ts)
+                ]
                 continue
 
             fetch_start, fetch_end = start_ts, end_ts
             if not self.refresh and cached is not None and not cached.empty:
                 min_cached = cached.index.min()
                 max_cached = cached.index.max()
-                if min_cached <= start_ts + pd.Timedelta(days=3) and max_cached < end_ts - pd.Timedelta(days=3):
+                if min_cached <= start_ts + pd.Timedelta(
+                    days=3
+                ) and max_cached < end_ts - pd.Timedelta(days=3):
                     fetch_start = max_cached + pd.Timedelta(days=1)
-                elif max_cached >= end_ts - pd.Timedelta(days=3) and min_cached > start_ts + pd.Timedelta(days=3):
+                elif max_cached >= end_ts - pd.Timedelta(
+                    days=3
+                ) and min_cached > start_ts + pd.Timedelta(days=3):
                     fetch_end = min_cached - pd.Timedelta(days=1)
             missing.setdefault((fetch_start, fetch_end), []).append(ticker)
 
@@ -265,7 +280,9 @@ class YFinancePriceFetcher:
                     merged = _merge_cached(cached_by_ticker.get(ticker), norm)
                     if not merged.empty:
                         _save_cache(cache_key, merged, self.cache_dir)
-                    results[ticker] = merged.loc[(merged.index >= start_ts) & (merged.index <= end_ts)]
+                    results[ticker] = merged.loc[
+                        (merged.index >= start_ts) & (merged.index <= end_ts)
+                    ]
         return results
 
 
@@ -308,7 +325,9 @@ def _normalize_fmp_historical(payload: object, auto_adjust: bool) -> pd.DataFram
             if col in out.columns:
                 out[col] = out[col] * factor
     keep_cols = [col for col in [*OHLCV_COLUMNS, "adj_close"] if col in out.columns]
-    out = out[keep_cols].dropna(subset=[col for col in OHLCV_COLUMNS if col in out.columns])
+    out = out[keep_cols].dropna(
+        subset=[col for col in OHLCV_COLUMNS if col in out.columns]
+    )
     return out[~out.index.duplicated(keep="last")].sort_index()
 
 
@@ -346,8 +365,14 @@ class FMPPriceFetcher:
         for ticker in [t for t in tickers if t]:
             cache_key = _fmp_cache_key(ticker, self.auto_adjust)
             cached = None if self.refresh else _load_cached(cache_key, self.cache_dir)
-            if not self.refresh and cached is not None and _has_range(cached, start_ts, end_ts):
-                results[ticker] = cached.loc[(cached.index >= start_ts) & (cached.index <= end_ts)]
+            if (
+                not self.refresh
+                and cached is not None
+                and _has_range(cached, start_ts, end_ts)
+            ):
+                results[ticker] = cached.loc[
+                    (cached.index >= start_ts) & (cached.index <= end_ts)
+                ]
                 continue
 
             def request_payload() -> object:
@@ -445,7 +470,9 @@ def fetch_benchmark(
     data = fetcher.fetch([symbol], start, end)
     frame = data.get(symbol)
     if frame is None or frame.empty:
-        return pd.Series(index=pd.DatetimeIndex([], name="date"), dtype=float, name=symbol)
+        return pd.Series(
+            index=pd.DatetimeIndex([], name="date"), dtype=float, name=symbol
+        )
     series = frame["close"].astype(float).copy()
     series.name = symbol
     return series

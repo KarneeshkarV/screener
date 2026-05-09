@@ -1,4 +1,5 @@
 """Exhaustive grid search for backtest parameters."""
+
 from __future__ import annotations
 
 import hashlib
@@ -30,7 +31,9 @@ class GridSearchResult:
     error: str | None = None
 
 
-def parameter_combinations(parameter_grid: dict[str, list[Any]]) -> list[dict[str, Any]]:
+def parameter_combinations(
+    parameter_grid: dict[str, list[Any]],
+) -> list[dict[str, Any]]:
     keys = list(parameter_grid)
     values = [parameter_grid[key] for key in keys]
     return [dict(zip(keys, combo)) for combo in itertools.product(*values)]

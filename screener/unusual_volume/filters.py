@@ -4,6 +4,7 @@ Drops illiquid names, sub-floor market caps, and India F&O ban-list tickers.
 The F&O ban-list is fetched from NSE archives via a primed requests session
 (jugaad-data does not expose this endpoint at the time of writing).
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -81,9 +82,7 @@ def _parse_ban_csv(text: str) -> set[str]:
     return out
 
 
-def passes_volume_floor(
-    bars: pd.DataFrame, min_avg_volume: float, as_of: date
-) -> bool:
+def passes_volume_floor(bars: pd.DataFrame, min_avg_volume: float, as_of: date) -> bool:
     """Reject tickers whose 20-day average daily volume is below the floor."""
     if bars is None or bars.empty:
         return False

@@ -1,4 +1,5 @@
 """Compatibility exports for named strategy expression shortcuts."""
+
 from screener.strategies.expressions import (
     NAMED_STRATEGIES,
     NamedStrategy,

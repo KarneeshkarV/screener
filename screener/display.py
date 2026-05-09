@@ -146,13 +146,11 @@ def _print_diff(
     console.print("\n[bold]Diff vs previous run[/bold]")
     if added:
         console.print(
-            f"  [green]+ {', '.join(added)}[/green]  "
-            f"[dim]({len(added)} new)[/dim]"
+            f"  [green]+ {', '.join(added)}[/green]  [dim]({len(added)} new)[/dim]"
         )
     if removed:
         console.print(
-            f"  [red]- {', '.join(removed)}[/red]  "
-            f"[dim]({len(removed)} dropped)[/dim]"
+            f"  [red]- {', '.join(removed)}[/red]  [dim]({len(removed)} dropped)[/dim]"
         )
 
 
@@ -200,7 +198,12 @@ _INSIDER_LABELS = {
 def _format_insider(col: str, val) -> str:
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return "-"
-    if col in {"promoter_pct_latest", "promoter_pct_prev", "fii_pct_latest", "dii_pct_latest"}:
+    if col in {
+        "promoter_pct_latest",
+        "promoter_pct_prev",
+        "fii_pct_latest",
+        "dii_pct_latest",
+    }:
         return f"{float(val):.2f}%"
     if col == "promoter_change":
         return f"{float(val):+.2f}"
@@ -244,7 +247,11 @@ def print_insider_results(
     table = Table(show_header=True, header_style="bold", show_lines=False)
     for col_name in columns:
         label = _INSIDER_LABELS.get(col_name, COLUMN_LABELS.get(col_name, col_name))
-        justify = "right" if col_name not in {"name", "description", "latest_quarter"} else "left"
+        justify = (
+            "right"
+            if col_name not in {"name", "description", "latest_quarter"}
+            else "left"
+        )
         if col_name == "description":
             table.add_column(label, justify=justify, min_width=12, max_width=22)
         elif col_name == "name":

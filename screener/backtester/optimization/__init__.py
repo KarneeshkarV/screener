@@ -1,5 +1,10 @@
 """Parameter optimization tools for the backtester."""
-from screener.backtester.optimization.grid import GridSearchResult, grid_search, parameter_combinations
+
+from screener.backtester.optimization.grid import (
+    GridSearchResult,
+    grid_search,
+    parameter_combinations,
+)
 from screener.backtester.optimization.metrics import (
     calmar_ratio,
     expectancy,
@@ -9,7 +14,10 @@ from screener.backtester.optimization.metrics import (
     sharpe_ratio,
     win_rate,
 )
-from screener.backtester.optimization.monte_carlo import MonteCarloResult, simulate_monte_carlo
+from screener.backtester.optimization.monte_carlo import (
+    MonteCarloResult,
+    simulate_monte_carlo,
+)
 from screener.backtester.optimization.walk_forward import (
     WalkForwardResult,
     WalkForwardSummary,

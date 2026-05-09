@@ -1,4 +1,5 @@
 """Trading metrics used by parameter optimization."""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -73,7 +74,9 @@ def calmar_ratio(equity: pd.Series) -> float:
 
 def risk_adjusted_return(result: BacktestResult) -> float:
     total = float(result.metrics.get("total_return", 0.0))
-    dd = abs(float(result.metrics.get("max_drawdown", maximum_drawdown(result.equity_curve))))
+    dd = abs(
+        float(result.metrics.get("max_drawdown", maximum_drawdown(result.equity_curve)))
+    )
     if dd == 0.0:
         return total
     return total / dd

@@ -1,4 +1,5 @@
 """Compatibility exports for the backtester split."""
+
 from screener.backtester.core import (
     _resolve_stop_fill,
     _resolve_target_fill,

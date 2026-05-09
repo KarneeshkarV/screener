@@ -16,6 +16,7 @@ Convergence notes:
     values. The two converge asymptotically but differ during warm-up — so
     the test asserts tight parity only AFTER a long warm-up (>= 200 bars).
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -71,7 +72,9 @@ def test_highest_lowest_parity(bars):
     # Both call pandas rolling internally (engine via AST; pine-port direct).
     for op in ("max", "min"):
         engine = getattr(bars["close"].rolling(20, min_periods=20), op)().to_numpy()
-        port = getattr(pd.Series(bars["close"].to_numpy()).rolling(20, min_periods=20), op)().to_numpy()
+        port = getattr(
+            pd.Series(bars["close"].to_numpy()).rolling(20, min_periods=20), op
+        )().to_numpy()
         mask = _aligned_mask(engine, port)
         assert np.max(np.abs(engine[mask] - port[mask])) < 1e-9, f"{op} diverges"
 
@@ -109,4 +112,6 @@ def test_rsi_bounds_both_implementations(bars):
     port = pp_rsi(bars["close"].to_numpy(), 14)
     for arr, name in [(engine, "engine"), (port, "port")]:
         finite = arr[~np.isnan(arr)]
-        assert (finite >= 0).all() and (finite <= 100).all(), f"{name} RSI out of bounds"
+        assert (finite >= 0).all() and (finite <= 100).all(), (
+            f"{name} RSI out of bounds"
+        )

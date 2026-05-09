@@ -19,6 +19,7 @@ A separate boolean ``High_Momentum_Watch`` flags Long Build-ups within
 15% of the 52-week high — the spec's bonus filter that catches momentum
 plays before they break out.
 """
+
 from __future__ import annotations
 
 import pandas as pd
@@ -63,7 +64,5 @@ def label(df: pd.DataFrame) -> pd.DataFrame:
     # High Momentum Watch: Long Build-up + within 15% of 52-week high.
     # NaN dist (cache miss) is treated as not-near-high.
     near_high = df["Dist_From_52W_High"].le(15.0).fillna(False)
-    df["High_Momentum_Watch"] = (
-        (df["Operator_Action"] == "Long Build-up") & near_high
-    )
+    df["High_Momentum_Watch"] = (df["Operator_Action"] == "Long Build-up") & near_high
     return df

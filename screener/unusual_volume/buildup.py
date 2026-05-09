@@ -24,6 +24,7 @@ whether delivery is in play.
 This module operates on the same OHLCV panel the rest of unusual_volume/
 already loads — it adds no new data dependencies.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict, field
@@ -45,13 +46,13 @@ BB_MULT = 2.0
 # squeeze / volatility-compression breakout playbooks). All thresholds are
 # soft: the sub-score scales linearly past the threshold, so a marginal
 # pass shouldn't dominate the composite.
-ATR_RATIO_THRESHOLD = 0.60      # atr_now / max(atr, window) — lower = tighter
-BB_SQUEEZE_THRESHOLD = 0.50     # bb_width_now / SMA(bb_width, 20)
-UPDOWN_VOL_THRESHOLD = 1.5      # up_vol / down_vol
-SLOPE_NORM_FLOOR = 0.0          # higher-lows slope must be > 0
+ATR_RATIO_THRESHOLD = 0.60  # atr_now / max(atr, window) — lower = tighter
+BB_SQUEEZE_THRESHOLD = 0.50  # bb_width_now / SMA(bb_width, 20)
+UPDOWN_VOL_THRESHOLD = 1.5  # up_vol / down_vol
+SLOPE_NORM_FLOOR = 0.0  # higher-lows slope must be > 0
 DELIVERY_MEAN_THRESHOLD = 45.0  # rolling mean DELIV_PER
-DELIVERY_HIT_THRESHOLD = 0.60   # fraction of bars with DELIV_PER >= 50
-ABSORPTION_THRESHOLD = 0.65     # mean (close-low)/(high-low)
+DELIVERY_HIT_THRESHOLD = 0.60  # fraction of bars with DELIV_PER >= 50
+ABSORPTION_THRESHOLD = 0.65  # mean (close-low)/(high-low)
 
 
 @dataclass
@@ -77,7 +78,9 @@ class BuildupScore:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d["as_of"] = self.as_of.isoformat() if isinstance(self.as_of, date) else str(self.as_of)
+        d["as_of"] = (
+            self.as_of.isoformat() if isinstance(self.as_of, date) else str(self.as_of)
+        )
         return d
 
 
@@ -98,7 +101,9 @@ def _atr(df: pd.DataFrame, length: int = ATR_LEN) -> pd.Series:
     return tr.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
 
 
-def _bb_width(close: pd.Series, length: int = BB_LEN, mult: float = BB_MULT) -> pd.Series:
+def _bb_width(
+    close: pd.Series, length: int = BB_LEN, mult: float = BB_MULT
+) -> pd.Series:
     basis = close.rolling(length, min_periods=length).mean()
     sd = close.rolling(length, min_periods=length).std(ddof=0)
     upper = basis + mult * sd
@@ -107,7 +112,9 @@ def _bb_width(close: pd.Series, length: int = BB_LEN, mult: float = BB_MULT) -> 
     return (upper - lower) / basis.replace(0, np.nan)
 
 
-def _score_range_compression(df: pd.DataFrame, window: int) -> tuple[Optional[float], Optional[float], Optional[float]]:
+def _score_range_compression(
+    df: pd.DataFrame, window: int
+) -> tuple[Optional[float], Optional[float], Optional[float]]:
     if len(df) < max(BB_LEN, ATR_LEN) + window:
         return None, None, None
     atr = _atr(df)
@@ -125,16 +132,23 @@ def _score_range_compression(df: pd.DataFrame, window: int) -> tuple[Optional[fl
 
     # Sub-score: lower ratios = tighter compression. Map [0..threshold] -> [1..0]
     # then take the better (tighter) of the two engines.
-    atr_sub = max(0.0, min(1.0, (ATR_RATIO_THRESHOLD - atr_ratio) / ATR_RATIO_THRESHOLD + 0.5))
+    atr_sub = max(
+        0.0, min(1.0, (ATR_RATIO_THRESHOLD - atr_ratio) / ATR_RATIO_THRESHOLD + 0.5)
+    )
     if bb_ratio is None:
         bb_sub = 0.0
     else:
-        bb_sub = max(0.0, min(1.0, (BB_SQUEEZE_THRESHOLD - bb_ratio) / BB_SQUEEZE_THRESHOLD + 0.5))
+        bb_sub = max(
+            0.0,
+            min(1.0, (BB_SQUEEZE_THRESHOLD - bb_ratio) / BB_SQUEEZE_THRESHOLD + 0.5),
+        )
     sub = max(atr_sub, bb_sub)
     return float(sub), atr_ratio, bb_ratio
 
 
-def _score_updown_volume(df: pd.DataFrame, window: int) -> tuple[Optional[float], Optional[float]]:
+def _score_updown_volume(
+    df: pd.DataFrame, window: int
+) -> tuple[Optional[float], Optional[float]]:
     win = df.iloc[-window:]
     if len(win) < window:
         return None, None
@@ -159,7 +173,9 @@ def _score_updown_volume(df: pd.DataFrame, window: int) -> tuple[Optional[float]
     return sub, (None if not np.isfinite(ratio) else ratio)
 
 
-def _score_higher_lows(df: pd.DataFrame, window: int) -> tuple[Optional[float], Optional[float]]:
+def _score_higher_lows(
+    df: pd.DataFrame, window: int
+) -> tuple[Optional[float], Optional[float]]:
     win = df.iloc[-window:]
     if len(win) < window:
         return None, None
@@ -218,12 +234,14 @@ def _score_sustained_delivery(
     hit_rate = float((pct >= 50.0).sum() / len(pct))
     # Sub-score: blended mean + hit rate.
     mean_sub = max(0.0, min(1.0, (mean_pct - 30.0) / 40.0))  # 30 -> 0, 70 -> 1
-    hit_sub = max(0.0, min(1.0, (hit_rate - 0.3) / 0.6))     # 30% -> 0, 90% -> 1
+    hit_sub = max(0.0, min(1.0, (hit_rate - 0.3) / 0.6))  # 30% -> 0, 90% -> 1
     sub = (mean_sub + hit_sub) / 2.0
     return float(sub), mean_pct, hit_rate
 
 
-def _score_close_near_high(df: pd.DataFrame, window: int) -> tuple[Optional[float], Optional[float]]:
+def _score_close_near_high(
+    df: pd.DataFrame, window: int
+) -> tuple[Optional[float], Optional[float]]:
     win = df.iloc[-window:]
     if len(win) < window:
         return None, None

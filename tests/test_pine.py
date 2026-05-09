@@ -121,6 +121,7 @@ def test_crossover_only_uses_i_and_iminus1():
     a = evaluate(parse("close"), bars)
     b = bars["_slow"]
     from screener.backtester.pine import _crossover  # noqa: E402
+
     out = _crossover(a, b)
     # First cross happens at index 6 (bar i=6): fast[6]=3>slow[6]=3? actually
     # fast[6]=3 vs slow[6]=3 -> not strictly greater. Try at index 7:
@@ -142,6 +143,7 @@ def test_crossunder_symmetric():
         {"open": a, "high": a, "low": a, "close": a, "volume": 1.0, "_b": b}
     )
     from screener.backtester.pine import _crossunder
+
     out = _crossunder(evaluate(parse("close"), bars), bars["_b"])
     # bar 3: a=3<b=4 and prev a=5>=b=4 → True
     assert bool(out.iloc[3])
@@ -213,9 +215,7 @@ def test_adj_close_alias_when_missing():
 
 def test_composite_expression():
     bars = _bars(50)
-    node = parse(
-        "close > ema(close, 20) and ema(close, 20) > ema(close, 50)"
-    )
+    node = parse("close > ema(close, 20) and ema(close, 20) > ema(close, 50)")
     out = evaluate(node, bars)
     assert out.dtype == bool
     assert len(out) == len(bars)
@@ -229,9 +229,7 @@ def test_breakout_expression():
 
 
 def test_required_lookback():
-    node = parse(
-        "close > sma(close, 20) and ema(close, 50) > rsi(close, 14)"
-    )
+    node = parse("close > sma(close, 20) and ema(close, 50) > rsi(close, 14)")
     assert required_lookback(node) == 50
     node2 = parse("crossover(close, sma(close, 10))")
     assert required_lookback(node2) == 10

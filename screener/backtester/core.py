@@ -1,4 +1,5 @@
 """Shared backtest primitives used by multiple backtest flows."""
+
 from __future__ import annotations
 
 import math
@@ -323,9 +324,7 @@ def _check_exit_at_bar(
         )
     if target_hit:
         return (
-            _slip_sell(
-                _resolve_target_fill(bar_open, state.target_ref, cfg.gap_fills)
-            ),
+            _slip_sell(_resolve_target_fill(bar_open, state.target_ref, cfg.gap_fills)),
             "target",
         )
 
@@ -557,7 +556,9 @@ def _bar_index_on_or_before(bars: pd.DataFrame, day: pd.Timestamp) -> Optional[i
     return int(np.where(mask)[0][-1])
 
 
-def _active_or_pending_tickers(slot_states: dict[int, Optional[_SlotState]]) -> set[str]:
+def _active_or_pending_tickers(
+    slot_states: dict[int, Optional[_SlotState]],
+) -> set[str]:
     return {state.ticker for state in slot_states.values() if state is not None}
 
 

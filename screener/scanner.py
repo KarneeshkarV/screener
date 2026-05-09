@@ -4,7 +4,15 @@ import re
 from tradingview_screener import Query
 import pandas as pd
 
-from screener.cache import cache_path, is_fresh, read_frame, read_json, stable_key, write_frame, write_json
+from screener.cache import (
+    cache_path,
+    is_fresh,
+    read_frame,
+    read_json,
+    stable_key,
+    write_frame,
+    write_json,
+)
 from screener.resilience import call_with_resilience
 
 
@@ -51,7 +59,11 @@ def get_scanner_data_cached(
     key = stable_key(key_parts)
     frame_path = cache_path("tradingview_scanner", key, "parquet")
     meta_path = cache_path("tradingview_scanner", key, "json")
-    if not refresh and is_fresh(frame_path, cache_ttl) and is_fresh(meta_path, cache_ttl):
+    if (
+        not refresh
+        and is_fresh(frame_path, cache_ttl)
+        and is_fresh(meta_path, cache_ttl)
+    ):
         cached = read_frame(frame_path)
         meta = read_json(meta_path, default={}) or {}
         if cached is not None:
@@ -124,9 +136,13 @@ def _dedupe_listings(df: pd.DataFrame) -> pd.DataFrame:
 
     deduped = df.copy()
     fallback = deduped["name"] if "name" in deduped.columns else deduped["ticker"]
-    company = deduped["description"].fillna("").where(
-        deduped["description"].fillna("").str.strip() != "",
-        fallback.fillna(""),
+    company = (
+        deduped["description"]
+        .fillna("")
+        .where(
+            deduped["description"].fillna("").str.strip() != "",
+            fallback.fillna(""),
+        )
     )
     deduped["_listing_key"] = company.map(
         lambda value: re.sub(r"[^a-z0-9]+", "", str(value).lower())
@@ -181,7 +197,9 @@ def scan(
         df = _add_setup_score(df)
         df = df.sort_values("setup_score", ascending=False)
         hidden_score_columns = [
-            col for col in SETUP_SCORE_COLUMNS if not detail or col not in DETAIL_COLUMNS
+            col
+            for col in SETUP_SCORE_COLUMNS
+            if not detail or col not in DETAIL_COLUMNS
         ]
         df = df.drop(columns=hidden_score_columns)
     if not df.empty:

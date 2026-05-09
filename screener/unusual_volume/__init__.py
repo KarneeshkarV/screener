@@ -5,6 +5,7 @@ Indian equities. The India path additionally overlays NSE delivery quantity
 (via jugaad-data) so volume spikes without delivery (intraday churn) are
 separated from real institutional footprints.
 """
+
 from __future__ import annotations
 
 from .detector import (

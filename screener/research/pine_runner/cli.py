@@ -1,4 +1,5 @@
 """CLI for the research Pine runner."""
+
 from __future__ import annotations
 
 import click
@@ -18,7 +19,9 @@ from screener.research.pine_runner.run import run_market
     default=None,
     help="If set, write per-strategy top-trader ticker lists to this JSON file.",
 )
-def main(market: str, years: int, limit: int, refresh: bool, trades_json: str | None) -> None:
+def main(
+    market: str, years: int, limit: int, refresh: bool, trades_json: str | None
+) -> None:
     result = run_market(market=market, years=years, limit=limit, refresh=refresh)
     print_market_table(result)
     if trades_json:

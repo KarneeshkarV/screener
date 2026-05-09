@@ -1,4 +1,5 @@
 """Click commands for backtester parameter optimization."""
+
 from __future__ import annotations
 
 import csv
@@ -29,7 +30,9 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-def _parse_values(raw: str | None, cast: type = float, *, allow_none: bool = True) -> list[Any]:
+def _parse_values(
+    raw: str | None, cast: type = float, *, allow_none: bool = True
+) -> list[Any]:
     if raw is None:
         return [None] if allow_none else []
     values: list[Any] = []
@@ -57,7 +60,9 @@ def _parse_values(raw: str | None, cast: type = float, *, allow_none: bool = Tru
     return values
 
 
-def _parameter_grid(stop_loss, take_profit, trailing_stop, hold) -> dict[str, list[Any]]:
+def _parameter_grid(
+    stop_loss, take_profit, trailing_stop, hold
+) -> dict[str, list[Any]]:
     grid = {
         "stop_loss": _parse_values(stop_loss),
         "take_profit": _parse_values(take_profit),
@@ -98,15 +103,25 @@ def _base_config(
         exit_expr = exit_expr or strategy.exit
     if not entry_expr:
         raise click.UsageError("--entry or --strategy is required.")
-    ticker_tuple = tuple(t.strip() for t in tickers.split(",") if t.strip()) if tickers else None
-    resolved_min_price = DEFAULT_MIN_PRICE.get(market) if min_price is None else min_price
-    resolved_min_adv = DEFAULT_MIN_ADV.get(market) if min_avg_dollar_volume is None else min_avg_dollar_volume
+    ticker_tuple = (
+        tuple(t.strip() for t in tickers.split(",") if t.strip()) if tickers else None
+    )
+    resolved_min_price = (
+        DEFAULT_MIN_PRICE.get(market) if min_price is None else min_price
+    )
+    resolved_min_adv = (
+        DEFAULT_MIN_ADV.get(market)
+        if min_avg_dollar_volume is None
+        else min_avg_dollar_volume
+    )
     if resolved_min_price == 0:
         resolved_min_price = None
     if resolved_min_adv == 0:
         resolved_min_adv = None
     if not ticker_tuple and not universe_file:
-        raise click.UsageError("Pass --tickers or --universe-file for optimization runs.")
+        raise click.UsageError(
+            "Pass --tickers or --universe-file for optimization runs."
+        )
     return BacktestConfig(
         market=market,
         as_of=end_date,
@@ -133,7 +148,9 @@ def _base_config(
 
 
 def _resolve_dates(start_arg, end_arg, years) -> tuple[date, date]:
-    end_date = end_arg.date() if isinstance(end_arg, datetime) else (end_arg or date.today())
+    end_date = (
+        end_arg.date() if isinstance(end_arg, datetime) else (end_arg or date.today())
+    )
     start_date = (
         start_arg.date()
         if isinstance(start_arg, datetime)
@@ -155,9 +172,18 @@ def optimize() -> None:
 
 def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
     options = [
-        click.option("-m", "--market", type=click.Choice(["us", "india"]), default="us"),
-        click.option("--start", "start_arg", type=click.DateTime(formats=["%Y-%m-%d"]), default=None),
-        click.option("--end", "end_arg", type=click.DateTime(formats=["%Y-%m-%d"]), default=None),
+        click.option(
+            "-m", "--market", type=click.Choice(["us", "india"]), default="us"
+        ),
+        click.option(
+            "--start",
+            "start_arg",
+            type=click.DateTime(formats=["%Y-%m-%d"]),
+            default=None,
+        ),
+        click.option(
+            "--end", "end_arg", type=click.DateTime(formats=["%Y-%m-%d"]), default=None
+        ),
         click.option("--years", type=int, default=1, show_default=True),
         click.option("--top", type=int, default=10, show_default=True),
         click.option("--entry", "entry_expr", default=None),
@@ -177,13 +203,31 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
         click.option("--min-price", type=float, default=None),
         click.option("--min-avg-dollar-volume", type=float, default=None),
         click.option("--adv-window", type=int, default=20),
-        click.option("--metric", type=click.Choice(["sharpe", "profit_factor", "risk_adjusted_return", "calmar", "total_return"]), default="sharpe"),
+        click.option(
+            "--metric",
+            type=click.Choice(
+                [
+                    "sharpe",
+                    "profit_factor",
+                    "risk_adjusted_return",
+                    "calmar",
+                    "total_return",
+                ]
+            ),
+            default="sharpe",
+        ),
         click.option("--min-trades", type=int, default=1, show_default=True),
         click.option("--top-n", type=int, default=10, show_default=True),
         click.option("--workers", type=int, default=1, show_default=True),
-        click.option("--cache", "cache_path", type=click.Path(path_type=Path), default=None),
-        click.option("--json", "json_path", type=click.Path(path_type=Path), default=None),
-        click.option("--html", "html_path", type=click.Path(path_type=Path), default=None),
+        click.option(
+            "--cache", "cache_path", type=click.Path(path_type=Path), default=None
+        ),
+        click.option(
+            "--json", "json_path", type=click.Path(path_type=Path), default=None
+        ),
+        click.option(
+            "--html", "html_path", type=click.Path(path_type=Path), default=None
+        ),
     ]
     for option in reversed(options):
         fn = option(fn)
@@ -194,9 +238,14 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
 @_common_options
 def optimize_grid(**kwargs) -> None:
     """Run exhaustive grid search over parameter ranges."""
-    start_date, end_date = _resolve_dates(kwargs.pop("start_arg"), kwargs.pop("end_arg"), kwargs.pop("years"))
+    start_date, end_date = _resolve_dates(
+        kwargs.pop("start_arg"), kwargs.pop("end_arg"), kwargs.pop("years")
+    )
     parameter_grid = _parameter_grid(
-        kwargs["stop_loss"], kwargs["take_profit"], kwargs["trailing_stop"], kwargs["hold"]
+        kwargs["stop_loss"],
+        kwargs["take_profit"],
+        kwargs["trailing_stop"],
+        kwargs["hold"],
     )
     cfg = _base_config(
         market=kwargs["market"],
@@ -248,9 +297,14 @@ def optimize_grid(**kwargs) -> None:
 @click.option("--step-days", type=int, default=None)
 def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
     """Run rolling train/test walk-forward optimization."""
-    start_date, end_date = _resolve_dates(kwargs.pop("start_arg"), kwargs.pop("end_arg"), kwargs.pop("years"))
+    start_date, end_date = _resolve_dates(
+        kwargs.pop("start_arg"), kwargs.pop("end_arg"), kwargs.pop("years")
+    )
     parameter_grid = _parameter_grid(
-        kwargs["stop_loss"], kwargs["take_profit"], kwargs["trailing_stop"], kwargs["hold"]
+        kwargs["stop_loss"],
+        kwargs["take_profit"],
+        kwargs["trailing_stop"],
+        kwargs["hold"],
     )
     cfg = _base_config(
         market=kwargs["market"],
@@ -310,7 +364,9 @@ def _load_trades(path: Path) -> list[Trade]:
             Trade(
                 ticker=str(row.get("ticker", "")),
                 rank=int(row.get("rank") or idx),
-                signal_date=date.fromisoformat(str(row.get("signal_date") or row.get("entry_date"))),
+                signal_date=date.fromisoformat(
+                    str(row.get("signal_date") or row.get("entry_date"))
+                ),
                 entry_date=date.fromisoformat(str(row.get("entry_date"))),
                 entry_price=float(row.get("entry_price") or 0.0),
                 exit_date=date.fromisoformat(str(row.get("exit_date"))),
@@ -327,13 +383,20 @@ def _load_trades(path: Path) -> list[Trade]:
 
 
 @optimize.command(name="validate")
-@click.option("--trades", "trades_path", type=click.Path(path_type=Path, exists=True), required=True)
+@click.option(
+    "--trades",
+    "trades_path",
+    type=click.Path(path_type=Path, exists=True),
+    required=True,
+)
 @click.option("--iterations", type=int, default=5000, show_default=True)
 @click.option("--seed", type=int, default=42, show_default=True)
 @click.option("--initial-capital", type=float, default=100_000.0, show_default=True)
 @click.option("--ruin-threshold", type=float, default=0.5, show_default=True)
 @click.option("--json", "json_path", type=click.Path(path_type=Path), default=None)
-def optimize_validate(trades_path, iterations, seed, initial_capital, ruin_threshold, json_path) -> None:
+def optimize_validate(
+    trades_path, iterations, seed, initial_capital, ruin_threshold, json_path
+) -> None:
     """Run Monte Carlo stress testing on an existing trade ledger."""
     from rich.console import Console
     from rich.table import Table

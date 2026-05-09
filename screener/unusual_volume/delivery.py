@@ -10,6 +10,7 @@ equity (`EQ`, `BE`, `BZ`) so government securities and SME segments are
 excluded — those have very different delivery profiles and would distort
 the SMA window.
 """
+
 from __future__ import annotations
 
 import os
@@ -87,7 +88,9 @@ def load_delivery_panel(
     cur = as_of
     earliest = as_of - timedelta(days=history_days)
     while cur >= earliest:
-        if cur.weekday() < 5:  # skip weekends locally; jugaad still hits archives though
+        if (
+            cur.weekday() < 5
+        ):  # skip weekends locally; jugaad still hits archives though
             day = _load_one_day(cur)
             if day is not None and not day.empty:
                 frames.append(day[day["SYMBOL"].isin(sym_set)])
@@ -109,21 +112,15 @@ def compute_delivery_metrics(panel: pd.DataFrame) -> pd.DataFrame:
             out[col] = pd.Series(dtype=float)
         return out
     panel = panel.copy()
-    panel["delivery_sma_20"] = (
-        panel.groupby("SYMBOL")["DELIV_QTY"]
-        .transform(
-            lambda s: s.shift(1).rolling(DELIVERY_SMA_WINDOW, min_periods=5).mean()
-        )
+    panel["delivery_sma_20"] = panel.groupby("SYMBOL")["DELIV_QTY"].transform(
+        lambda s: s.shift(1).rolling(DELIVERY_SMA_WINDOW, min_periods=5).mean()
     )
     panel["delivery_rvol"] = panel["DELIV_QTY"] / panel["delivery_sma_20"]
     # Rolling mean of DELIV_PER for build-up detection — the per-bar
     # delivery_pct is too noisy on its own; sustained-elevation over weeks is
     # what marks accumulation.
-    panel["delivery_pct_sma_20"] = (
-        panel.groupby("SYMBOL")["DELIV_PER"]
-        .transform(
-            lambda s: s.rolling(DELIVERY_SMA_WINDOW, min_periods=5).mean()
-        )
+    panel["delivery_pct_sma_20"] = panel.groupby("SYMBOL")["DELIV_PER"].transform(
+        lambda s: s.rolling(DELIVERY_SMA_WINDOW, min_periods=5).mean()
     )
     return panel
 
@@ -145,9 +142,7 @@ def _delivery_notes(rvol: float, delivery_pct: Optional[float], direction: str) 
     return "; ".join(notes)
 
 
-def overlay_events(
-    events: list[Event], panel: pd.DataFrame
-) -> list[Event]:
+def overlay_events(events: list[Event], panel: pd.DataFrame) -> list[Event]:
     """Mutate ``events`` in place with delivery_qty / pct / rvol / conviction."""
     if not events:
         return events
@@ -202,8 +197,7 @@ def quiet_accumulation_events(
     as_of_ts = pd.Timestamp(as_of).normalize()
     out: list[Event] = []
     today = panel[
-        (panel["date"] == as_of)
-        & (panel["delivery_rvol"] >= QUIET_DELIVERY_RVOL)
+        (panel["date"] == as_of) & (panel["delivery_rvol"] >= QUIET_DELIVERY_RVOL)
     ]
     for _, row in today.iterrows():
         sym = str(row["SYMBOL"]).upper()
@@ -231,7 +225,9 @@ def quiet_accumulation_events(
         rvol = v / avg20 if avg20 and avg20 > 0 else float("nan")
         if not pd.isna(rvol) and rvol >= min_rvol_skip:
             continue  # already covered by the regular detector
-        prev_close = float(df["close"].iloc[-2]) if len(df) >= 2 else float(last["close"])
+        prev_close = (
+            float(df["close"].iloc[-2]) if len(df) >= 2 else float(last["close"])
+        )
         pct_change = (
             (float(last["close"]) - prev_close) / prev_close * 100.0
             if prev_close > 0
@@ -244,7 +240,9 @@ def quiet_accumulation_events(
             float(row["delivery_rvol"]) if not pd.isna(row["delivery_rvol"]) else None
         )
         conviction = (
-            round((rvol if not pd.isna(rvol) else 1.0) * (delivery_pct or 0.0) / 100.0, 4)
+            round(
+                (rvol if not pd.isna(rvol) else 1.0) * (delivery_pct or 0.0) / 100.0, 4
+            )
             if delivery_pct is not None
             else None
         )

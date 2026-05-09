@@ -3,6 +3,7 @@
 Three output sinks: rich table to stdout, JSON file (full schema), and
 Markdown summary. Mirrors the pattern in ``scan_today.py``.
 """
+
 from __future__ import annotations
 
 import json
@@ -172,9 +173,7 @@ def write_json(events: list[Event], path: Path) -> None:
     Path(path).write_text(json.dumps(payload, indent=2, default=str, allow_nan=False))
 
 
-def write_markdown(
-    events: list[Event], path: Path, market: str, as_of
-) -> None:
+def write_markdown(events: list[Event], path: Path, market: str, as_of) -> None:
     sorted_events = sort_events(events)
     is_india = market == "india"
     lines: list[str] = []
@@ -205,23 +204,23 @@ def write_markdown(
         if label == "BUILDUP":
             # Build-ups don't have meaningful RVOL/Z (they failed the volume
             # filter), so render score + flags instead.
-            lines.append(
-                "| # | Ticker | Score | Flags | Close | Chg | Sector |"
-            )
-            lines.append(
-                "|---|--------|-----:|-------|------:|----:|--------|"
-            )
+            lines.append("| # | Ticker | Score | Flags | Close | Chg | Sector |")
+            lines.append("|---|--------|-----:|-------|------:|----:|--------|")
             for i, ev in enumerate(_sort_by_buildup(evs)[:25], 1):
                 lines.append(
-                    "| " + " | ".join([
-                        str(i),
-                        f"**{ev.symbol}**",
-                        _fmt_float(ev.buildup_score, 3),
-                        ", ".join(ev.buildup_flags or []) or "-",
-                        _fmt_float(ev.close),
-                        _fmt_pct(ev.pct_change),
-                        ev.sector or "-",
-                    ]) + " |"
+                    "| "
+                    + " | ".join(
+                        [
+                            str(i),
+                            f"**{ev.symbol}**",
+                            _fmt_float(ev.buildup_score, 3),
+                            ", ".join(ev.buildup_flags or []) or "-",
+                            _fmt_float(ev.close),
+                            _fmt_pct(ev.pct_change),
+                            ev.sector or "-",
+                        ]
+                    )
+                    + " |"
                 )
             lines.append("")
             continue
@@ -273,8 +272,6 @@ def write_markdown(
 def _sort_by_buildup(evs: list[Event]) -> list[Event]:
     return sorted(
         evs,
-        key=lambda e: (
-            e.buildup_score if e.buildup_score is not None else 0.0
-        ),
+        key=lambda e: (e.buildup_score if e.buildup_score is not None else 0.0),
         reverse=True,
     )

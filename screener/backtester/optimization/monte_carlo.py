@@ -1,4 +1,5 @@
 """Monte Carlo stress testing for completed trade lists."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

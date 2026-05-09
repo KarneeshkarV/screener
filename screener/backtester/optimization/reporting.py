@@ -1,4 +1,5 @@
 """Console, JSON, and HTML reports for optimization results."""
+
 from __future__ import annotations
 
 import json
@@ -32,10 +33,20 @@ def write_json_report(data: Any, path: Path | str) -> None:
     target.write_text(json.dumps(data, indent=2, default=_json_default))
 
 
-def print_grid_table(results: Iterable[GridSearchResult], console: Console | None = None) -> None:
+def print_grid_table(
+    results: Iterable[GridSearchResult], console: Console | None = None
+) -> None:
     console = console or Console()
     table = Table(title="Grid Search Results", show_header=True, header_style="bold")
-    for col in ["Rank", "Score", "Trades", "Sharpe", "Profit Factor", "Max DD", "Params"]:
+    for col in [
+        "Rank",
+        "Score",
+        "Trades",
+        "Sharpe",
+        "Profit Factor",
+        "Max DD",
+        "Params",
+    ]:
         table.add_column(col, justify="right" if col != "Params" else "left")
     for rank, result in enumerate(results, start=1):
         table.add_row(
@@ -50,11 +61,15 @@ def print_grid_table(results: Iterable[GridSearchResult], console: Console | Non
     console.print(table)
 
 
-def print_walk_forward_table(summary: WalkForwardSummary, console: Console | None = None) -> None:
+def print_walk_forward_table(
+    summary: WalkForwardSummary, console: Console | None = None
+) -> None:
     console = console or Console()
     table = Table(title="Walk-Forward Results", show_header=True, header_style="bold")
     for col in ["Window", "Train Score", "Test Sharpe", "Test Trades", "Params"]:
-        table.add_column(col, justify="right" if col != "Params" and col != "Window" else "left")
+        table.add_column(
+            col, justify="right" if col != "Params" and col != "Window" else "left"
+        )
     for result in summary.windows:
         w = result.window
         table.add_row(
@@ -72,7 +87,9 @@ def print_walk_forward_table(summary: WalkForwardSummary, console: Console | Non
     )
 
 
-def write_html_report(data: Any, path: Path | str, title: str = "Optimization Report") -> None:
+def write_html_report(
+    data: Any, path: Path | str, title: str = "Optimization Report"
+) -> None:
     payload = json.dumps(data, indent=2, default=_json_default)
     html = f"""<!doctype html>
 <html lang="en">

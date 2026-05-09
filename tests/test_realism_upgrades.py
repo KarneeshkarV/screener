@@ -10,6 +10,7 @@ Covers the four modeling limitations that were addressed:
 Tests use the same synthetic ``make_bars`` helper and ``StubPriceFetcher`` as
 the existing suite so no live yfinance call is made.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -76,8 +77,12 @@ def test_half_spread_buys_above_mid_sells_below():
 def test_vol_impact_scales_with_sqrt_shares_over_adv():
     # 4x shares → 2x adverse fraction (Almgren-Chriss sqrt-law).
     model = VolumeImpactSlippage(k=0.1)
-    base = model.adverse_fraction("buy", shares=1000.0, adv=1_000_000.0, sigma_daily=0.02)
-    four_x = model.adverse_fraction("buy", shares=4000.0, adv=1_000_000.0, sigma_daily=0.02)
+    base = model.adverse_fraction(
+        "buy", shares=1000.0, adv=1_000_000.0, sigma_daily=0.02
+    )
+    four_x = model.adverse_fraction(
+        "buy", shares=4000.0, adv=1_000_000.0, sigma_daily=0.02
+    )
     assert four_x == pytest.approx(2.0 * base, rel=1e-9)
 
 
@@ -98,7 +103,9 @@ def test_composite_sums_components():
 def test_zero_adv_falls_back_safely():
     # Volume-impact with zero ADV must not explode (div-by-zero / sqrt-of-neg).
     model = VolumeImpactSlippage(k=0.5)
-    assert model.adverse_fraction("buy", shares=1000.0, adv=0.0, sigma_daily=0.02) == 0.0
+    assert (
+        model.adverse_fraction("buy", shares=1000.0, adv=0.0, sigma_daily=0.02) == 0.0
+    )
     assert model.adverse_fraction("buy", shares=0.0, adv=1e6, sigma_daily=0.02) == 0.0
     assert model.adverse_fraction("buy", shares=1000.0, adv=1e6, sigma_daily=0.0) == 0.0
 
@@ -137,13 +144,17 @@ def test_gap_down_stop_fills_at_open_worse_than_stop_ref():
 
 def test_gap_up_target_fills_at_open_better_than_target_ref():
     # target_ref=105, bar opens at 110 → gap fill at 110, not 105.
-    assert _resolve_target_fill(bar_open=110.0, target_ref=105.0, gap_fills=True) == 110.0
+    assert (
+        _resolve_target_fill(bar_open=110.0, target_ref=105.0, gap_fills=True) == 110.0
+    )
 
 
 def test_gap_fills_false_preserves_legacy_behavior():
     # Gap-fills disabled → always reference price regardless of bar open.
     assert _resolve_stop_fill(bar_open=90.0, stop_ref=95.0, gap_fills=False) == 95.0
-    assert _resolve_target_fill(bar_open=110.0, target_ref=105.0, gap_fills=False) == 105.0
+    assert (
+        _resolve_target_fill(bar_open=110.0, target_ref=105.0, gap_fills=False) == 105.0
+    )
 
 
 def test_stop_refprice_fill_when_bar_opens_above_stop():

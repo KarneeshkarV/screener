@@ -12,6 +12,7 @@ Models:
     ``k * sigma_daily * sqrt(shares / adv_shares)``.
   * ``CompositeSlippage`` — sums adverse fractions from component models.
 """
+
 from __future__ import annotations
 
 import math

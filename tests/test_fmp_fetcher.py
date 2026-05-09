@@ -4,7 +4,11 @@ from datetime import date
 
 import pandas as pd
 
-from screener.backtester.data import FallbackPriceFetcher, FMPPriceFetcher, build_price_fetcher
+from screener.backtester.data import (
+    FallbackPriceFetcher,
+    FMPPriceFetcher,
+    build_price_fetcher,
+)
 
 
 class DummyResponse:
@@ -67,8 +71,18 @@ def test_fmp_fetcher_uses_api_key_and_normalizes_adjusted_prices(tmp_path):
     assert session.calls[0][0].endswith("/AAA")
     assert session.calls[0][1]["params"]["apikey"] == "test-key"
     frame = out["AAA"]
-    assert list(frame.columns) == ["open", "high", "low", "close", "volume", "adj_close"]
-    assert frame.index.tolist() == [pd.Timestamp("2024-01-02"), pd.Timestamp("2024-01-03")]
+    assert list(frame.columns) == [
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "adj_close",
+    ]
+    assert frame.index.tolist() == [
+        pd.Timestamp("2024-01-02"),
+        pd.Timestamp("2024-01-03"),
+    ]
     assert frame.loc[pd.Timestamp("2024-01-02"), "close"] == 52
     assert frame.loc[pd.Timestamp("2024-01-03"), "open"] == 52.5
 
@@ -115,7 +129,10 @@ def test_fallback_fetcher_fills_empty_primary_results():
         def fetch(self, tickers, start, end):
             ticker_list = list(tickers)
             self.calls.append(ticker_list)
-            return {ticker: self.frames.get(ticker, pd.DataFrame()) for ticker in ticker_list}
+            return {
+                ticker: self.frames.get(ticker, pd.DataFrame())
+                for ticker in ticker_list
+            }
 
     fallback_frame = pd.DataFrame(
         {

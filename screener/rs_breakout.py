@@ -4,6 +4,7 @@ The scan is intentionally local/OHLCV-based because the required filters
 depend on stock-vs-index history, SuperTrend state, previous completed weekly
 high, and NSE delivery bhavcopy data.
 """
+
 from __future__ import annotations
 
 import json
@@ -79,7 +80,9 @@ def normalize_bars(bars: pd.DataFrame, as_of: date) -> pd.DataFrame:
     return df[list(needed)].astype(float)
 
 
-def relative_strength_55(stock_close: pd.Series, benchmark_close: pd.Series) -> pd.Series:
+def relative_strength_55(
+    stock_close: pd.Series, benchmark_close: pd.Series
+) -> pd.Series:
     aligned = pd.concat(
         [stock_close.astype(float), benchmark_close.astype(float)],
         axis=1,
@@ -128,7 +131,11 @@ def supertrend(
         if i == 0 or pd.isna(final_upper.iloc[i - 1]):
             final_upper.iloc[i] = basic_upper.iloc[i]
             final_lower.iloc[i] = basic_lower.iloc[i]
-            st.iloc[i] = final_lower.iloc[i] if close.iloc[i] >= hl2.iloc[i] else final_upper.iloc[i]
+            st.iloc[i] = (
+                final_lower.iloc[i]
+                if close.iloc[i] >= hl2.iloc[i]
+                else final_upper.iloc[i]
+            )
             continue
 
         final_upper.iloc[i] = (
@@ -146,9 +153,17 @@ def supertrend(
 
         prev_st = st.iloc[i - 1]
         if prev_st == final_upper.iloc[i - 1]:
-            st.iloc[i] = final_lower.iloc[i] if close.iloc[i] > final_upper.iloc[i] else final_upper.iloc[i]
+            st.iloc[i] = (
+                final_lower.iloc[i]
+                if close.iloc[i] > final_upper.iloc[i]
+                else final_upper.iloc[i]
+            )
         else:
-            st.iloc[i] = final_upper.iloc[i] if close.iloc[i] < final_lower.iloc[i] else final_lower.iloc[i]
+            st.iloc[i] = (
+                final_upper.iloc[i]
+                if close.iloc[i] < final_lower.iloc[i]
+                else final_lower.iloc[i]
+            )
     st.name = "supertrend"
     return st
 
@@ -167,7 +182,9 @@ def previous_completed_week_high(bars: pd.DataFrame, as_of: date) -> Optional[fl
     return float(week["high"].max())
 
 
-def delivery_lookup(panel: pd.DataFrame) -> dict[str, tuple[Optional[float], Optional[float]]]:
+def delivery_lookup(
+    panel: pd.DataFrame,
+) -> dict[str, tuple[Optional[float], Optional[float]]]:
     """Return symbol -> (latest DELIV_PER, previous DELIV_PER)."""
     if panel is None or panel.empty:
         return {}
@@ -199,13 +216,23 @@ def evaluate_symbol(
 
     rs = relative_strength_55(df["close"], benchmark_close)
     st = supertrend(df)
-    vol_avg = df["volume"].rolling(VOLUME_WINDOW, min_periods=VOLUME_WINDOW).mean().shift(1)
+    vol_avg = (
+        df["volume"].rolling(VOLUME_WINDOW, min_periods=VOLUME_WINDOW).mean().shift(1)
+    )
     prev_week_high = previous_completed_week_high(df, df.index[-1].date())
 
     last_idx = df.index[-1]
-    if last_idx not in rs.index or pd.isna(rs.loc[last_idx]) or pd.isna(st.loc[last_idx]):
+    if (
+        last_idx not in rs.index
+        or pd.isna(rs.loc[last_idx])
+        or pd.isna(st.loc[last_idx])
+    ):
         return None
-    avg20 = float(vol_avg.loc[last_idx]) if not pd.isna(vol_avg.loc[last_idx]) else float("nan")
+    avg20 = (
+        float(vol_avg.loc[last_idx])
+        if not pd.isna(vol_avg.loc[last_idx])
+        else float("nan")
+    )
     if not math.isfinite(avg20) or avg20 <= 0:
         return None
 
@@ -216,7 +243,9 @@ def evaluate_symbol(
     volume_ratio = volume / avg20
     delivery_pct, previous_delivery_pct = delivery or (None, None)
 
-    base_pass = rs_55 > 0 and close > supertrend_value and volume_ratio >= VOLUME_MULTIPLIER
+    base_pass = (
+        rs_55 > 0 and close > supertrend_value and volume_ratio >= VOLUME_MULTIPLIER
+    )
     if not base_pass:
         return None
 
@@ -255,7 +284,9 @@ def scan_rs_breakouts(
     benchmark = normalize_bars(benchmark_bars, as_of)
     if benchmark.empty:
         raise ValueError("Benchmark OHLCV data is empty.")
-    lookup = delivery_lookup(delivery_panel if delivery_panel is not None else pd.DataFrame())
+    lookup = delivery_lookup(
+        delivery_panel if delivery_panel is not None else pd.DataFrame()
+    )
     full: list[RsBreakoutRow] = []
     relaxed: list[RsBreakoutRow] = []
     for symbol, bars in bars_by_symbol.items():
@@ -294,7 +325,9 @@ def fetch_price_data(
     end = as_of + timedelta(days=1)
     ticker_list = list(tickers)
     yf_map = {t: tv_to_yf(t, market) for t in ticker_list}
-    benchmark_bars = fetcher.fetch([benchmark], start, end).get(benchmark, pd.DataFrame())
+    benchmark_bars = fetcher.fetch([benchmark], start, end).get(
+        benchmark, pd.DataFrame()
+    )
     bars_by_symbol: dict[str, pd.DataFrame] = {}
 
     def _fetch_one(tv_sym: str, yf_sym: str) -> tuple[str, pd.DataFrame]:
@@ -312,8 +345,7 @@ def fetch_price_data(
 
     with ThreadPoolExecutor(max_workers=max(1, int(max_workers))) as pool:
         futures = [
-            pool.submit(_fetch_one, tv_sym, yf_sym)
-            for tv_sym, yf_sym in yf_map.items()
+            pool.submit(_fetch_one, tv_sym, yf_sym) for tv_sym, yf_sym in yf_map.items()
         ]
         for fut in as_completed(futures):
             tv_sym, frame = fut.result()
@@ -322,7 +354,9 @@ def fetch_price_data(
 
 
 def load_india_delivery_for_scan(symbols: Iterable[str], as_of: date) -> pd.DataFrame:
-    return load_delivery_panel([india_symbol(s) for s in symbols], as_of, history_days=14)
+    return load_delivery_panel(
+        [india_symbol(s) for s in symbols], as_of, history_days=14
+    )
 
 
 def india_symbol(symbol: str) -> str:
@@ -345,7 +379,9 @@ def previous_completed_week_high_series(bars: pd.DataFrame) -> pd.Series:
     week_key = bars.index.to_period("W-FRI")
     weekly_high = bars["high"].astype(float).groupby(week_key).max()
     prev_week_high = week_key.map(weekly_high.shift(1))
-    return pd.Series(prev_week_high, index=bars.index, dtype=float, name="previous_week_high")
+    return pd.Series(
+        prev_week_high, index=bars.index, dtype=float, name="previous_week_high"
+    )
 
 
 def _delivery_series_for_symbol(
@@ -396,7 +432,11 @@ def build_signal_frame(
     rs = relative_strength_55(df["close"], benchmark_close)
     st = supertrend(df)
     avg_volume = (
-        df["volume"].astype(float).rolling(VOLUME_WINDOW, min_periods=VOLUME_WINDOW).mean().shift(1)
+        df["volume"]
+        .astype(float)
+        .rolling(VOLUME_WINDOW, min_periods=VOLUME_WINDOW)
+        .mean()
+        .shift(1)
     )
     prev_week_high = previous_completed_week_high_series(df)
     delivery = _delivery_series_for_symbol(delivery_panel, symbol, df.index)
@@ -463,11 +503,17 @@ def render_result(
         f"vs {result.benchmark}[/dim]"
     )
     _render_bucket("Full", result.full[:limit], console)
-    _render_bucket("Relaxed (without price breakout and delivery increase)", result.relaxed[:limit], console)
+    _render_bucket(
+        "Relaxed (without price breakout and delivery increase)",
+        result.relaxed[:limit],
+        console,
+    )
 
 
 def _render_bucket(title: str, rows: list[RsBreakoutRow], console: Console) -> None:
-    table = Table(title=f"{title} - {len(rows)} match(es)", show_header=True, header_style="bold")
+    table = Table(
+        title=f"{title} - {len(rows)} match(es)", show_header=True, header_style="bold"
+    )
     for name, justify in [
         ("Ticker", "left"),
         ("Close", "right"),

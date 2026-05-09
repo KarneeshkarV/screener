@@ -4,6 +4,7 @@ The calculation ports the publicly linked Pine v4/v5 indicator logic into
 causal pandas columns that the existing Pine-like backtester can reference.
 Source attribution: Vivek_AlfaTraders, MPL-2.0 notice in the published script.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -102,8 +103,12 @@ def prepare_vivek_equity_tool_frame(bars: pd.DataFrame) -> pd.DataFrame:
     out["vivek_equity_in_range"] = in_range.astype(float)
     out["vivek_equity_direction"] = dir_trend
     out["vivek_equity_condition"] = condition
-    out["vivek_equity_entry"] = ((condition == 1.0) & (prev_condition != 1.0)).astype(float)
-    out["vivek_equity_exit"] = ((condition == -1.0) & (prev_condition != -1.0)).astype(float)
+    out["vivek_equity_entry"] = ((condition == 1.0) & (prev_condition != 1.0)).astype(
+        float
+    )
+    out["vivek_equity_exit"] = ((condition == -1.0) & (prev_condition != -1.0)).astype(
+        float
+    )
     out["vivek_equity_close"] = ((prev_condition != 0.0) & close_cond).astype(float)
     out["vivek_equity_golden_cross"] = _crossover(ema_fast_2, trend).astype(float)
     out["vivek_equity_death_cross"] = _crossunder(ema_fast_2, trend).astype(float)

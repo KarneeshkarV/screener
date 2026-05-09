@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from screener.resilience import CircuitBreaker, CircuitBreakerConfig, RetryConfig, call_with_resilience
+from screener.resilience import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    RetryConfig,
+    call_with_resilience,
+)
 
 
 def test_retries_then_returns_success() -> None:

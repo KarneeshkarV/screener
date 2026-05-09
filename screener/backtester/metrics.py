@@ -3,6 +3,7 @@
 All metrics derive from the portfolio equity curve and the aligned benchmark.
 Alpha/beta use a simple OLS fit via ``numpy.polyfit`` — no sklearn.
 """
+
 from __future__ import annotations
 
 from typing import Iterable
@@ -108,7 +109,9 @@ def compute_metrics(
     slot_count: int,
 ) -> dict:
     daily = _daily_returns(equity)
-    bench_daily = _daily_returns(benchmark) if not benchmark.empty else pd.Series(dtype=float)
+    bench_daily = (
+        _daily_returns(benchmark) if not benchmark.empty else pd.Series(dtype=float)
+    )
     total_return = (
         float(equity.iloc[-1] / equity.iloc[0] - 1.0)
         if len(equity) >= 2 and equity.iloc[0] > 0
@@ -116,9 +119,7 @@ def compute_metrics(
     )
     alpha, beta = _alpha_beta(daily, bench_daily)
     hit_rate = (
-        float(sum(1 for t in trades if t.pnl > 0) / len(trades))
-        if trades
-        else 0.0
+        float(sum(1 for t in trades if t.pnl > 0) / len(trades)) if trades else 0.0
     )
     bench_return = (
         float(benchmark.iloc[-1] / benchmark.iloc[0] - 1.0)

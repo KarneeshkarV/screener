@@ -1,4 +1,5 @@
 """Click command for the TradingView-based technical screener."""
+
 from __future__ import annotations
 
 import click
@@ -35,9 +36,16 @@ from screener.scanner import MARKETS, scan
     help="Sort by column. Use setup_score for local composite ranking.",
 )
 @click.option("--csv", "output_csv", is_flag=True, help="Output as CSV.")
-@click.option("--detail", is_flag=True, help="Show fundamental details (P/E, ROE, etc.).")
+@click.option(
+    "--detail", is_flag=True, help="Show fundamental details (P/E, ROE, etc.)."
+)
 @click.option("--refresh", is_flag=True, help="Bypass cached TradingView data.")
-@click.option("--cache-ttl", default="15m", show_default=True, help="TradingView cache TTL, e.g. 30s, 15m, 1h, off.")
+@click.option(
+    "--cache-ttl",
+    default="15m",
+    show_default=True,
+    help="TradingView cache TTL, e.g. 30s, 15m, 1h, off.",
+)
 def screen(
     market: str,
     criteria_names: tuple[str, ...],

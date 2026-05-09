@@ -20,6 +20,7 @@ re-runs on the same date hit disk only.
 cache at ``./.autoresearch/ohlcv/india/<SYMBOL>__*.parquet`` already holds
 ~4 years of daily closes per ticker.
 """
+
 from __future__ import annotations
 
 import io
@@ -70,9 +71,7 @@ def latest_trading_day(d: date, *, lookback: int = TRADING_DAY_LOOKBACK) -> date
                 actual=str(actual),
             )
         return actual
-    raise RuntimeError(
-        f"no NSE cash bhavcopy found within {lookback} days of {d}"
-    )
+    raise RuntimeError(f"no NSE cash bhavcopy found within {lookback} days of {d}")
 
 
 def _parse_bhavcopy_date(df: pd.DataFrame) -> Optional[date]:
@@ -133,8 +132,12 @@ def fetch_cash_bhavcopy(d: date) -> pd.DataFrame:
     df = _read_cash_bhavcopy_raw(d)
     df = df[df["SERIES"] == "EQ"].copy()
     numeric_cols = [
-        "PREV_CLOSE", "CLOSE_PRICE", "AVG_PRICE",
-        "TTL_TRD_QNTY", "DELIV_QTY", "DELIV_PER",
+        "PREV_CLOSE",
+        "CLOSE_PRICE",
+        "AVG_PRICE",
+        "TTL_TRD_QNTY",
+        "DELIV_QTY",
+        "DELIV_PER",
     ]
     for c in numeric_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -197,7 +200,9 @@ def fetch_fo_bhavcopy(d: date) -> pd.DataFrame:
     df = df[df["FinInstrmTp"] == "STF"].copy()  # stock futures only
     df["XpryDt"] = pd.to_datetime(df["XpryDt"], errors="coerce")
     df["OpnIntrst"] = pd.to_numeric(df["OpnIntrst"], errors="coerce")
-    df = df.rename(columns={"TckrSymb": "SYMBOL", "OpnIntrst": "OI", "XpryDt": "EXPIRY"})
+    df = df.rename(
+        columns={"TckrSymb": "SYMBOL", "OpnIntrst": "OI", "XpryDt": "EXPIRY"}
+    )
     return df[["SYMBOL", "EXPIRY", "OI"]].reset_index(drop=True)
 
 
@@ -219,8 +224,14 @@ def near_month_oi(fo_df: pd.DataFrame) -> pd.DataFrame:
         # treat Cumulative_OI as just Current_OI rather than NaN, since the
         # signal logic only needs a comparable per-symbol total day-over-day.
         cumulative = (cur or 0.0) + (nxt if pd.notna(nxt) else 0.0)
-        rows.append({"SYMBOL": sym, "Current_OI": cur, "Next_OI": nxt,
-                     "Cumulative_OI": cumulative})
+        rows.append(
+            {
+                "SYMBOL": sym,
+                "Current_OI": cur,
+                "Next_OI": nxt,
+                "Cumulative_OI": cumulative,
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -256,26 +267,31 @@ def fifty_two_week_hl(symbols: Iterable[str], as_of: date) -> pd.DataFrame:
     for sym in symbols:
         path = _resolve_parquet(sym)
         if path is None:
-            rows.append({"SYMBOL": sym, "_52W_High": float("nan"),
-                         "_52W_Low": float("nan")})
+            rows.append(
+                {"SYMBOL": sym, "_52W_High": float("nan"), "_52W_Low": float("nan")}
+            )
             continue
         try:
             df = pd.read_parquet(path, columns=["date", "high", "low", "close"])
         except (OSError, pd.errors.ParserError):
-            rows.append({"SYMBOL": sym, "_52W_High": float("nan"),
-                         "_52W_Low": float("nan")})
+            rows.append(
+                {"SYMBOL": sym, "_52W_High": float("nan"), "_52W_Low": float("nan")}
+            )
             continue
         df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
         window = df[(df["date"] >= cutoff) & (df["date"] <= ts_as_of)]
         if len(window) < 200:
-            rows.append({"SYMBOL": sym, "_52W_High": float("nan"),
-                         "_52W_Low": float("nan")})
+            rows.append(
+                {"SYMBOL": sym, "_52W_High": float("nan"), "_52W_Low": float("nan")}
+            )
             continue
         # Use intraday high/low if available, else close — matches the NSE
         # convention of "52-week high" being the highest traded price.
-        rows.append({
-            "SYMBOL": sym,
-            "_52W_High": float(window["high"].max()),
-            "_52W_Low": float(window["low"].min()),
-        })
+        rows.append(
+            {
+                "SYMBOL": sym,
+                "_52W_High": float(window["high"].max()),
+                "_52W_Low": float(window["low"].min()),
+            }
+        )
     return pd.DataFrame(rows)

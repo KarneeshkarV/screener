@@ -10,6 +10,7 @@ The detector is deliberately decoupled from data loading and India delivery
 overlays — those live in ``cli`` / ``delivery``. This module only sees a
 ``pd.DataFrame`` of OHLCV per ticker.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict, field
@@ -61,7 +62,9 @@ class Event:
 
     def to_dict(self) -> dict:
         d = asdict(self)
-        d["date"] = self.date.isoformat() if isinstance(self.date, date) else str(self.date)
+        d["date"] = (
+            self.date.isoformat() if isinstance(self.date, date) else str(self.date)
+        )
         return d
 
 

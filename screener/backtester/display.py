@@ -1,4 +1,5 @@
 """Render backtest results: summary metrics table + per-trade ledger."""
+
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -111,9 +112,19 @@ def trades_dataframe(result: BacktestResult) -> pd.DataFrame:
     if not result.trades:
         return pd.DataFrame(
             columns=[
-                "ticker", "rank", "signal_date", "entry_date", "entry_price",
-                "exit_date", "exit_price", "exit_reason", "shares",
-                "entry_cost", "exit_value", "pnl", "return_pct",
+                "ticker",
+                "rank",
+                "signal_date",
+                "entry_date",
+                "entry_price",
+                "exit_date",
+                "exit_price",
+                "exit_reason",
+                "shares",
+                "entry_cost",
+                "exit_value",
+                "pnl",
+                "return_pct",
             ]
         )
     rows = [asdict(t) for t in sorted(result.trades, key=lambda tr: tr.rank)]

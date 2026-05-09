@@ -73,7 +73,10 @@ def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
                 (
                     run_id,
                     ticker,
-                    str(row["description"]) if row.get("description") is not None and not pd.isna(row.get("description")) else None,
+                    str(row["description"])
+                    if row.get("description") is not None
+                    and not pd.isna(row.get("description"))
+                    else None,
                     _to_float(row.get("close")),
                     _to_float(row.get("change")),
                     _to_float(row.get("volume")),
@@ -125,9 +128,7 @@ def previous_run(market: str, criteria: str, before_id: int) -> Optional[pd.Data
         conn.close()
 
 
-def diff(
-    current: pd.DataFrame, previous: pd.DataFrame
-) -> tuple[list[str], list[str]]:
+def diff(current: pd.DataFrame, previous: pd.DataFrame) -> tuple[list[str], list[str]]:
     if current is None or current.empty:
         current_set: set[str] = set()
     else:

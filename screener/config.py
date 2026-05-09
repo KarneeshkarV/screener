@@ -1,4 +1,5 @@
 """Configuration file loading for the screener CLI."""
+
 from __future__ import annotations
 
 import json
@@ -33,7 +34,9 @@ def load_config(path: str | Path) -> ConfigMap:
     except click.UsageError:
         raise
     except (OSError, json.JSONDecodeError, yaml.YAMLError) as exc:
-        raise click.UsageError(f"Could not load config file {config_path}: {exc}") from exc
+        raise click.UsageError(
+            f"Could not load config file {config_path}: {exc}"
+        ) from exc
 
     if not isinstance(loaded, dict):
         raise click.UsageError("Config file must contain a top-level mapping.")

@@ -1,4 +1,5 @@
 """Historical backtest orchestration and CLI."""
+
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -91,9 +92,11 @@ def select_candidates(
                 "role",
             ]
         ), warnings
-    df = pd.DataFrame(rows).sort_values(
-        "as_of_dollar_vol", ascending=False, kind="stable"
-    ).reset_index(drop=True)
+    df = (
+        pd.DataFrame(rows)
+        .sort_values("as_of_dollar_vol", ascending=False, kind="stable")
+        .reset_index(drop=True)
+    )
     df = df.head(pool_limit).reset_index(drop=True)
     df["rank"] = df.index + 1
     df["role"] = ["active" if i < top_n else "reserve" for i in range(len(df))]
@@ -211,7 +214,11 @@ def _run_event_driven_sim(
             if day not in bars.index:
                 continue
             i = bars.index.get_loc(day)
-            if isinstance(i, slice) or not isinstance(i, int) or i < state.entry_idx + 1:
+            if (
+                isinstance(i, slice)
+                or not isinstance(i, int)
+                or i < state.entry_idx + 1
+            ):
                 continue
             _maybe_credit_dividends(portfolio, state, bars, i, cfg)
             _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio)
@@ -259,7 +266,12 @@ def _run_event_driven_sim(
                 if reserve_signal_idx is None:
                     continue
                 state, warn = _make_slot_state(
-                    ticker, reserve_bars, reserve_signal_idx, cfg, exit_ast, int(reserve["rank"])
+                    ticker,
+                    reserve_bars,
+                    reserve_signal_idx,
+                    cfg,
+                    exit_ast,
+                    int(reserve["rank"]),
                 )
                 if state is None:
                     if warn:
@@ -324,7 +336,9 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     end = (as_of_ts + pd.Timedelta(days=cfg.hold * 2 + 30)).date()
     price_panel = fetcher.fetch(yf_symbols, start, end)
 
-    bars_by_tv = {tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols}
+    bars_by_tv = {
+        tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
+    }
     bars_by_tv, strategy_lookback = _prepare_strategy_bars(
         cfg, bars_by_tv, price_panel, tv_symbols, start, end, fetcher, warnings
     )
@@ -431,15 +445,29 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     default=None,
     help="Named strategy shortcut (overrides --entry/--exit if given).",
 )
-@click.option("--stop-loss", type=float, default=None, help="Stop loss (fraction, e.g. 0.08).")
+@click.option(
+    "--stop-loss", type=float, default=None, help="Stop loss (fraction, e.g. 0.08)."
+)
 @click.option("--take-profit", type=float, default=None, help="Take profit (fraction).")
-@click.option("--trailing-stop", type=float, default=None, help="Trailing stop (fraction).")
-@click.option("--slippage-bps", type=float, default=0.0, help="Slippage per fill (bps).")
-@click.option("--commission-bps", type=float, default=0.0, help="Commission per fill (bps).")
+@click.option(
+    "--trailing-stop", type=float, default=None, help="Trailing stop (fraction)."
+)
+@click.option(
+    "--slippage-bps", type=float, default=0.0, help="Slippage per fill (bps)."
+)
+@click.option(
+    "--commission-bps", type=float, default=0.0, help="Commission per fill (bps)."
+)
 @click.option("--initial-capital", type=float, default=100_000.0)
-@click.option("--benchmark", default=None, help="Benchmark symbol (default: SPY for US, ^NSEI for India).")
+@click.option(
+    "--benchmark",
+    default=None,
+    help="Benchmark symbol (default: SPY for US, ^NSEI for India).",
+)
 @click.option("--tickers", default=None, help="Comma-separated ticker list.")
-@click.option("--universe-file", default=None, help="Path to newline-separated ticker file.")
+@click.option(
+    "--universe-file", default=None, help="Path to newline-separated ticker file."
+)
 @click.option(
     "--max-universe",
     type=int,
@@ -458,7 +486,12 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     default=None,
     help="Minimum rolling-mean dollar volume (close*volume) over --adv-window. Default: $1,000 (US) / ₹100,000 (India). Pass 0 to disable.",
 )
-@click.option("--adv-window", type=int, default=20, help="Lookback (bars) for average dollar-volume filter.")
+@click.option(
+    "--adv-window",
+    type=int,
+    default=20,
+    help="Lookback (bars) for average dollar-volume filter.",
+)
 @click.option(
     "--reserve-multiple",
     type=int,

@@ -1,4 +1,5 @@
 """Registry for implemented research strategies."""
+
 from __future__ import annotations
 
 from collections.abc import Iterator

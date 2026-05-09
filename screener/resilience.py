@@ -1,4 +1,5 @@
 """Retry and circuit-breaker helpers for external data providers."""
+
 from __future__ import annotations
 
 import logging
@@ -75,7 +76,7 @@ def get_breaker(provider: str) -> CircuitBreaker:
 
 
 def _sleep_time(config: RetryConfig, attempt_index: int) -> float:
-    raw = cast(float, min(config.max_delay, config.base_delay * (2 ** attempt_index)))
+    raw = cast(float, min(config.max_delay, config.base_delay * (2**attempt_index)))
     if config.jitter <= 0:
         return raw
     return raw + random.uniform(0.0, config.jitter)

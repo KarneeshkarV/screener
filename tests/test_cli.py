@@ -1,4 +1,5 @@
 """CLI smoke tests — offline, no network."""
+
 from __future__ import annotations
 
 import io
@@ -151,8 +152,19 @@ def test_csv_flag_emits_trade_ledger():
     )
     assert res.exit_code == 0, res.output
     df = pd.read_csv(io.StringIO(res.output))
-    for col in ["ticker", "rank", "signal_date", "entry_date", "entry_price",
-                "exit_date", "exit_price", "exit_reason", "shares", "pnl", "return_pct"]:
+    for col in [
+        "ticker",
+        "rank",
+        "signal_date",
+        "entry_date",
+        "entry_price",
+        "exit_date",
+        "exit_price",
+        "exit_reason",
+        "shares",
+        "pnl",
+        "return_pct",
+    ]:
         assert col in df.columns
     # rank must preserve selection ordering (1, 2)
     assert sorted(df["rank"].tolist()) == list(range(1, len(df) + 1))

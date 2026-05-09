@@ -1,4 +1,5 @@
 """Compatibility wrapper for the package-owned research strategy runner."""
+
 from __future__ import annotations
 
 from screener.indicators.numpy import (

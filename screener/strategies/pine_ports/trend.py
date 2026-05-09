@@ -1,4 +1,5 @@
 """Trend-following Pine strategy ports."""
+
 from __future__ import annotations
 
 import numpy as np

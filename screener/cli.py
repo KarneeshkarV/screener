@@ -1,4 +1,5 @@
 """Package-owned Click entrypoint for the screener CLI."""
+
 from __future__ import annotations
 
 import click
@@ -36,7 +37,9 @@ from screener.unusual_volume.cli import unusual_volume
     help="Emit one JSON event per line on stderr instead of human-readable logs.",
 )
 @click.pass_context
-def cli(ctx: click.Context, config_path: str | None, log_level: str, log_json: bool) -> None:
+def cli(
+    ctx: click.Context, config_path: str | None, log_level: str, log_json: bool
+) -> None:
     """Stock screener for US and Indian markets."""
     if config_path:
         config = load_config(config_path)

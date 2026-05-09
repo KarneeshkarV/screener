@@ -70,4 +70,5 @@ class StubPriceFetcher:
 def stub_fetcher_factory():
     def _make(data: dict[str, pd.DataFrame]) -> StubPriceFetcher:
         return StubPriceFetcher(data)
+
     return _make

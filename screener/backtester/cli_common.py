@@ -1,4 +1,5 @@
 """Shared CLI helpers for backtest commands."""
+
 from __future__ import annotations
 
 import click
@@ -60,7 +61,9 @@ def parse_partial_exits(partial_exit_args) -> tuple[tuple[float, float], ...]:
 
 
 def resolve_min_filters(market, min_price, min_avg_dollar_volume):
-    resolved_min_price = DEFAULT_MIN_PRICE.get(market) if min_price is None else min_price
+    resolved_min_price = (
+        DEFAULT_MIN_PRICE.get(market) if min_price is None else min_price
+    )
     if resolved_min_price == 0:
         resolved_min_price = None
     resolved_min_adv = (
@@ -71,4 +74,3 @@ def resolve_min_filters(market, min_price, min_avg_dollar_volume):
     if resolved_min_adv == 0:
         resolved_min_adv = None
     return resolved_min_price, resolved_min_adv
-

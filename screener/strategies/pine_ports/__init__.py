@@ -1,4 +1,5 @@
 """Pandas/Numpy ports of public Pine strategies."""
+
 from screener.strategies.pine_ports.breakout import strat_bb_breakout
 from screener.strategies.pine_ports.custom import strat_vivek_equity_tool
 from screener.strategies.pine_ports.momentum import strat_macd_rsi, strat_rsi_ema

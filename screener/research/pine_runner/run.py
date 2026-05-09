@@ -1,4 +1,5 @@
 """Execution and aggregation for the research Pine runner."""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,7 +35,9 @@ def _compound(trades: list[Trade]) -> float:
     return r - 1.0
 
 
-def _run_ticker(df: pd.DataFrame, window_start: pd.Timestamp, strategy_fn) -> dict | None:
+def _run_ticker(
+    df: pd.DataFrame, window_start: pd.Timestamp, strategy_fn
+) -> dict | None:
     """Run one strategy on one ticker with pre-window indicator warmup."""
     df = df.sort_values("date").reset_index(drop=True)
     if len(df) < 50:

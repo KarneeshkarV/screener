@@ -9,7 +9,11 @@ from click.testing import CliRunner
 from main import cli
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
 from screener.backtester.optimization import grid as grid_module
-from screener.backtester.optimization.grid import _cache_key, grid_search, parameter_combinations
+from screener.backtester.optimization.grid import (
+    _cache_key,
+    grid_search,
+    parameter_combinations,
+)
 from screener.backtester.optimization.metrics import (
     expectancy,
     maximum_drawdown,

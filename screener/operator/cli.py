@@ -2,6 +2,7 @@
 
 Wired into the existing ``main.py:cli`` group at import time.
 """
+
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -23,11 +24,12 @@ def register(cli_group: click.Group) -> None:
 
 @click.command(name="operator-scan")
 @click.option(
-    "--date", "as_of",
+    "--date",
+    "as_of",
     type=click.DateTime(formats=["%Y-%m-%d"]),
     default=None,
     help="Trading date to scan (YYYY-MM-DD). Defaults to today; "
-         "weekends/holidays auto-walk back to the most recent trading day.",
+    "weekends/holidays auto-walk back to the most recent trading day.",
 )
 @click.option(
     "--universe",
@@ -49,7 +51,8 @@ def register(cli_group: click.Group) -> None:
     help="Only emit rows with a non-null Operator_Action.",
 )
 @click.option(
-    "--verbose", "-v",
+    "--verbose",
+    "-v",
     is_flag=True,
     help="Log progress to stderr.",
 )
@@ -75,7 +78,9 @@ def operator_scan(as_of, universe, out_path, only_actions, verbose):
 
     actions = df["Operator_Action"].value_counts(dropna=True)
     n_hmw = int(df["High_Momentum_Watch"].sum())
-    click.echo(f"Operator scan: trading day {actual}  ·  {len(df)} symbols  ·  wrote {written}")
+    click.echo(
+        f"Operator scan: trading day {actual}  ·  {len(df)} symbols  ·  wrote {written}"
+    )
     if not actions.empty:
         for label_name, count in actions.items():
             click.echo(f"  {label_name:<16} {count}")

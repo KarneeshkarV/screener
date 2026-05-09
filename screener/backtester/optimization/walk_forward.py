@@ -1,4 +1,5 @@
 """Walk-forward optimization over rolling train/test windows."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -166,7 +167,9 @@ def walk_forward_optimize(
         weight = max(count, 1)
         aggregate_weight += weight
         for key, value in metrics.items():
-            weighted_metrics[key] = weighted_metrics.get(key, 0.0) + float(value) * weight
+            weighted_metrics[key] = (
+                weighted_metrics.get(key, 0.0) + float(value) * weight
+            )
         train_scores.append(float(best.score))
         test_scores.append(float(metrics.get(metric, 0.0)))
 

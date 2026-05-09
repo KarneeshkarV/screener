@@ -8,6 +8,7 @@ then computes the spec's six derived columns.
 The screener label itself lives in ``screen.py`` — this module stops at the
 arithmetic so the calculated frame is also useful standalone.
 """
+
 from __future__ import annotations
 
 import logging
@@ -62,7 +63,9 @@ def _five_day_avg_delivery(as_of: date) -> pd.DataFrame:
     return avg.rename(columns={"DELIV_QTY": "5_Day_Avg_Delivery"})
 
 
-def build_dataset(as_of: date | None = None, *, universe_mode: str = "fo+cash") -> tuple[pd.DataFrame, date]:
+def build_dataset(
+    as_of: date | None = None, *, universe_mode: str = "fo+cash"
+) -> tuple[pd.DataFrame, date]:
     """Build the screener dataset for ``as_of`` (defaults to today).
 
     Returns ``(df, actual_trading_day)``. ``actual_trading_day`` is the date

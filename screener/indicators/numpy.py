@@ -1,4 +1,5 @@
 """Numpy/Pandas indicator helpers shared by strategy research code."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -48,7 +49,9 @@ def _rsi(close: np.ndarray, n: int = 14) -> np.ndarray:
     return rsi
 
 
-def _atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, n: int = 14) -> np.ndarray:
+def _atr(
+    high: np.ndarray, low: np.ndarray, close: np.ndarray, n: int = 14
+) -> np.ndarray:
     prev_close = np.concatenate(([close[0]], close[:-1]))
     tr = np.maximum.reduce(
         [

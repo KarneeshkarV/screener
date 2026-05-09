@@ -1,4 +1,5 @@
 """Small on-disk cache helpers for external market-data providers."""
+
 from __future__ import annotations
 
 import hashlib
@@ -20,7 +21,9 @@ def stable_key(*parts: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def parse_ttl(value: str | int | float | None, *, default: float | None = None) -> float | None:
+def parse_ttl(
+    value: str | int | float | None, *, default: float | None = None
+) -> float | None:
     """Parse a TTL value in seconds, or with s/m/h/d suffixes."""
     if value is None:
         return default
@@ -36,7 +39,9 @@ def parse_ttl(value: str | int | float | None, *, default: float | None = None) 
     return float(raw[:-1]) * multiplier
 
 
-def is_fresh(path: Path, ttl_seconds: float | None, *, now: float | None = None) -> bool:
+def is_fresh(
+    path: Path, ttl_seconds: float | None, *, now: float | None = None
+) -> bool:
     if ttl_seconds is None or not path.exists():
         return False
     if ttl_seconds < 0:

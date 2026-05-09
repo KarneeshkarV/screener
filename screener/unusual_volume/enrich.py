@@ -6,6 +6,7 @@ exposes these columns. India events get an optional `--deep-india` path that
 runs openscreener (Playwright-backed) only on the small set of surviving
 events.
 """
+
 from __future__ import annotations
 
 from typing import Iterable, Optional

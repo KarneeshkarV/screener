@@ -16,6 +16,7 @@ Causality guarantee: every rolling / shift operation is left-aligned, so the
 value at bar ``i`` depends only on bars ``<= i``. crossover/crossunder use a
 single ``.shift(1)`` and so compare only bars ``i`` and ``i-1``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -58,7 +59,7 @@ class Name:
 
 @dataclass
 class UnaryOp:
-    op: str            # '-' or '+'
+    op: str  # '-' or '+'
     operand: "Node"
 
 
@@ -69,21 +70,21 @@ class Not:
 
 @dataclass
 class BinOp:
-    op: str            # '+', '-', '*', '/'
+    op: str  # '+', '-', '*', '/'
     left: "Node"
     right: "Node"
 
 
 @dataclass
 class Compare:
-    op: str            # '>', '>=', '<', '<=', '==', '!='
+    op: str  # '>', '>=', '<', '<=', '==', '!='
     left: "Node"
     right: "Node"
 
 
 @dataclass
 class BoolOp:
-    op: str            # 'and' or 'or'
+    op: str  # 'and' or 'or'
     left: "Node"
     right: "Node"
 
@@ -92,7 +93,7 @@ class BoolOp:
 class Call:
     name: str
     args: list
-    col: int           # column in source (for error messages)
+    col: int  # column in source (for error messages)
 
 
 Node = Union[Num, Name, UnaryOp, Not, BinOp, Compare, BoolOp, Call]
@@ -107,7 +108,7 @@ _SINGLE_PUNCT = set("+-*/()><,")
 
 @dataclass
 class Token:
-    kind: str          # 'num', 'name', 'op', 'lp', 'rp', 'comma', 'end'
+    kind: str  # 'num', 'name', 'op', 'lp', 'rp', 'comma', 'end'
     value: str
     col: int
 
@@ -138,7 +139,7 @@ def _tokenize(expr: str) -> list[Token]:
                 i += 1
             tokens.append(Token("name", expr[start:i], start))
             continue
-        two = expr[i:i + 2]
+        two = expr[i : i + 2]
         if two in _TWO_CHAR:
             tokens.append(Token("op", two, i))
             i += 2
@@ -194,9 +195,7 @@ class _Parser:
         node = self.parse_or()
         if self.peek().kind != "end":
             tok = self.peek()
-            raise PineSyntaxError(
-                f"Unexpected {tok.value!r} at column {tok.col}"
-            )
+            raise PineSyntaxError(f"Unexpected {tok.value!r} at column {tok.col}")
         return node
 
     def parse_or(self) -> Node:
@@ -277,9 +276,7 @@ class _Parser:
             if tok.value in {"true", "false"}:
                 return Num(1.0 if tok.value == "true" else 0.0)
             return Name(tok.value)
-        raise PineSyntaxError(
-            f"Unexpected token {tok.value!r} at column {tok.col}"
-        )
+        raise PineSyntaxError(f"Unexpected token {tok.value!r} at column {tok.col}")
 
 
 def parse(expr: str) -> Node:
@@ -299,9 +296,7 @@ def _as_series(value, index: pd.Index) -> pd.Series:
 
 def _require_int_literal(node: Node, func: str, arg: str) -> int:
     if not isinstance(node, Num):
-        raise PineSyntaxError(
-            f"{func}() argument {arg!r} must be an integer literal"
-        )
+        raise PineSyntaxError(f"{func}() argument {arg!r} must be an integer literal")
     n = int(node.value)
     if n != node.value or n <= 0:
         raise PineSyntaxError(
@@ -365,9 +360,7 @@ def _series_from_name(name: str, bars: pd.DataFrame) -> pd.Series:
         return bars["close"].astype(float)
     if name in SERIES_NAMES:
         if name not in bars.columns:
-            raise PineNameError(
-                f"Series {name!r} not available in bars DataFrame"
-            )
+            raise PineNameError(f"Series {name!r} not available in bars DataFrame")
         return bars[name].astype(float)
     if name in bars.columns:
         return pd.to_numeric(bars[name], errors="coerce").astype(float)
@@ -457,9 +450,7 @@ def _eval_call(node: Call, bars: pd.DataFrame):
         return _atr(bars, length)
     if name in {"crossover", "crossunder"}:
         if len(node.args) != 2:
-            raise PineSyntaxError(
-                f"{name}() takes 2 arguments, got {len(node.args)}"
-            )
+            raise PineSyntaxError(f"{name}() takes 2 arguments, got {len(node.args)}")
         a = _as_series(_eval(node.args[0], bars), bars.index)
         b = _as_series(_eval(node.args[1], bars), bars.index)
         return _crossover(a, b) if name == "crossover" else _crossunder(a, b)
@@ -495,7 +486,11 @@ def required_lookback(node: Node) -> int:
     def visit(n: Node) -> None:
         nonlocal max_len
         if isinstance(n, Call):
-            if n.name in ROLLING_FUNCS and len(n.args) == 2 and isinstance(n.args[1], Num):
+            if (
+                n.name in ROLLING_FUNCS
+                and len(n.args) == 2
+                and isinstance(n.args[1], Num)
+            ):
                 max_len = max(max_len, int(n.args[1].value))
             if n.name == "atr" and len(n.args) == 1 and isinstance(n.args[0], Num):
                 max_len = max(max_len, int(n.args[0].value))

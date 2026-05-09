@@ -113,11 +113,13 @@ def intraday_breakout():
 
 def combine(*filter_fns):
     """Return a function that merges filters from all given filter functions."""
+
     def combined():
         filters = []
         for fn in filter_fns:
             filters.extend(fn())
         return filters
+
     return combined
 
 

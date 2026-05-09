@@ -92,8 +92,8 @@ class Trade:
     exit_price: float
     exit_reason: ExitReason
     shares: float
-    entry_cost: float   # total cash out at entry (shares*entry_price + commission)
-    exit_value: float   # total cash in at exit (shares*exit_price - commission)
+    entry_cost: float  # total cash out at entry (shares*entry_price + commission)
+    exit_value: float  # total cash in at exit (shares*exit_price - commission)
     pnl: float
     return_pct: float
     # Cash dividends received while the position was held. Excluded from

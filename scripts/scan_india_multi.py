@@ -3,6 +3,7 @@ fresh entries (within the last LOOKBACK_DAYS sessions).
 
 Usage: uv run python scripts/scan_india_multi.py <strat1> [<strat2> ...]
 """
+
 from __future__ import annotations
 
 import sys
@@ -36,8 +37,11 @@ def load_india_universe(limit: int) -> list[str]:
     # Same shape as run_pinescript_strategies.load_universe but with a larger
     # ceiling so we descend into mid-caps. ₹50 floor strips penny names.
     filters = [col("type") == "stock", col("close") >= 50.0]
-    _total, df = _tv_scan(market=MARKET, filters=filters, limit=limit, order_by="volume")
+    _total, df = _tv_scan(
+        market=MARKET, filters=filters, limit=limit, order_by="volume"
+    )
     return [str(t) for t in df["name"].dropna().tolist()]
+
 
 names = sys.argv[1:] or ["morning_star_pullback"]
 unknown = [n for n in names if n not in NEW_STRATEGIES]
@@ -104,31 +108,41 @@ def main():
                     last_close = float(last["close"])
                     last_date = pd.Timestamp(last["date"]).date()
                     gain_since = (last_close / float(tr.entry_px) - 1.0) * 100.0
-                    hits.append({
-                        "ticker": ticker,
-                        "entry_date": str(ed.date()),
-                        "entry_px": float(tr.entry_px),
-                        "last_close": last_close,
-                        "last_date": str(last_date),
-                        "days_since": (today - ed).days,
-                        "gain_since_entry_pct": gain_since,
-                    })
+                    hits.append(
+                        {
+                            "ticker": ticker,
+                            "entry_date": str(ed.date()),
+                            "entry_px": float(tr.entry_px),
+                            "last_close": last_close,
+                            "last_date": str(last_date),
+                            "days_since": (today - ed).days,
+                            "gain_since_entry_pct": gain_since,
+                        }
+                    )
 
         hits.sort(key=lambda r: (r["days_since"], -r["gain_since_entry_pct"]))
 
-        print(f"\n=== INDIA {strat_name} fresh entries "
-              f"(last {LOOKBACK_DAYS}d, as of {today.date()}) ===")
+        print(
+            f"\n=== INDIA {strat_name} fresh entries "
+            f"(last {LOOKBACK_DAYS}d, as of {today.date()}) ==="
+        )
         if not hits:
             print("  (no fresh signals)")
         else:
-            print(f"{'#':>3}  {'TICKER':<14}  {'ENTRY':<11}  "
-                  f"{'ENTRY_PX':>10}  {'LAST':>10}  {'GAIN%':>7}  {'DAYS':>4}")
+            print(
+                f"{'#':>3}  {'TICKER':<14}  {'ENTRY':<11}  "
+                f"{'ENTRY_PX':>10}  {'LAST':>10}  {'GAIN%':>7}  {'DAYS':>4}"
+            )
             for i, h in enumerate(hits, 1):
-                print(f"{i:>3}  {h['ticker']:<14}  {h['entry_date']:<11}  "
-                      f"{h['entry_px']:>10.2f}  {h['last_close']:>10.2f}  "
-                      f"{h['gain_since_entry_pct']:>+6.2f}%  {h['days_since']:>4}")
-        print(f"[done] {len(hits)} fresh {strat_name} signals across "
-              f"{len(ohlcv)} India tickers")
+                print(
+                    f"{i:>3}  {h['ticker']:<14}  {h['entry_date']:<11}  "
+                    f"{h['entry_px']:>10.2f}  {h['last_close']:>10.2f}  "
+                    f"{h['gain_since_entry_pct']:>+6.2f}%  {h['days_since']:>4}"
+                )
+        print(
+            f"[done] {len(hits)} fresh {strat_name} signals across "
+            f"{len(ohlcv)} India tickers"
+        )
 
 
 if __name__ == "__main__":

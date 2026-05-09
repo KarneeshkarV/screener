@@ -1,4 +1,5 @@
 """Click command for promoter and insider buying screens."""
+
 from __future__ import annotations
 
 import click
@@ -64,8 +65,17 @@ from screener.scanner import MARKETS, _dedupe_listings, get_scanner_data_cached
     help="Parallel enrichment workers.",
 )
 @click.option("--csv", "output_csv", is_flag=True, help="Output as CSV.")
-@click.option("--refresh", is_flag=True, help="Bypass cached TradingView/yfinance/screener.in data.")
-@click.option("--cache-ttl", default="15m", show_default=True, help="TradingView universe cache TTL, e.g. 30s, 15m, 1h, off.")
+@click.option(
+    "--refresh",
+    is_flag=True,
+    help="Bypass cached TradingView/yfinance/screener.in data.",
+)
+@click.option(
+    "--cache-ttl",
+    default="15m",
+    show_default=True,
+    help="TradingView universe cache TTL, e.g. 30s, 15m, 1h, off.",
+)
 def promoter_buys(
     market: str,
     universe_size: int,
@@ -153,7 +163,9 @@ def promoter_buys(
             click.echo("No openscreener data returned. Falling back to yfinance only.")
             insiders = yf_df
         else:
-            insiders = os_df.merge(yf_df, on="name", how="left") if not yf_df.empty else os_df
+            insiders = (
+                os_df.merge(yf_df, on="name", how="left") if not yf_df.empty else os_df
+            )
     else:
         insiders = yf_df
 
@@ -173,7 +185,9 @@ def promoter_buys(
         return
 
     enriched = matches.merge(
-        universe[["name", "description", "close", "change", "volume", "market_cap_basic"]],
+        universe[
+            ["name", "description", "close", "change", "volume", "market_cap_basic"]
+        ],
         on="name",
         how="left",
     )

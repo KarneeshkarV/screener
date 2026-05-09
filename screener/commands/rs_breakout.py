@@ -1,4 +1,5 @@
 """Click command and orchestration helpers for RS breakout scans."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -51,7 +52,9 @@ def resolve_universe(
         if not path.exists():
             raise click.UsageError(f"--universe-file not found: {universe_file}")
         return [line.strip() for line in path.read_text().splitlines() if line.strip()]
-    return load_universe(market, int(universe_limit), cache_ttl=cache_ttl, refresh=refresh)
+    return load_universe(
+        market, int(universe_limit), cache_ttl=cache_ttl, refresh=refresh
+    )
 
 
 def load_universe(
@@ -97,7 +100,9 @@ def run_rs_breakout_scan(
     delivery_panel = pd.DataFrame()
     if request.market == "india":
         try:
-            delivery_panel = load_india_delivery_for_scan(request.universe, request.as_of)
+            delivery_panel = load_india_delivery_for_scan(
+                request.universe, request.as_of
+            )
         except (
             requests.RequestException,
             OSError,
@@ -153,7 +158,9 @@ def write_default_outputs(
     default=None,
     help="Comma-separated ticker list. Falls back to the India universe when omitted.",
 )
-@click.option("--universe-file", default=None, help="Path to newline-separated tickers.")
+@click.option(
+    "--universe-file", default=None, help="Path to newline-separated tickers."
+)
 @click.option(
     "--universe-limit",
     type=int,
@@ -176,8 +183,15 @@ def write_default_outputs(
 @click.option("-n", "--limit", type=int, default=50, show_default=True)
 @click.option("--json", "json_path", default=None, help="JSON output path.")
 @click.option("--md", "md_path", default=None, help="Markdown output path.")
-@click.option("--refresh", is_flag=True, help="Bypass cached TradingView/yfinance data.")
-@click.option("--cache-ttl", default="15m", show_default=True, help="TradingView universe cache TTL, e.g. 30s, 15m, 1h, off.")
+@click.option(
+    "--refresh", is_flag=True, help="Bypass cached TradingView/yfinance data."
+)
+@click.option(
+    "--cache-ttl",
+    default="15m",
+    show_default=True,
+    help="TradingView universe cache TTL, e.g. 30s, 15m, 1h, off.",
+)
 @click.option(
     "--no-output-files",
     is_flag=True,
@@ -228,5 +242,7 @@ def rs_breakout(
     render_result(result, console, limit=int(limit), market=market)
 
     if not no_output_files:
-        json_written, md_written = write_default_outputs(result, market, json_path, md_path)
+        json_written, md_written = write_default_outputs(
+            result, market, json_path, md_path
+        )
         console.print(f"\n[dim]Wrote {json_written} + {md_written}[/dim]")

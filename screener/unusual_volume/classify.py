@@ -1,4 +1,5 @@
 """Direction + strength classification for unusual-volume events."""
+
 from __future__ import annotations
 
 from typing import Literal

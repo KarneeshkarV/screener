@@ -9,6 +9,7 @@ Output:
   picks_today.json   structured picks by market + strategy
   picks_today.md     human-readable summary
 """
+
 from __future__ import annotations
 
 import json
@@ -130,7 +131,9 @@ def scan_market(market: str, strategies: dict, ohlcv: dict[str, pd.DataFrame]) -
                 ed = pd.Timestamp(tr.entry_date)
                 if ed >= cutoff:
                     days_since = (today - ed).days
-                    signals[sname].append((ticker, str(ed.date()), days_since, float(tr.entry_px)))
+                    signals[sname].append(
+                        (ticker, str(ed.date()), days_since, float(tr.entry_px))
+                    )
                     ticker_strategies[ticker].add(sname)
 
             last_row = df.iloc[-1]
@@ -168,8 +171,10 @@ def main():
 
     # Markdown summary
     lines = ["# Today's buy picks — frequency across profitable strategies", ""]
-    lines.append(f"**Scan date:** {date.today().isoformat()}  •  **Lookback:** {LOOKBACK_DAYS}d  •  "
-                 f"**Strategies:** {len(strategies)}")
+    lines.append(
+        f"**Scan date:** {date.today().isoformat()}  •  **Lookback:** {LOOKBACK_DAYS}d  •  "
+        f"**Strategies:** {len(strategies)}"
+    )
     lines.append("")
     for market in ("us", "india"):
         m = out[market]
@@ -181,14 +186,26 @@ def main():
         lines.append("")
         lines.append("### Top 25 by strategy-frequency")
         lines.append("")
-        lines.append("| # | Ticker | # Strategies | Last close | Last bar | Strategies |")
-        lines.append("|---|--------|--------------|-----------:|----------|------------|")
+        lines.append(
+            "| # | Ticker | # Strategies | Last close | Last bar | Strategies |"
+        )
+        lines.append(
+            "|---|--------|--------------|-----------:|----------|------------|"
+        )
         for i, (ticker, n) in enumerate(list(m["frequency"].items())[:25], 1):
             close = m["latest_close"].get(ticker, 0.0)
             ldate = m["latest_date"].get(ticker, "")
-            strats = ", ".join(s.split(":", 1)[1] for s in m["ticker_strategies"][ticker][:6])
-            extra = "" if len(m["ticker_strategies"][ticker]) <= 6 else f" (+{len(m['ticker_strategies'][ticker]) - 6} more)"
-            lines.append(f"| {i} | **{ticker}** | {n} | {close:.2f} | {ldate} | {strats}{extra} |")
+            strats = ", ".join(
+                s.split(":", 1)[1] for s in m["ticker_strategies"][ticker][:6]
+            )
+            extra = (
+                ""
+                if len(m["ticker_strategies"][ticker]) <= 6
+                else f" (+{len(m['ticker_strategies'][ticker]) - 6} more)"
+            )
+            lines.append(
+                f"| {i} | **{ticker}** | {n} | {close:.2f} | {ldate} | {strats}{extra} |"
+            )
         lines.append("")
     Path("picks_today.md").write_text("\n".join(lines))
     log.info("scan.outputs_written", json="picks_today.json", md="picks_today.md")

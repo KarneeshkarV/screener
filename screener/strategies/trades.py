@@ -1,4 +1,5 @@
 """Trade model and long-only walker for research strategies."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,7 +22,9 @@ class Trade:
         return self.exit_px / self.entry_px - 1.0 if self.entry_px > 0 else 0.0
 
 
-def _walk(entries: np.ndarray, exits: np.ndarray, close: np.ndarray, dates) -> list[Trade]:
+def _walk(
+    entries: np.ndarray, exits: np.ndarray, close: np.ndarray, dates
+) -> list[Trade]:
     """Long-only round-trip walker with close-based entries and exits."""
     trades: list[Trade] = []
     in_pos = False
