@@ -4,7 +4,7 @@ from datetime import date
 
 import pandas as pd
 
-from screener.backtester.data import FMPPriceFetcher, build_price_fetcher
+from screener.backtester.data import FallbackPriceFetcher, FMPPriceFetcher, build_price_fetcher
 
 
 class DummyResponse:
@@ -95,3 +95,44 @@ def test_build_price_fetcher_selects_fmp_from_env(monkeypatch):
     fetcher = build_price_fetcher()
 
     assert isinstance(fetcher, FMPPriceFetcher)
+
+
+def test_build_price_fetcher_defaults_to_yfinance_with_fmp_fallback(monkeypatch):
+    monkeypatch.delenv("SCREENER_PRICE_PROVIDER", raising=False)
+    monkeypatch.setenv("FMP_API_KEY", "env-key")
+
+    fetcher = build_price_fetcher()
+
+    assert isinstance(fetcher, FallbackPriceFetcher)
+
+
+def test_fallback_fetcher_fills_empty_primary_results():
+    class StubFetcher:
+        def __init__(self, frames: dict[str, pd.DataFrame]) -> None:
+            self.frames = frames
+            self.calls: list[list[str]] = []
+
+        def fetch(self, tickers, start, end):
+            ticker_list = list(tickers)
+            self.calls.append(ticker_list)
+            return {ticker: self.frames.get(ticker, pd.DataFrame()) for ticker in ticker_list}
+
+    fallback_frame = pd.DataFrame(
+        {
+            "open": [10.0],
+            "high": [11.0],
+            "low": [9.0],
+            "close": [10.5],
+            "volume": [1000],
+        },
+        index=pd.to_datetime(["2024-01-02"]),
+    )
+    primary = StubFetcher({"AAA": pd.DataFrame(), "BBB": fallback_frame})
+    fallback = StubFetcher({"AAA": fallback_frame})
+    fetcher = FallbackPriceFetcher(primary, fallback)
+
+    out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 1), date(2024, 1, 5))
+
+    assert fallback.calls == [["AAA"]]
+    assert out["AAA"].equals(fallback_frame)
+    assert out["BBB"].equals(fallback_frame)

@@ -381,13 +381,52 @@ class FMPPriceFetcher:
         return results
 
 
+class FallbackPriceFetcher:
+    """Use a primary fetcher first and fill missing ticker frames from fallback."""
+
+    def __init__(self, primary: PriceFetcher, fallback: PriceFetcher) -> None:
+        self.primary = primary
+        self.fallback = fallback
+
+    def fetch(
+        self, tickers: Iterable[str], start: date, end: date
+    ) -> dict[str, pd.DataFrame]:
+        ticker_list = [ticker for ticker in tickers if ticker]
+        primary_results = self.primary.fetch(ticker_list, start, end)
+        missing = [
+            ticker
+            for ticker in ticker_list
+            if ticker not in primary_results
+            or primary_results[ticker] is None
+            or primary_results[ticker].empty
+        ]
+        if not missing:
+            return primary_results
+
+        fallback_results = self.fallback.fetch(missing, start, end)
+        results = dict(primary_results)
+        for ticker in missing:
+            frame = fallback_results.get(ticker)
+            if frame is not None and not frame.empty:
+                results[ticker] = frame
+            else:
+                results.setdefault(ticker, pd.DataFrame(columns=OHLCV_COLUMNS))
+        return results
+
+
 def build_price_fetcher(
     provider: str | None = None,
     *,
     auto_adjust: bool = True,
     refresh: bool = False,
 ) -> PriceFetcher:
-    resolved = (provider or os.environ.get("SCREENER_PRICE_PROVIDER") or "yfinance").lower()
+    resolved = (provider or os.environ.get("SCREENER_PRICE_PROVIDER") or "auto").lower()
+    if resolved in {"auto", "default"}:
+        primary = YFinancePriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
+        if os.environ.get("FMP_API_KEY"):
+            fallback = FMPPriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
+            return FallbackPriceFetcher(primary, fallback)
+        return primary
     if resolved in {"yf", "yfinance"}:
         return YFinancePriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
     if resolved in {"fmp", "financialmodelingprep"}:
