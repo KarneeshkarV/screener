@@ -90,8 +90,29 @@ def test_rolling_backtest_help_lists_core_flags():
         "--hold",
         "--top",
         "--csv",
+        "--dashboard",
+        "--dashboard-port",
+        "--dashboard-dir",
     ]:
         assert flag in res.output, f"missing flag in help: {flag}"
+
+
+def test_rolling_backtest_rejects_csv_with_dashboard():
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-rolling",
+            "--tickers",
+            "AAA",
+            "--entry",
+            "close > 0",
+            "--csv",
+            "--dashboard",
+        ],
+    )
+
+    assert res.exit_code != 0
+    assert "--csv and --dashboard cannot be used together" in res.output
 
 
 def _stub_env():

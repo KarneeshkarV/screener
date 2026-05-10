@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import click
 import pandas as pd
@@ -402,6 +403,26 @@ def run_rolling_backtest(
     default="full",
 )
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
+@click.option(
+    "--dashboard",
+    is_flag=True,
+    default=False,
+    help="Render and serve a local interactive dashboard for this run.",
+)
+@click.option(
+    "--dashboard-port",
+    type=int,
+    default=8765,
+    show_default=True,
+    help="Local port used when --dashboard is enabled.",
+)
+@click.option(
+    "--dashboard-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=Path(".screener/dashboards"),
+    show_default=True,
+    help="Directory for generated dashboard HTML files.",
+)
 def backtest_rolling(
     market,
     start_arg,
@@ -436,8 +457,14 @@ def backtest_rolling(
     partial_exit_args,
     price_adjustment,
     output_csv,
+    dashboard,
+    dashboard_port,
+    dashboard_dir,
 ):
     """Run a true daily rolling backtest over a date window."""
+    if output_csv and dashboard:
+        raise click.UsageError("--csv and --dashboard cannot be used together.")
+
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
     slip_model = build_slippage_model(
         slippage_model, slippage_bps, half_spread_bps, vol_impact_k
@@ -518,3 +545,13 @@ def backtest_rolling(
     if universe_note:
         console.print(f"[dim]Universe: {universe_note}[/dim]")
     print_backtest(result)
+    if dashboard:
+        from screener.backtester.dashboard import render_dashboard, serve_dashboard
+
+        dashboard_path = render_dashboard(result, dashboard_dir)
+        console.print(f"[green]Dashboard:[/green] {dashboard_path}")
+        console.print(
+            f"[green]Serving:[/green] http://127.0.0.1:{dashboard_port}/{dashboard_path.name}"
+        )
+        console.print("[dim]Press Ctrl+C to stop the dashboard server.[/dim]")
+        serve_dashboard(dashboard_path.parent, int(dashboard_port))
