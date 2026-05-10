@@ -18,6 +18,7 @@ dependencies = [
     "requests>=2.31",
     "structlog>=24.1",
     "PyYAML>=6.0",
+    "libsql-client>=0.3.1",
 ]
 
 [project.scripts]
