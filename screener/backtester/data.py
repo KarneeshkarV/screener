@@ -10,7 +10,9 @@ the engine never depends directly on yfinance.
 
 from __future__ import annotations
 
+import contextlib
 from datetime import date, datetime
+import io
 import os
 from pathlib import Path
 from typing import Iterable, Optional, Protocol
@@ -238,7 +240,12 @@ class YFinancePriceFetcher:
             batch: list[str], download_kwargs: dict[str, object]
         ) -> pd.DataFrame:
             target: str | list[str] = batch if len(batch) > 1 else batch[0]
-            return yf.download(target, **download_kwargs)
+            # yfinance prints expected "possibly delisted" messages directly
+            # to stderr for empty pre-listing ranges. The empty frame is enough
+            # for FallbackPriceFetcher to call FMP, so keep the lab/CLI output
+            # focused on actionable diagnostics.
+            with contextlib.redirect_stderr(io.StringIO()):
+                return yf.download(target, **download_kwargs)
 
         tickers = [t for t in tickers if t]
         results: dict[str, pd.DataFrame] = {}
