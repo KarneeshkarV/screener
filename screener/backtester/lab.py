@@ -59,10 +59,20 @@ def _result_payload(name: str, result: BacktestResult) -> dict[str, Any]:
     trade_rows = [] if trades.empty else trades.to_dict(orient="records")
     return {
         "strategy": name,
+        "base_strategy": result.config.strategy_name or name,
         "metrics": result.metrics,
         "curves": curves,
         "trades": trade_rows,
         "warnings": result.warnings,
+    }
+
+
+def _universe_note(name: UniverseName, symbols: tuple[str, ...], source: str, cached_path: object) -> dict[str, Any]:
+    return {
+        "name": name,
+        "symbol_count": len(symbols),
+        "source": source,
+        "cached_path": str(cached_path),
     }
 
 
@@ -80,12 +90,15 @@ def compare_payload(
     min_price: float | None = None,
     min_avg_dollar_volume: float | None = None,
     universe: UniverseName | None = None,
+    compare_universe: UniverseName | None = None,
     use_universe_cache: bool = True,
 ) -> dict[str, Any]:
     """Run rolling backtests for selected named strategies and serialize them."""
     if not strategies:
         raise ValueError("Select at least one strategy.")
     universe_note = None
+    compare_universe_note = None
+    ticker_runs: list[tuple[str, tuple[str, ...]]] = []
     if universe is not None:
         loaded = load_current_universe(
             universe,
@@ -93,14 +106,25 @@ def compare_payload(
             use_cache=use_universe_cache,
         )
         tickers = loaded.symbols
-        universe_note = {
-            "name": loaded.name,
-            "symbol_count": len(loaded.symbols),
-            "source": loaded.source,
-            "cached_path": str(loaded.cached_path),
-        }
+        universe_note = _universe_note(
+            loaded.name, loaded.symbols, loaded.source, loaded.cached_path
+        )
+        ticker_runs.append((loaded.name, tickers))
     elif not tickers:
         raise ValueError("Enter at least one ticker.")
+    else:
+        ticker_runs.append(("tickers", tickers))
+
+    if universe is None and compare_universe is not None:
+        loaded = load_current_universe(
+            compare_universe,
+            as_of=end_date,
+            use_cache=use_universe_cache,
+        )
+        compare_universe_note = _universe_note(
+            loaded.name, loaded.symbols, loaded.source, loaded.cached_path
+        )
+        ticker_runs.append((loaded.name, loaded.symbols))
 
     bench = benchmark or DEFAULT_BENCHMARK.get(market, "SPY")
     resolved_min_price, resolved_min_adv = resolve_min_filters(
@@ -110,32 +134,33 @@ def compare_payload(
     results: list[dict[str, Any]] = []
     for name in strategies:
         strategy = resolve_strategy(name)
-        cfg = BacktestConfig(
-            market=market,
-            as_of=end_date,
-            hold=int(hold),
-            top=int(top),
-            entry_expr=strategy.entry,
-            exit_expr=strategy.exit,
-            stop_loss=None,
-            take_profit=None,
-            trailing_stop=None,
-            slippage_bps=0.0,
-            commission_bps=0.0,
-            initial_capital=float(initial_capital),
-            benchmark=bench,
-            strategy_name=name,
-            tickers=tickers,
-            min_price=resolved_min_price,
-            min_avg_dollar_volume=resolved_min_adv,
-        )
-        result = run_rolling_backtest(
-            cfg,
-            fetcher,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        results.append(_result_payload(name, result))
+        for run_label, run_tickers in ticker_runs:
+            cfg = BacktestConfig(
+                market=market,
+                as_of=end_date,
+                hold=int(hold),
+                top=int(top),
+                entry_expr=strategy.entry,
+                exit_expr=strategy.exit,
+                stop_loss=None,
+                take_profit=None,
+                trailing_stop=None,
+                slippage_bps=0.0,
+                commission_bps=0.0,
+                initial_capital=float(initial_capital),
+                benchmark=bench,
+                strategy_name=name,
+                tickers=run_tickers,
+                min_price=resolved_min_price,
+                min_avg_dollar_volume=resolved_min_adv,
+            )
+            result = run_rolling_backtest(
+                cfg,
+                fetcher,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            results.append(_result_payload(f"{name} · {run_label}", result))
     return {
         "request": {
             "market": market,
@@ -149,6 +174,8 @@ def compare_payload(
             "benchmark": bench,
             "universe": universe,
             "universe_note": universe_note,
+            "compare_universe": compare_universe,
+            "compare_universe_note": compare_universe_note,
         },
         "results": results,
     }
@@ -288,6 +315,13 @@ def _lab_html() -> str:
       <label>Tickers
         <input id="tickers" value="AAPL,MSFT" placeholder="AAPL,MSFT,NVDA">
       </label>
+      <label>Compare Tickers Against
+        <select id="compare-universe">
+          <option value="none">None</option>
+          <option value="sp500">S&P 500</option>
+          <option value="nifty50">Nifty 50</option>
+        </select>
+      </label>
       <label>Start
         <input id="start" type="date" value="{start.isoformat()}">
       </label>
@@ -317,6 +351,7 @@ def _lab_html() -> str:
     const statusEl = document.getElementById("status");
     const runBtn = document.getElementById("run");
     const universeEl = document.getElementById("universe");
+    const compareUniverseEl = document.getElementById("compare-universe");
     const tickersEl = document.getElementById("tickers");
     const pct = value => value == null || Number.isNaN(value) ? "" : `${{(value * 100).toFixed(2)}}%`;
     const num = value => value == null || Number.isNaN(value) ? "" : Number(value).toFixed(3);
@@ -329,6 +364,8 @@ def _lab_html() -> str:
       const manual = universeEl.value === "manual";
       tickersEl.disabled = !manual;
       tickersEl.style.opacity = manual ? "1" : ".55";
+      compareUniverseEl.disabled = !manual;
+      compareUniverseEl.style.opacity = manual ? "1" : ".55";
     }}
 
     universeEl.addEventListener("change", syncUniverseMode);
@@ -341,6 +378,7 @@ def _lab_html() -> str:
         ["max_drawdown", "Max DD", pct],
         ["sharpe", "Sharpe", num],
         ["trade_count", "Trades", value => value ?? ""],
+        ["exposure", "Exposure", pct],
         ["hit_rate", "Hit Rate", pct],
       ];
       document.getElementById("metrics").innerHTML = results.flatMap(result =>
@@ -394,6 +432,7 @@ def _lab_html() -> str:
         const payload = {{
           market: document.getElementById("market").value,
           universe: universeEl.value,
+          compare_universe: compareUniverseEl.value,
           strategies: selectedStrategies(),
           tickers: tickersEl.value,
           start: document.getElementById("start").value,
@@ -414,6 +453,8 @@ def _lab_html() -> str:
         renderTrades(data.results);
         const universeText = data.request.universe_note
           ? ` across ${{data.request.universe_note.symbol_count}} symbols`
+          : data.request.compare_universe_note
+          ? ` plus ${{data.request.compare_universe_note.symbol_count}} comparison symbols`
           : "";
         statusEl.textContent = `Rendered ${{data.results.length}} strategy runs${{universeText}}.`;
       }} catch (err) {{
@@ -464,6 +505,12 @@ class LabHandler(BaseHTTPRequestHandler):
             universe = None if universe_raw == "manual" else universe_raw
             if universe not in {None, "sp500", "nifty50"}:
                 raise ValueError(f"Unknown universe: {universe_raw}")
+            compare_universe_raw = str(payload.get("compare_universe", "none"))
+            compare_universe = (
+                None if compare_universe_raw == "none" else compare_universe_raw
+            )
+            if compare_universe not in {None, "sp500", "nifty50"}:
+                raise ValueError(f"Unknown comparison universe: {compare_universe_raw}")
             data = compare_payload(
                 market=str(payload.get("market", "us")),
                 strategies=list(payload.get("strategies", [])),
@@ -474,6 +521,7 @@ class LabHandler(BaseHTTPRequestHandler):
                 top=int(payload.get("top", 5)),
                 initial_capital=float(payload.get("initial_capital", 100_000.0)),
                 universe=universe,
+                compare_universe=compare_universe,
             )
             body = json.dumps(data, default=_json_default).encode()
             self._send(HTTPStatus.OK, body, "application/json")
