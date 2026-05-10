@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -185,9 +185,13 @@ def _fetch_india_sections(symbol: str) -> dict[str, Any]:
 
 
 def _india_row(symbol: str, description: str | None, payload: dict[str, Any]) -> dict[str, Any]:
-    ratios = payload.get("ratios") if isinstance(payload.get("ratios"), dict) else {}
-    profit_loss = (
-        payload.get("profit_loss") if isinstance(payload.get("profit_loss"), dict) else {}
+    ratios = cast(
+        dict[str, Any],
+        payload.get("ratios") if isinstance(payload.get("ratios"), dict) else {},
+    )
+    profit_loss = cast(
+        dict[str, Any],
+        payload.get("profit_loss") if isinstance(payload.get("profit_loss"), dict) else {},
     )
     metrics = {**profit_loss, **ratios}
     quarterly = (

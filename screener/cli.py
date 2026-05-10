@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from screener.backtester.historical import backtest_historical
+from screener.backtester.lab import backtest_lab
 from screener.backtester.optimization.cli import optimize
 from screener.backtester.rolling import backtest_rolling
 from screener.commands.garp import garp
@@ -65,6 +66,7 @@ cli.add_command(promoter_buys)
 cli.add_command(unusual_volume)
 cli.add_command(backtest_historical)
 cli.add_command(backtest_rolling)
+cli.add_command(backtest_lab)
 _register_operator_cli(cli)
 cli.add_command(optimize)
 

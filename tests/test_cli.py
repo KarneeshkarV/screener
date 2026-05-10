@@ -42,6 +42,7 @@ def test_package_cli_matches_main_wrapper():
         "unusual-volume",
         "backtest-historical",
         "backtest-rolling",
+        "backtest-lab",
         "operator-scan",
         "optimize",
     ]:
@@ -113,6 +114,14 @@ def test_rolling_backtest_rejects_csv_with_dashboard():
 
     assert res.exit_code != 0
     assert "--csv and --dashboard cannot be used together" in res.output
+
+
+def test_backtest_lab_help_lists_server_flags():
+    res = CliRunner().invoke(cli, ["backtest-lab", "--help"])
+
+    assert res.exit_code == 0
+    assert "--host" in res.output
+    assert "--port" in res.output
 
 
 def _stub_env():

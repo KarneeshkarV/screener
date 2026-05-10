@@ -71,6 +71,7 @@ disable_error_code = [
 module = [
     "jugaad_data.*",
     "openscreener.*",
+    "plotly.*",
     "tradingview_screener.*",
     "yfinance.*",
 ]
