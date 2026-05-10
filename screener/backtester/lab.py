@@ -20,6 +20,7 @@ from screener.backtester.display import trades_dataframe
 from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.rolling import run_rolling_backtest
 from screener.backtester.strategies import STRATEGIES, resolve_strategy
+from screener.universes import UniverseName, load_current_universe
 
 
 def _json_default(value: Any) -> Any:
@@ -78,11 +79,27 @@ def compare_payload(
     benchmark: str | None = None,
     min_price: float | None = None,
     min_avg_dollar_volume: float | None = None,
+    universe: UniverseName | None = None,
+    use_universe_cache: bool = True,
 ) -> dict[str, Any]:
     """Run rolling backtests for selected named strategies and serialize them."""
     if not strategies:
         raise ValueError("Select at least one strategy.")
-    if not tickers:
+    universe_note = None
+    if universe is not None:
+        loaded = load_current_universe(
+            universe,
+            as_of=end_date,
+            use_cache=use_universe_cache,
+        )
+        tickers = loaded.symbols
+        universe_note = {
+            "name": loaded.name,
+            "symbol_count": len(loaded.symbols),
+            "source": loaded.source,
+            "cached_path": str(loaded.cached_path),
+        }
+    elif not tickers:
         raise ValueError("Enter at least one ticker.")
 
     bench = benchmark or DEFAULT_BENCHMARK.get(market, "SPY")
@@ -130,6 +147,8 @@ def compare_payload(
             "top": top,
             "initial_capital": initial_capital,
             "benchmark": bench,
+            "universe": universe,
+            "universe_note": universe_note,
         },
         "results": results,
     }
@@ -259,6 +278,13 @@ def _lab_html() -> str:
       <label>Market
         <select id="market"><option value="us">US</option><option value="india">India</option></select>
       </label>
+      <label>Universe
+        <select id="universe">
+          <option value="manual">Manual tickers</option>
+          <option value="sp500">S&P 500</option>
+          <option value="nifty50">Nifty 50</option>
+        </select>
+      </label>
       <label>Tickers
         <input id="tickers" value="AAPL,MSFT" placeholder="AAPL,MSFT,NVDA">
       </label>
@@ -290,12 +316,23 @@ def _lab_html() -> str:
   <script>
     const statusEl = document.getElementById("status");
     const runBtn = document.getElementById("run");
+    const universeEl = document.getElementById("universe");
+    const tickersEl = document.getElementById("tickers");
     const pct = value => value == null || Number.isNaN(value) ? "" : `${{(value * 100).toFixed(2)}}%`;
     const num = value => value == null || Number.isNaN(value) ? "" : Number(value).toFixed(3);
 
     function selectedStrategies() {{
       return [...document.querySelectorAll('input[name="strategy"]:checked')].map(el => el.value);
     }}
+
+    function syncUniverseMode() {{
+      const manual = universeEl.value === "manual";
+      tickersEl.disabled = !manual;
+      tickersEl.style.opacity = manual ? "1" : ".55";
+    }}
+
+    universeEl.addEventListener("change", syncUniverseMode);
+    syncUniverseMode();
 
     function renderMetrics(results) {{
       const keys = [
@@ -356,8 +393,9 @@ def _lab_html() -> str:
       try {{
         const payload = {{
           market: document.getElementById("market").value,
+          universe: universeEl.value,
           strategies: selectedStrategies(),
-          tickers: document.getElementById("tickers").value,
+          tickers: tickersEl.value,
           start: document.getElementById("start").value,
           end: document.getElementById("end").value,
           hold: Number(document.getElementById("hold").value),
@@ -374,7 +412,10 @@ def _lab_html() -> str:
         renderCurve(data.results);
         renderMetrics(data.results);
         renderTrades(data.results);
-        statusEl.textContent = `Rendered ${{data.results.length}} strategy runs.`;
+        const universeText = data.request.universe_note
+          ? ` across ${{data.request.universe_note.symbol_count}} symbols`
+          : "";
+        statusEl.textContent = `Rendered ${{data.results.length}} strategy runs${{universeText}}.`;
       }} catch (err) {{
         statusEl.className = "status error";
         statusEl.textContent = err.message;
@@ -419,6 +460,10 @@ class LabHandler(BaseHTTPRequestHandler):
                 for item in str(payload.get("tickers", "")).split(",")
                 if item.strip()
             )
+            universe_raw = str(payload.get("universe", "manual"))
+            universe = None if universe_raw == "manual" else universe_raw
+            if universe not in {None, "sp500", "nifty50"}:
+                raise ValueError(f"Unknown universe: {universe_raw}")
             data = compare_payload(
                 market=str(payload.get("market", "us")),
                 strategies=list(payload.get("strategies", [])),
@@ -428,6 +473,7 @@ class LabHandler(BaseHTTPRequestHandler):
                 hold=int(payload.get("hold", 20)),
                 top=int(payload.get("top", 5)),
                 initial_capital=float(payload.get("initial_capital", 100_000.0)),
+                universe=universe,
             )
             body = json.dumps(data, default=_json_default).encode()
             self._send(HTTPStatus.OK, body, "application/json")
