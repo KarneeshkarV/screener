@@ -23,6 +23,7 @@ from screener.resilience import call_with_resilience
 
 CACHE_DIR = Path.home() / ".screener" / "prices"
 FMP_CACHE_DIR = Path.home() / ".screener" / "fmp_prices"
+_DOTENV_LOADED = False
 
 
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
@@ -30,6 +31,27 @@ OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 # are always optional on a bars DataFrame — callers should treat a missing
 # column the same as a column of zeros.
 CORPORATE_ACTION_COLUMNS = ["dividend", "split_factor", "stock_splits"]
+
+
+def _load_env_file() -> None:
+    """Load simple KEY=VALUE pairs from the project .env if not exported."""
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED:
+        return
+    _DOTENV_LOADED = True
+    env_path = Path.cwd() / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip().strip('"').strip("'")
+        os.environ[key] = value
 
 
 class PriceFetcher(Protocol):
@@ -445,6 +467,7 @@ def build_price_fetcher(
     auto_adjust: bool = True,
     refresh: bool = False,
 ) -> PriceFetcher:
+    _load_env_file()
     resolved = (provider or os.environ.get("SCREENER_PRICE_PROVIDER") or "auto").lower()
     if resolved in {"auto", "default"}:
         primary = YFinancePriceFetcher(auto_adjust=auto_adjust, refresh=refresh)

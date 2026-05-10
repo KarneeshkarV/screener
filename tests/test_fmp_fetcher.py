@@ -9,6 +9,7 @@ from screener.backtester.data import (
     FMPPriceFetcher,
     build_price_fetcher,
 )
+from screener.backtester import data as data_module
 
 
 class DummyResponse:
@@ -118,6 +119,20 @@ def test_build_price_fetcher_defaults_to_yfinance_with_fmp_fallback(monkeypatch)
     fetcher = build_price_fetcher()
 
     assert isinstance(fetcher, FallbackPriceFetcher)
+
+
+def test_build_price_fetcher_loads_fmp_key_from_dotenv(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("SCREENER_PRICE_PROVIDER", raising=False)
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
+    monkeypatch.setattr(data_module, "_DOTENV_LOADED", False)
+    (tmp_path / ".env").write_text('FMP_API_KEY="dotenv-key"\n')
+
+    fetcher = build_price_fetcher()
+
+    assert isinstance(fetcher, FallbackPriceFetcher)
+    assert isinstance(fetcher.fallback, FMPPriceFetcher)
+    assert fetcher.fallback.api_key == "dotenv-key"
 
 
 def test_fallback_fetcher_fills_empty_primary_results():
