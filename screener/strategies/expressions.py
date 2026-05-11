@@ -1,9 +1,18 @@
-"""Named Pine-like strategy expression shortcuts."""
+"""Named Pine-like strategy expression shortcuts.
+
+Backwards-compatible view over the unified ``screener.strategies.spec.registry``.
+Add a new entry/exit Pine strategy by dropping a plugin file in
+``screener/strategies/plugins/`` with ``@strategy("name", entry="...", exit="...")``.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
+
+from screener.strategies.spec import discover_plugins, registry
+
+discover_plugins()
 
 
 @dataclass(frozen=True)
@@ -13,22 +22,9 @@ class NamedStrategy:
 
 
 NAMED_STRATEGIES: dict[str, NamedStrategy] = {
-    "ema_trend": NamedStrategy(
-        entry="close > ema(close, 20) and ema(close, 20) > ema(close, 200)",
-        exit="crossunder(close, ema(close, 20))",
-    ),
-    "breakout": NamedStrategy(
-        entry="close >= highest(close, 252) * 0.9 and volume > sma(volume, 10)",
-        exit=None,
-    ),
-    "rs_breakout": NamedStrategy(
-        entry="rs_breakout_entry > 0",
-        exit=None,
-    ),
-    "vivek_equity_tool": NamedStrategy(
-        entry="vivek_equity_entry > 0",
-        exit="vivek_equity_exit > 0 or vivek_equity_close > 0",
-    ),
+    name: NamedStrategy(entry=spec.entry, exit=spec.exit)
+    for name, spec in registry.items()
+    if spec.entry is not None
 }
 
 

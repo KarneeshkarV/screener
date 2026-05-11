@@ -460,67 +460,26 @@ def _prepare_strategy_bars(
     fetcher: PriceFetcher,
     warnings: list[str],
 ) -> tuple[dict[str, pd.DataFrame], int]:
-    """Prepare strategy-specific derived bars, if needed."""
-    lookback_floor = 0
-    if cfg.strategy_name == "vivek_equity_tool":
-        from screener.backtester.vivek_equity import (
-            prepare_vivek_equity_tool_frame,
-            required_history_bars,
-        )
+    """Dispatch to the strategy's ``prepare_bars`` / ``required_lookback`` hooks."""
+    from screener.strategies.spec import PrepareCtx, registry as strategy_registry
 
-        lookback_floor = required_history_bars()
-        return (
-            {
-                symbol: prepare_vivek_equity_tool_frame(bars)
-                for symbol, bars in bars_by_tv.items()
-            },
-            lookback_floor,
-        )
-
-    if cfg.strategy_name != "rs_breakout":
+    spec = strategy_registry.get_optional(cfg.strategy_name)
+    if spec is None:
+        return bars_by_tv, 0
+    lookback_floor = spec.required_lookback() if spec.required_lookback else 0
+    if spec.prepare_bars is None:
         return bars_by_tv, lookback_floor
-
-    from screener.rs_breakout import (
-        india_symbol,
-        prepare_backtest_frames,
-        required_history_bars,
+    ctx = PrepareCtx(
+        cfg=cfg,
+        bars_by_tv=bars_by_tv,
+        price_panel=price_panel,
+        tv_symbols=tv_symbols,
+        start=start,
+        end=end,
+        fetcher=fetcher,
+        warnings=warnings,
     )
-    from screener.unusual_volume.delivery import load_delivery_panel
-
-    lookback_floor = required_history_bars()
-    benchmark_bars = price_panel.get(cfg.benchmark, pd.DataFrame())
-    if benchmark_bars is None or benchmark_bars.empty:
-        warnings.append(f"benchmark data unavailable for rs_breakout: {cfg.benchmark}")
-        return bars_by_tv, lookback_floor
-
-    delivery_panel = pd.DataFrame()
-    if cfg.market == "india":
-        history_days = max((pd.Timestamp(end) - pd.Timestamp(start)).days + 14, 40)
-        try:
-            delivery_panel = load_delivery_panel(
-                [india_symbol(symbol) for symbol in tv_symbols],
-                end,
-                history_days=history_days,
-            )
-        except (
-            ConnectionError,
-            TimeoutError,
-            OSError,
-            RuntimeError,
-            ValueError,
-            pd.errors.ParserError,
-        ) as exc:
-            warnings.append(f"delivery panel unavailable for rs_breakout: {exc}")
-
-    return (
-        prepare_backtest_frames(
-            bars_by_tv,
-            benchmark_bars,
-            market=cfg.market,
-            delivery_panel=delivery_panel,
-        ),
-        lookback_floor,
-    )
+    return spec.prepare_bars(ctx), lookback_floor
 
 
 def _eligible_reserve_signal_idx(

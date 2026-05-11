@@ -1,32 +1,28 @@
-"""Registry for implemented research strategies."""
+"""Registry for callable research strategies.
+
+Backwards-compatible view over the unified ``screener.strategies.spec.registry``.
+``STRATEGIES`` and friends remain a plain dict for the pine_runner; expression-
+flavored strategies are surfaced separately through
+``screener.strategies.expressions``.
+
+Add a new strategy by dropping a plugin file in ``screener/strategies/plugins/``
+with an ``@strategy(...)`` decorator. No edits to this file are needed.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 
 from screener.strategies.base import StrategyFn
-from screener.strategies.pine_ports import (
-    strat_bb_breakout,
-    strat_ma_cross,
-    strat_ma_cross_regime,
-    strat_ma_cross_st_entry,
-    strat_ma_cross_st_exit,
-    strat_macd_rsi,
-    strat_rsi_ema,
-    strat_supertrend,
-    strat_supertrend_rsi,
-)
+from screener.strategies.spec import discover_plugins, registry
+
+discover_plugins()
+
 
 STRATEGIES: dict[str, StrategyFn] = {
-    "supertrend": strat_supertrend,
-    "supertrend_rsi": strat_supertrend_rsi,
-    "macd_rsi": strat_macd_rsi,
-    "rsi_ema": strat_rsi_ema,
-    "ma_cross": strat_ma_cross,
-    "bb_breakout": strat_bb_breakout,
-    "ma_cross_regime": strat_ma_cross_regime,
-    "ma_cross_st_entry": strat_ma_cross_st_entry,
-    "ma_cross_st_exit": strat_ma_cross_st_exit,
+    name: spec.callable_fn
+    for name, spec in registry.items()
+    if spec.callable_fn is not None
 }
 
 
