@@ -19,15 +19,8 @@ from screener.research.pine_runner import (
 )
 from screener.strategies.pine_ports import (
     strat_bb_breakout,
-    strat_macd_rsi,
-    strat_ma_cross,
-    strat_ma_cross_regime,
     strat_ma_cross_st_entry,
-    strat_ma_cross_st_exit,
-    strat_rsi_ema,
     strat_supertrend,
-    strat_supertrend_rsi,
-    strat_vivek_equity_tool,
 )
 from screener.strategies.registry import STRATEGIES
 from screener.strategies.trades import Trade, _walk
@@ -48,15 +41,8 @@ __all__ = [
     "load_universe",
     "main",
     "strat_bb_breakout",
-    "strat_macd_rsi",
-    "strat_ma_cross",
-    "strat_ma_cross_regime",
     "strat_ma_cross_st_entry",
-    "strat_ma_cross_st_exit",
-    "strat_rsi_ema",
     "strat_supertrend",
-    "strat_supertrend_rsi",
-    "strat_vivek_equity_tool",
 ]
 
 
