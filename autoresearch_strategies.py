@@ -28,7 +28,6 @@ from run_pinescript_strategies import (
     _rsi,
     _sma,
     _stdev,
-    _supertrend_dir,
     _walk,
 )
 
@@ -558,7 +557,6 @@ def strat_choppiness_regime_shift(df: pd.DataFrame) -> list[Trade]:
     close = df["close"].to_numpy(dtype=float)
     high = df["high"].to_numpy(dtype=float)
     low = df["low"].to_numpy(dtype=float)
-    n = len(close)
 
     prev_close = np.concatenate(([close[0]], close[:-1]))
     tr = np.maximum.reduce([
@@ -2526,7 +2524,6 @@ def strat_elder_impulse_bull(df: pd.DataFrame) -> list[Trade]:
     close < EMA20.
     """
     close = df["close"].to_numpy(dtype=float)
-    n = close.size
 
     ema13 = _ema(close, 13)
     ema12 = _ema(close, 12)

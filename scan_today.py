@@ -61,7 +61,7 @@ def fetch_universe(market: str, limit: int) -> dict[str, pd.DataFrame]:
     today = date.today()
     fetch_start = (pd.Timestamp(today) - pd.DateOffset(years=WARMUP_YEARS)).date()
     fetch_end = today
-    tickers = load_universe(market, None)[:limit]
+    tickers = load_universe(market)[:limit]
     log.info("scan.universe_loaded", market=market, size=len(tickers))
     ohlcv: dict[str, pd.DataFrame] = {}
 

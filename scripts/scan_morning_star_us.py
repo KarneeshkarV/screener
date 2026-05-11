@@ -62,7 +62,7 @@ def main():
     fetch_start = (today - pd.DateOffset(years=WARMUP_YEARS)).date()
     fetch_end = today.date()
 
-    tickers = load_universe(MARKET, None)[:LIMIT]
+    tickers = load_universe(MARKET)[:LIMIT]
     log.info("scan.universe_loaded", market="us", size=len(tickers))
 
     ohlcv = {}
