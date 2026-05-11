@@ -78,9 +78,7 @@ _register_operator_cli(cli)
 cli.add_command(optimize)
 
 
-def _wrap_usage_tracking(
-    command: click.Command, feature_path: tuple[str, ...]
-) -> None:
+def _wrap_usage_tracking(command: click.Command, feature_path: tuple[str, ...]) -> None:
     if isinstance(command, click.Group):
         for name, child in command.commands.items():
             _wrap_usage_tracking(child, (*feature_path, name))

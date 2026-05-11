@@ -32,11 +32,11 @@ def test_record_feature_usage_inserts_success(monkeypatch):
     monkeypatch.setattr(usage.getpass, "getuser", lambda: "karneeshkar")
     monkeypatch.setattr(usage.platform, "node", lambda: "workstation")
 
-    usage.record_feature_usage(
-        "screen", command_path="screener screen", duration_ms=42
-    )
+    usage.record_feature_usage("screen", command_path="screener screen", duration_ms=42)
 
-    insert = [item for item in client.statements if "INSERT INTO feature_usage" in item[0]]
+    insert = [
+        item for item in client.statements if "INSERT INTO feature_usage" in item[0]
+    ]
     assert insert
     assert insert[0][1] == [
         "screener",

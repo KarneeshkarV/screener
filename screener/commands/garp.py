@@ -75,4 +75,3 @@ def garp(
         print_csv(results)
         return
     print_garp_results(results, market)
-

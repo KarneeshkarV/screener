@@ -52,8 +52,12 @@ def test_garp_cli_emits_csv(monkeypatch) -> None:
     universe = pd.DataFrame({"name": ["AAA"], "description": ["Alpha"]})
     results = add_garp_score(pd.DataFrame([_passing_row(description="Alpha")]))
 
-    monkeypatch.setattr("screener.commands.garp.load_garp_universe", lambda *a, **k: universe)
-    monkeypatch.setattr("screener.commands.garp.screen_india_garp", lambda *a, **k: results)
+    monkeypatch.setattr(
+        "screener.commands.garp.load_garp_universe", lambda *a, **k: universe
+    )
+    monkeypatch.setattr(
+        "screener.commands.garp.screen_india_garp", lambda *a, **k: results
+    )
 
     res = CliRunner().invoke(cli, ["garp", "-m", "india", "--csv"])
 

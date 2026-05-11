@@ -78,7 +78,9 @@ def _series_from_statement(statement: pd.DataFrame, row_names: list[str]) -> pd.
     return pd.Series(dtype=float)
 
 
-def _average_ratio(numerator: pd.Series, denominator: pd.Series, periods: int) -> float | None:
+def _average_ratio(
+    numerator: pd.Series, denominator: pd.Series, periods: int
+) -> float | None:
     if numerator.empty or denominator.empty:
         return None
     values = []
@@ -111,7 +113,8 @@ def _passes_garp(row: dict[str, Any], thresholds: GarpThresholds) -> bool:
         and float(row["sales"]) > thresholds.sales_min
         and 0 < float(row["peg"]) < thresholds.peg_max
         and float(row["sales_growth_5y"]) > thresholds.sales_growth_5y_min
-        and float(row["operating_profit_growth"]) > thresholds.operating_profit_growth_min
+        and float(row["operating_profit_growth"])
+        > thresholds.operating_profit_growth_min
         and float(row["eps_growth_5y"]) > thresholds.eps_growth_5y_min
         and float(row["roe_5y"]) > thresholds.roe_5y_min
         and float(row["roce_or_roic"]) > thresholds.roce_or_roic_min
@@ -184,14 +187,18 @@ def _fetch_india_sections(symbol: str) -> dict[str, Any]:
     }
 
 
-def _india_row(symbol: str, description: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+def _india_row(
+    symbol: str, description: str | None, payload: dict[str, Any]
+) -> dict[str, Any]:
     ratios = cast(
         dict[str, Any],
         payload.get("ratios") if isinstance(payload.get("ratios"), dict) else {},
     )
     profit_loss = cast(
         dict[str, Any],
-        payload.get("profit_loss") if isinstance(payload.get("profit_loss"), dict) else {},
+        payload.get("profit_loss")
+        if isinstance(payload.get("profit_loss"), dict)
+        else {},
     )
     metrics = {**profit_loss, **ratios}
     quarterly = (
@@ -217,7 +224,9 @@ def _india_row(symbol: str, description: str | None, payload: dict[str, Any]) ->
         "market_cap": _first_num(metrics, "market_capitalization", "market_cap"),
         "sales": _first_num(metrics, "sales", "sales_ttm", "revenue"),
         "peg": _first_num(metrics, "peg_ratio", "peg"),
-        "sales_growth_5y": _first_num(metrics, "sales_growth_5years", "sales_growth_5y"),
+        "sales_growth_5y": _first_num(
+            metrics, "sales_growth_5years", "sales_growth_5y"
+        ),
         "operating_profit_growth": _first_num(
             metrics, "operating_profit_growth", "opm_growth"
         ),
@@ -311,11 +320,17 @@ def _us_row(symbol: str, description: str | None) -> dict[str, Any]:
         quarterly_eps_growth = _pct_change(expected_eps, year_ago_eps)
 
     latest_revenue = _num(revenue.iloc[0]) if not revenue.empty else None
-    oldest_revenue = _num(revenue.iloc[min(len(revenue) - 1, 4)]) if len(revenue) else None
+    oldest_revenue = (
+        _num(revenue.iloc[min(len(revenue) - 1, 4)]) if len(revenue) else None
+    )
     latest_op = _num(operating.iloc[0]) if not operating.empty else None
-    old_op = _num(operating.iloc[min(len(operating) - 1, 1)]) if len(operating) else None
+    old_op = (
+        _num(operating.iloc[min(len(operating) - 1, 1)]) if len(operating) else None
+    )
     latest_ni = _num(net_income.iloc[0]) if not net_income.empty else None
-    old_ni = _num(net_income.iloc[min(len(net_income) - 1, 4)]) if len(net_income) else None
+    old_ni = (
+        _num(net_income.iloc[min(len(net_income) - 1, 4)]) if len(net_income) else None
+    )
 
     tax = _num(tax_rate.iloc[0]) if not tax_rate.empty else 0.21
     nopat = ebit * (1.0 - float(tax or 0.21))

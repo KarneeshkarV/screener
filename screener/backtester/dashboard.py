@@ -64,7 +64,9 @@ def dashboard_frames(result: BacktestResult) -> dict[str, pd.DataFrame]:
     monthly = pd.DataFrame(columns=["month", "return_pct"])
     if not equity.empty:
         monthly_equity = equity.set_index("date")["equity"].resample("ME").last()
-        monthly = monthly_equity.pct_change().dropna().rename("return_pct").reset_index()
+        monthly = (
+            monthly_equity.pct_change().dropna().rename("return_pct").reset_index()
+        )
         monthly["month"] = monthly["date"].dt.strftime("%Y-%m")
         monthly = monthly[["month", "return_pct"]]
 
@@ -102,7 +104,7 @@ def _figure_html(fig: go.Figure, div_id: str) -> str:
 def _empty_panel(panel_id: str, title: str, message: str) -> str:
     return (
         f'<section class="panel" id="{panel_id}">'
-        f"<h2>{html.escape(title)}</h2><p class=\"empty\">{html.escape(message)}</p></section>"
+        f'<h2>{html.escape(title)}</h2><p class="empty">{html.escape(message)}</p></section>'
     )
 
 
@@ -291,7 +293,9 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
 
     if selection.empty:
         sections.append(
-            _empty_panel("selection-diagnostics", "Selection Diagnostics", "No selected signals.")
+            _empty_panel(
+                "selection-diagnostics", "Selection Diagnostics", "No selected signals."
+            )
         )
     else:
         by_day = selection.groupby("signal_date").size().rename("signals").reset_index()
@@ -443,7 +447,7 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
   </header>
   <main>
     <section class="metrics" id="summary-metrics">{_metric_cards(result)}</section>
-    {''.join(sections)}
+    {"".join(sections)}
     <section class="panel wide" id="warnings"><h2>Warnings</h2><ul class="warnings">{warnings}</ul></section>
     <section class="tables">
       <article class="panel" id="trade-ledger"><h2>Trade Ledger</h2><div class="table-wrap">{_table_html(trades, "trade-ledger-table")}</div></article>

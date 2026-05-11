@@ -67,7 +67,9 @@ def _result_payload(name: str, result: BacktestResult) -> dict[str, Any]:
     }
 
 
-def _universe_note(name: UniverseName, symbols: tuple[str, ...], source: str, cached_path: object) -> dict[str, Any]:
+def _universe_note(
+    name: UniverseName, symbols: tuple[str, ...], source: str, cached_path: object
+) -> dict[str, Any]:
     return {
         "name": name,
         "symbol_count": len(symbols),
@@ -184,7 +186,7 @@ def compare_payload(
 def _lab_html() -> str:
     strategy_options = "\n".join(
         f'<label><input type="checkbox" name="strategy" value="{html.escape(name)}" '
-        f'{"checked" if i < 3 else ""}> {html.escape(name)}</label>'
+        f"{'checked' if i < 3 else ''}> {html.escape(name)}</label>"
         for i, name in enumerate(STRATEGIES)
     )
     today = date.today()

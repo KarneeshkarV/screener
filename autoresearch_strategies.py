@@ -15,6 +15,7 @@ Rules (for the agent):
 - Use _walk to turn entry/exit boolean arrays into round-trip Trade objects.
 - Keep one strategy per function; register it in NEW_STRATEGIES.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -43,7 +44,6 @@ def strat_example_rsi_mean_revert(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
-
 def strat_donchian_20_10_trend(df: pd.DataFrame) -> list[Trade]:
     """Turtle-style 20/10 Donchian breakout, gated by SMA(100) trend filter.
 
@@ -60,12 +60,8 @@ def strat_donchian_20_10_trend(df: pd.DataFrame) -> list[Trade]:
     high = df["high"].to_numpy(dtype=float)
     low = df["low"].to_numpy(dtype=float)
 
-    upper_20 = (
-        pd.Series(high).shift(1).rolling(20, min_periods=20).max().to_numpy()
-    )
-    lower_10 = (
-        pd.Series(low).shift(1).rolling(10, min_periods=10).min().to_numpy()
-    )
+    upper_20 = pd.Series(high).shift(1).rolling(20, min_periods=20).max().to_numpy()
+    lower_10 = pd.Series(low).shift(1).rolling(10, min_periods=10).min().to_numpy()
     sma100 = _sma(close, 100)
 
     valid_up = ~np.isnan(upper_20) & ~np.isnan(sma100)
@@ -116,11 +112,6 @@ def strat_squeeze_breakout(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
-
-
-
-
-
 def strat_pocket_pivot(df: pd.DataFrame) -> list[Trade]:
     """O'Neil/Morales/Kacher Pocket Pivot — up-close on volume exceeding the
     largest down-day volume of the trailing 10 bars, inside an SMA(50) uptrend.
@@ -153,24 +144,11 @@ def strat_pocket_pivot(df: pd.DataFrame) -> list[Trade]:
     sma50 = _sma(close, 50)
     sma20 = _sma(close, 20)
 
-    valid = (
-        np.isfinite(close_prev)
-        & np.isfinite(sma50)
-        & np.isfinite(max_down_vol_10)
-    )
-    entries = (
-        valid
-        & up_day
-        & (volume > max_down_vol_10)
-        & (close > sma50)
-    )
+    valid = np.isfinite(close_prev) & np.isfinite(sma50) & np.isfinite(max_down_vol_10)
+    entries = valid & up_day & (volume > max_down_vol_10) & (close > sma50)
     exits = np.isfinite(sma20) & (close < sma20)
 
     return _walk(entries, exits, close, df["date"].values)
-
-
-
-
 
 
 def strat_parabolic_sar_flip_trend(df: pd.DataFrame) -> list[Trade]:
@@ -262,11 +240,6 @@ def strat_parabolic_sar_flip_trend(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
-
-
-
-
-
 def strat_kama_cross_trend(df: pd.DataFrame) -> list[Trade]:
     """Perry Kaufman's KAMA efficiency-ratio adaptive-MA bullish cross.
 
@@ -306,13 +279,9 @@ def strat_kama_cross_trend(df: pd.DataFrame) -> list[Trade]:
 
     abs_change = np.abs(np.diff(close, prepend=close[0]))
     volat = pd.Series(abs_change).rolling(N, min_periods=N).sum().to_numpy()
-    close_n_ago = np.concatenate(
-        (np.full(N, np.nan), close[:-N])
-    )
+    close_n_ago = np.concatenate((np.full(N, np.nan), close[:-N]))
     change = np.abs(close - close_n_ago)
-    er = np.where(
-        np.isfinite(volat) & (volat > 0), change / volat, np.nan
-    )
+    er = np.where(np.isfinite(volat) & (volat > 0), change / volat, np.nan)
     sc = np.where(
         np.isfinite(er),
         (er * (fast_sc - slow_sc) + slow_sc) ** 2,
@@ -355,15 +324,10 @@ def strat_kama_cross_trend(df: pd.DataFrame) -> list[Trade]:
     )
     fresh_cross = (close_prev2 <= kama_prev2) & (close_prev > kama_prev)
     entries = valid & fresh_cross & (close_prev > sma100_prev)
-    exits = (
-        (np.isfinite(kama) & (close < kama))
-        | (np.isfinite(sma20) & (close < sma20))
+    exits = (np.isfinite(kama) & (close < kama)) | (
+        np.isfinite(sma20) & (close < sma20)
     )
     return _walk(entries, exits, close, df["date"].values)
-
-
-
-
 
 
 def strat_pring_kst_signal_cross(df: pd.DataFrame) -> list[Trade]:
@@ -416,28 +380,23 @@ def strat_pring_kst_signal_cross(df: pd.DataFrame) -> list[Trade]:
     sma200_prev = np.concatenate(([np.nan], sma200[:-1]))
 
     bullish_cross = (
-        np.isfinite(kst_prev) & np.isfinite(kst_prev2)
-        & np.isfinite(sig_prev) & np.isfinite(sig_prev2)
+        np.isfinite(kst_prev)
+        & np.isfinite(kst_prev2)
+        & np.isfinite(sig_prev)
+        & np.isfinite(sig_prev2)
         & (kst_prev2 <= sig_prev2)
         & (kst_prev > sig_prev)
     )
     trend_ok = (
-        np.isfinite(close_prev) & np.isfinite(sma200_prev)
-        & (close_prev > sma200_prev)
+        np.isfinite(close_prev) & np.isfinite(sma200_prev) & (close_prev > sma200_prev)
     )
 
     entries = bullish_cross & trend_ok
-    exits = (
-        (np.isfinite(kst) & np.isfinite(sig) & (kst < sig))
-        | (np.isfinite(sma20) & (close < sma20))
+    exits = (np.isfinite(kst) & np.isfinite(sig) & (kst < sig)) | (
+        np.isfinite(sma20) & (close < sma20)
     )
 
     return _walk(entries, exits, close, df["date"].values)
-
-
-
-
-
 
 
 def strat_chaikin_oscillator_zero_cross(df: pd.DataFrame) -> list[Trade]:
@@ -490,25 +449,21 @@ def strat_chaikin_oscillator_zero_cross(df: pd.DataFrame) -> list[Trade]:
     sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
 
     cross_up = (
-        np.isfinite(chaikin_prev1) & np.isfinite(chaikin_prev2)
+        np.isfinite(chaikin_prev1)
+        & np.isfinite(chaikin_prev2)
         & (chaikin_prev2 <= 0.0)
         & (chaikin_prev1 > 0.0)
     )
     trend_ok = (
-        np.isfinite(sma100_prev) & np.isfinite(close_prev)
-        & (close_prev > sma100_prev)
+        np.isfinite(sma100_prev) & np.isfinite(close_prev) & (close_prev > sma100_prev)
     )
     entries = cross_up & trend_ok
 
-    exits = (
-        (np.isfinite(chaikin) & (chaikin < 0.0))
-        | (np.isfinite(sma20) & (close < sma20))
+    exits = (np.isfinite(chaikin) & (chaikin < 0.0)) | (
+        np.isfinite(sma20) & (close < sma20)
     )
 
     return _walk(entries, exits, close, df["date"].values)
-
-
-
 
 
 def strat_choppiness_regime_shift(df: pd.DataFrame) -> list[Trade]:
@@ -559,22 +514,18 @@ def strat_choppiness_regime_shift(df: pd.DataFrame) -> list[Trade]:
     low = df["low"].to_numpy(dtype=float)
 
     prev_close = np.concatenate(([close[0]], close[:-1]))
-    tr = np.maximum.reduce([
-        high - low,
-        np.abs(high - prev_close),
-        np.abs(low - prev_close),
-    ])
+    tr = np.maximum.reduce(
+        [
+            high - low,
+            np.abs(high - prev_close),
+            np.abs(low - prev_close),
+        ]
+    )
 
     period = 14
-    sum_tr = (
-        pd.Series(tr).rolling(period, min_periods=period).sum().to_numpy()
-    )
-    high_n = (
-        pd.Series(high).rolling(period, min_periods=period).max().to_numpy()
-    )
-    low_n = (
-        pd.Series(low).rolling(period, min_periods=period).min().to_numpy()
-    )
+    sum_tr = pd.Series(tr).rolling(period, min_periods=period).sum().to_numpy()
+    high_n = pd.Series(high).rolling(period, min_periods=period).max().to_numpy()
+    low_n = pd.Series(low).rolling(period, min_periods=period).min().to_numpy()
     range_n = high_n - low_n
 
     log_n = np.log10(period)
@@ -589,25 +540,21 @@ def strat_choppiness_regime_shift(df: pd.DataFrame) -> list[Trade]:
     close_prev = np.concatenate(([np.nan], close[:-1]))
     sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
 
-    chop_recent = (
-        pd.Series(ci_prev).rolling(10, min_periods=1).max().to_numpy()
-    )
+    chop_recent = pd.Series(ci_prev).rolling(10, min_periods=1).max().to_numpy()
 
     entries = (
-        np.isfinite(ci_prev) & (ci_prev < 38.2)
-        & np.isfinite(chop_recent) & (chop_recent >= 61.8)
-        & np.isfinite(sma100_prev) & np.isfinite(close_prev)
+        np.isfinite(ci_prev)
+        & (ci_prev < 38.2)
+        & np.isfinite(chop_recent)
+        & (chop_recent >= 61.8)
+        & np.isfinite(sma100_prev)
+        & np.isfinite(close_prev)
         & (close_prev > sma100_prev)
     )
 
-    exits = (
-        (np.isfinite(ci) & (ci > 61.8))
-        | (np.isfinite(sma20) & (close < sma20))
-    )
+    exits = (np.isfinite(ci) & (ci > 61.8)) | (np.isfinite(sma20) & (close < sma20))
 
     return _walk(entries, exits, close, df["date"].values)
-
-
 
 
 def strat_dpo_zero_cross(df: pd.DataFrame) -> list[Trade]:
@@ -660,30 +607,19 @@ def strat_dpo_zero_cross(df: pd.DataFrame) -> list[Trade]:
     sma100_prev = np.concatenate(([np.nan], sma100[:-1]))
 
     cross_up = (
-        np.isfinite(dpo_prev1) & np.isfinite(dpo_prev2)
+        np.isfinite(dpo_prev1)
+        & np.isfinite(dpo_prev2)
         & (dpo_prev2 <= 0.0)
         & (dpo_prev1 > 0.0)
     )
     trend_ok = (
-        np.isfinite(close_prev) & np.isfinite(sma100_prev)
-        & (close_prev > sma100_prev)
+        np.isfinite(close_prev) & np.isfinite(sma100_prev) & (close_prev > sma100_prev)
     )
     entries = cross_up & trend_ok
 
-    exits = (
-        (np.isfinite(dpo) & (dpo < 0.0))
-        | (np.isfinite(sma20) & (close < sma20))
-    )
+    exits = (np.isfinite(dpo) & (dpo < 0.0)) | (np.isfinite(sma20) & (close < sma20))
 
     return _walk(entries, exits, close, df["date"].values)
-
-
-
-
-
-
-
-
 
 
 def strat_linreg_slope_signchange(df: pd.DataFrame) -> list[Trade]:
@@ -724,9 +660,11 @@ def strat_linreg_slope_signchange(df: pd.DataFrame) -> list[Trade]:
 
     s = pd.Series(close)
     sum_y = s.rolling(n, min_periods=n).sum().to_numpy()
-    sum_xy = s.rolling(n, min_periods=n).apply(
-        lambda w: float(np.dot(x, w)), raw=True
-    ).to_numpy()
+    sum_xy = (
+        s.rolling(n, min_periods=n)
+        .apply(lambda w: float(np.dot(x, w)), raw=True)
+        .to_numpy()
+    )
     slope = (n * sum_xy - sum_x * sum_y) / denom
 
     slope_prev = pd.Series(slope).shift(1).to_numpy()
@@ -741,10 +679,7 @@ def strat_linreg_slope_signchange(df: pd.DataFrame) -> list[Trade]:
     sma50 = _sma(close, 50)
     sma20 = _sma(close, 20)
     uptrend = (
-        np.isfinite(sma200)
-        & np.isfinite(sma50)
-        & (close > sma200)
-        & (close > sma50)
+        np.isfinite(sma200) & np.isfinite(sma50) & (close > sma200) & (close > sma50)
     )
 
     entries = sign_cross_up & uptrend
@@ -754,7 +689,6 @@ def strat_linreg_slope_signchange(df: pd.DataFrame) -> list[Trade]:
     exits = slope_neg | below_sma20
 
     return _walk(entries, exits, close, df["date"].values)
-
 
 
 def strat_keltner_channel_breakout(df: pd.DataFrame) -> list[Trade]:
@@ -809,8 +743,6 @@ def strat_keltner_channel_breakout(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
-
-
 def strat_qstick_zero_cross(df: pd.DataFrame) -> list[Trade]:
     """Q-Stick (Chande) zero-line bullish cross in an SMA(50)>SMA(200) uptrend.
 
@@ -862,12 +794,6 @@ def strat_qstick_zero_cross(df: pd.DataFrame) -> list[Trade]:
     exits = np.isfinite(ema20) & (close < ema20)
 
     return _walk(entries, exits, close, df["date"].values)
-
-
-
-
-
-
 
 
 def strat_klinger_volume_oscillator_signal_cross(df: pd.DataFrame) -> list[Trade]:
@@ -950,9 +876,7 @@ def strat_klinger_volume_oscillator_signal_cross(df: pd.DataFrame) -> list[Trade
         & (kvo_prev <= signal_prev)
         & (kvo > signal)
     )
-    uptrend = (
-        np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
-    )
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
 
     entries = cross_up & uptrend
     exits = np.isfinite(ema20) & (close < ema20)
@@ -1124,15 +1048,12 @@ def strat_range_filter_buy(df: pd.DataFrame) -> list[Trade]:
         & (rf >= rf_prev)
         & (rf_prev >= rf_prev2)
     )
-    uptrend = (
-        np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
-    )
+    uptrend = np.isfinite(sma50) & np.isfinite(sma200) & (sma50 > sma200)
 
     entries = cross_up & uptrend
     exits = np.isfinite(ema20) & (close < ema20)
 
     return _walk(entries, exits, close, df["date"].values)
-
 
 
 def strat_vidya_bullish_cross(df: pd.DataFrame) -> list[Trade]:
@@ -1232,9 +1153,7 @@ def strat_acceleration_bands_breakout(df: pd.DataFrame) -> list[Trade]:
     factor = np.where(hl_sum > 0, (high - low) / hl_sum, 0.0)
     upper_raw = high * (1.0 + 4.0 * factor)
 
-    upper_band = (
-        pd.Series(upper_raw).rolling(20, min_periods=20).mean().to_numpy()
-    )
+    upper_band = pd.Series(upper_raw).rolling(20, min_periods=20).mean().to_numpy()
     sma200 = _sma(close, 200)
     ema20 = _ema(close, 20)
 
@@ -1340,10 +1259,6 @@ def strat_qqe_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     exits = np.isfinite(ema20) & (close < ema20)
 
     return _walk(entries, exits, close, df["date"].values)
-
-
-
-
 
 
 def strat_alma_bullish_cross(df: pd.DataFrame) -> list[Trade]:
@@ -1562,7 +1477,6 @@ def strat_ehlers_cog_signal_cross(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
-
 def strat_gann_hilo_activator_flip(df: pd.DataFrame) -> list[Trade]:
     """Gann HiLo Activator (GHLA) — trend-state flip from down to up.
 
@@ -1652,7 +1566,6 @@ def strat_gann_hilo_activator_flip(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
-
 def strat_premier_stochastic_oscillator(df: pd.DataFrame) -> list[Trade]:
     """Lee Leibfarth's Premier Stochastic Oscillator (PSO).
 
@@ -1674,7 +1587,9 @@ def strat_premier_stochastic_oscillator(df: pd.DataFrame) -> list[Trade]:
     high_k = pd.Series(high).rolling(k_len, min_periods=k_len).max().to_numpy()
     low_k = pd.Series(low).rolling(k_len, min_periods=k_len).min().to_numpy()
     rng = high_k - low_k
-    pct_k = np.where(rng > 0, (close - low_k) / np.where(rng > 0, rng, 1.0) * 100.0, 50.0)
+    pct_k = np.where(
+        rng > 0, (close - low_k) / np.where(rng > 0, rng, 1.0) * 100.0, 50.0
+    )
     pct_k = np.nan_to_num(pct_k, nan=50.0, posinf=100.0, neginf=0.0)
 
     nsk = 0.1 * (pct_k - 50.0)
@@ -1745,7 +1660,7 @@ def strat_mcginley_dynamic_cross(df: pd.DataFrame) -> list[Trade]:
             ratio = close[i] / prev
             # Clamp ratio to keep ratio**4 numerically stable on extreme bars.
             ratio = float(np.clip(ratio, 0.5, 2.0))
-            md[i] = prev + (close[i] - prev) / (N * (ratio ** 4))
+            md[i] = prev + (close[i] - prev) / (N * (ratio**4))
 
     sma50 = _sma(close, 50)
     sma200 = _sma(close, 200)
@@ -1819,12 +1734,8 @@ def strat_frama_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     ll_full = low_s.rolling(N, min_periods=N).min().to_numpy()
     hh_recent = high_s.rolling(half, min_periods=half).max().to_numpy()
     ll_recent = low_s.rolling(half, min_periods=half).min().to_numpy()
-    hh_older = (
-        high_s.rolling(half, min_periods=half).max().shift(half).to_numpy()
-    )
-    ll_older = (
-        low_s.rolling(half, min_periods=half).min().shift(half).to_numpy()
-    )
+    hh_older = high_s.rolling(half, min_periods=half).max().shift(half).to_numpy()
+    ll_older = low_s.rolling(half, min_periods=half).min().shift(half).to_numpy()
 
     frama = np.full(n_bars, np.nan)
     log2 = np.log(2.0)
@@ -1876,7 +1787,6 @@ def strat_frama_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     exits = np.isfinite(ema20) & (close < ema20)
 
     return _walk(entries, exits, close, df["date"].values)
-
 
 
 def strat_mama_fama_cross(df: pd.DataFrame) -> list[Trade]:
@@ -1946,10 +1856,7 @@ def strat_mama_fama_cross(df: pd.DataFrame) -> list[Trade]:
             fama[i] = price[i]
             continue
         smooth[i] = (
-            4.0 * price[i]
-            + 3.0 * price[i - 1]
-            + 2.0 * price[i - 2]
-            + price[i - 3]
+            4.0 * price[i] + 3.0 * price[i - 1] + 2.0 * price[i - 2] + price[i - 3]
         ) / 10.0
         adj = 0.075 * period[i - 1] + 0.54
         detrender[i] = (
@@ -2041,7 +1948,6 @@ def strat_mama_fama_cross(df: pd.DataFrame) -> list[Trade]:
     exits = np.isfinite(ema20) & (close < ema20)
 
     return _walk(entries, exits, close, df["date"].values)
-
 
 
 def strat_tillson_t3_cross(df: pd.DataFrame) -> list[Trade]:
@@ -2199,8 +2105,16 @@ def strat_ehlers_laguerre_rsi(df: pd.DataFrame) -> list[Trade]:
         d01 = L0[i] - L1[i]
         d12 = L1[i] - L2[i]
         d23 = L2[i] - L3[i]
-        cu = (d01 if d01 > 0 else 0.0) + (d12 if d12 > 0 else 0.0) + (d23 if d23 > 0 else 0.0)
-        cd = (-d01 if d01 < 0 else 0.0) + (-d12 if d12 < 0 else 0.0) + (-d23 if d23 < 0 else 0.0)
+        cu = (
+            (d01 if d01 > 0 else 0.0)
+            + (d12 if d12 > 0 else 0.0)
+            + (d23 if d23 > 0 else 0.0)
+        )
+        cd = (
+            (-d01 if d01 < 0 else 0.0)
+            + (-d12 if d12 < 0 else 0.0)
+            + (-d23 if d23 < 0 else 0.0)
+        )
         denom = cu + cd
         if denom > 0:
             lrsi[i] = cu / denom
@@ -2228,7 +2142,6 @@ def strat_ehlers_laguerre_rsi(df: pd.DataFrame) -> list[Trade]:
     exits = np.isfinite(ema20) & (close < ema20)
 
     return _walk(entries, exits, close, df["date"].values)
-
 
 
 def strat_bill_williams_alligator_awake(df: pd.DataFrame) -> list[Trade]:
@@ -2409,8 +2322,6 @@ def strat_williams_ac_zero_acceleration(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
-
-
 def strat_twiggs_money_flow(df: pd.DataFrame) -> list[Trade]:
     """Twiggs Money Flow zero up-cross — Colin Twiggs' true-range CMF variant.
 
@@ -2475,11 +2386,7 @@ def strat_twiggs_money_flow(df: pd.DataFrame) -> list[Trade]:
     ema_vol = _ema(volume, PERIOD)
 
     tmf = np.full(n, np.nan)
-    valid_ratio = (
-        np.isfinite(ema_adv)
-        & np.isfinite(ema_vol)
-        & (ema_vol > 0.0)
-    )
+    valid_ratio = np.isfinite(ema_adv) & np.isfinite(ema_vol) & (ema_vol > 0.0)
     tmf[valid_ratio] = ema_adv[valid_ratio] / ema_vol[valid_ratio]
 
     sma50 = _sma(close, 50)
@@ -2564,7 +2471,6 @@ def strat_elder_impulse_bull(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
-
 def strat_chande_forecast_oscillator(df: pd.DataFrame) -> list[Trade]:
     """Chande Forecast Oscillator (Tushar Chande, 'Beyond Technical Analysis' 1997).
 
@@ -2636,7 +2542,6 @@ def strat_chande_forecast_oscillator(df: pd.DataFrame) -> list[Trade]:
     return _walk(entries, exits, close, df["date"].values)
 
 
-
 def strat_disparity_index_zero_cross(df: pd.DataFrame) -> list[Trade]:
     """Disparity Index (Steve Nison, 'Beyond Candlesticks' 1994) — zero up-cross.
 
@@ -2692,11 +2597,6 @@ def strat_disparity_index_zero_cross(df: pd.DataFrame) -> list[Trade]:
     exits = di_below | below_ema20
 
     return _walk(entries, exits, close, df["date"].values)
-
-
-
-
-
 
 
 def strat_adaptive_price_zone_breakout(df: pd.DataFrame) -> list[Trade]:
@@ -2766,8 +2666,6 @@ def strat_adaptive_price_zone_breakout(df: pd.DataFrame) -> list[Trade]:
     exits = below_center | below_ema20
 
     return _walk(entries, exits, close, df["date"].values)
-
-
 
 
 def strat_chande_dynamic_momentum_index(df: pd.DataFrame) -> list[Trade]:
@@ -2904,14 +2802,20 @@ def strat_accumulative_swing_index_cross(df: pd.DataFrame) -> list[Trade]:
     case_a = (abs_hc >= abs_lc) & (abs_hc >= hl)
     case_b = (abs_lc > abs_hc) & (abs_lc >= hl)
 
-    r_a = (high - close_prev) - 0.5 * (low - close_prev) + 0.25 * (close_prev - open_prev)
-    r_b = (low - close_prev) - 0.5 * (high - close_prev) + 0.25 * (close_prev - open_prev)
+    r_a = (
+        (high - close_prev) - 0.5 * (low - close_prev) + 0.25 * (close_prev - open_prev)
+    )
+    r_b = (
+        (low - close_prev) - 0.5 * (high - close_prev) + 0.25 * (close_prev - open_prev)
+    )
     r_c = (high - low) + 0.25 * (close_prev - open_prev)
 
     r_raw = np.where(case_a, r_a, np.where(case_b, r_b, r_c))
     r_abs = np.abs(r_raw)
 
-    n_term = (close - close_prev) + 0.5 * (close - open_) + 0.25 * (close_prev - open_prev)
+    n_term = (
+        (close - close_prev) + 0.5 * (close - open_) + 0.25 * (close_prev - open_prev)
+    )
     k = np.maximum(abs_hc, abs_lc)
 
     tr = np.maximum(np.maximum(hl, abs_hc), abs_lc)
@@ -2927,7 +2831,10 @@ def strat_accumulative_swing_index_cross(df: pd.DataFrame) -> list[Trade]:
     )
     si = np.where(
         valid_si,
-        50.0 * n_term / np.where(r_abs > 0, r_abs, 1.0) * (k / np.where(t_param > 0, t_param, 1.0)),
+        50.0
+        * n_term
+        / np.where(r_abs > 0, r_abs, 1.0)
+        * (k / np.where(t_param > 0, t_param, 1.0)),
         0.0,
     )
     si = np.clip(si, -100.0, 100.0)
@@ -2957,11 +2864,7 @@ def strat_accumulative_swing_index_cross(df: pd.DataFrame) -> list[Trade]:
         & (asi_p1 <= sig_p1)
         & (asi > signal)
     )
-    uptrend = (
-        np.isfinite(sma50_p1)
-        & np.isfinite(sma200_p1)
-        & (sma50_p1 > sma200_p1)
-    )
+    uptrend = np.isfinite(sma50_p1) & np.isfinite(sma200_p1) & (sma50_p1 > sma200_p1)
     entries = warmup & fresh_cross & uptrend
 
     below_signal = np.isfinite(asi) & np.isfinite(signal) & (asi < signal)
@@ -3019,12 +2922,13 @@ def strat_trend_trigger_factor(df: pd.DataFrame) -> list[Trade]:
     denom = 0.5 * (bp + sp)
 
     valid_ttf = (
-        np.isfinite(bp)
-        & np.isfinite(sp)
-        & np.isfinite(denom)
-        & (np.abs(denom) > 1e-12)
+        np.isfinite(bp) & np.isfinite(sp) & np.isfinite(denom) & (np.abs(denom) > 1e-12)
     )
-    ttf = np.where(valid_ttf, 100.0 * (bp - sp) / np.where(np.abs(denom) > 1e-12, denom, 1.0), np.nan)
+    ttf = np.where(
+        valid_ttf,
+        100.0 * (bp - sp) / np.where(np.abs(denom) > 1e-12, denom, 1.0),
+        np.nan,
+    )
 
     sma50 = _sma(close, 50)
     sma200 = _sma(close, 200)
@@ -3039,16 +2943,9 @@ def strat_trend_trigger_factor(df: pd.DataFrame) -> list[Trade]:
     warmup[warmup_start:] = True
 
     fresh_cross_up = (
-        np.isfinite(ttf_p1)
-        & np.isfinite(ttf)
-        & (ttf_p1 <= 100.0)
-        & (ttf > 100.0)
+        np.isfinite(ttf_p1) & np.isfinite(ttf) & (ttf_p1 <= 100.0) & (ttf > 100.0)
     )
-    uptrend = (
-        np.isfinite(sma50_p1)
-        & np.isfinite(sma200_p1)
-        & (sma50_p1 > sma200_p1)
-    )
+    uptrend = np.isfinite(sma50_p1) & np.isfinite(sma200_p1) & (sma50_p1 > sma200_p1)
     entries = warmup & fresh_cross_up & uptrend
 
     below_neg100 = np.isfinite(ttf) & (ttf < -100.0)
@@ -3056,7 +2953,6 @@ def strat_trend_trigger_factor(df: pd.DataFrame) -> list[Trade]:
     exits = below_neg100 | below_ema20
 
     return _walk(entries, exits, close, df["date"].values)
-
 
 
 def strat_composite_index_brown(df: pd.DataFrame) -> list[Trade]:
@@ -3093,11 +2989,7 @@ def strat_composite_index_brown(df: pd.DataFrame) -> list[Trade]:
         & (ci_p1 <= sig_p1)
         & (ci > ci_signal)
     )
-    uptrend = (
-        np.isfinite(sma50_p1)
-        & np.isfinite(sma200_p1)
-        & (sma50_p1 > sma200_p1)
-    )
+    uptrend = np.isfinite(sma50_p1) & np.isfinite(sma200_p1) & (sma50_p1 > sma200_p1)
     warmup = np.zeros(n, dtype=bool)
     warmup_start = min(n, 220)
     warmup[warmup_start:] = True
@@ -3165,11 +3057,7 @@ def strat_sushi_roll_reversal(df: pd.DataFrame) -> list[Trade]:
         & (low_new < low_old)
         & (close > high_old)
     )
-    prior_down = (
-        np.isfinite(close_t5)
-        & np.isfinite(close_t10)
-        & (close_t5 < close_t10)
-    )
+    prior_down = np.isfinite(close_t5) & np.isfinite(close_t10) & (close_t5 < close_t10)
     uptrend = np.isfinite(sma100) & (close > sma100)
 
     entries = engulf & prior_down & uptrend
@@ -3179,8 +3067,6 @@ def strat_sushi_roll_reversal(df: pd.DataFrame) -> list[Trade]:
     exits = np.isfinite(low_new_prev) & (close < low_new_prev)
 
     return _walk(entries, exits, close, df["date"].values)
-
-
 
 
 def strat_vpci_bullish_cross(df: pd.DataFrame) -> list[Trade]:
@@ -3271,7 +3157,6 @@ def strat_vpci_bullish_cross(df: pd.DataFrame) -> list[Trade]:
     exits = fresh_down | below_sma50
 
     return _walk(entries, exits, close, df["date"].values)
-
 
 
 NEW_STRATEGIES: dict = {
