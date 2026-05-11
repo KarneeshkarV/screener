@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, cast
 
 import pandas as pd
 
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 
 StrategyFn = Callable[[pd.DataFrame], list[Trade]]
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 @dataclass(frozen=True)
@@ -78,7 +79,7 @@ def strategy(
     prepare_bars: Optional[PrepareBarsFn] = None,
     required_lookback: Optional[LookbackFn] = None,
     **meta: Any,
-):
+) -> Callable[[F], F]:
     """Decorator. Two shapes:
 
     Callable strategy (decorates a fn ``(df) -> list[Trade]``):
@@ -88,10 +89,10 @@ def strategy(
         ``@strategy("ema_trend", entry="...", exit="...") def _ema_trend(): pass``
     """
 
-    def _wrap(value):
+    def _wrap(value: F) -> F:
         spec = StrategySpec(
             name=name,
-            callable_fn=value if callable(value) and entry is None else None,
+            callable_fn=cast(StrategyFn, value) if entry is None else None,
             entry=entry,
             exit=exit,
             prepare_bars=prepare_bars,
