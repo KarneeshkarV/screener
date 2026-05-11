@@ -13,8 +13,14 @@ from screener.strategies.registry import STRATEGIES, get_strategy, iter_strategi
 def test_strategy_registry_preserves_pine_runner_names():
     expected = {
         "bb_breakout",
+        "ma_cross",
+        "ma_cross_regime",
         "ma_cross_st_entry",
+        "ma_cross_st_exit",
+        "macd_rsi",
+        "rsi_ema",
         "supertrend",
+        "supertrend_rsi",
     }
 
     assert set(STRATEGIES) == expected
