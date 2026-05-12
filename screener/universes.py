@@ -28,8 +28,6 @@ class Universe(BaseModel):
     @field_validator("symbols")
     @classmethod
     def _validate_symbols(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if not value:
-            raise ValueError("symbols must not be empty")
         normalized = tuple(symbol.strip() for symbol in value if symbol.strip())
         if not normalized:
             raise ValueError("symbols must not be empty")

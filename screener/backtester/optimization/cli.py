@@ -282,7 +282,7 @@ def optimize_grid(**kwargs) -> None:
         end_date=end_date,
     )
     print_grid_table(results)
-    payload = [result.model_dump() for result in results]
+    payload = [result.model_dump(mode="json") for result in results]
     if kwargs["json_path"]:
         write_json_report(payload, kwargs["json_path"])
     if kwargs["html_path"]:
@@ -342,7 +342,7 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         cache_path=kwargs["cache_path"],
     )
     print_walk_forward_table(summary)
-    payload = summary.model_dump()
+    payload = summary.model_dump(mode="json")
     if kwargs["json_path"]:
         write_json_report(payload, kwargs["json_path"])
     if kwargs["html_path"]:
@@ -417,4 +417,4 @@ def optimize_validate(
             table.add_row(key, str(value))
     Console().print(table)
     if json_path:
-        write_json_report(result.model_dump(), json_path)
+        write_json_report(result.model_dump(mode="json"), json_path)

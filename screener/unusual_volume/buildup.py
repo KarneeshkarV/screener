@@ -83,7 +83,7 @@ class BuildupScore(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("symbol must not be empty")
-        return normalized.upper()
+        return normalized
 
     def to_dict(self) -> dict[str, object]:
         return self.model_dump(mode="json")

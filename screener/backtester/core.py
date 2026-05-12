@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field
 
 from screener.backtester.data import PriceFetcher
 from screener.backtester.models import BacktestConfig, ExitReason, Trade
@@ -17,9 +17,8 @@ from screener.backtester.portfolio import Portfolio
 from screener.backtester.slippage import Side, apply_slippage
 
 
-class _SimOutcome(BaseModel):
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
+@dataclass(frozen=True)
+class _SimOutcome:
     trade: Optional[Trade]
     warning: Optional[str]
 
@@ -104,10 +103,9 @@ def _passes_entry_filters(
     return True, None
 
 
-class _SlotState(BaseModel):
+@dataclass
+class _SlotState:
     """Mutable state for a single slot during the event-driven simulation."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     ticker: str
     entry_idx: int
@@ -124,7 +122,7 @@ class _SlotState(BaseModel):
     sigma_daily: float = 0.0
     partial_targets: tuple[float, ...] = ()
     partial_fractions: tuple[float, ...] = ()
-    partial_fired: list[bool] = Field(default_factory=list)
+    partial_fired: list[bool] = field(default_factory=list)
 
 
 def _resolve_entry_fill(

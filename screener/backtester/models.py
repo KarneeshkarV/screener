@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -64,20 +64,16 @@ class BacktestConfig(BaseModel):
     #   ``none``        — raw OHLC, no adjustment.
     price_adjustment: Literal["full", "splits_only", "none"] = "full"
 
-    @model_validator(mode="after")
-    def _default_slippage(self) -> "BacktestConfig":
-        if self.slippage_model is None:
-            # Frozen model: bypass the immutability guard to populate the
-            # default slippage implementation derived from ``slippage_bps``.
-            object.__setattr__(
-                self, "slippage_model", FixedBpsSlippage(bps=self.slippage_bps)
-            )
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def _default_slippage(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("slippage_model") is None:
+            bps = data.get("slippage_bps", 0.0)
+            data["slippage_model"] = FixedBpsSlippage(bps=bps)
+        return data
 
 
 class Position(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=False)
-
     ticker: str
     entry_date: date
     entry_fill: float

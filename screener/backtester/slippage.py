@@ -49,9 +49,9 @@ def apply_slippage(
 
 
 class FixedBpsSlippage(BaseModel):
-    bps: float = 0.0
-
     model_config = ConfigDict(frozen=True)
+
+    bps: float = 0.0
 
     def adverse_fraction(
         self, side: Side, shares: float, adv: float, sigma_daily: float
@@ -60,9 +60,9 @@ class FixedBpsSlippage(BaseModel):
 
 
 class HalfSpreadSlippage(BaseModel):
-    half_spread_bps: float = 0.0
-
     model_config = ConfigDict(frozen=True)
+
+    half_spread_bps: float = 0.0
 
     def adverse_fraction(
         self, side: Side, shares: float, adv: float, sigma_daily: float
@@ -78,9 +78,9 @@ class VolumeImpactSlippage(BaseModel):
     to other components in a composite.
     """
 
-    k: float = 0.1
-
     model_config = ConfigDict(frozen=True)
+
+    k: float = 0.1
 
     def adverse_fraction(
         self, side: Side, shares: float, adv: float, sigma_daily: float
@@ -91,9 +91,9 @@ class VolumeImpactSlippage(BaseModel):
 
 
 class CompositeSlippage(BaseModel):
-    models: tuple[SlippageModel, ...] = Field(default_factory=tuple)
-
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    models: tuple[SlippageModel, ...] = Field(default_factory=tuple)
 
     def adverse_fraction(
         self, side: Side, shares: float, adv: float, sigma_daily: float

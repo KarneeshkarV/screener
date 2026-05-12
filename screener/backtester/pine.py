@@ -19,7 +19,7 @@ single ``.shift(1)`` and so compare only bars ``i`` and ``i-1``.
 
 from __future__ import annotations
 
-from typing import Union
+from typing import Literal, Union
 
 import numpy as np
 import pandas as pd
@@ -62,7 +62,7 @@ class Name(BaseModel):
 class UnaryOp(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    op: str  # '-' or '+'
+    op: Literal["-", "+"]
     operand: "Node"
 
 
@@ -75,7 +75,7 @@ class Not(BaseModel):
 class BinOp(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    op: str  # '+', '-', '*', '/'
+    op: Literal["+", "-", "*", "/"]
     left: "Node"
     right: "Node"
 
@@ -83,7 +83,7 @@ class BinOp(BaseModel):
 class Compare(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    op: str  # '>', '>=', '<', '<=', '==', '!='
+    op: Literal[">", ">=", "<", "<=", "==", "!="]
     left: "Node"
     right: "Node"
 
@@ -91,7 +91,7 @@ class Compare(BaseModel):
 class BoolOp(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    op: str  # 'and' or 'or'
+    op: Literal["and", "or"]
     left: "Node"
     right: "Node"
 
@@ -104,6 +104,7 @@ class Call(BaseModel):
     col: int  # column in source (for error messages)
 
 
+# In-memory construction only — no discriminator, so model_validate from dicts is intentionally not supported.
 Node = Union[Num, Name, UnaryOp, Not, BinOp, Compare, BoolOp, Call]
 
 UnaryOp.model_rebuild()
@@ -124,7 +125,7 @@ _SINGLE_PUNCT = set("+-*/()><,")
 class Token(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    kind: str  # 'num', 'name', 'op', 'lp', 'rp', 'comma', 'end'
+    kind: Literal["num", "name", "op", "lp", "rp", "comma", "end"]
     value: str
     col: int
 

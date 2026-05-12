@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
 from pathlib import Path
-from typing import Any, TypeAlias, cast
+from typing import Any
 
 import click
 from pydantic import (
@@ -18,27 +17,7 @@ from pydantic import (
 import yaml  # type: ignore[import-untyped]
 
 
-ConfigScalar: TypeAlias = str | int | float | bool | None | date | datetime
-ConfigValue: TypeAlias = ConfigScalar | list["ConfigValue"] | dict[str, "ConfigValue"]
-ConfigMap = dict[str, ConfigValue]
-
-
-def _validate_config_value(value: Any, path: str) -> ConfigValue:
-    if value is None or isinstance(value, (str, int, float, bool, date, datetime)):
-        return cast(ConfigValue, value)
-    if isinstance(value, list):
-        return [
-            _validate_config_value(item, f"{path}[{idx}]")
-            for idx, item in enumerate(value)
-        ]
-    if isinstance(value, dict):
-        if not all(isinstance(key, str) for key in value):
-            raise ValueError(f"Config keys must be strings at {path}.")
-        return {
-            key: _validate_config_value(item, f"{path}.{key}")
-            for key, item in value.items()
-        }
-    raise ValueError(f"Unsupported config value at {path}: {type(value).__name__}.")
+ConfigMap = dict[str, Any]
 
 
 class CliConfig(BaseModel):
@@ -54,10 +33,7 @@ class CliConfig(BaseModel):
             raise ValueError("Config file must contain a top-level mapping.")
         if not all(isinstance(key, str) for key in value):
             raise ValueError("Config file keys must be strings.")
-        return {
-            str(key): _validate_config_value(item, str(key))
-            for key, item in value.items()
-        }
+        return value
 
     @field_validator("log_level")
     @classmethod
@@ -70,7 +46,7 @@ class CliConfig(BaseModel):
         return normalized
 
     def to_click_default_map(self) -> ConfigMap:
-        return cast(ConfigMap, self.model_dump(exclude_none=True, mode="python"))
+        return self.model_dump(exclude_none=True, mode="python")
 
 
 def load_config(path: str | Path) -> ConfigMap:
