@@ -6,7 +6,12 @@ import click
 
 from screener.cache import parse_ttl
 from screener import history
-from screener.criteria import CRITERIA, combine, is_pipeline, registry as criteria_registry
+from screener.criteria import (
+    CRITERIA,
+    combine,
+    is_pipeline,
+    registry as criteria_registry,
+)
 from screener.display import print_csv, print_results
 from screener.scanner import MARKETS, scan
 
