@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import json
 
 import pandas as pd
 from click.testing import CliRunner
@@ -14,6 +15,7 @@ from screener.rs_breakout import (
     relative_strength_55,
     scan_rs_breakouts,
     supertrend,
+    write_json,
 )
 from tests.conftest import StubPriceFetcher
 
@@ -172,3 +174,22 @@ def test_rs_breakout_cli_runs_offline(monkeypatch):
     assert res.exit_code == 0, res.output
     assert "INDIA RS Breakout Screen" in res.output
     assert "AAA" in res.output
+
+
+def test_write_json_serializes_result_dates(tmp_path) -> None:
+    bars = _trend_bars(100.0, 150.0)
+    bars.iloc[-1, bars.columns.get_loc("volume")] = 160_000.0
+    benchmark = _trend_bars(100.0, 110.0)
+    result = scan_rs_breakouts(
+        {"AAA": bars},
+        benchmark,
+        date(2026, 4, 30),
+        delivery_panel=_delivery_panel("AAA", latest=55.0, previous=45.0),
+    )
+
+    path = tmp_path / "rs_breakout.json"
+    write_json(result, path)
+
+    payload = json.loads(path.read_text())
+    assert payload["as_of"] == "2026-04-30"
+    assert payload["full"][0]["date"] == "2026-04-30"

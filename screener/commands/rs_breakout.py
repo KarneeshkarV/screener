@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
 import click
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import requests
 from rich.console import Console
 
@@ -26,14 +26,31 @@ from screener.rs_breakout import (
 from screener.scanner import scan
 
 
-@dataclass(frozen=True)
-class RsBreakoutRequest:
+class RsBreakoutRequest(BaseModel):
     market: str
     as_of: date
     universe: list[str]
     benchmark: str
-    history_days: int
+    history_days: int = Field(ge=1)
     require_delivery: bool
+
+    model_config = ConfigDict(frozen=True)
+
+    @field_validator("market", "benchmark")
+    @classmethod
+    def _strip_non_empty(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be empty")
+        return normalized
+
+    @field_validator("universe")
+    @classmethod
+    def _normalize_universe(cls, value: list[str]) -> list[str]:
+        normalized = [ticker.strip() for ticker in value if ticker.strip()]
+        if not normalized:
+            raise ValueError("universe must include at least one ticker")
+        return normalized
 
 
 def resolve_universe(

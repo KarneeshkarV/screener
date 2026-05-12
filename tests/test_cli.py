@@ -330,6 +330,19 @@ def test_config_rejects_unsupported_extension(tmp_path):
     assert "Unsupported config file extension" in res.output
 
 
+def test_config_rejects_non_mapping_root(tmp_path):
+    path = tmp_path / "screener.yaml"
+    path.write_text("- backtest-historical")
+
+    res = CliRunner().invoke(
+        cli,
+        ["--config", str(path), "backtest-historical"],
+    )
+
+    assert res.exit_code != 0
+    assert "Config file must contain a top-level mapping" in res.output
+
+
 def test_nested_optimize_config_supplies_defaults(tmp_path, monkeypatch):
     captured = {}
 

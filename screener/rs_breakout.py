@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
@@ -18,6 +17,7 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 import requests
+from pydantic import BaseModel, ConfigDict, field_validator
 from rich.console import Console
 from rich.table import Table
 
@@ -34,8 +34,7 @@ VOLUME_WINDOW = 20
 VOLUME_MULTIPLIER = 1.5
 
 
-@dataclass(frozen=True)
-class RsBreakoutRow:
+class RsBreakoutRow(BaseModel):
     symbol: str
     date: date
     close: float
@@ -48,18 +47,35 @@ class RsBreakoutRow:
     delivery_pct: Optional[float]
     previous_delivery_pct: Optional[float]
 
-    def to_dict(self) -> dict:
-        data = asdict(self)
-        data["date"] = self.date.isoformat()
-        return data
+    model_config = ConfigDict(frozen=True)
+
+    @field_validator("symbol")
+    @classmethod
+    def _normalize_symbol(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("symbol must not be empty")
+        return normalized
+
+    def to_dict(self) -> dict[str, object]:
+        return self.model_dump(mode="json")
 
 
-@dataclass(frozen=True)
-class RsBreakoutResult:
+class RsBreakoutResult(BaseModel):
     as_of: date
     benchmark: str
     full: list[RsBreakoutRow]
     relaxed: list[RsBreakoutRow]
+
+    model_config = ConfigDict(frozen=True)
+
+    @field_validator("benchmark")
+    @classmethod
+    def _normalize_benchmark(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("benchmark must not be empty")
+        return normalized
 
 
 def normalize_bars(bars: pd.DataFrame, as_of: date) -> pd.DataFrame:
@@ -540,12 +556,7 @@ def _render_bucket(title: str, rows: list[RsBreakoutRow], console: Console) -> N
 
 
 def write_json(result: RsBreakoutResult, path: Path) -> None:
-    payload = {
-        "as_of": result.as_of.isoformat(),
-        "benchmark": result.benchmark,
-        "full": [r.to_dict() for r in result.full],
-        "relaxed": [r.to_dict() for r in result.relaxed],
-    }
+    payload = result.model_dump(mode="json")
     path.write_text(json.dumps(payload, indent=2, default=str))
 
 

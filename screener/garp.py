@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from typing import Any, cast
 
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field
 
 from screener.cache import cached_json_call
 from screener.scanner import scan
@@ -16,16 +16,17 @@ INDIA_MIN_CRORE = 1000.0
 US_MIN_USD = 1_000_000_000.0
 
 
-@dataclass(frozen=True)
-class GarpThresholds:
-    market_cap_min: float
-    sales_min: float
-    peg_max: float = 2.0
-    sales_growth_5y_min: float = 15.0
-    operating_profit_growth_min: float = 10.0
-    eps_growth_5y_min: float = 12.0
-    roe_5y_min: float = 15.0
-    roce_or_roic_min: float = 15.0
+class GarpThresholds(BaseModel):
+    market_cap_min: float = Field(ge=0.0)
+    sales_min: float = Field(ge=0.0)
+    peg_max: float = Field(default=2.0, gt=0.0)
+    sales_growth_5y_min: float = Field(default=15.0)
+    operating_profit_growth_min: float = Field(default=10.0)
+    eps_growth_5y_min: float = Field(default=12.0)
+    roe_5y_min: float = Field(default=15.0)
+    roce_or_roic_min: float = Field(default=15.0)
+
+    model_config = ConfigDict(frozen=True)
 
 
 INDIA_THRESHOLDS = GarpThresholds(

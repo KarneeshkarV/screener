@@ -6,27 +6,30 @@ import logging
 import random
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from threading import Lock
 from typing import TypeVar, cast
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 LOG = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-@dataclass(frozen=True)
-class RetryConfig:
-    attempts: int = 3
-    base_delay: float = 0.5
-    max_delay: float = 8.0
-    jitter: float = 0.2
+class RetryConfig(BaseModel):
+    attempts: int = Field(default=3, ge=1)
+    base_delay: float = Field(default=0.5, ge=0.0)
+    max_delay: float = Field(default=8.0, ge=0.0)
+    jitter: float = Field(default=0.2, ge=0.0)
+
+    model_config = ConfigDict(frozen=True)
 
 
-@dataclass(frozen=True)
-class CircuitBreakerConfig:
-    failure_threshold: int = 5
-    cooldown_seconds: float = 60.0
+class CircuitBreakerConfig(BaseModel):
+    failure_threshold: int = Field(default=5, ge=1)
+    cooldown_seconds: float = Field(default=60.0, ge=0.0)
+
+    model_config = ConfigDict(frozen=True)
 
 
 class CircuitOpenError(RuntimeError):

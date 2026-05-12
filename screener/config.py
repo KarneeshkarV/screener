@@ -3,14 +3,74 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeAlias, cast
 
 import click
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 import yaml  # type: ignore[import-untyped]
 
 
-ConfigMap = dict[str, Any]
+ConfigScalar: TypeAlias = str | int | float | bool | None | date | datetime
+ConfigValue: TypeAlias = ConfigScalar | list["ConfigValue"] | dict[str, "ConfigValue"]
+ConfigMap = dict[str, ConfigValue]
+
+
+def _validate_config_value(value: Any, path: str) -> ConfigValue:
+    if value is None or isinstance(value, (str, int, float, bool, date, datetime)):
+        return cast(ConfigValue, value)
+    if isinstance(value, list):
+        return [
+            _validate_config_value(item, f"{path}[{idx}]")
+            for idx, item in enumerate(value)
+        ]
+    if isinstance(value, dict):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError(f"Config keys must be strings at {path}.")
+        return {
+            key: _validate_config_value(item, f"{path}.{key}")
+            for key, item in value.items()
+        }
+    raise ValueError(f"Unsupported config value at {path}: {type(value).__name__}.")
+
+
+class CliConfig(BaseModel):
+    log_level: str | None = None
+    log_json: bool | None = None
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_payload(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            raise ValueError("Config file must contain a top-level mapping.")
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("Config file keys must be strings.")
+        return {
+            str(key): _validate_config_value(item, str(key))
+            for key, item in value.items()
+        }
+
+    @field_validator("log_level")
+    @classmethod
+    def _normalize_log_level(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("log_level must not be empty.")
+        return normalized
+
+    def to_click_default_map(self) -> ConfigMap:
+        return cast(ConfigMap, self.model_dump(exclude_none=True, mode="python"))
 
 
 def load_config(path: str | Path) -> ConfigMap:
@@ -38,8 +98,8 @@ def load_config(path: str | Path) -> ConfigMap:
             f"Could not load config file {config_path}: {exc}"
         ) from exc
 
-    if not isinstance(loaded, dict):
-        raise click.UsageError("Config file must contain a top-level mapping.")
-    if not all(isinstance(key, str) for key in loaded):
-        raise click.UsageError("Config file keys must be strings.")
-    return cast(ConfigMap, loaded)
+    try:
+        return CliConfig.model_validate(loaded).to_click_default_map()
+    except ValidationError as exc:
+        message = exc.errors()[0]["msg"] if exc.errors() else str(exc)
+        raise click.UsageError(message) from exc

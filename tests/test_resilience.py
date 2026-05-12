@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from screener.resilience import (
     CircuitBreaker,
     CircuitBreakerConfig,
@@ -65,3 +68,8 @@ def test_circuit_opens_and_closes_after_success() -> None:
     breaker.before_call()
     breaker.record_success()
     breaker.before_call()
+
+
+def test_retry_config_rejects_invalid_attempts() -> None:
+    with pytest.raises(ValidationError):
+        RetryConfig(attempts=0)
