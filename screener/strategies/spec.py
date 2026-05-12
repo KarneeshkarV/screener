@@ -21,7 +21,6 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from screener._registry import Registry, autodiscover
-from screener.backtester.data import PriceFetcher
 from screener.backtester.models import BacktestConfig
 from screener.strategies.trades import Trade
 
@@ -39,7 +38,7 @@ class PrepareCtx(BaseModel):
     tv_symbols: list[str]
     start: date
     end: date
-    fetcher: PriceFetcher
+    fetcher: Any
     warnings: list[str]
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
