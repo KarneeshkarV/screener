@@ -46,6 +46,7 @@ class InvocationRollup:
     feature: str
     market: str
     criteria: str
+    status: str
     count: int
     last_used_at: str | None
     top_extras: str
@@ -233,59 +234,66 @@ def invocation_rollup(limit: int = 30) -> list[InvocationRollup]:
             SELECT feature,
                    COALESCE(market, '') AS market,
                    COALESCE(criteria, '') AS criteria,
-                   COUNT(*) AS usage_count,
-                   MAX(created_at) AS last_used_at
+                   status,
+                   created_at,
+                   extras_json
             FROM {INVOCATIONS_TABLE}
             WHERE project = ?
-            GROUP BY feature, COALESCE(market, ''), COALESCE(criteria, '')
-            ORDER BY usage_count DESC, last_used_at DESC
-            LIMIT ?
             """,
-            [PROJECT_NAME, int(limit)],
+            [PROJECT_NAME],
         ).rows
 
-        results: list[InvocationRollup] = []
+        groups: dict[
+            tuple[str, str, str, str],
+            dict[str, Any],
+        ] = {}
         for row in rows:
             feature = str(row[0])
             market = str(row[1])
             criteria = str(row[2])
-            count = int(row[3])
-            last_used_at = str(row[4]) if row[4] is not None else None
+            status = str(row[3])
+            created_at = str(row[4]) if row[4] is not None else None
+            extras_raw = row[5]
 
-            extras_rows = client.execute(
-                f"""
-                SELECT extras_json
-                FROM {INVOCATIONS_TABLE}
-                WHERE project = ?
-                  AND feature = ?
-                  AND COALESCE(market, '') = ?
-                  AND COALESCE(criteria, '') = ?
-                  AND extras_json IS NOT NULL
-                """,
-                [PROJECT_NAME, feature, market, criteria],
-            ).rows
+            key = (feature, market, criteria, status)
+            entry = groups.setdefault(
+                key,
+                {"count": 0, "last_used_at": None, "extras_counter": {}},
+            )
+            entry["count"] += 1
+            if created_at and (
+                entry["last_used_at"] is None or created_at > entry["last_used_at"]
+            ):
+                entry["last_used_at"] = created_at
 
-            extras_counter: dict[str, dict[str, int]] = {}
-            for ext_row in extras_rows:
-                raw = ext_row[0]
-                if raw is None:
-                    continue
-                try:
-                    payload = json.loads(str(raw))
-                except (ValueError, TypeError):
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                for k, v in payload.items():
-                    key = str(k)
-                    val = str(v)
-                    extras_counter.setdefault(key, {})
-                    extras_counter[key][val] = extras_counter[key].get(val, 0) + 1
+            if extras_raw is None:
+                continue
+            try:
+                payload = json.loads(str(extras_raw))
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            counter: dict[str, dict[str, int]] = entry["extras_counter"]
+            for k, v in payload.items():
+                key_s = str(k)
+                val_s = str(v)
+                counter.setdefault(key_s, {})
+                counter[key_s][val_s] = counter[key_s].get(val_s, 0) + 1
 
+        sorted_groups = sorted(
+            groups.items(),
+            key=lambda kv: (kv[1]["count"], kv[1]["last_used_at"] or ""),
+            reverse=True,
+        )
+
+        results: list[InvocationRollup] = []
+        for (feature, market, criteria, status), entry in sorted_groups[: int(limit)]:
+            counter = entry["extras_counter"]
             top_parts: list[tuple[int, str]] = []
-            for key, vals in extras_counter.items():
+            for key_s, vals in counter.items():
                 best_val, best_count = max(vals.items(), key=lambda kv: kv[1])
-                top_parts.append((best_count, f"{key}={best_val}"))
+                top_parts.append((best_count, f"{key_s}={best_val}"))
             top_parts.sort(key=lambda kv: kv[0], reverse=True)
             top_extras = ", ".join(part for _, part in top_parts[:3])
 
@@ -294,8 +302,9 @@ def invocation_rollup(limit: int = 30) -> list[InvocationRollup]:
                     feature=feature,
                     market=market,
                     criteria=criteria,
-                    count=count,
-                    last_used_at=last_used_at,
+                    status=status,
+                    count=entry["count"],
+                    last_used_at=entry["last_used_at"],
                     top_extras=top_extras,
                 )
             )

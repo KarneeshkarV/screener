@@ -139,10 +139,11 @@ def usage_report() -> None:
         click.echo("No invocations recorded yet.")
         return
 
-    inv_table = Table(title="Recent invocations (by feature/market/criteria)")
+    inv_table = Table(title="Recent invocations (by feature/market/criteria/status)")
     inv_table.add_column("Feature")
     inv_table.add_column("Market")
     inv_table.add_column("Criteria")
+    inv_table.add_column("Status")
     inv_table.add_column("Uses", justify="right")
     inv_table.add_column("Last Used")
     inv_table.add_column("Top extras")
@@ -151,6 +152,7 @@ def usage_report() -> None:
             inv.feature,
             inv.market or "",
             inv.criteria or "",
+            inv.status,
             str(inv.count),
             inv.last_used_at or "",
             inv.top_extras or "",
