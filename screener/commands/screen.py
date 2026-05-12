@@ -6,7 +6,7 @@ import click
 
 from screener.cache import parse_ttl
 from screener import history
-from screener.criteria import CRITERIA, combine
+from screener.criteria import CRITERIA, combine, is_pipeline, registry as criteria_registry
 from screener.display import print_csv, print_results
 from screener.scanner import MARKETS, scan
 
@@ -57,6 +57,23 @@ def screen(
     cache_ttl: str,
 ) -> None:
     """Screen stocks based on technical criteria."""
+    pipeline_names = [n for n in criteria_names if is_pipeline(n)]
+    if pipeline_names:
+        if len(criteria_names) > 1:
+            raise click.UsageError(
+                f"Pipeline criterion {pipeline_names[0]!r} cannot be combined "
+                f"with other -c values; got {list(criteria_names)!r}."
+            )
+        runner = criteria_registry.get(pipeline_names[0])
+        runner(
+            market=market,
+            limit=limit,
+            output_csv=output_csv,
+            refresh=refresh,
+            cache_ttl=cache_ttl,
+        )
+        return
+
     criteria_fns = [CRITERIA[name] for name in criteria_names]
     filters = combine(*criteria_fns)()
     label = "+".join(criteria_names)
