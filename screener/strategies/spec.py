@@ -18,7 +18,13 @@ from datetime import date
 from typing import Any, Callable, Optional, TypeVar, cast
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, SkipValidation, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    SkipValidation,
+    field_validator,
+    model_validator,
+)
 
 from screener._registry import Registry, autodiscover
 from screener.backtester.data import PriceFetcher
