@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
-
 import pandas as pd
 from rich.console import Console
 from rich.panel import Panel
@@ -127,7 +125,7 @@ def trades_dataframe(result: BacktestResult) -> pd.DataFrame:
                 "return_pct",
             ]
         )
-    rows = [asdict(t) for t in sorted(result.trades, key=lambda tr: tr.rank)]
+    rows = [t.model_dump() for t in sorted(result.trades, key=lambda tr: tr.rank)]
     return pd.DataFrame(rows)
 
 

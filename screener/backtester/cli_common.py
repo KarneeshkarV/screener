@@ -31,16 +31,16 @@ def build_slippage_model(slippage_model, slippage_bps, half_spread_bps, vol_impa
     )
 
     if slippage_model == "fixed":
-        return FixedBpsSlippage(float(slippage_bps))
+        return FixedBpsSlippage(bps=float(slippage_bps))
     if slippage_model == "half-spread":
-        return HalfSpreadSlippage(float(half_spread_bps))
+        return HalfSpreadSlippage(half_spread_bps=float(half_spread_bps))
     if slippage_model == "vol-impact":
-        return VolumeImpactSlippage(float(vol_impact_k))
+        return VolumeImpactSlippage(k=float(vol_impact_k))
     return CompositeSlippage(
         models=(
-            FixedBpsSlippage(float(slippage_bps)),
-            HalfSpreadSlippage(float(half_spread_bps)),
-            VolumeImpactSlippage(float(vol_impact_k)),
+            FixedBpsSlippage(bps=float(slippage_bps)),
+            HalfSpreadSlippage(half_spread_bps=float(half_spread_bps)),
+            VolumeImpactSlippage(k=float(vol_impact_k)),
         )
     )
 

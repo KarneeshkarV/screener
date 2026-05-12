@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, ParamSpec, TypeVar
@@ -283,7 +282,7 @@ def optimize_grid(**kwargs) -> None:
         end_date=end_date,
     )
     print_grid_table(results)
-    payload = [asdict(result) for result in results]
+    payload = [result.model_dump() for result in results]
     if kwargs["json_path"]:
         write_json_report(payload, kwargs["json_path"])
     if kwargs["html_path"]:
@@ -343,7 +342,7 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         cache_path=kwargs["cache_path"],
     )
     print_walk_forward_table(summary)
-    payload = asdict(summary)
+    payload = summary.model_dump()
     if kwargs["json_path"]:
         write_json_report(payload, kwargs["json_path"])
     if kwargs["html_path"]:
@@ -411,11 +410,11 @@ def optimize_validate(
     table = Table(title="Monte Carlo Validation", show_header=True, header_style="bold")
     table.add_column("Metric")
     table.add_column("Value", justify="right")
-    for key, value in asdict(result).items():
+    for key, value in result.model_dump().items():
         if isinstance(value, float):
             table.add_row(key, f"{value:.4f}")
         else:
             table.add_row(key, str(value))
     Console().print(table)
     if json_path:
-        write_json_report(asdict(result), json_path)
+        write_json_report(result.model_dump(), json_path)

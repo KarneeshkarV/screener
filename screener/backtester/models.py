@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Optional
 
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from screener.backtester.slippage import FixedBpsSlippage, SlippageModel
 
@@ -12,8 +12,9 @@ from screener.backtester.slippage import FixedBpsSlippage, SlippageModel
 ExitReason = Literal["stop", "target", "trail", "time", "exit_expr", "eod"]
 
 
-@dataclass(frozen=True)
-class BacktestConfig:
+class BacktestConfig(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     market: str
     as_of: date
     hold: int
@@ -63,15 +64,20 @@ class BacktestConfig:
     #   ``none``        — raw OHLC, no adjustment.
     price_adjustment: Literal["full", "splits_only", "none"] = "full"
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def _default_slippage(self) -> "BacktestConfig":
         if self.slippage_model is None:
+            # Frozen model: bypass the immutability guard to populate the
+            # default slippage implementation derived from ``slippage_bps``.
             object.__setattr__(
-                self, "slippage_model", FixedBpsSlippage(self.slippage_bps)
+                self, "slippage_model", FixedBpsSlippage(bps=self.slippage_bps)
             )
+        return self
 
 
-@dataclass
-class Position:
+class Position(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=False)
+
     ticker: str
     entry_date: date
     entry_fill: float
@@ -81,8 +87,9 @@ class Position:
     dividend_income: float = 0.0
 
 
-@dataclass
-class Trade:
+class Trade(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     ticker: str
     rank: int
     signal_date: date
@@ -103,12 +110,13 @@ class Trade:
     dividend_income: float = 0.0
 
 
-@dataclass
-class BacktestResult:
+class BacktestResult(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     config: BacktestConfig
     trades: list[Trade]
     equity_curve: pd.Series
     benchmark_curve: pd.Series
     metrics: dict
-    warnings: list[str] = field(default_factory=list)
-    selection: pd.DataFrame = field(default_factory=pd.DataFrame)
+    warnings: list[str] = Field(default_factory=list)
+    selection: pd.DataFrame = Field(default_factory=pd.DataFrame)

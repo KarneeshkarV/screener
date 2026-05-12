@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel, ConfigDict
 
 from screener.backtester.data import PriceFetcher
 from screener.backtester.engine import run_rolling_backtest
@@ -17,24 +17,27 @@ from screener.backtester.optimization.grid import GridSearchResult, grid_search
 from screener.backtester.optimization.metrics import optimization_metrics
 
 
-@dataclass(frozen=True)
-class WalkForwardWindow:
+class WalkForwardWindow(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     train_start: date
     train_end: date
     test_start: date
     test_end: date
 
 
-@dataclass(frozen=True)
-class WalkForwardResult:
+class WalkForwardResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     window: WalkForwardWindow
     best_train: GridSearchResult
     test_metrics: dict[str, float]
     test_trade_count: int
 
 
-@dataclass(frozen=True)
-class WalkForwardSummary:
+class WalkForwardSummary(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     windows: list[WalkForwardResult]
     stability_score: float
     aggregate_metrics: dict[str, float]
@@ -146,7 +149,7 @@ def walk_forward_optimize(
         if not ranked:
             continue
         best = ranked[0]
-        test_cfg = replace(cfg, **best.params)
+        test_cfg = cfg.model_copy(update=best.params)
         test_result = run_rolling_backtest(
             test_cfg,
             fetcher,

@@ -51,8 +51,9 @@ class UsageCount(BaseModel):
         return normalized
 
 
-@dataclass(frozen=True)
-class InvocationRollup:
+class InvocationRollup(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     feature: str
     market: str
     criteria: str

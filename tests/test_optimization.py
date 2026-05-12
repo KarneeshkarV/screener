@@ -153,8 +153,10 @@ def test_grid_cache_key_includes_min_trades(monkeypatch, tmp_path):
 
 
 def test_grid_cache_key_includes_slippage_model():
-    base = _config(slippage_bps=5.0, slippage_model=FixedBpsSlippage(5.0))
-    half_spread = _config(slippage_bps=5.0, slippage_model=HalfSpreadSlippage(5.0))
+    base = _config(slippage_bps=5.0, slippage_model=FixedBpsSlippage(bps=5.0))
+    half_spread = _config(
+        slippage_bps=5.0, slippage_model=HalfSpreadSlippage(half_spread_bps=5.0)
+    )
 
     base_key = _cache_key(
         base,

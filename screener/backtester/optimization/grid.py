@@ -6,12 +6,12 @@ import hashlib
 import itertools
 import json
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import asdict, dataclass, is_dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict
 
 from screener.backtester.data import PriceFetcher
 from screener.backtester.engine import run_backtest, run_rolling_backtest
@@ -21,8 +21,9 @@ from screener.backtester.optimization.metrics import optimization_metrics, score
 RunnerName = Literal["historical", "rolling"]
 
 
-@dataclass(frozen=True)
-class GridSearchResult:
+class GridSearchResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     params: dict[str, Any]
     score: float
     metrics: dict[str, float]
@@ -63,10 +64,10 @@ def _stable_fingerprint(value: Any) -> Any:
             str(key): _stable_fingerprint(item)
             for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
         }
-    if is_dataclass(value):
+    if isinstance(value, BaseModel):
         return {
             "__class__": f"{value.__class__.__module__}.{value.__class__.__qualname__}",
-            "fields": _stable_fingerprint(asdict(value)),
+            "fields": _stable_fingerprint(value.model_dump()),
         }
     return {
         "__class__": f"{value.__class__.__module__}.{value.__class__.__qualname__}",
@@ -75,7 +76,7 @@ def _stable_fingerprint(value: Any) -> Any:
 
 
 def _config_fingerprint(cfg: BacktestConfig) -> dict[str, Any]:
-    data = asdict(cfg)
+    data = cfg.model_dump()
     data["slippage_model"] = _stable_fingerprint(cfg.slippage_model)
     return data
 
@@ -131,7 +132,7 @@ def _run_one(
     metric: str,
     min_trades: int,
 ) -> GridSearchResult:
-    test_cfg = replace(cfg, **params)
+    test_cfg = cfg.model_copy(update=params)
     if runner == "rolling":
         if start_date is None or end_date is None:
             raise ValueError("rolling grid search requires start_date and end_date")
@@ -238,7 +239,7 @@ def grid_search(
                         metric=metric,
                         min_trades=min_trades,
                     )
-                    cache[key] = asdict(result)
+                    cache[key] = result.model_dump()
                     _save_cache(cache_file, cache)
         else:
             for arg in args:
@@ -253,7 +254,7 @@ def grid_search(
                     metric=metric,
                     min_trades=min_trades,
                 )
-                cache[key] = asdict(result)
+                cache[key] = result.model_dump()
                 _save_cache(cache_file, cache)
     except KeyboardInterrupt:
         _save_cache(cache_file, cache)

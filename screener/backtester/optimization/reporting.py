@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, is_dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any, Iterable
 
+from pydantic import BaseModel
 from rich.console import Console
 from rich.table import Table
 
@@ -18,8 +18,8 @@ from screener.backtester.optimization.walk_forward import WalkForwardSummary
 def _json_default(value: Any) -> Any:
     if isinstance(value, date):
         return value.isoformat()
-    if is_dataclass(value):
-        return asdict(value)
+    if isinstance(value, BaseModel):
+        return value.model_dump()
     if value == float("inf"):
         return "inf"
     if value == float("-inf"):

@@ -16,8 +16,9 @@ Models:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 Side = Literal["buy", "sell"]
@@ -47,9 +48,10 @@ def apply_slippage(
     return reference_price * (1.0 - frac)
 
 
-@dataclass(frozen=True)
-class FixedBpsSlippage:
+class FixedBpsSlippage(BaseModel):
     bps: float = 0.0
+
+    model_config = ConfigDict(frozen=True)
 
     def adverse_fraction(
         self, side: Side, shares: float, adv: float, sigma_daily: float
@@ -57,9 +59,10 @@ class FixedBpsSlippage:
         return self.bps / 10_000.0
 
 
-@dataclass(frozen=True)
-class HalfSpreadSlippage:
+class HalfSpreadSlippage(BaseModel):
     half_spread_bps: float = 0.0
+
+    model_config = ConfigDict(frozen=True)
 
     def adverse_fraction(
         self, side: Side, shares: float, adv: float, sigma_daily: float
@@ -67,8 +70,7 @@ class HalfSpreadSlippage:
         return self.half_spread_bps / 10_000.0
 
 
-@dataclass(frozen=True)
-class VolumeImpactSlippage:
+class VolumeImpactSlippage(BaseModel):
     """Almgren-Chriss square-root-law market impact.
 
     ``adv`` is expected in shares (not dollars). When ADV is unknown or zero
@@ -78,6 +80,8 @@ class VolumeImpactSlippage:
 
     k: float = 0.1
 
+    model_config = ConfigDict(frozen=True)
+
     def adverse_fraction(
         self, side: Side, shares: float, adv: float, sigma_daily: float
     ) -> float:
@@ -86,9 +90,10 @@ class VolumeImpactSlippage:
         return self.k * sigma_daily * math.sqrt(shares / adv)
 
 
-@dataclass(frozen=True)
-class CompositeSlippage:
-    models: tuple[SlippageModel, ...] = field(default_factory=tuple)
+class CompositeSlippage(BaseModel):
+    models: tuple[SlippageModel, ...] = Field(default_factory=tuple)
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     def adverse_fraction(
         self, side: Side, shares: float, adv: float, sigma_daily: float

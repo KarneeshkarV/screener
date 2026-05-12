@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
 from datetime import date
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field
 
 from screener.backtester.data import PriceFetcher
 from screener.backtester.models import BacktestConfig, ExitReason, Trade
@@ -17,8 +17,9 @@ from screener.backtester.portfolio import Portfolio
 from screener.backtester.slippage import Side, apply_slippage
 
 
-@dataclass
-class _SimOutcome:
+class _SimOutcome(BaseModel):
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
     trade: Optional[Trade]
     warning: Optional[str]
 
@@ -103,9 +104,10 @@ def _passes_entry_filters(
     return True, None
 
 
-@dataclass
-class _SlotState:
+class _SlotState(BaseModel):
     """Mutable state for a single slot during the event-driven simulation."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     ticker: str
     entry_idx: int
@@ -122,7 +124,7 @@ class _SlotState:
     sigma_daily: float = 0.0
     partial_targets: tuple[float, ...] = ()
     partial_fractions: tuple[float, ...] = ()
-    partial_fired: list[bool] = field(default_factory=list)
+    partial_fired: list[bool] = Field(default_factory=list)
 
 
 def _resolve_entry_fill(
@@ -356,7 +358,7 @@ def simulate_ticker(
         if exit_ is not None:
             fill, reason = exit_
             return _SimOutcome(
-                _make_exit(
+                trade=_make_exit(
                     state.entry_date,
                     state.entry_fill,
                     bars.index[i].date(),
@@ -364,7 +366,7 @@ def simulate_ticker(
                     reason,
                     signal_idx_bar=state.signal_date,
                 ),
-                None,
+                warning=None,
             )
 
     last_bar = bars.iloc[-1]
@@ -376,7 +378,7 @@ def simulate_ticker(
         sigma_daily=state.sigma_daily,
     )
     return _SimOutcome(
-        _make_exit(
+        trade=_make_exit(
             state.entry_date,
             state.entry_fill,
             bars.index[-1].date(),
@@ -384,7 +386,7 @@ def simulate_ticker(
             "eod",
             signal_idx_bar=state.signal_date,
         ),
-        None,
+        warning=None,
     )
 
 

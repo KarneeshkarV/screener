@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict
 
 from screener.backtester.models import Trade
 
 
-@dataclass(frozen=True)
-class MonteCarloResult:
+class MonteCarloResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     iterations: int
     seed: int
     initial_capital: float

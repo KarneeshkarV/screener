@@ -19,11 +19,11 @@ single ``.shift(1)`` and so compare only bars ``i`` and ``i-1``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Union
 
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel, ConfigDict
 
 
 class PineError(Exception):
@@ -47,56 +47,71 @@ BOOL_KEYWORDS = {"and", "or", "not", "true", "false"}
 # ── AST ──────────────────────────────────────────────────────────────
 
 
-@dataclass
-class Num:
+class Num(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     value: float
 
 
-@dataclass
-class Name:
+class Name(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     name: str
 
 
-@dataclass
-class UnaryOp:
+class UnaryOp(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     op: str  # '-' or '+'
     operand: "Node"
 
 
-@dataclass
-class Not:
+class Not(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     operand: "Node"
 
 
-@dataclass
-class BinOp:
+class BinOp(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     op: str  # '+', '-', '*', '/'
     left: "Node"
     right: "Node"
 
 
-@dataclass
-class Compare:
+class Compare(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     op: str  # '>', '>=', '<', '<=', '==', '!='
     left: "Node"
     right: "Node"
 
 
-@dataclass
-class BoolOp:
+class BoolOp(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     op: str  # 'and' or 'or'
     left: "Node"
     right: "Node"
 
 
-@dataclass
-class Call:
+class Call(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     name: str
-    args: list
+    args: list["Node"]
     col: int  # column in source (for error messages)
 
 
 Node = Union[Num, Name, UnaryOp, Not, BinOp, Compare, BoolOp, Call]
+
+UnaryOp.model_rebuild()
+Not.model_rebuild()
+BinOp.model_rebuild()
+Compare.model_rebuild()
+BoolOp.model_rebuild()
+Call.model_rebuild()
 
 
 # ── tokenizer ────────────────────────────────────────────────────────
@@ -106,8 +121,9 @@ _TWO_CHAR = {">=", "<=", "==", "!="}
 _SINGLE_PUNCT = set("+-*/()><,")
 
 
-@dataclass
-class Token:
+class Token(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     kind: str  # 'num', 'name', 'op', 'lp', 'rp', 'comma', 'end'
     value: str
     col: int
@@ -130,38 +146,38 @@ def _tokenize(expr: str) -> list[Token]:
                 if expr[i] == ".":
                     saw_dot = True
                 i += 1
-            tokens.append(Token("num", expr[start:i], start))
+            tokens.append(Token(kind="num", value=expr[start:i], col=start))
             continue
         if ch.isalpha() or ch == "_":
             start = i
             i += 1
             while i < n and (expr[i].isalnum() or expr[i] == "_"):
                 i += 1
-            tokens.append(Token("name", expr[start:i], start))
+            tokens.append(Token(kind="name", value=expr[start:i], col=start))
             continue
         two = expr[i : i + 2]
         if two in _TWO_CHAR:
-            tokens.append(Token("op", two, i))
+            tokens.append(Token(kind="op", value=two, col=i))
             i += 2
             continue
         if ch == "(":
-            tokens.append(Token("lp", ch, i))
+            tokens.append(Token(kind="lp", value=ch, col=i))
             i += 1
             continue
         if ch == ")":
-            tokens.append(Token("rp", ch, i))
+            tokens.append(Token(kind="rp", value=ch, col=i))
             i += 1
             continue
         if ch == ",":
-            tokens.append(Token("comma", ch, i))
+            tokens.append(Token(kind="comma", value=ch, col=i))
             i += 1
             continue
         if ch in _SINGLE_PUNCT:
-            tokens.append(Token("op", ch, i))
+            tokens.append(Token(kind="op", value=ch, col=i))
             i += 1
             continue
         raise PineSyntaxError(f"Unexpected character {ch!r} at column {i}")
-    tokens.append(Token("end", "", n))
+    tokens.append(Token(kind="end", value="", col=n))
     return tokens
 
 
@@ -203,7 +219,7 @@ class _Parser:
         while self.peek().kind == "name" and self.peek().value == "or":
             self.consume()
             right = self.parse_and()
-            left = BoolOp("or", left, right)
+            left = BoolOp(op="or", left=left, right=right)
         return left
 
     def parse_and(self) -> Node:
@@ -211,13 +227,13 @@ class _Parser:
         while self.peek().kind == "name" and self.peek().value == "and":
             self.consume()
             right = self.parse_not()
-            left = BoolOp("and", left, right)
+            left = BoolOp(op="and", left=left, right=right)
         return left
 
     def parse_not(self) -> Node:
         if self.peek().kind == "name" and self.peek().value == "not":
             self.consume()
-            return Not(self.parse_not())
+            return Not(operand=self.parse_not())
         return self.parse_compare()
 
     def parse_compare(self) -> Node:
@@ -226,7 +242,7 @@ class _Parser:
         if tok.kind == "op" and tok.value in {">", ">=", "<", "<=", "==", "!="}:
             self.consume()
             right = self.parse_add()
-            return Compare(tok.value, left, right)
+            return Compare(op=tok.value, left=left, right=right)
         return left
 
     def parse_add(self) -> Node:
@@ -234,7 +250,7 @@ class _Parser:
         while self.peek().kind == "op" and self.peek().value in {"+", "-"}:
             op = self.consume().value
             right = self.parse_mul()
-            left = BinOp(op, left, right)
+            left = BinOp(op=op, left=left, right=right)
         return left
 
     def parse_mul(self) -> Node:
@@ -242,20 +258,20 @@ class _Parser:
         while self.peek().kind == "op" and self.peek().value in {"*", "/"}:
             op = self.consume().value
             right = self.parse_unary()
-            left = BinOp(op, left, right)
+            left = BinOp(op=op, left=left, right=right)
         return left
 
     def parse_unary(self) -> Node:
         if self.peek().kind == "op" and self.peek().value in {"+", "-"}:
             op = self.consume().value
-            return UnaryOp(op, self.parse_unary())
+            return UnaryOp(op=op, operand=self.parse_unary())
         return self.parse_primary()
 
     def parse_primary(self) -> Node:
         tok = self.peek()
         if tok.kind == "num":
             self.consume()
-            return Num(float(tok.value))
+            return Num(value=float(tok.value))
         if tok.kind == "lp":
             self.consume()
             node = self.parse_or()
@@ -272,10 +288,10 @@ class _Parser:
                         self.consume()
                         args.append(self.parse_or())
                 self.expect("rp")
-                return Call(tok.value, args, tok.col)
+                return Call(name=tok.value, args=args, col=tok.col)
             if tok.value in {"true", "false"}:
-                return Num(1.0 if tok.value == "true" else 0.0)
-            return Name(tok.value)
+                return Num(value=1.0 if tok.value == "true" else 0.0)
+            return Name(name=tok.value)
         raise PineSyntaxError(f"Unexpected token {tok.value!r} at column {tok.col}")
 
 
