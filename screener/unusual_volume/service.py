@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
 
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import requests
 from rich.console import Console
 
@@ -22,29 +22,47 @@ _DEFAULT_MIN_MCAP = {"us": 300_000_000.0, "india": 5_000_000_000.0}
 _STRENGTH_RANK = {"MODERATE": 1, "HIGH": 2, "EXTREME": 3}
 
 
-@dataclass(frozen=True)
-class UnusualVolumeRequest:
+class UnusualVolumeRequest(BaseModel):
     market: str
     as_of: date
     universe: list[str]
-    min_rvol: float
-    min_z: float
+    min_rvol: float = Field(ge=0.0)
+    min_z: float = Field(ge=0.0)
     strength_floor: str
-    min_avg_volume: float
-    min_market_cap: Optional[float]
+    min_avg_volume: float = Field(ge=0.0)
+    min_market_cap: Optional[float] = Field(default=None, ge=0.0)
     include_fno_ban: bool
     deep_india: bool
     buildup_enabled: bool
-    buildup_window: int
-    buildup_min_score: float
+    buildup_window: int = Field(ge=1)
+    buildup_min_score: float = Field(ge=0.0)
     refresh: bool = False
 
+    model_config = ConfigDict(frozen=True)
 
-@dataclass(frozen=True)
-class UnusualVolumeResult:
-    events: list[Event]
-    fetched_count: int
-    liquid_count: int
+    @field_validator("market", "strength_floor")
+    @classmethod
+    def _strip_non_empty(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be empty")
+        return normalized
+
+    @field_validator("universe")
+    @classmethod
+    def _normalize_universe(cls, value: list[str]) -> list[str]:
+        normalized = [ticker.strip() for ticker in value if ticker.strip()]
+        if not normalized:
+            raise ValueError("universe must include at least one ticker")
+        return normalized
+
+
+class UnusualVolumeResult(BaseModel):
+    events: list[Event] = Field(default_factory=list)
+    fetched_count: int = Field(ge=0)
+    liquid_count: int = Field(ge=0)
+
+    model_config = ConfigDict(frozen=True)
 
 
 def fetch_bars(

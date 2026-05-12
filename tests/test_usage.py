@@ -105,8 +105,10 @@ def test_usage_report_renders_counts(monkeypatch):
         usage,
         "feature_usage_counts",
         lambda: [
-            usage.UsageCount("screen", 2, "2026-05-10T12:00:00.000Z"),
-            usage.UsageCount("garp", 1, None),
+            usage.UsageCount(
+                feature="screen", count=2, last_used_at="2026-05-10T12:00:00.000Z"
+            ),
+            usage.UsageCount(feature="garp", count=1, last_used_at=None),
         ],
     )
 

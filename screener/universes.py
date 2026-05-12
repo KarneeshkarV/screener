@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Literal
 
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, field_validator
 import requests
 
 from screener.resilience import call_with_resilience
@@ -17,12 +17,31 @@ CACHE_DIR = Path.home() / ".screener" / "universes"
 UniverseName = Literal["sp500", "nifty50"]
 
 
-@dataclass(frozen=True)
-class Universe:
+class Universe(BaseModel):
     name: UniverseName
     symbols: tuple[str, ...]
     source: str
     cached_path: Path
+
+    model_config = ConfigDict(frozen=True)
+
+    @field_validator("symbols")
+    @classmethod
+    def _validate_symbols(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value:
+            raise ValueError("symbols must not be empty")
+        normalized = tuple(symbol.strip() for symbol in value if symbol.strip())
+        if not normalized:
+            raise ValueError("symbols must not be empty")
+        return normalized
+
+    @field_validator("source")
+    @classmethod
+    def _normalize_source(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("source must not be empty")
+        return normalized
 
 
 def _cache_path(name: UniverseName, as_of: date) -> Path:

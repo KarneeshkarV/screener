@@ -27,12 +27,12 @@ already loads — it adds no new data dependencies.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict, field
 from datetime import date
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 DEFAULT_WINDOW = 20
@@ -55,8 +55,7 @@ DELIVERY_HIT_THRESHOLD = 0.60  # fraction of bars with DELIV_PER >= 50
 ABSORPTION_THRESHOLD = 0.65  # mean (close-low)/(high-low)
 
 
-@dataclass
-class BuildupScore:
+class BuildupScore(BaseModel):
     symbol: str
     as_of: date
     window: int
@@ -66,7 +65,7 @@ class BuildupScore:
     sustained_delivery: Optional[float]
     close_near_high: Optional[float]
     composite: float
-    flags: list[str] = field(default_factory=list)
+    flags: list[str] = Field(default_factory=list)
     # Diagnostic raw values — handy when triaging a score in the journal.
     atr_ratio: Optional[float] = None
     bb_squeeze_ratio: Optional[float] = None
@@ -76,12 +75,18 @@ class BuildupScore:
     delivery_hit_rate: Optional[float] = None
     absorption_mean: Optional[float] = None
 
-    def to_dict(self) -> dict:
-        d = asdict(self)
-        d["as_of"] = (
-            self.as_of.isoformat() if isinstance(self.as_of, date) else str(self.as_of)
-        )
-        return d
+    model_config = ConfigDict(frozen=True)
+
+    @field_validator("symbol")
+    @classmethod
+    def _normalize_symbol(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("symbol must not be empty")
+        return normalized.upper()
+
+    def to_dict(self) -> dict[str, object]:
+        return self.model_dump(mode="json")
 
 
 def _atr(df: pd.DataFrame, length: int = ATR_LEN) -> pd.Series:

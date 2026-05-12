@@ -13,12 +13,12 @@ overlays — those live in ``cli`` / ``delivery``. This module only sees a
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict, field
 from datetime import date
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel, Field, field_validator
 
 from .classify import Direction, Strength, classify_direction, classify_strength
 
@@ -32,8 +32,7 @@ EXTREME_RVOL = 5.0
 EXTREME_Z = 3.5
 
 
-@dataclass
-class Event:
+class Event(BaseModel):
     symbol: str
     date: date
     close: float
@@ -58,14 +57,18 @@ class Event:
     notes: str = ""
     # Build-up overlay — populated by buildup.scan_buildups, default None.
     buildup_score: Optional[float] = None
-    buildup_flags: list[str] = field(default_factory=list)
+    buildup_flags: list[str] = Field(default_factory=list)
 
-    def to_dict(self) -> dict:
-        d = asdict(self)
-        d["date"] = (
-            self.date.isoformat() if isinstance(self.date, date) else str(self.date)
-        )
-        return d
+    @field_validator("symbol")
+    @classmethod
+    def _normalize_symbol(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("symbol must not be empty")
+        return normalized
+
+    def to_dict(self) -> dict[str, object]:
+        return self.model_dump(mode="json")
 
 
 def _rolling_pct_rank(series: pd.Series, window: int) -> pd.Series:

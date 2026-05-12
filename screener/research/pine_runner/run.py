@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from datetime import date
 
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from screener.logging_config import get_logger
 from screener.research.pine_runner.constants import BENCHMARKS
@@ -17,8 +17,7 @@ from screener.strategies.trades import Trade
 log = get_logger("pine_runner")
 
 
-@dataclass(frozen=True)
-class MarketRun:
+class MarketRun(BaseModel):
     market: str
     today: date
     window_start: pd.Timestamp
@@ -26,6 +25,16 @@ class MarketRun:
     benchmark_return: float | None
     per_strategy: dict[str, list[dict]]
     error_counts: dict[str, int]
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    @field_validator("market", "benchmark_symbol")
+    @classmethod
+    def _normalize_non_empty(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be empty")
+        return normalized
 
 
 def _compound(trades: list[Trade]) -> float:

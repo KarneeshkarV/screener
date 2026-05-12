@@ -14,44 +14,42 @@ Strategies that need bar prep before the backtester evaluates signals attach a
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, cast
+from typing import Any, Callable, Optional, TypeVar, cast
 
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from screener._registry import Registry, autodiscover
+from screener.backtester.data import PriceFetcher
+from screener.backtester.models import BacktestConfig
 from screener.strategies.trades import Trade
-
-if TYPE_CHECKING:
-    from screener.backtester.data import PriceFetcher
-    from screener.backtester.models import BacktestConfig
 
 
 StrategyFn = Callable[[pd.DataFrame], list[Trade]]
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-@dataclass(frozen=True)
-class PrepareCtx:
+class PrepareCtx(BaseModel):
     """Inputs handed to a strategy's ``prepare_bars`` hook."""
 
-    cfg: "BacktestConfig"
+    cfg: BacktestConfig
     bars_by_tv: dict[str, pd.DataFrame]
     price_panel: dict[str, pd.DataFrame]
     tv_symbols: list[str]
     start: date
     end: date
-    fetcher: "PriceFetcher"
+    fetcher: PriceFetcher
     warnings: list[str]
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 PrepareBarsFn = Callable[[PrepareCtx], dict[str, pd.DataFrame]]
 LookbackFn = Callable[[], int]
 
 
-@dataclass(frozen=True)
-class StrategySpec:
+class StrategySpec(BaseModel):
     """One strategy in the registry. Has callable OR expression form (or both)."""
 
     name: str
@@ -61,11 +59,23 @@ class StrategySpec:
     prepare_bars: Optional[PrepareBarsFn] = None
     required_lookback: Optional[LookbackFn] = None
 
-    def __post_init__(self) -> None:
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    @field_validator("name")
+    @classmethod
+    def _normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("strategy name must not be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "StrategySpec":
         if self.callable_fn is None and self.entry is None:
             raise ValueError(
                 f"strategy {self.name!r}: either callable_fn or entry must be set"
             )
+        return self
 
 
 registry: Registry[StrategySpec] = Registry("strategy")

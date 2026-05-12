@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel, ConfigDict
 
 
-@dataclass
-class Trade:
+class Trade(BaseModel):
     entry_idx: int
     exit_idx: int
     entry_px: float
     exit_px: float
     entry_date: pd.Timestamp
     exit_date: pd.Timestamp
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     @property
     def ret(self) -> float:
@@ -40,24 +40,24 @@ def _walk(
         elif exits[i]:
             trades.append(
                 Trade(
-                    entry_i,
-                    i,
-                    entry_px,
-                    float(close[i]),
-                    pd.Timestamp(dates[entry_i]),
-                    pd.Timestamp(dates[i]),
+                    entry_idx=entry_i,
+                    exit_idx=i,
+                    entry_px=entry_px,
+                    exit_px=float(close[i]),
+                    entry_date=pd.Timestamp(dates[entry_i]),
+                    exit_date=pd.Timestamp(dates[i]),
                 )
             )
             in_pos = False
     if in_pos:
         trades.append(
             Trade(
-                entry_i,
-                n - 1,
-                entry_px,
-                float(close[-1]),
-                pd.Timestamp(dates[entry_i]),
-                pd.Timestamp(dates[-1]),
+                entry_idx=entry_i,
+                exit_idx=n - 1,
+                entry_px=entry_px,
+                exit_px=float(close[-1]),
+                entry_date=pd.Timestamp(dates[entry_i]),
+                exit_date=pd.Timestamp(dates[-1]),
             )
         )
     return trades
