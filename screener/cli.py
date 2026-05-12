@@ -92,13 +92,27 @@ def _wrap_usage_tracking(command: click.Command, feature_path: tuple[str, ...]) 
     @functools.wraps(original)
     def tracked_callback(*args: Any, **kwargs: Any) -> Any:
         started_at = time.perf_counter()
-        result = original(*args, **kwargs)
-        usage.record_feature_usage(
-            feature,
-            command_path=f"screener {feature}",
-            duration_ms=usage.elapsed_ms(started_at),
-        )
-        return result
+        status = "success"
+        try:
+            return original(*args, **kwargs)
+        except BaseException as exc:
+            status = type(exc).__name__
+            raise
+        finally:
+            duration = usage.elapsed_ms(started_at)
+            if status == "success":
+                usage.record_feature_usage(
+                    feature,
+                    command_path=f"screener {feature}",
+                    duration_ms=duration,
+                )
+            usage.record_feature_invocation(
+                feature,
+                command_path=f"screener {feature}",
+                duration_ms=duration,
+                status=status,
+                params=kwargs,
+            )
 
     tracked_callback._usage_tracked = True
     command.callback = tracked_callback
@@ -107,18 +121,41 @@ def _wrap_usage_tracking(command: click.Command, feature_path: tuple[str, ...]) 
 @click.command(name="usage-report")
 def usage_report() -> None:
     """Show successful feature usage counts from Turso."""
+    console = Console()
     rows = usage.feature_usage_counts()
     if not rows:
         click.echo("No feature usage recorded for this project yet.")
+    else:
+        table = Table(title="Feature Usage")
+        table.add_column("Feature")
+        table.add_column("Uses", justify="right")
+        table.add_column("Last Used")
+        for row in rows:
+            table.add_row(row.feature, str(row.count), row.last_used_at or "")
+        console.print(table)
+
+    invocations = usage.invocation_rollup(limit=30)
+    if not invocations:
+        click.echo("No invocations recorded yet.")
         return
 
-    table = Table(title="Feature Usage")
-    table.add_column("Feature")
-    table.add_column("Uses", justify="right")
-    table.add_column("Last Used")
-    for row in rows:
-        table.add_row(row.feature, str(row.count), row.last_used_at or "")
-    Console().print(table)
+    inv_table = Table(title="Recent invocations (by feature/market/criteria)")
+    inv_table.add_column("Feature")
+    inv_table.add_column("Market")
+    inv_table.add_column("Criteria")
+    inv_table.add_column("Uses", justify="right")
+    inv_table.add_column("Last Used")
+    inv_table.add_column("Top extras")
+    for inv in invocations:
+        inv_table.add_row(
+            inv.feature,
+            inv.market or "",
+            inv.criteria or "",
+            str(inv.count),
+            inv.last_used_at or "",
+            inv.top_extras or "",
+        )
+    console.print(inv_table)
 
 
 cli.add_command(usage_report)
