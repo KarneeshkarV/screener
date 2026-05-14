@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
+from typing import cast
 
 import click
 import numpy as np
@@ -24,9 +26,15 @@ from screener.backtester.core import (
     _resolve_universe,
 )
 from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
-from screener.backtester.display import print_backtest, print_ledger_csv
+from screener.backtester.display import (
+    print_backtest,
+    print_ledger_csv,
+    print_monte_carlo,
+    write_backtest_artifacts,
+)
 from screener.backtester.metrics import compute_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
+from screener.backtester.monte_carlo import MonteCarloMethod, run_monte_carlo
 from screener.backtester.pine import PineError, evaluate, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 
@@ -564,6 +572,20 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     default="full",
     help="Price-adjustment regime. full=legacy (yfinance auto_adjust=True); splits_only=split-adjust OHLC and credit dividends as cash; none=raw OHLC.",
 )
+@click.option(
+    "--monte-carlo",
+    "monte_carlo",
+    type=int,
+    default=0,
+    help="Run N Monte Carlo simulations after the backtest.",
+)
+@click.option(
+    "--mc-method",
+    type=click.Choice(["bootstrap_trades", "bootstrap_returns", "block_bootstrap"]),
+    default="bootstrap_trades",
+    show_default=True,
+    help="Monte Carlo bootstrap method.",
+)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
 def backtest_historical(
     market,
@@ -598,9 +620,14 @@ def backtest_historical(
     max_reentries,
     partial_exit_args,
     price_adjustment,
+    monte_carlo,
+    mc_method,
     output_csv,
 ):
     """Run an accurate historical backtest with Pine-like entry/exit expressions."""
+    if output_csv and monte_carlo:
+        raise click.UsageError("--monte-carlo cannot be combined with --csv")
+
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
     slip_model = build_slippage_model(
         slippage_model, slippage_bps, half_spread_bps, vol_impact_k
@@ -662,3 +689,18 @@ def backtest_historical(
         print_ledger_csv(result)
         return
     print_backtest(result)
+    if monte_carlo:
+        mc_result = run_monte_carlo(
+            result,
+            n_sims=int(monte_carlo),
+            method=cast(MonteCarloMethod, mc_method),
+        )
+        print_monte_carlo(mc_result)
+        stem = f"historical_{cfg.market}_{cfg.as_of}_{cfg.strategy_name or 'custom'}"
+        ledger_path, mc_path = write_backtest_artifacts(
+            result,
+            mc_result,
+            stem=stem,
+            directory=Path(".screener/backtests"),
+        )
+        click.echo(f"Artifacts: {ledger_path} {mc_path}")

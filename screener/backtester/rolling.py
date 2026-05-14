@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import click
 import pandas as pd
@@ -29,9 +30,15 @@ from screener.backtester.core import (
     _resolve_universe,
 )
 from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
-from screener.backtester.display import print_backtest, print_ledger_csv
+from screener.backtester.display import (
+    print_backtest,
+    print_ledger_csv,
+    print_monte_carlo,
+    write_backtest_artifacts,
+)
 from screener.backtester.metrics import compute_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
+from screener.backtester.monte_carlo import MonteCarloMethod, run_monte_carlo
 from screener.backtester.pine import parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.universes import load_current_universe
@@ -402,6 +409,20 @@ def run_rolling_backtest(
     type=click.Choice(["full", "splits_only", "none"]),
     default="full",
 )
+@click.option(
+    "--monte-carlo",
+    "monte_carlo",
+    type=int,
+    default=0,
+    help="Run N Monte Carlo simulations after the backtest.",
+)
+@click.option(
+    "--mc-method",
+    type=click.Choice(["bootstrap_trades", "bootstrap_returns", "block_bootstrap"]),
+    default="bootstrap_trades",
+    show_default=True,
+    help="Monte Carlo bootstrap method.",
+)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
 @click.option(
     "--dashboard",
@@ -456,6 +477,8 @@ def backtest_rolling(
     entry_limit_bps,
     partial_exit_args,
     price_adjustment,
+    monte_carlo,
+    mc_method,
     output_csv,
     dashboard,
     dashboard_port,
@@ -464,6 +487,8 @@ def backtest_rolling(
     """Run a true daily rolling backtest over a date window."""
     if output_csv and dashboard:
         raise click.UsageError("--csv and --dashboard cannot be used together.")
+    if output_csv and monte_carlo:
+        raise click.UsageError("--monte-carlo cannot be combined with --csv")
 
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
     slip_model = build_slippage_model(
@@ -545,6 +570,21 @@ def backtest_rolling(
     if universe_note:
         console.print(f"[dim]Universe: {universe_note}[/dim]")
     print_backtest(result)
+    if monte_carlo:
+        mc_result = run_monte_carlo(
+            result,
+            n_sims=int(monte_carlo),
+            method=cast(MonteCarloMethod, mc_method),
+        )
+        print_monte_carlo(mc_result)
+        stem = f"rolling_{cfg.market}_{start_date}_{end_date}_{cfg.strategy_name or 'custom'}"
+        ledger_path, mc_path = write_backtest_artifacts(
+            result,
+            mc_result,
+            stem=stem,
+            directory=Path(".screener/backtests"),
+        )
+        console.print(f"[green]Artifacts:[/green] {ledger_path} {mc_path}")
     if dashboard:
         from screener.backtester.dashboard import render_dashboard, serve_dashboard
 

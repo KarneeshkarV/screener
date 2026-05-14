@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from screener.backtester.monte_carlo import MonteCarloResult
 from screener.backtester.models import BacktestResult
 
 
@@ -132,3 +135,54 @@ def trades_dataframe(result: BacktestResult) -> pd.DataFrame:
 def print_ledger_csv(result: BacktestResult) -> None:
     df = trades_dataframe(result)
     print(df.to_csv(index=False), end="")
+
+
+def print_monte_carlo(result: MonteCarloResult) -> None:
+    table = Table(title="Monte Carlo", show_header=True, header_style="bold")
+    table.add_column("Measure")
+    table.add_column("p05", justify="right")
+    table.add_column("p50", justify="right")
+    table.add_column("p95", justify="right")
+    labels = {
+        "terminal_return": "Terminal Return",
+        "max_dd": "Max Drawdown",
+        "sharpe": "Sharpe",
+    }
+    for key, label in labels.items():
+        row = result.confidence.get(key, {})
+        if key in {"terminal_return", "max_dd"}:
+            values = [
+                f"{float(row.get(p, 0.0)) * 100:+.2f}%" for p in ("p05", "p50", "p95")
+            ]
+        else:
+            values = [f"{float(row.get(p, 0.0)):+.3f}" for p in ("p05", "p50", "p95")]
+        table.add_row(label, *values)
+    table.add_row(
+        "Probability of Loss",
+        "",
+        f"{result.prob_of_loss * 100:.2f}%",
+        "",
+    )
+    table.add_row(
+        "Breach Realized Max DD",
+        "",
+        f"{result.prob_breach_max_dd * 100:.2f}%",
+        "",
+    )
+    console.print(table)
+
+
+def write_backtest_artifacts(
+    result: BacktestResult,
+    mc_result: MonteCarloResult,
+    *,
+    stem: str,
+    directory: Path = Path(".screener/backtests"),
+) -> tuple[Path, Path]:
+    directory.mkdir(parents=True, exist_ok=True)
+    safe_stem = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in stem)
+    ledger_path = directory / f"{safe_stem}_ledger.csv"
+    mc_path = directory / f"{safe_stem}_mc_metrics.csv"
+    trades_dataframe(result).to_csv(ledger_path, index=False)
+    mc_result.sim_metrics.to_csv(mc_path)
+    return ledger_path, mc_path

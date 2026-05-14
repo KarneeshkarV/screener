@@ -15,11 +15,14 @@ from plotly.offline import get_plotlyjs
 from rich.console import Console
 
 from screener.backtester.cli_common import DEFAULT_BENCHMARK, resolve_min_filters
-from screener.backtester.data import build_price_fetcher
+from screener.backtester.data import build_price_fetcher, tv_to_yf
 from screener.backtester.display import trades_dataframe
+from screener.backtester.metrics import compute_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
+from screener.backtester.pine import parse
 from screener.backtester.rolling import run_rolling_backtest
 from screener.backtester.strategies import STRATEGIES, resolve_strategy
+from screener.backtester.vbt_adapter import UnsupportedVbtFeatureError, run_vbt
 from screener.universes import UniverseName, load_current_universe
 
 
@@ -94,6 +97,7 @@ def compare_payload(
     universe: UniverseName | None = None,
     compare_universe: UniverseName | None = None,
     use_universe_cache: bool = True,
+    fast: bool = False,
 ) -> dict[str, Any]:
     """Run rolling backtests for selected named strategies and serialize them."""
     if not strategies:
@@ -156,12 +160,50 @@ def compare_payload(
                 min_price=resolved_min_price,
                 min_avg_dollar_volume=resolved_min_adv,
             )
-            result = run_rolling_backtest(
-                cfg,
-                fetcher,
-                start_date=start_date,
-                end_date=end_date,
-            )
+            if fast:
+                yf_by_tv = {tv: tv_to_yf(tv, market) for tv in run_tickers}
+                fetch_symbols = list(dict.fromkeys([*yf_by_tv.values(), bench]))
+                price_panel = fetcher.fetch(fetch_symbols, start_date, end_date)
+                bars_by_tv = {
+                    tv: price_panel.get(yf_by_tv[tv], pd.DataFrame())
+                    for tv in run_tickers
+                }
+                try:
+                    result = run_vbt(
+                        cfg,
+                        bars_by_tv,
+                        parse(cfg.entry_expr),
+                        parse(cfg.exit_expr) if cfg.exit_expr else None,
+                    )
+                    benchmark_frame = price_panel.get(bench, pd.DataFrame())
+                    if not benchmark_frame.empty and not result.equity_curve.empty:
+                        benchmark_series = benchmark_frame["close"].reindex(
+                            result.equity_curve.index,
+                            method="ffill",
+                        )
+                        result.benchmark_curve = benchmark_series.dropna()
+                        result.metrics = compute_metrics(
+                            result.equity_curve,
+                            result.benchmark_curve,
+                            result.trades,
+                            max(cfg.top, 1),
+                        )
+                    result.warnings.append("engine=vectorbt-fast")
+                except UnsupportedVbtFeatureError as exc:
+                    result = run_rolling_backtest(
+                        cfg,
+                        fetcher,
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
+                    result.warnings.append(f"fast path fallback: {exc}")
+            else:
+                result = run_rolling_backtest(
+                    cfg,
+                    fetcher,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
             results.append(_result_payload(f"{name} · {run_label}", result))
     return {
         "request": {
@@ -473,6 +515,8 @@ def _lab_html() -> str:
 
 
 class LabHandler(BaseHTTPRequestHandler):
+    use_fast = False
+
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -524,6 +568,7 @@ class LabHandler(BaseHTTPRequestHandler):
                 initial_capital=float(payload.get("initial_capital", 100_000.0)),
                 universe=universe,
                 compare_universe=compare_universe,
+                fast=self.use_fast,
             )
             body = json.dumps(data, default=_json_default).encode()
             self._send(HTTPStatus.OK, body, "application/json")
@@ -538,11 +583,20 @@ class LabHandler(BaseHTTPRequestHandler):
 @click.command(name="backtest-lab")
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", type=int, default=8766, show_default=True)
-def backtest_lab(host: str, port: int) -> None:
+@click.option(
+    "--fast",
+    is_flag=True,
+    default=False,
+    help="Use the vectorbt fast path where supported; fall back to the event engine otherwise.",
+)
+def backtest_lab(host: str, port: int, fast: bool) -> None:
     """Launch a browser UI for comparing rolling backtest strategies."""
     console = Console()
+    LabHandler.use_fast = bool(fast)
     server = ThreadingHTTPServer((host, int(port)), LabHandler)
     console.print(f"[green]Backtest lab:[/green] http://{host}:{port}/")
+    if fast:
+        console.print("[dim]Fast path enabled where vectorbt coverage matches.[/dim]")
     console.print("[dim]Press Ctrl+C to stop the lab server.[/dim]")
     try:
         server.serve_forever()
