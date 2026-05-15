@@ -1,0 +1,1668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Backtester Correctness Audit Report</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem; background: #f4f6f8; color: #1a1a1a; }
+    header { margin-bottom: 1rem; }
+    h1 { font-size: 1.35rem; margin: 0 0 0.25rem 0; }
+    .meta { color: #555; font-size: 0.9rem; }
+    .cards { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1rem 0; }
+    .card { background: #fff; border-radius: 8px; padding: 0.75rem 1rem; min-width: 120px; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+    .card strong { display: block; font-size: 1.5rem; }
+    .card.pass strong { color: #1b5e20; }
+    .card.fail strong { color: #b71c1c; }
+    .card.skip strong { color: #f57f17; }
+    .bar { height: 22px; border-radius: 6px; overflow: hidden; display: flex; margin: 0.5rem 0 1.25rem; border: 1px solid #ccc; }
+    .bar .ok { background: #66bb6a; height: 100%; }
+    .bar .bad { background: #ef5350; height: 100%; }
+    .accordion { background: #fff; border-radius: 8px; margin-bottom: 0.75rem; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+    .acc-btn { width: 100%; text-align: left; padding: 0.75rem 1rem; font-size: 1rem; border: none; background: #e3e7ec; cursor: pointer; border-radius: 8px 8px 0 0; }
+    .acc-btn:hover { background: #d5dbe4; }
+    .acc-panel { padding: 0.75rem 1rem 1rem; }
+    .blurb { color: #444; font-size: 0.9rem; margin-top: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    th, td { border-bottom: 1px solid #e0e0e0; padding: 0.45rem 0.35rem; vertical-align: top; }
+    th { text-align: left; background: #fafafa; }
+    tr.pass td:first-child { background: #e8f5e9; }
+    tr.fail td:first-child { background: #ffebee; }
+    tr.skip td:first-child { background: #fff8e1; }
+    .name summary { cursor: pointer; font-weight: 600; }
+    .nodeid { font-size: 0.75rem; color: #666; margin-top: 0.2rem; }
+    .detail pre { white-space: pre-wrap; word-break: break-word; background: #fafafa; padding: 0.5rem; border-radius: 4px; max-height: 320px; overflow: auto; font-size: 0.82rem; }
+    .num { text-align: right; width: 90px; }
+    footer { margin-top: 2rem; font-size: 0.85rem; color: #555; }
+    #copyBtn { margin: 0.5rem 0 1rem; padding: 0.4rem 0.75rem; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Backtester Correctness Audit Report</h1>
+    <div class="meta">Generated: 2026-05-15 03:55:21 UTC</div>
+  </header>
+  <div class="cards">
+    <div class="card"><span>Total</span><strong>35</strong></div>
+    <div class="card pass"><span>Passed</span><strong>35</strong></div>
+    <div class="card fail"><span>Failed</span><strong>0</strong></div>
+    <div class="card skip"><span>Skipped</span><strong>0</strong></div>
+  </div>
+  <div class="bar" title="Pass rate">
+    <div class="ok" style="width:100.00%"></div>
+    <div class="bad" style="width:0.00%"></div>
+  </div>
+  <button id="copyBtn" type="button">Copy JSON</button>
+  <textarea id="rawJson" hidden>{
+  &quot;created&quot;: 1778817321.3565428,
+  &quot;duration&quot;: 7.3440797328948975,
+  &quot;exitcode&quot;: 0,
+  &quot;root&quot;: &quot;/workspace&quot;,
+  &quot;environment&quot;: {},
+  &quot;summary&quot;: {
+    &quot;passed&quot;: 35,
+    &quot;total&quot;: 35,
+    &quot;collected&quot;: 35
+  },
+  &quot;collectors&quot;: [
+    {
+      &quot;nodeid&quot;: &quot;&quot;,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;result&quot;: [
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py&quot;,
+          &quot;type&quot;: &quot;Module&quot;
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py&quot;,
+          &quot;type&quot;: &quot;Module&quot;
+        }
+      ]
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py&quot;,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;result&quot;: [
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_moo_entry_fill_matches_next_open&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 69
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_fixed_bps_slippage_entry&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 79
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_fixed_bps_slippage_exit_time&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 90
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_commission_round_trip_identity&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 109
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[stop_loss]&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 128
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[take_profit]&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 128
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[trailing_stop]&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 128
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[hold_cap]&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 128
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_exit_expression_both_engines&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 197
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_multi_slot_ranking_by_dollar_volume&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 215
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_buy_hold_parity_ticker_c&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 280
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_equity_curve_starts_at_initial_capital&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 306
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_metrics_total_return_single_trade&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 316
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_metrics_hit_rate_two_one&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 330
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_allow_reentry_false_single_trade_ticker_e&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 388
+        }
+      ]
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py&quot;,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;result&quot;: [
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_gap_fills_true_stop_fill_at_open&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 51
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_gap_fills_true_target_fill_at_open&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 72
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_gap_fills_false_stop_fill_at_stop_ref&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 93
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_gap_fills_false_target_fill_at_target_ref&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 114
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_partial_exit_then_breakeven_stop&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 135
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_moc_entry_uses_next_close&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 188
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_limit_entry_fills_when_touched&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 217
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_limit_never_filled_returns_warning&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 245
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_half_spread_slippage_model&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 272
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_volume_impact_slippage_model&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 299
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_composite_slippage_sums_components&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 311
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_min_price_filter_blocks_ticker_d&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 339
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_min_avg_dollar_volume_blocks_ticker_d&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 356
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_allow_reentry_true_multiple_trades_ticker_e&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 374
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_dividend_credit_splits_only&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 395
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_sortino_exceeds_sharpe_on_downside_only_noise&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 422
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_calmar_matches_cagr_over_abs_drawdown&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 433
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_alpha_beta_benchmark_tracking_portfolio&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 448
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_exposure_half_booked_days&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 459
+        },
+        {
+          &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_invested_return_from_mock_trades&quot;,
+          &quot;type&quot;: &quot;Function&quot;,
+          &quot;lineno&quot;: 485
+        }
+      ]
+    }
+  ],
+  &quot;tests&quot;: [
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_moo_entry_fill_matches_next_open&quot;,
+      &quot;lineno&quot;: 69,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_moo_entry_fill_matches_next_open&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 0.00017807100084610283,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.08848672999010887,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 9.025100735016167e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_fixed_bps_slippage_entry&quot;,
+      &quot;lineno&quot;: 79,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_fixed_bps_slippage_entry&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 7.191899931058288e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.08537793900177348,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 9.781500557437539e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_fixed_bps_slippage_exit_time&quot;,
+      &quot;lineno&quot;: 90,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_fixed_bps_slippage_exit_time&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.561499321833253e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0013099630014039576,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.716201071161777e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_commission_round_trip_identity&quot;,
+      &quot;lineno&quot;: 109,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_commission_round_trip_identity&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.554000719916075e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 4.027046757997596,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 0.00010148898581974208,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[stop_loss]&quot;,
+      &quot;lineno&quot;: 128,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_vbt_core_risk_controls[stop_loss]&quot;,
+        &quot;parametrize&quot;,
+        &quot;pytestmark&quot;,
+        &quot;stop_loss&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 0.0003299939999124035,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.019225412994273938,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 0.00012117599544581026,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[take_profit]&quot;,
+      &quot;lineno&quot;: 128,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_vbt_core_risk_controls[take_profit]&quot;,
+        &quot;parametrize&quot;,
+        &quot;pytestmark&quot;,
+        &quot;take_profit&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 0.00028716601082123816,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.017128020990639925,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 0.0001125739945564419,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[trailing_stop]&quot;,
+      &quot;lineno&quot;: 128,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_vbt_core_risk_controls[trailing_stop]&quot;,
+        &quot;parametrize&quot;,
+        &quot;pytestmark&quot;,
+        &quot;trailing_stop&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 0.0002767249970929697,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.017306071997154504,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 0.00010782500612549484,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[hold_cap]&quot;,
+      &quot;lineno&quot;: 128,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_vbt_core_risk_controls[hold_cap]&quot;,
+        &quot;parametrize&quot;,
+        &quot;pytestmark&quot;,
+        &quot;hold_cap&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 0.00028295000083744526,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.017249837997951545,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 0.00011254899436607957,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_exit_expression_both_engines&quot;,
+      &quot;lineno&quot;: 197,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_exit_expression_both_engines&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.62969978293404e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.011348232990712859,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 8.135799726005644e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_multi_slot_ranking_by_dollar_volume&quot;,
+      &quot;lineno&quot;: 215,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_multi_slot_ranking_by_dollar_volume&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.683799438178539e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 2.2068798490072368,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 9.649399726185948e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_buy_hold_parity_ticker_c&quot;,
+      &quot;lineno&quot;: 280,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_buy_hold_parity_ticker_c&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 7.239199476316571e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.11142534398823045,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 9.485500049777329e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_equity_curve_starts_at_initial_capital&quot;,
+      &quot;lineno&quot;: 306,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_equity_curve_starts_at_initial_capital&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 7.01870012562722e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.00879824000003282,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 8.374800381716341e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_metrics_total_return_single_trade&quot;,
+      &quot;lineno&quot;: 316,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_metrics_total_return_single_trade&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 8.040199463721365e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.008699730999069288,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 9.424801100976765e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_metrics_hit_rate_two_one&quot;,
+      &quot;lineno&quot;: 330,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_metrics_hit_rate_two_one&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.86919956933707e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0030246310052461922,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.673799700569361e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier1.py::test_tier1_allow_reentry_false_single_trade_ticker_e&quot;,
+      &quot;lineno&quot;: 388,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier1_allow_reentry_false_single_trade_ticker_e&quot;,
+        &quot;test_correctness_tier1.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 7.015500159468502e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.1150578119995771,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 8.146199979819357e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_gap_fills_true_stop_fill_at_open&quot;,
+      &quot;lineno&quot;: 51,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier2_gap_fills_true_stop_fill_at_open&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 7.101900700945407e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0007668070029467344,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.09730084054172e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_gap_fills_true_target_fill_at_open&quot;,
+      &quot;lineno&quot;: 72,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier2_gap_fills_true_target_fill_at_open&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.338200182653964e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0007130940066417679,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 6.931800453457981e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_gap_fills_false_stop_fill_at_stop_ref&quot;,
+      &quot;lineno&quot;: 93,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier2_gap_fills_false_stop_fill_at_stop_ref&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.107000808697194e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0006845669995527714,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.19620002200827e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_gap_fills_false_target_fill_at_target_ref&quot;,
+      &quot;lineno&quot;: 114,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier2_gap_fills_false_target_fill_at_target_ref&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.610900163650513e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0006939359882380813,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 6.928401126060635e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_partial_exit_then_breakeven_stop&quot;,
+      &quot;lineno&quot;: 135,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier2_partial_exit_then_breakeven_stop&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 7.553001341875643e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0097223210032098,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.720300345681608e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_moc_entry_uses_next_close&quot;,
+      &quot;lineno&quot;: 188,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier2_moc_entry_uses_next_close&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.456000846810639e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0008144809980876744,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.298499986063689e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_limit_entry_fills_when_touched&quot;,
+      &quot;lineno&quot;: 217,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier2_limit_entry_fills_when_touched&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.350700277835131e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0008083189895842224,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.066600664984435e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier2_limit_never_filled_returns_warning&quot;,
+      &quot;lineno&quot;: 245,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier2_limit_never_filled_returns_warning&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.771000334993005e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0005187269998714328,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 6.353198841679841e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_half_spread_slippage_model&quot;,
+      &quot;lineno&quot;: 272,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_half_spread_slippage_model&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.019999273121357e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0006985539948800579,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 6.950099486857653e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_volume_impact_slippage_model&quot;,
+      &quot;lineno&quot;: 299,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_volume_impact_slippage_model&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 7.625100261066109e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 9.01140010682866e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 5.732900172006339e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_composite_slippage_sums_components&quot;,
+      &quot;lineno&quot;: 311,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_composite_slippage_sums_components&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 5.7133001973852515e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0007314059912459925,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 6.740899698343128e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_min_price_filter_blocks_ticker_d&quot;,
+      &quot;lineno&quot;: 339,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_min_price_filter_blocks_ticker_d&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 7.447900134138763e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.08740140500594862,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 8.084499859251082e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_min_avg_dollar_volume_blocks_ticker_d&quot;,
+      &quot;lineno&quot;: 356,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_min_avg_dollar_volume_blocks_ticker_d&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.355499499477446e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.08810467300645541,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 8.189100481104106e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_allow_reentry_true_multiple_trades_ticker_e&quot;,
+      &quot;lineno&quot;: 374,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_allow_reentry_true_multiple_trades_ticker_e&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.557999586220831e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.10730718100967351,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.896299939602613e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_dividend_credit_splits_only&quot;,
+      &quot;lineno&quot;: 395,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_dividend_credit_splits_only&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 7.028199615888298e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.09878678500535898,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.852799899410456e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_sortino_exceeds_sharpe_on_downside_only_noise&quot;,
+      &quot;lineno&quot;: 422,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_sortino_exceeds_sharpe_on_downside_only_noise&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.631200085394084e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0014767800021218136,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.430400000885129e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_calmar_matches_cagr_over_abs_drawdown&quot;,
+      &quot;lineno&quot;: 433,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_calmar_matches_cagr_over_abs_drawdown&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.299999949987978e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.004821809008717537,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.496500620618463e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_alpha_beta_benchmark_tracking_portfolio&quot;,
+      &quot;lineno&quot;: 448,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_alpha_beta_benchmark_tracking_portfolio&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.384399603120983e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.002830319994245656,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.59980030125007e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_exposure_half_booked_days&quot;,
+      &quot;lineno&quot;: 459,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_exposure_half_booked_days&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.817799294367433e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.002554217993747443,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.591600297018886e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    },
+    {
+      &quot;nodeid&quot;: &quot;tests/test_correctness_tier2_3.py::test_tier3_invested_return_from_mock_trades&quot;,
+      &quot;lineno&quot;: 485,
+      &quot;outcome&quot;: &quot;passed&quot;,
+      &quot;keywords&quot;: [
+        &quot;test_tier3_invested_return_from_mock_trades&quot;,
+        &quot;test_correctness_tier2_3.py&quot;,
+        &quot;tests&quot;,
+        &quot;workspace&quot;,
+        &quot;&quot;
+      ],
+      &quot;setup&quot;: {
+        &quot;duration&quot;: 6.785300502087921e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;call&quot;: {
+        &quot;duration&quot;: 0.0024264350067824125,
+        &quot;outcome&quot;: &quot;passed&quot;
+      },
+      &quot;teardown&quot;: {
+        &quot;duration&quot;: 7.791900134179741e-05,
+        &quot;outcome&quot;: &quot;passed&quot;
+      }
+    }
+  ]
+}</textarea>
+  
+        <section class="accordion">
+          <button type="button" class="acc-btn" aria-expanded="false">Tier 1 — Shared Features (VBT ↔ Core)</button>
+          <div class="acc-panel" hidden>
+            <p class="blurb">Cross-engine fills, risk controls, ranking, and shared metrics.</p>
+            <table>
+              <thead><tr><th>Test</th><th>Status</th><th>Duration (ms)</th><th>Notes</th></tr></thead>
+              <tbody>
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_allow_reentry_false_single_trade_ticker_e</summary>
+                      <div class="detail"><pre>Passed: test_tier1_allow_reentry_false_single_trade_ticker_e</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_allow_reentry_false_single_trade_ticker_e</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">115.21</td>
+                  <td class="notes">Passed: test_tier1_allow_reentry_false_single_trade_ticker_e</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_buy_hold_parity_ticker_c</summary>
+                      <div class="detail"><pre>Passed: test_tier1_buy_hold_parity_ticker_c</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_buy_hold_parity_ticker_c</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">111.59</td>
+                  <td class="notes">Passed: test_tier1_buy_hold_parity_ticker_c</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_commission_round_trip_identity</summary>
+                      <div class="detail"><pre>Passed: test_tier1_commission_round_trip_identity</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_commission_round_trip_identity</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">4027.21</td>
+                  <td class="notes">Passed: test_tier1_commission_round_trip_identity</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_equity_curve_starts_at_initial_capital</summary>
+                      <div class="detail"><pre>Passed: test_tier1_equity_curve_starts_at_initial_capital</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_equity_curve_starts_at_initial_capital</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">8.95</td>
+                  <td class="notes">Passed: test_tier1_equity_curve_starts_at_initial_capital</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_exit_expression_both_engines</summary>
+                      <div class="detail"><pre>Passed: test_tier1_exit_expression_both_engines</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_exit_expression_both_engines</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">11.50</td>
+                  <td class="notes">Passed: test_tier1_exit_expression_both_engines</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_fixed_bps_slippage_entry</summary>
+                      <div class="detail"><pre>Passed: test_tier1_fixed_bps_slippage_entry</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_fixed_bps_slippage_entry</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">85.55</td>
+                  <td class="notes">Passed: test_tier1_fixed_bps_slippage_entry</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_fixed_bps_slippage_exit_time</summary>
+                      <div class="detail"><pre>Passed: test_tier1_fixed_bps_slippage_exit_time</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_fixed_bps_slippage_exit_time</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">1.45</td>
+                  <td class="notes">Passed: test_tier1_fixed_bps_slippage_exit_time</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_metrics_hit_rate_two_one</summary>
+                      <div class="detail"><pre>Passed: test_tier1_metrics_hit_rate_two_one</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_metrics_hit_rate_two_one</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">3.17</td>
+                  <td class="notes">Passed: test_tier1_metrics_hit_rate_two_one</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_metrics_total_return_single_trade</summary>
+                      <div class="detail"><pre>Passed: test_tier1_metrics_total_return_single_trade</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_metrics_total_return_single_trade</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">8.87</td>
+                  <td class="notes">Passed: test_tier1_metrics_total_return_single_trade</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_moo_entry_fill_matches_next_open</summary>
+                      <div class="detail"><pre>Passed: test_tier1_moo_entry_fill_matches_next_open</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_moo_entry_fill_matches_next_open</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">88.76</td>
+                  <td class="notes">Passed: test_tier1_moo_entry_fill_matches_next_open</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_multi_slot_ranking_by_dollar_volume</summary>
+                      <div class="detail"><pre>Passed: test_tier1_multi_slot_ranking_by_dollar_volume</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_multi_slot_ranking_by_dollar_volume</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">2207.04</td>
+                  <td class="notes">Passed: test_tier1_multi_slot_ranking_by_dollar_volume</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_vbt_core_risk_controls[hold_cap]</summary>
+                      <div class="detail"><pre>Passed: test_tier1_vbt_core_risk_controls[hold_cap]</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[hold_cap]</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">17.65</td>
+                  <td class="notes">Passed: test_tier1_vbt_core_risk_controls[hold_cap]</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_vbt_core_risk_controls[stop_loss]</summary>
+                      <div class="detail"><pre>Passed: test_tier1_vbt_core_risk_controls[stop_loss]</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[stop_loss]</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">19.68</td>
+                  <td class="notes">Passed: test_tier1_vbt_core_risk_controls[stop_loss]</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_vbt_core_risk_controls[take_profit]</summary>
+                      <div class="detail"><pre>Passed: test_tier1_vbt_core_risk_controls[take_profit]</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[take_profit]</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">17.53</td>
+                  <td class="notes">Passed: test_tier1_vbt_core_risk_controls[take_profit]</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier1_vbt_core_risk_controls[trailing_stop]</summary>
+                      <div class="detail"><pre>Passed: test_tier1_vbt_core_risk_controls[trailing_stop]</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier1.py::test_tier1_vbt_core_risk_controls[trailing_stop]</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">17.69</td>
+                  <td class="notes">Passed: test_tier1_vbt_core_risk_controls[trailing_stop]</td>
+                </tr>
+                </tbody>
+            </table>
+          </div>
+        </section>
+        
+        <section class="accordion">
+          <button type="button" class="acc-btn" aria-expanded="false">Tier 2 — Core-only Gap / Partial / Entry</button>
+          <div class="acc-panel" hidden>
+            <p class="blurb">Gap-aware fills, partial exits, and alternate entry order types.</p>
+            <table>
+              <thead><tr><th>Test</th><th>Status</th><th>Duration (ms)</th><th>Notes</th></tr></thead>
+              <tbody>
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier2_gap_fills_false_stop_fill_at_stop_ref</summary>
+                      <div class="detail"><pre>Passed: test_tier2_gap_fills_false_stop_fill_at_stop_ref</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier2_gap_fills_false_stop_fill_at_stop_ref</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">0.82</td>
+                  <td class="notes">Passed: test_tier2_gap_fills_false_stop_fill_at_stop_ref</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier2_gap_fills_false_target_fill_at_target_ref</summary>
+                      <div class="detail"><pre>Passed: test_tier2_gap_fills_false_target_fill_at_target_ref</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier2_gap_fills_false_target_fill_at_target_ref</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">0.83</td>
+                  <td class="notes">Passed: test_tier2_gap_fills_false_target_fill_at_target_ref</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier2_gap_fills_true_stop_fill_at_open</summary>
+                      <div class="detail"><pre>Passed: test_tier2_gap_fills_true_stop_fill_at_open</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier2_gap_fills_true_stop_fill_at_open</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">0.91</td>
+                  <td class="notes">Passed: test_tier2_gap_fills_true_stop_fill_at_open</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier2_gap_fills_true_target_fill_at_open</summary>
+                      <div class="detail"><pre>Passed: test_tier2_gap_fills_true_target_fill_at_open</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier2_gap_fills_true_target_fill_at_open</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">0.85</td>
+                  <td class="notes">Passed: test_tier2_gap_fills_true_target_fill_at_open</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier2_limit_entry_fills_when_touched</summary>
+                      <div class="detail"><pre>Passed: test_tier2_limit_entry_fills_when_touched</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier2_limit_entry_fills_when_touched</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">0.94</td>
+                  <td class="notes">Passed: test_tier2_limit_entry_fills_when_touched</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier2_limit_never_filled_returns_warning</summary>
+                      <div class="detail"><pre>Passed: test_tier2_limit_never_filled_returns_warning</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier2_limit_never_filled_returns_warning</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">0.65</td>
+                  <td class="notes">Passed: test_tier2_limit_never_filled_returns_warning</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier2_moc_entry_uses_next_close</summary>
+                      <div class="detail"><pre>Passed: test_tier2_moc_entry_uses_next_close</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier2_moc_entry_uses_next_close</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">0.95</td>
+                  <td class="notes">Passed: test_tier2_moc_entry_uses_next_close</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier2_partial_exit_then_breakeven_stop</summary>
+                      <div class="detail"><pre>Passed: test_tier2_partial_exit_then_breakeven_stop</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier2_partial_exit_then_breakeven_stop</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">9.88</td>
+                  <td class="notes">Passed: test_tier2_partial_exit_then_breakeven_stop</td>
+                </tr>
+                </tbody>
+            </table>
+          </div>
+        </section>
+        
+        <section class="accordion">
+          <button type="button" class="acc-btn" aria-expanded="false">Tier 3 — Core-only Slippage / Filters / Metrics</button>
+          <div class="acc-panel" hidden>
+            <p class="blurb">Slippage models, universe filters, dividends, and performance metrics.</p>
+            <table>
+              <thead><tr><th>Test</th><th>Status</th><th>Duration (ms)</th><th>Notes</th></tr></thead>
+              <tbody>
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_allow_reentry_true_multiple_trades_ticker_e</summary>
+                      <div class="detail"><pre>Passed: test_tier3_allow_reentry_true_multiple_trades_ticker_e</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_allow_reentry_true_multiple_trades_ticker_e</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">107.45</td>
+                  <td class="notes">Passed: test_tier3_allow_reentry_true_multiple_trades_ticker_e</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_alpha_beta_benchmark_tracking_portfolio</summary>
+                      <div class="detail"><pre>Passed: test_tier3_alpha_beta_benchmark_tracking_portfolio</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_alpha_beta_benchmark_tracking_portfolio</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">2.97</td>
+                  <td class="notes">Passed: test_tier3_alpha_beta_benchmark_tracking_portfolio</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_calmar_matches_cagr_over_abs_drawdown</summary>
+                      <div class="detail"><pre>Passed: test_tier3_calmar_matches_cagr_over_abs_drawdown</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_calmar_matches_cagr_over_abs_drawdown</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">4.96</td>
+                  <td class="notes">Passed: test_tier3_calmar_matches_cagr_over_abs_drawdown</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_composite_slippage_sums_components</summary>
+                      <div class="detail"><pre>Passed: test_tier3_composite_slippage_sums_components</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_composite_slippage_sums_components</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">0.86</td>
+                  <td class="notes">Passed: test_tier3_composite_slippage_sums_components</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_dividend_credit_splits_only</summary>
+                      <div class="detail"><pre>Passed: test_tier3_dividend_credit_splits_only</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_dividend_credit_splits_only</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">98.94</td>
+                  <td class="notes">Passed: test_tier3_dividend_credit_splits_only</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_exposure_half_booked_days</summary>
+                      <div class="detail"><pre>Passed: test_tier3_exposure_half_booked_days</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_exposure_half_booked_days</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">2.70</td>
+                  <td class="notes">Passed: test_tier3_exposure_half_booked_days</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_half_spread_slippage_model</summary>
+                      <div class="detail"><pre>Passed: test_tier3_half_spread_slippage_model</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_half_spread_slippage_model</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">0.83</td>
+                  <td class="notes">Passed: test_tier3_half_spread_slippage_model</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_invested_return_from_mock_trades</summary>
+                      <div class="detail"><pre>Passed: test_tier3_invested_return_from_mock_trades</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_invested_return_from_mock_trades</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">2.57</td>
+                  <td class="notes">Passed: test_tier3_invested_return_from_mock_trades</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_min_avg_dollar_volume_blocks_ticker_d</summary>
+                      <div class="detail"><pre>Passed: test_tier3_min_avg_dollar_volume_blocks_ticker_d</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_min_avg_dollar_volume_blocks_ticker_d</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">88.25</td>
+                  <td class="notes">Passed: test_tier3_min_avg_dollar_volume_blocks_ticker_d</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_min_price_filter_blocks_ticker_d</summary>
+                      <div class="detail"><pre>Passed: test_tier3_min_price_filter_blocks_ticker_d</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_min_price_filter_blocks_ticker_d</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">87.56</td>
+                  <td class="notes">Passed: test_tier3_min_price_filter_blocks_ticker_d</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_sortino_exceeds_sharpe_on_downside_only_noise</summary>
+                      <div class="detail"><pre>Passed: test_tier3_sortino_exceeds_sharpe_on_downside_only_noise</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_sortino_exceeds_sharpe_on_downside_only_noise</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">1.62</td>
+                  <td class="notes">Passed: test_tier3_sortino_exceeds_sharpe_on_downside_only_noise</td>
+                </tr>
+                
+
+                <tr class="pass">
+                  <td class="name">
+                    <details>
+                      <summary>test_tier3_volume_impact_slippage_model</summary>
+                      <div class="detail"><pre>Passed: test_tier3_volume_impact_slippage_model</pre></div>
+                    </details>
+                    <div class="nodeid">tests/test_correctness_tier2_3.py::test_tier3_volume_impact_slippage_model</div>
+                  </td>
+                  <td>passed</td>
+                  <td class="num">0.22</td>
+                  <td class="notes">Passed: test_tier3_volume_impact_slippage_model</td>
+                </tr>
+                </tbody>
+            </table>
+          </div>
+        </section>
+        
+  <footer>Generated by backtester-correctness-audit agent · /workspace</footer>
+  <script>
+    (function () {
+      document.querySelectorAll(".acc-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var p = btn.nextElementSibling;
+          var open = btn.getAttribute("aria-expanded") === "true";
+          btn.setAttribute("aria-expanded", open ? "false" : "true");
+          p.hidden = open;
+        });
+      });
+      document.getElementById("copyBtn").addEventListener("click", function () {
+        var t = document.getElementById("rawJson");
+        navigator.clipboard.writeText(t.value).then(function () {
+          var b = document.getElementById("copyBtn");
+          var o = b.textContent;
+          b.textContent = "Copied!";
+          setTimeout(function () { b.textContent = o; }, 1500);
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
