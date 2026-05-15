@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm view *)",
+      "Bash(pnpm view *)",
+      "Bash(mise list *)",
+      "Bash(aws lambda list-functions *)",
+      "Bash(aws lambda get-function *)",
+      "Bash(aws logs filter-log-events *)",
+      "Bash(aws logs describe-log-streams *)",
+      "Bash(aws cloudtrail lookup-events *)",
+      "Bash(aws cognito-idp list-users *)"
+    ]
+  }
+}
