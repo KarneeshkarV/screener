@@ -1,0 +1,44 @@
+{
+  "results": [
+    {
+      "name": "base_only",
+      "features": 27,
+      "auc_mean": 0.618723912973541,
+      "auc_std": 0.0028394899093012703,
+      "top10_wr_mean": 0.6211562115621155,
+      "top10_avg_mean": 0.036636069541077204
+    },
+    {
+      "name": "base+onehot",
+      "features": 33,
+      "auc_mean": 0.6140235866048784,
+      "auc_std": 0.006751956251306641,
+      "top10_wr_mean": 0.5904059040590405,
+      "top10_avg_mean": 0.034194835803801144
+    },
+    {
+      "name": "base+target_encode",
+      "features": 28,
+      "auc_mean": 0.615234834717847,
+      "auc_std": 0.009315174686117169,
+      "top10_wr_mean": 0.6150061500615006,
+      "top10_avg_mean": 0.036202397932372794
+    },
+    {
+      "name": "base+both",
+      "features": 34,
+      "auc_mean": 0.6165714620547766,
+      "auc_std": 0.011107454801352171,
+      "top10_wr_mean": 0.6088560885608856,
+      "top10_avg_mean": 0.035785645557319924
+    }
+  ],
+  "best": {
+    "name": "base_only",
+    "features": 27,
+    "auc_mean": 0.618723912973541,
+    "auc_std": 0.0028394899093012703,
+    "top10_wr_mean": 0.6211562115621155,
+    "top10_avg_mean": 0.036636069541077204
+  }
+}
