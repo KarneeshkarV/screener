@@ -8,9 +8,22 @@ wheels/
 
 # Virtual environments
 .venv
+.env
 *.log
 _*.txt
 matrix_*.txt
-.env
-.screener/
+
+# Training data
+scripts/training_data/
+scripts/training_data_v4/
+scripts/training_data_v5/
+scripts/training_data_v5_large/
+
+# Model artifacts
+*.pkl
+
+# CatBoost
+/catboost_info/
+
+# App data
 .screener/
