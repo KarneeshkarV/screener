@@ -4,7 +4,10 @@ import click
 
 from screener import history
 from screener.backtester.historical import backtest_historical
+from screener.backtester.monte_carlo import monte_carlo
 from screener.backtester.rolling import backtest_rolling
+from screener.backtester.sensitivity import sensitivity
+from screener.backtester.walk_forward import walk_forward
 from screener.criteria import CRITERIA, combine
 from screener.scanner import scan, MARKETS
 from screener.display import print_results, print_csv
@@ -28,6 +31,9 @@ def cli():
 cli.add_command(unusual_volume)
 cli.add_command(backtest_historical)
 cli.add_command(backtest_rolling)
+cli.add_command(walk_forward)
+cli.add_command(monte_carlo)
+cli.add_command(sensitivity)
 
 
 @cli.command()

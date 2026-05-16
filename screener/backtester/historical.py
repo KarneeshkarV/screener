@@ -533,6 +533,13 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     help="Price-adjustment regime. full=legacy (yfinance auto_adjust=True); splits_only=split-adjust OHLC and credit dividends as cash; none=raw OHLC.",
 )
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
+@click.option(
+    "--monte-carlo",
+    is_flag=True,
+    default=False,
+    help="After backtest, run Monte Carlo trade-shuffle simulation.",
+)
+@click.option("--mc-runs", type=int, default=1000, show_default=True)
 def backtest_historical(
     market,
     as_of,
@@ -567,6 +574,8 @@ def backtest_historical(
     partial_exit_args,
     price_adjustment,
     output_csv,
+    monte_carlo,
+    mc_runs,
 ):
     """Run an accurate historical backtest with Pine-like entry/exit expressions."""
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
@@ -630,4 +639,16 @@ def backtest_historical(
         print_ledger_csv(result)
         return
     print_backtest(result)
+
+    if monte_carlo:
+        from screener.backtester.monte_carlo import MonteCarloSimulator, print_monte_carlo
+
+        sim = MonteCarloSimulator(
+            trades=result.trades,
+            initial_capital=result.config.initial_capital,
+            calendar=result.equity_curve.index,
+            bars_by_tv={},
+        )
+        mc_result = sim.trade_shuffle(n_runs=mc_runs)
+        print_monte_carlo(mc_result)
 
