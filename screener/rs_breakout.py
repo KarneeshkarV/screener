@@ -43,8 +43,9 @@ class RsBreakoutRow:
     volume: float
     avg_volume_20d: float
     volume_ratio: float
-    delivery_pct: Optional[float]
-    previous_delivery_pct: Optional[float]
+    delivery_pct: Optional[float] = None
+    previous_delivery_pct: Optional[float] = None
+    ml_confidence: Optional[float] = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -190,8 +191,10 @@ def evaluate_symbol(
     benchmark_close: pd.Series,
     as_of: date,
     delivery: tuple[Optional[float], Optional[float]] | None = None,
-) -> Optional[tuple[RsBreakoutRow, bool, bool]]:
-    """Return row plus price/delivery pass booleans when base filters pass."""
+    confidence_model: Optional["SignalConfidenceModel"] = None,
+    benchmark_bars: Optional[pd.DataFrame] = None,
+) -> Optional[tuple[RsBreakoutRow, bool, bool, Optional[float]]]:
+    """Return row plus price/delivery pass booleans and optional ML confidence."""
     df = normalize_bars(bars, as_of)
     if len(df) < max(RS_WINDOW + 1, VOLUME_WINDOW + 1, SUPERTREND_PERIOD + 1):
         return None
@@ -225,6 +228,19 @@ def evaluate_symbol(
         and previous_delivery_pct is not None
         and delivery_pct > previous_delivery_pct
     )
+
+    ml_confidence: Optional[float] = None
+    if confidence_model is not None:
+        from screener.ml_signal import BreakoutFeatureExtractor
+
+        extractor = BreakoutFeatureExtractor()
+        features = extractor.extract(df, benchmark_bars=benchmark_bars)
+        if not features.empty:
+            try:
+                ml_confidence = float(confidence_model.predict(features.iloc[[-1]])[0])
+            except Exception:
+                pass
+
     row = RsBreakoutRow(
         symbol=symbol,
         date=last_idx.date(),
@@ -239,8 +255,9 @@ def evaluate_symbol(
         previous_delivery_pct=None
         if previous_delivery_pct is None
         else round(previous_delivery_pct, 4),
+        ml_confidence=None if ml_confidence is None else round(ml_confidence, 4),
     )
-    return row, price_pass, delivery_pass
+    return row, price_pass, delivery_pass, ml_confidence
 
 
 def scan_rs_breakouts(
@@ -250,6 +267,8 @@ def scan_rs_breakouts(
     delivery_panel: Optional[pd.DataFrame] = None,
     benchmark_symbol: str = DEFAULT_BENCHMARK,
     require_delivery: bool = True,
+    confidence_model: Optional["SignalConfidenceModel"] = None,
+    confidence_threshold: Optional[float] = None,
 ) -> RsBreakoutResult:
     benchmark = normalize_bars(benchmark_bars, as_of)
     if benchmark.empty:
@@ -265,10 +284,14 @@ def scan_rs_breakouts(
             benchmark["close"],
             as_of,
             delivery=lookup.get(bare),
+            confidence_model=confidence_model,
+            benchmark_bars=benchmark,
         )
         if evaluated is None:
             continue
-        row, price_pass, delivery_pass = evaluated
+        row, price_pass, delivery_pass, ml_confidence = evaluated
+        if confidence_threshold is not None and (ml_confidence is None or ml_confidence < confidence_threshold):
+            continue
         relaxed.append(row)
         if price_pass and (delivery_pass or not require_delivery):
             full.append(row)
@@ -461,7 +484,7 @@ def render_result(
 
 def _render_bucket(title: str, rows: list[RsBreakoutRow], console: Console) -> None:
     table = Table(title=f"{title} - {len(rows)} match(es)", show_header=True, header_style="bold")
-    for name, justify in [
+    columns = [
         ("Ticker", "left"),
         ("Close", "right"),
         ("RS55", "right"),
@@ -470,10 +493,14 @@ def _render_bucket(title: str, rows: list[RsBreakoutRow], console: Console) -> N
         ("VolRatio", "right"),
         ("Deliv%", "right"),
         ("PrevDeliv%", "right"),
-    ]:
+    ]
+    has_conf = any(r.ml_confidence is not None for r in rows)
+    if has_conf:
+        columns.append(("ML Conf", "right"))
+    for name, justify in columns:
         table.add_column(name, justify=justify)
     for row in rows:
-        table.add_row(
+        cells = [
             row.symbol,
             _fmt_float(row.close),
             _fmt_float(row.rs_55),
@@ -482,7 +509,10 @@ def _render_bucket(title: str, rows: list[RsBreakoutRow], console: Console) -> N
             _fmt_float(row.volume_ratio),
             _fmt_float(row.delivery_pct),
             _fmt_float(row.previous_delivery_pct),
-        )
+        ]
+        if has_conf:
+            cells.append(_fmt_float(row.ml_confidence))
+        table.add_row(*cells)
     console.print(table)
 
 
@@ -507,30 +537,37 @@ def write_markdown(result: RsBreakoutResult, path: Path, market: str = "india") 
         ("Full", result.full),
         ("Relaxed (without price breakout and delivery increase)", result.relaxed),
     ]:
+        has_conf = any(r.ml_confidence is not None for r in rows)
+        header = "| # | Ticker | Close | RS55 | SuperTrend | Prev Week High | Vol Ratio | Deliv% | Prev Deliv% |"
+        divider = "|---|--------|------:|-----:|-----------:|---------------:|----------:|-------:|------------:|"
+        if has_conf:
+            header = header.rstrip("|") + " ML Conf |"
+            divider = divider.rstrip("|") + "----------:|"
         lines.extend(
             [
                 f"## {title} ({len(rows)})",
                 "",
-                "| # | Ticker | Close | RS55 | SuperTrend | Prev Week High | Vol Ratio | Deliv% | Prev Deliv% |",
-                "|---|--------|------:|-----:|-----------:|---------------:|----------:|-------:|------------:|",
+                header,
+                divider,
             ]
         )
         for i, row in enumerate(rows, 1):
+            cells = [
+                str(i),
+                f"**{row.symbol}**",
+                _fmt_float(row.close),
+                _fmt_float(row.rs_55),
+                _fmt_float(row.supertrend),
+                _fmt_float(row.previous_week_high),
+                _fmt_float(row.volume_ratio),
+                _fmt_float(row.delivery_pct),
+                _fmt_float(row.previous_delivery_pct),
+            ]
+            if has_conf:
+                cells.append(_fmt_float(row.ml_confidence))
             lines.append(
                 "| "
-                + " | ".join(
-                    [
-                        str(i),
-                        f"**{row.symbol}**",
-                        _fmt_float(row.close),
-                        _fmt_float(row.rs_55),
-                        _fmt_float(row.supertrend),
-                        _fmt_float(row.previous_week_high),
-                        _fmt_float(row.volume_ratio),
-                        _fmt_float(row.delivery_pct),
-                        _fmt_float(row.previous_delivery_pct),
-                    ]
-                )
+                + " | ".join(cells)
                 + " |"
             )
         lines.append("")

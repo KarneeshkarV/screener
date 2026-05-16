@@ -1,13 +1,17 @@
 from datetime import date, datetime
+from pathlib import Path
 
 import click
 
 from screener import history
+from screener.backtester.data import YFinancePriceFetcher, tv_to_yf
 from screener.backtester.historical import backtest_historical
 from screener.backtester.rolling import backtest_rolling
 from screener.criteria import CRITERIA, combine
-from screener.scanner import scan, MARKETS
-from screener.display import print_results, print_csv
+from screener.display import print_csv, print_results
+from screener.ml_signal import BreakoutFeatureExtractor, MissingMLDependencyError, SignalConfidenceModel
+from screener.ml_signal_cli import predict_cmd, feature_importance, train_model
+from screener.scanner import MARKETS, scan
 from screener.rs_breakout import (
     DEFAULT_BENCHMARKS as RS_BREAKOUT_DEFAULT_BENCHMARKS,
     fetch_price_data as fetch_rs_breakout_price_data,
@@ -28,6 +32,9 @@ def cli():
 cli.add_command(unusual_volume)
 cli.add_command(backtest_historical)
 cli.add_command(backtest_rolling)
+cli.add_command(train_model)
+cli.add_command(predict_cmd)
+cli.add_command(feature_importance)
 
 
 @cli.command()
@@ -144,6 +151,18 @@ def screen(market, criteria_names, limit, order_by, output_csv, detail):
     default=False,
     help="Skip JSON/Markdown writes.",
 )
+@click.option(
+    "--confidence-model",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to trained SignalConfidenceModel for filtering.",
+)
+@click.option(
+    "--confidence-threshold",
+    type=float,
+    default=None,
+    help="Minimum ML confidence (0-1) to include a breakout.",
+)
 def rs_breakout(
     market,
     as_of_arg,
@@ -156,6 +175,8 @@ def rs_breakout(
     json_path,
     md_path,
     no_output_files,
+    confidence_model,
+    confidence_threshold,
 ):
     """Screen Indian stocks for RS + SuperTrend + breakout/volume setups."""
     from pathlib import Path
@@ -211,6 +232,16 @@ def rs_breakout(
 
         delivery_panel = pd.DataFrame()
 
+    model = None
+    if confidence_model:
+        try:
+            model = SignalConfidenceModel.load(confidence_model)
+            console.print(f"[dim]Loaded confidence model from {confidence_model}[/dim]")
+        except MissingMLDependencyError as exc:
+            console.print(f"[yellow]{exc}[/yellow]")
+        except Exception as exc:
+            console.print(f"[yellow]Failed to load model: {exc}[/yellow]")
+
     result = scan_rs_breakouts(
         bars_by_symbol,
         benchmark_bars,
@@ -218,6 +249,8 @@ def rs_breakout(
         delivery_panel=delivery_panel,
         benchmark_symbol=resolved_benchmark,
         require_delivery=market == "india",
+        confidence_model=model,
+        confidence_threshold=confidence_threshold,
     )
     render_rs_breakout_result(result, console, limit=int(limit), market=market)
 

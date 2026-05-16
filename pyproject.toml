@@ -15,6 +15,9 @@ dependencies = [
     "pyarrow>=15.0",
     "jugaad-data>=0.28",
     "requests>=2.31",
+    "xgboost>=2.0",
+    "scikit-learn>=1.3",
+    "joblib>=1.3",
 ]
 
 [project.scripts]
