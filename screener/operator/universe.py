@@ -22,6 +22,7 @@ from datetime import date
 from screener.logging_config import get_logger
 
 from .fetch import fetch_fo_bhavcopy
+from .models import OperatorUniverseMode
 
 log = get_logger(__name__)
 
@@ -43,7 +44,9 @@ def cash_top_500() -> list[str]:
     return load_universe("india")
 
 
-def combined_universe(d: date, *, mode: str = "fo+cash") -> tuple[list[str], set[str]]:
+def combined_universe(
+    d: date, *, mode: OperatorUniverseMode = "fo+cash"
+) -> tuple[list[str], set[str]]:
     """Return ``(all_symbols, fno_set)`` for the requested mode.
 
     ``mode``:

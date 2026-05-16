@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from pathlib import Path
+from typing import cast
 
 import click
 
 from screener.logging_config import configure_logging
 
+from .models import OperatorScanRequest, OperatorUniverseMode
 from .output import write_csv
 from .process import build_dataset
 from .screen import label
@@ -56,7 +58,13 @@ def register(cli_group: click.Group) -> None:
     is_flag=True,
     help="Log progress to stderr.",
 )
-def operator_scan(as_of, universe, out_path, only_actions, verbose):
+def operator_scan(
+    as_of: datetime | None,
+    universe: str,
+    out_path: Path | None,
+    only_actions: bool,
+    verbose: bool,
+) -> None:
     """NSE Operator Intent screener — daily Cash + F&O OI signal.
 
     Combines NSE Cash Bhavcopy delivery + VWAP with the F&O UDiff
@@ -65,16 +73,25 @@ def operator_scan(as_of, universe, out_path, only_actions, verbose):
     Long Build-ups within 15% of the 52-week high are flagged as
     High_Momentum_Watch. Output is a single CSV.
     """
-    configure_logging(level="INFO" if verbose else "WARNING")
-
     if isinstance(as_of, datetime):
-        as_of = as_of.date()
-    if as_of is None:
-        as_of = date.today()
+        as_of_date = as_of.date()
+    else:
+        as_of_date = date.today()
 
-    df, actual = build_dataset(as_of, universe_mode=universe)
+    request = OperatorScanRequest(
+        as_of=as_of_date,
+        universe=cast(OperatorUniverseMode, universe),
+        out_path=out_path,
+        only_actions=only_actions,
+        verbose=verbose,
+    )
+    configure_logging(level="INFO" if request.verbose else "WARNING")
+
+    df, actual = build_dataset(request.as_of, universe_mode=request.universe)
     df = label(df)
-    written = write_csv(df, actual, out_path=out_path, only_actions=only_actions)
+    written = write_csv(
+        df, actual, out_path=request.out_path, only_actions=request.only_actions
+    )
 
     actions = df["Operator_Action"].value_counts(dropna=True)
     n_hmw = int(df["High_Momentum_Watch"].sum())

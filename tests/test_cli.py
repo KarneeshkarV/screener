@@ -343,6 +343,19 @@ def test_config_rejects_non_mapping_root(tmp_path):
     assert "Config file must contain a top-level mapping" in res.output
 
 
+def test_config_rejects_empty_log_level(tmp_path):
+    path = tmp_path / "screener.yaml"
+    path.write_text('log_level: "   "\n')
+
+    res = CliRunner().invoke(
+        cli,
+        ["--config", str(path), "backtest-historical"],
+    )
+
+    assert res.exit_code != 0
+    assert "log_level must not be empty" in res.output
+
+
 def test_nested_optimize_config_supplies_defaults(tmp_path, monkeypatch):
     captured = {}
 

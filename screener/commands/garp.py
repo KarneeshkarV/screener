@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import click
+from pydantic import ValidationError
 
 from screener.cache import parse_ttl
+from screener.commands.requests import GarpRequest
 from screener.display import print_csv, print_garp_results
 from screener.garp import load_garp_universe, screen_india_garp, screen_us_garp
 from screener.scanner import MARKETS
@@ -45,33 +47,49 @@ def garp(
     cache_ttl: str,
 ) -> None:
     """Find GARP stocks using market-specific fundamental data."""
-    ttl = parse_ttl(cache_ttl, default=86400)
+    try:
+        req = GarpRequest(
+            market=market,
+            universe_size=universe_size,
+            limit=limit,
+            workers=workers,
+            output_csv=output_csv,
+            refresh=refresh,
+            cache_ttl=cache_ttl,
+        )
+    except ValidationError as exc:
+        msg = exc.errors()[0]["msg"] if exc.errors() else str(exc)
+        raise click.UsageError(msg) from exc
+
+    ttl = parse_ttl(req.cache_ttl, default=86400)
     universe = load_garp_universe(
-        market,
-        int(universe_size),
+        req.market,
+        int(req.universe_size),
         cache_ttl=ttl,
-        refresh=refresh,
+        refresh=req.refresh,
     )
     if universe.empty:
         click.echo("No tickers returned from the base universe scan.")
         return
 
     click.echo(
-        f"Universe: {len(universe)} liquid {market.upper()} tickers. Enriching...",
-        err=output_csv,
+        f"Universe: {len(universe)} liquid {req.market.upper()} tickers. Enriching...",
+        err=req.output_csv,
     )
-    if market == "india":
+    if req.market == "india":
         results = screen_india_garp(
             universe,
-            limit=int(limit),
-            workers=int(workers),
+            limit=int(req.limit),
+            workers=int(req.workers),
             cache_ttl=ttl,
-            refresh=refresh,
+            refresh=req.refresh,
         )
     else:
-        results = screen_us_garp(universe, limit=int(limit), workers=int(workers))
+        results = screen_us_garp(
+            universe, limit=int(req.limit), workers=int(req.workers)
+        )
 
-    if output_csv:
+    if req.output_csv:
         print_csv(results)
         return
-    print_garp_results(results, market)
+    print_garp_results(results, req.market)

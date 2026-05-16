@@ -51,18 +51,18 @@ def cli(
 ) -> None:
     """Stock screener for US and Indian markets."""
     if config_path:
-        config = load_config(config_path)
-        ctx.default_map = config
+        cfg = load_config(config_path)
+        ctx.default_map = cfg.to_click_default_map()
         if (
             ctx.get_parameter_source("log_level") == click.core.ParameterSource.DEFAULT
-            and "log_level" in config
+            and cfg.log_level is not None
         ):
-            log_level = str(config["log_level"])
+            log_level = cfg.log_level
         if (
             ctx.get_parameter_source("log_json") == click.core.ParameterSource.DEFAULT
-            and "log_json" in config
+            and cfg.log_json is not None
         ):
-            log_json = bool(config["log_json"])
+            log_json = cfg.log_json
     configure_logging(level=log_level, json=log_json)
 
 

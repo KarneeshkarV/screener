@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import click
+from pydantic import ValidationError
 
 from screener.cache import parse_ttl
+from screener.commands.requests import PromoterBuysRequest
 from screener.display import print_csv, print_insider_results
 from screener.scanner import MARKETS, _dedupe_listings, get_scanner_data_cached
 
@@ -90,6 +92,24 @@ def promoter_buys(
     cache_ttl: str,
 ) -> None:
     """Find stocks where promoter/insider holding has increased."""
+    try:
+        req = PromoterBuysRequest(
+            market=market,
+            universe_size=universe_size,
+            limit=limit,
+            min_change_pct=min_change_pct,
+            min_yf_net_pct=min_yf_net_pct,
+            require_both=require_both,
+            min_market_cap=min_market_cap,
+            workers=workers,
+            output_csv=output_csv,
+            refresh=refresh,
+            cache_ttl=cache_ttl,
+        )
+    except ValidationError as exc:
+        msg = exc.errors()[0]["msg"] if exc.errors() else str(exc)
+        raise click.UsageError(msg) from exc
+
     from tradingview_screener import Query, col
 
     from screener.insiders import (
@@ -98,41 +118,41 @@ def promoter_buys(
         filter_promoter_increased,
     )
 
-    exchanges = ("NSE", "BSE") if market == "india" else ("NASDAQ", "NYSE", "AMEX")
-    min_close = 10.0 if market == "india" else 1.0
+    exchanges = ("NSE", "BSE") if req.market == "india" else ("NASDAQ", "NYSE", "AMEX")
+    min_close = 10.0 if req.market == "india" else 1.0
     base = [
         col("type") == "stock",
         col("close") >= min_close,
         col("volume") >= 1_000,
         col("exchange").isin(exchanges),
     ]
-    if min_market_cap is not None:
-        base.append(col("market_cap_basic") >= float(min_market_cap))
+    if req.min_market_cap is not None:
+        base.append(col("market_cap_basic") >= float(req.min_market_cap))
 
     query = (
         Query()
-        .set_markets(MARKETS[market])
+        .set_markets(MARKETS[req.market])
         .select("name", "description", "close", "change", "volume", "market_cap_basic")
         .where(*base)
         .order_by("volume", ascending=False)
-        .limit(int(universe_size))
+        .limit(int(req.universe_size))
     )
 
     columns = ["name", "description", "close", "change", "volume", "market_cap_basic"]
-    parsed_ttl = parse_ttl(cache_ttl, default=900)
+    parsed_ttl = parse_ttl(req.cache_ttl, default=900)
     total, universe = get_scanner_data_cached(
         query,
         key_parts=(
             "promoter_universe",
-            market,
+            req.market,
             [repr(f) for f in base],
             columns,
-            int(universe_size),
+            int(req.universe_size),
         ),
         columns=columns,
         operation="promoter universe",
         cache_ttl=parsed_ttl,
-        refresh=refresh,
+        refresh=req.refresh,
     )
     if not universe.empty:
         universe = _dedupe_listings(universe)
@@ -143,21 +163,21 @@ def promoter_buys(
 
     click.echo(
         f"Universe: {len(universe)} liquid tickers (out of {total} in "
-        f"{market}). Enriching..."
+        f"{req.market}). Enriching..."
     )
 
     yf_df = fetch_yfinance_insiders(
         universe,
-        market,
-        max_workers=int(workers),
-        refresh=refresh,
+        req.market,
+        max_workers=int(req.workers),
+        refresh=req.refresh,
     )
 
-    if market == "india":
+    if req.market == "india":
         os_df = fetch_openscreener_promoters(
             universe,
-            max_workers=int(workers),
-            refresh=refresh,
+            max_workers=int(req.workers),
+            refresh=req.refresh,
         )
         if os_df.empty:
             click.echo("No openscreener data returned. Falling back to yfinance only.")
@@ -175,10 +195,10 @@ def promoter_buys(
 
     matches = filter_promoter_increased(
         insiders,
-        market=market,
-        min_promoter_change_pct=float(min_change_pct),
-        min_yf_net_pct=min_yf_net_pct,
-        require_both=bool(require_both),
+        market=req.market,
+        min_promoter_change_pct=float(req.min_change_pct),
+        min_yf_net_pct=req.min_yf_net_pct,
+        require_both=bool(req.require_both),
     )
     if matches.empty:
         click.echo("No tickers passed the holding-increase filter.")
@@ -191,7 +211,7 @@ def promoter_buys(
         on="name",
         how="left",
     )
-    if market == "india":
+    if req.market == "india":
         enriched = enriched.sort_values(
             ["promoter_change", "yf_net_pct_6m"], ascending=False, na_position="last"
         )
@@ -199,10 +219,10 @@ def promoter_buys(
         enriched = enriched.sort_values(
             ["yf_net_pct_6m", "yf_net_shares_6m"], ascending=False, na_position="last"
         )
-    enriched = enriched.head(limit)
+    enriched = enriched.head(req.limit)
 
-    if output_csv:
+    if req.output_csv:
         print_csv(enriched)
         return
 
-    print_insider_results(enriched, market, len(universe), len(matches))
+    print_insider_results(enriched, req.market, len(universe), len(matches))

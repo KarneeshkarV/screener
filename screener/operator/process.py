@@ -23,6 +23,7 @@ from .fetch import (
     latest_trading_day,
     near_month_oi,
 )
+from .models import OperatorUniverseMode
 from .universe import combined_universe
 
 LOG = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ def _five_day_avg_delivery(as_of: date) -> pd.DataFrame:
 
 
 def build_dataset(
-    as_of: date | None = None, *, universe_mode: str = "fo+cash"
+    as_of: date | None = None, *, universe_mode: OperatorUniverseMode = "fo+cash"
 ) -> tuple[pd.DataFrame, date]:
     """Build the screener dataset for ``as_of`` (defaults to today).
 

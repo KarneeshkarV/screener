@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import click
+from pydantic import ValidationError
 
 from screener.cache import parse_ttl
 from screener import history
+from screener.commands.requests import ScreenRequest
 from screener.criteria import (
     CRITERIA,
     combine,
@@ -62,43 +64,58 @@ def screen(
     cache_ttl: str,
 ) -> None:
     """Screen stocks based on technical criteria."""
-    pipeline_names = [n for n in criteria_names if is_pipeline(n)]
-    if pipeline_names:
-        if len(criteria_names) > 1:
-            raise click.UsageError(
-                f"Pipeline criterion {pipeline_names[0]!r} cannot be combined "
-                f"with other -c values; got {list(criteria_names)!r}."
-            )
-        runner = criteria_registry.get(pipeline_names[0])
-        runner(
+    try:
+        req = ScreenRequest(
             market=market,
+            criteria_names=criteria_names,
             limit=limit,
+            order_by=order_by,
             output_csv=output_csv,
+            detail=detail,
             refresh=refresh,
             cache_ttl=cache_ttl,
         )
+    except ValidationError as exc:
+        msg = exc.errors()[0]["msg"] if exc.errors() else str(exc)
+        raise click.UsageError(msg) from exc
+
+    pipeline_names = [n for n in req.criteria_names if is_pipeline(n)]
+    if pipeline_names:
+        if len(req.criteria_names) > 1:
+            raise click.UsageError(
+                f"Pipeline criterion {pipeline_names[0]!r} cannot be combined "
+                f"with other -c values; got {list(req.criteria_names)!r}."
+            )
+        runner = criteria_registry.get(pipeline_names[0])
+        runner(
+            market=req.market,
+            limit=req.limit,
+            output_csv=req.output_csv,
+            refresh=req.refresh,
+            cache_ttl=req.cache_ttl,
+        )
         return
 
-    criteria_fns = [CRITERIA[name] for name in criteria_names]
+    criteria_fns = [CRITERIA[name] for name in req.criteria_names]
     filters = combine(*criteria_fns)()
-    label = "+".join(criteria_names)
+    run_label = "+".join(req.criteria_names)
 
     total, df = scan(
-        market=market,
+        market=req.market,
         filters=filters,
-        limit=limit,
-        order_by=order_by,
-        detail=detail,
-        cache_ttl=parse_ttl(cache_ttl, default=900),
-        refresh=refresh,
+        limit=req.limit,
+        order_by=req.order_by,
+        detail=req.detail,
+        cache_ttl=parse_ttl(req.cache_ttl, default=900),
+        refresh=req.refresh,
     )
 
-    if output_csv:
+    if req.output_csv:
         print_csv(df)
         return
 
-    run_id = history.save_run(market, label, total, df)
-    prev = history.previous_run(market, label, before_id=run_id)
+    run_id = history.save_run(req.market, run_label, total, df)
+    prev = history.previous_run(req.market, run_label, before_id=run_id)
     if prev is None:
         added, removed, first_run = [], [], True
     else:
@@ -108,8 +125,8 @@ def screen(
     print_results(
         df,
         total,
-        market,
-        label,
+        req.market,
+        run_label,
         added=added,
         removed=removed,
         first_run=first_run,

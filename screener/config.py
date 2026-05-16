@@ -49,8 +49,12 @@ class CliConfig(BaseModel):
         return self.model_dump(exclude_none=True, mode="python")
 
 
-def load_config(path: str | Path) -> ConfigMap:
-    """Load a YAML or JSON config file as a Click default map."""
+def load_config(path: str | Path) -> CliConfig:
+    """Load and validate a YAML or JSON config file.
+
+    Use :meth:`CliConfig.to_click_default_map` for Click's ``default_map``
+    (includes unknown top-level keys for per-subcommand defaults).
+    """
     config_path = Path(path)
     if not config_path.exists():
         raise click.UsageError(f"Config file not found: {config_path}")
@@ -75,7 +79,7 @@ def load_config(path: str | Path) -> ConfigMap:
         ) from exc
 
     try:
-        return CliConfig.model_validate(loaded).to_click_default_map()
+        return CliConfig.model_validate(loaded)
     except ValidationError as exc:
         message = exc.errors()[0]["msg"] if exc.errors() else str(exc)
         raise click.UsageError(message) from exc
