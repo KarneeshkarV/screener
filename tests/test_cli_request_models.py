@@ -29,12 +29,7 @@ def test_screen_request_rejects_blank_order_by() -> None:
 
 def test_load_config_returns_cli_config_with_nested_defaults(tmp_path: Path) -> None:
     path = tmp_path / "cfg.yaml"
-    path.write_text(
-        "log_level: DEBUG\n"
-        "screen:\n"
-        "  market: india\n"
-        "  limit: 10\n"
-    )
+    path.write_text("log_level: DEBUG\nscreen:\n  market: india\n  limit: 10\n")
     cfg = load_config(path)
     assert isinstance(cfg, CliConfig)
     assert cfg.log_level == "DEBUG"
