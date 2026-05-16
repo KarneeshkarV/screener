@@ -159,12 +159,16 @@ def scan(
     detail: bool = False,
     cache_ttl: float | None = 900,
     refresh: bool = False,
+    confidence_scores: dict[str, float] | None = None,
 ) -> tuple[int, pd.DataFrame]:
     columns = list(DEFAULT_COLUMNS)
     if detail:
         columns.extend(DETAIL_COLUMNS)
 
     if order_by == "setup_score":
+        columns.extend(c for c in SETUP_SCORE_COLUMNS if c not in columns)
+        fetch_limit = max(limit * 10, 500)
+    elif order_by == "ml-confidence":
         columns.extend(c for c in SETUP_SCORE_COLUMNS if c not in columns)
         fetch_limit = max(limit * 10, 500)
     else:
@@ -175,7 +179,7 @@ def scan(
         .set_markets(MARKETS[market])
         .select(*columns)
         .where(*filters)
-        .order_by("volume" if order_by == "setup_score" else order_by, ascending=False)
+        .order_by("volume" if order_by in ("setup_score", "ml-confidence") else order_by, ascending=False)
         .limit(fetch_limit)
     )
 
@@ -202,6 +206,10 @@ def scan(
             if not detail or col not in DETAIL_COLUMNS
         ]
         df = df.drop(columns=hidden_score_columns)
+    elif order_by == "ml-confidence" and not df.empty:
+        if confidence_scores:
+            df["ml_confidence"] = df["name"].map(confidence_scores).fillna(0.0)
+            df = df.sort_values("ml_confidence", ascending=False)
     if not df.empty:
         df = _dedupe_listings(df).head(limit)
 
