@@ -30,6 +30,7 @@ from screener.backtester.metrics import compute_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.pine import PineError, evaluate, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.regime import RegimeDetector, stress_position_multiplier
 
 
 def select_candidates(
@@ -114,6 +115,7 @@ def _run_event_driven_sim(
     exit_ast,
     lookback: int,
     warnings: list[str],
+    size_multiplier: float = 1.0,
 ) -> None:
     """Chronological event-driven simulator with optional reserve rotation."""
     from screener.backtester.core import (
@@ -155,6 +157,7 @@ def _run_event_driven_sim(
             entry_date=state.entry_date,
             entry_price=state.entry_fill,
             commission_bps=cfg.commission_bps,
+            size_multiplier=size_multiplier,
         )
         slot_states[slot_id] = state
         slot_bars[slot_id] = bars
@@ -200,6 +203,7 @@ def _run_event_driven_sim(
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
                     commission_bps=cfg.commission_bps,
+                    size_multiplier=size_multiplier,
                 )
                 slot_states[slot_id] = state
                 del pending_reentry[slot_id]
@@ -272,6 +276,7 @@ def _run_event_driven_sim(
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
                     commission_bps=cfg.commission_bps,
+                    size_multiplier=size_multiplier,
                 )
                 slot_states[slot_id] = state
                 slot_bars[slot_id] = bars

@@ -8,6 +8,8 @@ from screener.backtester.rolling import backtest_rolling
 from screener.criteria import CRITERIA, combine
 from screener.scanner import scan, MARKETS
 from screener.display import print_results, print_csv
+from screener.regime import RegimeDetector
+from screener.regime_cli import detect_regime, regime_history
 from screener.rs_breakout import (
     DEFAULT_BENCHMARKS as RS_BREAKOUT_DEFAULT_BENCHMARKS,
     fetch_price_data as fetch_rs_breakout_price_data,
@@ -28,6 +30,8 @@ def cli():
 cli.add_command(unusual_volume)
 cli.add_command(backtest_historical)
 cli.add_command(backtest_rolling)
+cli.add_command(detect_regime)
+cli.add_command(regime_history)
 
 
 @cli.command()
@@ -63,12 +67,31 @@ def screen(market, criteria_names, limit, order_by, output_csv, detail):
 
     label = "+".join(criteria_names)
 
+    regime = None
+    if detail:
+        try:
+            from screener.backtester.data import YFinancePriceFetcher
+            from datetime import timedelta
+            bench_symbol = RS_BREAKOUT_DEFAULT_BENCHMARKS.get(market, "SPY")
+            fetcher = YFinancePriceFetcher()
+            as_of = date.today()
+            bench_bars = fetcher.fetch(
+                [bench_symbol],
+                as_of - timedelta(days=300),
+                as_of + timedelta(days=1),
+            ).get(bench_symbol, pd.DataFrame())
+            if bench_bars is not None and not bench_bars.empty:
+                regime = RegimeDetector.classify(bench_bars, bench_bars)
+        except Exception:
+            pass
+
     total, df = scan(
         market=market,
         filters=filters,
         limit=limit,
         order_by=order_by,
         detail=detail,
+        regime=regime,
     )
 
     if output_csv:

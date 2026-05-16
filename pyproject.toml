@@ -15,6 +15,7 @@ dependencies = [
     "pyarrow>=15.0",
     "jugaad-data>=0.28",
     "requests>=2.31",
+    "scipy>=1.12",
 ]
 
 [project.scripts]

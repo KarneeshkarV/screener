@@ -4,6 +4,7 @@ import re
 from tradingview_screener import Query
 import pandas as pd
 
+from screener.regime import Regime
 
 MARKETS = {
     "us": "america",
@@ -109,10 +110,13 @@ def scan(
     limit: int = 50,
     order_by: str = "volume",
     detail: bool = False,
+    regime: Regime | None = None,
 ) -> tuple[int, pd.DataFrame]:
     columns = list(DEFAULT_COLUMNS)
     if detail:
         columns.extend(DETAIL_COLUMNS)
+        if regime is not None:
+            columns.extend(["vol_regime", "trend_regime", "stress", "tradeable"])
 
     if order_by == "setup_score":
         columns.extend(c for c in SETUP_SCORE_COLUMNS if c not in columns)
@@ -139,5 +143,11 @@ def scan(
         df = df.drop(columns=hidden_score_columns)
     if not df.empty:
         df = _dedupe_listings(df).head(limit)
+
+    if regime is not None and not df.empty:
+        df["vol_regime"] = regime.vol_regime
+        df["trend_regime"] = regime.trend_regime
+        df["stress"] = regime.stress
+        df["tradeable"] = regime.is_tradeable
 
     return count, df

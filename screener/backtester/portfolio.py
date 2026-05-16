@@ -66,6 +66,7 @@ class Portfolio:
         commission_bps: float,
         *,
         raise_if_exists: bool = True,
+        size_multiplier: float = 1.0,
     ) -> Position:
         """Open a position for ``ticker``. By default raises if the ticker is
         already active (legacy invariant). Pass ``raise_if_exists=False`` to
@@ -74,12 +75,12 @@ class Portfolio:
         """
         if raise_if_exists and self._active_keys(ticker):
             raise ValueError(f"Position already open for {ticker}")
-        # spend up to min(slot_capital, current cash); commission reduces shares
+        # spend up to min(slot_capital, current cash) * size_multiplier; commission reduces shares
         # acquired. Cap by current cash so reserve promotion after losing trades
         # cannot overdraw the portfolio.
         c = commission_bps / 10_000.0
         gross_per_share = entry_price * (1.0 + c)
-        budget = min(self.slot_capital, max(self._cash, 0.0))
+        budget = min(self.slot_capital * size_multiplier, max(self._cash, 0.0))
         shares = budget / gross_per_share if gross_per_share > 0 else 0.0
         notional = shares * entry_price
         commission = notional * c

@@ -20,6 +20,7 @@ from rich.console import Console
 from rich.table import Table
 
 from screener.backtester.data import PriceFetcher, tv_to_yf
+from screener.regime import RegimeDetector
 from screener.unusual_volume.delivery import load_delivery_panel
 
 
@@ -190,11 +191,19 @@ def evaluate_symbol(
     benchmark_close: pd.Series,
     as_of: date,
     delivery: tuple[Optional[float], Optional[float]] | None = None,
+    *,
+    regime_filter: bool = False,
+    benchmark_bars: Optional[pd.DataFrame] = None,
 ) -> Optional[tuple[RsBreakoutRow, bool, bool]]:
     """Return row plus price/delivery pass booleans when base filters pass."""
     df = normalize_bars(bars, as_of)
     if len(df) < max(RS_WINDOW + 1, VOLUME_WINDOW + 1, SUPERTREND_PERIOD + 1):
         return None
+
+    if regime_filter and benchmark_bars is not None and not benchmark_bars.empty:
+        regime = RegimeDetector.classify(df, benchmark_bars)
+        if not regime.is_tradeable:
+            return None
 
     rs = relative_strength_55(df["close"], benchmark_close)
     st = supertrend(df)
@@ -250,6 +259,7 @@ def scan_rs_breakouts(
     delivery_panel: Optional[pd.DataFrame] = None,
     benchmark_symbol: str = DEFAULT_BENCHMARK,
     require_delivery: bool = True,
+    regime_filter: bool = False,
 ) -> RsBreakoutResult:
     benchmark = normalize_bars(benchmark_bars, as_of)
     if benchmark.empty:
@@ -265,6 +275,8 @@ def scan_rs_breakouts(
             benchmark["close"],
             as_of,
             delivery=lookup.get(bare),
+            regime_filter=regime_filter,
+            benchmark_bars=benchmark,
         )
         if evaluated is None:
             continue
