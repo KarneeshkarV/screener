@@ -11,3 +11,6 @@ wheels/
 *.log
 _*.txt
 matrix_*.txt
+
+# Training data
+scripts/training_data/
