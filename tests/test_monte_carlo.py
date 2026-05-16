@@ -1,7 +1,5 @@
-"""Monte Carlo simulation tests."""
+"""Tests for Monte Carlo simulation."""
 from __future__ import annotations
-
-from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -9,122 +7,102 @@ import pytest
 
 from screener.backtester.models import Trade
 from screener.backtester.monte_carlo import (
-    MonteCarloResult,
     MonteCarloSimulator,
-    print_monte_carlo,
-    run_monte_carlo_from_result,
+    MonteCarloResult,
+    _trade_returns,
+    _rebuild_equity_from_returns,
 )
 
 
-def _make_trade(pnl: float, return_pct: float, entry_date: date, exit_date: date) -> Trade:
-    return Trade(
-        ticker="AAA",
-        rank=1,
-        signal_date=entry_date,
-        entry_date=entry_date,
-        entry_price=100.0,
-        exit_date=exit_date,
-        exit_price=100.0 * (1.0 + return_pct),
-        exit_reason="time",
-        shares=100.0,
-        entry_cost=10_000.0,
-        exit_value=10_000.0 + pnl,
-        pnl=pnl,
-        return_pct=return_pct,
-    )
+def _make_trades(n: int = 20, seed: int = 42) -> list[Trade]:
+    rng = np.random.default_rng(seed)
+    trades = []
+    for i in range(n):
+        ret = rng.normal(0.02, 0.05)
+        entry = pd.Timestamp("2024-01-01") + pd.Timedelta(days=i * 5)
+        exit_ = entry + pd.Timedelta(days=3)
+        trades.append(
+            Trade(
+                ticker="AAPL",
+                rank=1,
+                signal_date=entry.date(),
+                entry_date=entry.date(),
+                entry_price=100.0,
+                exit_date=exit_.date(),
+                exit_price=100.0 * (1 + ret),
+                exit_reason="hold_limit",
+                shares=10.0,
+                entry_cost=1000.0,
+                exit_value=1000.0 * (1 + ret),
+                pnl=1000.0 * ret,
+                return_pct=ret,
+                dividend_income=0.0,
+            )
+        )
+    return trades
 
 
-def test_trade_shuffle_preserves_trade_count():
-    trades = [
-        _make_trade(100.0, 0.01, date(2024, 1, 1), date(2024, 1, 5)),
-        _make_trade(-50.0, -0.005, date(2024, 1, 6), date(2024, 1, 10)),
-        _make_trade(200.0, 0.02, date(2024, 1, 11), date(2024, 1, 15)),
-    ]
+def test_trade_returns() -> None:
+    trades = _make_trades(10)
+    returns = _trade_returns(trades)
+    assert len(returns) == 10
+    assert all(isinstance(r, (float, np.floating)) for r in returns)
+
+
+def test_rebuild_equity_from_returns() -> None:
+    returns = np.array([0.01, -0.005, 0.02])
+    calendar = pd.bdate_range("2024-01-01", periods=5)
+    equity = _rebuild_equity_from_returns(returns, 10000.0, calendar)
+    assert len(equity) == 4  # min(len(returns)+1, len(calendar))
+    assert equity.iloc[0] == pytest.approx(10000.0)
+    assert equity.iloc[1] == pytest.approx(10100.0)
+    assert equity.iloc[2] == pytest.approx(10100.0 * 0.995)
+
+
+def test_simulator_trade_shuffle() -> None:
+    trades = _make_trades(30)
     sim = MonteCarloSimulator(trades, initial_capital=100_000.0)
     result = sim.trade_shuffle(n_runs=100, seed=42)
+    assert isinstance(result, MonteCarloResult)
+    assert result.method == "trade_shuffle"
     assert result.n_runs == 100
-    assert len(result.max_drawdowns) == 100
-    assert len(result.final_equities) == 100
+    assert 0 <= result.probabilities_of_profit <= 1
+    assert result.median_max_dd <= 0
+    assert result.median_final_equity > 0
 
 
-def test_returns_bootstrap_with_empty_trades():
+def test_simulator_returns_bootstrap() -> None:
+    trades = _make_trades(30)
+    sim = MonteCarloSimulator(trades, initial_capital=100_000.0)
+    result = sim.returns_bootstrap(n_runs=100, seed=42)
+    assert isinstance(result, MonteCarloResult)
+    assert result.method == "returns_bootstrap"
+    assert result.n_runs == 100
+
+
+def test_simulator_block_bootstrap() -> None:
+    trades = _make_trades(30)
+    sim = MonteCarloSimulator(trades, initial_capital=100_000.0)
+    result = sim.block_bootstrap(block_size=5, n_runs=100, seed=42)
+    assert isinstance(result, MonteCarloResult)
+    assert result.method == "block_bootstrap"
+    assert result.n_runs == 100
+
+
+def test_simulator_empty_trades() -> None:
     sim = MonteCarloSimulator([], initial_capital=100_000.0)
-    result = sim.returns_bootstrap(n_runs=50, seed=1)
+    result = sim.returns_bootstrap(n_runs=10)
     assert result.probabilities_of_profit == 0.0
     assert result.median_final_equity == pytest.approx(100_000.0)
 
 
-def test_block_bootstrap_block_size_respected():
-    trades = [
-        _make_trade(100.0, 0.01, date(2024, 1, min(i, 28)), date(2024, 1, min(i + 2, 31)))
-        for i in range(1, 41, 3)
-    ]
+def test_summarize_percentiles() -> None:
+    trades = _make_trades(50)
     sim = MonteCarloSimulator(trades, initial_capital=100_000.0)
-    result = sim.block_bootstrap(block_size=5, n_runs=100, seed=7)
-    assert result.n_runs == 100
-    assert np.isfinite(result.median_max_dd)
-    assert np.isfinite(result.median_final_equity)
-
-
-def test_monte_carlo_prob_profit_between_zero_and_one():
-    trades = [
-        _make_trade(100.0, 0.01, date(2024, 1, 1), date(2024, 1, 5)),
-        _make_trade(-50.0, -0.005, date(2024, 1, 6), date(2024, 1, 10)),
-    ]
-    sim = MonteCarloSimulator(trades, initial_capital=100_000.0)
-    result = sim.returns_bootstrap(n_runs=200, seed=3)
-    assert 0.0 <= result.probabilities_of_profit <= 1.0
-
-
-def test_monte_carlo_var_less_than_median():
-    trades = [
-        _make_trade(np.random.normal(0, 100), np.random.normal(0, 0.01), date(2024, 1, min(i, 28)), date(2024, 1, min(i + 2, 31)))
-        for i in range(1, 50, 3)
-    ]
-    sim = MonteCarloSimulator(trades, initial_capital=100_000.0)
-    result = sim.trade_shuffle(n_runs=500, seed=5)
-    # VaR-95 should be <= median final equity
-    assert result.var_95 <= result.median_final_equity
-
-
-def test_print_monte_carlo_smoke():
-    trades = [
-        _make_trade(100.0, 0.01, date(2024, 1, 1), date(2024, 1, 5)),
-        _make_trade(-50.0, -0.005, date(2024, 1, 6), date(2024, 1, 10)),
-    ]
-    sim = MonteCarloSimulator(trades, initial_capital=100_000.0)
-    result = sim.returns_bootstrap(n_runs=50, seed=9)
-    print_monte_carlo(result)
-
-
-def test_run_monte_carlo_from_result_wrapper():
-    from screener.backtester.models import BacktestConfig, BacktestResult
-
-    trades = [
-        _make_trade(100.0, 0.01, date(2024, 1, 1), date(2024, 1, 5)),
-    ]
-    cfg = BacktestConfig(
-        market="us",
-        as_of=date(2024, 1, 1),
-        hold=5,
-        top=1,
-        entry_expr="close > 0",
-        exit_expr=None,
-        stop_loss=None,
-        take_profit=None,
-        trailing_stop=None,
-        slippage_bps=0.0,
-        commission_bps=0.0,
-        initial_capital=100_000.0,
-        benchmark="SPY",
-    )
-    result = BacktestResult(
-        config=cfg,
-        trades=trades,
-        equity_curve=pd.Series([100_000.0, 101_000.0], index=pd.bdate_range("2024-01-01", periods=2)),
-        benchmark_curve=pd.Series([100_000.0, 100_500.0], index=pd.bdate_range("2024-01-01", periods=2)),
-        metrics={},
-    )
-    mc = run_monte_carlo_from_result(result, method="shuffle", n_runs=50, seed=11)
-    assert mc.method == "trade_shuffle"
-    assert mc.n_runs == 50
+    result = sim.trade_shuffle(n_runs=200, seed=42)
+    assert "max_drawdown" in result.percentile_breakdown
+    assert "final_equity" in result.percentile_breakdown
+    assert "sharpe" in result.percentile_breakdown
+    # Check that percentiles are ordered
+    dd = result.percentile_breakdown["max_drawdown"]
+    assert dd["p5"] <= dd["p50"] <= dd["p95"]
