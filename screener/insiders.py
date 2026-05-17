@@ -19,6 +19,9 @@ For US the yfinance feed is the only signal.
 
 from __future__ import annotations
 
+import json
+import os
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
@@ -33,6 +36,11 @@ from screener.resilience import call_with_resilience
 _INDIA_SUFFIXES = (".NS", ".BO")
 _SCREENER_URL = "https://www.screener.in/company/{symbol}/"
 _SCREENER_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; screener-cli/1.0)"}
+
+_FMP_INSIDER_URL = "https://financialmodelingprep.com/api/v4/insider-trading"
+# FMP only exposes Form 3/4/5 (SEC) data, which covers US listings. Indian
+# tickers stay on the screener.in promoter feed.
+_FMP_WINDOW_DAYS = 182
 
 
 def _tv_to_yf(ticker: str, market: str) -> str:
@@ -122,6 +130,146 @@ def fetch_yfinance_insiders(
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [
             pool.submit(_fetch_yf_one, n, s, cache_ttl=cache_ttl, refresh=refresh)
+            for n, s in jobs
+        ]
+        for fut in as_completed(futures):
+            r = fut.result()
+            if r is not None:
+                rows.append(r)
+    return pd.DataFrame(rows)
+
+
+# ── FMP insider trading (SEC Form 4) ───────────────────────────────────────
+
+
+def _fmp_api_key() -> Optional[str]:
+    """Resolve FMP_API_KEY, loading the project .env once like the backtester."""
+    key = os.environ.get("FMP_API_KEY")
+    if key:
+        return key
+    try:
+        from screener.backtester.data import _load_env_file
+    except Exception:
+        return None
+    _load_env_file()
+    return os.environ.get("FMP_API_KEY")
+
+
+def _aggregate_fmp_transactions(
+    transactions: list[dict], window_days: int = _FMP_WINDOW_DAYS
+) -> Optional[dict]:
+    """Aggregate FMP insider rows into 6-month net buy/sell share counts.
+
+    FMP tags each row with ``acquistionOrDisposition`` (their spelling): ``A``
+    for acquired (buy) and ``D`` for disposed (sell). Net shares > 0 ⇒ insiders
+    bought more than they sold over the window.
+    """
+    if not transactions:
+        return None
+    cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=window_days)
+    bought = sold = 0.0
+    buy_trans = sell_trans = 0
+    for txn in transactions:
+        date_raw = txn.get("transactionDate") or txn.get("filingDate")
+        ts = pd.to_datetime(date_raw, errors="coerce")
+        if ts is None or pd.isna(ts) or ts < cutoff:
+            continue
+        try:
+            shares = float(txn.get("securitiesTransacted") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if txn.get("acquistionOrDisposition") == "A":
+            bought += shares
+            buy_trans += 1
+        elif txn.get("acquistionOrDisposition") == "D":
+            sold += shares
+            sell_trans += 1
+    if buy_trans == 0 and sell_trans == 0:
+        return None
+    return {
+        "fmp_net_shares_6m": bought - sold,
+        "fmp_buy_shares_6m": bought,
+        "fmp_sell_shares_6m": sold,
+        "fmp_buy_trans_6m": buy_trans,
+        "fmp_sell_trans_6m": sell_trans,
+    }
+
+
+def _fetch_fmp_insider_one(
+    name: str,
+    symbol: str,
+    *,
+    api_key: str,
+    cache_ttl: float | None,
+    refresh: bool,
+) -> Optional[dict]:
+    def _fetch() -> Optional[dict]:
+        def _request() -> Optional[list]:
+            query = urllib.parse.urlencode(
+                {"symbol": symbol, "page": 0, "apikey": api_key}
+            )
+            req = urllib.request.Request(
+                f"{_FMP_INSIDER_URL}?{query}", headers=_SCREENER_HEADERS
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8", "ignore"))
+            return payload if isinstance(payload, list) else None
+
+        transactions = call_with_resilience(
+            "fmp",
+            f"insider trading {symbol}",
+            _request,
+            fallback=None,
+        )
+        if not transactions:
+            return None
+        agg = _aggregate_fmp_transactions(transactions)
+        if agg is None:
+            return None
+        return {"name": name, "fmp_symbol": symbol, **agg}
+
+    return cached_json_call(
+        "fmp_insiders",
+        ("insider_trading", name, symbol),
+        ttl_seconds=cache_ttl,
+        refresh=refresh,
+        fetch=_fetch,
+    )
+
+
+def fetch_fmp_insiders(
+    universe: pd.DataFrame,
+    market: str,
+    max_workers: int = 12,
+    cache_ttl: float | None = 86400,
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """Fetch 6-month net insider buying from FMP for each US ticker.
+
+    Returns an empty frame when no ``FMP_API_KEY`` is configured, so callers
+    can fall back to the yfinance feed transparently.
+    """
+    if universe.empty:
+        return pd.DataFrame()
+    api_key = _fmp_api_key()
+    if not api_key:
+        return pd.DataFrame()
+
+    jobs = [
+        (str(row["name"]), _tv_to_yf(str(row["ticker"]), market))
+        for _, row in universe.iterrows()
+    ]
+    rows: list[dict] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [
+            pool.submit(
+                _fetch_fmp_insider_one,
+                n,
+                s,
+                api_key=api_key,
+                cache_ttl=cache_ttl,
+                refresh=refresh,
+            )
             for n, s in jobs
         ]
         for fut in as_completed(futures):
@@ -270,7 +418,16 @@ def filter_promoter_increased(
             yf_net = pd.to_numeric(insiders.get("yf_net_shares_6m"), errors="coerce")
             mask = mask & (yf_net > 0)
     else:
-        net = pd.to_numeric(insiders.get("yf_net_shares_6m"), errors="coerce")
+        # US: FMP (SEC Form 4) is the primary signal when available; fall back
+        # to the yfinance feed per-row when FMP has no data for a ticker.
+        yf_net = pd.to_numeric(insiders.get("yf_net_shares_6m"), errors="coerce")
+        if "fmp_net_shares_6m" in insiders.columns:
+            fmp_net = pd.to_numeric(
+                insiders.get("fmp_net_shares_6m"), errors="coerce"
+            )
+            net = fmp_net.where(fmp_net.notna(), yf_net)
+        else:
+            net = yf_net
         mask = net > 0
         if min_yf_net_pct is not None:
             pct = pd.to_numeric(insiders.get("yf_net_pct_6m"), errors="coerce")

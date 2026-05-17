@@ -16,7 +16,8 @@ from screener.scanner import MARKETS, _dedupe_listings, get_scanner_data_cached
     type=click.Choice(list(MARKETS.keys())),
     default="india",
     help="Market to screen. india => promoter % from screener.in (+ yfinance "
-    "cross-check). us => yfinance Form 4 insider buys.",
+    "cross-check). us => FMP Form 4 insider buys when FMP_API_KEY is set "
+    "(+ yfinance cross-check), else yfinance only.",
 )
 @click.option(
     "--universe-size",
@@ -93,6 +94,7 @@ def promoter_buys(
     from tradingview_screener import Query, col
 
     from screener.insiders import (
+        fetch_fmp_insiders,
         fetch_openscreener_promoters,
         fetch_yfinance_insiders,
         filter_promoter_increased,
@@ -167,7 +169,18 @@ def promoter_buys(
                 os_df.merge(yf_df, on="name", how="left") if not yf_df.empty else os_df
             )
     else:
-        insiders = yf_df
+        fmp_df = fetch_fmp_insiders(
+            universe,
+            market,
+            max_workers=int(workers),
+            refresh=refresh,
+        )
+        if fmp_df.empty:
+            insiders = yf_df
+        elif yf_df.empty:
+            insiders = fmp_df
+        else:
+            insiders = fmp_df.merge(yf_df, on="name", how="outer")
 
     if insiders.empty:
         click.echo("No insider data returned for this universe.")
@@ -196,8 +209,13 @@ def promoter_buys(
             ["promoter_change", "yf_net_pct_6m"], ascending=False, na_position="last"
         )
     else:
+        sort_cols = [
+            c
+            for c in ("fmp_net_shares_6m", "yf_net_pct_6m", "yf_net_shares_6m")
+            if c in enriched.columns
+        ]
         enriched = enriched.sort_values(
-            ["yf_net_pct_6m", "yf_net_shares_6m"], ascending=False, na_position="last"
+            sort_cols, ascending=False, na_position="last"
         )
     enriched = enriched.head(limit)
 

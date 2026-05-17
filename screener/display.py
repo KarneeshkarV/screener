@@ -241,6 +241,9 @@ _INSIDER_US_COLUMNS = [
     "name",
     "description",
     "close",
+    "fmp_net_shares_6m",
+    "fmp_buy_shares_6m",
+    "fmp_sell_shares_6m",
     "yf_net_shares_6m",
     "yf_net_pct_6m",
     "yf_total_held",
@@ -255,6 +258,9 @@ _INSIDER_LABELS = {
     "latest_quarter": "Quarter",
     "fii_pct_latest": "FII%",
     "dii_pct_latest": "DII%",
+    "fmp_net_shares_6m": "FMP Net 6m",
+    "fmp_buy_shares_6m": "FMP Buy",
+    "fmp_sell_shares_6m": "FMP Sell",
     "yf_net_shares_6m": "YF Net Shares 6m",
     "yf_net_pct_6m": "YF Net%",
     "yf_total_held": "Insider Held",
@@ -277,7 +283,7 @@ def _format_insider(col: str, val) -> str:
         return f"{float(val):+.2f}"
     if col == "yf_net_pct_6m":
         return f"{float(val) * 100:+.3f}%"
-    if col == "yf_net_shares_6m":
+    if col in {"yf_net_shares_6m", "fmp_net_shares_6m"}:
         v = float(val)
         sign = "+" if v >= 0 else ""
         if abs(v) >= 1_000_000:
@@ -285,7 +291,7 @@ def _format_insider(col: str, val) -> str:
         if abs(v) >= 1_000:
             return f"{sign}{v / 1_000:.1f}K"
         return f"{sign}{v:,.0f}"
-    if col == "yf_total_held":
+    if col in {"yf_total_held", "fmp_buy_shares_6m", "fmp_sell_shares_6m"}:
         v = float(val)
         if v >= 1_000_000:
             return f"{v / 1_000_000:.1f}M"
