@@ -94,6 +94,36 @@ def panel_path(name: str) -> Path:
     return PANEL_ROOT / f"{name}.parquet"
 
 
+def _normalize_dedupe_key_dates(
+    existing: pd.DataFrame | None, rows: pd.DataFrame, keys: list[str]
+) -> tuple[pd.DataFrame | None, pd.DataFrame]:
+    out_existing = existing.copy() if existing is not None else None
+    out_rows = rows.copy()
+    for key in keys:
+        key_l = key.lower()
+        if not any(part in key_l for part in ("date", "as_of", "day")):
+            continue
+        series = out_rows.get(key)
+        prior = out_existing.get(key) if out_existing is not None else None
+        sample = pd.concat(
+            [s.dropna().head(5) for s in (prior, series) if s is not None],
+            ignore_index=True,
+        )
+        if sample.empty:
+            continue
+        parsed = pd.to_datetime(sample, errors="coerce")
+        if parsed.notna().all():
+            if out_existing is not None and key in out_existing.columns:
+                out_existing[key] = pd.to_datetime(
+                    out_existing[key], errors="coerce"
+                ).dt.normalize()
+            if key in out_rows.columns:
+                out_rows[key] = pd.to_datetime(
+                    out_rows[key], errors="coerce"
+                ).dt.normalize()
+    return out_existing, out_rows
+
+
 @contextlib.contextmanager
 def _file_lock(path: Path) -> Iterator[None]:
     """POSIX advisory lock on ``<path>.lock`` (dependency-free, Linux-only).
@@ -133,6 +163,7 @@ def append_panel_snapshot(
     path = panel_path(name)
     with _file_lock(path):
         existing = read_frame(path)
+        existing, rows = _normalize_dedupe_key_dates(existing, rows, dedupe_keys)
         merged = (
             pd.concat([existing, rows], ignore_index=True)
             if existing is not None and not existing.empty

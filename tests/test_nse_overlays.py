@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from datetime import date
+import multiprocessing as mp
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from screener import cache, pledge
+from screener import rs_breakout
 from screener.unusual_volume import fii_dii, option_chain
 from screener.unusual_volume.delivery import compute_delivery_metrics, overlay_events
 from screener.unusual_volume.detector import Event
@@ -142,6 +145,15 @@ def _fii_panel(n: int) -> pd.DataFrame:
     )
 
 
+def _append_panel_worker(root: str, name: str, rows: list[dict]) -> None:
+    from screener import cache as worker_cache
+
+    worker_cache.PANEL_ROOT = Path(root)
+    worker_cache.append_panel_snapshot(
+        name, pd.DataFrame(rows), dedupe_keys=["date", "symbol"]
+    )
+
+
 def test_compute_fii_dii_metrics_5d_and_trend():
     panel = _fii_panel(25)
     as_of = panel["date"].max()
@@ -157,6 +169,61 @@ def test_compute_fii_dii_metrics_cold_start():
     m = fii_dii.compute_fii_dii_metrics(panel, panel["date"].max())
     assert m["fii_5d_net"] == pytest.approx(panel["fii_net"].sum())
     assert m["fii_trend"] is None  # < 5 rows
+
+
+def test_join_microstructure_panels_normalizes_and_shifts(monkeypatch, tmp_path):
+    monkeypatch.setattr(cache, "PANEL_ROOT", tmp_path)
+    prepared = {
+        "RELIANCE": pd.DataFrame(
+            {"close": [10.0, 11.0, 12.0]},
+            index=pd.to_datetime(
+                ["2026-05-14 09:15", "2026-05-15 09:15", "2026-05-18 09:15"]
+            ),
+        )
+    }
+    cache.append_panel_snapshot(
+        "option_chain",
+        pd.DataFrame(
+            [
+                {
+                    "SYMBOL": "RELIANCE",
+                    "as_of": date(2026, 5, 14),
+                    "call_put_oi_ratio": 1.2,
+                    "pcr": 0.8,
+                },
+                {
+                    "SYMBOL": "RELIANCE",
+                    "as_of": date(2026, 5, 15),
+                    "call_put_oi_ratio": 1.5,
+                    "pcr": 0.6,
+                },
+            ]
+        ),
+        dedupe_keys=["SYMBOL", "as_of"],
+    )
+    cache.append_panel_snapshot(
+        "fii_dii",
+        pd.DataFrame(
+            [
+                {
+                    "date": (pd.Timestamp("2026-05-10") + pd.Timedelta(days=i)).date(),
+                    "fii_net": float(i + 1),
+                    "dii_net": float(10 + i),
+                }
+                for i in range(6)
+            ]
+        ),
+        dedupe_keys=["date"],
+    )
+
+    rs_breakout._join_microstructure_panels(prepared)
+    frame = prepared["RELIANCE"]
+
+    assert pd.isna(frame.iloc[0]["pcr"])
+    assert frame.iloc[1]["pcr"] == pytest.approx(0.8)
+    assert frame.iloc[1]["fii_5d_net"] == pytest.approx(15.0)
+    assert frame.iloc[2]["pcr"] == pytest.approx(0.6)
+    assert frame.iloc[2]["fii_5d_net"] == pytest.approx(20.0)
 
 
 def test_overlay_fii_dii_broadcasts_identical(monkeypatch, tmp_path):
@@ -190,6 +257,58 @@ def test_append_panel_snapshot_dedupes_keep_last(monkeypatch, tmp_path):
     r3 = pd.DataFrame([{"date": date(2026, 5, 16), "fii_net": 5.0}])
     merged = cache.append_panel_snapshot("t", r3, dedupe_keys=["date"])
     assert len(merged) == 2
+
+
+def test_append_panel_snapshot_dedupes_date_after_parquet_roundtrip(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(cache, "PANEL_ROOT", tmp_path)
+    r1 = pd.DataFrame([{"date": date(2026, 5, 15), "fii_net": 1.0}])
+    cache.append_panel_snapshot("typed_dates", r1, dedupe_keys=["date"])
+    assert str(
+        cache.read_frame(cache.panel_path("typed_dates"))["date"].dtype
+    ).startswith("datetime64")
+    r2 = pd.DataFrame([{"date": date(2026, 5, 15), "fii_net": 9.0}])
+    merged = cache.append_panel_snapshot("typed_dates", r2, dedupe_keys=["date"])
+
+    assert len(merged) == 1
+    assert merged.iloc[0]["fii_net"] == 9.0
+
+
+def test_append_panel_snapshot_concurrent_processes_keep_all_rows(tmp_path):
+    name = "concurrent_panel"
+    workers = []
+    for idx in range(4):
+        rows = [
+            {
+                "date": date(2026, 5, 15).isoformat(),
+                "symbol": f"S{idx}",
+                "value": float(idx),
+            },
+            {
+                "date": date(2026, 5, 15).isoformat(),
+                "symbol": f"S{idx}",
+                "value": float(idx) + 0.5,
+            },
+            {
+                "date": date(2026, 5, 16).isoformat(),
+                "symbol": f"S{idx}",
+                "value": float(idx) + 1.0,
+            },
+        ]
+        workers.append(
+            mp.Process(target=_append_panel_worker, args=(str(tmp_path), name, rows))
+        )
+
+    for proc in workers:
+        proc.start()
+    for proc in workers:
+        proc.join(timeout=10)
+        assert proc.exitcode == 0
+
+    frame = pd.read_parquet(tmp_path / f"{name}.parquet")
+    assert len(frame) == 8
+    assert not frame.duplicated(subset=["date", "symbol"]).any()
 
 
 # ── pledge dual-source ─────────────────────────────────────────────────────

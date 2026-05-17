@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
+import urllib.parse
+
 import pandas as pd
 
+from screener import cache
+from screener import insiders as insiders_module
 from screener.insiders import (
     _aggregate_fmp_transactions,
+    _fetch_fmp_insider_one,
     filter_promoter_increased,
 )
 
@@ -95,6 +101,98 @@ def test_aggregate_excludes_non_sale_dispositions_and_handles_missing_type():
     }
 
 
+def test_aggregate_skips_non_numeric_shares_and_uses_filing_date():
+    filing = (pd.Timestamp.now().normalize() - pd.Timedelta(days=4)).date()
+    agg = _aggregate_fmp_transactions(
+        [
+            _txn(5, "A", 100, transaction_type="P-Purchase")
+            | {"securitiesTransacted": "not-a-number"},
+            {
+                "filingDate": filing.isoformat(),
+                "acquistionOrDisposition": "A",
+                "transactionType": "P-Purchase",
+                "securitiesTransacted": "250",
+            },
+        ]
+    )
+
+    assert agg == {
+        "fmp_net_shares_6m": 250.0,
+        "fmp_buy_shares_6m": 250.0,
+        "fmp_sell_shares_6m": 0.0,
+        "fmp_buy_trans_6m": 1,
+        "fmp_sell_trans_6m": 0,
+    }
+
+
+class _Resp:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode()
+
+
+def _fmp_row(days_ago: int, shares: float = 10.0) -> dict:
+    d = (pd.Timestamp.now().normalize() - pd.Timedelta(days=days_ago)).date()
+    return {
+        "transactionDate": d.isoformat(),
+        "acquistionOrDisposition": "A",
+        "transactionType": "P-Purchase",
+        "securitiesTransacted": shares,
+    }
+
+
+def test_fetch_fmp_warns_when_page_cap_may_truncate(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+
+    def fake_urlopen(req, timeout=20):
+        page = int(
+            urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)["page"][0]
+        )
+        return _Resp([_fmp_row(page), _fmp_row(page + 1)])
+
+    monkeypatch.setattr(insiders_module.urllib.request, "urlopen", fake_urlopen)
+
+    with caplog.at_level("WARNING", logger="screener.insiders"):
+        out = _fetch_fmp_insider_one(
+            "AAA", "AAA", api_key="key", cache_ttl=None, refresh=True
+        )
+
+    assert out is not None
+    assert "may be truncated at 10 pages" in caplog.text
+
+
+def test_fetch_fmp_stops_after_out_of_window_page(monkeypatch, tmp_path):
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    calls: list[int] = []
+
+    def fake_urlopen(req, timeout=20):
+        page = int(
+            urllib.parse.parse_qs(urllib.parse.urlparse(req.full_url).query)["page"][0]
+        )
+        calls.append(page)
+        if page == 0:
+            return _Resp([_fmp_row(1), _fmp_row(2)])
+        if page == 1:
+            return _Resp([_fmp_row(3), _fmp_row(400)])
+        return _Resp([_fmp_row(4)])
+
+    monkeypatch.setattr(insiders_module.urllib.request, "urlopen", fake_urlopen)
+    out = _fetch_fmp_insider_one(
+        "AAA", "AAA", api_key="key", cache_ttl=None, refresh=True
+    )
+
+    assert out is not None
+    assert calls == [0, 1]
+
+
 def test_us_filter_prefers_fmp_and_falls_back_to_yfinance():
     df = pd.DataFrame(
         [
@@ -104,9 +202,11 @@ def test_us_filter_prefers_fmp_and_falls_back_to_yfinance():
             {"name": "BBB", "fmp_net_shares_6m": -100.0, "yf_net_shares_6m": 50.0},
             # FMP missing -> falls back to yfinance (positive -> kept)
             {"name": "CCC", "fmp_net_shares_6m": None, "yf_net_shares_6m": 20.0},
+            # FMP zero is no signal -> falls back to yfinance (positive -> kept)
+            {"name": "DDD", "fmp_net_shares_6m": 0.0, "yf_net_shares_6m": 30.0},
         ]
     )
 
     out = filter_promoter_increased(df, market="us")
 
-    assert sorted(out["name"]) == ["AAA", "CCC"]
+    assert sorted(out["name"]) == ["AAA", "CCC", "DDD"]

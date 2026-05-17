@@ -25,7 +25,7 @@ _NSE_PLEDGE_URL = "https://www.nseindia.com/api/corporate-pledgedata?symbol={sym
 # screener.in renders e.g. "Pledged percentage</span> ... 12.34%" in the
 # shareholding section. Match the number that follows the label.
 _OSC_PLEDGE_RE = re.compile(
-    r"pledged?\s*percentage[^0-9%]{0,60}?([0-9]+(?:\.[0-9]+)?)\s*%",
+    r"pledged?\s*percentage[^0-9%]{0,60}?([0-9][0-9,]*(?:\.[0-9]+)?)\s*%",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -37,6 +37,13 @@ def _as_float(value: object) -> Optional[float]:
         return float(str(value).replace(",", "").replace("%", "").strip())
     except (TypeError, ValueError):
         return None
+
+
+def _as_pct(value: object) -> Optional[float]:
+    num = _as_float(value)
+    if num is None or num < 0.0 or num > 100.0:
+        return None
+    return num
 
 
 def fetch_nse_pledge(symbol: str, *, refresh: bool = False) -> Optional[float]:
@@ -62,13 +69,14 @@ def fetch_nse_pledge(symbol: str, *, refresh: bool = False) -> Optional[float]:
         "pledgePercentage",
         "perShareEncumbered",
     ):
-        val = _as_float(latest.get(key))
+        val = _as_pct(latest.get(key))
         if val is not None:
             return val
-    # Fallback: any key mentioning "pledge" with a numeric value.
+    # Fallback: any percent-like key mentioning "pledge" with a numeric value.
     for key, val in latest.items():
-        if "pledge" in str(key).lower():
-            num = _as_float(val)
+        key_l = str(key).lower()
+        if "pledge" in key_l and ("per" in key_l or "%" in key_l or "percent" in key_l):
+            num = _as_pct(val)
             if num is not None:
                 return num
     return None
@@ -82,7 +90,7 @@ def fetch_openscreener_pledge(name: str, *, refresh: bool = False) -> Optional[f
         if not html:
             return None
         match = _OSC_PLEDGE_RE.search(html)
-        return _as_float(match.group(1)) if match else None
+        return _as_pct(match.group(1)) if match else None
 
     return cached_json_call(
         "openscreener_pledge",

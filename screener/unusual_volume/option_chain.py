@@ -19,8 +19,7 @@ from .nse_client import get_primed_session, nse_cached_json
 
 _OC_URL = "https://www.nseindia.com/api/option-chain-equities?symbol={sym}"
 _OC_PAGE = "https://www.nseindia.com/option-chain"
-_oc_page_lock = threading.Lock()
-_oc_page_primed = False
+_oc_tls = threading.local()
 
 
 def _prime_oc_page() -> None:
@@ -29,16 +28,14 @@ def _prime_oc_page() -> None:
     option-chain page; without it the API returns ``{}`` (also the documented
     off-hours/market-closed response). Only mark primed on a real success so a
     failed warm-up retries on a later call rather than being cached as done."""
-    global _oc_page_primed
-    with _oc_page_lock:
-        if _oc_page_primed:
-            return
-        try:
-            resp = get_primed_session().get(_OC_PAGE, timeout=10)
-            if resp.status_code < 400:
-                _oc_page_primed = True
-        except Exception:
-            pass
+    if getattr(_oc_tls, "page_primed", False):
+        return
+    try:
+        resp = get_primed_session().get(_OC_PAGE, timeout=10)
+        if resp.status_code < 400:
+            _oc_tls.page_primed = True
+    except Exception:
+        pass
 
 
 def fetch_option_chain(symbol: str, *, refresh: bool = False) -> Optional[dict]:

@@ -56,6 +56,11 @@ def _load_env_file() -> None:
         os.environ[key] = value
 
 
+def load_env_file() -> None:
+    """Load simple KEY=VALUE pairs from the project .env if not exported."""
+    _load_env_file()
+
+
 class PriceFetcher(Protocol):
     def fetch(
         self, tickers: Iterable[str], start: date, end: date

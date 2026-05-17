@@ -72,27 +72,63 @@ def parse_fii_dii(raw: list, as_of: date) -> Optional[dict]:
     return {"date": as_of, "fii_net": fii_net, "dii_net": dii_net}
 
 
+_METRIC_COLUMNS = ("fii_5d_net", "dii_5d_net", "fii_trend")
+
+
+def fii_dii_metric_series(panel: pd.DataFrame) -> pd.DataFrame:
+    """Return live-equivalent FII/DII metrics indexed by normalized date."""
+    if panel is None or panel.empty:
+        return pd.DataFrame(columns=_METRIC_COLUMNS)
+    df = panel.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df = (
+        df.dropna(subset=["date"])
+        .sort_values("date")
+        .drop_duplicates(subset=["date"], keep="last")
+    )
+    if df.empty:
+        return pd.DataFrame(columns=_METRIC_COLUMNS)
+    rows: list[dict[str, float | pd.Timestamp | None]] = []
+    for current in df["date"]:
+        hist = df[df["date"] <= current]
+        fii = pd.to_numeric(hist["fii_net"], errors="coerce").dropna()
+        dii = pd.to_numeric(hist["dii_net"], errors="coerce").dropna()
+        fii_5d = float(fii.tail(5).sum()) if not fii.empty else None
+        dii_5d = float(dii.tail(5).sum()) if not dii.empty else None
+        fii_trend: Optional[float] = None
+        if len(fii) >= 5:
+            baseline = float(fii.tail(20).mean())
+            today = float(fii.iloc[-1])
+            # A negative baseline preserves the sign of the ratio; only a zero
+            # or NaN baseline is undefined.
+            if baseline != 0.0 and not pd.isna(baseline):
+                fii_trend = round(today / baseline, 4)
+        rows.append(
+            {
+                "date": current,
+                "fii_5d_net": fii_5d,
+                "dii_5d_net": dii_5d,
+                "fii_trend": fii_trend,
+            }
+        )
+    return pd.DataFrame(rows).set_index("date")
+
+
 def compute_fii_dii_metrics(panel: pd.DataFrame, as_of: date) -> dict:
     """Derive fii_5d_net / dii_5d_net / fii_trend from the accumulated panel."""
     empty = {"fii_5d_net": None, "dii_5d_net": None, "fii_trend": None}
-    if panel is None or panel.empty:
+    metrics = fii_dii_metric_series(panel)
+    if metrics.empty:
         return empty
-    df = panel.copy()
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df = df[df["date"] <= as_of].sort_values("date")
-    if df.empty:
+    cutoff = pd.Timestamp(as_of).normalize()
+    metrics = metrics[metrics.index <= cutoff]
+    if metrics.empty:
         return empty
-    fii = pd.to_numeric(df["fii_net"], errors="coerce").dropna()
-    dii = pd.to_numeric(df["dii_net"], errors="coerce").dropna()
-    fii_5d = float(fii.tail(5).sum()) if not fii.empty else None
-    dii_5d = float(dii.tail(5).sum()) if not dii.empty else None
-    fii_trend: Optional[float] = None
-    if len(fii) >= 5:
-        baseline = float(fii.tail(20).mean())
-        today = float(fii.iloc[-1])
-        if baseline not in (0.0,) and not pd.isna(baseline):
-            fii_trend = round(today / baseline, 4)
-    return {"fii_5d_net": fii_5d, "dii_5d_net": dii_5d, "fii_trend": fii_trend}
+    latest = metrics.iloc[-1]
+    return {
+        col: None if pd.isna(latest[col]) else float(latest[col])
+        for col in _METRIC_COLUMNS
+    }
 
 
 def overlay_fii_dii(

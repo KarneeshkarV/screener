@@ -20,6 +20,7 @@ For US the yfinance feed is the only signal.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.parse
 import urllib.request
@@ -33,6 +34,7 @@ from screener.cache import cached_json_call
 from screener.resilience import call_with_resilience
 
 
+logger = logging.getLogger(__name__)
 _INDIA_SUFFIXES = (".NS", ".BO")
 _SCREENER_URL = "https://www.screener.in/company/{symbol}/"
 _SCREENER_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; screener-cli/1.0)"}
@@ -41,6 +43,7 @@ _FMP_INSIDER_URL = "https://financialmodelingprep.com/api/v4/insider-trading"
 # FMP only exposes Form 3/4/5 (SEC) data, which covers US listings. Indian
 # tickers stay on the screener.in promoter feed.
 _FMP_WINDOW_DAYS = 182
+_FMP_MAX_PAGES = 10
 
 
 def _tv_to_yf(ticker: str, market: str) -> str:
@@ -148,10 +151,10 @@ def _fmp_api_key() -> Optional[str]:
     if key:
         return key
     try:
-        from screener.backtester.data import _load_env_file
+        from screener.backtester.data import load_env_file
     except Exception:
         return None
-    _load_env_file()
+    load_env_file()
     return os.environ.get("FMP_API_KEY")
 
 
@@ -185,7 +188,7 @@ def _aggregate_fmp_transactions(
     for txn in transactions:
         date_raw = txn.get("transactionDate") or txn.get("filingDate")
         ts = pd.to_datetime(date_raw, errors="coerce")
-        if ts is None or pd.isna(ts) or ts < cutoff:
+        if pd.isna(ts) or ts < cutoff:
             continue
         try:
             shares = float(txn.get("securitiesTransacted") or 0.0)
@@ -237,17 +240,32 @@ def _fetch_fmp_insider_one(
             # is empty/non-list, the oldest row on a page predates the 182-day
             # window, or we hit a safety cap (no unbounded loop on bad data).
             collected: list[dict] = []
-            for page in range(10):
+            expected_page_size: int | None = None
+            for page in range(_FMP_MAX_PAGES):
                 rows = _request_page(page)
                 if not rows:
                     break
+                if expected_page_size is None:
+                    expected_page_size = len(rows)
                 collected.extend(rows)
                 oldest_raw = rows[-1].get("transactionDate") or rows[-1].get(
                     "filingDate"
                 )
                 oldest = pd.to_datetime(oldest_raw, errors="coerce")
-                if oldest is not None and not pd.isna(oldest) and oldest < cutoff:
+                if not pd.isna(oldest) and oldest < cutoff:
                     break
+                if (
+                    page == _FMP_MAX_PAGES - 1
+                    and expected_page_size is not None
+                    and len(rows) >= expected_page_size
+                    and not pd.isna(oldest)
+                    and oldest >= cutoff
+                ):
+                    logger.warning(
+                        "FMP insider trading for %s may be truncated at %d pages",
+                        symbol,
+                        _FMP_MAX_PAGES,
+                    )
             return collected or None
 
         transactions = call_with_resilience(
@@ -458,7 +476,7 @@ def filter_promoter_increased(
         yf_net = pd.to_numeric(insiders.get("yf_net_shares_6m"), errors="coerce")
         if "fmp_net_shares_6m" in insiders.columns:
             fmp_net = pd.to_numeric(insiders.get("fmp_net_shares_6m"), errors="coerce")
-            net = fmp_net.where(fmp_net.notna(), yf_net)
+            net = fmp_net.where(fmp_net.notna() & (fmp_net != 0.0), yf_net)
         else:
             net = yf_net
         mask = net > 0

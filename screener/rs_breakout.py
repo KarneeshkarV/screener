@@ -8,6 +8,7 @@ high, and NSE delivery bhavcopy data.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
@@ -25,6 +26,7 @@ from screener.backtester.data import PriceFetcher, tv_to_yf
 from screener.unusual_volume.delivery import load_delivery_panel
 
 
+logger = logging.getLogger(__name__)
 DEFAULT_BENCHMARK = "^NSEI"
 DEFAULT_BENCHMARKS = {"india": "^NSEI", "us": "SPY"}
 RS_WINDOW = 55
@@ -428,7 +430,7 @@ def _delivery_series_for_symbol(
     delivery_pct = pd.to_numeric(rows["DELIV_PER"], errors="coerce")
     sma20 = delivery_pct.rolling(20, min_periods=5).mean()
     std20 = delivery_pct.rolling(20, min_periods=5).std(ddof=0)
-    trend = delivery_pct / sma20
+    trend = delivery_pct / sma20.replace(0.0, np.nan)
     spike = (delivery_pct - sma20) / std20.replace(0.0, np.nan)
     series = pd.DataFrame(
         {
@@ -530,6 +532,7 @@ def _join_microstructure_panels(prepared: dict[str, pd.DataFrame]) -> None:
     keeps backtests offline/deterministic.
     """
     from screener.cache import panel_path, read_frame
+    from screener.unusual_volume.fii_dii import fii_dii_metric_series
 
     oc = read_frame(panel_path("option_chain"))
     fd = read_frame(panel_path("fii_dii"))
@@ -541,19 +544,17 @@ def _join_microstructure_panels(prepared: dict[str, pd.DataFrame]) -> None:
             oc_by_sym[sym] = grp.set_index("as_of").sort_index()
     if fd is not None and not fd.empty:
         fd = fd.copy()
-        fd["date"] = pd.to_datetime(fd["date"], errors="coerce").dt.normalize()
-        fd = fd.set_index("date").sort_index()
-        # Derive the rolling metrics historically from the raw daily nets so a
-        # backtest sees the same values the live scan would have computed.
-        fii = pd.to_numeric(fd["fii_net"], errors="coerce")
-        dii = pd.to_numeric(fd["dii_net"], errors="coerce")
-        fd["fii_5d_net"] = fii.rolling(5, min_periods=1).sum()
-        fd["dii_5d_net"] = dii.rolling(5, min_periods=1).sum()
-        fd["fii_trend"] = fii / fii.rolling(20, min_periods=5).mean()
+        fd = fii_dii_metric_series(fd)
     for symbol, frame in prepared.items():
         if frame is None or frame.empty:
             continue
         sym = india_symbol(symbol)
+        target_index = pd.DatetimeIndex(
+            pd.to_datetime(pd.Index(frame.index), errors="coerce")
+        )
+        if target_index.tz is not None:
+            target_index = target_index.tz_localize(None)
+        target_index = target_index.normalize()
         g = oc_by_sym.get(sym)
         # One-bar lag: the FII/DII provisional figure (and the option-chain
         # snapshot) is only published after market close, so a same-day
@@ -562,14 +563,27 @@ def _join_microstructure_panels(prepared: dict[str, pd.DataFrame]) -> None:
         # day's accumulated snapshot. Cold-start bars stay NaN (shift fills
         # the leading bar with NaN, matching the missing-history contract).
         for col in ("call_put_oi_ratio", "pcr"):
-            frame[col] = (
-                g[col].reindex(frame.index).shift(1)
-                if g is not None and col in g.columns
-                else np.nan
-            )
+            if g is not None and col in g.columns:
+                joined = g[col].reindex(target_index).shift(1)
+                frame[col] = pd.Series(joined.to_numpy(dtype=float), index=frame.index)
+                if g[col].notna().any() and frame[col].notna().sum() == 0:
+                    logger.debug(
+                        "option-chain panel for %s joined zero non-NaN %s rows",
+                        sym,
+                        col,
+                    )
+            else:
+                frame[col] = np.nan
         for col in ("fii_5d_net", "dii_5d_net", "fii_trend"):
             if fd is not None and not fd.empty and col in fd.columns:
-                frame[col] = fd[col].reindex(frame.index).shift(1)
+                joined = fd[col].reindex(target_index).shift(1)
+                frame[col] = pd.Series(joined.to_numpy(dtype=float), index=frame.index)
+                if fd[col].notna().any() and frame[col].notna().sum() == 0:
+                    logger.debug(
+                        "FII/DII panel for %s joined zero non-NaN %s rows",
+                        sym,
+                        col,
+                    )
             else:
                 frame[col] = np.nan
 
