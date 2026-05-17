@@ -160,9 +160,22 @@ def _aggregate_fmp_transactions(
 ) -> Optional[dict]:
     """Aggregate FMP insider rows into 6-month net buy/sell share counts.
 
-    FMP tags each row with ``acquistionOrDisposition`` (their spelling): ``A``
-    for acquired (buy) and ``D`` for disposed (sell). Net shares > 0 ⇒ insiders
-    bought more than they sold over the window.
+    On SEC Form 4 the ``acquistionOrDisposition`` flag (FMP's spelling) only
+    says whether shares were acquired (``A``) or disposed (``D``). An ``A`` row
+    covers open-market purchases *and* grants, awards, option-exercises and
+    gifts, so it cannot stand alone as a "buy" signal. We therefore key off
+    the more specific ``transactionType`` SEC code:
+
+    * a genuine **buy** is ``transactionType`` starting with ``P-`` (Purchase)
+      *and* ``acquistionOrDisposition == "A"``;
+    * a genuine **sell** is ``transactionType`` starting with ``S-`` (Sale)
+      *and* ``acquistionOrDisposition == "D"``.
+
+    Every other code (``A-Award``, ``G-Gift``, ``M-Exempt``,
+    ``F-Payment of Exercise`` …) is skipped. Net shares > 0 ⇒ insiders bought
+    more than they sold over the window. ``transactionType`` may be absent or
+    ``None``; it is coerced to ``str`` (default ``""``) so a missing code just
+    skips the row instead of raising.
     """
     if not transactions:
         return None
@@ -178,10 +191,12 @@ def _aggregate_fmp_transactions(
             shares = float(txn.get("securitiesTransacted") or 0.0)
         except (TypeError, ValueError):
             continue
-        if txn.get("acquistionOrDisposition") == "A":
+        disposition = txn.get("acquistionOrDisposition")
+        txn_type = str(txn.get("transactionType") or "").upper()
+        if txn_type.startswith("P-") and disposition == "A":
             bought += shares
             buy_trans += 1
-        elif txn.get("acquistionOrDisposition") == "D":
+        elif txn_type.startswith("S-") and disposition == "D":
             sold += shares
             sell_trans += 1
     if buy_trans == 0 and sell_trans == 0:
@@ -204,9 +219,11 @@ def _fetch_fmp_insider_one(
     refresh: bool,
 ) -> Optional[dict]:
     def _fetch() -> Optional[dict]:
-        def _request() -> Optional[list]:
+        cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=_FMP_WINDOW_DAYS)
+
+        def _request_page(page: int) -> Optional[list]:
             query = urllib.parse.urlencode(
-                {"symbol": symbol, "page": 0, "apikey": api_key}
+                {"symbol": symbol, "page": page, "apikey": api_key}
             )
             req = urllib.request.Request(
                 f"{_FMP_INSIDER_URL}?{query}", headers=_SCREENER_HEADERS
@@ -214,6 +231,24 @@ def _fetch_fmp_insider_one(
             with urllib.request.urlopen(req, timeout=20) as resp:
                 payload = json.loads(resp.read().decode("utf-8", "ignore"))
             return payload if isinstance(payload, list) else None
+
+        def _request() -> Optional[list]:
+            # FMP paginates insider rows (newest first). Walk pages until one
+            # is empty/non-list, the oldest row on a page predates the 182-day
+            # window, or we hit a safety cap (no unbounded loop on bad data).
+            collected: list[dict] = []
+            for page in range(10):
+                rows = _request_page(page)
+                if not rows:
+                    break
+                collected.extend(rows)
+                oldest_raw = rows[-1].get("transactionDate") or rows[-1].get(
+                    "filingDate"
+                )
+                oldest = pd.to_datetime(oldest_raw, errors="coerce")
+                if oldest is not None and not pd.isna(oldest) and oldest < cutoff:
+                    break
+            return collected or None
 
         transactions = call_with_resilience(
             "fmp",

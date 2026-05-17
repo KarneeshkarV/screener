@@ -555,15 +555,21 @@ def _join_microstructure_panels(prepared: dict[str, pd.DataFrame]) -> None:
             continue
         sym = india_symbol(symbol)
         g = oc_by_sym.get(sym)
+        # One-bar lag: the FII/DII provisional figure (and the option-chain
+        # snapshot) is only published after market close, so a same-day
+        # intraday/open decision must not see today's value. Shift the
+        # reindexed series by one trading bar so each bar only sees the prior
+        # day's accumulated snapshot. Cold-start bars stay NaN (shift fills
+        # the leading bar with NaN, matching the missing-history contract).
         for col in ("call_put_oi_ratio", "pcr"):
             frame[col] = (
-                g[col].reindex(frame.index)
+                g[col].reindex(frame.index).shift(1)
                 if g is not None and col in g.columns
                 else np.nan
             )
         for col in ("fii_5d_net", "dii_5d_net", "fii_trend"):
             if fd is not None and not fd.empty and col in fd.columns:
-                frame[col] = fd[col].reindex(frame.index)
+                frame[col] = fd[col].reindex(frame.index).shift(1)
             else:
                 frame[col] = np.nan
 

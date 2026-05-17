@@ -8,6 +8,7 @@ backtestable history accumulates over time.
 
 from __future__ import annotations
 
+import threading
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
@@ -18,6 +19,7 @@ from .nse_client import get_primed_session, nse_cached_json
 
 _OC_URL = "https://www.nseindia.com/api/option-chain-equities?symbol={sym}"
 _OC_PAGE = "https://www.nseindia.com/option-chain"
+_oc_page_lock = threading.Lock()
 _oc_page_primed = False
 
 
@@ -25,15 +27,18 @@ def _prime_oc_page() -> None:
     """Seed the option-chain page cookies once (in addition to the homepage
     warm-up). NSE gates the equity option-chain API behind a visit to the
     option-chain page; without it the API returns ``{}`` (also the documented
-    off-hours/market-closed response)."""
+    off-hours/market-closed response). Only mark primed on a real success so a
+    failed warm-up retries on a later call rather than being cached as done."""
     global _oc_page_primed
-    if _oc_page_primed:
-        return
-    try:
-        get_primed_session().get(_OC_PAGE, timeout=10)
-    except Exception:
-        pass
-    _oc_page_primed = True
+    with _oc_page_lock:
+        if _oc_page_primed:
+            return
+        try:
+            resp = get_primed_session().get(_OC_PAGE, timeout=10)
+            if resp.status_code < 400:
+                _oc_page_primed = True
+        except Exception:
+            pass
 
 
 def fetch_option_chain(symbol: str, *, refresh: bool = False) -> Optional[dict]:

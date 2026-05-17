@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
+import os
+import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Iterator, TypeVar
 
 import pandas as pd
 
@@ -90,6 +94,26 @@ def panel_path(name: str) -> Path:
     return PANEL_ROOT / f"{name}.parquet"
 
 
+@contextlib.contextmanager
+def _file_lock(path: Path) -> Iterator[None]:
+    """POSIX advisory lock on ``<path>.lock`` (dependency-free, Linux-only).
+
+    Serializes the read-modify-write in ``append_panel_snapshot`` across
+    concurrent processes so a snapshot append never loses rows to a racing
+    writer.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def append_panel_snapshot(
     name: str, rows: pd.DataFrame, *, dedupe_keys: list[str]
 ) -> pd.DataFrame:
@@ -98,21 +122,36 @@ def append_panel_snapshot(
     Live-only sources (option chain, FII/DII) have no historical backfill, so
     each scan appends today's snapshot here and the panel accumulates over
     time into a backtestable history. Re-runs on the same key overwrite the
-    prior row (``keep="last"``). The write is atomic (tmp + replace).
+    prior row (``keep="last"``). The read-modify-write is serialized with a
+    POSIX file lock and the parquet is written via a per-writer unique temp
+    file + atomic ``os.replace`` so concurrent processes can't lose rows or
+    clobber each other's ``.tmp``.
     """
     if rows is None or rows.empty:
         existing = read_frame(panel_path(name))
         return existing if existing is not None else pd.DataFrame()
     path = panel_path(name)
-    existing = read_frame(path)
-    merged = (
-        pd.concat([existing, rows], ignore_index=True)
-        if existing is not None and not existing.empty
-        else rows.copy()
-    )
-    merged = merged.drop_duplicates(subset=dedupe_keys, keep="last")
-    merged = merged.sort_values(dedupe_keys).reset_index(drop=True)
-    write_frame(path, merged)
+    with _file_lock(path):
+        existing = read_frame(path)
+        merged = (
+            pd.concat([existing, rows], ignore_index=True)
+            if existing is not None and not existing.empty
+            else rows.copy()
+        )
+        merged = merged.drop_duplicates(subset=dedupe_keys, keep="last")
+        merged = merged.sort_values(dedupe_keys).reset_index(drop=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+        )
+        os.close(fd)
+        tmp = Path(tmp_name)
+        try:
+            merged.to_parquet(tmp)
+            os.replace(tmp, path)
+        finally:
+            with contextlib.suppress(OSError):
+                tmp.unlink()
     return merged
 
 

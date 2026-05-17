@@ -352,7 +352,14 @@ def _overlay_india_microstructure(
                     "option_chain", rows, dedupe_keys=["as_of", "SYMBOL"]
                 )
             console.print(f"[dim]Option-chain overlay: {len(metrics)} symbol(s).[/dim]")
-        except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
+        except (
+            requests.RequestException,
+            OSError,
+            RuntimeError,
+            ValueError,
+            KeyError,
+            TypeError,
+        ) as exc:
             console.print(
                 f"[yellow]Option-chain overlay failed: {exc}. Skipping.[/yellow]"
             )
@@ -367,7 +374,14 @@ def _overlay_india_microstructure(
                     f"[dim]FII/DII (market-wide): 5d FII={m['fii_5d_net']} "
                     f"5d DII={m['dii_5d_net']} trend={m['fii_trend']}.[/dim]"
                 )
-        except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
+        except (
+            requests.RequestException,
+            OSError,
+            RuntimeError,
+            ValueError,
+            KeyError,
+            TypeError,
+        ) as exc:
             console.print(f"[yellow]FII/DII overlay failed: {exc}. Skipping.[/yellow]")
 
     if request.pledge:
@@ -376,7 +390,14 @@ def _overlay_india_microstructure(
 
             overlay_pledge(events, refresh=request.refresh)
             console.print("[dim]Pledge overlay applied.[/dim]")
-        except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
+        except (
+            requests.RequestException,
+            OSError,
+            RuntimeError,
+            ValueError,
+            KeyError,
+            TypeError,
+        ) as exc:
             console.print(f"[yellow]Pledge overlay failed: {exc}. Skipping.[/yellow]")
 
 

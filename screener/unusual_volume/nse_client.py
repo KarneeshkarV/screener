@@ -7,6 +7,11 @@ dependency), layer browser headers + a homepage warm-up on top, and route every
 call through ``call_with_resilience`` so a flaky/blocking NSE degrades to
 ``None`` rather than raising. On a 401/403 (cookie expiry / soft block) we
 re-prime once and retry.
+
+``requests.Session`` is not thread-safe, and the option-chain / pledge overlays
+fan out across ``ThreadPoolExecutor`` workers. Each worker therefore gets its
+own homepage-primed session via ``threading.local()``; a soft-block reprime
+rebuilds only the calling thread's session.
 """
 
 from __future__ import annotations
@@ -30,9 +35,7 @@ _BROWSER_HEADERS = {
     "Referer": f"{_NSE_HOME}/",
 }
 
-_lock = threading.Lock()
-_session: requests.Session | None = None
-_primed = False
+_tls = threading.local()
 
 
 class _SoftBlock:
@@ -51,28 +54,32 @@ def _new_session() -> requests.Session:
 
 
 def get_primed_session() -> requests.Session:
-    """Return a process-wide session with NSE cookies seeded (once)."""
-    global _session, _primed
-    with _lock:
-        if _session is None:
-            _session = _new_session()
-        if not _primed:
-            call_with_resilience(
-                "nse",
-                "nse homepage warmup",
-                lambda: _session.get(f"{_NSE_HOME}/", timeout=10),
-                fallback=None,
-            )
-            _primed = True
-        return _session
+    """Return the calling thread's session with NSE cookies seeded (once).
+
+    ``requests.Session`` is not thread-safe, so each worker thread keeps its
+    own homepage-primed session in thread-local storage.
+    """
+    session: requests.Session | None = getattr(_tls, "session", None)
+    if session is None:
+        session = _new_session()
+        _tls.session = session
+        _tls.primed = False
+    if not getattr(_tls, "primed", False):
+        call_with_resilience(
+            "nse",
+            "nse homepage warmup",
+            lambda: session.get(f"{_NSE_HOME}/", timeout=10),
+            fallback=None,
+        )
+        _tls.primed = True
+    return session
 
 
 def _reprime() -> requests.Session:
-    """Force a fresh session + homepage warm-up (cookie expiry / soft block)."""
-    global _session, _primed
-    with _lock:
-        _session = None
-        _primed = False
+    """Rebuild *this thread's* session + homepage warm-up (cookie expiry /
+    soft block). Other threads keep their own sessions untouched."""
+    _tls.session = None
+    _tls.primed = False
     return get_primed_session()
 
 
