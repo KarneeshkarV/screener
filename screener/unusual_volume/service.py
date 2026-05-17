@@ -232,11 +232,11 @@ def run_unusual_volume_scan(
     floor_rank = _STRENGTH_RANK[request.strength_floor.upper()]
     events = [e for e in events if _STRENGTH_RANK[e.strength] >= floor_rank]
 
-    if request.market == "india":
-        _overlay_india_microstructure(request, events, console)
-
     if request.buildup_enabled:
         _apply_buildup_overlay(request, liquid, panel, events, console)
+
+    if request.market == "india":
+        _overlay_india_microstructure(request, events, console)
 
     if events:
         sector_map = fetch_sector_map(

@@ -17,6 +17,7 @@ rebuilds only the calling thread's session.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from typing import Any
 
 import requests
@@ -83,7 +84,13 @@ def _reprime() -> requests.Session:
     return get_primed_session()
 
 
-def fetch_nse_json(url: str, operation: str, *, timeout: float = 10.0) -> Any | None:
+def fetch_nse_json(
+    url: str,
+    operation: str,
+    *,
+    timeout: float = 10.0,
+    after_reprime: Callable[[requests.Session], None] | None = None,
+) -> Any | None:
     """GET ``url`` and return parsed JSON, or ``None`` on any failure.
 
     Never raises — overlays must degrade gracefully (mirrors the contract of
@@ -102,7 +109,10 @@ def fetch_nse_json(url: str, operation: str, *, timeout: float = 10.0) -> Any | 
 
     result = _do(get_primed_session())
     if result is _SOFT_BLOCK:
-        result = _do(_reprime())
+        session = _reprime()
+        if after_reprime is not None:
+            after_reprime(session)
+        result = _do(session)
     return None if result is _SOFT_BLOCK else result
 
 
@@ -114,6 +124,7 @@ def nse_cached_json(
     *,
     refresh: bool = False,
     ttl_seconds: float | None = 900.0,
+    after_reprime: Callable[[requests.Session], None] | None = None,
 ) -> Any | None:
     """TTL-cached ``fetch_nse_json`` (default 15 min, intraday-safe)."""
     return cached_json_call(
@@ -121,5 +132,5 @@ def nse_cached_json(
         key_parts,
         ttl_seconds=ttl_seconds,
         refresh=refresh,
-        fetch=lambda: fetch_nse_json(url, operation),
+        fetch=lambda: fetch_nse_json(url, operation, after_reprime=after_reprime),
     )

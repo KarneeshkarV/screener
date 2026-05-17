@@ -14,7 +14,7 @@ from rich.console import Console
 from screener import cache, pledge
 from screener import rs_breakout
 from screener.unusual_volume import service
-from screener.unusual_volume import fii_dii, option_chain
+from screener.unusual_volume import fii_dii, nse_client, option_chain
 from screener.unusual_volume.delivery import compute_delivery_metrics, overlay_events
 from screener.unusual_volume.detector import Event
 
@@ -129,6 +129,70 @@ def test_overlay_option_chain_mutates_and_returns_map(monkeypatch):
     assert ev.pcr == 2.0
     assert ev.call_put_oi_ratio == 0.5
     assert out["TCS"]["pcr"] == 2.0
+
+
+def test_fetch_option_chain_rewarms_page_after_nse_reprime(monkeypatch, tmp_path):
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    for name in ("session", "primed"):
+        if hasattr(nse_client._tls, name):
+            delattr(nse_client._tls, name)
+    for name in ("page_primed", "page_primed_session_id"):
+        if hasattr(option_chain._oc_tls, name):
+            delattr(option_chain._oc_tls, name)
+
+    class Resp:
+        def __init__(self, status_code: int, payload: dict | None = None) -> None:
+            self.status_code = status_code
+            self.payload = payload or {}
+
+        def raise_for_status(self) -> None:
+            if self.status_code >= 400:
+                raise RuntimeError(self.status_code)
+
+        def json(self) -> dict:
+            return self.payload
+
+    class Session:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.headers = {}
+            self.option_page_hits = 0
+
+        def get(self, url: str, timeout: float = 10.0) -> Resp:
+            del timeout
+            if url == option_chain._OC_PAGE:
+                self.option_page_hits += 1
+                events.append(("option-page", self.name))
+                return Resp(200)
+            if url.endswith("/"):
+                events.append(("home", self.name))
+                return Resp(200)
+            events.append(("api", self.name, self.option_page_hits))
+            if self.name == "old":
+                return Resp(403)
+            return Resp(
+                200,
+                {"filtered": {"CE": {"totOI": 1000}, "PE": {"totOI": 2000}}},
+            )
+
+    events: list[tuple] = []
+    sessions = iter([Session("old"), Session("new")])
+    monkeypatch.setattr(nse_client, "_new_session", lambda: next(sessions))
+    monkeypatch.setattr(
+        nse_client, "call_with_resilience", lambda _d, _o, fn, fallback=None: fn()
+    )
+
+    raw = option_chain.fetch_option_chain("TCS", refresh=True)
+
+    assert raw == {"filtered": {"CE": {"totOI": 1000}, "PE": {"totOI": 2000}}}
+    assert events == [
+        ("home", "old"),
+        ("option-page", "old"),
+        ("api", "old", 1),
+        ("home", "new"),
+        ("option-page", "new"),
+        ("api", "new", 1),
+    ]
 
 
 # ── FII/DII derivation + broadcast ─────────────────────────────────────────
@@ -301,6 +365,67 @@ def test_live_nse_overlays_persist_live_snapshot_date(monkeypatch, tmp_path):
     assert fd.iloc[0]["date"].date() == live_snapshot_date
     assert oc.iloc[0]["as_of"].date() != historical_as_of
     assert fd.iloc[0]["date"].date() != historical_as_of
+
+
+def test_india_microstructure_runs_after_buildup_adds_events(monkeypatch):
+    as_of = date(2026, 5, 15)
+    idx = pd.date_range(end=as_of, periods=25, freq="D")
+    bars = pd.DataFrame(
+        {
+            "open": [100.0] * len(idx),
+            "high": [101.0] * len(idx),
+            "low": [99.0] * len(idx),
+            "close": [100.0] * len(idx),
+            "volume": [100_000.0] * len(idx),
+        },
+        index=idx,
+    )
+    seen_event_counts: list[int] = []
+
+    def add_buildup_event(_request, _liquid, _panel, events, _console):
+        events.append(_event("RELIANCE", as_of))
+
+    def overlay_microstructure(_request, events, _console):
+        seen_event_counts.append(len(events))
+        for ev in events:
+            ev.pcr = 2.0
+
+    monkeypatch.setattr(
+        service, "fetch_bars", lambda *args, **kwargs: {"NSE:RELIANCE": bars}
+    )
+    monkeypatch.setattr(service, "detect_market", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        service, "_overlay_india_delivery", lambda *args, **kwargs: pd.DataFrame()
+    )
+    monkeypatch.setattr(service, "_apply_buildup_overlay", add_buildup_event)
+    monkeypatch.setattr(
+        service, "_overlay_india_microstructure", overlay_microstructure
+    )
+    monkeypatch.setattr(service, "fetch_sector_map", lambda *args, **kwargs: {})
+
+    request = service.UnusualVolumeRequest(
+        market="india",
+        as_of=as_of,
+        universe=["NSE:RELIANCE"],
+        min_rvol=0.0,
+        min_z=0.0,
+        strength_floor="MODERATE",
+        min_avg_volume=0.0,
+        min_market_cap=0.0,
+        include_fno_ban=True,
+        deep_india=False,
+        buildup_enabled=True,
+        buildup_window=20,
+        buildup_min_score=0.0,
+        option_chain=True,
+        fii_dii=False,
+        pledge=False,
+    )
+
+    result = service.run_unusual_volume_scan(request, Console(file=io.StringIO()))
+
+    assert seen_event_counts == [1]
+    assert result.events[0].pcr == 2.0
 
 
 # ── panel snapshot dedupe ──────────────────────────────────────────────────
