@@ -7,9 +7,12 @@ Key improvements over v4:
 - Richer signal-quality features (drawdown, divergence, gap)
 - Walk-forward training support for regime adaptation
 - Meta-confidence score based on prediction magnitude
+- PROPER train/val/test split: early-stop on val, report on untouched test
+- Per-feature neutral fill values instead of blanket 0.0
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,6 +30,8 @@ except ImportError:
 
 from screener.backtester.models import Trade
 
+logger = logging.getLogger(__name__)
+
 
 class MissingMLDependencyError(RuntimeError):
     pass
@@ -39,34 +44,50 @@ def _require_ml() -> None:
         )
 
 
+# Per-feature neutral fill values (no fake signal injection)
+FEATURE_NEUTRAL_VALUES: dict[str, float] = {
+    # Volume — neutral = 1.0 (average volume)
+    "rvol_5d": 1.0,
+    "rvol_20d": 1.0,
+    "volume_trend_10d": 1.0,
+    # Momentum — neutral = 0.0 (no change)
+    "returns_5d": 0.0,
+    "returns_20d": 0.0,
+    "returns_60d": 0.0,
+    "momentum_5d_vs_20d": 0.0,
+    # Trend alignment — neutral = 0.0 (price at EMA)
+    "close_vs_ema20": 0.0,
+    "close_vs_ema50": 0.0,
+    "ema20_vs_ema50": 0.0,
+    "ema50_vs_ema200": 0.0,
+    # Volatility / risk — ATR 0, vol percentile middle
+    "ATR_14_pct": 0.0,
+    "volatility_percentile_90d": 0.5,
+    # Technical — bb middle, rsi neutral, macd flat, adx weak trend
+    "bb_position": 0.5,
+    "rsi_14": 50.0,
+    "macd_hist": 0.0,
+    "adx_14": 25.0,
+    # Price structure — neutral = at midpoint
+    "dist_from_52w_high": 0.0,
+    "dist_from_52w_low": 0.0,
+    # Market context — neutral market return, beta = 1.0
+    "benchmark_return_20d": 0.0,
+    "beta_20d": 1.0,
+    # Signal quality — no drawdown, no gap, no streak
+    "max_dd_20d": 0.0,
+    "range_pct": 0.0,
+    "gap_pct": 0.0,
+    "consecutive_up_days": 0.0,
+    "volume_price_corr_20d": 0.0,
+    "sharpe_20d": 0.0,
+}
+
+
 class V5FeatureExtractor:
     """Production feature set focused on signal quality and regime context."""
 
-    FEATURE_COLUMNS = [
-        # Volume
-        "rvol_5d", "rvol_20d", "volume_trend_10d",
-        # Momentum / acceleration
-        "returns_5d", "returns_20d", "returns_60d",
-        "momentum_5d_vs_20d",
-        # Trend alignment
-        "close_vs_ema20", "close_vs_ema50", "ema20_vs_ema50", "ema50_vs_ema200",
-        # Volatility / risk
-        "ATR_14_pct", "volatility_percentile_90d", "bb_position",
-        # Technical
-        "rsi_14", "macd_hist", "adx_14",
-        # Price structure
-        "dist_from_52w_high", "dist_from_52w_low",
-        # Market context
-        "benchmark_return_20d", "beta_20d",
-        # Signal quality (NEW)
-        "max_dd_20d",
-        "range_pct",
-        "gap_pct",
-        "consecutive_up_days",
-        "volume_price_corr_20d",
-        # Risk-adjusted
-        "sharpe_20d",
-    ]
+    FEATURE_COLUMNS = list(FEATURE_NEUTRAL_VALUES.keys())
 
     @staticmethod
     def _ema(series: pd.Series, span: int) -> pd.Series:
@@ -258,38 +279,41 @@ class V5FeatureExtractor:
             "sharpe_20d": sharpe_20d,
         }, index=df.index)
 
-        return features.fillna(0.0)
+        # Drop rows that are >50% NaN (insufficient history), then fill remaining with neutral values
+        na_frac = features.isna().mean(axis=1)
+        features = features[na_frac <= 0.5]
+        features = features.fillna(FEATURE_NEUTRAL_VALUES)
+        return features
 
 
 @dataclass
 class V5SignalModel:
     """Production ML model: predicts expected return via regression.
 
-    Uses XGBRegressor to predict return_pct directly.  Meta-confidence
-    is derived from prediction magnitude (higher expected return = higher
-    confidence) and optional rolling calibration.
+    Uses XGBRegressor to predict return_pct directly.
+    PROPER train/val/test split:
+        - Train: 60% oldest data (by signal date)
+        - Val:   20% middle data (early stopping here)
+        - Test:  20% newest data (untouched for final metrics)
     """
 
     model: Any | None = None
     feature_names: list[str] = field(default_factory=lambda: list(V5FeatureExtractor.FEATURE_COLUMNS))
     metrics: dict[str, float] | None = None
-    rolling_window_months: int = 3  # months of history to use for training
-    n_estimators: int = 100
-    max_depth: int = 3
-    reg_lambda: float = 5.0
+    rolling_window_months: int = 0  # 0 = use all data (walk-forward overrides)
+    n_estimators: int = 300
+    max_depth: int = 5
+    reg_lambda: float = 3.0
+    learning_rate: float = 0.05
 
-    def train(
+    def _build_dataset(
         self,
         trades: list[Trade],
         bars_by_symbol: dict[str, pd.DataFrame],
         benchmark_bars: pd.DataFrame | None = None,
-    ) -> V5SignalModel:
-        _require_ml()
-        if not trades:
-            raise ValueError("No trades provided for training.")
-
+    ) -> tuple[pd.DataFrame, np.ndarray, np.ndarray, pd.DatetimeIndex]:
+        """Extract features and labels from trades. Returns (X, y, weights, dates)."""
         extractor = V5FeatureExtractor()
-        print("Pre-computing features for all symbols...")
         features_cache = {}
         for sym, bars in bars_by_symbol.items():
             if bars is None or bars.empty:
@@ -330,102 +354,148 @@ class V5SignalModel:
             raise ValueError("Could not extract features for any trade.")
 
         X = pd.concat(X_rows, ignore_index=True)
-        X = X[self.feature_names].fillna(0.0)
+        X = X[self.feature_names]
+        # Apply per-feature neutral fill for any remaining NAs (should be rare after extract())
+        for col in X.columns:
+            if col in FEATURE_NEUTRAL_VALUES:
+                X[col] = X[col].fillna(FEATURE_NEUTRAL_VALUES[col])
+            else:
+                X[col] = X[col].fillna(0.0)
         y_arr = np.array(y)
         weights_arr = np.array(weights)
         dates_arr = pd.to_datetime(dates)
+        return X, y_arr, weights_arr, dates_arr
 
-        print(f"Training on {len(y_arr)} trades, {len(self.feature_names)} features")
+    def train(
+        self,
+        trades: list[Trade],
+        bars_by_symbol: dict[str, pd.DataFrame],
+        benchmark_bars: pd.DataFrame | None = None,
+    ) -> V5SignalModel:
+        _require_ml()
+        if not trades:
+            raise ValueError("No trades provided for training.")
+
+        print("Building dataset...")
+        X, y_arr, weights_arr, dates_arr = self._build_dataset(
+            trades, bars_by_symbol, benchmark_bars
+        )
+
+        print(f"Dataset: {len(y_arr)} trades, {len(self.feature_names)} features")
         print(f"Return distribution: mean={y_arr.mean():.3%}, std={y_arr.std():.3%}")
 
-        # Default: use rolling window of recent data (regime-adaptive)
-        if self.rolling_window_months > 0:
-            cutoff = dates_arr.max() - pd.DateOffset(months=self.rolling_window_months)
-            recent_mask = dates_arr >= cutoff
-            if recent_mask.sum() >= 100:
-                print(f"Using rolling window: last {self.rolling_window_months} months ({recent_mask.sum()} trades)")
-                X = X[recent_mask]
-                y_arr = y_arr[recent_mask]
-                weights_arr = weights_arr[recent_mask]
-                dates_arr = dates_arr[recent_mask]
-
-        # Time-series split for evaluation: sort by date, take last 20% as test
-        n = len(y_arr)
-        split_idx = int(n * 0.8)
+        # Time-series sort: oldest first
         sort_idx = np.argsort(dates_arr)
         X_sorted = X.iloc[sort_idx].reset_index(drop=True)
         y_sorted = y_arr[sort_idx]
         w_sorted = weights_arr[sort_idx]
+        dates_sorted = dates_arr[sort_idx]
 
-        X_train = X_sorted.iloc[:split_idx]
-        y_train = y_sorted[:split_idx]
-        w_train = w_sorted[:split_idx]
-        X_test = X_sorted.iloc[split_idx:]
-        y_test = y_sorted[split_idx:]
+        n = len(y_sorted)
+        # 60/20/20 temporal split
+        train_end = int(n * 0.6)
+        val_end = int(n * 0.8)
 
-        print(f"Train: {len(y_train)} | Test: {len(y_test)}")
+        X_train = X_sorted.iloc[:train_end]
+        y_train = y_sorted[:train_end]
+        w_train = w_sorted[:train_end]
+
+        X_val = X_sorted.iloc[train_end:val_end]
+        y_val = y_sorted[train_end:val_end]
+
+        X_test = X_sorted.iloc[val_end:]
+        y_test = y_sorted[val_end:]
+
+        print(f"Train: {len(y_train)} | Val: {len(y_val)} | Test: {len(y_test)}")
+        print(f"Date ranges — train: {dates_sorted[0].date()} to {dates_sorted[train_end-1].date()}")
+        print(f"                 val: {dates_sorted[train_end].date()} to {dates_sorted[val_end-1].date()}")
+        print(f"                test: {dates_sorted[val_end].date()} to {dates_sorted[-1].date()}")
 
         model = XGBRegressor(
             n_estimators=self.n_estimators,
             max_depth=self.max_depth,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
+            learning_rate=self.learning_rate,
+            subsample=0.6,
+            colsample_bytree=0.6,
             colsample_bylevel=0.8,
-            min_child_weight=3,
-            reg_alpha=0.3,
+            min_child_weight=1,
+            reg_alpha=0.0,
             reg_lambda=self.reg_lambda,
-            gamma=0.1,
+            gamma=0.0,
             random_state=42,
+            n_jobs=4,
             early_stopping_rounds=20,
         )
 
         model.fit(
             X_train, y_train,
             sample_weight=w_train,
-            eval_set=[(X_test, y_test)],
+            eval_set=[(X_val, y_val)],
             verbose=False,
         )
 
-        y_pred = model.predict(X_test)
+        # === REPORT ON UNTOUCHED TEST SET ===
+        y_pred_test = model.predict(X_test)
 
-        mse = mean_squared_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
+        mse_test = mean_squared_error(y_test, y_pred_test)
+        r2_test = r2_score(y_test, y_pred_test)
 
-        # Directional metrics
+        # Directional metrics on TEST
         y_test_dir = (y_test > 0).astype(int)
-        y_pred_dir = (y_pred > np.median(y_pred)).astype(int)
-        auc = roc_auc_score(y_test_dir, y_pred) if len(set(y_test_dir)) > 1 else float("nan")
-        acc = accuracy_score(y_test_dir, y_pred_dir)
+        auc_test = roc_auc_score(y_test_dir, y_pred_test) if len(set(y_test_dir)) > 1 else float("nan")
+        y_pred_dir = (y_pred_test > np.median(y_pred_test)).astype(int)
+        acc_test = accuracy_score(y_test_dir, y_pred_dir)
 
-        # Filter performance: top predictions
-        sorted_pred_idx = np.argsort(y_pred)[::-1]
-        top_n = max(1, int(len(y_test) * 0.2))
-        top_idx = sorted_pred_idx[:top_n]
-        top_avg_ret = y_test[top_idx].mean()
-        top_win_rate = (y_test[top_idx] > 0).mean()
+        # Filter performance: top predictions on TEST
+        sorted_pred_idx = np.argsort(y_pred_test)[::-1]
+        n10 = max(1, int(len(y_test) * 0.1))
+        top10_idx = sorted_pred_idx[:n10]
+        top10_avg_ret = y_test[top10_idx].mean()
+        top10_wr = (y_test[top10_idx] > 0).mean()
 
-        bottom_n = max(1, int(len(y_test) * 0.2))
-        bottom_idx = sorted_pred_idx[-bottom_n:]
-        bottom_avg_ret = y_test[bottom_idx].mean()
-        bottom_win_rate = (y_test[bottom_idx] > 0).mean()
+        n20 = max(1, int(len(y_test) * 0.2))
+        top20_idx = sorted_pred_idx[:n20]
+        top20_avg_ret = y_test[top20_idx].mean()
+        top20_wr = (y_test[top20_idx] > 0).mean()
+
+        bottom20_idx = sorted_pred_idx[-n20:]
+        bottom20_avg_ret = y_test[bottom20_idx].mean()
+        bottom20_wr = (y_test[bottom20_idx] > 0).mean()
+
+        # Val metrics for reference (where early stopping happened)
+        y_pred_val = model.predict(X_val)
+        y_val_dir = (y_val > 0).astype(int)
+        auc_val = roc_auc_score(y_val_dir, y_pred_val) if len(set(y_val_dir)) > 1 else float("nan")
 
         self.model = model
         self.metrics = {
-            "mse": float(mse),
-            "r2": float(r2),
-            "auc_direction": float(auc),
-            "accuracy_direction": float(acc),
-            "top20_avg_return": float(top_avg_ret),
-            "top20_win_rate": float(top_win_rate),
-            "bottom20_avg_return": float(bottom_avg_ret),
-            "bottom20_win_rate": float(bottom_win_rate),
+            "mse_test": float(mse_test),
+            "r2_test": float(r2_test),
+            "auc_test": float(auc_test),
+            "auc_val": float(auc_val),
+            "accuracy_test": float(acc_test),
+            "top10_avg_return": float(top10_avg_ret),
+            "top10_win_rate": float(top10_wr),
+            "top20_avg_return": float(top20_avg_ret),
+            "top20_win_rate": float(top20_wr),
+            "bottom20_avg_return": float(bottom20_avg_ret),
+            "bottom20_win_rate": float(bottom20_wr),
             "baseline_win_rate": float(y_test_dir.mean()),
             "baseline_avg_return": float(y_test.mean()),
             "n_train": int(len(y_train)),
+            "n_val": int(len(y_val)),
             "n_test": int(len(y_test)),
             "best_iteration": int(model.best_iteration) if hasattr(model, "best_iteration") else self.n_estimators,
         }
+
+        print(f"\n{'='*60}")
+        print("FINAL METRICS (UNTOUCHED TEST SET)")
+        print(f"{'='*60}")
+        print(f"AUC (test):  {auc_test:.4f}  |  AUC (val): {auc_val:.4f}")
+        print(f"Top 10% WR:  {top10_wr:.1%}  |  Top 10% Avg: {top10_avg_ret:.3%}")
+        print(f"Top 20% WR:  {top20_wr:.1%}  |  Top 20% Avg: {top20_avg_ret:.3%}")
+        print(f"Baseline WR: {y_test_dir.mean():.1%}  |  Baseline Avg: {y_test.mean():.3%}")
+        print(f"{'='*60}")
         return self
 
     def predict(self, features_df: pd.DataFrame) -> np.ndarray:
@@ -433,7 +503,12 @@ class V5SignalModel:
         _require_ml()
         if self.model is None:
             raise RuntimeError("Model has not been trained or loaded.")
-        X = features_df[self.feature_names].fillna(0.0)
+        X = features_df[self.feature_names].copy()
+        for col in X.columns:
+            if col in FEATURE_NEUTRAL_VALUES:
+                X[col] = X[col].fillna(FEATURE_NEUTRAL_VALUES[col])
+            else:
+                X[col] = X[col].fillna(0.0)
         return self.model.predict(X)
 
     def predict_confidence(self, features_df: pd.DataFrame) -> np.ndarray:
@@ -457,6 +532,7 @@ class V5SignalModel:
             "n_estimators": self.n_estimators,
             "max_depth": self.max_depth,
             "reg_lambda": self.reg_lambda,
+            "learning_rate": self.learning_rate,
         }
         joblib.dump(payload, Path(path))
 
@@ -469,10 +545,11 @@ class V5SignalModel:
         instance.model = payload.get("model")
         instance.feature_names = payload.get("feature_names", list(V5FeatureExtractor.FEATURE_COLUMNS))
         instance.metrics = payload.get("metrics")
-        instance.rolling_window_months = payload.get("rolling_window_months", 3)
-        instance.n_estimators = payload.get("n_estimators", 100)
-        instance.max_depth = payload.get("max_depth", 3)
-        instance.reg_lambda = payload.get("reg_lambda", 5.0)
+        instance.rolling_window_months = payload.get("rolling_window_months", 0)
+        instance.n_estimators = payload.get("n_estimators", 300)
+        instance.max_depth = payload.get("max_depth", 5)
+        instance.reg_lambda = payload.get("reg_lambda", 3.0)
+        instance.learning_rate = payload.get("learning_rate", 0.05)
         return instance
 
     def feature_importance(self) -> pd.DataFrame:

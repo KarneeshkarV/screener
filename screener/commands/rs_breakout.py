@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 import click
 import pandas as pd
@@ -101,6 +102,8 @@ def run_rs_breakout_scan(
     request: RsBreakoutRequest,
     fetcher: PriceFetcher,
     console: Console,
+    confidence_model: Any = None,
+    confidence_threshold: float | None = None,
 ) -> RsBreakoutResult:
     console.print(
         f"[dim]Scanning {len(request.universe)} {request.market.upper()} "
@@ -138,6 +141,8 @@ def run_rs_breakout_scan(
         delivery_panel=delivery_panel,
         benchmark_symbol=request.benchmark,
         require_delivery=request.require_delivery,
+        confidence_model=confidence_model,
+        confidence_threshold=confidence_threshold,
     )
 
 
@@ -215,6 +220,18 @@ def write_default_outputs(
     default=False,
     help="Skip JSON/Markdown writes.",
 )
+@click.option(
+    "--confidence-model",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to trained V5SignalModel (.pkl) for ML confidence filtering.",
+)
+@click.option(
+    "--confidence-threshold",
+    type=float,
+    default=None,
+    help="Minimum ML confidence (0-1) to include a breakout.",
+)
 def rs_breakout(
     market: str,
     as_of_arg: datetime | None,
@@ -229,6 +246,8 @@ def rs_breakout(
     refresh: bool,
     cache_ttl: str,
     no_output_files: bool,
+    confidence_model: Path | None,
+    confidence_threshold: float | None,
 ) -> None:
     """Screen stocks for RS + SuperTrend + breakout/volume setups."""
     console = Console()
@@ -247,6 +266,17 @@ def rs_breakout(
         raise click.UsageError("Empty universe: pass --tickers or --universe-file.")
 
     fetcher = click.get_current_context().obj or build_price_fetcher(refresh=refresh)
+
+    # Load v5 ML model if provided
+    model = None
+    if confidence_model is not None:
+        from screener.ml_signal_v5 import V5SignalModel
+        try:
+            model = V5SignalModel.load(confidence_model)
+            console.print(f"[dim]Loaded v5 confidence model from {confidence_model}[/dim]")
+        except Exception as exc:
+            console.print(f"[yellow]Failed to load confidence model: {exc}[/yellow]")
+
     request = RsBreakoutRequest(
         market=market,
         as_of=as_of_date,
@@ -255,7 +285,11 @@ def rs_breakout(
         history_days=int(history_days),
         require_delivery=market == "india",
     )
-    result = run_rs_breakout_scan(request, fetcher, console)
+    result = run_rs_breakout_scan(
+        request, fetcher, console,
+        confidence_model=model,
+        confidence_threshold=confidence_threshold,
+    )
     render_result(result, console, limit=int(limit), market=market)
 
     if not no_output_files:

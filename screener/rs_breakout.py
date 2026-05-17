@@ -225,7 +225,7 @@ def evaluate_symbol(
     benchmark_close: pd.Series,
     as_of: date,
     delivery: tuple[Optional[float], Optional[float]] | None = None,
-    confidence_model: Optional["SignalConfidenceModel"] = None,
+    confidence_model: Optional[Any] = None,
     benchmark_bars: Optional[pd.DataFrame] = None,
 ) -> Optional[tuple[RsBreakoutRow, bool, bool, Optional[float]]]:
     """Return row plus price/delivery pass booleans and optional ML confidence."""
@@ -277,15 +277,20 @@ def evaluate_symbol(
 
     ml_confidence: Optional[float] = None
     if confidence_model is not None:
-        from screener.ml_signal import BreakoutFeatureExtractor
+        from screener.ml_signal_v5 import V5FeatureExtractor
 
-        extractor = BreakoutFeatureExtractor()
+        extractor = V5FeatureExtractor()
         features = extractor.extract(df, benchmark_bars=benchmark_bars)
         if not features.empty:
             try:
-                ml_confidence = float(confidence_model.predict(features.iloc[[-1]])[0])
-            except Exception:
-                pass
+                row_feat = features.iloc[[-1]]
+                preds = confidence_model.predict(row_feat)
+                ml_confidence = float(confidence_model.predict_confidence(row_feat)[0])
+            except Exception as exc:
+                logger.warning(
+                    "ML confidence computation failed for %s: %s", symbol, exc,
+                    exc_info=False,
+                )
 
     row = RsBreakoutRow(
         symbol=symbol,
@@ -313,7 +318,7 @@ def scan_rs_breakouts(
     delivery_panel: Optional[pd.DataFrame] = None,
     benchmark_symbol: str = DEFAULT_BENCHMARK,
     require_delivery: bool = True,
-    confidence_model: Optional["SignalConfidenceModel"] = None,
+    confidence_model: Optional[Any] = None,
     confidence_threshold: Optional[float] = None,
 ) -> RsBreakoutResult:
     benchmark = normalize_bars(benchmark_bars, as_of)
