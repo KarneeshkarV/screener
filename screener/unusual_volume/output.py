@@ -98,6 +98,11 @@ def render_rich(events: list[Event], market: str, as_of, console: Console) -> No
         table.add_column("Deliv%", justify="right")
         table.add_column("DelvRVOL", justify="right")
         table.add_column("Conv", justify="right")
+        table.add_column("DelvTrend", justify="right")
+        table.add_column("DelvZ", justify="right")
+        table.add_column("PCR", justify="right")
+        table.add_column("C/P OI", justify="right")
+        table.add_column("Pledge%", justify="right")
     table.add_column("Build", justify="right")
     table.add_column("Sector", no_wrap=False, max_width=20)
     table.add_column("Notes", no_wrap=False, max_width=40)
@@ -119,12 +124,38 @@ def render_rich(events: list[Event], market: str, as_of, console: Console) -> No
                     _fmt_float(ev.delivery_pct, 1),
                     _fmt_float(ev.delivery_rvol),
                     _fmt_float(ev.conviction_score),
+                    _fmt_float(ev.delivery_trend),
+                    _fmt_float(ev.delivery_spike),
+                    _fmt_float(ev.pcr),
+                    _fmt_float(ev.call_put_oi_ratio),
+                    _fmt_float(ev.pledge_pct, 1),
                 ]
             )
         row.append(_fmt_float(ev.buildup_score, 3))
         row.extend([ev.sector or "-", ev.notes or "-"])
         table.add_row(*row)
     console.print(table)
+    if is_india:
+        footer = _fii_dii_footer(sorted_events)
+        if footer:
+            console.print(footer)
+
+
+def _fii_dii_footer(events: list[Event]) -> str:
+    """FII/DII are market-wide (identical on every event) — render once."""
+    for ev in events:
+        if (
+            ev.fii_5d_net is not None
+            or ev.dii_5d_net is not None
+            or ev.fii_trend is not None
+        ):
+            return (
+                "[dim]Market-wide FII/DII — "
+                f"FII 5d net: {_fmt_float(ev.fii_5d_net)} | "
+                f"DII 5d net: {_fmt_float(ev.dii_5d_net)} | "
+                f"FII trend: {_fmt_float(ev.fii_trend)}[/dim]"
+            )
+    return ""
 
 
 def _color_direction(d: str) -> str:
@@ -180,6 +211,12 @@ def write_markdown(events: list[Event], path: Path, market: str, as_of) -> None:
     lines.append(f"# Unusual Volume — {market.upper()} ({as_of})")
     lines.append("")
     lines.append(f"**Events:** {len(events)}")
+    if is_india:
+        fd = _fii_dii_footer(sorted_events)
+        if fd:
+            plain = fd.replace("[dim]", "").replace("[/dim]", "")
+            lines.append("")
+            lines.append(f"**{plain}**")
     lines.append("")
 
     buckets = {
@@ -226,10 +263,14 @@ def write_markdown(events: list[Event], path: Path, market: str, as_of) -> None:
             continue
         if is_india:
             lines.append(
-                "| # | Ticker | Strength | Close | Chg | RVOL | Z | Deliv% | DelvRVOL | Conv | Build | Sector |"
+                "| # | Ticker | Strength | Close | Chg | RVOL | Z | Deliv% | "
+                "DelvRVOL | Conv | DelvTrend | DelvZ | PCR | C/P OI | Pledge% | "
+                "Build | Sector |"
             )
             lines.append(
-                "|---|--------|----------|------:|----:|-----:|--:|-------:|---------:|-----:|------:|--------|"
+                "|---|--------|----------|------:|----:|-----:|--:|-------:|"
+                "---------:|-----:|----------:|------:|----:|-------:|--------:|"
+                "------:|--------|"
             )
         else:
             lines.append(
@@ -253,6 +294,11 @@ def write_markdown(events: list[Event], path: Path, market: str, as_of) -> None:
                     _fmt_float(ev.delivery_pct, 1),
                     _fmt_float(ev.delivery_rvol),
                     _fmt_float(ev.conviction_score),
+                    _fmt_float(ev.delivery_trend),
+                    _fmt_float(ev.delivery_spike),
+                    _fmt_float(ev.pcr),
+                    _fmt_float(ev.call_put_oi_ratio),
+                    _fmt_float(ev.pledge_pct, 1),
                     _fmt_float(ev.buildup_score, 3),
                     ev.sector or "-",
                 ]

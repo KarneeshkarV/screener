@@ -82,6 +82,40 @@ def write_frame(path: Path, frame: pd.DataFrame) -> None:
     tmp.replace(path)
 
 
+PANEL_ROOT = Path.home() / ".screener" / "panels"
+
+
+def panel_path(name: str) -> Path:
+    """Path to an accumulating snapshot panel parquet (``~/.screener/panels``)."""
+    return PANEL_ROOT / f"{name}.parquet"
+
+
+def append_panel_snapshot(
+    name: str, rows: pd.DataFrame, *, dedupe_keys: list[str]
+) -> pd.DataFrame:
+    """Append ``rows`` to the named panel, dedupe (keep last), persist, return.
+
+    Live-only sources (option chain, FII/DII) have no historical backfill, so
+    each scan appends today's snapshot here and the panel accumulates over
+    time into a backtestable history. Re-runs on the same key overwrite the
+    prior row (``keep="last"``). The write is atomic (tmp + replace).
+    """
+    if rows is None or rows.empty:
+        existing = read_frame(panel_path(name))
+        return existing if existing is not None else pd.DataFrame()
+    path = panel_path(name)
+    existing = read_frame(path)
+    merged = (
+        pd.concat([existing, rows], ignore_index=True)
+        if existing is not None and not existing.empty
+        else rows.copy()
+    )
+    merged = merged.drop_duplicates(subset=dedupe_keys, keep="last")
+    merged = merged.sort_values(dedupe_keys).reset_index(drop=True)
+    write_frame(path, merged)
+    return merged
+
+
 def cached_json_call(
     namespace: str,
     key_parts: Any,

@@ -405,11 +405,15 @@ def _delivery_series_for_symbol(
     symbol: str,
     index: pd.DatetimeIndex,
 ) -> pd.DataFrame:
+    cols = (
+        "delivery_pct",
+        "previous_delivery_pct",
+        "delivery_pct_last",
+        "delivery_trend",
+        "delivery_spike",
+    )
     empty = pd.DataFrame(
-        {
-            "delivery_pct": pd.Series(np.nan, index=index, dtype=float),
-            "previous_delivery_pct": pd.Series(np.nan, index=index, dtype=float),
-        }
+        {c: pd.Series(np.nan, index=index, dtype=float) for c in cols}
     )
     if panel is None or panel.empty:
         return empty
@@ -424,10 +428,17 @@ def _delivery_series_for_symbol(
         .drop_duplicates(subset=["date"], keep="last")
     )
     delivery_pct = pd.to_numeric(rows["DELIV_PER"], errors="coerce")
+    sma20 = delivery_pct.rolling(20, min_periods=5).mean()
+    std20 = delivery_pct.rolling(20, min_periods=5).std(ddof=0)
+    trend = delivery_pct / sma20
+    spike = (delivery_pct - sma20) / std20.replace(0.0, np.nan)
     series = pd.DataFrame(
         {
             "delivery_pct": delivery_pct.to_numpy(dtype=float),
             "previous_delivery_pct": delivery_pct.shift(1).to_numpy(dtype=float),
+            "delivery_pct_last": delivery_pct.to_numpy(dtype=float),
+            "delivery_trend": trend.to_numpy(dtype=float),
+            "delivery_spike": spike.to_numpy(dtype=float),
         },
         index=pd.DatetimeIndex(rows["date"]),
     )
@@ -464,6 +475,9 @@ def build_signal_frame(
     out["previous_week_high"] = prev_week_high
     out["delivery_pct"] = delivery["delivery_pct"]
     out["previous_delivery_pct"] = delivery["previous_delivery_pct"]
+    out["delivery_pct_last"] = delivery["delivery_pct_last"]
+    out["delivery_trend"] = delivery["delivery_trend"]
+    out["delivery_spike"] = delivery["delivery_spike"]
     base_pass = (
         (out["rs_55"] > 0)
         & (out["close"].astype(float) > out["supertrend_value"])
@@ -505,7 +519,55 @@ def prepare_backtest_frames(
             symbol=symbol,
             require_delivery=require_delivery,
         )
+    if market == "india":
+        _join_microstructure_panels(prepared)
     return prepared
+
+
+def _join_microstructure_panels(prepared: dict[str, pd.DataFrame]) -> None:
+    """Left-join accumulated option-chain / FII-DII snapshot panels as feature
+    columns. These live-only sources have no historical backfill, so columns
+    are NaN for dates before the daily snapshot accumulation began —
+    strategies referencing them simply don't trigger on those bars. Read-only,
+    keeps backtests offline/deterministic.
+    """
+    from screener.cache import panel_path, read_frame
+
+    oc = read_frame(panel_path("option_chain"))
+    fd = read_frame(panel_path("fii_dii"))
+    oc_by_sym: dict[str, pd.DataFrame] = {}
+    if oc is not None and not oc.empty:
+        oc = oc.copy()
+        oc["as_of"] = pd.to_datetime(oc["as_of"], errors="coerce").dt.normalize()
+        for sym, grp in oc.groupby(oc["SYMBOL"].astype(str).str.upper()):
+            oc_by_sym[sym] = grp.set_index("as_of").sort_index()
+    if fd is not None and not fd.empty:
+        fd = fd.copy()
+        fd["date"] = pd.to_datetime(fd["date"], errors="coerce").dt.normalize()
+        fd = fd.set_index("date").sort_index()
+        # Derive the rolling metrics historically from the raw daily nets so a
+        # backtest sees the same values the live scan would have computed.
+        fii = pd.to_numeric(fd["fii_net"], errors="coerce")
+        dii = pd.to_numeric(fd["dii_net"], errors="coerce")
+        fd["fii_5d_net"] = fii.rolling(5, min_periods=1).sum()
+        fd["dii_5d_net"] = dii.rolling(5, min_periods=1).sum()
+        fd["fii_trend"] = fii / fii.rolling(20, min_periods=5).mean()
+    for symbol, frame in prepared.items():
+        if frame is None or frame.empty:
+            continue
+        sym = india_symbol(symbol)
+        g = oc_by_sym.get(sym)
+        for col in ("call_put_oi_ratio", "pcr"):
+            frame[col] = (
+                g[col].reindex(frame.index)
+                if g is not None and col in g.columns
+                else np.nan
+            )
+        for col in ("fii_5d_net", "dii_5d_net", "fii_trend"):
+            if fd is not None and not fd.empty and col in fd.columns:
+                frame[col] = fd[col].reindex(frame.index)
+            else:
+                frame[col] = np.nan
 
 
 def render_result(

@@ -36,6 +36,9 @@ class UnusualVolumeRequest(BaseModel):
     buildup_enabled: bool
     buildup_window: int = Field(ge=1)
     buildup_min_score: float = Field(ge=0.0)
+    option_chain: bool = False
+    fii_dii: bool = False
+    pledge: bool = False
     refresh: bool = False
 
     model_config = ConfigDict(frozen=True)
@@ -218,6 +221,9 @@ def run_unusual_volume_scan(
     floor_rank = _STRENGTH_RANK[request.strength_floor.upper()]
     events = [e for e in events if _STRENGTH_RANK[e.strength] >= floor_rank]
 
+    if request.market == "india":
+        _overlay_india_microstructure(request, events, console)
+
     if request.buildup_enabled:
         _apply_buildup_overlay(request, liquid, panel, events, console)
 
@@ -300,6 +306,86 @@ def _overlay_india_delivery(
         )
     events.extend(quiet)
     return panel
+
+
+def _overlay_india_microstructure(
+    request: UnusualVolumeRequest,
+    events: list[Event],
+    console: Console,
+) -> None:
+    """Attach option-chain / FII-DII / pledge overlays (India, post-filter).
+
+    Each overlay is independently guarded so a flaky NSE never aborts the
+    scan. Live-only sources also persist a daily snapshot panel so a
+    backtestable history accumulates over time.
+    """
+    if not events or not (
+        request.option_chain or request.fii_dii or request.pledge
+    ):
+        return
+    try:
+        from screener.operator.fetch import latest_trading_day
+
+        snap_date = latest_trading_day(request.as_of)
+    except Exception:
+        snap_date = request.as_of
+
+    if request.option_chain:
+        try:
+            from screener.cache import append_panel_snapshot
+            from .option_chain import overlay_option_chain
+
+            metrics = overlay_option_chain(events, refresh=request.refresh)
+            if metrics:
+                rows = pd.DataFrame(
+                    [
+                        {
+                            "as_of": snap_date,
+                            "SYMBOL": sym,
+                            "ce_oi": m.get("ce_oi"),
+                            "pe_oi": m.get("pe_oi"),
+                            "call_put_oi_ratio": m.get("call_put_oi_ratio"),
+                            "pcr": m.get("pcr"),
+                        }
+                        for sym, m in metrics.items()
+                    ]
+                )
+                append_panel_snapshot(
+                    "option_chain", rows, dedupe_keys=["as_of", "SYMBOL"]
+                )
+            console.print(
+                f"[dim]Option-chain overlay: {len(metrics)} symbol(s).[/dim]"
+            )
+        except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
+            console.print(
+                f"[yellow]Option-chain overlay failed: {exc}. Skipping.[/yellow]"
+            )
+
+    if request.fii_dii:
+        try:
+            from .fii_dii import overlay_fii_dii
+
+            m = overlay_fii_dii(events, snap_date, refresh=request.refresh)
+            if m is not None:
+                console.print(
+                    f"[dim]FII/DII (market-wide): 5d FII={m['fii_5d_net']} "
+                    f"5d DII={m['dii_5d_net']} trend={m['fii_trend']}.[/dim]"
+                )
+        except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
+            console.print(
+                f"[yellow]FII/DII overlay failed: {exc}. Skipping.[/yellow]"
+            )
+
+    if request.pledge:
+        try:
+            from screener.pledge import overlay_pledge
+
+            overlay_pledge(events, refresh=request.refresh)
+            console.print("[dim]Pledge overlay applied.[/dim]")
+        except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
+            console.print(
+                f"[yellow]Pledge overlay failed: {exc}. Skipping.[/yellow]"
+            )
 
 
 def _apply_buildup_overlay(

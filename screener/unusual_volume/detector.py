@@ -58,6 +58,17 @@ class Event(BaseModel):
     # Build-up overlay — populated by buildup.scan_buildups, default None.
     buildup_score: Optional[float] = None
     buildup_flags: list[str] = Field(default_factory=list)
+    # India micro-structure overlays — populated by the delivery / option-chain
+    # / FII-DII / pledge overlays, default None elsewhere.
+    delivery_pct_last: Optional[float] = None
+    delivery_trend: Optional[float] = None
+    delivery_spike: Optional[float] = None
+    call_put_oi_ratio: Optional[float] = None
+    pcr: Optional[float] = None
+    fii_5d_net: Optional[float] = None
+    fii_trend: Optional[float] = None
+    dii_5d_net: Optional[float] = None
+    pledge_pct: Optional[float] = None
 
     @field_validator("symbol")
     @classmethod

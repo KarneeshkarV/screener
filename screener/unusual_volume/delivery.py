@@ -108,7 +108,12 @@ def compute_delivery_metrics(panel: pd.DataFrame) -> pd.DataFrame:
     """Add delivery_rvol + conviction_score columns to a delivery panel."""
     if panel.empty:
         out = panel.copy()
-        for col in ("delivery_rvol", "conviction_score"):
+        for col in (
+            "delivery_rvol",
+            "conviction_score",
+            "delivery_trend",
+            "delivery_spike",
+        ):
             out[col] = pd.Series(dtype=float)
         return out
     panel = panel.copy()
@@ -122,6 +127,16 @@ def compute_delivery_metrics(panel: pd.DataFrame) -> pd.DataFrame:
     panel["delivery_pct_sma_20"] = panel.groupby("SYMBOL")["DELIV_PER"].transform(
         lambda s: s.rolling(DELIVERY_SMA_WINDOW, min_periods=5).mean()
     )
+    # delivery_trend: latest DELIV_PER relative to its 20-bar mean (same ratio
+    # idiom as delivery_rvol) — > 1 means delivery running hot vs recent norm.
+    panel["delivery_trend"] = panel["DELIV_PER"] / panel["delivery_pct_sma_20"]
+    # delivery_spike: z-score of DELIV_PER over the trailing 20 bars.
+    delivery_pct_std_20 = panel.groupby("SYMBOL")["DELIV_PER"].transform(
+        lambda s: s.rolling(DELIVERY_SMA_WINDOW, min_periods=5).std(ddof=0)
+    )
+    panel["delivery_spike"] = (
+        panel["DELIV_PER"] - panel["delivery_pct_sma_20"]
+    ) / delivery_pct_std_20.replace(0.0, pd.NA)
     return panel
 
 
@@ -166,6 +181,17 @@ def overlay_events(events: list[Event], panel: pd.DataFrame) -> list[Event]:
         )
         ev.delivery_rvol = (
             float(row["delivery_rvol"]) if not pd.isna(row["delivery_rvol"]) else None
+        )
+        ev.delivery_pct_last = ev.delivery_pct
+        ev.delivery_trend = (
+            float(row["delivery_trend"])
+            if not pd.isna(row["delivery_trend"])
+            else None
+        )
+        ev.delivery_spike = (
+            float(row["delivery_spike"])
+            if not pd.isna(row["delivery_spike"])
+            else None
         )
         if ev.delivery_pct is not None and ev.rvol == ev.rvol:  # not NaN
             ev.conviction_score = round(ev.rvol * (ev.delivery_pct / 100.0), 4)

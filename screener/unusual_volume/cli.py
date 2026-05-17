@@ -245,6 +245,26 @@ def _standalone_buildup_event(
     help="Skip JSON/MD writes (rich-table only).",
 )
 @click.option(
+    "--option-chain",
+    is_flag=True,
+    default=False,
+    help="(India) attach live NSE option-chain PCR / call-put OI ratio and "
+    "accumulate a daily snapshot panel.",
+)
+@click.option(
+    "--fii-dii",
+    is_flag=True,
+    default=False,
+    help="(India) attach market-wide FII/DII 5d net + trend and accumulate a "
+    "daily snapshot panel.",
+)
+@click.option(
+    "--pledge",
+    is_flag=True,
+    default=False,
+    help="(India) attach promoter pledge %% (NSE filings, openscreener fallback).",
+)
+@click.option(
     "--refresh", is_flag=True, help="Bypass cached yfinance and enrichment data."
 )
 @click.option(
@@ -287,6 +307,9 @@ def unusual_volume(
     min_market_cap: Optional[float],
     include_fno_ban: bool,
     deep_india: bool,
+    option_chain: bool,
+    fii_dii: bool,
+    pledge: bool,
     json_path: Optional[str],
     md_path: Optional[str],
     no_output_files: bool,
@@ -321,6 +344,9 @@ def unusual_volume(
         buildup_enabled=buildup_enabled,
         buildup_window=buildup_window,
         buildup_min_score=buildup_min_score,
+        option_chain=option_chain,
+        fii_dii=fii_dii,
+        pledge=pledge,
         refresh=refresh,
     )
     result = run_unusual_volume_scan(request, console)
