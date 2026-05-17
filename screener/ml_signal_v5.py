@@ -82,16 +82,18 @@ FEATURE_NEUTRAL_VALUES: dict[str, float] = {
     "consecutive_up_days": 0.0,
     "volume_price_corr_20d": 0.0,
     "sharpe_20d": 0.0,
-    # External data — neutral = no signal
-    "insider_buy_ratio": 0.5,
-    "insider_buy_shares_ratio": 0.5,
-    "insider_buy_dollar_ratio": 0.5,
-    "insider_n_transactions": 0.0,
-    "short_pct_float": 0.05,
-    "short_trend": 1.0,
-    "earnings_surprise_last": 0.0,
-    "earnings_beat_streak": 0.0,
-    "days_since_earnings": 90.0,
+    # External data — India specific
+    "call_put_oi_ratio": 1.0,
+    "call_put_volume_ratio": 1.0,
+    "pcr": 1.0,
+    "max_pain_strike": 0.0,
+    "delivery_pct_last": 50.0,
+    "delivery_trend": 1.0,
+    "delivery_spike": 0.0,
+    "fii_5d_net": 0.0,
+    "fii_trend": 1.0,
+    "dii_5d_net": 0.0,
+    "pledge_pct": 0.0,
 }
 
 
