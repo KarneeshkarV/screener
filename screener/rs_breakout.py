@@ -412,9 +412,7 @@ def _delivery_series_for_symbol(
         "delivery_trend",
         "delivery_spike",
     )
-    empty = pd.DataFrame(
-        {c: pd.Series(np.nan, index=index, dtype=float) for c in cols}
-    )
+    empty = pd.DataFrame({c: pd.Series(np.nan, index=index, dtype=float) for c in cols})
     if panel is None or panel.empty:
         return empty
     sym = india_symbol(symbol)

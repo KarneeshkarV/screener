@@ -319,9 +319,7 @@ def _overlay_india_microstructure(
     scan. Live-only sources also persist a daily snapshot panel so a
     backtestable history accumulates over time.
     """
-    if not events or not (
-        request.option_chain or request.fii_dii or request.pledge
-    ):
+    if not events or not (request.option_chain or request.fii_dii or request.pledge):
         return
     try:
         from screener.operator.fetch import latest_trading_day
@@ -353,9 +351,7 @@ def _overlay_india_microstructure(
                 append_panel_snapshot(
                     "option_chain", rows, dedupe_keys=["as_of", "SYMBOL"]
                 )
-            console.print(
-                f"[dim]Option-chain overlay: {len(metrics)} symbol(s).[/dim]"
-            )
+            console.print(f"[dim]Option-chain overlay: {len(metrics)} symbol(s).[/dim]")
         except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
             console.print(
                 f"[yellow]Option-chain overlay failed: {exc}. Skipping.[/yellow]"
@@ -372,9 +368,7 @@ def _overlay_india_microstructure(
                     f"5d DII={m['dii_5d_net']} trend={m['fii_trend']}.[/dim]"
                 )
         except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
-            console.print(
-                f"[yellow]FII/DII overlay failed: {exc}. Skipping.[/yellow]"
-            )
+            console.print(f"[yellow]FII/DII overlay failed: {exc}. Skipping.[/yellow]")
 
     if request.pledge:
         try:
@@ -383,9 +377,7 @@ def _overlay_india_microstructure(
             overlay_pledge(events, refresh=request.refresh)
             console.print("[dim]Pledge overlay applied.[/dim]")
         except (requests.RequestException, OSError, RuntimeError, ValueError) as exc:
-            console.print(
-                f"[yellow]Pledge overlay failed: {exc}. Skipping.[/yellow]"
-            )
+            console.print(f"[yellow]Pledge overlay failed: {exc}. Skipping.[/yellow]")
 
 
 def _apply_buildup_overlay(

@@ -149,9 +149,7 @@ def test_compute_fii_dii_metrics_5d_and_trend():
     fii = panel["fii_net"]
     assert m["fii_5d_net"] == pytest.approx(fii.tail(5).sum())
     assert m["dii_5d_net"] == pytest.approx(panel["dii_net"].tail(5).sum())
-    assert m["fii_trend"] == pytest.approx(
-        round(fii.iloc[-1] / fii.tail(20).mean(), 4)
-    )
+    assert m["fii_trend"] == pytest.approx(round(fii.iloc[-1] / fii.tail(20).mean(), 4))
 
 
 def test_compute_fii_dii_metrics_cold_start():

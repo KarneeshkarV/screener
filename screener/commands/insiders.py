@@ -214,9 +214,7 @@ def promoter_buys(
             for c in ("fmp_net_shares_6m", "yf_net_pct_6m", "yf_net_shares_6m")
             if c in enriched.columns
         ]
-        enriched = enriched.sort_values(
-            sort_cols, ascending=False, na_position="last"
-        )
+        enriched = enriched.sort_values(sort_cols, ascending=False, na_position="last")
     enriched = enriched.head(limit)
 
     if output_csv:

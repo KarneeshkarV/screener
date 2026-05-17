@@ -422,9 +422,7 @@ def filter_promoter_increased(
         # to the yfinance feed per-row when FMP has no data for a ticker.
         yf_net = pd.to_numeric(insiders.get("yf_net_shares_6m"), errors="coerce")
         if "fmp_net_shares_6m" in insiders.columns:
-            fmp_net = pd.to_numeric(
-                insiders.get("fmp_net_shares_6m"), errors="coerce"
-            )
+            fmp_net = pd.to_numeric(insiders.get("fmp_net_shares_6m"), errors="coerce")
             net = fmp_net.where(fmp_net.notna(), yf_net)
         else:
             net = yf_net

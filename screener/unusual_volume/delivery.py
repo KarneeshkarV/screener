@@ -184,14 +184,10 @@ def overlay_events(events: list[Event], panel: pd.DataFrame) -> list[Event]:
         )
         ev.delivery_pct_last = ev.delivery_pct
         ev.delivery_trend = (
-            float(row["delivery_trend"])
-            if not pd.isna(row["delivery_trend"])
-            else None
+            float(row["delivery_trend"]) if not pd.isna(row["delivery_trend"]) else None
         )
         ev.delivery_spike = (
-            float(row["delivery_spike"])
-            if not pd.isna(row["delivery_spike"])
-            else None
+            float(row["delivery_spike"]) if not pd.isna(row["delivery_spike"]) else None
         )
         if ev.delivery_pct is not None and ev.rvol == ev.rvol:  # not NaN
             ev.conviction_score = round(ev.rvol * (ev.delivery_pct / 100.0), 4)
