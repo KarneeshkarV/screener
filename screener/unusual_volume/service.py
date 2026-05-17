@@ -22,6 +22,17 @@ _DEFAULT_MIN_MCAP = {"us": 300_000_000.0, "india": 5_000_000_000.0}
 _STRENGTH_RANK = {"MODERATE": 1, "HIGH": 2, "EXTREME": 3}
 
 
+def _live_nse_snapshot_date() -> date:
+    """Return the trading date represented by live NSE-only endpoints."""
+    today = date.today()
+    try:
+        from screener.operator.fetch import latest_trading_day
+
+        return latest_trading_day(today)
+    except Exception:
+        return today
+
+
 class UnusualVolumeRequest(BaseModel):
     market: str
     as_of: date
@@ -321,12 +332,7 @@ def _overlay_india_microstructure(
     """
     if not events or not (request.option_chain or request.fii_dii or request.pledge):
         return
-    try:
-        from screener.operator.fetch import latest_trading_day
-
-        snap_date = latest_trading_day(request.as_of)
-    except Exception:
-        snap_date = request.as_of
+    snap_date = _live_nse_snapshot_date()
 
     if request.option_chain:
         try:

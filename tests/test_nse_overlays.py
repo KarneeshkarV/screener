@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from datetime import date
+import io
 import multiprocessing as mp
 from pathlib import Path
 
 import pandas as pd
 import pytest
+from rich.console import Console
 
 from screener import cache, pledge
 from screener import rs_breakout
+from screener.unusual_volume import service
 from screener.unusual_volume import fii_dii, option_chain
 from screener.unusual_volume.delivery import compute_delivery_metrics, overlay_events
 from screener.unusual_volume.detector import Event
@@ -241,6 +244,63 @@ def test_overlay_fii_dii_broadcasts_identical(monkeypatch, tmp_path):
     assert m is not None
     assert evs[0].fii_5d_net == evs[1].fii_5d_net
     assert evs[0].dii_5d_net == evs[1].dii_5d_net
+
+
+def test_live_nse_overlays_persist_live_snapshot_date(monkeypatch, tmp_path):
+    historical_as_of = date(2026, 5, 1)
+    live_snapshot_date = date(2026, 5, 15)
+    monkeypatch.setattr(cache, "PANEL_ROOT", tmp_path)
+    monkeypatch.setattr(service, "_live_nse_snapshot_date", lambda: live_snapshot_date)
+    monkeypatch.setattr(
+        option_chain,
+        "overlay_option_chain",
+        lambda events, refresh=False: {
+            "RELIANCE": {
+                "ce_oi": 100.0,
+                "pe_oi": 200.0,
+                "call_put_oi_ratio": 0.5,
+                "pcr": 2.0,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        fii_dii,
+        "fetch_fii_dii_today",
+        lambda refresh=False: [
+            {"category": "FII/FPI", "netValue": "123.45"},
+            {"category": "DII", "netValue": "67.89"},
+        ],
+    )
+    request = service.UnusualVolumeRequest(
+        market="india",
+        as_of=historical_as_of,
+        universe=["NSE:RELIANCE"],
+        min_rvol=0.0,
+        min_z=0.0,
+        strength_floor="MODERATE",
+        min_avg_volume=0.0,
+        include_fno_ban=False,
+        deep_india=False,
+        buildup_enabled=False,
+        buildup_window=20,
+        buildup_min_score=0.0,
+        option_chain=True,
+        fii_dii=True,
+        pledge=False,
+    )
+
+    service._overlay_india_microstructure(
+        request, [_event("RELIANCE", historical_as_of)], Console(file=io.StringIO())
+    )
+
+    oc = cache.read_frame(cache.panel_path("option_chain"))
+    fd = cache.read_frame(cache.panel_path("fii_dii"))
+    assert oc is not None
+    assert fd is not None
+    assert oc.iloc[0]["as_of"].date() == live_snapshot_date
+    assert fd.iloc[0]["date"].date() == live_snapshot_date
+    assert oc.iloc[0]["as_of"].date() != historical_as_of
+    assert fd.iloc[0]["date"].date() != historical_as_of
 
 
 # ── panel snapshot dedupe ──────────────────────────────────────────────────
