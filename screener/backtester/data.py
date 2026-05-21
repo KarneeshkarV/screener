@@ -30,19 +30,45 @@ _YFINANCE_CONFIGURED = False
 
 
 def _configure_yfinance() -> None:
-    """Point yfinance tz cache at tmpfs and avoid peewee SQLite lookups."""
+    """Point yfinance tz cache at tmpfs and avoid peewee SQLite lookups.
+
+    The tz-cache dummy swap relies on yfinance private symbols
+    (``_TzCacheManager`` / ``_TzCacheDummy``); upstream renames have happened
+    in the past. We attempt the swap defensively and degrade to a warning if
+    the symbols disappear — the bulk download still works without it, just a
+    bit slower on first call. ``_YFINANCE_CONFIGURED`` is set regardless so we
+    don't keep retrying the same monkey-patch on every fetch.
+    """
     global _YFINANCE_CONFIGURED
     if _YFINANCE_CONFIGURED:
         return
-    import yfinance as yf
-    import yfinance.cache as yf_cache
+    try:
+        import yfinance as yf
+        import yfinance.cache as yf_cache
 
-    if os.path.isdir("/dev/shm"):
-        yf.set_tz_cache_location("/dev/shm/screener-yftz")
-    yf_cache._TzCacheManager.get_tz_cache = classmethod(
-        lambda cls: yf_cache._TzCacheDummy()
-    )
-    _YFINANCE_CONFIGURED = True
+        if os.path.isdir("/dev/shm"):
+            yf.set_tz_cache_location("/dev/shm/screener-yftz")
+        try:
+            tz_cache_manager = yf_cache._TzCacheManager
+            tz_cache_dummy = yf_cache._TzCacheDummy
+        except AttributeError:
+            from screener.logging_config import get_logger
+
+            get_logger(__name__).warning(
+                "yfinance_tz_cache_patch_unavailable",
+                reason="missing private _TzCacheManager/_TzCacheDummy",
+            )
+        else:
+            tz_cache_manager.get_tz_cache = classmethod(lambda cls: tz_cache_dummy())
+    except Exception as exc:  # noqa: BLE001 - degrade gracefully on any swap failure
+        from screener.logging_config import get_logger
+
+        get_logger(__name__).warning(
+            "yfinance_configure_failed",
+            error=repr(exc),
+        )
+    finally:
+        _YFINANCE_CONFIGURED = True
 
 
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
