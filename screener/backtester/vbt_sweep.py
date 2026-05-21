@@ -91,16 +91,28 @@ def _sma(close: pd.DataFrame, window: int, vbt: Any) -> pd.DataFrame:
 
 
 def _fixed_hold_exits(entries: pd.DataFrame, hold: int) -> pd.DataFrame:
+    return _vectorized_fixed_hold_exits(entries, hold)
+
+
+def _vectorized_fixed_hold_exits(entries: pd.DataFrame, hold: int) -> pd.DataFrame:
     if hold <= 0:
         return pd.DataFrame(False, index=entries.index, columns=entries.columns)
     arr = entries.to_numpy(dtype=bool)
     out = np.zeros_like(arr, dtype=bool)
-    for col in range(arr.shape[1]):
-        for entry_i in np.flatnonzero(arr[:, col]):
-            exit_i = entry_i + hold
-            if exit_i < arr.shape[0]:
-                out[exit_i, col] = True
+    if not arr.any():
+        return pd.DataFrame(out, index=entries.index, columns=entries.columns)
+    entry_idx = np.argwhere(arr)
+    exit_rows = entry_idx[:, 0] + hold
+    valid = exit_rows < arr.shape[0]
+    if valid.any():
+        np.add.at(out, (exit_rows[valid], entry_idx[valid, 1]), True)
     return pd.DataFrame(out, index=entries.index, columns=entries.columns)
+
+
+def _ma_for_window(ma_panel: pd.DataFrame, window: int) -> pd.DataFrame:
+    if isinstance(ma_panel.columns, pd.MultiIndex):
+        return ma_panel.xs(window, axis=1, level="ma_window")
+    return ma_panel
 
 
 def sma_crossover_signals(
@@ -252,6 +264,45 @@ def run_combo_backtest(
     }
 
 
+def _build_vectorized_signal_panels(
+    close: pd.DataFrame,
+    combos: list[tuple[int, int, int]],
+    *,
+    vbt: Any,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    tickers = list(close.columns)
+    fast_values = sorted({fast for fast, _, _ in combos})
+    slow_values = sorted({slow for _, slow, _ in combos})
+    fast_ma_panel = vbt.MA.run(close, window=fast_values).ma
+    slow_ma_panel = vbt.MA.run(close, window=slow_values).ma
+
+    entry_parts: list[pd.DataFrame] = []
+    exit_parts: list[pd.DataFrame] = []
+    for fast, slow, hold in combos:
+        sma_fast = _ma_for_window(fast_ma_panel, fast)
+        sma_slow = _ma_for_window(slow_ma_panel, slow)
+        entries = close.vbt.crossed_above(sma_slow) & (close > sma_fast)
+        exits = close.vbt.crossed_below(sma_slow)
+        if hold > 0:
+            exits = exits | _vectorized_fixed_hold_exits(entries, hold)
+        col_index = pd.MultiIndex.from_product(
+            [[fast], [slow], [hold], tickers],
+            names=["fast", "slow", "hold", "ticker"],
+        )
+        entries.columns = col_index
+        exits.columns = col_index
+        entry_parts.append(entries.fillna(False))
+        exit_parts.append(exits.fillna(False))
+
+    return pd.concat(entry_parts, axis=1), pd.concat(exit_parts, axis=1)
+
+
+def _combo_metric(series: pd.Series | float, fast: int, slow: int, hold: int) -> float:
+    if isinstance(series, pd.Series):
+        return _scalar_metric(series.loc[(fast, slow, hold)])
+    return _scalar_metric(series)
+
+
 def run_parameter_sweep(
     close: pd.DataFrame,
     *,
@@ -262,21 +313,54 @@ def run_parameter_sweep(
     initial_capital: float = INITIAL_CAPITAL_DEFAULT,
 ) -> pd.DataFrame:
     vbt = _require_vectorbt()
-    rows: list[dict[str, float | int]] = []
-    for fast, slow, hold in iter_param_combos(fast_values, slow_values, hold_values):
-        rows.append(
-            run_combo_backtest(
-                close,
-                fast,
-                slow,
-                hold,
-                vbt=vbt,
-                open_=open_,
-                initial_capital=initial_capital,
-            )
-        )
-    if not rows:
+    combos = iter_param_combos(fast_values, slow_values, hold_values)
+    if not combos:
         raise ValueError("No valid parameter combinations (require slow > fast).")
+
+    entries, exits = _build_vectorized_signal_panels(close, combos, vbt=vbt)
+    entries_shifted = entries.astype(bool).shift(1, fill_value=False).astype(bool)
+    exits_shifted = exits.astype(bool).shift(1, fill_value=False).astype(bool)
+    fill_price = open_ if open_ is not None else close
+    close_broadcast = pd.concat([close] * len(combos), axis=1)
+    close_broadcast.columns = entries.columns
+    price_broadcast = pd.concat([fill_price] * len(combos), axis=1)
+    price_broadcast.columns = entries.columns
+
+    pf = vbt.Portfolio.from_signals(
+        close_broadcast,
+        entries_shifted,
+        exits_shifted,
+        price=price_broadcast,
+        init_cash=float(initial_capital),
+        fees=0.0,
+        slippage=0.0,
+        group_by=["fast", "slow", "hold"],
+        cash_sharing=True,
+        freq="1D",
+    )
+    sharpe = pf.sharpe_ratio()
+    total_return = pf.total_return()
+    calmar = pf.calmar_ratio()
+    max_drawdown = pf.max_drawdown()
+    win_rate = pf.trades.win_rate()
+    trade_count = pf.trades.count()
+
+    rows: list[dict[str, float | int]] = []
+    for fast, slow, hold in combos:
+        trades_val = _combo_metric(trade_count, fast, slow, hold)
+        rows.append(
+            {
+                "fast": fast,
+                "slow": slow,
+                "hold": hold,
+                "sharpe": _combo_metric(sharpe, fast, slow, hold),
+                "total_return": _combo_metric(total_return, fast, slow, hold),
+                "calmar": _combo_metric(calmar, fast, slow, hold),
+                "max_drawdown": _combo_metric(max_drawdown, fast, slow, hold),
+                "win_rate": _combo_metric(win_rate, fast, slow, hold),
+                "trades": int(trades_val),
+            }
+        )
     return pd.DataFrame(rows)
 
 

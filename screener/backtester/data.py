@@ -26,6 +26,23 @@ from screener.resilience import call_with_resilience
 CACHE_DIR = Path.home() / ".screener" / "prices"
 FMP_CACHE_DIR = Path.home() / ".screener" / "fmp_prices"
 _DOTENV_LOADED = False
+_YFINANCE_CONFIGURED = False
+
+
+def _configure_yfinance() -> None:
+    """Point yfinance tz cache at tmpfs and avoid peewee SQLite lookups."""
+    global _YFINANCE_CONFIGURED
+    if _YFINANCE_CONFIGURED:
+        return
+    import yfinance as yf
+    import yfinance.cache as yf_cache
+
+    if os.path.isdir("/dev/shm"):
+        yf.set_tz_cache_location("/dev/shm/screener-yftz")
+    yf_cache._TzCacheManager.get_tz_cache = classmethod(
+        lambda cls: yf_cache._TzCacheDummy()
+    )
+    _YFINANCE_CONFIGURED = True
 
 
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
@@ -121,9 +138,16 @@ def _save_cache(ticker: str, df: pd.DataFrame, cache_dir: Path = CACHE_DIR) -> N
         pass
 
 
+def _empty_ohlcv_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=OHLCV_COLUMNS,
+        index=pd.DatetimeIndex([], dtype="datetime64[ns]"),
+    )
+
+
 def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
-        return pd.DataFrame(columns=OHLCV_COLUMNS)
+        return _empty_ohlcv_frame()
     # yfinance returns MultiIndex columns when multiple tickers; callers should
     # split first. For single-ticker frames, columns are plain strings.
     if isinstance(df.columns, pd.MultiIndex):
@@ -179,7 +203,7 @@ def _has_range(df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -
 
 def _split_download(raw: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataFrame]:
     if raw is None or raw.empty:
-        return {ticker: pd.DataFrame(columns=OHLCV_COLUMNS) for ticker in tickers}
+        return {ticker: _empty_ohlcv_frame() for ticker in tickers}
     if not isinstance(raw.columns, pd.MultiIndex):
         ticker = tickers[0] if tickers else ""
         return {ticker: _normalize_frame(raw)}
@@ -239,19 +263,6 @@ class YFinancePriceFetcher:
     def fetch(
         self, tickers: Iterable[str], start: date, end: date
     ) -> dict[str, pd.DataFrame]:
-        import yfinance as yf  # lazy import so tests without yfinance still run
-
-        def download_batch(
-            batch: list[str], download_kwargs: dict[str, object]
-        ) -> pd.DataFrame:
-            target: str | list[str] = batch if len(batch) > 1 else batch[0]
-            # yfinance prints expected "possibly delisted" messages directly
-            # to stderr for empty pre-listing ranges. The empty frame is enough
-            # for FallbackPriceFetcher to call FMP, so keep the lab/CLI output
-            # focused on actionable diagnostics.
-            with contextlib.redirect_stderr(io.StringIO()):
-                return yf.download(target, **download_kwargs)
-
         tickers = [t for t in tickers if t]
         results: dict[str, pd.DataFrame] = {}
         start_ts = pd.Timestamp(start)
@@ -288,6 +299,23 @@ class YFinancePriceFetcher:
                     fetch_end = min_cached - pd.Timedelta(days=1)
             missing.setdefault((fetch_start, fetch_end), []).append(ticker)
 
+        if not missing:
+            return results
+
+        _configure_yfinance()
+        import yfinance as yf  # lazy import so tests without yfinance still run
+
+        def download_batch(
+            batch: list[str], download_kwargs: dict[str, object]
+        ) -> pd.DataFrame:
+            target = " ".join(batch) if len(batch) > 1 else batch[0]
+            # yfinance prints expected "possibly delisted" messages directly
+            # to stderr for empty pre-listing ranges. The empty frame is enough
+            # for FallbackPriceFetcher to call FMP, so keep the lab/CLI output
+            # focused on actionable diagnostics.
+            with contextlib.redirect_stderr(io.StringIO()):
+                return yf.download(target, **download_kwargs)
+
         for (fetch_start, fetch_end), group in missing.items():
             for i in range(0, len(group), self.batch_size):
                 batch = group[i : i + self.batch_size]
@@ -310,7 +338,7 @@ class YFinancePriceFetcher:
                 downloaded = _split_download(raw, batch)
                 for ticker in batch:
                     cache_key = self._cache_key(ticker)
-                    norm = downloaded.get(ticker, pd.DataFrame(columns=OHLCV_COLUMNS))
+                    norm = downloaded.get(ticker, _empty_ohlcv_frame())
                     merged = _merge_cached(cached_by_ticker.get(ticker), norm)
                     if not merged.empty:
                         _save_cache(cache_key, merged, self.cache_dir)

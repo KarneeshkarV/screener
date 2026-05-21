@@ -39,7 +39,8 @@ def test_yfinance_fetcher_batches_uncached_tickers(tmp_path, monkeypatch):
 
     def fake_download(tickers, **kwargs):
         calls.append((tickers, kwargs))
-        return _download_frame(tickers, kwargs["start"], kwargs["end"])
+        batch = tickers.split() if isinstance(tickers, str) else list(tickers)
+        return _download_frame(batch, kwargs["start"], kwargs["end"])
 
     monkeypatch.setattr(yf, "download", fake_download)
 
@@ -47,7 +48,7 @@ def test_yfinance_fetcher_batches_uncached_tickers(tmp_path, monkeypatch):
     out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 1), date(2024, 1, 10))
 
     assert len(calls) == 1
-    assert calls[0][0] == ["AAA", "BBB"]
+    assert calls[0][0] == "AAA BBB"
     assert set(out) == {"AAA", "BBB"}
     assert not out["AAA"].empty
     assert not out["BBB"].empty
@@ -60,7 +61,8 @@ def test_yfinance_fetcher_uses_full_cache_hit(tmp_path, monkeypatch):
 
     def fake_download(tickers, **kwargs):
         calls["count"] += 1
-        return _download_frame(tickers, kwargs["start"], kwargs["end"])
+        batch = tickers.split() if isinstance(tickers, str) else list(tickers)
+        return _download_frame(batch, kwargs["start"], kwargs["end"])
 
     monkeypatch.setattr(yf, "download", fake_download)
 
@@ -79,7 +81,8 @@ def test_yfinance_fetcher_fetches_only_missing_tail(tmp_path, monkeypatch):
 
     def fake_download(tickers, **kwargs):
         calls.append((pd.Timestamp(kwargs["start"]), pd.Timestamp(kwargs["end"])))
-        return _download_frame(tickers, kwargs["start"], kwargs["end"])
+        batch = tickers.split() if isinstance(tickers, str) else list(tickers)
+        return _download_frame(batch, kwargs["start"], kwargs["end"])
 
     monkeypatch.setattr(yf, "download", fake_download)
 
@@ -92,3 +95,26 @@ def test_yfinance_fetcher_fetches_only_missing_tail(tmp_path, monkeypatch):
     assert calls[1][1] == pd.Timestamp("2024-01-13")
     assert out["AAA"].index.min() == pd.Timestamp("2024-01-01")
     assert out["AAA"].index.max() == pd.Timestamp("2024-01-12")
+
+
+def test_yfinance_fetcher_frame_equal_fixture(tmp_path, monkeypatch):
+    """Regression: batched fetch matches per-ticker normalization for a small fixture."""
+    import yfinance as yf
+
+    tickers = ["AAPL", "MSFT", "NVDA"]
+
+    def fake_download(tickers_arg, **kwargs):
+        batch = (
+            tickers_arg.split() if isinstance(tickers_arg, str) else list(tickers_arg)
+        )
+        return _download_frame(batch, kwargs["start"], kwargs["end"])
+
+    monkeypatch.setattr(yf, "download", fake_download)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    start, end = date(2024, 1, 1), date(2024, 1, 10)
+    batched = fetcher.fetch(tickers, start, end)
+
+    for ticker in tickers:
+        single = fetcher.fetch([ticker], start, end)
+        pd.testing.assert_frame_equal(batched[ticker], single[ticker])
