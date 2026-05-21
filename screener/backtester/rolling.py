@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import click
+import numpy as np
 import pandas as pd
 from rich.console import Console
 
@@ -18,12 +20,10 @@ from screener.backtester.cli_common import (
 )
 from screener.backtester.core import (
     _active_or_pending_tickers,
-    _bar_index_on_or_before,
     _close_slot_at_day,
     _SlotState,
     _force_close_open_slots,
     _make_slot_state,
-    _passes_entry_filters,
     _precompute_entry_signals,
     _precompute_filter_signals,
     _prepare_strategy_bars,
@@ -38,63 +38,113 @@ from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.universes import load_current_universe
 
 
-def _candidate_rows_for_day(
-    bars_by_ticker: dict[str, pd.DataFrame],
-    entry_signals_by_ticker: dict[str, pd.Series],
-    day: pd.Timestamp,
+@dataclass(frozen=True)
+class _RollingCandidateMatrices:
+    """Precomputed per-day matrices for vectorized candidate selection."""
+
+    signal_mat: pd.DataFrame
+    lookback_ok_mat: pd.DataFrame
+    filter_mat: pd.DataFrame | None
+    dollar_vol_mat: pd.DataFrame
+    close_mat: pd.DataFrame
+    volume_mat: pd.DataFrame
+    bar_idx_mat: pd.DataFrame
+
+
+def _build_rolling_candidate_matrices(
+    bars_by_tv: dict[str, pd.DataFrame],
+    entry_signals_by_tv: dict[str, pd.Series],
+    filter_signals_by_tv: dict[str, pd.Series],
+    master_dates: list[pd.Timestamp],
     lookback_required: int,
-    cfg: BacktestConfig,
+) -> _RollingCandidateMatrices:
+    """Build once-per-run matrices for daily candidate scans."""
+    master_ix = pd.DatetimeIndex(master_dates)
+    valid_tickers = [
+        tv for tv, bars in bars_by_tv.items() if bars is not None and not bars.empty
+    ]
+    signal_mat = (
+        pd.DataFrame(entry_signals_by_tv)
+        .reindex(master_ix)
+        .reindex(columns=valid_tickers)
+        .fillna(False)
+        .astype(bool)
+    )
+    # Empty dict sentinel: no min-price / ADV filters configured.
+    filter_mat: pd.DataFrame | None
+    if filter_signals_by_tv:
+        filter_mat = (
+            pd.DataFrame(filter_signals_by_tv)
+            .reindex(master_ix)
+            .reindex(columns=valid_tickers)
+            .fillna(False)
+            .astype(bool)
+        )
+    else:
+        filter_mat = None
+
+    bar_cols: dict[str, np.ndarray] = {}
+    lookback_cols: dict[str, np.ndarray] = {}
+    close_cols: dict[str, np.ndarray] = {}
+    volume_cols: dict[str, np.ndarray] = {}
+    for tv in valid_tickers:
+        bars = bars_by_tv[tv]
+        close = bars["close"].astype(float).to_numpy()
+        volume = bars["volume"].astype(float).to_numpy()
+        pos = bars.index.searchsorted(master_ix, side="right") - 1
+        pos = np.where(pos < 0, -1, pos)
+        n = len(bars)
+        has_bar = pos >= 0
+        bar_cols[tv] = pos
+        lookback_cols[tv] = (pos + 1 >= lookback_required + 1) & (pos + 1 < n) & has_bar
+        close_cols[tv] = np.where(has_bar, close[pos], np.nan)
+        volume_cols[tv] = np.where(has_bar, volume[pos], np.nan)
+
+    bar_idx_mat = pd.DataFrame(bar_cols, index=master_ix)
+    lookback_ok_mat = pd.DataFrame(lookback_cols, index=master_ix).astype(bool)
+    close_mat = pd.DataFrame(close_cols, index=master_ix)
+    volume_mat = pd.DataFrame(volume_cols, index=master_ix)
+    dollar_vol_mat = close_mat * volume_mat
+    return _RollingCandidateMatrices(
+        signal_mat=signal_mat,
+        lookback_ok_mat=lookback_ok_mat,
+        filter_mat=filter_mat,
+        dollar_vol_mat=dollar_vol_mat,
+        close_mat=close_mat,
+        volume_mat=volume_mat,
+        bar_idx_mat=bar_idx_mat,
+    )
+
+
+def _candidate_rows_for_day(
+    day: pd.Timestamp,
+    matrices: _RollingCandidateMatrices,
     *,
     exclude: set[str],
-    filter_signals_by_ticker: dict[str, pd.Series] | None = None,
 ) -> tuple[list[dict], list[str]]:
     """Evaluate entry signals for the full universe on one trading day."""
-    rows: list[dict] = []
     warnings: list[str] = []
-    # ``filter_signals_by_ticker`` carries precomputed min-price + ADV filters.
-    # An empty dict is the sentinel for "no filters configured" — fall back to
-    # the per-call helper to preserve the historical/legacy semantics.
-    filters_configured = bool(filter_signals_by_ticker)
-    for ticker, bars in bars_by_ticker.items():
-        if ticker in exclude or bars is None or bars.empty:
-            continue
-        signal_idx = _bar_index_on_or_before(bars, day)
-        if signal_idx is None or signal_idx + 1 >= len(bars):
-            continue
-        if signal_idx + 1 < lookback_required + 1:
-            continue
-        if filters_configured:
-            filter_series = filter_signals_by_ticker.get(ticker)
-            if filter_series is None or signal_idx >= len(filter_series):
-                continue
-            if not bool(filter_series.iat[signal_idx]):
-                continue
-        elif filter_signals_by_ticker is None:
-            passes, _ = _passes_entry_filters(bars, day, cfg)
-            if not passes:
-                continue
-        signal = entry_signals_by_ticker.get(ticker)
-        if signal is None or signal.empty or day not in signal.index:
-            continue
-        last = signal.loc[day]
-        if pd.isna(last) or not bool(last):
-            continue
-        last_bar = bars.iloc[signal_idx]
-        close = float(last_bar["close"])
-        volume = float(last_bar["volume"])
+    eligible = matrices.signal_mat.loc[day] & matrices.lookback_ok_mat.loc[day]
+    if matrices.filter_mat is not None:
+        eligible = eligible & matrices.filter_mat.loc[day]
+    if exclude:
+        eligible = eligible & ~eligible.index.isin(exclude)
+    dollar_vol = matrices.dollar_vol_mat.loc[day]
+    eligible = eligible & dollar_vol.notna()
+    ranked = dollar_vol[eligible].sort_values(ascending=False, kind="mergesort")
+    rows: list[dict] = []
+    for rank, (ticker, as_of_dollar_vol) in enumerate(ranked.items(), start=1):
         rows.append(
             {
                 "ticker": ticker,
-                "signal_idx": signal_idx,
-                "as_of_close": close,
-                "as_of_volume": volume,
-                "as_of_dollar_vol": close * volume,
+                "signal_idx": int(matrices.bar_idx_mat.at[day, ticker]),
+                "as_of_close": float(matrices.close_mat.at[day, ticker]),
+                "as_of_volume": float(matrices.volume_mat.at[day, ticker]),
+                "as_of_dollar_vol": float(as_of_dollar_vol),
+                "rank": rank,
+                "role": "active",
             }
         )
-    rows.sort(key=lambda row: row["as_of_dollar_vol"], reverse=True)
-    for i, row in enumerate(rows, 1):
-        row["rank"] = i
-        row["role"] = "active"
     return rows, warnings
 
 
@@ -170,6 +220,13 @@ def run_rolling_backtest(
         )
 
     master_dates = sorted(day_set)
+    candidate_matrices = _build_rolling_candidate_matrices(
+        bars_by_tv,
+        entry_signals_by_tv,
+        filter_signals_by_tv,
+        master_dates,
+        lookback,
+    )
     portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
     slot_states: dict[int, _SlotState | None] = {
         slot_id: None for slot_id in range(max(cfg.top, 1))
@@ -199,13 +256,9 @@ def run_rolling_backtest(
             continue
 
         candidates, day_warnings = _candidate_rows_for_day(
-            bars_by_tv,
-            entry_signals_by_tv,
             day,
-            lookback,
-            cfg,
+            candidate_matrices,
             exclude=_active_or_pending_tickers(slot_states),
-            filter_signals_by_ticker=filter_signals_by_tv,
         )
         warnings.extend(day_warnings)
         if not candidates:
