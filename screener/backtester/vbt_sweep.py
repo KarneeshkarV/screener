@@ -1,11 +1,30 @@
 """Fast vectorbt parameter sweeps for strategy exploration.
 
 This module is for **fast exploration**, not validation. Results may diverge
-from ``backtest-rolling`` because slot allocation, partial exits, dividends,
-and custom slippage models are **not** modeled here (slippage is fixed at zero).
+from ``backtest-rolling`` because the following are **not** modeled here:
+
+- slot allocation / position sizing rules
+- partial exits
+- dividends
+- custom slippage models (``slippage=0.0`` hard-coded)
+- commissions / fees (``fees=0.0`` hard-coded)
+- trailing stops, stop-loss, take-profit (custom engine supports all three)
+
+Entries/exits are shifted by one bar and filled at the next bar's **open** to
+match the custom engine's MOO (market-on-open) semantics — so there is no
+same-bar look-ahead, but residual differences vs MOC-style exits still apply.
 
 Always validate promising parameter combinations with ``backtest-rolling``
 before drawing conclusions.
+
+Strategy DSL note
+-----------------
+The ``sma_cross`` strategy here is a hand-coded vectorbt signal generator
+(see ``sma_crossover_signals`` below); it is **not** the same as the
+``ma_cross`` plugin in ``screener/strategies/plugins/ma_cross.py`` (which
+uses EMA10/EMA20 via the Pine DSL). The two are intentionally decoupled so
+this module can stay vectorbt-native for speed; do not assume parameter
+results transfer between them.
 """
 
 from __future__ import annotations
@@ -25,7 +44,12 @@ from screener.backtester.cli_common import DEFAULT_BENCHMARK
 from screener.backtester.data import PriceFetcher, build_price_fetcher, tv_to_yf
 from screener.universes import load_current_universe
 
-DISCLAIMER = "[yellow]Exploration only — approximations; validate with backtest-rolling.[/yellow]"
+DISCLAIMER = (
+    "[yellow]Exploration only — approximations; validate with backtest-rolling.\n"
+    "Not modeled: slot allocation, partial exits, dividends, custom slippage "
+    "(slippage=0), fees (fees=0), trailing stops, stop-loss, take-profit.\n"
+    "Fills: next-bar open (MOO match); residual MOC differences may apply.[/yellow]"
+)
 
 MetricName = Literal["sharpe", "total_return", "calmar"]
 StrategyName = Literal["sma_cross"]
@@ -116,6 +140,33 @@ def iter_param_combos(
     return combos
 
 
+def _build_column_panel(
+    price_panel: dict[str, pd.DataFrame],
+    yf_symbols: list[str],
+    *,
+    column: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    series: dict[str, pd.Series] = {}
+    for sym in yf_symbols:
+        frame = price_panel.get(sym)
+        if frame is None or frame.empty or column not in frame.columns:
+            continue
+        col = frame[column].astype(float)
+        col.index = pd.to_datetime(col.index).tz_localize(None).normalize()
+        trimmed = col.loc[(col.index >= start) & (col.index <= end)]
+        if trimmed.empty:
+            continue
+        series[sym] = trimmed
+    if not series:
+        raise ValueError(f"No usable {column} prices for the requested window.")
+    panel = pd.DataFrame(series).sort_index()
+    panel = panel.ffill()
+    panel = panel.dropna(axis=1, how="any")
+    return panel.dropna(how="all")
+
+
 def build_close_panel(
     price_panel: dict[str, pd.DataFrame],
     yf_symbols: list[str],
@@ -123,23 +174,21 @@ def build_close_panel(
     start: pd.Timestamp,
     end: pd.Timestamp,
 ) -> pd.DataFrame:
-    series: dict[str, pd.Series] = {}
-    for sym in yf_symbols:
-        frame = price_panel.get(sym)
-        if frame is None or frame.empty or "close" not in frame.columns:
-            continue
-        close = frame["close"].astype(float)
-        close.index = pd.to_datetime(close.index).tz_localize(None).normalize()
-        trimmed = close.loc[(close.index >= start) & (close.index <= end)]
-        if trimmed.empty:
-            continue
-        series[sym] = trimmed
-    if not series:
-        raise ValueError("No usable close prices for the requested window.")
-    panel = pd.DataFrame(series).sort_index()
-    panel = panel.ffill()
-    panel = panel.dropna(axis=1, how="any")
-    return panel.dropna(how="all")
+    return _build_column_panel(
+        price_panel, yf_symbols, column="close", start=start, end=end
+    )
+
+
+def build_open_panel(
+    price_panel: dict[str, pd.DataFrame],
+    yf_symbols: list[str],
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    return _build_column_panel(
+        price_panel, yf_symbols, column="open", start=start, end=end
+    )
 
 
 def _scalar_metric(value: Any) -> float:
@@ -163,13 +212,20 @@ def run_combo_backtest(
     hold: int,
     *,
     vbt: Any,
+    open_: pd.DataFrame | None = None,
     initial_capital: float = INITIAL_CAPITAL_DEFAULT,
 ) -> dict[str, float | int]:
     entries, exits = STRATEGY_BUILDERS["sma_cross"](close, fast, slow, hold, vbt)
+    # Match custom engine MOO semantics: signals on bar t fill at bar t+1 open.
+    # Shift entries/exits by 1 bar and price the fill at the next bar's open.
+    entries_shifted = entries.astype(bool).shift(1, fill_value=False).astype(bool)
+    exits_shifted = exits.astype(bool).shift(1, fill_value=False).astype(bool)
+    fill_price = open_ if open_ is not None else close
     pf = vbt.Portfolio.from_signals(
         close,
-        entries,
-        exits,
+        entries_shifted,
+        exits_shifted,
+        price=fill_price,
         init_cash=float(initial_capital),
         fees=0.0,
         slippage=0.0,
@@ -202,6 +258,7 @@ def run_parameter_sweep(
     fast_values: list[int],
     slow_values: list[int],
     hold_values: list[int],
+    open_: pd.DataFrame | None = None,
     initial_capital: float = INITIAL_CAPITAL_DEFAULT,
 ) -> pd.DataFrame:
     vbt = _require_vectorbt()
@@ -214,6 +271,7 @@ def run_parameter_sweep(
                 slow,
                 hold,
                 vbt=vbt,
+                open_=open_,
                 initial_capital=initial_capital,
             )
         )
@@ -263,9 +321,11 @@ def print_results_table(
             str(int(row["hold"])),
             f"{row['sharpe']:.3f}" if np.isfinite(row["sharpe"]) else "n/a",
             f"{row['total_return'] * 100:+.2f}%",
-            f"{row['calmar']:.3f}",
+            f"{row['calmar']:.3f}" if np.isfinite(row["calmar"]) else "n/a",
             f"{row['max_drawdown'] * 100:+.2f}%",
-            f"{row['win_rate'] * 100:.1f}%",
+            f"{row['win_rate'] * 100:.1f}%"
+            if np.isfinite(row["win_rate"])
+            else "n/a",
             str(int(row["trades"])),
         )
     out.print(table)
@@ -425,18 +485,30 @@ def vbt_sweep(
         start=start_ts,
         end=end_ts,
     )
+    try:
+        open_panel = build_open_panel(
+            price_panel,
+            equity_symbols,
+            start=start_ts,
+            end=end_ts,
+        )
+        # Align open panel to the same columns/rows as close (handles drop-na divergence).
+        open_panel = open_panel.reindex(index=close.index, columns=close.columns)
+    except ValueError:
+        open_panel = None
 
     results = run_parameter_sweep(
         close,
         fast_values=fast_values,
         slow_values=slow_values,
         hold_values=hold_values,
+        open_=open_panel,
         initial_capital=INITIAL_CAPITAL_DEFAULT,
     )
     ranked = rank_results(results, cast(MetricName, metric))
 
     if output_csv:
-        ranked.to_csv(index=False)
+        click.echo(ranked.to_csv(index=False))
         return
 
     console.print(
