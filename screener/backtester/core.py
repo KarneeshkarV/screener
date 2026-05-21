@@ -86,7 +86,7 @@ def _passes_entry_filters(
     if cfg.min_price is None and cfg.min_avg_dollar_volume is None:
         return True, None
     # bars.index is a sorted DatetimeIndex; use searchsorted for O(log n) lookup.
-    pos = bars.index.searchsorted(as_of_ts, side="right")
+    pos = int(bars.index.searchsorted(as_of_ts, side="right"))
     if pos <= 0:
         return False, "no history"
     last = bars.iloc[pos - 1]
@@ -566,7 +566,9 @@ def _precompute_filter_signals(
             dollar_vol = close * volume
             adv = dollar_vol.rolling(window=window, min_periods=1).mean()
             # NaN (or +-inf) ADV must fail the filter.
-            adv_ok = np.isfinite(adv.values) & (adv.values >= float(cfg.min_avg_dollar_volume))
+            adv_ok = np.isfinite(adv.values) & (
+                adv.values >= float(cfg.min_avg_dollar_volume)
+            )
             passes &= pd.Series(adv_ok, index=bars.index)
         out[ticker] = passes.astype(bool)
     return out

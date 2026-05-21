@@ -13,7 +13,7 @@ from __future__ import annotations
 import itertools
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import click
 import numpy as np
@@ -31,7 +31,7 @@ MetricName = Literal["sharpe", "total_return", "calmar"]
 StrategyName = Literal["sma_cross"]
 
 StrategyBuilder = Callable[
-    [pd.DataFrame, int, int, int],
+    [pd.DataFrame, int, int, int, Any],
     tuple[pd.DataFrame, pd.DataFrame],
 ]
 
@@ -84,7 +84,6 @@ def sma_crossover_signals(
     fast: int,
     slow: int,
     hold: int,
-    *,
     vbt: Any,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """SMA crossover: enter when close crosses above slow SMA while close > fast SMA."""
@@ -166,8 +165,7 @@ def run_combo_backtest(
     vbt: Any,
     initial_capital: float = INITIAL_CAPITAL_DEFAULT,
 ) -> dict[str, float | int]:
-    builder = STRATEGY_BUILDERS["sma_cross"]
-    entries, exits = builder(close, fast, slow, hold, vbt=vbt)
+    entries, exits = STRATEGY_BUILDERS["sma_cross"](close, fast, slow, hold, vbt)
     pf = vbt.Portfolio.from_signals(
         close,
         entries,
@@ -435,7 +433,7 @@ def vbt_sweep(
         hold_values=hold_values,
         initial_capital=INITIAL_CAPITAL_DEFAULT,
     )
-    ranked = rank_results(results, metric)  # type: ignore[arg-type]
+    ranked = rank_results(results, cast(MetricName, metric))
 
     if output_csv:
         ranked.to_csv(index=False)
@@ -448,4 +446,4 @@ def vbt_sweep(
     )
     if universe_note:
         console.print(f"[dim]Universe: {universe_note}[/dim]")
-    print_results_table(ranked, top_n=int(top), metric=metric)  # type: ignore[arg-type]
+    print_results_table(ranked, top_n=int(top), metric=cast(MetricName, metric))

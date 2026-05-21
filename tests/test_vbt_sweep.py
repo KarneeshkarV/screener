@@ -8,7 +8,11 @@ import pandas as pd
 from click.testing import CliRunner
 
 from main import cli
-from screener.backtester.vbt_sweep import iter_param_combos, parse_int_list, rank_results
+from screener.backtester.vbt_sweep import (
+    iter_param_combos,
+    parse_int_list,
+    rank_results,
+)
 
 
 def test_iter_param_combos_skips_invalid_slow():
