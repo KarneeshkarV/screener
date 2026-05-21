@@ -125,7 +125,9 @@ def _render_active_table(
         table.add_row("(none)", "—", "—", "—", "—", "—")
     else:
         for sym, ed, ep, lp, pnl, dh in rows[:limit]:
-            table.add_row(sym, str(ed), f"{ep:.2f}", f"{lp:.2f}", f"{pnl:+.2f}", str(dh))
+            table.add_row(
+                sym, str(ed), f"{ep:.2f}", f"{lp:.2f}", f"{pnl:+.2f}", str(dh)
+            )
     console.print(table)
 
 
@@ -228,9 +230,7 @@ def vol_breakout_live(
             continue
         pnl = (last_px / entry_px - 1.0) * 100.0
         days_held = (n_rows - 1) - entry_row
-        active.append(
-            (yf_to_tv.get(c, c), entry_dt, entry_px, last_px, pnl, days_held)
-        )
+        active.append((yf_to_tv.get(c, c), entry_dt, entry_px, last_px, pnl, days_held))
     active.sort(key=lambda r: r[4], reverse=True)
 
     console.print(

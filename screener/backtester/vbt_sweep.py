@@ -156,8 +156,7 @@ def parse_indicator_list(raw: str) -> list[str]:
     bad = [p for p in parts if p not in VALID_INDICATORS]
     if bad:
         raise click.UsageError(
-            f"--indicator values must be in {VALID_INDICATORS} (or 'all'); "
-            f"got {bad!r}"
+            f"--indicator values must be in {VALID_INDICATORS} (or 'all'); got {bad!r}"
         )
     seen: set[str] = set()
     out: list[str] = []
@@ -604,13 +603,9 @@ def _build_indicator_signal_panels(
     needs_high_low = any(c[0] in HL_INDICATORS for c in combos)
     needs_volume = any(c[0] in VOLUME_INDICATORS for c in combos)
     if needs_high_low and (high is None or low is None):
-        raise ValueError(
-            "supertrend / keltner indicators require high & low panels."
-        )
+        raise ValueError("supertrend / keltner indicators require high & low panels.")
     if needs_volume and volume is None:
-        raise ValueError(
-            "vol_breakout / obv_trend indicators require a volume panel."
-        )
+        raise ValueError("vol_breakout / obv_trend indicators require a volume panel.")
 
     # ---- SMA intermediates (preserves frozen regression bit-for-bit) ----
     sma_fast_set = sorted({c[1] for c in combos if c[0] in ("sma", "sma_rsi")})
@@ -651,11 +646,7 @@ def _build_indicator_signal_panels(
 
     # ---- Breakout / vol_breakout / breakout_rsi (Donchian on close) ----
     breakout_w_set = sorted(
-        {
-            c[1]
-            for c in combos
-            if c[0] in ("breakout", "vol_breakout", "breakout_rsi")
-        }
+        {c[1] for c in combos if c[0] in ("breakout", "vol_breakout", "breakout_rsi")}
     )
     breakout_entries_by_w: dict[int, np.ndarray] = {}
     for w in breakout_w_set:
@@ -756,9 +747,7 @@ def _build_indicator_signal_panels(
     if any(c[0] == "vol_breakout" for c in combos):
         assert volume is not None
         vol_arr = volume.to_numpy(dtype=float)
-        vol_ma = (
-            volume.rolling(DEFAULT_VOL_MA_WINDOW).mean().to_numpy(dtype=float)
-        )
+        vol_ma = volume.rolling(DEFAULT_VOL_MA_WINDOW).mean().to_numpy(dtype=float)
         with np.errstate(invalid="ignore"):
             vol_above_ma = vol_arr > (DEFAULT_VOL_MULTIPLIER * vol_ma)
         vol_above_ma[~np.isfinite(vol_ma)] = False
@@ -772,9 +761,7 @@ def _build_indicator_signal_panels(
         obv = _obv(close, volume)
         for w in obv_w_set:
             obv_df = pd.DataFrame(obv, index=close.index, columns=close.columns)
-            obv_ema = (
-                obv_df.ewm(span=w, adjust=False).mean().to_numpy(dtype=float)
-            )
+            obv_ema = obv_df.ewm(span=w, adjust=False).mean().to_numpy(dtype=float)
             obv_entries_by_w[w] = crossed_above_nb(
                 np.ascontiguousarray(obv), np.ascontiguousarray(obv_ema)
             )
@@ -1033,9 +1020,7 @@ def run_parameter_sweep(
         row: dict[str, Any] = {
             "indicator": ind,
             "fast": fast_or_w,
-            "slow": (
-                float("nan") if ind in SOLO_INDICATORS_NAN_SLOW else slow
-            ),
+            "slow": (float("nan") if ind in SOLO_INDICATORS_NAN_SLOW else slow),
             "hold": hold,
             "sharpe": _combo_metric(sharpe, ind, fast_or_w, slow, hold),
             "total_return": _combo_metric(total_return, ind, fast_or_w, slow, hold),
@@ -1081,9 +1066,7 @@ def print_results_table(
     out.print(DISCLAIMER)
     table = Table(title=f"Top {top_n} by {metric}")
     has_indicator = "indicator" in df.columns
-    columns = (
-        ["indicator"] if has_indicator else []
-    ) + [
+    columns = (["indicator"] if has_indicator else []) + [
         "fast",
         "slow",
         "hold",
