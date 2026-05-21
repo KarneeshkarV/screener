@@ -17,14 +17,28 @@ same-bar look-ahead, but residual differences vs MOC-style exits still apply.
 Always validate promising parameter combinations with ``backtest-rolling``
 before drawing conclusions.
 
-Strategy DSL note
------------------
-The ``sma_cross`` strategy here is a hand-coded vectorbt signal generator
-(see ``sma_crossover_signals`` below); it is **not** the same as the
-``ma_cross`` plugin in ``screener/strategies/plugins/ma_cross.py`` (which
-uses EMA10/EMA20 via the Pine DSL). The two are intentionally decoupled so
-this module can stay vectorbt-native for speed; do not assume parameter
-results transfer between them.
+Indicator menu
+--------------
+Solo indicators:
+    sma, ema  — moving-average crossover (fast vs slow)
+    breakout  — Donchian breakout on close
+    bbands    — EMA-based Bollinger Band upper-band breakout
+    supertrend — ATR-based trend direction flip (numba kernel)
+    keltner   — Keltner channel upper-band breakout
+    rsi       — Wilder RSI(14) crosses above a threshold
+    macd      — MACD line crosses signal line (default 12/26/9)
+    vol_breakout — Donchian breakout AND volume > vol-MA
+    obv_trend — OBV crosses its own EMA
+
+Combinations (entry = primary signal AND secondary filter):
+    sma_rsi      — SMA cross + RSI(14) > 50 filter
+    breakout_rsi — Donchian breakout + RSI(14) > 50 filter
+
+The ``sma_cross`` strategy in :func:`sma_crossover_signals` is a hand-coded
+vectorbt signal generator; it is **not** the same as the ``ma_cross`` plugin
+in ``screener/strategies/plugins/ma_cross.py``. The two are intentionally
+decoupled so this module can stay vectorbt-native for speed; do not assume
+parameter results transfer between them.
 """
 
 from __future__ import annotations
@@ -53,6 +67,56 @@ DISCLAIMER = (
 
 MetricName = Literal["sharpe", "total_return", "calmar"]
 StrategyName = Literal["sma_cross"]
+IndicatorName = Literal[
+    "sma",
+    "ema",
+    "breakout",
+    "bbands",
+    "supertrend",
+    "keltner",
+    "rsi",
+    "macd",
+    "vol_breakout",
+    "obv_trend",
+    "sma_rsi",
+    "breakout_rsi",
+]
+VALID_INDICATORS: tuple[str, ...] = (
+    "sma",
+    "ema",
+    "breakout",
+    "bbands",
+    "supertrend",
+    "keltner",
+    "rsi",
+    "macd",
+    "vol_breakout",
+    "obv_trend",
+    "sma_rsi",
+    "breakout_rsi",
+)
+
+# Fixed-config defaults (kept as module constants so the viewer can document them).
+DEFAULT_BREAKOUT_WINDOWS: tuple[int, ...] = (20, 55, 100)
+DEFAULT_BBANDS_WINDOWS: tuple[int, ...] = (20, 50)
+DEFAULT_BBANDS_STD: float = 2.0
+DEFAULT_SUPERTREND_PERIODS: tuple[int, ...] = (7, 10, 14)
+DEFAULT_SUPERTREND_MULT: float = 3.0
+DEFAULT_KELTNER_WINDOWS: tuple[int, ...] = (20, 50)
+DEFAULT_KELTNER_MULT: float = 2.0
+DEFAULT_RSI_PERIOD: int = 14
+DEFAULT_RSI_THRESHOLDS: tuple[int, ...] = (50, 55, 60)
+DEFAULT_VOL_MA_WINDOW: int = 20
+DEFAULT_VOL_MULTIPLIER: float = 1.0
+DEFAULT_MACD_FAST: int = 12
+DEFAULT_MACD_SLOW: int = 26
+DEFAULT_MACD_SIGNAL: int = 9
+DEFAULT_OBV_EMA_WINDOWS: tuple[int, ...] = (20, 50)
+
+# Indicators that require a separate volume panel for signal generation.
+VOLUME_INDICATORS: frozenset[str] = frozenset({"vol_breakout", "obv_trend"})
+# Indicators that require high/low panels.
+HL_INDICATORS: frozenset[str] = frozenset({"supertrend", "keltner"})
 
 StrategyBuilder = Callable[
     [pd.DataFrame, int, int, int, Any],
@@ -81,6 +145,28 @@ def parse_int_list(raw: str, *, name: str) -> list[int]:
         return [int(p) for p in parts]
     except ValueError as exc:
         raise click.UsageError(f"--{name} expects comma-separated integers.") from exc
+
+
+def parse_indicator_list(raw: str) -> list[str]:
+    parts = [p.strip().lower() for p in raw.split(",") if p.strip()]
+    if not parts:
+        raise click.UsageError("--indicator requires at least one value.")
+    if parts == ["all"]:
+        return list(VALID_INDICATORS)
+    bad = [p for p in parts if p not in VALID_INDICATORS]
+    if bad:
+        raise click.UsageError(
+            f"--indicator values must be in {VALID_INDICATORS} (or 'all'); "
+            f"got {bad!r}"
+        )
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in parts:
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append(p)
+    return out
 
 
 def _sma(close: pd.DataFrame, window: int, vbt: Any) -> pd.DataFrame:
@@ -155,6 +241,85 @@ def iter_param_combos(
     return combos
 
 
+def iter_indicator_combos(
+    indicators: list[str],
+    fast_values: list[int],
+    slow_values: list[int],
+    hold_values: list[int],
+    *,
+    breakout_windows: list[int] | None = None,
+    bbands_windows: list[int] | None = None,
+    supertrend_periods: list[int] | None = None,
+    keltner_windows: list[int] | None = None,
+    rsi_thresholds: list[int] | None = None,
+    obv_ema_windows: list[int] | None = None,
+) -> list[tuple[str, int, int, int]]:
+    """Build (indicator, fast_or_window, slow, hold) combos for each indicator.
+
+    Conventions for the (fast, slow) pair per indicator:
+    - sma / ema: (fast_window, slow_window). slow > fast required.
+    - breakout / bbands / supertrend / keltner / vol_breakout / obv_trend /
+      breakout_rsi: (window_or_period, 0). slow is the sentinel ``0``.
+    - rsi: (threshold, 0). period is fixed at ``DEFAULT_RSI_PERIOD``.
+    - macd: (macd_fast, macd_slow). signal fixed at ``DEFAULT_MACD_SIGNAL``.
+    - sma_rsi: (sma_fast, sma_slow). RSI filter uses defaults.
+    """
+    breakout_windows = list(breakout_windows or DEFAULT_BREAKOUT_WINDOWS)
+    bbands_windows = list(bbands_windows or DEFAULT_BBANDS_WINDOWS)
+    supertrend_periods = list(supertrend_periods or DEFAULT_SUPERTREND_PERIODS)
+    keltner_windows = list(keltner_windows or DEFAULT_KELTNER_WINDOWS)
+    rsi_thresholds = list(rsi_thresholds or DEFAULT_RSI_THRESHOLDS)
+    obv_ema_windows = list(obv_ema_windows or DEFAULT_OBV_EMA_WINDOWS)
+
+    def _pair_grid(name: str) -> list[tuple[str, int, int, int]]:
+        out: list[tuple[str, int, int, int]] = []
+        for fast, slow, hold in itertools.product(
+            fast_values, slow_values, hold_values
+        ):
+            if slow <= fast:
+                continue
+            out.append((name, int(fast), int(slow), int(hold)))
+        return out
+
+    def _window_grid(name: str, windows: list[int]) -> list[tuple[str, int, int, int]]:
+        return [
+            (name, int(w), 0, int(hold))
+            for w, hold in itertools.product(windows, hold_values)
+        ]
+
+    combos: list[tuple[str, int, int, int]] = []
+    for ind in indicators:
+        if ind in ("sma", "ema", "sma_rsi"):
+            combos.extend(_pair_grid(ind))
+        elif ind == "macd":
+            combos.extend(
+                ("macd", DEFAULT_MACD_FAST, DEFAULT_MACD_SLOW, int(hold))
+                for hold in hold_values
+            )
+        elif ind == "breakout":
+            combos.extend(_window_grid("breakout", breakout_windows))
+        elif ind == "bbands":
+            combos.extend(_window_grid("bbands", bbands_windows))
+        elif ind == "supertrend":
+            combos.extend(_window_grid("supertrend", supertrend_periods))
+        elif ind == "keltner":
+            combos.extend(_window_grid("keltner", keltner_windows))
+        elif ind == "vol_breakout":
+            combos.extend(_window_grid("vol_breakout", breakout_windows))
+        elif ind == "breakout_rsi":
+            combos.extend(_window_grid("breakout_rsi", breakout_windows))
+        elif ind == "obv_trend":
+            combos.extend(_window_grid("obv_trend", obv_ema_windows))
+        elif ind == "rsi":
+            combos.extend(
+                ("rsi", int(thresh), 0, int(hold))
+                for thresh, hold in itertools.product(rsi_thresholds, hold_values)
+            )
+        else:
+            raise ValueError(f"Unknown indicator: {ind!r}")
+    return combos
+
+
 def _build_column_panel(
     price_panel: dict[str, pd.DataFrame],
     yf_symbols: list[str],
@@ -203,6 +368,42 @@ def build_open_panel(
 ) -> pd.DataFrame:
     return _build_column_panel(
         price_panel, yf_symbols, column="open", start=start, end=end
+    )
+
+
+def build_high_panel(
+    price_panel: dict[str, pd.DataFrame],
+    yf_symbols: list[str],
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    return _build_column_panel(
+        price_panel, yf_symbols, column="high", start=start, end=end
+    )
+
+
+def build_low_panel(
+    price_panel: dict[str, pd.DataFrame],
+    yf_symbols: list[str],
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    return _build_column_panel(
+        price_panel, yf_symbols, column="low", start=start, end=end
+    )
+
+
+def build_volume_panel(
+    price_panel: dict[str, pd.DataFrame],
+    yf_symbols: list[str],
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    return _build_column_panel(
+        price_panel, yf_symbols, column="volume", start=start, end=end
     )
 
 
@@ -267,58 +468,370 @@ def run_combo_backtest(
     }
 
 
-def _build_vectorized_signal_panels(
+# ---------------------------------------------------------------------------
+# Indicator helpers (per-column vectorized intermediates)
+# ---------------------------------------------------------------------------
+
+
+def _rsi_wilder(close: pd.DataFrame, period: int) -> np.ndarray:
+    """Wilder's RSI on a 2D close panel. Returns ndarray of shape ``close``."""
+    delta = close.diff()
+    gain = delta.clip(lower=0.0)
+    loss = (-delta).clip(lower=0.0)
+    # Wilder smoothing == EWM with alpha = 1/period.
+    avg_gain = gain.ewm(alpha=1.0 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0.0, np.nan)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return rsi.to_numpy(dtype=float)
+
+
+def _atr_wilder(
+    high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame, period: int
+) -> np.ndarray:
+    """Wilder ATR on 2D panels (close-shifted true range, EWM smoothed)."""
+    prev_close = close.shift(1)
+    tr1 = (high - low).to_numpy(dtype=float)
+    tr2 = (high - prev_close).abs().to_numpy(dtype=float)
+    tr3 = (low - prev_close).abs().to_numpy(dtype=float)
+    tr = np.maximum(tr1, np.maximum(tr2, tr3))
+    tr_df = pd.DataFrame(tr, index=close.index, columns=close.columns)
+    return tr_df.ewm(alpha=1.0 / period, adjust=False).mean().to_numpy(dtype=float)
+
+
+def _obv(close: pd.DataFrame, volume: pd.DataFrame) -> np.ndarray:
+    """On-Balance Volume cumulative sum."""
+    diff = close.diff().to_numpy(dtype=float)
+    vol = volume.to_numpy(dtype=float)
+    sign = np.where(diff > 0, 1.0, np.where(diff < 0, -1.0, 0.0))
+    flow = sign * vol
+    flow[~np.isfinite(flow)] = 0.0
+    return np.cumsum(flow, axis=0)
+
+
+def _supertrend_signals_np(
+    close: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    period: int,
+    multiplier: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-column Supertrend direction state machine.
+
+    Pure numpy implementation (no numba dep) — runs once per (period, multiplier)
+    pair across the entire panel. Inner loop is O(n_days * n_tickers) which is
+    fine at this scale.
+    """
+    n, m = close.shape
+    entries = np.zeros((n, m), dtype=bool)
+    exits = np.zeros((n, m), dtype=bool)
+
+    # ATR (Wilder) computed inline to avoid pandas roundtrips.
+    tr = np.zeros((n, m), dtype=float)
+    tr[0] = high[0] - low[0]
+    for i in range(1, n):
+        a = high[i] - low[i]
+        b = np.abs(high[i] - close[i - 1])
+        c = np.abs(low[i] - close[i - 1])
+        tr[i] = np.maximum(a, np.maximum(b, c))
+    atr = np.zeros((n, m), dtype=float)
+    if period <= n:
+        atr[period - 1] = tr[:period].mean(axis=0)
+        for i in range(period, n):
+            atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
+
+    hl2 = (high + low) / 2.0
+    upper = hl2 + multiplier * atr
+    lower = hl2 - multiplier * atr
+    final_upper = np.zeros((n, m), dtype=float)
+    final_lower = np.zeros((n, m), dtype=float)
+    direction = np.zeros((n, m), dtype=np.int8)
+    if period < n:
+        final_upper[period] = upper[period]
+        final_lower[period] = lower[period]
+        direction[period] = np.where(close[period] > final_upper[period], 1, -1)
+        for i in range(period + 1, n):
+            keep_upper = (upper[i] >= final_upper[i - 1]) & (
+                close[i - 1] <= final_upper[i - 1]
+            )
+            final_upper[i] = np.where(keep_upper, final_upper[i - 1], upper[i])
+            keep_lower = (lower[i] <= final_lower[i - 1]) & (
+                close[i - 1] >= final_lower[i - 1]
+            )
+            final_lower[i] = np.where(keep_lower, final_lower[i - 1], lower[i])
+            prev_dir = direction[i - 1]
+            new_dir = np.where(
+                prev_dir == 1,
+                np.where(close[i] < final_lower[i], -1, 1),
+                np.where(close[i] > final_upper[i], 1, -1),
+            ).astype(np.int8)
+            direction[i] = new_dir
+            entries[i] = (prev_dir == -1) & (new_dir == 1)
+            exits[i] = (prev_dir == 1) & (new_dir == -1)
+    return entries, exits
+
+
+# ---------------------------------------------------------------------------
+# Vectorized signal panel builder
+# ---------------------------------------------------------------------------
+
+
+def _build_indicator_signal_panels(
     close: pd.DataFrame,
-    combos: list[tuple[int, int, int]],
+    combos: list[tuple[str, int, int, int]],
     *,
     vbt: Any,
+    high: pd.DataFrame | None = None,
+    low: pd.DataFrame | None = None,
+    volume: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Compute entry/exit masks for every combo without a per-combo pandas loop.
+    """Compute entry/exit masks for combos across all supported indicators.
 
-    Key optimisation: ``close.vbt.crossed_above(sma_slow)`` and
-    ``close.vbt.crossed_below(sma_slow)`` only depend on the slow window, and
-    ``close > sma_fast`` only depends on the fast window. We deduplicate those
-    intermediates over the unique fast/slow values and assemble each combo with
-    pure numpy boolean ops. Exact vectorbt semantics for NaN / equality are
-    preserved by calling ``crossed_above_nb`` (the same numba kernel the
-    pandas accessor uses) directly on the underlying arrays — so the frozen
-    fixture continues to match within ``atol=1e-9``.
+    All indicators feed into a single (entries, exits) panel keyed by
+    ``(indicator, fast, slow, hold, ticker)``; they will be handed to a
+    single ``Portfolio.from_signals`` call so the import/setup cost amortises.
+
+    The SMA path is byte-identical to the historical implementation:
+    ``vbt.MA.run`` + the ``crossed_above_nb`` Numba kernel. This keeps the
+    frozen-fixture regression at ``atol=1e-9``.
     """
     from vectorbt.generic.nb import crossed_above_nb
 
     tickers = list(close.columns)
-    fast_values = sorted({fast for fast, _, _ in combos})
-    slow_values = sorted({slow for _, slow, _ in combos})
-    fast_ma_panel = vbt.MA.run(close, window=fast_values).ma
-    slow_ma_panel = vbt.MA.run(close, window=slow_values).ma
-
     close_arr = np.ascontiguousarray(close.to_numpy(dtype=float))
-
-    above_fast_by_w: dict[int, np.ndarray] = {}
-    for w in fast_values:
-        fast_arr = _ma_for_window(fast_ma_panel, w).to_numpy(dtype=float)
-        # vectorbt's pandas accessor would treat NaN comparisons as False; the
-        # raw numpy ``>`` does the same, so this matches without extra work.
-        above_fast_by_w[w] = close_arr > fast_arr
-
-    crossed_above_by_w: dict[int, np.ndarray] = {}
-    crossed_below_by_w: dict[int, np.ndarray] = {}
-    for w in slow_values:
-        slow_arr = np.ascontiguousarray(
-            _ma_for_window(slow_ma_panel, w).to_numpy(dtype=float)
-        )
-        # ``crossed_above_nb`` operates on contiguous 2D float arrays and
-        # implements the exact state-machine used by ``close.vbt.crossed_above``.
-        crossed_above_by_w[w] = crossed_above_nb(close_arr, slow_arr)
-        crossed_below_by_w[w] = crossed_above_nb(slow_arr, close_arr)
-
     n_days, n_tickers = close_arr.shape
+
+    needs_high_low = any(c[0] in HL_INDICATORS for c in combos)
+    needs_volume = any(c[0] in VOLUME_INDICATORS for c in combos)
+    if needs_high_low and (high is None or low is None):
+        raise ValueError(
+            "supertrend / keltner indicators require high & low panels."
+        )
+    if needs_volume and volume is None:
+        raise ValueError(
+            "vol_breakout / obv_trend indicators require a volume panel."
+        )
+
+    # ---- SMA intermediates (preserves frozen regression bit-for-bit) ----
+    sma_fast_set = sorted({c[1] for c in combos if c[0] in ("sma", "sma_rsi")})
+    sma_slow_set = sorted({c[2] for c in combos if c[0] in ("sma", "sma_rsi")})
+    sma_above_fast_by_w: dict[int, np.ndarray] = {}
+    sma_crossed_above_by_w: dict[int, np.ndarray] = {}
+    sma_crossed_below_by_w: dict[int, np.ndarray] = {}
+    if sma_fast_set:
+        sma_fast_panel = vbt.MA.run(close, window=sma_fast_set).ma
+        for w in sma_fast_set:
+            fast_arr = _ma_for_window(sma_fast_panel, w).to_numpy(dtype=float)
+            sma_above_fast_by_w[w] = close_arr > fast_arr
+    if sma_slow_set:
+        sma_slow_panel = vbt.MA.run(close, window=sma_slow_set).ma
+        for w in sma_slow_set:
+            slow_arr = np.ascontiguousarray(
+                _ma_for_window(sma_slow_panel, w).to_numpy(dtype=float)
+            )
+            sma_crossed_above_by_w[w] = crossed_above_nb(close_arr, slow_arr)
+            sma_crossed_below_by_w[w] = crossed_above_nb(slow_arr, close_arr)
+
+    # ---- EMA intermediates ----
+    ema_fast_set = sorted({c[1] for c in combos if c[0] == "ema"})
+    ema_slow_set = sorted({c[2] for c in combos if c[0] == "ema"})
+    ema_all_windows = sorted(set(ema_fast_set) | set(ema_slow_set))
+    ema_by_w: dict[int, np.ndarray] = {}
+    for w in ema_all_windows:
+        ema_by_w[w] = np.ascontiguousarray(
+            close.ewm(span=w, adjust=False).mean().to_numpy(dtype=float)
+        )
+    ema_above_fast_by_w = {w: close_arr > ema_by_w[w] for w in ema_fast_set}
+    ema_crossed_above_by_w = {
+        w: crossed_above_nb(close_arr, ema_by_w[w]) for w in ema_slow_set
+    }
+    ema_crossed_below_by_w = {
+        w: crossed_above_nb(ema_by_w[w], close_arr) for w in ema_slow_set
+    }
+
+    # ---- Breakout / vol_breakout / breakout_rsi (Donchian on close) ----
+    breakout_w_set = sorted(
+        {
+            c[1]
+            for c in combos
+            if c[0] in ("breakout", "vol_breakout", "breakout_rsi")
+        }
+    )
+    breakout_entries_by_w: dict[int, np.ndarray] = {}
+    for w in breakout_w_set:
+        rmax = close.rolling(w).max().shift(1).to_numpy(dtype=float)
+        breakout_entries_by_w[w] = crossed_above_nb(
+            close_arr, np.ascontiguousarray(rmax)
+        )
+
+    # ---- BBands (EMA middle + n_std * rolling std) ----
+    bbands_w_set = sorted({c[1] for c in combos if c[0] == "bbands"})
+    bbands_entries_by_w: dict[int, np.ndarray] = {}
+    bbands_exits_by_w: dict[int, np.ndarray] = {}
+    for w in bbands_w_set:
+        middle = close.ewm(span=w, adjust=False).mean()
+        std = close.rolling(w).std()
+        upper = (middle + DEFAULT_BBANDS_STD * std).to_numpy(dtype=float)
+        middle_arr = middle.to_numpy(dtype=float)
+        bbands_entries_by_w[w] = crossed_above_nb(
+            close_arr, np.ascontiguousarray(upper)
+        )
+        # Exit: close crosses back below middle.
+        bbands_exits_by_w[w] = crossed_above_nb(
+            np.ascontiguousarray(middle_arr), close_arr
+        )
+
+    # ---- Supertrend ----
+    supertrend_p_set = sorted({c[1] for c in combos if c[0] == "supertrend"})
+    supertrend_signals_by_p: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    if supertrend_p_set:
+        assert high is not None and low is not None
+        high_arr = high.to_numpy(dtype=float)
+        low_arr = low.to_numpy(dtype=float)
+        for p in supertrend_p_set:
+            supertrend_signals_by_p[p] = _supertrend_signals_np(
+                close_arr, high_arr, low_arr, p, DEFAULT_SUPERTREND_MULT
+            )
+
+    # ---- Keltner channels (EMA middle ± mult * ATR) ----
+    keltner_w_set = sorted({c[1] for c in combos if c[0] == "keltner"})
+    keltner_entries_by_w: dict[int, np.ndarray] = {}
+    keltner_exits_by_w: dict[int, np.ndarray] = {}
+    if keltner_w_set:
+        assert high is not None and low is not None
+        for w in keltner_w_set:
+            middle = close.ewm(span=w, adjust=False).mean()
+            atr = _atr_wilder(high, low, close, w)
+            upper = middle.to_numpy(dtype=float) + DEFAULT_KELTNER_MULT * atr
+            lower_band = middle.to_numpy(dtype=float) - DEFAULT_KELTNER_MULT * atr
+            keltner_entries_by_w[w] = crossed_above_nb(
+                close_arr, np.ascontiguousarray(upper)
+            )
+            keltner_exits_by_w[w] = crossed_above_nb(
+                np.ascontiguousarray(lower_band), close_arr
+            )
+
+    # ---- RSI (Wilder), shared across rsi indicator + *_rsi combos ----
+    rsi_needed = any(c[0] in ("rsi", "sma_rsi", "breakout_rsi") for c in combos)
+    rsi_arr: np.ndarray | None = (
+        _rsi_wilder(close, DEFAULT_RSI_PERIOD) if rsi_needed else None
+    )
+    rsi_threshold_signals: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    rsi_filter_above_50: np.ndarray | None = None
+    if rsi_arr is not None:
+        rsi_filter_above_50 = (rsi_arr > 50).astype(bool)
+        for thresh in sorted({c[1] for c in combos if c[0] == "rsi"}):
+            thresh_arr = np.full_like(rsi_arr, float(thresh))
+            entries_t = crossed_above_nb(
+                np.ascontiguousarray(rsi_arr), np.ascontiguousarray(thresh_arr)
+            )
+            exits_t = crossed_above_nb(
+                np.ascontiguousarray(thresh_arr), np.ascontiguousarray(rsi_arr)
+            )
+            rsi_threshold_signals[thresh] = (entries_t, exits_t)
+
+    # ---- MACD ----
+    macd_needed = any(c[0] == "macd" for c in combos)
+    macd_entries: np.ndarray | None = None
+    macd_exits: np.ndarray | None = None
+    if macd_needed:
+        ema_f = close.ewm(span=DEFAULT_MACD_FAST, adjust=False).mean()
+        ema_s = close.ewm(span=DEFAULT_MACD_SLOW, adjust=False).mean()
+        macd_line = (ema_f - ema_s).to_numpy(dtype=float)
+        signal_line = (
+            pd.DataFrame(macd_line, index=close.index, columns=close.columns)
+            .ewm(span=DEFAULT_MACD_SIGNAL, adjust=False)
+            .mean()
+            .to_numpy(dtype=float)
+        )
+        macd_entries = crossed_above_nb(
+            np.ascontiguousarray(macd_line), np.ascontiguousarray(signal_line)
+        )
+        macd_exits = crossed_above_nb(
+            np.ascontiguousarray(signal_line), np.ascontiguousarray(macd_line)
+        )
+
+    # ---- Volume MA for vol_breakout ----
+    vol_above_ma: np.ndarray | None = None
+    if any(c[0] == "vol_breakout" for c in combos):
+        assert volume is not None
+        vol_arr = volume.to_numpy(dtype=float)
+        vol_ma = (
+            volume.rolling(DEFAULT_VOL_MA_WINDOW).mean().to_numpy(dtype=float)
+        )
+        with np.errstate(invalid="ignore"):
+            vol_above_ma = vol_arr > (DEFAULT_VOL_MULTIPLIER * vol_ma)
+        vol_above_ma[~np.isfinite(vol_ma)] = False
+
+    # ---- OBV trend (OBV crosses its own EMA) ----
+    obv_w_set = sorted({c[1] for c in combos if c[0] == "obv_trend"})
+    obv_entries_by_w: dict[int, np.ndarray] = {}
+    obv_exits_by_w: dict[int, np.ndarray] = {}
+    if obv_w_set:
+        assert volume is not None
+        obv = _obv(close, volume)
+        for w in obv_w_set:
+            obv_df = pd.DataFrame(obv, index=close.index, columns=close.columns)
+            obv_ema = (
+                obv_df.ewm(span=w, adjust=False).mean().to_numpy(dtype=float)
+            )
+            obv_entries_by_w[w] = crossed_above_nb(
+                np.ascontiguousarray(obv), np.ascontiguousarray(obv_ema)
+            )
+            obv_exits_by_w[w] = crossed_above_nb(
+                np.ascontiguousarray(obv_ema), np.ascontiguousarray(obv)
+            )
+
+    # ---- Assemble per-combo entry/exit panels ----
     n_combos = len(combos)
     entries_panel = np.empty((n_days, n_combos * n_tickers), dtype=bool)
     exits_panel = np.empty((n_days, n_combos * n_tickers), dtype=bool)
-    for k, (fast, slow, hold) in enumerate(combos):
-        entries_k = crossed_above_by_w[slow] & above_fast_by_w[fast]
-        exits_k = crossed_below_by_w[slow]
+
+    for k, (ind, fast_or_w, slow, hold) in enumerate(combos):
+        if ind == "sma":
+            entries_k = sma_crossed_above_by_w[slow] & sma_above_fast_by_w[fast_or_w]
+            exits_k = sma_crossed_below_by_w[slow]
+        elif ind == "ema":
+            entries_k = ema_crossed_above_by_w[slow] & ema_above_fast_by_w[fast_or_w]
+            exits_k = ema_crossed_below_by_w[slow]
+        elif ind == "breakout":
+            entries_k = breakout_entries_by_w[fast_or_w]
+            exits_k = np.zeros_like(entries_k, dtype=bool)
+        elif ind == "bbands":
+            entries_k = bbands_entries_by_w[fast_or_w]
+            exits_k = bbands_exits_by_w[fast_or_w]
+        elif ind == "supertrend":
+            entries_k, exits_k = supertrend_signals_by_p[fast_or_w]
+        elif ind == "keltner":
+            entries_k = keltner_entries_by_w[fast_or_w]
+            exits_k = keltner_exits_by_w[fast_or_w]
+        elif ind == "rsi":
+            entries_k, exits_k = rsi_threshold_signals[fast_or_w]
+        elif ind == "macd":
+            assert macd_entries is not None and macd_exits is not None
+            entries_k = macd_entries
+            exits_k = macd_exits
+        elif ind == "vol_breakout":
+            assert vol_above_ma is not None
+            entries_k = breakout_entries_by_w[fast_or_w] & vol_above_ma
+            exits_k = np.zeros_like(entries_k, dtype=bool)
+        elif ind == "obv_trend":
+            entries_k = obv_entries_by_w[fast_or_w]
+            exits_k = obv_exits_by_w[fast_or_w]
+        elif ind == "sma_rsi":
+            assert rsi_filter_above_50 is not None
+            entries_k = (
+                sma_crossed_above_by_w[slow]
+                & sma_above_fast_by_w[fast_or_w]
+                & rsi_filter_above_50
+            )
+            exits_k = sma_crossed_below_by_w[slow]
+        elif ind == "breakout_rsi":
+            assert rsi_filter_above_50 is not None
+            entries_k = breakout_entries_by_w[fast_or_w] & rsi_filter_above_50
+            exits_k = np.zeros_like(entries_k, dtype=bool)
+        else:
+            raise ValueError(f"Unknown indicator: {ind!r}")
         if hold > 0:
             exits_k = exits_k | _fixed_hold_exits_np(entries_k, hold)
         start = k * n_tickers
@@ -327,18 +840,38 @@ def _build_vectorized_signal_panels(
         exits_panel[:, start:stop] = exits_k
 
     col_index = pd.MultiIndex.from_tuples(
-        [(fast, slow, hold, t) for fast, slow, hold in combos for t in tickers],
-        names=["fast", "slow", "hold", "ticker"],
+        [
+            (ind, fast_or_w, slow, hold, t)
+            for ind, fast_or_w, slow, hold in combos
+            for t in tickers
+        ],
+        names=["indicator", "fast", "slow", "hold", "ticker"],
     )
     entries_df = pd.DataFrame(entries_panel, index=close.index, columns=col_index)
     exits_df = pd.DataFrame(exits_panel, index=close.index, columns=col_index)
     return entries_df, exits_df
 
 
-def _combo_metric(series: pd.Series | float, fast: int, slow: int, hold: int) -> float:
+def _combo_metric(
+    series: pd.Series | float, ind: str, fast: int, slow: int, hold: int
+) -> float:
     if isinstance(series, pd.Series):
-        return _scalar_metric(series.loc[(fast, slow, hold)])
+        return _scalar_metric(series.loc[(ind, fast, slow, hold)])
     return _scalar_metric(series)
+
+
+SOLO_INDICATORS_NAN_SLOW: frozenset[str] = frozenset(
+    {
+        "breakout",
+        "bbands",
+        "supertrend",
+        "keltner",
+        "rsi",
+        "vol_breakout",
+        "obv_trend",
+        "breakout_rsi",
+    }
+)
 
 
 def run_parameter_sweep(
@@ -347,15 +880,40 @@ def run_parameter_sweep(
     fast_values: list[int],
     slow_values: list[int],
     hold_values: list[int],
+    indicators: list[str] | None = None,
+    breakout_windows: list[int] | None = None,
+    bbands_windows: list[int] | None = None,
+    supertrend_periods: list[int] | None = None,
+    keltner_windows: list[int] | None = None,
+    rsi_thresholds: list[int] | None = None,
+    obv_ema_windows: list[int] | None = None,
+    high: pd.DataFrame | None = None,
+    low: pd.DataFrame | None = None,
+    volume: pd.DataFrame | None = None,
     open_: pd.DataFrame | None = None,
     initial_capital: float = INITIAL_CAPITAL_DEFAULT,
 ) -> pd.DataFrame:
     vbt = _require_vectorbt()
-    combos = iter_param_combos(fast_values, slow_values, hold_values)
+    if indicators is None:
+        indicators = ["sma"]
+    combos = iter_indicator_combos(
+        indicators,
+        fast_values,
+        slow_values,
+        hold_values,
+        breakout_windows=breakout_windows,
+        bbands_windows=bbands_windows,
+        supertrend_periods=supertrend_periods,
+        keltner_windows=keltner_windows,
+        rsi_thresholds=rsi_thresholds,
+        obv_ema_windows=obv_ema_windows,
+    )
     if not combos:
-        raise ValueError("No valid parameter combinations (require slow > fast).")
+        raise ValueError("No valid parameter combinations to evaluate.")
 
-    entries, exits = _build_vectorized_signal_panels(close, combos, vbt=vbt)
+    entries, exits = _build_indicator_signal_panels(
+        close, combos, vbt=vbt, high=high, low=low, volume=volume
+    )
     entries_shifted = entries.astype(bool).shift(1, fill_value=False).astype(bool)
     exits_shifted = exits.astype(bool).shift(1, fill_value=False).astype(bool)
     fill_price = open_ if open_ is not None else close
@@ -386,7 +944,7 @@ def run_parameter_sweep(
         init_cash=float(initial_capital),
         fees=0.0,
         slippage=0.0,
-        group_by=["fast", "slow", "hold"],
+        group_by=["indicator", "fast", "slow", "hold"],
         cash_sharing=True,
         freq="1D",
     )
@@ -397,22 +955,24 @@ def run_parameter_sweep(
     win_rate = pf.trades.win_rate()
     trade_count = pf.trades.count()
 
-    rows: list[dict[str, float | int]] = []
-    for fast, slow, hold in combos:
-        trades_val = _combo_metric(trade_count, fast, slow, hold)
-        rows.append(
-            {
-                "fast": fast,
-                "slow": slow,
-                "hold": hold,
-                "sharpe": _combo_metric(sharpe, fast, slow, hold),
-                "total_return": _combo_metric(total_return, fast, slow, hold),
-                "calmar": _combo_metric(calmar, fast, slow, hold),
-                "max_drawdown": _combo_metric(max_drawdown, fast, slow, hold),
-                "win_rate": _combo_metric(win_rate, fast, slow, hold),
-                "trades": int(trades_val),
-            }
-        )
+    rows: list[dict[str, Any]] = []
+    for ind, fast_or_w, slow, hold in combos:
+        trades_val = _combo_metric(trade_count, ind, fast_or_w, slow, hold)
+        row: dict[str, Any] = {
+            "indicator": ind,
+            "fast": fast_or_w,
+            "slow": (
+                float("nan") if ind in SOLO_INDICATORS_NAN_SLOW else slow
+            ),
+            "hold": hold,
+            "sharpe": _combo_metric(sharpe, ind, fast_or_w, slow, hold),
+            "total_return": _combo_metric(total_return, ind, fast_or_w, slow, hold),
+            "calmar": _combo_metric(calmar, ind, fast_or_w, slow, hold),
+            "max_drawdown": _combo_metric(max_drawdown, ind, fast_or_w, slow, hold),
+            "win_rate": _combo_metric(win_rate, ind, fast_or_w, slow, hold),
+            "trades": int(trades_val) if np.isfinite(trades_val) else 0,
+        }
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -428,6 +988,16 @@ def rank_results(df: pd.DataFrame, metric: MetricName) -> pd.DataFrame:
     )
 
 
+def _fmt_int_or_dash(value: Any) -> str:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if not np.isfinite(f):
+        return "—"
+    return str(int(f))
+
+
 def print_results_table(
     df: pd.DataFrame,
     *,
@@ -438,7 +1008,10 @@ def print_results_table(
     out = console or Console()
     out.print(DISCLAIMER)
     table = Table(title=f"Top {top_n} by {metric}")
-    for col in [
+    has_indicator = "indicator" in df.columns
+    columns = (
+        ["indicator"] if has_indicator else []
+    ) + [
         "fast",
         "slow",
         "hold",
@@ -448,20 +1021,29 @@ def print_results_table(
         "max_drawdown",
         "win_rate",
         "trades",
-    ]:
+    ]
+    for col in columns:
         table.add_column(col)
     for _, row in df.head(top_n).iterrows():
-        table.add_row(
-            str(int(row["fast"])),
-            str(int(row["slow"])),
-            str(int(row["hold"])),
-            f"{row['sharpe']:.3f}" if np.isfinite(row["sharpe"]) else "n/a",
-            f"{row['total_return'] * 100:+.2f}%",
-            f"{row['calmar']:.3f}" if np.isfinite(row["calmar"]) else "n/a",
-            f"{row['max_drawdown'] * 100:+.2f}%",
-            f"{row['win_rate'] * 100:.1f}%" if np.isfinite(row["win_rate"]) else "n/a",
-            str(int(row["trades"])),
+        cells: list[str] = []
+        if has_indicator:
+            cells.append(str(row["indicator"]))
+        cells.extend(
+            [
+                _fmt_int_or_dash(row["fast"]),
+                _fmt_int_or_dash(row["slow"]),
+                _fmt_int_or_dash(row["hold"]),
+                f"{row['sharpe']:.3f}" if np.isfinite(row["sharpe"]) else "n/a",
+                f"{row['total_return'] * 100:+.2f}%",
+                f"{row['calmar']:.3f}" if np.isfinite(row["calmar"]) else "n/a",
+                f"{row['max_drawdown'] * 100:+.2f}%",
+                f"{row['win_rate'] * 100:.1f}%"
+                if np.isfinite(row["win_rate"])
+                else "n/a",
+                _fmt_int_or_dash(row["trades"]),
+            ]
         )
+        table.add_row(*cells)
     out.print(table)
 
 
@@ -503,22 +1085,75 @@ def print_results_table(
     "--universe-file", default=None, help="Path to newline-separated ticker file."
 )
 @click.option(
+    "--indicator",
+    "indicator_arg",
+    default="sma",
+    show_default=True,
+    help=(
+        "Comma-separated subset of "
+        f"{','.join(VALID_INDICATORS)} (or 'all'). EMA/SMA/MACD/sma_rsi use "
+        "--fast/--slow/--hold; window-based indicators use their own --*-windows."
+    ),
+)
+@click.option(
     "--fast",
     default="10,20,50",
     show_default=True,
-    help="Comma-separated fast SMA windows.",
+    help="Comma-separated fast SMA/EMA windows.",
 )
 @click.option(
     "--slow",
     default="50,100,200",
     show_default=True,
-    help="Comma-separated slow SMA windows (must be > fast).",
+    help="Comma-separated slow SMA/EMA windows (must be > fast).",
 )
 @click.option(
     "--hold",
     default="0",
     show_default=True,
     help="Comma-separated fixed hold lengths in bars; 0 disables fixed hold.",
+)
+@click.option(
+    "--breakout-windows",
+    "breakout_windows_arg",
+    default=",".join(str(w) for w in DEFAULT_BREAKOUT_WINDOWS),
+    show_default=True,
+    help="Donchian breakout windows (used by breakout, vol_breakout, breakout_rsi).",
+)
+@click.option(
+    "--bbands-windows",
+    "bbands_windows_arg",
+    default=",".join(str(w) for w in DEFAULT_BBANDS_WINDOWS),
+    show_default=True,
+    help=f"EMA Bollinger band windows (std fixed at {DEFAULT_BBANDS_STD}).",
+)
+@click.option(
+    "--supertrend-periods",
+    "supertrend_periods_arg",
+    default=",".join(str(p) for p in DEFAULT_SUPERTREND_PERIODS),
+    show_default=True,
+    help=f"Supertrend ATR periods (multiplier fixed at {DEFAULT_SUPERTREND_MULT}).",
+)
+@click.option(
+    "--keltner-windows",
+    "keltner_windows_arg",
+    default=",".join(str(w) for w in DEFAULT_KELTNER_WINDOWS),
+    show_default=True,
+    help=f"Keltner channel windows (multiplier fixed at {DEFAULT_KELTNER_MULT}).",
+)
+@click.option(
+    "--rsi-thresholds",
+    "rsi_thresholds_arg",
+    default=",".join(str(t) for t in DEFAULT_RSI_THRESHOLDS),
+    show_default=True,
+    help=f"RSI entry thresholds (period fixed at {DEFAULT_RSI_PERIOD}).",
+)
+@click.option(
+    "--obv-ema-windows",
+    "obv_ema_windows_arg",
+    default=",".join(str(w) for w in DEFAULT_OBV_EMA_WINDOWS),
+    show_default=True,
+    help="OBV smoothing EMA windows for obv_trend.",
 )
 @click.option(
     "--top", type=int, default=10, show_default=True, help="Print top N rows."
@@ -542,9 +1177,16 @@ def vbt_sweep(
     no_universe_cache: bool,
     tickers: str | None,
     universe_file: str | None,
+    indicator_arg: str,
     fast: str,
     slow: str,
     hold: str,
+    breakout_windows_arg: str,
+    bbands_windows_arg: str,
+    supertrend_periods_arg: str,
+    keltner_windows_arg: str,
+    rsi_thresholds_arg: str,
+    obv_ema_windows_arg: str,
     top: int,
     output_csv: bool,
     metric: str,
@@ -554,9 +1196,18 @@ def vbt_sweep(
     Approximate results — slot allocation, partial exits, dividends, and custom
     slippage are not modeled. Validate winners with backtest-rolling.
     """
+    indicators = parse_indicator_list(indicator_arg)
     fast_values = parse_int_list(fast, name="fast")
     slow_values = parse_int_list(slow, name="slow")
     hold_values = parse_int_list(hold, name="hold")
+    breakout_windows = parse_int_list(breakout_windows_arg, name="breakout-windows")
+    bbands_windows = parse_int_list(bbands_windows_arg, name="bbands-windows")
+    supertrend_periods = parse_int_list(
+        supertrend_periods_arg, name="supertrend-periods"
+    )
+    keltner_windows = parse_int_list(keltner_windows_arg, name="keltner-windows")
+    rsi_thresholds = parse_int_list(rsi_thresholds_arg, name="rsi-thresholds")
+    obv_ema_windows = parse_int_list(obv_ema_windows_arg, name="obv-ema-windows")
 
     end_date = (
         end_arg.date() if isinstance(end_arg, datetime) else (end_arg or date.today())
@@ -603,8 +1254,27 @@ def vbt_sweep(
 
     yf_by_tv = {tv: tv_to_yf(tv, market) for tv in tv_symbols}
     yf_symbols = list(dict.fromkeys(list(yf_by_tv.values()) + [bench]))
-    max_slow = max(slow_values)
-    warmup_days = max(max_slow * 3 + 30, 90)
+    candidate_lookbacks: list[int] = []
+    if any(ind in ("sma", "ema", "sma_rsi") for ind in indicators):
+        candidate_lookbacks.append(max(slow_values))
+    if any(ind in ("breakout", "vol_breakout", "breakout_rsi") for ind in indicators):
+        candidate_lookbacks.append(max(breakout_windows))
+    if "bbands" in indicators:
+        candidate_lookbacks.append(max(bbands_windows))
+    if "supertrend" in indicators:
+        candidate_lookbacks.append(max(supertrend_periods))
+    if "keltner" in indicators:
+        candidate_lookbacks.append(max(keltner_windows))
+    if "obv_trend" in indicators:
+        candidate_lookbacks.append(max(obv_ema_windows))
+    if "macd" in indicators:
+        candidate_lookbacks.append(DEFAULT_MACD_SLOW + DEFAULT_MACD_SIGNAL)
+    if "rsi" in indicators:
+        candidate_lookbacks.append(DEFAULT_RSI_PERIOD * 3)
+    if "vol_breakout" in indicators:
+        candidate_lookbacks.append(DEFAULT_VOL_MA_WINDOW)
+    max_lookback = max(candidate_lookbacks) if candidate_lookbacks else max(slow_values)
+    warmup_days = max(max_lookback * 3 + 30, 90)
     fetch_start = (pd.Timestamp(start_date) - pd.Timedelta(days=warmup_days)).date()
     fetch_end = end_date
 
@@ -626,16 +1296,47 @@ def vbt_sweep(
             start=start_ts,
             end=end_ts,
         )
-        # Align open panel to the same columns/rows as close (handles drop-na divergence).
         open_panel = open_panel.reindex(index=close.index, columns=close.columns)
     except ValueError:
         open_panel = None
+
+    high_panel: pd.DataFrame | None = None
+    low_panel: pd.DataFrame | None = None
+    volume_panel: pd.DataFrame | None = None
+    if any(ind in HL_INDICATORS for ind in indicators):
+        try:
+            high_panel = build_high_panel(
+                price_panel, equity_symbols, start=start_ts, end=end_ts
+            ).reindex(index=close.index, columns=close.columns)
+            low_panel = build_low_panel(
+                price_panel, equity_symbols, start=start_ts, end=end_ts
+            ).reindex(index=close.index, columns=close.columns)
+        except ValueError:
+            high_panel = None
+            low_panel = None
+    if any(ind in VOLUME_INDICATORS for ind in indicators):
+        try:
+            volume_panel = build_volume_panel(
+                price_panel, equity_symbols, start=start_ts, end=end_ts
+            ).reindex(index=close.index, columns=close.columns)
+        except ValueError:
+            volume_panel = None
 
     results = run_parameter_sweep(
         close,
         fast_values=fast_values,
         slow_values=slow_values,
         hold_values=hold_values,
+        indicators=indicators,
+        breakout_windows=breakout_windows,
+        bbands_windows=bbands_windows,
+        supertrend_periods=supertrend_periods,
+        keltner_windows=keltner_windows,
+        rsi_thresholds=rsi_thresholds,
+        obv_ema_windows=obv_ema_windows,
+        high=high_panel,
+        low=low_panel,
+        volume=volume_panel,
         open_=open_panel,
         initial_capital=INITIAL_CAPITAL_DEFAULT,
     )
@@ -647,8 +1348,9 @@ def vbt_sweep(
 
     console.print(
         f"[dim]Window: {start_date.isoformat()} to {end_date.isoformat()}  "
-        f"symbols={close.shape[1]}  combos={len(results)}  "
-        f"capital={INITIAL_CAPITAL_DEFAULT:,.0f}  slippage=0[/dim]"
+        f"indicators={','.join(indicators)}  symbols={close.shape[1]}  "
+        f"combos={len(results)}  capital={INITIAL_CAPITAL_DEFAULT:,.0f}  "
+        f"slippage=0[/dim]"
     )
     if universe_note:
         console.print(f"[dim]Universe: {universe_note}[/dim]")
