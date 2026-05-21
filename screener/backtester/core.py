@@ -566,7 +566,9 @@ def _precompute_filter_signals(
             dollar_vol = close * volume
             adv = dollar_vol.rolling(window=window, min_periods=1).mean()
             # NaN (or +-inf) ADV must fail the filter.
-            adv_ok = np.isfinite(adv.values) & (adv.values >= float(cfg.min_avg_dollar_volume))
+            adv_ok = np.isfinite(adv.values) & (
+                adv.values >= float(cfg.min_avg_dollar_volume)
+            )
             passes &= pd.Series(adv_ok, index=bars.index)
         out[ticker] = passes.astype(bool)
     return out
