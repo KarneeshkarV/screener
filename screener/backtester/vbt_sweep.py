@@ -874,6 +874,62 @@ SOLO_INDICATORS_NAN_SLOW: frozenset[str] = frozenset(
 )
 
 
+def _portfolio_chunk_metrics(
+    close: pd.DataFrame,
+    fill_price: pd.DataFrame,
+    entries_chunk: pd.DataFrame,
+    exits_chunk: pd.DataFrame,
+    *,
+    vbt: Any,
+    initial_capital: float,
+) -> tuple[Any, ...]:
+    """Run one ``Portfolio.from_signals`` call over a slice of combo columns.
+
+    Materialising the tiled close/price for every combo at once peaks at
+    ~``n_days * n_tickers * n_combos * 8`` bytes — which OOMs on SP500 ×
+    multi-year × many-indicator runs. Chunking by combo keeps the peak bounded.
+    """
+    n_chunk_combos = entries_chunk.columns.get_level_values(0).nunique() * (
+        entries_chunk.shape[1] // close.shape[1]
+    )
+    n_combos = entries_chunk.shape[1] // close.shape[1]
+    tiled_close = np.tile(close.to_numpy(), (1, n_combos))
+    close_broadcast = pd.DataFrame(
+        tiled_close, index=close.index, columns=entries_chunk.columns, copy=False
+    )
+    if fill_price is close:
+        price_broadcast = close_broadcast
+    else:
+        tiled_price = np.tile(fill_price.to_numpy(), (1, n_combos))
+        price_broadcast = pd.DataFrame(
+            tiled_price,
+            index=fill_price.index,
+            columns=entries_chunk.columns,
+            copy=False,
+        )
+    del n_chunk_combos  # only used to make linter happy on unused branches
+    pf = vbt.Portfolio.from_signals(
+        close_broadcast,
+        entries_chunk,
+        exits_chunk,
+        price=price_broadcast,
+        init_cash=float(initial_capital),
+        fees=0.0,
+        slippage=0.0,
+        group_by=["indicator", "fast", "slow", "hold"],
+        cash_sharing=True,
+        freq="1D",
+    )
+    return (
+        pf.sharpe_ratio(),
+        pf.total_return(),
+        pf.calmar_ratio(),
+        pf.max_drawdown(),
+        pf.trades.win_rate(),
+        pf.trades.count(),
+    )
+
+
 def run_parameter_sweep(
     close: pd.DataFrame,
     *,
@@ -892,6 +948,7 @@ def run_parameter_sweep(
     volume: pd.DataFrame | None = None,
     open_: pd.DataFrame | None = None,
     initial_capital: float = INITIAL_CAPITAL_DEFAULT,
+    chunk_size: int | None = None,
 ) -> pd.DataFrame:
     vbt = _require_vectorbt()
     if indicators is None:
@@ -918,42 +975,57 @@ def run_parameter_sweep(
     exits_shifted = exits.astype(bool).shift(1, fill_value=False).astype(bool)
     fill_price = open_ if open_ is not None else close
 
-    # Tile close / fill_price across all combos without doubling memory via
-    # pd.concat. ``np.broadcast_to`` produces a read-only view that vectorbt
-    # may reject (it requires contiguous arrays for Numba kernels), so we
-    # materialise once via ``np.tile`` — a single allocation instead of the
-    # two previously caused by ``pd.concat([close] * len(combos))``.
-    close_np = close.to_numpy()
-    tiled_close = np.tile(close_np, (1, len(combos)))
-    close_broadcast = pd.DataFrame(
-        tiled_close, index=close.index, columns=entries.columns, copy=False
-    )
-    if fill_price is close:
-        price_broadcast = close_broadcast
-    else:
-        tiled_price = np.tile(fill_price.to_numpy(), (1, len(combos)))
-        price_broadcast = pd.DataFrame(
-            tiled_price, index=fill_price.index, columns=entries.columns, copy=False
-        )
+    n_tickers = close.shape[1]
+    n_combos = len(combos)
+    # Bound peak memory: tiled close+price for one chunk costs
+    # ``2 * n_days * n_tickers * chunk * 8`` bytes. Aim for <1 GiB per
+    # chunk and keep at least one chunk even at very high ticker counts.
+    if chunk_size is None:
+        n_days = close.shape[0]
+        bytes_per_combo = n_days * n_tickers * 8 * 2  # close + price tile
+        target_bytes = 1 * 1024 * 1024 * 1024  # ~1 GiB
+        chunk_size = max(1, min(n_combos, target_bytes // max(1, bytes_per_combo)))
 
-    pf = vbt.Portfolio.from_signals(
-        close_broadcast,
-        entries_shifted,
-        exits_shifted,
-        price=price_broadcast,
-        init_cash=float(initial_capital),
-        fees=0.0,
-        slippage=0.0,
-        group_by=["indicator", "fast", "slow", "hold"],
-        cash_sharing=True,
-        freq="1D",
-    )
-    sharpe = pf.sharpe_ratio()
-    total_return = pf.total_return()
-    calmar = pf.calmar_ratio()
-    max_drawdown = pf.max_drawdown()
-    win_rate = pf.trades.win_rate()
-    trade_count = pf.trades.count()
+    sharpe_parts: list[pd.Series] = []
+    total_return_parts: list[pd.Series] = []
+    calmar_parts: list[pd.Series] = []
+    max_drawdown_parts: list[pd.Series] = []
+    win_rate_parts: list[pd.Series] = []
+    trade_count_parts: list[pd.Series] = []
+
+    for start in range(0, n_combos, chunk_size):
+        stop = min(start + chunk_size, n_combos)
+        col_start = start * n_tickers
+        col_stop = stop * n_tickers
+        entries_chunk = entries_shifted.iloc[:, col_start:col_stop]
+        exits_chunk = exits_shifted.iloc[:, col_start:col_stop]
+        sharpe_c, total_c, calmar_c, dd_c, win_c, trades_c = _portfolio_chunk_metrics(
+            close,
+            fill_price,
+            entries_chunk,
+            exits_chunk,
+            vbt=vbt,
+            initial_capital=initial_capital,
+        )
+        sharpe_parts.append(sharpe_c)
+        total_return_parts.append(total_c)
+        calmar_parts.append(calmar_c)
+        max_drawdown_parts.append(dd_c)
+        win_rate_parts.append(win_c)
+        trade_count_parts.append(trades_c)
+
+    def _concat(parts: list[Any]) -> pd.Series | float:
+        cleaned = [p for p in parts if isinstance(p, pd.Series) and not p.empty]
+        if not cleaned:
+            return parts[0] if parts else float("nan")
+        return pd.concat(cleaned)
+
+    sharpe = _concat(sharpe_parts)
+    total_return = _concat(total_return_parts)
+    calmar = _concat(calmar_parts)
+    max_drawdown = _concat(max_drawdown_parts)
+    win_rate = _concat(win_rate_parts)
+    trade_count = _concat(trade_count_parts)
 
     rows: list[dict[str, Any]] = []
     for ind, fast_or_w, slow, hold in combos:
