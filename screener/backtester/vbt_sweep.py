@@ -323,9 +323,7 @@ def print_results_table(
             f"{row['total_return'] * 100:+.2f}%",
             f"{row['calmar']:.3f}" if np.isfinite(row["calmar"]) else "n/a",
             f"{row['max_drawdown'] * 100:+.2f}%",
-            f"{row['win_rate'] * 100:.1f}%"
-            if np.isfinite(row["win_rate"])
-            else "n/a",
+            f"{row['win_rate'] * 100:.1f}%" if np.isfinite(row["win_rate"]) else "n/a",
             str(int(row["trades"])),
         )
     out.print(table)
