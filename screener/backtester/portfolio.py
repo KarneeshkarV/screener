@@ -293,12 +293,14 @@ def build_equity_curve(
             if day in frame.index:
                 price = float(frame.loc[day, "close"])
             else:
-                prior = frame.loc[frame.index <= day]
-                price = (
-                    float(prior["close"].iloc[-1])
-                    if not prior.empty
-                    else trade.entry_price
-                )
+                price = float("nan")
+            if pd.isna(price):
+                # Bar present on the calendar but no valid close for this
+                # ticker (holiday mismatch, trading halt, delisting tail):
+                # carry the lot at its most recent valid close so one missing
+                # bar can't poison the equity endpoint (NaN -> NaN total return).
+                prior = frame.loc[frame.index <= day, "close"].dropna()
+                price = float(prior.iloc[-1]) if not prior.empty else trade.entry_price
             mtm += trade.shares * price
         equity.loc[day] = cash + mtm
     return equity

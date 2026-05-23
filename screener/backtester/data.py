@@ -150,6 +150,11 @@ def _load_cached(ticker: str, cache_dir: Path = CACHE_DIR) -> Optional[pd.DataFr
     try:
         df = pd.read_parquet(p)
         df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+        # Clean NaN-OHLCV rows that older cache writes may have persisted, so a
+        # cache hit can't reintroduce the NaN bars that _normalize_frame drops.
+        price_cols = [c for c in OHLCV_COLUMNS if c in df.columns]
+        if price_cols:
+            df = df.dropna(subset=price_cols)
         return df
     except (OSError, pd.errors.ParserError, ValueError):
         return None
@@ -200,6 +205,14 @@ def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
         out["stock_splits"] = splits
     out.index = pd.to_datetime(out.index).tz_localize(None).normalize()
     out = out[~out.index.duplicated(keep="last")].sort_index()
+    # Drop bars with no valid OHLCV (yfinance emits NaN rows for halts,
+    # illiquid/delisting tails, and multi-ticker index-union gaps). These are
+    # not tradeable bars: an entry/exit fill or mark-to-market landing on one
+    # propagates NaN into trade PnL and the equity endpoint. Mirrors the FMP
+    # normalize path, which already drops these.
+    price_cols = [c for c in OHLCV_COLUMNS if c in out.columns]
+    if price_cols:
+        out = out.dropna(subset=price_cols)
     return out
 
 
