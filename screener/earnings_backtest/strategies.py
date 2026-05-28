@@ -1,13 +1,13 @@
 """Sentiment strategies for earnings-drift backtest.
 
 Each strategy returns a score in [0, 1] for a given earnings event.
-A score ≥ threshold (default 0.5) means " bullish entry signal".
+A score ≥ threshold (default 0.5) means "bullish entry signal".
 
 Strategies:
   1. price_momentum  — 5d & 20d return positive going into earnings
   2. volume_surge    — volume >1.5× 20d avg on E-1/E-2
   3. analyst_sentiment — yfinance upgrades > downgrades
-  4. iv_sentiment    — P/C ratio <0.7 + IV percentile (US only, skips for India)
+  4. iv_sentiment    — P/C ratio <0.7 + IV percentile (US: yfinance, India: NSE)
   5. combined_score  — weighted average of above
 """
 
@@ -202,13 +202,16 @@ def iv_sentiment(
     iv_data: Optional[dict],
     threshold: float = 0.5,
 ) -> SignalResult:
-    """P/C ratio < 0.7 is bullish; IV percentile as confidence.
+    """P/C ratio < 0.7 is bullish; median IV as confidence.
 
-    US only — returns score 0.5 (neutral skip) for tickers with no options data.
-    Score = weighted combination of P/C signal and IV level.
+    US: uses yfinance options (full P/C + IV data).
+    India: uses NSE option chain via jugaad_data (P/C + IV from strikes).
+
+    When no options data is available, returns neutral score 0.5
+    which is excluded from combined weight.
     """
     if iv_data is None:
-        # Skip gracefully — return neutral score
+        # No data at all — return neutral
         return SignalResult(
             ticker,
             earnings_date,
@@ -219,21 +222,29 @@ def iv_sentiment(
         )
 
     pc_ratio = iv_data["pc_ratio"]
-    iv_pct = iv_data.get("iv_percentile", float("nan"))
+    # median_iv is in % terms (e.g. 40.11 for 40.11% IV, 22.23 for 22.23% IV)
+    median_iv = iv_data.get("median_iv", float("nan"))
 
     # P/C ratio signal: < 0.7 → bullish (score > 0.5), > 1.0 → bearish
     if pc_ratio < 0.7:
         pc_score = 1.0
     elif pc_ratio < 1.0:
-        pc_score = 1.0 - (pc_ratio - 0.7) / 0.3 * 0.5  # linear interpolation
+        pc_score = 1.0 - (pc_ratio - 0.7) / 0.3 * 0.5
     else:
         pc_score = max(0.0, 1.0 - (pc_ratio - 1.0) * 0.5)
 
-    # IV percentile: high IV (>80%) adds confidence for drift plays
-    if not np.isnan(iv_pct):
-        iv_score = min(iv_pct / 100.0, 1.0) * 0.3 + 0.35  # weight IV at 30%
+    # Median IV score: higher IV → more drift potential.
+    # Scale: IV < 20% → low (0.3), 20-50% → moderate (0.5), > 50% → high (0.7-1.0).
+    # If NaN (no IV data), use neutral 0.35.
+    if not np.isnan(median_iv):
+        if median_iv < 20:
+            iv_score = 0.3
+        elif median_iv < 50:
+            iv_score = 0.3 + (median_iv - 20) / 30 * 0.4  # 0.3 → 0.7
+        else:
+            iv_score = min(0.7 + (median_iv - 50) / 50 * 0.3, 1.0)
     else:
-        iv_score = 0.5  # neutral if no IV data
+        iv_score = 0.35
 
     # Combined: P/C ratio dominates (70%), IV adds (30%)
     score = pc_score * 0.7 + iv_score * 0.3
@@ -247,7 +258,7 @@ def iv_sentiment(
         passed=passed,
         details={
             "pc_ratio": round(pc_ratio, 4),
-            "iv_percentile": round(iv_pct, 4) if not np.isnan(iv_pct) else None,
+            "median_iv_pct": round(median_iv, 2) if not np.isnan(median_iv) else None,
         },
     )
 

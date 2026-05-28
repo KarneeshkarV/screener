@@ -1,8 +1,9 @@
 """Data acquisition for earnings backtest.
 
 Fetches earnings dates, price bars, volume, analyst recommendations,
-and options data from yfinance. Designed for batch processing under
-tight RAM constraints (~2 GB).
+and options data. Uses yfinance for US and jugaad_data for India (NSE).
+
+Designed for batch processing under tight RAM constraints (~2 GB).
 """
 
 from __future__ import annotations
@@ -23,9 +24,10 @@ from screener.backtester.data import (
 
 logger = logging.getLogger(__name__)
 
-# ── Universe loaders ────────────────────────────────────────────────────
-
 CACHE_DIR = Path.home() / ".screener" / "earnings_backtest"
+
+
+# ── Universe loaders ────────────────────────────────────────────────────
 
 
 def load_sp500() -> list[str]:
@@ -33,7 +35,6 @@ def load_sp500() -> list[str]:
     from screener.universes import load_current_universe
 
     univ = load_current_universe("sp500")
-    # Convert to yfinance-style; no suffix needed for US tickers
     return list(univ.symbols)
 
 
@@ -66,7 +67,6 @@ def load_nifty500() -> list[str]:
     df = pd.read_csv(io.StringIO(text))
     col = "Symbol" if "Symbol" in df.columns else "SYMBOL"
     symbols = df[col].dropna().astype(str).str.strip().str.upper().tolist()
-    # Add .NS suffix for yfinance
     symbols = [f"{s}.NS" for s in symbols]
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -82,28 +82,22 @@ def load_universe(market: str) -> list[str]:
     raise ValueError(f"Unknown market: {market!r}")
 
 
-# ── Earnings dates ──────────────────────────────────────────────────────
+# ── Earnings dates (yfinance) ────────────────────────────────────────────
 
 
-def fetch_earnings_dates(
+def fetch_earnings_dates_yf(
     ticker: str,
     years: int = 3,
 ) -> Optional[pd.DataFrame]:
-    """Return yfinance earnings_dates for *ticker* covering the last *years*.
-
-    Returns DataFrame with columns: [Earnings Date, EPS Estimate, Reported EPS, Surprise(%)]
-    or None if unavailable.
-    """
+    """Return yfinance earnings_dates for *ticker*."""
     _configure_yfinance()
     try:
         t = yf.Ticker(ticker)
         ed = t.earnings_dates
         if ed is None or ed.empty:
             return None
-        # yfinance returns earnings_dates with tz-aware index
         ed = ed.copy()
         ed.index = pd.to_datetime(ed.index).tz_localize(None).normalize()
-        # Filter to last N years
         cutoff = pd.Timestamp(date.today() - timedelta(days=years * 365))
         ed = ed[ed.index >= cutoff]
         return ed if not ed.empty else None
@@ -114,6 +108,56 @@ def fetch_earnings_dates(
         return None
 
 
+def fetch_earnings_dates_nse() -> Optional[pd.DataFrame]:
+    """Fetch earnings result dates from NSE corporate announcements via jugaad_data."""
+    try:
+        from jugaad_data.nse import NSELive
+
+        nse = NSELive()
+        announcements = nse.corporate_announcements()
+        if not announcements:
+            return None
+
+        rows = []
+        for ann in announcements:
+            desc = str(ann.get("desc", "")).lower()
+            text = str(ann.get("attchmntText", "")).lower()
+            # Filter for financial results announcements
+            if any(
+                kw in desc or kw in text
+                for kw in [
+                    "financial result",
+                    "earnings",
+                    "quarterly result",
+                    "audited financial",
+                    "unaudited financial",
+                ]
+            ):
+                symbol = ann.get("symbol", "")
+                dt_str = ann.get("sort_date", "")
+                if not symbol or not dt_str:
+                    continue
+                try:
+                    ann_date = pd.Timestamp(dt_str).normalize()
+                except Exception:
+                    continue
+                rows.append(
+                    {
+                        "ticker": f"{symbol}.NS",
+                        "earnings_date": ann_date,
+                        "desc": ann.get("desc", ""),
+                    }
+                )
+
+        if not rows:
+            return None
+        return pd.DataFrame(rows)
+
+    except Exception as exc:
+        logger.warning("nse_earnings_fetch_failed", extra={"error": str(exc)})
+        return None
+
+
 # ── Batch earnings collector ────────────────────────────────────────────
 
 
@@ -121,44 +165,118 @@ def collect_earnings_events(
     tickers: list[str],
     years: int = 3,
     batch_size: int = 50,
+    market: str = "us",
 ) -> pd.DataFrame:
     """Collect earnings dates for all *tickers*.
 
-    Returns a DataFrame with columns:
-        ticker, earnings_date, eps_estimate, reported_eps, surprise_pct
-
-    Processes in *batch_size* chunks to limit API pressure.
+    For India: tries jugaad_data (NSE announcements) first, falls back to yfinance.
+    For US: uses yfinance only.
     """
     rows: list[dict] = []
-    for i in range(0, len(tickers), batch_size):
-        batch = tickers[i : i + batch_size]
-        logger.info(
-            "earnings_batch",
-            extra={"batch": f"{i}-{i + len(batch)}", "size": len(batch)},
-        )
-        for ticker in batch:
-            try:
-                ed = fetch_earnings_dates(ticker, years=years)
-                if ed is None:
-                    continue
-                for idx, row in ed.iterrows():
-                    rows.append(
-                        {
-                            "ticker": ticker,
-                            "earnings_date": idx.date()
-                            if hasattr(idx, "date")
-                            else idx,
-                            "eps_estimate": row.get("EPS Estimate", float("nan")),
-                            "reported_eps": row.get("Reported EPS", float("nan")),
-                            "surprise_pct": row.get("Surprise(%)", float("nan")),
-                        }
-                    )
-            except Exception as exc:
-                logger.debug(
-                    "earnings_collect_error",
-                    extra={"ticker": ticker, "error": str(exc)},
+
+    if market == "india":
+        # Try NSE corporate announcements first (broader coverage)
+        nse_events = fetch_earnings_dates_nse()
+        if nse_events is not None and not nse_events.empty:
+            # Only keep tickers in our universe
+            ticker_set = set(tickers)
+            filtered = nse_events[nse_events["ticker"].isin(ticker_set)]
+            # Convert to unified format
+            cutoff = pd.Timestamp(date.today() - timedelta(days=years * 365))
+            filtered = filtered[filtered["earnings_date"] >= cutoff]
+            for _, row in filtered.iterrows():
+                rows.append(
+                    {
+                        "ticker": row["ticker"],
+                        "earnings_date": row["earnings_date"],
+                        "eps_estimate": float("nan"),
+                        "reported_eps": float("nan"),
+                        "surprise_pct": float("nan"),
+                    }
                 )
-                continue
+            # Fill in EPS from yfinance for tickers that have it
+            nse_found = (
+                set(rows_dict["ticker"] for rows_dict in rows) if rows else set()
+            )
+            missing = [t for t in tickers if t not in nse_found]
+            if missing:
+                logger.info("yfinance_earnings_fill", extra={"count": len(missing)})
+                for i in range(0, len(missing), batch_size):
+                    batch = missing[i : i + batch_size]
+                    for ticker in batch:
+                        ed = fetch_earnings_dates_yf(ticker, years=years)
+                        if ed is None:
+                            continue
+                        for idx, row in ed.iterrows():
+                            rows.append(
+                                {
+                                    "ticker": ticker,
+                                    "earnings_date": idx.date()
+                                    if hasattr(idx, "date")
+                                    else idx,
+                                    "eps_estimate": row.get(
+                                        "EPS Estimate", float("nan")
+                                    ),
+                                    "reported_eps": row.get(
+                                        "Reported EPS", float("nan")
+                                    ),
+                                    "surprise_pct": row.get(
+                                        "Surprise(%)", float("nan")
+                                    ),
+                                }
+                            )
+        else:
+            # Fallback: yfinance for all
+            for i in range(0, len(tickers), batch_size):
+                batch = tickers[i : i + batch_size]
+                for ticker in batch:
+                    ed = fetch_earnings_dates_yf(ticker, years=years)
+                    if ed is None:
+                        continue
+                    for idx, row in ed.iterrows():
+                        rows.append(
+                            {
+                                "ticker": ticker,
+                                "earnings_date": idx.date()
+                                if hasattr(idx, "date")
+                                else idx,
+                                "eps_estimate": row.get("EPS Estimate", float("nan")),
+                                "reported_eps": row.get("Reported EPS", float("nan")),
+                                "surprise_pct": row.get("Surprise(%)", float("nan")),
+                            }
+                        )
+    else:
+        # US: yfinance
+        for i in range(0, len(tickers), batch_size):
+            batch = tickers[i : i + batch_size]
+            logger.info(
+                "earnings_batch",
+                extra={"batch": f"{i}-{i + len(batch)}", "size": len(batch)},
+            )
+            for ticker in batch:
+                try:
+                    ed = fetch_earnings_dates_yf(ticker, years=years)
+                    if ed is None:
+                        continue
+                    for idx, row in ed.iterrows():
+                        rows.append(
+                            {
+                                "ticker": ticker,
+                                "earnings_date": idx.date()
+                                if hasattr(idx, "date")
+                                else idx,
+                                "eps_estimate": row.get("EPS Estimate", float("nan")),
+                                "reported_eps": row.get("Reported EPS", float("nan")),
+                                "surprise_pct": row.get("Surprise(%)", float("nan")),
+                            }
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "earnings_collect_error",
+                        extra={"ticker": ticker, "error": str(exc)},
+                    )
+                    continue
+
     if not rows:
         return pd.DataFrame(
             columns=[
@@ -175,19 +293,14 @@ def collect_earnings_events(
 # ── Analyst upgrades/downgrades ────────────────────────────────────────
 
 
-def fetch_analyst_sentiment(ticker: str) -> Optional[dict]:
-    """Compute analyst sentiment from yfinance upgrades/downgrades.
+def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
+    """Compute analyst sentiment.
 
-    Action key from yfinance:
-      - "up"    → upgrade (bullish)
-      - "down"  → downgrade (bearish)
-      - "reit"  → reiterate/maintain (neutral-bullish, weight=0.5)
-      - "main"  → main/hold (neutral)
-      - "init"  → initiate (neutral)
-
-    Returns dict with keys: upgrades, downgrades, net, grade_counts, or None.
+    For US: uses yfinance upgrades_downgrades.
+    For India: uses yfinance (usually empty) — returns None gracefully.
     """
     try:
+        _configure_yfinance()
         t = yf.Ticker(ticker)
         ud = t.upgrades_downgrades
         if ud is None or ud.empty:
@@ -195,7 +308,7 @@ def fetch_analyst_sentiment(ticker: str) -> Optional[dict]:
 
         if "Action" in ud.columns:
             counts = ud["Action"].value_counts().to_dict()
-            # Strict: up is upgrade, down is downgrade, reit is half-upgrade
+            # up = upgrade, reit = reiterate (half weight), down = downgrade
             upgrades = counts.get("up", 0) + 0.5 * counts.get("reit", 0)
             downgrades = counts.get("down", 0)
         elif "ToGrade" in ud.columns:
@@ -224,20 +337,14 @@ def fetch_analyst_sentiment(ticker: str) -> Optional[dict]:
 # ── Options / IV sentiment ──────────────────────────────────────────────
 
 
-def fetch_iv_sentiment(ticker: str) -> Optional[dict]:
-    """Compute put/call ratio and IV percentile for *ticker*.
-
-    P/C ratio < 0.7 is considered bullish.
-    Returns dict with keys: pc_ratio, iv_percentile, total_calls, total_puts,
-    or None if no options data (e.g. India).
-    """
+def fetch_iv_sentiment_yf(ticker: str) -> Optional[dict]:
+    """Compute put/call ratio and IV percentile from yfinance (US only)."""
     try:
         t = yf.Ticker(ticker)
         dates = t.options
         if not dates:
             return None
 
-        # Use nearest expiry that's >= 5 days out (avoid noise from expiry-day effects)
         today = pd.Timestamp(date.today())
         target_expiry = None
         for d in dates:
@@ -267,7 +374,6 @@ def fetch_iv_sentiment(ticker: str) -> Optional[dict]:
             int(puts["openInterest"].sum()) if "openInterest" in puts.columns else 0
         )
 
-        # P/C ratio on volume; fall back to OI if volume is zero
         denom = total_calls or 1
         pc_ratio = (
             total_puts / denom
@@ -275,23 +381,102 @@ def fetch_iv_sentiment(ticker: str) -> Optional[dict]:
             else (total_oi_puts / (total_oi_calls or 1))
         )
 
-        # IV percentile: use mean IV of calls as proxy
         iv_vals = []
         if "impliedVolatility" in calls.columns:
             iv_vals.extend(calls["impliedVolatility"].dropna().tolist())
         if "impliedVolatility" in puts.columns:
             iv_vals.extend(puts["impliedVolatility"].dropna().tolist())
-        iv_percentile = float(np.percentile(iv_vals, 50)) if iv_vals else float("nan")
+        # Median IV across all strikes (expressed as %, e.g. 40.11 for 40.11%)
+        # yfinance returns IV as decimals (0.4011 = 40.11%), so multiply by 100
+        iv_vals_pct = [v * 100 for v in iv_vals]
+        median_iv = (
+            float(np.percentile(iv_vals_pct, 50)) if iv_vals_pct else float("nan")
+        )
 
         return {
             "pc_ratio": round(pc_ratio, 4),
-            "iv_percentile": round(iv_percentile, 4),
+            "median_iv": round(median_iv, 2),
             "total_calls": total_calls,
             "total_puts": total_puts,
         }
     except Exception as exc:
         logger.debug("iv_sentiment_error", extra={"ticker": ticker, "error": str(exc)})
         return None
+
+
+def fetch_iv_sentiment_nse(symbol: str) -> Optional[dict]:
+    """Compute put/call ratio and IV from NSE option chain via jugaad_data.
+
+    *symbol* is the NSE symbol (e.g. 'RELIANCE'), NOT the yfinance ticker.
+    Uses openInterest for P/C ratio (more stable than volume).
+    NSE option chain does include impliedVolatility per strike.
+    """
+    try:
+        from jugaad_data.nse import NSELive
+
+        nse = NSELive()
+        oc = nse.equities_option_chain(symbol)
+        if not oc or "records" not in oc:
+            return None
+
+        data = oc["records"].get("data", [])
+        if not data:
+            return None
+
+        total_ce_oi = 0
+        total_pe_oi = 0
+        total_ce_vol = 0
+        total_pe_vol = 0
+        iv_vals = []
+
+        for item in data:
+            ce = item.get("CE", {})
+            pe = item.get("PE", {})
+            if ce:
+                total_ce_oi += ce.get("openInterest", 0) or 0
+                total_ce_vol += ce.get("totalTradedVolume", 0) or 0
+                iv = ce.get("impliedVolatility")
+                if iv and iv > 0:
+                    iv_vals.append(float(iv))
+            if pe:
+                total_pe_oi += pe.get("openInterest", 0) or 0
+                total_pe_vol += pe.get("totalTradedVolume", 0) or 0
+                iv = pe.get("impliedVolatility")
+                if iv and iv > 0:
+                    iv_vals.append(float(iv))
+
+        # P/C ratio on OI (more stable than volume)
+        denom = total_ce_oi or 1
+        pc_ratio = total_pe_oi / denom if total_ce_oi > 0 else 1.0
+
+        # IV percentile from NSE strike-level IV
+        iv_vals_pct = [
+            v for v in iv_vals if v > 0 and v < 500
+        ]  # Filter outliers (< 500%)
+        median_iv = (
+            float(np.percentile(iv_vals_pct, 50)) if iv_vals_pct else float("nan")
+        )
+
+        return {
+            "pc_ratio": round(pc_ratio, 4),
+            "median_iv": round(median_iv, 2) if not np.isnan(median_iv) else None,
+            "total_calls": total_ce_vol,
+            "total_puts": total_pe_vol,
+        }
+    except Exception as exc:
+        logger.debug(
+            "nse_iv_sentiment_error", extra={"symbol": symbol, "error": str(exc)}
+        )
+        return None
+
+
+def fetch_iv_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
+    """Dispatch IV sentiment to the appropriate source."""
+    if market == "india":
+        # Strip .NS suffix for jugaad_data
+        symbol = ticker.replace(".NS", "").replace(".BO", "")
+        return fetch_iv_sentiment_nse(symbol)
+    return fetch_iv_sentiment_yf(ticker)
 
 
 # ── Price / volume data ─────────────────────────────────────────────────
@@ -304,10 +489,7 @@ def fetch_price_data(
     fetcher: Optional[YFinancePriceFetcher] = None,
     batch_size: int = 50,
 ) -> dict[str, pd.DataFrame]:
-    """Fetch OHLCV bars for *tickers* from *start* to *end*.
-
-    Processes in *batch_size* chunks and frees memory between batches.
-    """
+    """Fetch OHLCV bars for *tickers* from *start* to *end*."""
     if fetcher is None:
         fetcher = YFinancePriceFetcher(auto_adjust=True)
 
@@ -316,7 +498,6 @@ def fetch_price_data(
         batch = tickers[i : i + batch_size]
         data = fetcher.fetch(batch, start, end)
         all_data.update(data)
-        # Free memory from stale frames
         for k in list(data.keys()):
             if data[k].empty:
                 del data[k]

@@ -78,7 +78,9 @@ def run_earnings_backtest(
 
     # 2. Earnings events
     cutoff_date = date.today() - timedelta(days=years * 365)
-    events_df = collect_earnings_events(tickers, years=years, batch_size=batch_size)
+    events_df = collect_earnings_events(
+        tickers, years=years, batch_size=batch_size, market=market
+    )
     if events_df.empty:
         logger.warning("no_earnings_events_found")
         return []
@@ -133,16 +135,17 @@ def run_earnings_backtest(
         for j in range(0, len(event_tickers), batch_size):
             batch = event_tickers[j : j + batch_size]
             for t in batch:
-                analyst_cache[t] = fetch_analyst_sentiment(t)
+                analyst_cache[t] = fetch_analyst_sentiment(t, market=market)
 
-    if (
-        "iv_sentiment" in analyzed_strategies or "combined_score" in analyzed_strategies
-    ) and market == "us":
-        logger.info("fetching_iv_sentiment", extra={"count": len(event_tickers)})
+    if "iv_sentiment" in analyzed_strategies or "combined_score" in analyzed_strategies:
+        logger.info(
+            "fetching_iv_sentiment",
+            extra={"count": len(event_tickers), "market": market},
+        )
         for j in range(0, len(event_tickers), batch_size):
             batch = event_tickers[j : j + batch_size]
             for t in batch:
-                iv_cache[t] = fetch_iv_sentiment(t)
+                iv_cache[t] = fetch_iv_sentiment(t, market=market)
 
     # Process each earnings event
     for _, event in events_df.iterrows():
