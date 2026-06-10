@@ -143,6 +143,17 @@ def test_passes_volume_floor_drops_thin_names():
     )
 
 
+def test_passes_volume_floor_rejects_nan_rolling_average():
+    bars = make_bars(n=60, seed=6)
+    # A NaN volume inside the trailing 20-day window leaves the rolling mean
+    # undefined; the ticker must be ineligible, not compared against NaN.
+    bars.iat[-5, bars.columns.get_loc("volume")] = float("nan")
+    assert (
+        passes_volume_floor(bars, min_avg_volume=1_000, as_of=bars.index[-1].date())
+        is False
+    )
+
+
 def test_parse_ban_csv():
     text = "Securities in Ban For Trade Date 27-APR-2026:\n1,SAIL\n2,FOO\n"
     assert _parse_ban_csv(text) == {"SAIL", "FOO"}

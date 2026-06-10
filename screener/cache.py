@@ -10,7 +10,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterator, TypeVar
+from typing import Any, Callable, Iterable, Iterator, TypeVar
 
 import pandas as pd
 
@@ -52,6 +52,17 @@ def is_fresh(
         return True
     current = time.time() if now is None else now
     return current - path.stat().st_mtime <= ttl_seconds
+
+
+def all_fresh(paths: Iterable[Path], ttl_seconds: float | None) -> bool:
+    """True only when *every* path exists and is fresh under one shared clock.
+
+    Used for multi-file cache entries (e.g. a parquet frame plus its JSON
+    metadata) so a missing or stale partner file consistently forces a
+    refetch of the whole entry.
+    """
+    now = time.time()
+    return all(is_fresh(path, ttl_seconds, now=now) for path in paths)
 
 
 def cache_path(namespace: str, key: str, suffix: str) -> Path:

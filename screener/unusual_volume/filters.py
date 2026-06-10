@@ -96,8 +96,12 @@ def passes_volume_floor(bars: pd.DataFrame, min_avg_volume: float, as_of: date) 
     df = df[df.index <= as_of_ts]
     if len(df) < 21:
         return False
-    avg20 = float(df["volume"].rolling(20, min_periods=20).mean().shift(1).iloc[-1])
-    return avg20 >= min_avg_volume
+    avg20 = df["volume"].rolling(20, min_periods=20).mean().shift(1).iloc[-1]
+    if pd.isna(avg20):
+        # NaN volume inside the window leaves the rolling mean undefined;
+        # treat the ticker as ineligible instead of comparing against NaN.
+        return False
+    return float(avg20) >= min_avg_volume
 
 
 def passes_market_cap(market_cap: Optional[float], min_market_cap: float) -> bool:

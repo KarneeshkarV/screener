@@ -229,6 +229,7 @@ def _fetch_fmp_insider_one(
 ) -> Optional[dict]:
     def _fetch() -> Optional[dict]:
         cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=_FMP_WINDOW_DAYS)
+        truncated = False
 
         def _request_page(page: int) -> Optional[list]:
             query = urllib.parse.urlencode(
@@ -245,6 +246,7 @@ def _fetch_fmp_insider_one(
             # FMP paginates insider rows (newest first). Walk pages until one
             # is empty/non-list, the oldest row on a page predates the 182-day
             # window, or we hit a safety cap (no unbounded loop on bad data).
+            nonlocal truncated
             collected: list[dict] = []
             expected_page_size: int | None = None
             for page in range(_FMP_MAX_PAGES):
@@ -267,6 +269,7 @@ def _fetch_fmp_insider_one(
                     and not pd.isna(oldest)
                     and oldest >= cutoff
                 ):
+                    truncated = True
                     logger.warning(
                         "FMP insider trading for %s may be truncated at %d pages",
                         symbol,
@@ -285,7 +288,9 @@ def _fetch_fmp_insider_one(
         agg = _aggregate_fmp_transactions(transactions)
         if agg is None:
             return None
-        return {"name": name, "fmp_symbol": symbol, **agg}
+        # Surface page-cap truncation to callers (not just a log line): the
+        # 6m totals may be incomplete when the history was cut at the cap.
+        return {"name": name, "fmp_symbol": symbol, "fmp_truncated": truncated, **agg}
 
     return cached_json_call(
         "fmp_insiders",

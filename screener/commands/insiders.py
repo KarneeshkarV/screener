@@ -175,6 +175,17 @@ def promoter_buys(
             max_workers=int(workers),
             refresh=refresh,
         )
+        if not fmp_df.empty and "fmp_truncated" in fmp_df.columns:
+            truncated = fmp_df.loc[
+                fmp_df["fmp_truncated"].fillna(False).astype(bool), "fmp_symbol"
+            ].astype(str)
+            if not truncated.empty:
+                click.echo(
+                    "Warning: FMP insider history hit the page cap for: "
+                    f"{', '.join(sorted(truncated))} — 6m net-buy totals may "
+                    "be incomplete.",
+                    err=True,
+                )
         if fmp_df.empty:
             insiders = yf_df
         elif yf_df.empty:

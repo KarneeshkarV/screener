@@ -5,8 +5,8 @@ from tradingview_screener import Query
 import pandas as pd
 
 from screener.cache import (
+    all_fresh,
     cache_path,
-    is_fresh,
     read_frame,
     read_json,
     stable_key,
@@ -59,11 +59,7 @@ def get_scanner_data_cached(
     key = stable_key(key_parts)
     frame_path = cache_path("tradingview_scanner", key, "parquet")
     meta_path = cache_path("tradingview_scanner", key, "json")
-    if (
-        not refresh
-        and is_fresh(frame_path, cache_ttl)
-        and is_fresh(meta_path, cache_ttl)
-    ):
+    if not refresh and all_fresh((frame_path, meta_path), cache_ttl):
         cached = read_frame(frame_path)
         meta = read_json(meta_path, default={}) or {}
         if cached is not None:
@@ -184,7 +180,10 @@ def scan(
         key_parts=(
             "scanner",
             market,
-            [repr(f) for f in filters],
+            # Query.where() joins filters with AND, so their order does not
+            # change TradingView semantics — sort so semantically identical
+            # filter lists hash to the same cache key.
+            sorted(repr(f) for f in filters),
             columns,
             order_by,
             fetch_limit,

@@ -49,11 +49,24 @@ def dashboard_frames(result: BacktestResult) -> dict[str, pd.DataFrame]:
     benchmark = _normalise_curve(result.benchmark_curve, "benchmark")
     curves = pd.merge(equity, benchmark, on="date", how="outer").sort_values("date")
     if not curves.empty:
-        first_equity = curves["equity"].dropna().iloc[0]
-        first_benchmark = curves["benchmark"].dropna().iloc[0]
-        curves["strategy_return"] = curves["equity"] / first_equity - 1.0
-        curves["benchmark_return"] = curves["benchmark"] / first_benchmark - 1.0
-        curves["drawdown"] = curves["equity"] / curves["equity"].cummax() - 1.0
+        # Guard against an all-NaN column or a zero/NaN first value: dividing
+        # by it would emit inf/NaN curves (or raise IndexError on dropna()).
+        equity_valid = curves["equity"].dropna()
+        benchmark_valid = curves["benchmark"].dropna()
+        first_equity = float(equity_valid.iloc[0]) if not equity_valid.empty else 0.0
+        first_benchmark = (
+            float(benchmark_valid.iloc[0]) if not benchmark_valid.empty else 0.0
+        )
+        if first_equity:
+            curves["strategy_return"] = curves["equity"] / first_equity - 1.0
+            curves["drawdown"] = curves["equity"] / curves["equity"].cummax() - 1.0
+        else:
+            curves["strategy_return"] = float("nan")
+            curves["drawdown"] = float("nan")
+        if first_benchmark:
+            curves["benchmark_return"] = curves["benchmark"] / first_benchmark - 1.0
+        else:
+            curves["benchmark_return"] = float("nan")
 
     trades = trades_dataframe(result)
     if not trades.empty:

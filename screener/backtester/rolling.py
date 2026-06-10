@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -275,11 +276,12 @@ def run_rolling_backtest(
         warnings.extend(day_warnings)
         if not candidates:
             continue
+        candidate_queue: deque[dict] = deque(candidates)
 
         for slot_id in free_slots:
             opened = False
-            while candidates and not opened:
-                row = candidates.pop(0)
+            while candidate_queue and not opened:
+                row = candidate_queue.popleft()
                 ticker = str(row["ticker"])
                 if ticker in _active_or_pending_tickers(slot_states):
                     continue

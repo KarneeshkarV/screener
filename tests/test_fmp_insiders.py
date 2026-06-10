@@ -174,6 +174,8 @@ def test_fetch_fmp_warns_when_page_cap_may_truncate(monkeypatch, tmp_path, caplo
 
     assert out is not None
     assert "may be truncated at 10 pages" in caplog.text
+    # Truncation is surfaced to callers as a flagged field, not just a log.
+    assert out["fmp_truncated"] is True
 
 
 def test_fetch_fmp_stops_after_out_of_window_page(monkeypatch, tmp_path):
@@ -198,6 +200,7 @@ def test_fetch_fmp_stops_after_out_of_window_page(monkeypatch, tmp_path):
 
     assert out is not None
     assert calls == [0, 1]
+    assert out["fmp_truncated"] is False
 
 
 def test_us_filter_prefers_fmp_and_falls_back_to_yfinance():

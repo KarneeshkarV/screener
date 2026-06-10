@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from datetime import date, datetime
 
 import click
@@ -163,7 +164,7 @@ def _run_event_driven_sim(
         reentries_left[slot_id] = cfg.max_reentries if cfg.allow_reentry else 0
 
     taken = {state.ticker for state in slot_states.values() if state is not None}
-    reserve_queue: list[dict] = reserves_df.to_dict("records")
+    reserve_queue: deque[dict] = deque(reserves_df.to_dict("records"))
 
     horizon_end = as_of_ts + pd.Timedelta(days=max(cfg.hold * 3 + 60, 90))
     day_set: set[pd.Timestamp] = set()
@@ -253,7 +254,7 @@ def _run_event_driven_sim(
             if slot_id in pending_reentry:
                 continue
             while reserve_queue:
-                reserve = reserve_queue.pop(0)
+                reserve = reserve_queue.popleft()
                 ticker = str(reserve["ticker"])
                 if ticker in taken:
                     continue
