@@ -123,9 +123,9 @@ def test_rolling_backtest_suppresses_entries_before_date_added(stub_fetcher_fact
     assert all(t.entry_date >= added for t in bbb_trades)
     bbb_selection = result.selection[result.selection["ticker"] == "BBB"]
     assert (bbb_selection["signal_date"] >= added).all()
-    assert any(
-        t.ticker == "AAA" and t.entry_date < added for t in result.trades
-    ), "unrestricted symbols should be unaffected"
+    assert any(t.ticker == "AAA" and t.entry_date < added for t in result.trades), (
+        "unrestricted symbols should be unaffected"
+    )
 
 
 def test_point_in_time_rejects_explicit_ticker_universe():
