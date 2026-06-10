@@ -31,6 +31,10 @@ class BacktestConfig(BaseModel):
     strategy_name: Optional[str] = None
     tickers: Optional[tuple[str, ...]] = None
     universe_file: Optional[str] = None
+    # Point-in-time universe membership: (symbol, first_eligible_date) pairs.
+    # Entry signals before a symbol's date are suppressed; symbols not listed
+    # are always eligible. Open positions are never force-closed.
+    membership_added: tuple[tuple[str, date], ...] = ()
     max_universe: int = 200
     min_price: Optional[float] = None
     min_avg_dollar_volume: Optional[float] = None

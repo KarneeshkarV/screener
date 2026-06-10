@@ -35,7 +35,7 @@ from screener.backtester.metrics import compute_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.pine import parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
-from screener.universes import load_current_universe
+from screener.universes import load_current_universe, load_sp500_membership
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ def _build_rolling_candidate_matrices(
     filter_signals_by_tv: dict[str, pd.Series],
     master_dates: list[pd.Timestamp],
     lookback_required: int,
+    membership_added: dict[str, date] | None = None,
 ) -> _RollingCandidateMatrices:
     """Build once-per-run matrices for daily candidate scans."""
     master_ix = pd.DatetimeIndex(master_dates)
@@ -70,6 +71,13 @@ def _build_rolling_candidate_matrices(
         .fillna(False)
         .astype(bool)
     )
+    # Point-in-time eligibility: suppress entry signals before a symbol's
+    # index "date added" so today's constituents are not backtested through
+    # history they were never selectable in.
+    if membership_added:
+        for tv, added in membership_added.items():
+            if tv in signal_mat.columns:
+                signal_mat.loc[master_ix < pd.Timestamp(added), tv] = False
     # Empty dict sentinel: no min-price / ADV filters configured.
     filter_mat: pd.DataFrame | None
     if filter_signals_by_tv:
@@ -229,6 +237,7 @@ def run_rolling_backtest(
         filter_signals_by_tv,
         master_dates,
         lookback,
+        membership_added=dict(cfg.membership_added) or None,
     )
     portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
     slot_states: dict[int, _SlotState | None] = {
@@ -402,6 +411,16 @@ def run_rolling_backtest(
     default=False,
     help="Force live constituent refresh instead of today's cache.",
 )
+@click.option(
+    "--point-in-time",
+    is_flag=True,
+    default=False,
+    help=(
+        "Reduce survivorship bias: only allow entries after a symbol's index "
+        "'date added' (sp500 universe only). Removed ex-members are still "
+        "absent because their delisted history is unavailable."
+    ),
+)
 @click.option("--tickers", default=None, help="Comma-separated ticker list.")
 @click.option(
     "--universe-file", default=None, help="Path to newline-separated ticker file."
@@ -505,6 +524,7 @@ def backtest_rolling(
     strategy_name,
     universe,
     no_universe_cache,
+    point_in_time,
     tickers,
     universe_file,
     max_universe,
@@ -556,6 +576,7 @@ def backtest_rolling(
 
     ticker_tuple = None
     universe_note = None
+    membership_added: tuple[tuple[str, date], ...] = ()
     if tickers:
         ticker_tuple = tuple(t.strip() for t in tickers.split(",") if t.strip())
     elif not universe_file:
@@ -567,6 +588,33 @@ def backtest_rolling(
         )
         ticker_tuple = loaded.symbols
         universe_note = f"{loaded.name}: {len(loaded.symbols)} symbols from {loaded.source}; cache={loaded.cached_path}"
+        if point_in_time:
+            if resolved_universe != "sp500":
+                raise click.UsageError(
+                    "--point-in-time currently supports only the sp500 universe."
+                )
+            added_by_symbol = load_sp500_membership(
+                as_of=end_date, use_cache=not no_universe_cache
+            )
+            membership_added = tuple(
+                (symbol, added)
+                for symbol, added in added_by_symbol.items()
+                if added is not None
+            )
+            universe_note += (
+                f"; point-in-time entries via 'date added' "
+                f"({len(membership_added)} dated symbols; removed ex-members not reconstructed)"
+            )
+        else:
+            universe_note += (
+                "; survivorship bias: today's members applied to history "
+                "(pass --point-in-time to filter by 'date added')"
+            )
+    if point_in_time and not membership_added:
+        raise click.UsageError(
+            "--point-in-time requires an index universe; it cannot be used with "
+            "--tickers or --universe-file."
+        )
 
     cfg = BacktestConfig(
         market=market,
@@ -585,6 +633,7 @@ def backtest_rolling(
         benchmark=bench,
         tickers=ticker_tuple,
         universe_file=universe_file,
+        membership_added=membership_added,
         max_universe=int(max_universe),
         min_price=resolved_min_price,
         min_avg_dollar_volume=resolved_min_adv,
