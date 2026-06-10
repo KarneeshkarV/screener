@@ -10,6 +10,7 @@ the engine never depends directly on yfinance.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import date, datetime
 import io
@@ -306,11 +307,13 @@ class YFinancePriceFetcher:
         auto_adjust: bool = True,
         batch_size: int = 75,
         refresh: bool = False,
+        max_workers: int = 4,
     ) -> None:
         self.cache_dir = cache_dir or CACHE_DIR
         self.auto_adjust = bool(auto_adjust)
         self.batch_size = max(1, int(batch_size))
         self.refresh = bool(refresh)
+        self.max_workers = max(1, int(max_workers))
 
     def _cache_key(self, ticker: str) -> str:
         return ticker if self.auto_adjust else f"{ticker}__raw"
@@ -360,46 +363,62 @@ class YFinancePriceFetcher:
         _configure_yfinance()
         import yfinance as yf  # lazy import so tests without yfinance still run
 
-        def download_batch(
-            batch: list[str], download_kwargs: dict[str, object]
-        ) -> pd.DataFrame:
-            target = " ".join(batch) if len(batch) > 1 else batch[0]
-            # yfinance prints expected "possibly delisted" messages directly
-            # to stderr for empty pre-listing ranges. The empty frame is enough
-            # for FallbackPriceFetcher to call FMP, so keep the lab/CLI output
-            # focused on actionable diagnostics.
-            with contextlib.redirect_stderr(io.StringIO()):
-                return yf.download(target, **download_kwargs)
-
+        jobs: list[tuple[pd.Timestamp, pd.Timestamp, list[str]]] = []
         for (fetch_start, fetch_end), group in missing.items():
             for i in range(0, len(group), self.batch_size):
-                batch = group[i : i + self.batch_size]
-                download_kwargs = dict(
-                    start=fetch_start,
-                    end=fetch_end + pd.Timedelta(days=1),
-                    auto_adjust=self.auto_adjust,
-                    progress=False,
-                    threads=True,
-                    group_by="ticker",
-                )
-                if not self.auto_adjust:
-                    download_kwargs["actions"] = True
-                raw = call_with_resilience(
-                    "yfinance",
-                    f"download {len(batch)} ticker(s)",
-                    lambda: download_batch(batch, download_kwargs),
-                    fallback=pd.DataFrame(),
-                )
-                downloaded = _split_download(raw, batch)
-                for ticker in batch:
-                    cache_key = self._cache_key(ticker)
-                    norm = downloaded.get(ticker, _empty_ohlcv_frame())
-                    merged = _merge_cached(cached_by_ticker.get(ticker), norm)
-                    if not merged.empty:
-                        _save_cache(cache_key, merged, self.cache_dir)
-                    results[ticker] = merged.loc[
-                        (merged.index >= start_ts) & (merged.index <= end_ts)
-                    ]
+                jobs.append((fetch_start, fetch_end, group[i : i + self.batch_size]))
+
+        def download_job(
+            job: tuple[pd.Timestamp, pd.Timestamp, list[str]],
+        ) -> tuple[list[str], pd.DataFrame]:
+            fetch_start, fetch_end, batch = job
+            download_kwargs = dict(
+                start=fetch_start,
+                end=fetch_end + pd.Timedelta(days=1),
+                auto_adjust=self.auto_adjust,
+                progress=False,
+                threads=True,
+                group_by="ticker",
+            )
+            if not self.auto_adjust:
+                download_kwargs["actions"] = True
+            target = " ".join(batch) if len(batch) > 1 else batch[0]
+            raw = call_with_resilience(
+                "yfinance",
+                f"download {len(batch)} ticker(s)",
+                lambda: yf.download(target, **download_kwargs),
+                fallback=pd.DataFrame(),
+            )
+            return batch, raw
+
+        # yfinance prints expected "possibly delisted" messages directly to
+        # stderr for empty pre-listing ranges. The empty frame is enough for
+        # FallbackPriceFetcher to call FMP, so keep the lab/CLI output focused
+        # on actionable diagnostics. A single process-wide redirect covers the
+        # worker threads too; per-batch redirects would race when batches
+        # download concurrently.
+        with contextlib.redirect_stderr(io.StringIO()):
+            if len(jobs) == 1:
+                downloads = [download_job(jobs[0])]
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=min(self.max_workers, len(jobs))
+                ) as pool:
+                    downloads = list(pool.map(download_job, jobs))
+
+        # Each ticker belongs to exactly one job, so merge + cache writes can
+        # stay on the main thread without coordination.
+        for batch, raw in downloads:
+            downloaded = _split_download(raw, batch)
+            for ticker in batch:
+                cache_key = self._cache_key(ticker)
+                norm = downloaded.get(ticker, _empty_ohlcv_frame())
+                merged = _merge_cached(cached_by_ticker.get(ticker), norm)
+                if not merged.empty:
+                    _save_cache(cache_key, merged, self.cache_dir)
+                results[ticker] = merged.loc[
+                    (merged.index >= start_ts) & (merged.index <= end_ts)
+                ]
         return results
 
 

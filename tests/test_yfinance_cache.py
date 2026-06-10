@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date
+import threading
+import time
 
 import pandas as pd
 
@@ -95,6 +97,32 @@ def test_yfinance_fetcher_fetches_only_missing_tail(tmp_path, monkeypatch):
     assert calls[1][1] == pd.Timestamp("2024-01-13")
     assert out["AAA"].index.min() == pd.Timestamp("2024-01-01")
     assert out["AAA"].index.max() == pd.Timestamp("2024-01-12")
+
+
+def test_yfinance_fetcher_downloads_batches_in_parallel(tmp_path, monkeypatch):
+    import yfinance as yf
+
+    lock = threading.Lock()
+    active = {"now": 0, "peak": 0}
+
+    def fake_download(tickers, **kwargs):
+        with lock:
+            active["now"] += 1
+            active["peak"] = max(active["peak"], active["now"])
+        time.sleep(0.05)
+        with lock:
+            active["now"] -= 1
+        batch = tickers.split() if isinstance(tickers, str) else list(tickers)
+        return _download_frame(batch, kwargs["start"], kwargs["end"])
+
+    monkeypatch.setattr(yf, "download", fake_download)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, batch_size=1, max_workers=4)
+    out = fetcher.fetch(["AAA", "BBB", "CCC"], date(2024, 1, 1), date(2024, 1, 10))
+
+    assert set(out) == {"AAA", "BBB", "CCC"}
+    assert all(not out[ticker].empty for ticker in out)
+    assert active["peak"] >= 2, "batches should overlap when more than one job exists"
 
 
 def test_yfinance_fetcher_frame_equal_fixture(tmp_path, monkeypatch):
