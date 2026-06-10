@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Literal, cast
 
@@ -60,6 +61,11 @@ from screener.backtester.data import (
     _naive_normalized_index,
     build_price_fetcher,
     tv_to_yf,
+)
+from screener.backtester.optimization.walk_forward import (
+    WalkForwardWindow,
+    _parameter_stability,
+    generate_walk_forward_windows,
 )
 from screener.universes import load_current_universe
 
@@ -1107,6 +1113,282 @@ def print_results_table(
     out.print(table)
 
 
+# ---------------------------------------------------------------------------
+# Walk-forward validation
+# ---------------------------------------------------------------------------
+
+# Months in --walk-forward TRAIN:TEST are approximated as 30 calendar days.
+WALK_FORWARD_DAYS_PER_MONTH = 30
+
+# OOS metric columns aggregated across walk-forward windows.
+WALK_FORWARD_OOS_COLUMNS: tuple[str, ...] = (
+    "sharpe",
+    "total_return",
+    "calmar",
+    "max_drawdown",
+    "win_rate",
+)
+
+
+def parse_walk_forward(raw: str) -> tuple[int, int]:
+    """Parse ``--walk-forward TRAIN_MONTHS:TEST_MONTHS`` (e.g. ``12:3``)."""
+    parts = raw.split(":")
+    if len(parts) != 2:
+        raise click.UsageError(
+            "--walk-forward expects TRAIN_MONTHS:TEST_MONTHS, e.g. 12:3."
+        )
+    try:
+        train_months, test_months = (int(p.strip()) for p in parts)
+    except ValueError as exc:
+        raise click.UsageError(
+            "--walk-forward expects integer months, e.g. 12:3."
+        ) from exc
+    if train_months <= 0 or test_months <= 0:
+        raise click.UsageError("--walk-forward months must be positive.")
+    return train_months, test_months
+
+
+def _single_combo_sweep_kwargs(
+    indicator: str, fast: int, slow: int, hold: int
+) -> dict[str, Any]:
+    """Sweep kwargs that reproduce exactly one ``(indicator, fast, slow, hold)``.
+
+    Mirrors the per-indicator parameter conventions in
+    :func:`iter_indicator_combos` so the out-of-sample run evaluates only the
+    in-sample winner.
+    """
+    base: dict[str, Any] = {
+        "indicators": [indicator],
+        "fast_values": [fast],
+        "slow_values": [slow],
+        "hold_values": [hold],
+    }
+    if indicator in ("sma", "ema", "sma_rsi", "macd"):
+        # macd ignores fast/slow lists (fixed defaults); hold drives the combo.
+        return base
+    window_kwarg = {
+        "breakout": "breakout_windows",
+        "vol_breakout": "breakout_windows",
+        "breakout_rsi": "breakout_windows",
+        "bbands": "bbands_windows",
+        "supertrend": "supertrend_periods",
+        "keltner": "keltner_windows",
+        "rsi": "rsi_thresholds",
+        "obv_trend": "obv_ema_windows",
+    }.get(indicator)
+    if window_kwarg is None:
+        raise ValueError(f"Unknown indicator: {indicator!r}")
+    base[window_kwarg] = [fast]
+    return base
+
+
+def _slice_panel(
+    panel: pd.DataFrame | None, start: date, end: date
+) -> pd.DataFrame | None:
+    if panel is None:
+        return None
+    s = pd.Timestamp(start)
+    e = pd.Timestamp(end)
+    return panel.loc[(panel.index >= s) & (panel.index <= e)]
+
+
+@dataclass(frozen=True)
+class WalkForwardSweepSummary:
+    """Per-window walk-forward results plus aggregate diagnostics."""
+
+    metric: str
+    windows: pd.DataFrame
+    aggregate_is_score: float
+    aggregate_oos_score: float
+    efficiency: float
+    parameter_stability: float
+    aggregate_oos_metrics: dict[str, float]
+
+
+def run_walk_forward_sweep(
+    close: pd.DataFrame,
+    *,
+    windows: list[WalkForwardWindow],
+    metric: MetricName,
+    grid: dict[str, Any],
+    open_: pd.DataFrame | None = None,
+    high: pd.DataFrame | None = None,
+    low: pd.DataFrame | None = None,
+    volume: pd.DataFrame | None = None,
+    initial_capital: float = INITIAL_CAPITAL_DEFAULT,
+    sweep_fn: Callable[..., pd.DataFrame] | None = None,
+) -> WalkForwardSweepSummary:
+    """Walk-forward validation of the vbt sweep grid.
+
+    For each window: run the full sweep ``grid`` on the training slice, pick
+    the in-sample winner by ``metric``, then evaluate exactly those params on
+    the out-of-sample test slice. Aggregate OOS metrics are trade-weighted;
+    walk-forward efficiency is mean(OOS metric) / |mean(IS metric)|.
+    Non-finite OOS scores are treated as 0.0 in the aggregates (kept as-is in
+    the per-window rows).
+    """
+    fn = sweep_fn if sweep_fn is not None else run_parameter_sweep
+    rows: list[dict[str, Any]] = []
+    is_scores: list[float] = []
+    oos_scores: list[float] = []
+    param_sets: list[dict[str, Any]] = []
+    weighted: dict[str, float] = {}
+    weights: dict[str, float] = {}
+    total_oos_trades = 0
+
+    for window in windows:
+        train_close = _slice_panel(close, window.train_start, window.train_end)
+        test_close = _slice_panel(close, window.test_start, window.test_end)
+        if (
+            train_close is None
+            or train_close.empty
+            or test_close is None
+            or test_close.empty
+        ):
+            continue
+        train_df = fn(
+            train_close,
+            open_=_slice_panel(open_, window.train_start, window.train_end),
+            high=_slice_panel(high, window.train_start, window.train_end),
+            low=_slice_panel(low, window.train_start, window.train_end),
+            volume=_slice_panel(volume, window.train_start, window.train_end),
+            initial_capital=initial_capital,
+            **grid,
+        )
+        ranked = rank_results(train_df, metric)
+        if ranked.empty:
+            continue
+        best = ranked.iloc[0]
+        is_score = float(best[metric])
+        if not np.isfinite(is_score):
+            continue
+        indicator = str(best["indicator"]) if "indicator" in ranked.columns else "sma"
+        fast = int(best["fast"])
+        try:
+            slow_float = float(best["slow"])
+            slow = int(slow_float) if np.isfinite(slow_float) else 0
+        except (KeyError, TypeError, ValueError):
+            slow = 0
+        hold = int(best["hold"])
+        test_df = fn(
+            test_close,
+            open_=_slice_panel(open_, window.test_start, window.test_end),
+            high=_slice_panel(high, window.test_start, window.test_end),
+            low=_slice_panel(low, window.test_start, window.test_end),
+            volume=_slice_panel(volume, window.test_start, window.test_end),
+            initial_capital=initial_capital,
+            **_single_combo_sweep_kwargs(indicator, fast, slow, hold),
+        )
+        if test_df.empty:
+            continue
+        oos = test_df.iloc[0]
+        oos_score = float(oos[metric])
+        oos_trades = int(oos["trades"])
+        row: dict[str, Any] = {
+            "train_start": window.train_start,
+            "train_end": window.train_end,
+            "test_start": window.test_start,
+            "test_end": window.test_end,
+            "indicator": indicator,
+            "fast": fast,
+            "slow": best["slow"],
+            "hold": hold,
+            "is_score": is_score,
+            "oos_score": oos_score,
+        }
+        for col in WALK_FORWARD_OOS_COLUMNS:
+            row[f"oos_{col}"] = float(oos[col])
+        row["oos_trades"] = oos_trades
+        rows.append(row)
+        is_scores.append(is_score)
+        oos_scores.append(oos_score if np.isfinite(oos_score) else 0.0)
+        param_sets.append(
+            {"indicator": indicator, "fast": fast, "slow": slow, "hold": hold}
+        )
+        total_oos_trades += oos_trades
+        weight = max(oos_trades, 1)
+        for col in WALK_FORWARD_OOS_COLUMNS:
+            value = float(oos[col])
+            if np.isfinite(value):
+                weighted[col] = weighted.get(col, 0.0) + value * weight
+                weights[col] = weights.get(col, 0.0) + weight
+
+    aggregate_oos_metrics = {col: weighted[col] / weights[col] for col in weighted}
+    aggregate_oos_metrics["trades"] = float(total_oos_trades)
+    is_avg = float(np.mean(is_scores)) if is_scores else 0.0
+    oos_avg = float(np.mean(oos_scores)) if oos_scores else 0.0
+    efficiency = oos_avg / max(abs(is_avg), 1e-9) if is_scores else 0.0
+    return WalkForwardSweepSummary(
+        metric=metric,
+        windows=pd.DataFrame(rows),
+        aggregate_is_score=is_avg,
+        aggregate_oos_score=oos_avg,
+        efficiency=efficiency,
+        parameter_stability=_parameter_stability(param_sets),
+        aggregate_oos_metrics=aggregate_oos_metrics,
+    )
+
+
+def print_walk_forward_sweep_table(
+    summary: WalkForwardSweepSummary,
+    *,
+    console: Console | None = None,
+) -> None:
+    out = console or Console()
+    out.print(DISCLAIMER)
+    metric = summary.metric
+    table = Table(title=f"Walk-Forward Sweep by {metric}")
+    for col in [
+        "train",
+        "test",
+        "indicator",
+        "fast",
+        "slow",
+        "hold",
+        f"IS {metric}",
+        f"OOS {metric}",
+        "OOS return",
+        "OOS trades",
+    ]:
+        table.add_column(col)
+    for _, row in summary.windows.iterrows():
+        table.add_row(
+            f"{row['train_start']}..{row['train_end']}",
+            f"{row['test_start']}..{row['test_end']}",
+            str(row["indicator"]),
+            _fmt_int_or_dash(row["fast"]),
+            _fmt_int_or_dash(row["slow"]),
+            _fmt_int_or_dash(row["hold"]),
+            f"{row['is_score']:.3f}" if np.isfinite(row["is_score"]) else "n/a",
+            f"{row['oos_score']:.3f}" if np.isfinite(row["oos_score"]) else "n/a",
+            f"{row['oos_total_return'] * 100:+.2f}%",
+            _fmt_int_or_dash(row["oos_trades"]),
+        )
+    out.print(table)
+    if summary.windows.empty:
+        out.print("[yellow]No walk-forward windows produced results.[/yellow]")
+        return
+    agg = summary.aggregate_oos_metrics
+    parts: list[str] = []
+    for col in WALK_FORWARD_OOS_COLUMNS:
+        if col not in agg:
+            continue
+        if col in ("total_return", "max_drawdown"):
+            parts.append(f"{col}={agg[col] * 100:+.2f}%")
+        elif col == "win_rate":
+            parts.append(f"{col}={agg[col] * 100:.1f}%")
+        else:
+            parts.append(f"{col}={agg[col]:.3f}")
+    parts.append(f"trades={int(agg.get('trades', 0))}")
+    out.print("Aggregate OOS (trade-weighted): " + "  ".join(parts))
+    out.print(
+        f"Aggregate IS {metric}: {summary.aggregate_is_score:.3f}  "
+        f"Aggregate OOS {metric}: {summary.aggregate_oos_score:.3f}  "
+        f"WF efficiency (OOS/IS): {summary.efficiency:.3f}  "
+        f"Parameter stability: {summary.parameter_stability:.3f}"
+    )
+
+
 @click.command(name="vbt-sweep")
 @click.option(
     "-m",
@@ -1228,6 +1510,18 @@ def print_results_table(
     show_default=True,
     help="Metric used to rank combinations.",
 )
+@click.option(
+    "--walk-forward",
+    "walk_forward_arg",
+    default=None,
+    help=(
+        "Walk-forward validation as TRAIN_MONTHS:TEST_MONTHS (e.g. 12:3): run "
+        "the sweep grid in each training window, pick the in-sample winner by "
+        "--metric, and evaluate it out-of-sample on the test window. Months "
+        "are approximated as 30 calendar days; windows step by the test "
+        "length. With --csv, emits per-window rows."
+    ),
+)
 def vbt_sweep(
     market: str,
     start_arg: datetime | None,
@@ -1250,12 +1544,16 @@ def vbt_sweep(
     top: int,
     output_csv: bool,
     metric: str,
+    walk_forward_arg: str | None,
 ) -> None:
     """Fast vectorbt grid search for exploration (not validation).
 
     Approximate results — slot allocation, partial exits, dividends, and custom
     slippage are not modeled. Validate winners with backtest-rolling.
     """
+    walk_forward_spec = (
+        parse_walk_forward(walk_forward_arg) if walk_forward_arg else None
+    )
     indicators = parse_indicator_list(indicator_arg)
     fast_values = parse_int_list(fast, name="fast")
     slow_values = parse_int_list(slow, name="slow")
@@ -1382,23 +1680,66 @@ def vbt_sweep(
         except ValueError:
             volume_panel = None
 
+    sweep_grid: dict[str, Any] = {
+        "fast_values": fast_values,
+        "slow_values": slow_values,
+        "hold_values": hold_values,
+        "indicators": indicators,
+        "breakout_windows": breakout_windows,
+        "bbands_windows": bbands_windows,
+        "supertrend_periods": supertrend_periods,
+        "keltner_windows": keltner_windows,
+        "rsi_thresholds": rsi_thresholds,
+        "obv_ema_windows": obv_ema_windows,
+    }
+
+    if walk_forward_spec is not None:
+        train_months, test_months = walk_forward_spec
+        wf_windows = generate_walk_forward_windows(
+            start_date,
+            end_date,
+            train_days=train_months * WALK_FORWARD_DAYS_PER_MONTH,
+            test_days=test_months * WALK_FORWARD_DAYS_PER_MONTH,
+        )
+        if not wf_windows:
+            raise click.UsageError(
+                "--walk-forward windows do not fit in the date range; use "
+                "smaller TRAIN/TEST months or a wider --start/--end."
+            )
+        summary = run_walk_forward_sweep(
+            close,
+            windows=wf_windows,
+            metric=cast(MetricName, metric),
+            grid=sweep_grid,
+            open_=open_panel,
+            high=high_panel,
+            low=low_panel,
+            volume=volume_panel,
+            initial_capital=INITIAL_CAPITAL_DEFAULT,
+        )
+        if output_csv:
+            click.echo(summary.windows.to_csv(index=False))
+            return
+        console.print(
+            f"[dim]Walk-forward: {start_date.isoformat()} to "
+            f"{end_date.isoformat()}  train={train_months}mo "
+            f"test={test_months}mo windows={len(wf_windows)}  "
+            f"indicators={','.join(indicators)}  symbols={close.shape[1]}  "
+            f"capital={INITIAL_CAPITAL_DEFAULT:,.0f}  slippage=0[/dim]"
+        )
+        if universe_note:
+            console.print(f"[dim]Universe: {universe_note}[/dim]")
+        print_walk_forward_sweep_table(summary, console=console)
+        return
+
     results = run_parameter_sweep(
         close,
-        fast_values=fast_values,
-        slow_values=slow_values,
-        hold_values=hold_values,
-        indicators=indicators,
-        breakout_windows=breakout_windows,
-        bbands_windows=bbands_windows,
-        supertrend_periods=supertrend_periods,
-        keltner_windows=keltner_windows,
-        rsi_thresholds=rsi_thresholds,
-        obv_ema_windows=obv_ema_windows,
         high=high_panel,
         low=low_panel,
         volume=volume_panel,
         open_=open_panel,
         initial_capital=INITIAL_CAPITAL_DEFAULT,
+        **sweep_grid,
     )
     ranked = rank_results(results, cast(MetricName, metric))
 
