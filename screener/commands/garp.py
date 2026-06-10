@@ -69,7 +69,13 @@ def garp(
             refresh=refresh,
         )
     else:
-        results = screen_us_garp(universe, limit=int(limit), workers=int(workers))
+        results = screen_us_garp(
+            universe,
+            limit=int(limit),
+            workers=int(workers),
+            cache_ttl=ttl,
+            refresh=refresh,
+        )
 
     if output_csv:
         print_csv(results)

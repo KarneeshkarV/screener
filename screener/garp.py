@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, cast
 
@@ -9,11 +12,15 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
 from screener.cache import cached_json_call
+from screener.resilience import call_with_resilience
 from screener.scanner import scan
 
 
 INDIA_MIN_CRORE = 1000.0
 US_MIN_USD = 1_000_000_000.0
+
+_FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
+_FMP_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; screener-cli/1.0)"}
 
 
 class GarpThresholds(BaseModel):
@@ -355,11 +362,218 @@ def _us_row(symbol: str, description: str | None) -> dict[str, Any]:
     }
 
 
+# ── FMP fundamentals (US) ───────────────────────────────────────────────────
+#
+# The yfinance path above costs ~4 HTTP round-trips per ticker. When an
+# FMP_API_KEY is configured we source the same inputs from FMP instead and
+# cache the per-symbol payload on disk; yfinance remains the fallback when no
+# key is set or FMP has no statement data for a symbol.
+
+
+def _fmp_api_key() -> str | None:
+    from screener.insiders import _fmp_api_key as resolve
+
+    return resolve()
+
+
+def _fmp_get(path: str, params: dict[str, Any], api_key: str) -> Any:
+    query = urllib.parse.urlencode({**params, "apikey": api_key})
+    req = urllib.request.Request(
+        f"{_FMP_BASE_URL}/{path}?{query}", headers=_FMP_HEADERS
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8", "ignore"))
+
+
+def _fetch_fmp_us_sections(symbol: str, api_key: str) -> dict[str, Any] | None:
+    def _request() -> dict[str, Any] | None:
+        return {
+            "profile": _fmp_get(f"profile/{symbol}", {}, api_key),
+            "ratios_ttm": _fmp_get(f"ratios-ttm/{symbol}", {}, api_key),
+            "income_annual": _fmp_get(
+                f"income-statement/{symbol}",
+                {"period": "annual", "limit": 5},
+                api_key,
+            ),
+            "balance_annual": _fmp_get(
+                f"balance-sheet-statement/{symbol}",
+                {"period": "annual", "limit": 5},
+                api_key,
+            ),
+            "income_quarterly": _fmp_get(
+                f"income-statement/{symbol}",
+                {"period": "quarter", "limit": 5},
+                api_key,
+            ),
+            # FMP sorts estimates descending by date (farthest future first),
+            # so a small limit would drop the nearest upcoming quarter.
+            "estimates_quarterly": _fmp_get(
+                f"analyst-estimates/{symbol}",
+                {"period": "quarter", "limit": 40},
+                api_key,
+            ),
+        }
+
+    return call_with_resilience(
+        "fmp", f"garp fundamentals {symbol}", _request, fallback=None
+    )
+
+
+def _fetch_fmp_us_cached(
+    symbol: str,
+    api_key: str,
+    *,
+    cache_ttl: float | None,
+    refresh: bool,
+) -> dict[str, Any] | None:
+    return cached_json_call(
+        "garp_fmp_us",
+        ("us", symbol),
+        ttl_seconds=cache_ttl,
+        refresh=refresh,
+        fetch=lambda: _fetch_fmp_us_sections(symbol, api_key),
+    )
+
+
+def _fmp_list(payload: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    value = payload.get(key)
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, dict)]
+
+
+def _fmp_series(statements: list[dict[str, Any]], field: str) -> pd.Series:
+    """Build a newest-first series keyed by statement date (FMP order)."""
+    data: dict[str, float] = {}
+    for entry in statements:
+        date = entry.get("date")
+        value = _num(entry.get(field))
+        if date and value is not None and str(date) not in data:
+            data[str(date)] = value
+    return pd.Series(data, dtype=float)
+
+
+def _fmp_quarterly_eps(
+    estimates: list[dict[str, Any]], quarterly_income: list[dict[str, Any]]
+) -> tuple[float | None, float | None]:
+    """Mirror yfinance's earnings_estimate ``0q`` row.
+
+    Expected EPS is the average analyst estimate for the first unreported
+    quarter; year-ago EPS is the actual EPS from the reported quarter ending
+    closest to one year before that estimate date.
+    """
+    expected_eps: float | None = None
+    expected_ts: pd.Timestamp | None = None
+    latest_reported = (
+        pd.to_datetime(quarterly_income[0].get("date"), errors="coerce")
+        if quarterly_income
+        else pd.NaT
+    )
+    if not pd.isna(latest_reported):
+        upcoming: list[tuple[pd.Timestamp, float]] = []
+        for entry in estimates:
+            ts = pd.to_datetime(entry.get("date"), errors="coerce")
+            eps = _first_num(entry, "estimatedEpsAvg", "epsAvg")
+            if not pd.isna(ts) and ts > latest_reported and eps is not None:
+                upcoming.append((ts, eps))
+        if upcoming:
+            expected_ts, expected_eps = min(upcoming)
+
+    # Pair by date (estimate date minus one year), not by list position:
+    # fiscal calendars shift and FMP statement lists can have gaps.
+    year_ago_eps: float | None = None
+    if expected_ts is not None:
+        target = expected_ts - pd.Timedelta(days=365)
+        best: tuple[float, float] | None = None
+        for entry in quarterly_income:
+            ts = pd.to_datetime(entry.get("date"), errors="coerce")
+            eps = _num(entry.get("eps"))
+            if pd.isna(ts) or eps is None:
+                continue
+            delta = abs(float((ts - target).days))
+            if delta <= 60 and (best is None or delta < best[0]):
+                best = (delta, eps)
+        if best is not None:
+            year_ago_eps = best[1]
+    return expected_eps, year_ago_eps
+
+
+def _fmp_us_row(
+    symbol: str, description: str | None, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Map an FMP payload to the same row shape ``_us_row`` produces.
+
+    Returns ``None`` when FMP has no annual statements for the symbol so the
+    caller can fall back to yfinance.
+    """
+    if not isinstance(payload, dict):
+        return None
+    income = _fmp_list(payload, "income_annual")
+    if not income:
+        return None
+    profile_rows = _fmp_list(payload, "profile")
+    profile = profile_rows[0] if profile_rows else {}
+    ratios_rows = _fmp_list(payload, "ratios_ttm")
+    ratios = ratios_rows[0] if ratios_rows else {}
+    balance = _fmp_list(payload, "balance_annual")
+    quarterly = _fmp_list(payload, "income_quarterly")
+    estimates = _fmp_list(payload, "estimates_quarterly")
+
+    revenue = _fmp_series(income, "revenue")
+    operating = _fmp_series(income, "operatingIncome")
+    net_income = _fmp_series(income, "netIncome")
+    equity = _fmp_series(balance, "totalStockholdersEquity")
+    debt = _fmp_series(balance, "totalDebt")
+    ebit = operating
+
+    tax: float | None = None
+    tax_expense = _num(income[0].get("incomeTaxExpense"))
+    pretax = _num(income[0].get("incomeBeforeTax"))
+    if tax_expense is not None and pretax not in (None, 0):
+        tax = tax_expense / float(pretax or 1.0)
+    nopat = ebit * (1.0 - float(tax or 0.21))
+    invested_capital = debt.add(equity, fill_value=0)
+    roic = _average_ratio(nopat, invested_capital, 3)
+
+    latest_revenue = _num(revenue.iloc[0]) if not revenue.empty else None
+    oldest_revenue = (
+        _num(revenue.iloc[min(len(revenue) - 1, 4)]) if len(revenue) else None
+    )
+    latest_op = _num(operating.iloc[0]) if not operating.empty else None
+    old_op = (
+        _num(operating.iloc[min(len(operating) - 1, 1)]) if len(operating) else None
+    )
+    latest_ni = _num(net_income.iloc[0]) if not net_income.empty else None
+    old_ni = (
+        _num(net_income.iloc[min(len(net_income) - 1, 4)]) if len(net_income) else None
+    )
+
+    expected_eps, year_ago_eps = _fmp_quarterly_eps(estimates, quarterly)
+
+    return {
+        "name": symbol,
+        "description": description or str(profile.get("companyName") or ""),
+        "market_cap": _first_num(profile, "mktCap", "marketCap"),
+        "sales": latest_revenue,
+        "peg": _first_num(ratios, "priceEarningsToGrowthRatioTTM", "pegRatioTTM"),
+        "sales_growth_5y": _cagr(latest_revenue, oldest_revenue, 4),
+        "operating_profit_growth": _pct_change(latest_op, old_op),
+        "eps_growth_5y": _cagr(latest_ni, old_ni, 4),
+        "roe_5y": _average_ratio(net_income, equity, 5),
+        "roce_or_roic": roic,
+        "expected_quarterly_profit": expected_eps,
+        "profit_3q_back": year_ago_eps,
+        "quarterly_profit_growth": _pct_change(expected_eps, year_ago_eps),
+    }
+
+
 def screen_us_garp(
     universe: pd.DataFrame,
     *,
     limit: int,
     workers: int,
+    cache_ttl: float | None = 86400,
+    refresh: bool = False,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     items = [
@@ -367,9 +581,22 @@ def screen_us_garp(
         for _, row in universe.iterrows()
         if row.get("name")
     ]
+    api_key = _fmp_api_key()
+
+    def _resolve(symbol: str, description: str) -> dict[str, Any]:
+        if api_key:
+            payload = _fetch_fmp_us_cached(
+                symbol, api_key, cache_ttl=cache_ttl, refresh=refresh
+            )
+            if isinstance(payload, dict):
+                row = _fmp_us_row(symbol, description, payload)
+                if row is not None:
+                    return row
+        return _us_row(symbol, description)
+
     with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
         futures = {
-            executor.submit(_us_row, symbol, description): (symbol, description)
+            executor.submit(_resolve, symbol, description): (symbol, description)
             for symbol, description in items
         }
         for future in as_completed(futures):
