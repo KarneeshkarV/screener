@@ -64,11 +64,9 @@ def vol_regime(close: pd.Series) -> pd.Series:
         return out
     returns = close.pct_change()
     realized_vol = returns.rolling(VOL_WINDOW, min_periods=VOL_WINDOW).std(ddof=0)
-    pct_rank = realized_vol.rolling(
-        VOL_DIST_WINDOW, min_periods=VOL_DIST_WINDOW
-    ).rank(pct=True)
-    known = pct_rank.notna()
-    out[known] = np.where(
-        pct_rank[known] >= VOL_HIGH_PERCENTILE, "high_vol", "normal"
+    pct_rank = realized_vol.rolling(VOL_DIST_WINDOW, min_periods=VOL_DIST_WINDOW).rank(
+        pct=True
     )
+    known = pct_rank.notna()
+    out[known] = np.where(pct_rank[known] >= VOL_HIGH_PERCENTILE, "high_vol", "normal")
     return out
