@@ -7,10 +7,9 @@ for the E-1/E-2 → E entry/exit pattern.
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Callable, Optional
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -28,7 +27,6 @@ from screener.earnings_backtest.strategies import (
 )
 
 logger = logging.getLogger(__name__)
-MAX_SENTIMENT_WORKERS = 12
 
 # ── Trade result ────────────────────────────────────────────────────────
 
@@ -122,30 +120,10 @@ def run_earnings_backtest(
     trades: list[EarningsTrade] = []
     analyzed_strategies = _resolve_strategies(strategy)
 
-    # Pre-fetch analyst & IV data (batched, with caching)
-    analyst_cache: dict[str, Optional[dict]] = {}
-    iv_cache: dict[str, Optional[dict]] = {}
-
-    # Only fetch for tickers that have earnings events
-    event_tickers = events_df["ticker"].unique().tolist()
-
-    if (
-        "analyst_sentiment" in analyzed_strategies
-        or "combined_score" in analyzed_strategies
-    ):
-        logger.info("fetching_analyst_sentiment", extra={"count": len(event_tickers)})
-        analyst_cache = _fetch_signal_data(
-            event_tickers, batch_size, fetch_analyst_sentiment, market
-        )
-
-    if "iv_sentiment" in analyzed_strategies or "combined_score" in analyzed_strategies:
-        logger.info(
-            "fetching_iv_sentiment",
-            extra={"count": len(event_tickers), "market": market},
-        )
-        iv_cache = _fetch_signal_data(
-            event_tickers, batch_size, fetch_iv_sentiment, market
-        )
+    # These live providers expose current snapshots only. Cache by entry/as-of
+    # date and only use them when the snapshot is point-in-time safe.
+    analyst_cache: dict[tuple[str, date], Optional[dict]] = {}
+    iv_cache: dict[tuple[str, date], Optional[dict]] = {}
 
     # Process each earnings event
     for _, event in events_df.iterrows():
@@ -200,9 +178,25 @@ def run_earnings_backtest(
                     as_of_date=pd.Timestamp(entry_date),
                 )
             elif strat_name == "analyst_sentiment":
-                result = func(ticker, ed, analyst_cache.get(ticker), threshold=0.0)
+                if not _can_use_current_snapshot(entry_date):
+                    signal_details[strat_name] = _historical_snapshot_unavailable(
+                        entry_date
+                    )
+                    continue
+                analyst_key = (ticker, entry_date)
+                if analyst_key not in analyst_cache:
+                    analyst_cache[analyst_key] = fetch_analyst_sentiment(ticker, market)
+                result = func(ticker, ed, analyst_cache.get(analyst_key), threshold=0.0)
             elif strat_name == "iv_sentiment":
-                result = func(ticker, ed, iv_cache.get(ticker), threshold=0.0)
+                if not _can_use_current_snapshot(entry_date):
+                    signal_details[strat_name] = _historical_snapshot_unavailable(
+                        entry_date
+                    )
+                    continue
+                iv_key = (ticker, entry_date)
+                if iv_key not in iv_cache:
+                    iv_cache[iv_key] = fetch_iv_sentiment(ticker, market)
+                result = func(ticker, ed, iv_cache.get(iv_key), threshold=0.0)
             else:
                 continue
             scores[strat_name] = result.score
@@ -245,30 +239,16 @@ def run_earnings_backtest(
     return trades
 
 
-def _fetch_signal_data(
-    tickers: list[str],
-    batch_size: int,
-    fetcher: Callable[[str, str], Optional[dict]],
-    market: str,
-) -> dict[str, Optional[dict]]:
-    """Fetch ticker-level signal inputs concurrently with per-ticker isolation."""
-    out: dict[str, Optional[dict]] = {}
-    max_workers = min(MAX_SENTIMENT_WORKERS, max(1, batch_size), max(1, len(tickers)))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_ticker = {
-            executor.submit(fetcher, ticker, market): ticker for ticker in tickers
-        }
-        for future in as_completed(future_to_ticker):
-            ticker = future_to_ticker[future]
-            try:
-                out[ticker] = future.result()
-            except Exception as exc:
-                logger.debug(
-                    "signal_fetch_error",
-                    extra={"ticker": ticker, "error": str(exc)},
-                )
-                out[ticker] = None
-    return out
+def _can_use_current_snapshot(as_of_date: date) -> bool:
+    """Return whether current-only sentiment data is safe for this as-of date."""
+    return as_of_date >= date.today()
+
+
+def _historical_snapshot_unavailable(as_of_date: date) -> dict[str, str]:
+    return {
+        "reason": "current_snapshot_unavailable_for_historical_entry",
+        "as_of_date": as_of_date.isoformat(),
+    }
 
 
 def _resolve_strategies(strategy: str) -> list[str]:
