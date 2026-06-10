@@ -24,6 +24,7 @@ from screener.commands.institutional import institutional
 from screener.commands.rs_breakout import rs_breakout
 from screener.commands.screen import screen
 from screener.config import load_config
+from screener.earnings_backtest.cli import earnings_backtest, earnings_pead
 from screener.logging_config import configure_logging
 from screener.operator.cli import register as _register_operator_cli
 from screener import usage
@@ -79,6 +80,8 @@ cli.add_command(promoter_buys)
 cli.add_command(institutional)
 cli.add_command(index_inclusion)
 cli.add_command(unusual_volume)
+cli.add_command(earnings_backtest)
+cli.add_command(earnings_pead)
 cli.add_command(backtest_historical)
 cli.add_command(backtest_rolling)
 cli.add_command(vbt_sweep)
