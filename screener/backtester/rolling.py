@@ -522,6 +522,13 @@ def run_rolling_backtest(
 )
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
 @click.option(
+    "--report",
+    "report_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write a static, self-contained HTML tear-sheet to this file.",
+)
+@click.option(
     "--dashboard",
     is_flag=True,
     default=False,
@@ -577,6 +584,7 @@ def backtest_rolling(
     price_adjustment,
     regime_filter_args,
     output_csv,
+    report_path,
     dashboard,
     dashboard_port,
     dashboard_dir,
@@ -684,6 +692,15 @@ def backtest_rolling(
     result = run_rolling_backtest(
         cfg, fetcher, start_date=start_date, end_date=end_date
     )
+    if report_path:
+        from screener.backtester.tearsheet import render_tearsheet
+
+        render_tearsheet(
+            result,
+            report_path,
+            title="Rolling Backtest Tear Sheet",
+            extra_notes=[universe_note] if universe_note else [],
+        )
     if output_csv:
         print_ledger_csv(result)
         return
@@ -695,6 +712,8 @@ def backtest_rolling(
     if universe_note:
         console.print(f"[dim]Universe: {universe_note}[/dim]")
     print_backtest(result)
+    if report_path:
+        console.print(f"[green]Report:[/green] {report_path}")
     if dashboard:
         from screener.backtester.dashboard import render_dashboard, serve_dashboard
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import date, datetime
+from pathlib import Path
 
 import click
 import numpy as np
@@ -567,6 +568,13 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     help="Price-adjustment regime. full=legacy (yfinance auto_adjust=True); splits_only=split-adjust OHLC and credit dividends as cash; none=raw OHLC.",
 )
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
+@click.option(
+    "--report",
+    "report_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write a static, self-contained HTML tear-sheet to this file.",
+)
 def backtest_historical(
     market,
     as_of,
@@ -601,6 +609,7 @@ def backtest_historical(
     partial_exit_args,
     price_adjustment,
     output_csv,
+    report_path,
 ):
     """Run an accurate historical backtest with Pine-like entry/exit expressions."""
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
@@ -660,7 +669,23 @@ def backtest_historical(
         auto_adjust=price_adjustment == "full"
     )
     result = run_backtest(cfg, fetcher)
+    if report_path:
+        from screener.backtester.tearsheet import render_tearsheet
+
+        universe_note = (
+            f"explicit universe: {len(ticker_tuple)} tickers via --tickers"
+            if ticker_tuple
+            else f"universe file: {universe_file}"
+        ) + "; survivorship bias: supplied list is not point-in-time"
+        render_tearsheet(
+            result,
+            report_path,
+            title="Historical Backtest Tear Sheet",
+            extra_notes=[universe_note],
+        )
     if output_csv:
         print_ledger_csv(result)
         return
     print_backtest(result)
+    if report_path:
+        click.echo(f"Report: {report_path}")
