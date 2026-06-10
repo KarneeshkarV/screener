@@ -439,9 +439,7 @@ def _garp_checks(
     ]
 
 
-def score_fundamentals(
-    row: dict[str, Any], thresholds: GarpThresholds
-) -> PillarResult:
+def score_fundamentals(row: dict[str, Any], thresholds: GarpThresholds) -> PillarResult:
     """Fraction of evaluable GARP criteria passed, scaled to 0-100."""
     name = "fundamentals"
     checks = _garp_checks(row, thresholds)

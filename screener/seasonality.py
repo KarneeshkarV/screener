@@ -143,8 +143,7 @@ def _pct(value: float) -> str:
 
 def render_report(report: SeasonalityReport, console: Console) -> None:
     console.print(
-        f"[bold]Seasonality — {report.ticker}[/bold]  "
-        f"({report.start} → {report.end})"
+        f"[bold]Seasonality — {report.ticker}[/bold]  ({report.start} → {report.end})"
     )
     for attr, title, label_header in _SECTIONS:
         rows: list[GroupStats] = getattr(report, attr)

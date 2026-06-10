@@ -129,7 +129,9 @@ def test_fetch_one_returns_none_for_empty_or_non_list_payload(monkeypatch, tmp_p
         lambda req, timeout=20: _Resp([]),
     )
     assert (
-        _fetch_fmp_institutional_one("ZZZZ", api_key="key", cache_ttl=None, refresh=True)
+        _fetch_fmp_institutional_one(
+            "ZZZZ", api_key="key", cache_ttl=None, refresh=True
+        )
         is None
     )
 
@@ -139,7 +141,9 @@ def test_fetch_one_returns_none_for_empty_or_non_list_payload(monkeypatch, tmp_p
         lambda req, timeout=20: _Resp({"Error Message": "Invalid API KEY."}),
     )
     assert (
-        _fetch_fmp_institutional_one("AAPL", api_key="key", cache_ttl=None, refresh=True)
+        _fetch_fmp_institutional_one(
+            "AAPL", api_key="key", cache_ttl=None, refresh=True
+        )
         is None
     )
 

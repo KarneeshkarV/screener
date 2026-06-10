@@ -158,9 +158,7 @@ def test_cli_seasonality_csv():
 
 def test_cli_seasonality_notes_short_span():
     fetcher = StubPriceFetcher({"AAA": _recent_bars(periods=300)})
-    res = CliRunner().invoke(
-        cli, ["seasonality", "AAA", "--years", "10"], obj=fetcher
-    )
+    res = CliRunner().invoke(cli, ["seasonality", "AAA", "--years", "10"], obj=fetcher)
     assert res.exit_code == 0, res.output
     assert "years of data available" in res.stderr
 

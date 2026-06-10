@@ -50,9 +50,7 @@ def _patch_india_providers(monkeypatch) -> None:
             "quarterly_profit_growth": 12.0,
         },
     )
-    monkeypatch.setattr(
-        conviction_mod, "_load_pledge", lambda symbol, *, refresh: 4.0
-    )
+    monkeypatch.setattr(conviction_mod, "_load_pledge", lambda symbol, *, refresh: 4.0)
     monkeypatch.setattr(
         conviction_mod, "_load_delivery", lambda symbol, as_of: (52.0, 45.0)
     )
