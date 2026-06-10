@@ -15,6 +15,7 @@ from screener.backtester.lab import backtest_lab
 from screener.backtester.optimization.cli import optimize
 from screener.backtester.rolling import backtest_rolling
 from screener.backtester.vbt_sweep import vbt_sweep
+from screener.commands.cache import cache_group
 from screener.commands.garp import garp
 from screener.commands.insiders import promoter_buys
 from screener.commands.rs_breakout import rs_breakout
@@ -78,6 +79,7 @@ cli.add_command(vbt_sweep)
 cli.add_command(backtest_lab)
 _register_operator_cli(cli)
 cli.add_command(optimize)
+cli.add_command(cache_group)
 
 
 def _wrap_usage_tracking(command: click.Command, feature_path: tuple[str, ...]) -> None:
