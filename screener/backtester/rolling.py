@@ -32,10 +32,11 @@ from screener.backtester.core import (
 )
 from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
 from screener.backtester.display import print_backtest, print_ledger_csv
-from screener.backtester.metrics import compute_metrics
+from screener.backtester.metrics import compute_metrics, compute_regime_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.pine import parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.regime import TREND_LABELS, classify_regimes
 from screener.universes import load_current_universe, load_sp500_membership
 
 
@@ -59,6 +60,7 @@ def _build_rolling_candidate_matrices(
     master_dates: list[pd.Timestamp],
     lookback_required: int,
     membership_added: dict[str, date] | None = None,
+    regime_allowed: pd.Series | None = None,
 ) -> _RollingCandidateMatrices:
     """Build once-per-run matrices for daily candidate scans."""
     master_ix = pd.DatetimeIndex(master_dates)
@@ -79,6 +81,14 @@ def _build_rolling_candidate_matrices(
         for tv, added in membership_added.items():
             if tv in signal_mat.columns:
                 signal_mat.loc[master_ix < pd.Timestamp(added), tv] = False
+    # Benchmark-regime gate: suppress every entry signal on days whose
+    # benchmark regime is not allowed (days missing from the benchmark
+    # calendar inherit the most recent prior regime; warmup days are blocked).
+    if regime_allowed is not None:
+        allowed = (
+            regime_allowed.reindex(master_ix, method="ffill").fillna(False).astype(bool)
+        )
+        signal_mat.loc[~allowed.to_numpy(), :] = False
     # Empty dict sentinel: no min-price / ADV filters configured.
     filter_mat: pd.DataFrame | None
     if filter_signals_by_tv:
@@ -206,6 +216,13 @@ def run_rolling_backtest(
     entry_signals_by_tv = _precompute_entry_signals(bars_by_tv, entry_ast, warnings)
     filter_signals_by_tv = _precompute_filter_signals(bars_by_tv, cfg)
 
+    # Fetched once (with warmup history so SMA200-based regimes are defined)
+    # and reused for the regime gate, the aligned curve, and regime metrics.
+    benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
+    regime_allowed: pd.Series | None = None
+    if cfg.regime_filter:
+        regime_allowed = classify_regimes(benchmark).isin(set(cfg.regime_filter))
+
     day_arrays: list[np.ndarray] = []
     for bars in bars_by_tv.values():
         if bars is None or bars.empty:
@@ -217,7 +234,6 @@ def run_rolling_backtest(
     if not day_arrays:
         calendar = pd.bdate_range(start_ts, end_ts)
         equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
-        benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
         benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
         metrics = compute_metrics(equity, benchmark_aligned, [], max(cfg.top, 1))
         metrics["unique_tickers"] = 0
@@ -239,6 +255,7 @@ def run_rolling_backtest(
         master_dates,
         lookback,
         membership_added=dict(cfg.membership_added) or None,
+        regime_allowed=regime_allowed,
     )
     portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
     slot_states: dict[int, _SlotState | None] = {
@@ -345,10 +362,10 @@ def run_rolling_backtest(
         date_set.update(dates.tolist())
     calendar = pd.DatetimeIndex(sorted(date_set))
     equity = build_equity_curve(calendar, trades, bars_by_tv, cfg.initial_capital)
-    benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
     metrics = compute_metrics(equity, benchmark_aligned, trades, max(cfg.top, 1))
     metrics["unique_tickers"] = len({trade.ticker for trade in trades})
+    metrics.update(compute_regime_metrics(benchmark, trades))
 
     selection = pd.DataFrame(
         selection_rows,
@@ -493,6 +510,16 @@ def run_rolling_backtest(
     type=click.Choice(["full", "splits_only", "none"]),
     default="full",
 )
+@click.option(
+    "--regime-filter",
+    "regime_filter_args",
+    multiple=True,
+    type=click.Choice(list(TREND_LABELS)),
+    help=(
+        "Only allow entries on days whose benchmark trend regime matches "
+        "(repeatable). Warmup days with an unknown regime are suppressed."
+    ),
+)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
 @click.option(
     "--dashboard",
@@ -548,6 +575,7 @@ def backtest_rolling(
     entry_limit_bps,
     partial_exit_args,
     price_adjustment,
+    regime_filter_args,
     output_csv,
     dashboard,
     dashboard_port,
@@ -647,6 +675,7 @@ def backtest_rolling(
         entry_limit_bps=entry_limit_bps,
         partial_exits=partial_exits,
         price_adjustment=price_adjustment,
+        regime_filter=tuple(dict.fromkeys(regime_filter_args)),
     )
 
     fetcher = click.get_current_context().obj or build_price_fetcher(

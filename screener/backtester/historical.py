@@ -26,7 +26,7 @@ from screener.backtester.core import (
 )
 from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
 from screener.backtester.display import print_backtest, print_ledger_csv
-from screener.backtester.metrics import compute_metrics
+from screener.backtester.metrics import compute_metrics, compute_regime_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.pine import PineError, evaluate, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
@@ -409,6 +409,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     benchmark = fetch_benchmark(cfg.benchmark, start, end, fetcher)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
     metrics = compute_metrics(equity, benchmark_aligned, trades, slot_count)
+    metrics.update(compute_regime_metrics(benchmark, trades))
 
     return BacktestResult(
         config=cfg,

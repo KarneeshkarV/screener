@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from screener.backtester.models import Trade
+from screener.regime import classify_regimes
 
 
 TRADING_DAYS_PER_YEAR = 252
@@ -183,6 +184,32 @@ def _invested_return(trades: Iterable[Trade]) -> float:
     if total_cost <= 0:
         return 0.0
     return total_pnl / total_cost
+
+
+def compute_regime_metrics(benchmark: pd.Series, trades: list[Trade]) -> dict:
+    """Per-regime trade stats keyed by each trade's entry-date regime.
+
+    The regime is classified from the (point-in-time) benchmark close curve;
+    each trade is bucketed by the benchmark regime in force on its entry date
+    (most recent benchmark date at or before entry). Returns keys of the form
+    ``regime_<label>_trades`` / ``regime_<label>_win_rate`` /
+    ``regime_<label>_avg_return`` for each label with at least one trade.
+    """
+    if benchmark is None or benchmark.empty or not trades:
+        return {}
+    regimes = classify_regimes(benchmark)
+    idx = regimes.index
+    by_label: dict[str, list[float]] = {}
+    for t in trades:
+        pos = int(idx.searchsorted(pd.Timestamp(t.entry_date), side="right")) - 1
+        label = str(regimes.iloc[pos]) if pos >= 0 else "unknown"
+        by_label.setdefault(label, []).append(float(t.return_pct))
+    out: dict = {}
+    for label, rets in by_label.items():
+        out[f"regime_{label}_trades"] = len(rets)
+        out[f"regime_{label}_win_rate"] = sum(1 for r in rets if r > 0) / len(rets)
+        out[f"regime_{label}_avg_return"] = sum(rets) / len(rets)
+    return out
 
 
 def compute_metrics(

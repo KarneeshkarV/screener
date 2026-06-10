@@ -42,12 +42,35 @@ _PCT_METRICS = {
 }
 
 
+_REGIME_LABELS = ("bull", "pullback", "bear", "unknown")
+
+
 def _format_metric(key: str, value) -> str:
     if isinstance(value, float):
         if key in _PCT_METRICS:
             return f"{value * 100:+.2f}%"
         return f"{value:+.3f}"
     return str(value)
+
+
+def _print_regime_metrics(metrics: dict) -> None:
+    """Render per-regime trade stats when regime_* keys are present."""
+    rows = [label for label in _REGIME_LABELS if f"regime_{label}_trades" in metrics]
+    if not rows:
+        return
+    table = Table(title="Trades by Entry Regime", show_header=True, header_style="bold")
+    table.add_column("Regime")
+    table.add_column("Trades", justify="right")
+    table.add_column("Win Rate", justify="right")
+    table.add_column("Avg Return", justify="right")
+    for label in rows:
+        table.add_row(
+            label,
+            str(metrics[f"regime_{label}_trades"]),
+            f"{metrics[f'regime_{label}_win_rate'] * 100:.1f}%",
+            f"{metrics[f'regime_{label}_avg_return'] * 100:+.2f}%",
+        )
+    console.print(table)
 
 
 def print_backtest(result: BacktestResult) -> None:
@@ -70,6 +93,7 @@ def print_backtest(result: BacktestResult) -> None:
         if key in result.metrics:
             metrics_table.add_row(label, _format_metric(key, result.metrics[key]))
     console.print(metrics_table)
+    _print_regime_metrics(result.metrics)
 
     if not result.trades:
         console.print("[dim]No trades.[/dim]")

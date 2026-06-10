@@ -35,6 +35,11 @@ class BacktestConfig(BaseModel):
     # Entry signals before a symbol's date are suppressed; symbols not listed
     # are always eligible. Open positions are never force-closed.
     membership_added: tuple[tuple[str, date], ...] = ()
+    # Benchmark-regime entry gate (rolling backtest): when non-empty, entry
+    # signals are suppressed on days whose benchmark trend regime (see
+    # ``screener.regime.classify_regimes``) is not in this set. Days with an
+    # 'unknown' (warmup) regime are also suppressed.
+    regime_filter: tuple[str, ...] = ()
     max_universe: int = 200
     min_price: Optional[float] = None
     min_avg_dollar_volume: Optional[float] = None
