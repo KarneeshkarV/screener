@@ -22,6 +22,7 @@ rebuilds only the calling thread's session.
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import date, timedelta
 from typing import Any
@@ -30,6 +31,8 @@ import requests
 
 from screener.cache import cached_json_call
 from screener.resilience import call_with_resilience
+
+LOG = logging.getLogger(__name__)
 
 _NSE_HOME = "https://www.nseindia.com"
 _BROWSER_HEADERS = {
@@ -110,7 +113,7 @@ def _prime_page(session: requests.Session, page_url: str) -> None:
             primed_pages.setdefault(session_id, set()).add(page_url)
             _tls.primed_pages = primed_pages
     except Exception:
-        pass
+        LOG.debug("NSE page priming failed for %s; will retry on next call", page_url)
 
 
 def fetch_nse_json(

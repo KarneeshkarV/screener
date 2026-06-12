@@ -1,3 +1,4 @@
+import logging
 import math
 import re
 
@@ -14,6 +15,9 @@ from screener.cache import (
     write_json,
 )
 from screener.resilience import call_with_resilience
+
+
+LOG = logging.getLogger(__name__)
 
 
 MARKETS = {
@@ -65,12 +69,20 @@ def get_scanner_data_cached(
         if cached is not None:
             return int(meta.get("count", 0)), cached
 
-    count, df = call_with_resilience(
+    result: tuple[int, pd.DataFrame] | None = call_with_resilience(
         "tradingview",
         operation,
         query.get_scanner_data,
-        fallback=(0, pd.DataFrame(columns=columns)),
+        fallback=None,
     )
+    if result is None:
+        LOG.warning(
+            "tradingview scan failed for %s; returning empty results "
+            "(not cached) — rerun with --refresh once connectivity is back",
+            operation,
+        )
+        return 0, pd.DataFrame(columns=columns)
+    count, df = result
     write_frame(frame_path, df)
     write_json(meta_path, {"count": int(count)})
     return count, df

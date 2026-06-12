@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 import json
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -13,6 +14,8 @@ import requests
 
 from screener.resilience import call_with_resilience
 
+
+LOG = logging.getLogger(__name__)
 
 CACHE_DIR = Path.home() / ".screener" / "universes"
 UniverseName = Literal["sp500", "nifty50"]
@@ -202,7 +205,7 @@ def load_sp500_membership(
                 for symbol, added in payload.items()
             }
         except (ValueError, OSError):
-            pass
+            LOG.debug("sp500 membership cache at %s unreadable; refetching", path)
 
     df = _fetch_sp500_table()
     if "Date added" not in df.columns:
