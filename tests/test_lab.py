@@ -2,13 +2,116 @@
 
 from __future__ import annotations
 
+import http.client
+import json
+import threading
 from datetime import date
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from screener.backtester import lab
+from screener.backtester.lab import LabHandler
 from screener.universes import Universe
 
 from tests.conftest import StubPriceFetcher, make_bars
+
+
+# ---------------------------------------------------------------------------
+# Handler-level tests (real ThreadingHTTPServer on ephemeral port 0)
+# ---------------------------------------------------------------------------
+
+
+def _start_server() -> tuple[ThreadingHTTPServer, int]:
+    """Start a LabHandler server on an ephemeral port and return (server, port)."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), LabHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, port
+
+
+def test_handler_get_strategies_same_origin_returns_200() -> None:
+    """GET /api/strategies with valid Host header returns 200."""
+    server, port = _start_server()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port)
+        conn.request("GET", "/api/strategies", headers={"Host": f"127.0.0.1:{port}"})
+        resp = conn.getresponse()
+        assert resp.status == 200
+        body = json.loads(resp.read())
+        assert "strategies" in body
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_handler_post_cross_origin_returns_403() -> None:
+    """POST /api/run with an evil Origin is rejected with 403."""
+    server, port = _start_server()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port)
+        payload = b"{}"
+        conn.request(
+            "POST",
+            "/api/run",
+            body=payload,
+            headers={
+                "Host": f"127.0.0.1:{port}",
+                "Origin": "http://evil.example",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        resp = conn.getresponse()
+        body_text = resp.read()
+        assert resp.status == 403
+        # Must not contain backtest data fields
+        assert b"results" not in body_text
+        assert b"metrics" not in body_text
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_handler_bad_host_returns_403() -> None:
+    """Request with Host: evil.example is rejected with 403."""
+    server, port = _start_server()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port)
+        conn.request("GET", "/api/strategies", headers={"Host": "evil.example"})
+        resp = conn.getresponse()
+        assert resp.status == 403
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_handler_same_origin_invalid_payload_returns_400() -> None:
+    """POST /api/run same-origin but invalid payload returns 400 (guard passed through)."""
+    server, port = _start_server()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port)
+        # Intentionally omit required "start" key so existing validation raises
+        payload = json.dumps({"market": "us", "strategies": ["ema_trend"]}).encode()
+        conn.request(
+            "POST",
+            "/api/run",
+            body=payload,
+            headers={
+                "Host": f"127.0.0.1:{port}",
+                "Origin": f"http://127.0.0.1:{port}",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(payload)),
+            },
+        )
+        resp = conn.getresponse()
+        assert resp.status == 400
+        # No backtest data was returned
+        body = json.loads(resp.read())
+        assert "error" in body
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_compare_payload_runs_multiple_named_strategies(monkeypatch):

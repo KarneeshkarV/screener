@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import urllib.parse
 from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -473,6 +474,20 @@ def _lab_html() -> str:
 
 
 class LabHandler(BaseHTTPRequestHandler):
+    _ALLOWED_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "[::1]"})
+
+    def _same_origin(self) -> bool:
+        """Reject DNS-rebinding (bad Host) and cross-site requests (bad Origin)."""
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
+        if host not in self._ALLOWED_HOSTS:
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            origin_host = urllib.parse.urlsplit(origin).hostname or ""
+            if origin_host not in self._ALLOWED_HOSTS:
+                return False
+        return True
+
     def _send(self, status: int, body: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -481,6 +496,9 @@ class LabHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
+        if not self._same_origin():
+            self._send(HTTPStatus.FORBIDDEN, b"forbidden", "text/plain")
+            return
         if self.path == "/" or self.path.startswith("/?"):
             self._send(HTTPStatus.OK, _lab_html().encode(), "text/html; charset=utf-8")
             return
@@ -491,6 +509,9 @@ class LabHandler(BaseHTTPRequestHandler):
         self._send(HTTPStatus.NOT_FOUND, b"not found", "text/plain")
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._same_origin():
+            self._send(HTTPStatus.FORBIDDEN, b"forbidden", "text/plain")
+            return
         if self.path != "/api/run":
             self._send(HTTPStatus.NOT_FOUND, b"not found", "text/plain")
             return
@@ -541,6 +562,7 @@ class LabHandler(BaseHTTPRequestHandler):
 def backtest_lab(host: str, port: int) -> None:
     """Launch a browser UI for comparing rolling backtest strategies."""
     console = Console()
+    LabHandler._ALLOWED_HOSTS = LabHandler._ALLOWED_HOSTS | {host}
     server = ThreadingHTTPServer((host, int(port)), LabHandler)
     console.print(f"[green]Backtest lab:[/green] http://{host}:{port}/")
     console.print("[dim]Press Ctrl+C to stop the lab server.[/dim]")
