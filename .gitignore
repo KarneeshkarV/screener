@@ -22,3 +22,7 @@ picks_today.md
 buy_recommendations.md
 journal.jsonl
 .benchmarks/
+momentum_out/
+oi_lab/
+sweep_results/
+reports/
