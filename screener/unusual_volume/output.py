@@ -16,46 +16,14 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
+from screener.format import fmt_float as _fmt_float
+from screener.format import fmt_pct as _fmt_pct
+from screener.format import fmt_volume as _fmt_volume
+
 from .detector import Event
 
 
 _STRENGTH_RANK = {"EXTREME": 3, "HIGH": 2, "MODERATE": 1}
-
-
-def _fmt_volume(v: float) -> str:
-    if v is None or (isinstance(v, float) and math.isnan(v)):
-        return "-"
-    if v >= 1e9:
-        return f"{v / 1e9:.2f}B"
-    if v >= 1e6:
-        return f"{v / 1e6:.2f}M"
-    if v >= 1e3:
-        return f"{v / 1e3:.1f}K"
-    return f"{v:,.0f}"
-
-
-def _fmt_pct(v) -> str:
-    if v is None or (isinstance(v, float) and math.isnan(v)):
-        return "-"
-    return f"{v:+.2f}%"
-
-
-def _fmt_float(v, ndp: int = 2) -> str:
-    if v is None or (isinstance(v, float) and math.isnan(v)):
-        return "-"
-    return f"{v:.{ndp}f}"
-
-
-def _fmt_mcap(v) -> str:
-    if v is None or (isinstance(v, float) and math.isnan(v)):
-        return "-"
-    if v >= 1e12:
-        return f"{v / 1e12:.2f}T"
-    if v >= 1e9:
-        return f"{v / 1e9:.2f}B"
-    if v >= 1e6:
-        return f"{v / 1e6:.1f}M"
-    return f"{v:,.0f}"
 
 
 def sort_events(events: Iterable[Event]) -> list[Event]:

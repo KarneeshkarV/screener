@@ -2,6 +2,8 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
+from screener.format import fmt_mcap, fmt_pct
+
 console = Console()
 
 COLUMN_LABELS = {
@@ -71,7 +73,7 @@ def _format_value(col: str, val) -> str:
         return "-"
 
     if col == "change":
-        return f"{val:+.2f}%"
+        return fmt_pct(val)
     if col == "volume":
         if val >= 1_000_000:
             return f"{val / 1_000_000:.1f}M"
@@ -79,13 +81,7 @@ def _format_value(col: str, val) -> str:
             return f"{val / 1_000:.1f}K"
         return f"{val:,.0f}"
     if col == "market_cap_basic":
-        if val >= 1e12:
-            return f"{val / 1e12:.2f}T"
-        if val >= 1e9:
-            return f"{val / 1e9:.2f}B"
-        if val >= 1e6:
-            return f"{val / 1e6:.1f}M"
-        return f"{val:,.0f}"
+        return fmt_mcap(val)
     if col in ("close", "EMA5", "EMA20", "EMA100", "EMA200"):
         return f"{val:.2f}"
     if col in (
@@ -109,13 +105,7 @@ def _format_value(col: str, val) -> str:
     ):
         return f"{val:.2f}"
     if col == "sales":
-        if val >= 1e12:
-            return f"{val / 1e12:.2f}T"
-        if val >= 1e9:
-            return f"{val / 1e9:.2f}B"
-        if val >= 1e6:
-            return f"{val / 1e6:.1f}M"
-        return f"{val:,.0f}"
+        return fmt_mcap(val)
 
     return str(val)
 

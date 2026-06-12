@@ -132,10 +132,12 @@ def test_exit_target_gap_up_uses_bar_open():
 
 def test_exit_gap_fills_disabled_uses_level():
     fm = FillModel(_cfg(gap_fills=False, slippage_bps=0.0))
-    assert fm.exit_price(reason="stop", bar_open=90.0, level=95.0) == pytest.approx(95.0)
-    assert fm.exit_price(
-        reason="target", bar_open=110.0, level=105.0
-    ) == pytest.approx(105.0)
+    assert fm.exit_price(reason="stop", bar_open=90.0, level=95.0) == pytest.approx(
+        95.0
+    )
+    assert fm.exit_price(reason="target", bar_open=110.0, level=105.0) == pytest.approx(
+        105.0
+    )
 
 
 def test_exit_trail_uses_stop_resolution():

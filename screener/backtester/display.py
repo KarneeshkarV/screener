@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from screener.backtester.models import BacktestResult
+from screener.format import fmt_pct
 
 
 console = Console()
@@ -48,7 +49,7 @@ _REGIME_LABELS = ("bull", "pullback", "bear", "unknown")
 def _format_metric(key: str, value) -> str:
     if isinstance(value, float):
         if key in _PCT_METRICS:
-            return f"{value * 100:+.2f}%"
+            return fmt_pct(value * 100)
         return f"{value:+.3f}"
     return str(value)
 
