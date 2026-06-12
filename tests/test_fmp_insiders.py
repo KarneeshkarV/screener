@@ -7,6 +7,7 @@ import pandas as pd
 
 from screener import cache
 from screener import insiders as insiders_module
+from screener.backtester.data import tv_to_yf
 from screener.insiders import (
     _aggregate_fmp_transactions,
     _fetch_fmp_insider_one,
@@ -201,6 +202,31 @@ def test_fetch_fmp_stops_after_out_of_window_page(monkeypatch, tmp_path):
     assert out is not None
     assert calls == [0, 1]
     assert out["fmp_truncated"] is False
+
+
+def test_tv_to_yf_bse_maps_to_bo_not_ns():
+    """BSE-prefixed tickers must resolve to .BO, not the old insiders .NS bug."""
+    assert tv_to_yf("BSE:TCS", "india") == "TCS.BO"
+
+
+def test_tv_to_yf_nse_maps_to_ns():
+    assert tv_to_yf("NSE:RELIANCE", "india") == "RELIANCE.NS"
+
+
+def test_tv_to_yf_bare_india_symbol_defaults_to_ns():
+    assert tv_to_yf("RELIANCE", "india") == "RELIANCE.NS"
+
+
+def test_tv_to_yf_presuffixed_symbol_passes_through():
+    assert tv_to_yf("RELIANCE.NS", "india") == "RELIANCE.NS"
+
+
+def test_tv_to_yf_us_symbol_strips_exchange():
+    assert tv_to_yf("NASDAQ:AAPL", "us") == "AAPL"
+
+
+def test_tv_to_yf_lowercases_input():
+    assert tv_to_yf("nse:reliance", "india") == "RELIANCE.NS"
 
 
 def test_us_filter_prefers_fmp_and_falls_back_to_yfinance():

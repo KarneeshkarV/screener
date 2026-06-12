@@ -30,12 +30,12 @@ from typing import Optional
 import pandas as pd
 import yfinance as yf
 
+from screener.backtester.data import tv_to_yf
 from screener.providers import CachedProvider, ProviderSpec
 from screener.resilience import call_with_resilience
 
 
 logger = logging.getLogger(__name__)
-_INDIA_SUFFIXES = (".NS", ".BO")
 _SCREENER_URL = "https://www.screener.in/company/{symbol}/"
 _SCREENER_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; screener-cli/1.0)"}
 
@@ -62,13 +62,6 @@ _OPENSCREENER_PROVIDER = CachedProvider(
         ttl_seconds=7 * 86400,
     )
 )
-
-
-def _tv_to_yf(ticker: str, market: str) -> str:
-    symbol = ticker.split(":", 1)[1] if ":" in ticker else ticker
-    if market == "india" and not symbol.endswith(_INDIA_SUFFIXES):
-        return f"{symbol}.NS"
-    return symbol
 
 
 # ── yfinance insider purchases ─────────────────────────────────────────────
@@ -144,7 +137,7 @@ def fetch_yfinance_insiders(
         return pd.DataFrame()
 
     jobs = [
-        (str(row["name"]), _tv_to_yf(str(row["ticker"]), market))
+        (str(row["name"]), tv_to_yf(str(row["ticker"]), market))
         for _, row in universe.iterrows()
     ]
     rows: list[dict] = []
@@ -323,7 +316,7 @@ def fetch_fmp_insiders(
         return pd.DataFrame()
 
     jobs = [
-        (str(row["name"]), _tv_to_yf(str(row["ticker"]), market))
+        (str(row["name"]), tv_to_yf(str(row["ticker"]), market))
         for _, row in universe.iterrows()
     ]
     rows: list[dict] = []
