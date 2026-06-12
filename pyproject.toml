@@ -36,12 +36,21 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "empyrical-reloaded>=0.5.12",
     "matplotlib>=3.10.8",
     "mypy>=1.10",
     "pandas-stubs>=2.0",
+    "pandas-ta-classic>=0.6.20",
     "pytest>=8.0",
     "ruff>=0.5",
     "types-requests>=2.31",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "network: requires live internet access (opt in with SCREENER_LIVE_TESTS=1)",
+    "requires_talib: requires the optional TA-Lib C library + python wrapper",
+    "requires_quantstats: requires the optional quantstats package",
 ]
 
 [tool.ruff]

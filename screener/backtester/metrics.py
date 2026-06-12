@@ -33,7 +33,11 @@ def _cagr(equity: pd.Series) -> float:
     end = float(equity.iloc[-1])
     if start <= 0:
         return 0.0
-    years = max(len(equity) / TRADING_DAYS_PER_YEAR, 1e-9)
+    # Annualize over the elapsed return periods (N-1 for an N-point curve), not
+    # the point count: an N-bar equity curve spans N-1 daily returns, so the
+    # horizon is (N-1)/252 years. Using len(equity)/252 overstated the horizon
+    # by one bar and understated CAGR; this matches empyrical's convention.
+    years = max((len(equity) - 1) / TRADING_DAYS_PER_YEAR, 1e-9)
     return (end / start) ** (1.0 / years) - 1.0
 
 
