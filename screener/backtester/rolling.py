@@ -168,6 +168,159 @@ def _candidate_rows_for_day(
     return rows, warnings
 
 
+@dataclass(frozen=True)
+class _RollingSimulationSetup:
+    """Once-per-run setup for the rolling day loop and result assembly.
+
+    When ``early_result`` is set, no trading day had price data and the caller
+    returns it directly without running the day loop; the remaining fields are
+    unused in that case.
+    """
+
+    early_result: BacktestResult | None
+    master_dates: list[pd.Timestamp]
+    candidate_matrices: _RollingCandidateMatrices | None
+    bars_by_tv: dict[str, pd.DataFrame]
+    benchmark: pd.Series
+    exit_ast: object
+    portfolio: Portfolio | None
+    slot_states: dict[int, _SlotState | None]
+    slot_bars: dict[int, pd.DataFrame]
+    selection_rows: list[dict]
+    fill_model: FillModel | None
+    day_loop: DayLoop | None
+
+
+def _prepare_simulation(
+    cfg: BacktestConfig,
+    fetcher: PriceFetcher,
+    *,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    warnings: list[str],
+) -> _RollingSimulationSetup:
+    """Fetch data, precompute signals/matrices and build the slot/portfolio state."""
+    entry_ast = parse(cfg.entry_expr)
+    exit_ast = parse(cfg.exit_expr) if cfg.exit_expr else None
+    lookback = required_lookback(entry_ast)
+    if exit_ast is not None:
+        lookback = max(lookback, required_lookback(exit_ast))
+
+    from screener.backtester.data import tv_to_yf
+
+    tv_symbols, univ_warnings = _resolve_universe(cfg)
+    warnings.extend(univ_warnings)
+    yf_by_tv = {tv: tv_to_yf(tv, cfg.market) for tv in tv_symbols}
+    yf_symbols = list(dict.fromkeys(list(yf_by_tv.values()) + [cfg.benchmark]))
+
+    warmup_days = max(lookback * 3 + 30, 365)
+    fetch_start = (start_ts - pd.Timedelta(days=warmup_days)).date()
+    fetch_end = end_ts.date()
+    price_panel = fetcher.fetch(yf_symbols, fetch_start, fetch_end)
+
+    bars_by_tv = {
+        tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
+    }
+    bars_by_tv, strategy_lookback = _prepare_strategy_bars(
+        cfg,
+        bars_by_tv,
+        price_panel,
+        tv_symbols,
+        fetch_start,
+        fetch_end,
+        fetcher,
+        warnings,
+    )
+    lookback = max(lookback, strategy_lookback)
+    entry_signals_by_tv = _precompute_entry_signals(bars_by_tv, entry_ast, warnings)
+    filter_signals_by_tv = _precompute_filter_signals(bars_by_tv, cfg)
+
+    # Fetched once (with warmup history so SMA200-based regimes are defined)
+    # and reused for the regime gate, the aligned curve, and regime metrics.
+    benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
+    regime_allowed: pd.Series | None = None
+    if cfg.regime_filter:
+        regime_allowed = classify_regimes(benchmark).isin(set(cfg.regime_filter))
+
+    day_arrays: list[np.ndarray] = []
+    for bars in bars_by_tv.values():
+        if bars is None or bars.empty:
+            continue
+        idx = bars.index
+        mask = (idx >= start_ts) & (idx <= end_ts)
+        if mask.any():
+            day_arrays.append(idx[mask].to_numpy())
+    if not day_arrays:
+        calendar = pd.bdate_range(start_ts, end_ts)
+        equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
+        benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
+        metrics = compute_metrics(equity, benchmark_aligned, [], max(cfg.top, 1))
+        metrics["unique_tickers"] = 0
+        early_result = BacktestResult(
+            config=cfg,
+            trades=[],
+            equity_curve=equity,
+            benchmark_curve=benchmark_aligned,
+            metrics=metrics,
+            warnings=warnings + ["no trading days with price data in rolling window"],
+            selection=pd.DataFrame(),
+        )
+        return _RollingSimulationSetup(
+            early_result=early_result,
+            master_dates=[],
+            candidate_matrices=None,
+            bars_by_tv=bars_by_tv,
+            benchmark=benchmark,
+            exit_ast=exit_ast,
+            portfolio=None,
+            slot_states={},
+            slot_bars={},
+            selection_rows=[],
+            fill_model=None,
+            day_loop=None,
+        )
+
+    master_dates = list(pd.DatetimeIndex(np.unique(np.concatenate(day_arrays))))
+    candidate_matrices = _build_rolling_candidate_matrices(
+        bars_by_tv,
+        entry_signals_by_tv,
+        filter_signals_by_tv,
+        master_dates,
+        lookback,
+        membership_added=dict(cfg.membership_added) or None,
+        regime_allowed=regime_allowed,
+    )
+    portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
+    slot_states: dict[int, _SlotState | None] = {
+        slot_id: None for slot_id in range(max(cfg.top, 1))
+    }
+    slot_bars: dict[int, pd.DataFrame] = {}
+    selection_rows: list[dict] = []
+
+    fill_model = FillModel(cfg)
+    day_loop = DayLoop(
+        portfolio=portfolio,
+        cfg=cfg,
+        slot_states=slot_states,
+        slot_bars=slot_bars,
+        fill_model=fill_model,
+    )
+    return _RollingSimulationSetup(
+        early_result=None,
+        master_dates=master_dates,
+        candidate_matrices=candidate_matrices,
+        bars_by_tv=bars_by_tv,
+        benchmark=benchmark,
+        exit_ast=exit_ast,
+        portfolio=portfolio,
+        slot_states=slot_states,
+        slot_bars=slot_bars,
+        selection_rows=selection_rows,
+        fill_model=fill_model,
+        day_loop=day_loop,
+    )
+
+
 def _simulate_day(
     day: pd.Timestamp,
     *,
@@ -325,131 +478,54 @@ def run_rolling_backtest(
     if end_ts < start_ts:
         raise ValueError("end_date must be >= start_date")
 
-    entry_ast = parse(cfg.entry_expr)
-    exit_ast = parse(cfg.exit_expr) if cfg.exit_expr else None
-    lookback = required_lookback(entry_ast)
-    if exit_ast is not None:
-        lookback = max(lookback, required_lookback(exit_ast))
-
-    from screener.backtester.data import tv_to_yf
-
-    tv_symbols, univ_warnings = _resolve_universe(cfg)
-    warnings.extend(univ_warnings)
-    yf_by_tv = {tv: tv_to_yf(tv, cfg.market) for tv in tv_symbols}
-    yf_symbols = list(dict.fromkeys(list(yf_by_tv.values()) + [cfg.benchmark]))
-
-    warmup_days = max(lookback * 3 + 30, 365)
-    fetch_start = (start_ts - pd.Timedelta(days=warmup_days)).date()
-    fetch_end = end_ts.date()
-    price_panel = fetcher.fetch(yf_symbols, fetch_start, fetch_end)
-
-    bars_by_tv = {
-        tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
-    }
-    bars_by_tv, strategy_lookback = _prepare_strategy_bars(
+    setup = _prepare_simulation(
         cfg,
-        bars_by_tv,
-        price_panel,
-        tv_symbols,
-        fetch_start,
-        fetch_end,
         fetcher,
-        warnings,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        warnings=warnings,
     )
-    lookback = max(lookback, strategy_lookback)
-    entry_signals_by_tv = _precompute_entry_signals(bars_by_tv, entry_ast, warnings)
-    filter_signals_by_tv = _precompute_filter_signals(bars_by_tv, cfg)
+    if setup.early_result is not None:
+        return setup.early_result
 
-    # Fetched once (with warmup history so SMA200-based regimes are defined)
-    # and reused for the regime gate, the aligned curve, and regime metrics.
-    benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
-    regime_allowed: pd.Series | None = None
-    if cfg.regime_filter:
-        regime_allowed = classify_regimes(benchmark).isin(set(cfg.regime_filter))
+    assert setup.candidate_matrices is not None
+    assert setup.portfolio is not None
+    assert setup.fill_model is not None
+    assert setup.day_loop is not None
 
-    day_arrays: list[np.ndarray] = []
-    for bars in bars_by_tv.values():
-        if bars is None or bars.empty:
-            continue
-        idx = bars.index
-        mask = (idx >= start_ts) & (idx <= end_ts)
-        if mask.any():
-            day_arrays.append(idx[mask].to_numpy())
-    if not day_arrays:
-        calendar = pd.bdate_range(start_ts, end_ts)
-        equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
-        benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
-        metrics = compute_metrics(equity, benchmark_aligned, [], max(cfg.top, 1))
-        metrics["unique_tickers"] = 0
-        return BacktestResult(
-            config=cfg,
-            trades=[],
-            equity_curve=equity,
-            benchmark_curve=benchmark_aligned,
-            metrics=metrics,
-            warnings=warnings + ["no trading days with price data in rolling window"],
-            selection=pd.DataFrame(),
-        )
-
-    master_dates = list(pd.DatetimeIndex(np.unique(np.concatenate(day_arrays))))
-    candidate_matrices = _build_rolling_candidate_matrices(
-        bars_by_tv,
-        entry_signals_by_tv,
-        filter_signals_by_tv,
-        master_dates,
-        lookback,
-        membership_added=dict(cfg.membership_added) or None,
-        regime_allowed=regime_allowed,
-    )
-    portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
-    slot_states: dict[int, _SlotState | None] = {
-        slot_id: None for slot_id in range(max(cfg.top, 1))
-    }
-    slot_bars: dict[int, pd.DataFrame] = {}
-    selection_rows: list[dict] = []
-
-    fill_model = FillModel(cfg)
-    day_loop = DayLoop(
-        portfolio=portfolio,
-        cfg=cfg,
-        slot_states=slot_states,
-        slot_bars=slot_bars,
-        fill_model=fill_model,
-    )
-
-    for day in master_dates:
+    for day in setup.master_dates:
         _simulate_day(
             day,
-            day_loop=day_loop,
-            candidate_matrices=candidate_matrices,
-            bars_by_tv=bars_by_tv,
+            day_loop=setup.day_loop,
+            candidate_matrices=setup.candidate_matrices,
+            bars_by_tv=setup.bars_by_tv,
             cfg=cfg,
-            exit_ast=exit_ast,
-            fill_model=fill_model,
-            portfolio=portfolio,
-            slot_states=slot_states,
-            slot_bars=slot_bars,
+            exit_ast=setup.exit_ast,
+            fill_model=setup.fill_model,
+            portfolio=setup.portfolio,
+            slot_states=setup.slot_states,
+            slot_bars=setup.slot_bars,
             end_ts=end_ts,
-            selection_rows=selection_rows,
+            selection_rows=setup.selection_rows,
             warnings=warnings,
         )
 
     _force_close_open_slots(
-        slot_states=slot_states,
-        slot_bars=slot_bars,
+        slot_states=setup.slot_states,
+        slot_bars=setup.slot_bars,
         cfg=cfg,
-        portfolio=portfolio,
+        portfolio=setup.portfolio,
         end_ts=end_ts,
-        fill_model=fill_model,
+        fill_model=setup.fill_model,
     )
 
     return _assemble_results(
-        portfolio=portfolio,
-        master_dates=master_dates,
-        bars_by_tv=bars_by_tv,
+        portfolio=setup.portfolio,
+        master_dates=setup.master_dates,
+        bars_by_tv=setup.bars_by_tv,
         cfg=cfg,
-        benchmark=benchmark,
-        selection_rows=selection_rows,
+        benchmark=setup.benchmark,
+        selection_rows=setup.selection_rows,
         warnings=warnings,
     )
 
