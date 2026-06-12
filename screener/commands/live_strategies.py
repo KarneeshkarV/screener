@@ -18,6 +18,7 @@ backtester would have entered on.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from typing import cast
 
 import click
 import numpy as np
@@ -56,13 +57,14 @@ def _crossed_above_np(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     prev_b[0] = np.nan
     prev_a[1:] = a[:-1]
     prev_b[1:] = b[:-1]
-    return (
+    return cast(
+        np.ndarray,
         np.isfinite(a)
         & np.isfinite(b)
         & np.isfinite(prev_a)
         & np.isfinite(prev_b)
         & (prev_a <= prev_b)
-        & (a > b)
+        & (a > b),
     )
 
 

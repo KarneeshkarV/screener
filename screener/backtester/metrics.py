@@ -38,7 +38,7 @@ def _cagr(equity: pd.Series) -> float:
     # horizon is (N-1)/252 years. Using len(equity)/252 overstated the horizon
     # by one bar and understated CAGR; this matches empyrical's convention.
     years = max((len(equity) - 1) / TRADING_DAYS_PER_YEAR, 1e-9)
-    return (end / start) ** (1.0 / years) - 1.0
+    return float((end / start) ** (1.0 / years) - 1.0)
 
 
 def _max_drawdown(equity: pd.Series) -> float:

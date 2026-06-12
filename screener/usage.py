@@ -9,7 +9,7 @@ import os
 import platform
 import time
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -95,7 +95,7 @@ def _connect() -> UsageClient | None:
 
     from libsql_client import create_client_sync  # type: ignore[import-untyped]
 
-    return create_client_sync(url, auth_token=token)
+    return cast(UsageClient, create_client_sync(url, auth_token=token))
 
 
 def ensure_usage_table(client: UsageClient) -> None:

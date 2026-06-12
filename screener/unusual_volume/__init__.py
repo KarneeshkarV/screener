@@ -8,10 +8,11 @@ separated from real institutional footprints.
 
 from __future__ import annotations
 
+# Direction/Strength originate in .classify; import them from the source so the
+# re-export is explicit (detector re-imports them without an __all__).
+from .classify import Direction, Strength
 from .detector import (
     Event,
-    Strength,
-    Direction,
     DEFAULT_MIN_RVOL,
     DEFAULT_MIN_Z,
     HIGH_RVOL,

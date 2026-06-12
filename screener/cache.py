@@ -10,7 +10,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, TypeVar
+from typing import Any, Callable, Iterable, Iterator, TypeVar, cast
 
 import pandas as pd
 
@@ -209,7 +209,7 @@ def cached_json_call(
     if not refresh and is_fresh(path, ttl_seconds):
         cached = read_json(path)
         if cached is not None:
-            return cached
+            return cast(T, cached)
     value = fetch()
     write_json(path, value)
     return value

@@ -180,10 +180,11 @@ def parse_indicator_list(raw: str) -> list[str]:
 
 
 def _sma(close: pd.DataFrame, window: int, vbt: Any) -> pd.DataFrame:
+    # vbt is Any (optional dep), so ma_out and its operations are Any.
     ma_out = vbt.MA.run(close, window=window).ma
     if isinstance(ma_out.columns, pd.MultiIndex):
-        return ma_out.xs(window, axis=1, level="ma_window")
-    return ma_out
+        return cast(pd.DataFrame, ma_out.xs(window, axis=1, level="ma_window"))
+    return cast(pd.DataFrame, ma_out)
 
 
 def _fixed_hold_exits_np(arr: np.ndarray, hold: int) -> np.ndarray:

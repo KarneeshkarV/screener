@@ -14,7 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -533,7 +533,7 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
     cache_path = _json_cache_path("analyst", f"{market}_{ticker}")
     hit, cached = _read_json_cache(cache_path, SENTIMENT_CACHE_DAYS)
     if hit:
-        return cached
+        return cast("dict[Any, Any] | None", cached)
 
     _install_yfinance_timeout_patch()
     try:
@@ -567,7 +567,7 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
         }
         result = _jsonable(result)
         _write_json_cache(cache_path, result)
-        return result
+        return cast("dict[Any, Any] | None", result)
     except Exception as exc:
         logger.debug(
             "analyst_sentiment_error", extra={"ticker": ticker, "error": str(exc)}
@@ -584,7 +584,7 @@ def fetch_iv_sentiment_yf(ticker: str) -> Optional[dict]:
     cache_path = _json_cache_path("iv_yf", ticker)
     hit, cached = _read_json_cache(cache_path, SENTIMENT_CACHE_DAYS)
     if hit:
-        return cached
+        return cast("dict[Any, Any] | None", cached)
 
     _install_yfinance_timeout_patch()
     try:
@@ -666,7 +666,7 @@ def fetch_iv_sentiment_nse(symbol: str) -> Optional[dict]:
     cache_path = _json_cache_path("iv_nse", symbol)
     hit, cached = _read_json_cache(cache_path, SENTIMENT_CACHE_DAYS)
     if hit:
-        return cached
+        return cast("dict[Any, Any] | None", cached)
 
     try:
         from jugaad_data.nse import NSELive

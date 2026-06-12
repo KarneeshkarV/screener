@@ -69,7 +69,7 @@ def calmar_ratio(equity: pd.Series) -> float:
     dd = abs(maximum_drawdown(equity))
     if dd == 0.0:
         return float("inf") if cagr > 0 else 0.0
-    return cagr / dd
+    return float(cagr / dd)
 
 
 def risk_adjusted_return(result: BacktestResult) -> float:

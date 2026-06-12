@@ -105,12 +105,14 @@ def _figure_html(fig: go.Figure, div_id: str) -> str:
         hovermode="x unified",
         legend={"orientation": "h", "y": 1.08},
     )
-    return to_html(
-        fig,
-        include_plotlyjs=False,
-        full_html=False,
-        div_id=div_id,
-        config={"displaylogo": False, "responsive": True},
+    return str(  # plotly.io.to_html is untyped -> Any; it returns the HTML str
+        to_html(
+            fig,
+            include_plotlyjs=False,
+            full_html=False,
+            div_id=div_id,
+            config={"displaylogo": False, "responsive": True},
+        )
     )
 
 

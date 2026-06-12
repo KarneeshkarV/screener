@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from typing import cast
 
 import pandas as pd
 
@@ -60,7 +61,7 @@ def _five_day_avg_delivery(as_of: date) -> pd.DataFrame:
         frames.append(df)
     stacked = pd.concat(frames, ignore_index=True)
     avg = stacked.groupby("SYMBOL", as_index=False)["DELIV_QTY"].mean()
-    return avg.rename(columns={"DELIV_QTY": "5_Day_Avg_Delivery"})
+    return cast(pd.DataFrame, avg.rename(columns={"DELIV_QTY": "5_Day_Avg_Delivery"}))
 
 
 def build_dataset(

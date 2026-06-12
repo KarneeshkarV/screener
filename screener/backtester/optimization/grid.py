@@ -8,7 +8,7 @@ import json
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict
@@ -108,7 +108,7 @@ def _load_cache(path: Path | None) -> dict[str, dict[str, Any]]:
     if path is None or not path.exists():
         return {}
     try:
-        return json.loads(path.read_text())
+        return cast("dict[str, dict[str, Any]]", json.loads(path.read_text()))
     except json.JSONDecodeError:
         return {}
 

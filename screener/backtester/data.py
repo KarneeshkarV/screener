@@ -16,7 +16,7 @@ from datetime import date, datetime
 import io
 import os
 from pathlib import Path
-from typing import Iterable, Optional, Protocol
+from typing import Iterable, Optional, Protocol, cast
 
 import pandas as pd
 import requests
@@ -450,7 +450,7 @@ def _normalize_fmp_historical(payload: object, auto_adjust: bool) -> pd.DataFram
     out = df[["date", *keep]].rename(columns=rename).copy()
     out.index = pd.to_datetime(out.pop("date"), errors="coerce")
     out = out[out.index.notna()]
-    out.index = out.index.tz_localize(None).normalize()
+    out.index = cast(pd.DatetimeIndex, out.index).tz_localize(None).normalize()
 
     for col in [*OHLCV_COLUMNS, "adj_close"]:
         if col in out.columns:

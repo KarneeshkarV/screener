@@ -13,7 +13,7 @@ import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -394,7 +394,7 @@ def required_history_bars() -> int:
 def previous_completed_week_high_series(bars: pd.DataFrame) -> pd.Series:
     if bars.empty:
         return pd.Series(dtype=float)
-    week_key = bars.index.to_period("W-FRI")
+    week_key = cast(pd.DatetimeIndex, bars.index).to_period("W-FRI")
     weekly_high = bars["high"].astype(float).groupby(week_key).max()
     prev_week_high = week_key.map(weekly_high.shift(1))
     return pd.Series(

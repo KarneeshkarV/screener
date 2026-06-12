@@ -25,7 +25,7 @@ import os
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
+from typing import Optional, cast
 
 import pandas as pd
 import yfinance as yf
@@ -360,7 +360,8 @@ class _HttpScraper:
                 self.base_url.format(symbol=symbol.upper()), headers=_SCREENER_HEADERS
             )
             with urllib.request.urlopen(req, timeout=20) as resp:
-                return resp.read().decode("utf-8", "ignore")
+                # urlopen's context manager is Any-typed; decode yields str.
+                return str(resp.read().decode("utf-8", "ignore"))
 
         return call_with_resilience(
             "screener-in",
@@ -487,4 +488,4 @@ def filter_promoter_increased(
             pct = pd.to_numeric(insiders.get("yf_net_pct_6m"), errors="coerce")
             mask = mask & (pct >= min_yf_net_pct)
 
-    return insiders[mask.fillna(False)].copy()
+    return cast(pd.DataFrame, insiders[mask.fillna(False)].copy())

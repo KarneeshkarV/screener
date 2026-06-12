@@ -81,7 +81,7 @@ def _pct_change(new: float | None, old: float | None) -> float | None:
 def _cagr(latest: float | None, oldest: float | None, years: float) -> float | None:
     if latest is None or oldest is None or latest <= 0 or oldest <= 0 or years <= 0:
         return None
-    return ((latest / oldest) ** (1.0 / years) - 1.0) * 100.0
+    return float(((latest / oldest) ** (1.0 / years) - 1.0) * 100.0)
 
 
 def _series_from_statement(statement: pd.DataFrame, row_names: list[str]) -> pd.Series:
@@ -89,7 +89,9 @@ def _series_from_statement(statement: pd.DataFrame, row_names: list[str]) -> pd.
         return pd.Series(dtype=float)
     for name in row_names:
         if name in statement.index:
-            return pd.to_numeric(statement.loc[name], errors="coerce").dropna()
+            return cast(
+                pd.Series, pd.to_numeric(statement.loc[name], errors="coerce").dropna()
+            )
     return pd.Series(dtype=float)
 
 

@@ -129,7 +129,9 @@ def _wrap_usage_tracking(command: click.Command, feature_path: tuple[str, ...]) 
                 params=kwargs,
             )
 
-    tracked_callback._usage_tracked = True
+    # Marker attribute so re-wrapping is idempotent (read via getattr above);
+    # mypy can't model dynamic attributes on a function object.
+    tracked_callback._usage_tracked = True  # type: ignore[attr-defined]
     command.callback = tracked_callback
 
 

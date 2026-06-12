@@ -58,7 +58,8 @@ _SOFT_BLOCK = _SoftBlock()
 def _new_session() -> requests.Session:
     from jugaad_data.nse import NSEArchives
 
-    sess = NSEArchives().s
+    # NSEArchives is untyped, so .s is Any; annotate to the documented Session.
+    sess: requests.Session = NSEArchives().s
     sess.headers.update(_BROWSER_HEADERS)
     return sess
 

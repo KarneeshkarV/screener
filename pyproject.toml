@@ -67,10 +67,8 @@ files = ["main.py", "run_pinescript_strategies.py", "screener"]
 exclude = ["tests"]
 disable_error_code = [
     "arg-type",
-    "attr-defined",
     "call-overload",
     "index",
-    "no-any-return",
     "no-untyped-call",
     "no-untyped-def",
     "operator",
@@ -87,3 +85,11 @@ module = [
     "yfinance.*",
 ]
 ignore_missing_imports = true
+
+# tradingview_screener ships py.typed but does not re-export Query/col from its
+# package __init__, so attr-defined flags every `from tradingview_screener import
+# col, Query`. The names are part of the documented public API; allow the
+# implicit re-export rather than ignoring each import site.
+[[tool.mypy.overrides]]
+module = ["tradingview_screener"]
+implicit_reexport = true

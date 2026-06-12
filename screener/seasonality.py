@@ -17,6 +17,7 @@ from __future__ import annotations
 import calendar
 from dataclasses import dataclass
 from datetime import date
+from typing import cast
 
 import pandas as pd
 from rich.console import Console
@@ -75,7 +76,8 @@ def _monthly_stats(close: pd.Series) -> list[GroupStats]:
     month_end = close.resample("ME").last().dropna()
     monthly_returns = month_end.pct_change().dropna()
     out: list[GroupStats] = []
-    grouped = dict(iter(monthly_returns.groupby(monthly_returns.index.month)))
+    month_idx = cast(pd.DatetimeIndex, monthly_returns.index)
+    grouped = dict(iter(monthly_returns.groupby(month_idx.month)))
     for month in range(1, 13):
         returns = grouped.get(month)
         if returns is None or returns.empty:
@@ -86,7 +88,8 @@ def _monthly_stats(close: pd.Series) -> list[GroupStats]:
 
 def _turn_of_month_stats(close: pd.Series, daily: pd.Series) -> list[GroupStats]:
     marker = pd.Series(0, index=close.index)
-    grouped = marker.groupby(close.index.to_period("M"))
+    close_idx = cast(pd.DatetimeIndex, close.index)
+    grouped = marker.groupby(close_idx.to_period("M"))
     position = grouped.cumcount()
     reverse_position = grouped.cumcount(ascending=False)
     tom_mask = (position < TURN_OF_MONTH_WINDOW) | (
@@ -100,7 +103,8 @@ def _turn_of_month_stats(close: pd.Series, daily: pd.Series) -> list[GroupStats]
 
 
 def _day_of_week_stats(daily: pd.Series) -> list[GroupStats]:
-    grouped = dict(iter(daily.groupby(daily.index.dayofweek)))
+    daily_idx = cast(pd.DatetimeIndex, daily.index)
+    grouped = dict(iter(daily.groupby(daily_idx.dayofweek)))
     out: list[GroupStats] = []
     for day in range(7):
         returns = grouped.get(day)
