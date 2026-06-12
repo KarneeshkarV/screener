@@ -30,6 +30,7 @@ from screener.backtester.core import (
     _resolve_universe,
 )
 from screener.backtester.day_loop import DayLoop
+from screener.backtester.fills import FillModel
 from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
 from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.metrics import compute_metrics, compute_regime_metrics
@@ -264,11 +265,13 @@ def run_rolling_backtest(
     slot_bars: dict[int, pd.DataFrame] = {}
     selection_rows: list[dict] = []
 
+    fill_model = FillModel(cfg)
     day_loop = DayLoop(
         portfolio=portfolio,
         cfg=cfg,
         slot_states=slot_states,
         slot_bars=slot_bars,
+        fill_model=fill_model,
     )
 
     for day in master_dates:
@@ -310,6 +313,7 @@ def run_rolling_backtest(
                     cfg,
                     exit_ast,
                     int(row["rank"]),
+                    fill_model,
                 )
                 if state is None:
                     if warn:
@@ -345,6 +349,7 @@ def run_rolling_backtest(
         cfg=cfg,
         portfolio=portfolio,
         end_ts=end_ts,
+        fill_model=fill_model,
     )
     trades = portfolio.closed_trades()
 

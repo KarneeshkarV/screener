@@ -34,6 +34,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from screener.backtester.core import _SlotState, _close_slot_at_day
+from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig
 from screener.backtester.portfolio import Portfolio
 
@@ -67,11 +68,13 @@ class DayLoop:
         cfg: BacktestConfig,
         slot_states: dict[int, _SlotState | None],
         slot_bars: dict[int, pd.DataFrame],
+        fill_model: FillModel | None = None,
     ) -> None:
         self.portfolio = portfolio
         self.cfg = cfg
         self.slot_states = slot_states
         self.slot_bars = slot_bars
+        self.fill_model = fill_model if fill_model is not None else FillModel(cfg)
 
     def process_exits_for_day(self, day: pd.Timestamp) -> list[FreedSlot]:
         """Run dividends → partial exits → exit checks for every live slot.
@@ -94,6 +97,7 @@ class DayLoop:
                 cfg=self.cfg,
                 portfolio=self.portfolio,
                 slot_states=self.slot_states,
+                fill_model=self.fill_model,
             ):
                 freed.append(FreedSlot(slot_id=slot_id, state=state))
         return freed

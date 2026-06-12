@@ -119,9 +119,10 @@ def _run_event_driven_sim(
     warnings: list[str],
 ) -> None:
     """Chronological event-driven simulator with optional reserve rotation."""
-    from screener.backtester.core import _apply_slip
     from screener.backtester.day_loop import DayLoop
+    from screener.backtester.fills import FillModel
 
+    fill_model = FillModel(cfg)
     slot_states: dict[int, _SlotState | None] = {}
     slot_bars: dict[int, pd.DataFrame] = {}
     reentries_left: dict[int, int] = {}
@@ -142,7 +143,7 @@ def _run_event_driven_sim(
             continue
         signal_idx = int(np.where(mask)[0][-1])
         state, warn = _make_slot_state(
-            ticker, bars, signal_idx, cfg, exit_ast, int(row["rank"])
+            ticker, bars, signal_idx, cfg, exit_ast, int(row["rank"]), fill_model
         )
         if state is None:
             if warn:
@@ -178,6 +179,7 @@ def _run_event_driven_sim(
         cfg=cfg,
         slot_states=slot_states,
         slot_bars=slot_bars,
+        fill_model=fill_model,
     )
 
     for day in master_dates:
@@ -194,7 +196,13 @@ def _run_event_driven_sim(
                     continue
                 new_rank = portfolio._ranks.get(ticker, 0)
                 state, warn = _make_slot_state(
-                    ticker, slot_frame, reentry_signal_idx, cfg, exit_ast, new_rank
+                    ticker,
+                    slot_frame,
+                    reentry_signal_idx,
+                    cfg,
+                    exit_ast,
+                    new_rank,
+                    fill_model,
                 )
                 if state is None:
                     if warn:
@@ -246,6 +254,7 @@ def _run_event_driven_sim(
                     cfg,
                     exit_ast,
                     int(reserve["rank"]),
+                    fill_model,
                 )
                 if state is None:
                     if warn:
@@ -271,10 +280,9 @@ def _run_event_driven_sim(
         if tail.empty:
             continue
         last_bar = tail.iloc[-1]
-        fill = _apply_slip(
-            float(last_bar["close"]),
-            "sell",
-            cfg,
+        fill = fill_model.exit_price(
+            reason="eod",
+            close=float(last_bar["close"]),
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
         )
