@@ -258,6 +258,59 @@ def _simulate_day(
             opened = True
 
 
+def _assemble_results(
+    *,
+    portfolio: Portfolio,
+    master_dates: list[pd.Timestamp],
+    bars_by_tv: dict[str, pd.DataFrame],
+    cfg: BacktestConfig,
+    benchmark: pd.Series,
+    selection_rows: list[dict],
+    warnings: list[str],
+) -> BacktestResult:
+    """Assemble the trade ledger, equity curve, metrics and selection frame."""
+    trades = portfolio.closed_trades()
+
+    date_set: set[pd.Timestamp] = set(master_dates)
+    for trade in trades:
+        frame = bars_by_tv.get(trade.ticker)
+        if frame is None or frame.empty:
+            continue
+        dates = frame.loc[
+            (frame.index >= pd.Timestamp(trade.entry_date))
+            & (frame.index <= pd.Timestamp(trade.exit_date))
+        ].index
+        date_set.update(dates.tolist())
+    calendar = pd.DatetimeIndex(sorted(date_set))
+    equity = build_equity_curve(calendar, trades, bars_by_tv, cfg.initial_capital)
+    benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
+    metrics = compute_metrics(equity, benchmark_aligned, trades, max(cfg.top, 1))
+    metrics["unique_tickers"] = len({trade.ticker for trade in trades})
+    metrics.update(compute_regime_metrics(benchmark, trades))
+
+    selection = pd.DataFrame(
+        selection_rows,
+        columns=[
+            "ticker",
+            "signal_date",
+            "as_of_close",
+            "as_of_volume",
+            "as_of_dollar_vol",
+            "rank",
+            "role",
+        ],
+    )
+    return BacktestResult(
+        config=cfg,
+        trades=trades,
+        equity_curve=equity,
+        benchmark_curve=benchmark_aligned,
+        metrics=metrics,
+        warnings=warnings,
+        selection=selection,
+    )
+
+
 def run_rolling_backtest(
     cfg: BacktestConfig,
     fetcher: PriceFetcher,
@@ -389,45 +442,15 @@ def run_rolling_backtest(
         end_ts=end_ts,
         fill_model=fill_model,
     )
-    trades = portfolio.closed_trades()
 
-    date_set: set[pd.Timestamp] = set(master_dates)
-    for trade in trades:
-        frame = bars_by_tv.get(trade.ticker)
-        if frame is None or frame.empty:
-            continue
-        dates = frame.loc[
-            (frame.index >= pd.Timestamp(trade.entry_date))
-            & (frame.index <= pd.Timestamp(trade.exit_date))
-        ].index
-        date_set.update(dates.tolist())
-    calendar = pd.DatetimeIndex(sorted(date_set))
-    equity = build_equity_curve(calendar, trades, bars_by_tv, cfg.initial_capital)
-    benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
-    metrics = compute_metrics(equity, benchmark_aligned, trades, max(cfg.top, 1))
-    metrics["unique_tickers"] = len({trade.ticker for trade in trades})
-    metrics.update(compute_regime_metrics(benchmark, trades))
-
-    selection = pd.DataFrame(
-        selection_rows,
-        columns=[
-            "ticker",
-            "signal_date",
-            "as_of_close",
-            "as_of_volume",
-            "as_of_dollar_vol",
-            "rank",
-            "role",
-        ],
-    )
-    return BacktestResult(
-        config=cfg,
-        trades=trades,
-        equity_curve=equity,
-        benchmark_curve=benchmark_aligned,
-        metrics=metrics,
+    return _assemble_results(
+        portfolio=portfolio,
+        master_dates=master_dates,
+        bars_by_tv=bars_by_tv,
+        cfg=cfg,
+        benchmark=benchmark,
+        selection_rows=selection_rows,
         warnings=warnings,
-        selection=selection,
     )
 
 
