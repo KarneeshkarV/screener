@@ -1,6 +1,6 @@
 # Plan 002 — Stop caching failed TradingView scans; log silent fallbacks
 
-- **Status:** TODO
+- **Status:** DONE
 - **Written against commit:** `9547d4d` (if HEAD has moved, re-verify every excerpt before editing; on mismatch STOP and report drift)
 - **Category:** correctness / DX
 - **Effort:** M · **Risk of fix:** medium

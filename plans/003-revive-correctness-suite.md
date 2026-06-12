@@ -1,6 +1,6 @@
 # Plan 003 — Revive the correctness-verification test suite branch
 
-- **Status:** TODO
+- **Status:** DONE
 - **Written against commit:** `9547d4d` on `main`
 - **Category:** tests
 - **Effort:** M (was L; most of the work already exists on a branch) · **Risk of fix:** low-medium

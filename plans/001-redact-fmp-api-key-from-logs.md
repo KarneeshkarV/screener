@@ -1,6 +1,6 @@
 # Plan 001 — Redact FMP API key from warning logs
 
-- **Status:** TODO
+- **Status:** DONE
 - **Written against commit:** `9547d4d` (run `git log --oneline -1` — if HEAD has moved, re-verify every excerpt below before editing; if an excerpt no longer matches, STOP and report drift)
 - **Category:** security
 - **Effort:** S · **Risk of fix:** low
