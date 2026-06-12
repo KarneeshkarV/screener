@@ -1,5 +1,5 @@
 import pandas as pd
-from rich.console import Console
+from rich.console import Console, JustifyMethod
 from rich.table import Table
 
 from screener.format import fmt_mcap, fmt_pct
@@ -134,7 +134,7 @@ def print_results(
 
     for col_name in display_cols:
         label = COLUMN_LABELS.get(col_name, col_name)
-        justify = "right" if col_name in RIGHT_ALIGN else "left"
+        justify: JustifyMethod = "right" if col_name in RIGHT_ALIGN else "left"
         if col_name == "name":
             table.add_column(label, justify=justify, min_width=8, no_wrap=True)
         elif col_name == "description":
@@ -204,7 +204,7 @@ def print_garp_results(df: pd.DataFrame, market: str) -> None:
     table = Table(show_header=True, header_style="bold", show_lines=False)
     for col_name in columns:
         label = COLUMN_LABELS.get(col_name, col_name)
-        justify = "right" if col_name in RIGHT_ALIGN else "left"
+        justify: JustifyMethod = "right" if col_name in RIGHT_ALIGN else "left"
         if col_name == "description":
             table.add_column(label, justify=justify, min_width=12, max_width=22)
         elif col_name == "name":
@@ -311,7 +311,7 @@ def print_insider_results(
     table = Table(show_header=True, header_style="bold", show_lines=False)
     for col_name in columns:
         label = _INSIDER_LABELS.get(col_name, COLUMN_LABELS.get(col_name, col_name))
-        justify = (
+        justify: JustifyMethod = (
             "right"
             if col_name not in {"name", "description", "latest_quarter"}
             else "left"
@@ -374,7 +374,7 @@ def print_institutional_results(df: pd.DataFrame) -> None:
     columns = [c for c in _INSTITUTIONAL_COLUMNS if c in df.columns]
     table = Table(show_header=True, header_style="bold", show_lines=False)
     for col_name in columns:
-        justify = "left" if col_name == "symbol" else "right"
+        justify: JustifyMethod = "left" if col_name == "symbol" else "right"
         table.add_column(
             _INSTITUTIONAL_LABELS.get(col_name, col_name),
             justify=justify,

@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, timedelta
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, cast
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
@@ -205,7 +205,7 @@ def score_trend(bars: pd.DataFrame, benchmark_close: pd.Series) -> PillarResult:
             bench_ret = (
                 aligned.iloc[-1, 1] / aligned.iloc[-1 - RS_TREND_WINDOW, 1] - 1.0
             ) * 100.0
-            rel = float(stock_ret - bench_ret)
+            rel = float(cast(Any, stock_ret - bench_ret))
 
     stack_count = int(stack // 10)
     if rel is None:

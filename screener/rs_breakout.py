@@ -13,13 +13,14 @@ import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Iterable, Optional, cast
+from collections.abc import Mapping
+from typing import Any, Iterable, Optional, cast
 
 import numpy as np
 import pandas as pd
 import requests
 from pydantic import BaseModel, ConfigDict, field_validator
-from rich.console import Console
+from rich.console import Console, JustifyMethod
 from rich.table import Table
 
 from screener.backtester.data import PriceFetcher, tv_to_yf
@@ -396,7 +397,9 @@ def previous_completed_week_high_series(bars: pd.DataFrame) -> pd.Series:
         return pd.Series(dtype=float)
     week_key = cast(pd.DatetimeIndex, bars.index).to_period("W-FRI")
     weekly_high = bars["high"].astype(float).groupby(week_key).max()
-    prev_week_high = week_key.map(weekly_high.shift(1))
+    # Index.map accepts a Series as a label->value mapping at runtime; the
+    # stub only lists Mapping/Callable, so cast the Series argument.
+    prev_week_high = week_key.map(cast("Mapping[Any, Any]", weekly_high.shift(1)))
     return pd.Series(
         prev_week_high, index=bars.index, dtype=float, name="previous_week_high"
     )
@@ -466,7 +469,9 @@ def build_signal_frame(
         .shift(1)
     )
     prev_week_high = previous_completed_week_high_series(df)
-    delivery = _delivery_series_for_symbol(delivery_panel, symbol, df.index)
+    delivery = _delivery_series_for_symbol(
+        delivery_panel, symbol, cast(pd.DatetimeIndex, df.index)
+    )
     out = df.copy()
     out["rs_55"] = rs.reindex(df.index)
     out["supertrend_value"] = st.reindex(df.index)
@@ -610,7 +615,7 @@ def _render_bucket(title: str, rows: list[RsBreakoutRow], console: Console) -> N
     table = Table(
         title=f"{title} - {len(rows)} match(es)", show_header=True, header_style="bold"
     )
-    for name, justify in [
+    columns: list[tuple[str, JustifyMethod]] = [
         ("Ticker", "left"),
         ("Close", "right"),
         ("RS55", "right"),
@@ -619,7 +624,8 @@ def _render_bucket(title: str, rows: list[RsBreakoutRow], console: Console) -> N
         ("VolRatio", "right"),
         ("Deliv%", "right"),
         ("PrevDeliv%", "right"),
-    ]:
+    ]
+    for name, justify in columns:
         table.add_column(name, justify=justify)
     for row in rows:
         table.add_row(

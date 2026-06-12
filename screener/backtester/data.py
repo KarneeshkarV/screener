@@ -524,11 +524,12 @@ class FMPPriceFetcher:
                 response.raise_for_status()
                 return response.json()
 
+            empty_payload: object = {}
             payload: object = call_with_resilience(
                 "fmp",
                 f"historical prices {ticker}",
                 request_payload,
-                fallback={},
+                fallback=empty_payload,
             )
             norm = _normalize_fmp_historical(payload, self.auto_adjust)
             merged = _merge_cached(cached, norm)

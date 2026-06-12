@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, cast
 
 import pandas as pd
 import plotly.express as px
@@ -66,7 +66,11 @@ def _monthly_heatmap_html(monthly: pd.DataFrame) -> str:
     rows: list[str] = []
     for year in sorted(pivot.index):
         cells = "".join(
-            _heatmap_cell(pivot.at[year, mon] if mon in pivot.columns else float("nan"))
+            _heatmap_cell(
+                cast(float, pivot.at[year, mon])
+                if mon in pivot.columns
+                else float("nan")
+            )
             for mon in range(1, 13)
         )
         rows.append(f"<tr><th>{html.escape(str(year))}</th>{cells}</tr>")

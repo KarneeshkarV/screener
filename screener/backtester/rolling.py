@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import click
 import numpy as np
@@ -38,7 +39,11 @@ from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.pine import parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.regime import TREND_LABELS, classify_regimes
-from screener.universes import load_current_universe, load_sp500_membership
+from screener.universes import (
+    UniverseName,
+    load_current_universe,
+    load_sp500_membership,
+)
 
 
 @dataclass(frozen=True)
@@ -157,9 +162,11 @@ def _candidate_rows_for_day(
         rows.append(
             {
                 "ticker": ticker,
-                "signal_idx": int(matrices.bar_idx_mat.at[day, ticker]),
-                "as_of_close": float(matrices.close_mat.at[day, ticker]),
-                "as_of_volume": float(matrices.volume_mat.at[day, ticker]),
+                # .at[...] is typed as a broad pandas Scalar union; these cells
+                # are always numeric, so cast to Any before int/float coercion.
+                "signal_idx": int(cast(Any, matrices.bar_idx_mat.at[day, ticker])),
+                "as_of_close": float(cast(Any, matrices.close_mat.at[day, ticker])),
+                "as_of_volume": float(cast(Any, matrices.volume_mat.at[day, ticker])),
                 "as_of_dollar_vol": float(as_of_dollar_vol),
                 "rank": rank,
                 "role": "active",
@@ -758,7 +765,10 @@ def backtest_rolling(
     if tickers:
         ticker_tuple = tuple(t.strip() for t in tickers.split(",") if t.strip())
     elif not universe_file:
-        resolved_universe = universe or ("nifty50" if market == "india" else "sp500")
+        resolved_universe = cast(
+            UniverseName,
+            universe or ("nifty50" if market == "india" else "sp500"),
+        )
         loaded = load_current_universe(
             resolved_universe,
             as_of=end_date,

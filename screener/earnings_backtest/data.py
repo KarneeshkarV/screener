@@ -118,7 +118,8 @@ def _jsonable(value: Any) -> Any:
 def _earnings_to_records(ed: pd.DataFrame) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for idx, row in ed.iterrows():
-        ts = pd.Timestamp(idx).tz_localize(None).normalize()
+        # iterrows() types the index label as Hashable; it is a datetime here.
+        ts = pd.Timestamp(cast(Any, idx)).tz_localize(None).normalize()
         records.append(
             {
                 "earnings_date": ts.date().isoformat(),

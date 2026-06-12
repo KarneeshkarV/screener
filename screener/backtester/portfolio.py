@@ -23,7 +23,7 @@ ticker cannot be opened twice through the legacy API.
 from __future__ import annotations
 
 from datetime import date
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional, cast
 
 import pandas as pd
 
@@ -291,7 +291,7 @@ def build_equity_curve(
                 mtm += trade.shares * trade.entry_price
                 continue
             if day in frame.index:
-                price = float(frame.loc[day, "close"])
+                price = float(cast(Any, frame.loc[day, "close"]))
             else:
                 price = float("nan")
             if pd.isna(price):

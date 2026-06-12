@@ -19,10 +19,13 @@ module attribute. See ``tests/conftest.py`` for the fake adapter.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, TypeVar, cast
 
 from screener.cache import cached_frame_call, cached_json_call
 from screener.resilience import RetryConfig, call_with_resilience
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 T = TypeVar("T")
@@ -90,7 +93,8 @@ class CachedProvider:
 
         if self.spec.kind == "frame":
             # kind == "frame" callers bind T to pd.DataFrame; cached_frame_call
-            # is statically typed to return DataFrame, so narrow it back to T.
+            # works in DataFrames, so cast resilient's Callable[[], T] to the
+            # frame fetch type and the result back to T.
             return cast(
                 T,
                 cached_frame_call(
@@ -98,7 +102,7 @@ class CachedProvider:
                     key_parts,
                     ttl_seconds=ttl,
                     refresh=refresh,
-                    fetch=resilient,
+                    fetch=cast("Callable[[], pd.DataFrame]", resilient),
                 ),
             )
         return cached_json_call(

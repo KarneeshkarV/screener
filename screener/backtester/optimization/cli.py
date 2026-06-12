@@ -7,10 +7,11 @@ import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, ParamSpec, TypeVar
+from typing import cast as type_cast
 
 import click
 
-from screener.backtester.models import BacktestConfig, Trade
+from screener.backtester.models import BacktestConfig, ExitReason, Trade
 from screener.backtester.optimization.grid import grid_search
 from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
 from screener.backtester.optimization.reporting import (
@@ -370,7 +371,10 @@ def _load_trades(path: Path) -> list[Trade]:
                 entry_price=float(row.get("entry_price") or 0.0),
                 exit_date=date.fromisoformat(str(row.get("exit_date"))),
                 exit_price=float(row.get("exit_price") or 0.0),
-                exit_reason=str(row.get("exit_reason") or "time"),
+                # Trade (pydantic) re-validates this Literal at construction.
+                exit_reason=type_cast(
+                    ExitReason, str(row.get("exit_reason") or "time")
+                ),
                 shares=float(row.get("shares") or 0.0),
                 entry_cost=float(row.get("entry_cost") or 0.0),
                 exit_value=float(row.get("exit_value") or 0.0),

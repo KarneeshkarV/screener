@@ -67,7 +67,7 @@ from screener.backtester.optimization.walk_forward import (
     _parameter_stability,
     generate_walk_forward_windows,
 )
-from screener.universes import load_current_universe
+from screener.universes import UniverseName, load_current_universe
 
 DISCLAIMER = (
     "[yellow]Exploration only — approximations; validate with backtest-rolling.\n"
@@ -1598,7 +1598,10 @@ def vbt_sweep(
             if line.strip() and not line.strip().startswith("#")
         ]
     else:
-        resolved_universe = universe or ("nifty50" if market == "india" else "sp500")
+        resolved_universe = cast(
+            UniverseName,
+            universe or ("nifty50" if market == "india" else "sp500"),
+        )
         loaded = load_current_universe(
             resolved_universe,
             as_of=end_date,

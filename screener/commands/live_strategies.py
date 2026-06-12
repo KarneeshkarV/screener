@@ -38,10 +38,10 @@ from screener.backtester.vbt_sweep import (
     build_close_panel,
     build_volume_panel,
 )
-from screener.universes import load_current_universe
+from screener.universes import UniverseName, load_current_universe
 
 
-def _market_to_universe(market: str) -> str:
+def _market_to_universe(market: str) -> UniverseName:
     return "sp500" if market == "us" else "nifty50"
 
 

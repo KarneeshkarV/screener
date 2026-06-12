@@ -11,7 +11,7 @@ from __future__ import annotations
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
-from typing import Optional
+from typing import Any, Optional, cast
 
 from .detector import Event
 from .nse_client import nse_cached_json
@@ -78,7 +78,8 @@ def _as_float(value: object) -> Optional[float]:
     try:
         if value is None:
             return None
-        return float(value)
+        # value is object; the try/except guards non-numeric inputs.
+        return float(cast(Any, value))
     except (TypeError, ValueError):
         return None
 

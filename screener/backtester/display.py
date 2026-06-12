@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
-from rich.console import Console
+from rich.console import Console, JustifyMethod
 from rich.panel import Panel
 from rich.table import Table
 
@@ -113,7 +113,7 @@ def print_backtest(result: BacktestResult) -> None:
         "Return",
         "PnL",
     ]:
-        justify = "right" if col not in {"Ticker", "Reason"} else "left"
+        justify: JustifyMethod = "right" if col not in {"Ticker", "Reason"} else "left"
         ledger.add_column(col, justify=justify)
     for t in sorted(result.trades, key=lambda tr: tr.rank):
         ledger.add_row(

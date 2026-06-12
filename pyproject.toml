@@ -66,7 +66,6 @@ strict = true
 files = ["main.py", "run_pinescript_strategies.py", "screener"]
 exclude = ["tests"]
 disable_error_code = [
-    "arg-type",
     "call-overload",
     "index",
     "no-untyped-call",

@@ -73,7 +73,7 @@ def _first_num(mapping: dict[str, Any], *keys: str) -> float | None:
 
 
 def _pct_change(new: float | None, old: float | None) -> float | None:
-    if new is None or old in (None, 0):
+    if new is None or old is None or old == 0:
         return None
     return ((new - old) / abs(old)) * 100.0
 
@@ -218,10 +218,11 @@ def _india_row(
         else {},
     )
     metrics = {**profit_loss, **ratios}
-    quarterly = (
+    quarterly = cast(
+        dict[str, Any],
         payload.get("quarterly_results")
         if isinstance(payload.get("quarterly_results"), dict)
-        else {}
+        else {},
     )
     expected_q_np = _first_num(
         ratios,

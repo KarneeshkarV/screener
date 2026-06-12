@@ -7,7 +7,7 @@ Alpha/beta use a simple OLS fit via ``numpy.polyfit`` — no sklearn.
 from __future__ import annotations
 
 import math
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 import numpy as np
 import pandas as pd
@@ -143,8 +143,8 @@ def _psr(daily: pd.Series, sr_benchmark_annual: float = 0.0) -> float:
     T = len(daily)
     sr_per = _sharpe(daily) / math.sqrt(TRADING_DAYS_PER_YEAR)
     sr_bench_per = sr_benchmark_annual / math.sqrt(TRADING_DAYS_PER_YEAR)
-    skew = float(daily.skew()) if daily.std(ddof=0) else 0.0
-    kurt_excess = float(daily.kurt()) if daily.std(ddof=0) else 0.0
+    skew = float(cast(Any, daily.skew())) if daily.std(ddof=0) else 0.0
+    kurt_excess = float(cast(Any, daily.kurt())) if daily.std(ddof=0) else 0.0
     denom_sq = 1.0 - skew * sr_per + (kurt_excess / 4.0) * sr_per * sr_per
     denom = math.sqrt(max(denom_sq, 1e-12))
     z = (sr_per - sr_bench_per) * math.sqrt(max(T - 1, 1)) / denom
@@ -254,7 +254,7 @@ def compute_metrics(
         "hit_rate": hit_rate,
         "alpha_annual": alpha,
         "beta": beta,
-        "exposure": _exposure(equity.index, trades, slot_count),
+        "exposure": _exposure(cast(pd.DatetimeIndex, equity.index), trades, slot_count),
         "benchmark_return": bench_return,
         "trade_count": len(trades),
         "invested_return": _invested_return(trades),

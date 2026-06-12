@@ -19,7 +19,7 @@ single ``.shift(1)`` and so compare only bars ``i`` and ``i-1``.
 
 from __future__ import annotations
 
-from typing import Literal, Union
+from typing import Literal, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -243,7 +243,12 @@ class _Parser:
         if tok.kind == "op" and tok.value in {">", ">=", "<", "<=", "==", "!="}:
             self.consume()
             right = self.parse_add()
-            return Compare(op=tok.value, left=left, right=right)
+            # op membership is guarded above; pydantic re-validates the Literal.
+            return Compare(
+                op=cast(Literal[">", ">=", "<", "<=", "==", "!="], tok.value),
+                left=left,
+                right=right,
+            )
         return left
 
     def parse_add(self) -> Node:
@@ -251,7 +256,9 @@ class _Parser:
         while self.peek().kind == "op" and self.peek().value in {"+", "-"}:
             op = self.consume().value
             right = self.parse_mul()
-            left = BinOp(op=op, left=left, right=right)
+            left = BinOp(
+                op=cast(Literal["+", "-", "*", "/"], op), left=left, right=right
+            )
         return left
 
     def parse_mul(self) -> Node:
@@ -259,13 +266,15 @@ class _Parser:
         while self.peek().kind == "op" and self.peek().value in {"*", "/"}:
             op = self.consume().value
             right = self.parse_unary()
-            left = BinOp(op=op, left=left, right=right)
+            left = BinOp(
+                op=cast(Literal["+", "-", "*", "/"], op), left=left, right=right
+            )
         return left
 
     def parse_unary(self) -> Node:
         if self.peek().kind == "op" and self.peek().value in {"+", "-"}:
             op = self.consume().value
-            return UnaryOp(op=op, operand=self.parse_unary())
+            return UnaryOp(op=cast(Literal["-", "+"], op), operand=self.parse_unary())
         return self.parse_primary()
 
     def parse_primary(self) -> Node:

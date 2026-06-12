@@ -266,7 +266,7 @@ def _score_close_near_high(
 
 def compute_buildup_score(
     symbol: str,
-    bars: pd.DataFrame,
+    bars: Optional[pd.DataFrame],
     as_of: date,
     delivery_panel: Optional[pd.DataFrame] = None,
     window: int = DEFAULT_WINDOW,

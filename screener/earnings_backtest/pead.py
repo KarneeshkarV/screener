@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Optional
+from typing import Any, Optional, cast
 
 import pandas as pd
 
@@ -106,7 +106,14 @@ def run_pead_backtest(
     ).date()
 
     price_data = fetch_price_data(
-        event_tickers, earliest, latest, fetcher=fetcher, batch_size=batch_size
+        event_tickers,
+        earliest,
+        latest,
+        # TODO(plan-005): run_pead_backtest accepts the broad PriceFetcher
+        # Protocol but fetch_price_data is typed for YFinancePriceFetcher;
+        # widening fetch_price_data's param is a public-signature change.
+        fetcher=fetcher,  # type: ignore[arg-type]
+        batch_size=batch_size,
     )
     price_data = {k: v for k, v in price_data.items() if not v.empty}
     logger.info("price_data_fetched", extra={"tickers": len(price_data)})
@@ -125,7 +132,7 @@ def run_pead_backtest(
         if post_bars.empty:
             continue
 
-        entry_idx = bars.index.get_indexer([post_bars.index[0]])[0]
+        entry_idx = bars.index.get_indexer(pd.Index([post_bars.index[0]]))[0]
         exit_idx = entry_idx + hold_days - 1
         if exit_idx >= len(bars):
             # Incomplete drift window (e.g. recent earnings): skip
@@ -169,7 +176,10 @@ def compute_pead_summary(
     hold_days: int,
 ) -> dict:
     """Aggregate PEAD drift statistics plus a by-surprise-quintile breakdown."""
-    summary = compute_backtest_summary(trades, strategy="pead")
+    # TODO(plan-005): compute_backtest_summary is typed for list[EarningsTrade]
+    # but only reads fields PeadTrade also has; unifying via a shared Protocol
+    # would change a public signature, so ignore the nominal mismatch.
+    summary = compute_backtest_summary(trades, strategy="pead")  # type: ignore[arg-type]
     summary["min_surprise_pct"] = min_surprise
     summary["hold_days"] = hold_days
     summary["surprise_quintiles"] = surprise_quintiles(trades)
@@ -199,7 +209,7 @@ def surprise_quintiles(trades: list[PeadTrade]) -> dict[str, dict[str, float]]:
 
     out: dict[str, dict[str, float]] = {}
     for bin_id, grp in df.groupby("bin"):
-        out[f"Q{int(bin_id) + 1}"] = {
+        out[f"Q{int(cast(Any, bin_id)) + 1}"] = {
             "trades": int(len(grp)),
             "avg_surprise_pct": round(float(grp["surprise"].mean()), 4),
             "avg_return_pct": round(float(grp["ret"].mean()), 4),
