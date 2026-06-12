@@ -1,6 +1,6 @@
 # Plan 008 — Minor cleanups (rename CLUADE.md, gitignore output dirs, optional [india] extra)
 
-- **Status:** TODO
+- **Status:** DONE
 - **Written against commit:** `9547d4d`
 - **Category:** dx / docs / dependencies
 - **Effort:** S · **Risk of fix:** low (step 3 medium — it changes install behavior)

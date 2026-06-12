@@ -1,6 +1,6 @@
 # Plan 004 — Consolidate duplicate ticker normalization (fixes latent BSE bug)
 
-- **Status:** TODO
+- **Status:** DONE
 - **Written against commit:** `9547d4d` (re-verify excerpts if HEAD moved; on mismatch STOP and report drift)
 - **Category:** tech-debt (with one latent correctness bug)
 - **Effort:** S-M · **Risk of fix:** low-medium

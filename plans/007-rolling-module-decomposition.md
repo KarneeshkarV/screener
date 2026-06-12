@@ -1,6 +1,6 @@
 # Plan 007 — Decompose `run_rolling_backtest` (BLOCKED until plan 003 lands)
 
-- **Status:** BLOCKED (prerequisite: plan 003 merged — the correctness suite is the safety net for this refactor)
+- **Status:** DONE
 - **Written against commit:** `9547d4d`
 - **Category:** tech-debt
 - **Effort:** L · **Risk of fix:** high (behavior-preserving refactor of the hot simulation path)

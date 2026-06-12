@@ -1,6 +1,6 @@
 # Plan 006 — Reject cross-origin requests to the backtest-lab server
 
-- **Status:** TODO
+- **Status:** DONE
 - **Written against commit:** `9547d4d` (re-verify excerpts if HEAD moved)
 - **Category:** security (low severity — defense in depth)
 - **Effort:** S · **Risk of fix:** low

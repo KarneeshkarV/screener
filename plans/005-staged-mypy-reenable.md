@@ -1,6 +1,6 @@
 # Plan 005 — Staged re-enable of disabled mypy error codes
 
-- **Status:** TODO
+- **Status:** DONE
 - **Written against commit:** `9547d4d`
 - **Category:** tech-debt
 - **Effort:** M (staged; each stage is S) · **Risk of fix:** medium
