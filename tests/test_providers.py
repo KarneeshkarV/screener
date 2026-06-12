@@ -65,9 +65,7 @@ def test_resilience_fallback_is_returned_and_cached(tmp_path, monkeypatch):
     def boom() -> dict:
         raise RuntimeError("provider down")
 
-    out = provider.fetch(
-        ("k",), boom, fallback={"fallback": True}, retry=retry
-    )
+    out = provider.fetch(("k",), boom, fallback={"fallback": True}, retry=retry)
     assert out == {"fallback": True}
 
     # The fallback was cached, so a follow-up does not re-invoke the breaker.

@@ -23,6 +23,7 @@ import pandas as pd
 from screener.resilience import call_with_resilience
 
 from .detector import Event
+from .nse_client import is_trading_day
 
 
 CACHE_DIR = Path.home() / ".screener" / "bhavcopy"
@@ -88,9 +89,9 @@ def load_delivery_panel(
     cur = as_of
     earliest = as_of - timedelta(days=history_days)
     while cur >= earliest:
-        if (
-            cur.weekday() < 5
-        ):  # skip weekends locally; jugaad still hits archives though
+        # Skip weekends + known NSE holidays locally; degrades to a weekday-only
+        # check when the holiday set is unavailable (jugaad still hits archives).
+        if is_trading_day(cur):
             day = _load_one_day(cur)
             if day is not None and not day.empty:
                 frames.append(day[day["SYMBOL"].isin(sym_set)])

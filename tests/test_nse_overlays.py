@@ -133,12 +133,9 @@ def test_overlay_option_chain_mutates_and_returns_map(monkeypatch):
 
 def test_fetch_option_chain_rewarms_page_after_nse_reprime(monkeypatch, tmp_path):
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
-    for name in ("session", "primed"):
+    for name in ("session", "primed", "primed_pages"):
         if hasattr(nse_client._tls, name):
             delattr(nse_client._tls, name)
-    for name in ("page_primed", "page_primed_session_id"):
-        if hasattr(option_chain._oc_tls, name):
-            delattr(option_chain._oc_tls, name)
 
     class Resp:
         def __init__(self, status_code: int, payload: dict | None = None) -> None:
@@ -193,6 +190,95 @@ def test_fetch_option_chain_rewarms_page_after_nse_reprime(monkeypatch, tmp_path
         ("option-page", "new"),
         ("api", "new", 1),
     ]
+
+
+def test_extra_prime_page_happens_once_per_thread(monkeypatch):
+    """The extra page is warmed once per thread/session, not per API call."""
+    for name in ("session", "primed", "primed_pages"):
+        if hasattr(nse_client._tls, name):
+            delattr(nse_client._tls, name)
+
+    page_hits = {"n": 0}
+
+    class Resp:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"ok": True}
+
+    class Session:
+        headers: dict = {}
+
+        def get(self, url: str, timeout: float = 10.0):
+            del timeout
+            if url == "https://www.nseindia.com/page":
+                page_hits["n"] += 1
+            return Resp()
+
+    monkeypatch.setattr(nse_client, "_new_session", lambda: Session())
+    monkeypatch.setattr(
+        nse_client, "call_with_resilience", lambda _d, _o, fn, fallback=None: fn()
+    )
+
+    for _ in range(3):
+        out = nse_client.fetch_nse_json(
+            "https://www.nseindia.com/api/x",
+            "x",
+            extra_prime_page="https://www.nseindia.com/page",
+        )
+        assert out == {"ok": True}
+    assert page_hits["n"] == 1  # primed once, reused across all 3 calls
+
+
+def test_fetch_fno_ban_list_uses_primed_session(monkeypatch):
+    from screener.unusual_volume import filters
+
+    captured = {}
+
+    def _fake_fetch_text(url, operation, *, timeout=8.0):
+        captured["url"] = url
+        captured["operation"] = operation
+        return "Securities in Ban For Trade Date 01-JAN-2026:\n1,SAIL\n2,IDEA\n"
+
+    monkeypatch.setattr(filters, "fetch_nse_text", _fake_fetch_text)
+    out = filters.fetch_fno_ban_list()
+    assert out == {"SAIL", "IDEA"}
+    assert captured["url"] == filters.FNO_BAN_URL
+
+
+def test_fetch_fno_ban_list_empty_on_failure(monkeypatch):
+    from screener.unusual_volume import filters
+
+    monkeypatch.setattr(filters, "fetch_nse_text", lambda url, op, timeout=8.0: None)
+    assert filters.fetch_fno_ban_list() == set()
+
+
+# ── trading calendar ───────────────────────────────────────────────────────
+
+
+def test_calendar_walk_back_skips_stubbed_holiday():
+    cal = nse_client.TradingCalendar()
+    # Thu 01-01 + Fri 01-02 are stubbed holidays, Sat 01-03/Sun 01-04 weekends,
+    # so on-or-before Sat 2026-01-03 walks back to Wed 2025-12-31.
+    cal._holidays = {date(2026, 1, 1), date(2026, 1, 2)}
+    assert cal.is_trading_day(date(2026, 1, 1)) is False
+    assert cal.is_trading_day(date(2026, 1, 2)) is False
+    assert cal.is_trading_day(date(2025, 12, 31)) is True
+    got = cal.last_trading_day_on_or_before(date(2026, 1, 3))
+    assert got == date(2025, 12, 31)
+
+
+def test_calendar_degrades_to_weekday_only_when_holiday_fetch_fails(monkeypatch):
+    cal = nse_client.TradingCalendar()
+    monkeypatch.setattr(nse_client, "nse_cached_json", lambda *a, **k: None)
+    # No holidays known -> weekday-only. 2026-01-03 is a Saturday; walk back to
+    # Friday 2026-01-02 (which, holiday-unaware, is treated as a trading day).
+    assert cal._holiday_set() == set()
+    assert cal.is_trading_day(date(2026, 1, 3)) is False  # Saturday
+    assert cal.last_trading_day_on_or_before(date(2026, 1, 3)) == date(2026, 1, 2)
 
 
 # ── FII/DII derivation + broadcast ─────────────────────────────────────────
