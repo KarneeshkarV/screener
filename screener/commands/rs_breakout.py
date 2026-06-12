@@ -141,6 +141,51 @@ def run_rs_breakout_scan(
     )
 
 
+def run_rs_breakout_screen(
+    market: str,
+    *,
+    as_of: date,
+    benchmark: str | None,
+    history_days: int,
+    cache_ttl: float | None,
+    refresh: bool,
+    console: Console,
+    tickers: str | None = None,
+    universe_file: str | None = None,
+    universe_limit: int = 500,
+    fetcher: PriceFetcher | None = None,
+) -> RsBreakoutResult:
+    """Resolve the universe and run the full RS-breakout scan.
+
+    Owns universe resolution + price fetching + scanning, returning the
+    ``RsBreakoutResult`` and leaving rendering/output writes to the caller.
+    Raises ``click.UsageError`` when the resolved universe is empty (matching
+    the standalone command's behaviour).
+    """
+    resolved_benchmark = benchmark or DEFAULT_BENCHMARKS[market]
+    universe = resolve_universe(
+        market,
+        tickers,
+        universe_file,
+        int(universe_limit),
+        cache_ttl=cache_ttl,
+        refresh=refresh,
+    )
+    if not universe:
+        raise click.UsageError("Empty universe: pass --tickers or --universe-file.")
+
+    price_fetcher = fetcher or build_price_fetcher(refresh=refresh)
+    request = RsBreakoutRequest(
+        market=market,
+        as_of=as_of,
+        universe=universe,
+        benchmark=resolved_benchmark,
+        history_days=int(history_days),
+        require_delivery=market == "india",
+    )
+    return run_rs_breakout_scan(request, price_fetcher, console)
+
+
 def write_default_outputs(
     result: RsBreakoutResult,
     market: str,
@@ -233,29 +278,22 @@ def rs_breakout(
     """Screen stocks for RS + SuperTrend + breakout/volume setups."""
     console = Console()
     as_of_date = as_of_arg.date() if isinstance(as_of_arg, datetime) else date.today()
-    resolved_benchmark = benchmark or DEFAULT_BENCHMARKS[market]
     parsed_ttl = parse_ttl(cache_ttl, default=900)
-    universe = resolve_universe(
+
+    fetcher = click.get_current_context().obj
+    result = run_rs_breakout_screen(
         market,
-        tickers,
-        universe_file,
-        int(universe_limit),
+        as_of=as_of_date,
+        benchmark=benchmark,
+        history_days=int(history_days),
         cache_ttl=parsed_ttl,
         refresh=refresh,
+        console=console,
+        tickers=tickers,
+        universe_file=universe_file,
+        universe_limit=int(universe_limit),
+        fetcher=fetcher,
     )
-    if not universe:
-        raise click.UsageError("Empty universe: pass --tickers or --universe-file.")
-
-    fetcher = click.get_current_context().obj or build_price_fetcher(refresh=refresh)
-    request = RsBreakoutRequest(
-        market=market,
-        as_of=as_of_date,
-        universe=universe,
-        benchmark=resolved_benchmark,
-        history_days=int(history_days),
-        require_delivery=market == "india",
-    )
-    result = run_rs_breakout_scan(request, fetcher, console)
     render_result(result, console, limit=int(limit), market=market)
 
     if not no_output_files:

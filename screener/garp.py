@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, cast
 
@@ -609,3 +610,49 @@ def screen_us_garp(
             if _passes_garp(row, US_THRESHOLDS):
                 rows.append(row)
     return add_garp_score(pd.DataFrame(rows)).head(limit)
+
+
+def run_garp_screen(
+    market: str,
+    universe_size: int,
+    *,
+    limit: int,
+    workers: int,
+    cache_ttl: float | None,
+    refresh: bool,
+    on_universe: Callable[[pd.DataFrame], None] = lambda _df: None,
+) -> pd.DataFrame | None:
+    """Run the full GARP pipeline and return the scored results.
+
+    Loads the liquid universe, enriches it with market-specific fundamentals
+    and applies the GARP filter + score. ``on_universe`` is called with the
+    loaded universe before enrichment so the command layer can emit its
+    progress line (and route it to stdout/stderr as needed). Returns ``None``
+    when the base universe scan yields nothing (distinct from an empty result
+    after filtering), leaving rendering to the caller.
+    """
+    universe = load_garp_universe(
+        market,
+        int(universe_size),
+        cache_ttl=cache_ttl,
+        refresh=refresh,
+    )
+    if universe.empty:
+        return None
+
+    on_universe(universe)
+    if market == "india":
+        return screen_india_garp(
+            universe,
+            limit=int(limit),
+            workers=int(workers),
+            cache_ttl=cache_ttl,
+            refresh=refresh,
+        )
+    return screen_us_garp(
+        universe,
+        limit=int(limit),
+        workers=int(workers),
+        cache_ttl=cache_ttl,
+        refresh=refresh,
+    )

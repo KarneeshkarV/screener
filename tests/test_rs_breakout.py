@@ -146,6 +146,36 @@ def test_scan_returns_relaxed_when_price_and_delivery_fail():
     assert {row.symbol for row in result.relaxed} == {"FULL", "RELAX"}
 
 
+def test_run_rs_breakout_screen_offline(monkeypatch):
+    from rich.console import Console
+
+    bars = _trend_bars(100.0, 150.0)
+    bars.iloc[-1, bars.columns.get_loc("volume")] = 160_000.0
+    benchmark = _trend_bars(100.0, 110.0)
+    fetcher = StubPriceFetcher({"AAA.NS": bars, "^NSEI": benchmark})
+
+    monkeypatch.setattr(
+        rs_breakout_cli,
+        "load_india_delivery_for_scan",
+        lambda symbols, as_of: _delivery_panel("AAA", latest=55.0, previous=45.0),
+    )
+
+    result = rs_breakout_cli.run_rs_breakout_screen(
+        "india",
+        as_of=date(2026, 4, 30),
+        benchmark=None,
+        history_days=220,
+        cache_ttl=None,
+        refresh=False,
+        console=Console(),
+        tickers="AAA",
+        fetcher=fetcher,
+    )
+
+    assert result.as_of == date(2026, 4, 30)
+    assert any(row.symbol == "AAA" for row in result.full + result.relaxed)
+
+
 def test_rs_breakout_cli_runs_offline(monkeypatch):
     bars = _trend_bars(100.0, 150.0)
     bars.iloc[-1, bars.columns.get_loc("volume")] = 160_000.0

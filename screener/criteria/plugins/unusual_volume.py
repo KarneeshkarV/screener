@@ -7,9 +7,8 @@ flags, so those screen-level options are ignored on this path. Use the
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
-
-import click
 
 from screener.criteria import criterion
 
@@ -22,11 +21,11 @@ def unusual_volume_pipeline(
     refresh: bool,
     **_: Any,
 ) -> None:
-    from screener.unusual_volume.cli import unusual_volume as unusual_volume_cmd
+    from screener.unusual_volume.cli import run_unusual_volume
 
-    click.get_current_context().invoke(
-        unusual_volume_cmd,
+    run_unusual_volume(
         market=market,
+        as_of=date.today(),
         limit=limit,
         refresh=refresh,
     )

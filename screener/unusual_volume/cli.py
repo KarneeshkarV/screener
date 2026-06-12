@@ -320,13 +320,64 @@ def unusual_volume(
     buildup_min_score: float,
 ) -> None:
     """Detect abnormal trading volume across a market on a given day."""
-    console = Console()
     as_of: date = (
         as_of_arg.date()
         if isinstance(as_of_arg, datetime)
         else (as_of_arg or date.today())
     )
+    run_unusual_volume(
+        market=market,
+        as_of=as_of,
+        tickers=tickers,
+        universe_file=universe_file,
+        min_rvol=min_rvol,
+        min_z=min_z,
+        strength_floor=strength_floor,
+        min_avg_volume=min_avg_volume,
+        min_market_cap=min_market_cap,
+        include_fno_ban=include_fno_ban,
+        deep_india=deep_india,
+        option_chain=option_chain,
+        fii_dii=fii_dii,
+        pledge=pledge,
+        json_path=json_path,
+        md_path=md_path,
+        no_output_files=no_output_files,
+        refresh=refresh,
+        limit=limit,
+        buildup_enabled=buildup_enabled,
+        buildup_window=buildup_window,
+        buildup_min_score=buildup_min_score,
+    )
 
+
+def run_unusual_volume(
+    *,
+    market: str,
+    as_of: date,
+    tickers: Optional[str] = None,
+    universe_file: Optional[str] = None,
+    min_rvol: float = DEFAULT_MIN_RVOL,
+    min_z: float = DEFAULT_MIN_Z,
+    strength_floor: str = "moderate",
+    min_avg_volume: float = _DEFAULT_MIN_AVG_VOLUME,
+    min_market_cap: Optional[float] = None,
+    include_fno_ban: bool = False,
+    deep_india: bool = False,
+    option_chain: bool = False,
+    fii_dii: bool = False,
+    pledge: bool = False,
+    json_path: Optional[str] = None,
+    md_path: Optional[str] = None,
+    no_output_files: bool = False,
+    refresh: bool = False,
+    limit: int = 50,
+    buildup_enabled: bool = False,
+    buildup_window: int = DEFAULT_BUILDUP_WINDOW,
+    buildup_min_score: float = DEFAULT_BUILDUP_MIN,
+) -> None:
+    """Run the unusual-volume scan and render it (no Click context required)."""
+    console = Console()
     universe = _resolve_universe(market, tickers, universe_file)
     if not universe:
         raise click.UsageError("Empty universe — pass --tickers or --universe-file.")

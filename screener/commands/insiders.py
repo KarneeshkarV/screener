@@ -91,6 +91,36 @@ def promoter_buys(
     cache_ttl: str,
 ) -> None:
     """Find stocks where promoter/insider holding has increased."""
+    run_promoter_buys(
+        market=market,
+        universe_size=universe_size,
+        limit=limit,
+        min_change_pct=min_change_pct,
+        min_yf_net_pct=min_yf_net_pct,
+        require_both=require_both,
+        min_market_cap=min_market_cap,
+        workers=workers,
+        output_csv=output_csv,
+        refresh=refresh,
+        cache_ttl=cache_ttl,
+    )
+
+
+def run_promoter_buys(
+    *,
+    market: str,
+    universe_size: int,
+    limit: int,
+    min_change_pct: float,
+    min_yf_net_pct: float | None,
+    require_both: bool,
+    min_market_cap: float | None,
+    workers: int,
+    output_csv: bool,
+    refresh: bool,
+    cache_ttl: str,
+) -> None:
+    """Run the promoter/insider-buying screen (no Click context required)."""
     from tradingview_screener import Query, col
 
     from screener.insiders import (

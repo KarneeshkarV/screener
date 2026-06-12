@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import click
+import pandas as pd
 
 from screener.cache import parse_ttl
 from screener.display import print_csv, print_garp_results
-from screener.garp import load_garp_universe, screen_india_garp, screen_us_garp
+from screener.garp import run_garp_screen
 from screener.scanner import MARKETS
 
 
@@ -46,36 +47,25 @@ def garp(
 ) -> None:
     """Find GARP stocks using market-specific fundamental data."""
     ttl = parse_ttl(cache_ttl, default=86400)
-    universe = load_garp_universe(
+
+    def _announce(universe: pd.DataFrame) -> None:
+        click.echo(
+            f"Universe: {len(universe)} liquid {market.upper()} tickers. Enriching...",
+            err=output_csv,
+        )
+
+    results = run_garp_screen(
         market,
         int(universe_size),
+        limit=int(limit),
+        workers=int(workers),
         cache_ttl=ttl,
         refresh=refresh,
+        on_universe=_announce,
     )
-    if universe.empty:
+    if results is None:
         click.echo("No tickers returned from the base universe scan.")
         return
-
-    click.echo(
-        f"Universe: {len(universe)} liquid {market.upper()} tickers. Enriching...",
-        err=output_csv,
-    )
-    if market == "india":
-        results = screen_india_garp(
-            universe,
-            limit=int(limit),
-            workers=int(workers),
-            cache_ttl=ttl,
-            refresh=refresh,
-        )
-    else:
-        results = screen_us_garp(
-            universe,
-            limit=int(limit),
-            workers=int(workers),
-            cache_ttl=ttl,
-            refresh=refresh,
-        )
 
     if output_csv:
         print_csv(results)

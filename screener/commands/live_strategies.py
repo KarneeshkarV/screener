@@ -189,10 +189,34 @@ def vol_breakout_live(
 
     Sweep winner: ``--market us --window 100 --hold 15``.
     """
-    console = Console()
     as_of = as_of_arg.date() if isinstance(as_of_arg, datetime) else date.today()
+    run_vol_breakout_live(
+        market=market,
+        as_of=as_of,
+        window=window,
+        hold=hold,
+        vol_ma=vol_ma,
+        vol_mult=vol_mult,
+        limit=limit,
+        fetcher=click.get_current_context().obj,
+    )
+
+
+def run_vol_breakout_live(
+    *,
+    market: str,
+    as_of: date,
+    window: int = 100,
+    hold: int = 15,
+    vol_ma: int = DEFAULT_VOL_MA_WINDOW,
+    vol_mult: float = DEFAULT_VOL_MULTIPLIER,
+    limit: int = 30,
+    fetcher: PriceFetcher | None = None,
+) -> None:
+    """Run the vol-breakout live screen (no Click context required)."""
+    console = Console()
     lookback = max(window, vol_ma) * 3 + 30
-    fetcher = click.get_current_context().obj or build_price_fetcher()
+    fetcher = fetcher or build_price_fetcher()
     close, volume, yf_to_tv = _load_panels(
         market, as_of, lookback_days=lookback, fetcher=fetcher
     )
@@ -288,10 +312,28 @@ def obv_trend_live(
 
     Sweep winner: ``--market india --ema-window 20``.
     """
-    console = Console()
     as_of = as_of_arg.date() if isinstance(as_of_arg, datetime) else date.today()
+    run_obv_trend_live(
+        market=market,
+        as_of=as_of,
+        ema_window=ema_window,
+        limit=limit,
+        fetcher=click.get_current_context().obj,
+    )
+
+
+def run_obv_trend_live(
+    *,
+    market: str,
+    as_of: date,
+    ema_window: int = 20,
+    limit: int = 30,
+    fetcher: PriceFetcher | None = None,
+) -> None:
+    """Run the obv-trend live screen (no Click context required)."""
+    console = Console()
     lookback = ema_window * 5 + 30
-    fetcher = click.get_current_context().obj or build_price_fetcher()
+    fetcher = fetcher or build_price_fetcher()
     close, volume, yf_to_tv = _load_panels(
         market, as_of, lookback_days=lookback, fetcher=fetcher
     )
