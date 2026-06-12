@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from collections.abc import Callable
 from threading import Lock
@@ -14,6 +15,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 LOG = logging.getLogger(__name__)
 T = TypeVar("T")
+
+_SECRET_PARAM_RE = re.compile(r"(?i)\b(apikey|api_key|token|auth)=([^&\s\"']+)")
+
+
+def redact_secrets(text: str) -> str:
+    """Mask credential-bearing query parameters in log/error text."""
+    return _SECRET_PARAM_RE.sub(r"\1=***", text)
 
 
 class RetryConfig(BaseModel):
@@ -121,6 +129,6 @@ def call_with_resilience(
         provider,
         operation,
         max(1, config.attempts),
-        last_exc,
+        redact_secrets(str(last_exc)),
     )
     return fallback
