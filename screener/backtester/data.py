@@ -524,7 +524,7 @@ class FMPPriceFetcher:
                 response.raise_for_status()
                 return response.json()
 
-            payload = call_with_resilience(
+            payload: object = call_with_resilience(
                 "fmp",
                 f"historical prices {ticker}",
                 request_payload,

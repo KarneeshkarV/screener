@@ -100,7 +100,9 @@ def screen(
     run_id = history.save_run(market, label, total, df)
     prev = history.previous_run(market, label, before_id=run_id)
     if prev is None:
-        added, removed, first_run = [], [], True
+        added: list[str] = []
+        removed: list[str] = []
+        first_run = True
     else:
         added, removed = history.diff(df, prev)
         first_run = False

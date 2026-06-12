@@ -1,6 +1,7 @@
 import logging
 import math
 import re
+from typing import Any
 
 from tradingview_screener import Query
 import pandas as pd
@@ -65,7 +66,7 @@ def get_scanner_data_cached(
     meta_path = cache_path("tradingview_scanner", key, "json")
     if not refresh and all_fresh((frame_path, meta_path), cache_ttl):
         cached = read_frame(frame_path)
-        meta = read_json(meta_path, default={}) or {}
+        meta: dict[str, Any] = read_json(meta_path, default={}) or {}
         if cached is not None:
             return int(meta.get("count", 0)), cached
 
