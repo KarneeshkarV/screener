@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, cast
 
@@ -12,7 +13,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
 from screener.cache import cached_json_call
-from screener.resilience import call_with_resilience
+from screener.providers import CachedProvider, ProviderSpec
 from screener.scanner import scan
 
 
@@ -21,6 +22,12 @@ US_MIN_USD = 1_000_000_000.0
 
 _FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
 _FMP_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; screener-cli/1.0)"}
+
+# FMP US fundamentals: 24h cache, "fmp" circuit breaker. ``cache_ttl`` is
+# overridden per-call below to honour the screen's --cache-ttl flag.
+_FMP_US_PROVIDER = CachedProvider(
+    ProviderSpec(provider="fmp", namespace="garp_fmp_us", ttl_seconds=86400)
+)
 
 
 class GarpThresholds(BaseModel):
@@ -386,37 +393,32 @@ def _fmp_get(path: str, params: dict[str, Any], api_key: str) -> Any:
 
 
 def _fetch_fmp_us_sections(symbol: str, api_key: str) -> dict[str, Any] | None:
-    def _request() -> dict[str, Any] | None:
-        return {
-            "profile": _fmp_get(f"profile/{symbol}", {}, api_key),
-            "ratios_ttm": _fmp_get(f"ratios-ttm/{symbol}", {}, api_key),
-            "income_annual": _fmp_get(
-                f"income-statement/{symbol}",
-                {"period": "annual", "limit": 5},
-                api_key,
-            ),
-            "balance_annual": _fmp_get(
-                f"balance-sheet-statement/{symbol}",
-                {"period": "annual", "limit": 5},
-                api_key,
-            ),
-            "income_quarterly": _fmp_get(
-                f"income-statement/{symbol}",
-                {"period": "quarter", "limit": 5},
-                api_key,
-            ),
-            # FMP sorts estimates descending by date (farthest future first),
-            # so a small limit would drop the nearest upcoming quarter.
-            "estimates_quarterly": _fmp_get(
-                f"analyst-estimates/{symbol}",
-                {"period": "quarter", "limit": 40},
-                api_key,
-            ),
-        }
-
-    return call_with_resilience(
-        "fmp", f"garp fundamentals {symbol}", _request, fallback=None
-    )
+    return {
+        "profile": _fmp_get(f"profile/{symbol}", {}, api_key),
+        "ratios_ttm": _fmp_get(f"ratios-ttm/{symbol}", {}, api_key),
+        "income_annual": _fmp_get(
+            f"income-statement/{symbol}",
+            {"period": "annual", "limit": 5},
+            api_key,
+        ),
+        "balance_annual": _fmp_get(
+            f"balance-sheet-statement/{symbol}",
+            {"period": "annual", "limit": 5},
+            api_key,
+        ),
+        "income_quarterly": _fmp_get(
+            f"income-statement/{symbol}",
+            {"period": "quarter", "limit": 5},
+            api_key,
+        ),
+        # FMP sorts estimates descending by date (farthest future first),
+        # so a small limit would drop the nearest upcoming quarter.
+        "estimates_quarterly": _fmp_get(
+            f"analyst-estimates/{symbol}",
+            {"period": "quarter", "limit": 40},
+            api_key,
+        ),
+    }
 
 
 def _fetch_fmp_us_cached(
@@ -426,12 +428,13 @@ def _fetch_fmp_us_cached(
     cache_ttl: float | None,
     refresh: bool,
 ) -> dict[str, Any] | None:
-    return cached_json_call(
-        "garp_fmp_us",
+    return _FMP_US_PROVIDER.fetch(
         ("us", symbol),
-        ttl_seconds=cache_ttl,
+        lambda: _fetch_fmp_us_sections(symbol, api_key),
         refresh=refresh,
-        fetch=lambda: _fetch_fmp_us_sections(symbol, api_key),
+        fallback=None,
+        ttl_seconds=cache_ttl,
+        operation=f"garp fundamentals {symbol}",
     )
 
 
@@ -607,3 +610,49 @@ def screen_us_garp(
             if _passes_garp(row, US_THRESHOLDS):
                 rows.append(row)
     return add_garp_score(pd.DataFrame(rows)).head(limit)
+
+
+def run_garp_screen(
+    market: str,
+    universe_size: int,
+    *,
+    limit: int,
+    workers: int,
+    cache_ttl: float | None,
+    refresh: bool,
+    on_universe: Callable[[pd.DataFrame], None] = lambda _df: None,
+) -> pd.DataFrame | None:
+    """Run the full GARP pipeline and return the scored results.
+
+    Loads the liquid universe, enriches it with market-specific fundamentals
+    and applies the GARP filter + score. ``on_universe`` is called with the
+    loaded universe before enrichment so the command layer can emit its
+    progress line (and route it to stdout/stderr as needed). Returns ``None``
+    when the base universe scan yields nothing (distinct from an empty result
+    after filtering), leaving rendering to the caller.
+    """
+    universe = load_garp_universe(
+        market,
+        int(universe_size),
+        cache_ttl=cache_ttl,
+        refresh=refresh,
+    )
+    if universe.empty:
+        return None
+
+    on_universe(universe)
+    if market == "india":
+        return screen_india_garp(
+            universe,
+            limit=int(limit),
+            workers=int(workers),
+            cache_ttl=cache_ttl,
+            refresh=refresh,
+        )
+    return screen_us_garp(
+        universe,
+        limit=int(limit),
+        workers=int(workers),
+        cache_ttl=cache_ttl,
+        refresh=refresh,
+    )

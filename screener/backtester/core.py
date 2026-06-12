@@ -11,22 +11,23 @@ import numpy as np
 import pandas as pd
 
 from screener.backtester.data import PriceFetcher
+from screener.backtester.fills import FillModel
+from screener.backtester.fills import (  # noqa: F401  (re-export compat shims)
+    _resolve_entry_fill,
+    _resolve_stop_fill,
+    _resolve_target_fill,
+    _slippage_factor,
+)
 from screener.backtester.models import BacktestConfig, ExitReason, Trade
 from screener.backtester.pine import PineError, evaluate
 from screener.backtester.portfolio import Portfolio
-from screener.backtester.slippage import Side, apply_slippage
+from screener.backtester.slippage import Side
 
 
 @dataclass(frozen=True)
 class _SimOutcome:
     trade: Optional[Trade]
     warning: Optional[str]
-
-
-def _slippage_factor(bps: float, buy: bool) -> float:
-    """Legacy helper kept for backwards compatibility."""
-    delta = bps / 10_000.0
-    return 1.0 + delta if buy else 1.0 - delta
 
 
 def _apply_slip(
@@ -38,17 +39,13 @@ def _apply_slip(
     adv_shares: float = 0.0,
     sigma_daily: float = 0.0,
 ) -> float:
-    """Run ``cfg.slippage_model`` over a reference price."""
-    model = cfg.slippage_model
-    if model is None:
-        return ref_price * _slippage_factor(cfg.slippage_bps, buy=(side == "buy"))
-    return apply_slippage(
-        model,
-        ref_price,
-        side,
-        shares=shares,
-        adv=adv_shares,
-        sigma_daily=sigma_daily,
+    """Backward-compatible shim routing through :class:`FillModel`.
+
+    Retained because :mod:`screener.backtester.historical` imports it; new code
+    should call :meth:`FillModel.exit_price` / :meth:`FillModel.entry_price`.
+    """
+    return FillModel(cfg)._apply_slip(
+        ref_price, side, shares=shares, adv_shares=adv_shares, sigma_daily=sigma_daily
     )
 
 
@@ -127,36 +124,6 @@ class _SlotState:
     partial_fired: list[bool] = field(default_factory=list)
 
 
-def _resolve_entry_fill(
-    bars: pd.DataFrame,
-    signal_idx: int,
-    cfg: BacktestConfig,
-) -> tuple[Optional[int], Optional[float], Optional[str]]:
-    """Resolve entry bar index and reference fill price from order settings."""
-    if signal_idx + 1 >= len(bars):
-        return None, None, "no post-signal entry bar"
-    order = cfg.entry_order_type
-    if order == "moo":
-        entry_idx = signal_idx + 1
-        return entry_idx, float(bars.iloc[entry_idx]["open"]), None
-    if order == "moc":
-        entry_idx = signal_idx + 1
-        return entry_idx, float(bars.iloc[entry_idx]["close"]), None
-    if order == "limit":
-        if cfg.entry_limit_bps is None:
-            return None, None, "limit order requires entry_limit_bps"
-        signal_close = float(bars.iloc[signal_idx]["close"])
-        limit_price = signal_close * (1.0 - cfg.entry_limit_bps / 10_000.0)
-        for i in range(signal_idx + 1, len(bars)):
-            bar = bars.iloc[i]
-            low = float(bar["low"])
-            if low <= limit_price:
-                ref = min(float(bar["open"]), limit_price)
-                return i, ref, None
-        return None, None, "limit order never filled in available window"
-    return None, None, f"unknown entry_order_type: {order}"
-
-
 def _make_slot_state(
     ticker: str,
     bars: pd.DataFrame,
@@ -164,15 +131,16 @@ def _make_slot_state(
     cfg: BacktestConfig,
     exit_ast,
     rank: int,
+    fill_model: Optional[FillModel] = None,
 ) -> tuple[Optional[_SlotState], Optional[str]]:
     """Build the per-slot state used by both historical and rolling flows."""
-    entry_idx, entry_ref, entry_warn = _resolve_entry_fill(bars, signal_idx, cfg)
-    if entry_idx is None or entry_ref is None:
-        return None, entry_warn
+    fills = fill_model if fill_model is not None else FillModel(cfg)
     adv_shares, sigma_daily = _trailing_liquidity(bars, signal_idx)
-    entry_fill = _apply_slip(
-        entry_ref, "buy", cfg, adv_shares=adv_shares, sigma_daily=sigma_daily
+    entry_idx, entry_fill, entry_warn = fills.entry_price(
+        bars, signal_idx, adv_shares=adv_shares, sigma_daily=sigma_daily
     )
+    if entry_idx is None or entry_fill is None:
+        return None, entry_warn
     exit_signal = None
     if exit_ast is not None:
         try:
@@ -208,20 +176,6 @@ def _make_slot_state(
     )
 
 
-def _resolve_stop_fill(bar_open: float, stop_ref: float, gap_fills: bool) -> float:
-    """Reference price for a gap-aware stop-loss fill."""
-    if gap_fills and bar_open <= stop_ref:
-        return bar_open
-    return stop_ref
-
-
-def _resolve_target_fill(bar_open: float, target_ref: float, gap_fills: bool) -> float:
-    """Reference price for a gap-aware take-profit fill."""
-    if gap_fills and bar_open >= target_ref:
-        return bar_open
-    return target_ref
-
-
 def _maybe_credit_dividends(
     portfolio: Portfolio,
     state: _SlotState,
@@ -247,6 +201,7 @@ def _fire_partial_exits_at_bar(
     i: int,
     cfg: BacktestConfig,
     portfolio: Portfolio,
+    fill_model: FillModel,
 ) -> None:
     """Close configured partial-exit tranches if their target prices trade."""
     if not state.partial_targets:
@@ -261,11 +216,10 @@ def _fire_partial_exits_at_bar(
     for tier_idx, target_price in enumerate(state.partial_targets):
         if state.partial_fired[tier_idx] or high < target_price:
             continue
-        ref = _resolve_target_fill(bar_open, target_price, cfg.gap_fills)
-        fill = _apply_slip(
-            ref,
-            "sell",
-            cfg,
+        fill = fill_model.exit_price(
+            reason="target",
+            bar_open=bar_open,
+            level=target_price,
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
         )
@@ -287,6 +241,7 @@ def _check_exit_at_bar(
     bars: pd.DataFrame,
     i: int,
     cfg: BacktestConfig,
+    fill_model: FillModel,
 ) -> Optional[tuple[float, ExitReason]]:
     """Evaluate exit rules for ``state`` at ``bars[i]``."""
     bar = bars.iloc[i]
@@ -300,43 +255,32 @@ def _check_exit_at_bar(
     target_hit = state.target_ref is not None and high >= state.target_ref
     trail_hit = trail_ref is not None and low <= trail_ref
 
-    def _slip_sell(ref: float) -> float:
-        return _apply_slip(
-            ref,
-            "sell",
-            cfg,
+    def _sell(reason: ExitReason, level: Optional[float] = None) -> float:
+        return fill_model.exit_price(
+            reason=reason,
+            bar_open=bar_open,
+            level=level,
+            close=close,
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
         )
 
     if stop_hit and target_hit:
-        return (
-            _slip_sell(_resolve_stop_fill(bar_open, state.stop_ref, cfg.gap_fills)),
-            "stop",
-        )
+        return _sell("stop", state.stop_ref), "stop"
     if stop_hit:
-        return (
-            _slip_sell(_resolve_stop_fill(bar_open, state.stop_ref, cfg.gap_fills)),
-            "stop",
-        )
+        return _sell("stop", state.stop_ref), "stop"
     if trail_hit:
-        return (
-            _slip_sell(_resolve_stop_fill(bar_open, trail_ref, cfg.gap_fills)),
-            "trail",
-        )
+        return _sell("trail", trail_ref), "trail"
     if target_hit:
-        return (
-            _slip_sell(_resolve_target_fill(bar_open, state.target_ref, cfg.gap_fills)),
-            "target",
-        )
+        return _sell("target", state.target_ref), "target"
 
     if high > state.peak:
         state.peak = high
 
     if state.exit_signal is not None and bool(state.exit_signal.iloc[i]):
-        return _slip_sell(close), "exit_expr"
+        return _sell("exit_expr"), "exit_expr"
     if i >= state.hold_limit_idx:
-        return _slip_sell(close), "time"
+        return _sell("time"), "time"
     return None
 
 
@@ -347,14 +291,21 @@ def simulate_ticker(
     exit_ast=None,
 ) -> _SimOutcome:
     """Simulate a single long-only trade starting from the bar after ``signal_idx``."""
+    fill_model = FillModel(cfg)
     state, warning = _make_slot_state(
-        ticker="", bars=bars, signal_idx=signal_idx, cfg=cfg, exit_ast=exit_ast, rank=0
+        ticker="",
+        bars=bars,
+        signal_idx=signal_idx,
+        cfg=cfg,
+        exit_ast=exit_ast,
+        rank=0,
+        fill_model=fill_model,
     )
     if state is None:
         return _SimOutcome(trade=None, warning=warning)
 
     for i in range(state.entry_idx + 1, len(bars)):
-        exit_ = _check_exit_at_bar(state, bars, i, cfg)
+        exit_ = _check_exit_at_bar(state, bars, i, cfg, fill_model)
         if exit_ is not None:
             fill, reason = exit_
             return _SimOutcome(
@@ -370,10 +321,9 @@ def simulate_ticker(
             )
 
     last_bar = bars.iloc[-1]
-    fill = _apply_slip(
-        float(last_bar["close"]),
-        "sell",
-        cfg,
+    fill = fill_model.exit_price(
+        reason="eod",
+        close=float(last_bar["close"]),
         adv_shares=state.adv_shares,
         sigma_daily=state.sigma_daily,
     )
@@ -583,6 +533,7 @@ def _close_slot_at_day(
     cfg: BacktestConfig,
     portfolio: Portfolio,
     slot_states: dict[int, Optional[_SlotState]],
+    fill_model: FillModel,
 ) -> bool:
     """Process one slot for a day. Returns True when the slot becomes free."""
     if day not in bars.index:
@@ -593,11 +544,11 @@ def _close_slot_at_day(
     if i < state.entry_idx + 1:
         return False
     _maybe_credit_dividends(portfolio, state, bars, i, cfg)
-    _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio)
+    _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio, fill_model)
     if portfolio.get_position(state.ticker) is None:
         slot_states[slot_id] = None
         return True
-    exit_ = _check_exit_at_bar(state, bars, i, cfg)
+    exit_ = _check_exit_at_bar(state, bars, i, cfg, fill_model)
     if exit_ is None:
         return False
     fill, reason = exit_
@@ -619,6 +570,7 @@ def _force_close_open_slots(
     cfg: BacktestConfig,
     portfolio: Portfolio,
     end_ts: pd.Timestamp,
+    fill_model: FillModel,
 ) -> None:
     for slot_id, state in list(slot_states.items()):
         if state is None:
@@ -630,10 +582,9 @@ def _force_close_open_slots(
         if tail.empty:
             continue
         last_bar = tail.iloc[-1]
-        fill = _apply_slip(
-            float(last_bar["close"]),
-            "sell",
-            cfg,
+        fill = fill_model.exit_price(
+            reason="eod",
+            close=float(last_bar["close"]),
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
         )

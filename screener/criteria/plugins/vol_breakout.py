@@ -7,9 +7,8 @@ match. Use ``screen -c vol-breakout -m us`` for the configured combo.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
-
-import click
 
 from screener.criteria import criterion
 
@@ -21,10 +20,10 @@ def vol_breakout_pipeline(
     limit: int,
     **_: Any,
 ) -> None:
-    from screener.commands.live_strategies import vol_breakout_live
+    from screener.commands.live_strategies import run_vol_breakout_live
 
-    click.get_current_context().invoke(
-        vol_breakout_live,
+    run_vol_breakout_live(
         market=market,
+        as_of=date.today(),
         limit=limit,
     )

@@ -7,9 +7,8 @@ its EMA). Use ``screen -c obv-trend -m india`` for the configured combo.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
-
-import click
 
 from screener.criteria import criterion
 
@@ -21,10 +20,10 @@ def obv_trend_pipeline(
     limit: int,
     **_: Any,
 ) -> None:
-    from screener.commands.live_strategies import obv_trend_live
+    from screener.commands.live_strategies import run_obv_trend_live
 
-    click.get_current_context().invoke(
-        obv_trend_live,
+    run_obv_trend_live(
         market=market,
+        as_of=date.today(),
         limit=limit,
     )

@@ -14,13 +14,23 @@ from typing import Iterable, Optional
 import pandas as pd
 from tradingview_screener import Query, col
 
-from screener.cache import cached_frame_call
-from screener.resilience import call_with_resilience
+from screener.providers import CachedProvider, ProviderSpec
 
 from .detector import Event
 
 
 _TV_MARKETS = {"us": "america", "india": "india"}
+
+# TradingView sector/market-cap enrichment: 24h parquet cache, "tradingview"
+# circuit breaker.
+_TV_SECTOR_PROVIDER = CachedProvider(
+    ProviderSpec(
+        provider="tradingview",
+        namespace="tradingview_sector",
+        ttl_seconds=86400,
+        kind="frame",
+    )
+)
 
 
 def fetch_sector_map(
@@ -42,17 +52,13 @@ def fetch_sector_map(
         .where(col("name").isin(syms))
         .limit(len(syms) + 50)
     )
-    df = cached_frame_call(
-        "tradingview_sector",
+    df = _TV_SECTOR_PROVIDER.fetch(
         ("sector_enrichment", market, syms),
-        ttl_seconds=cache_ttl,
+        lambda: query.get_scanner_data()[1],
         refresh=refresh,
-        fetch=lambda: call_with_resilience(
-            "tradingview",
-            "sector enrichment",
-            lambda: query.get_scanner_data()[1],
-            fallback=pd.DataFrame(),
-        ),
+        fallback=pd.DataFrame(),
+        ttl_seconds=cache_ttl,
+        operation="sector enrichment",
     )
     out: dict[str, dict] = {}
     if df is None or df.empty:

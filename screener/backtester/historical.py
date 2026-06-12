@@ -119,13 +119,10 @@ def _run_event_driven_sim(
     warnings: list[str],
 ) -> None:
     """Chronological event-driven simulator with optional reserve rotation."""
-    from screener.backtester.core import (
-        _apply_slip,
-        _check_exit_at_bar,
-        _fire_partial_exits_at_bar,
-        _maybe_credit_dividends,
-    )
+    from screener.backtester.day_loop import DayLoop
+    from screener.backtester.fills import FillModel
 
+    fill_model = FillModel(cfg)
     slot_states: dict[int, _SlotState | None] = {}
     slot_bars: dict[int, pd.DataFrame] = {}
     reentries_left: dict[int, int] = {}
@@ -146,7 +143,7 @@ def _run_event_driven_sim(
             continue
         signal_idx = int(np.where(mask)[0][-1])
         state, warn = _make_slot_state(
-            ticker, bars, signal_idx, cfg, exit_ast, int(row["rank"])
+            ticker, bars, signal_idx, cfg, exit_ast, int(row["rank"]), fill_model
         )
         if state is None:
             if warn:
@@ -177,6 +174,14 @@ def _run_event_driven_sim(
                 day_set.add(current_day)
     master_dates = sorted(day_set)
 
+    day_loop = DayLoop(
+        portfolio=portfolio,
+        cfg=cfg,
+        slot_states=slot_states,
+        slot_bars=slot_bars,
+        fill_model=fill_model,
+    )
+
     for day in master_dates:
         if pending_reentry:
             for slot_id, ticker in list(pending_reentry.items()):
@@ -191,7 +196,13 @@ def _run_event_driven_sim(
                     continue
                 new_rank = portfolio._ranks.get(ticker, 0)
                 state, warn = _make_slot_state(
-                    ticker, slot_frame, reentry_signal_idx, cfg, exit_ast, new_rank
+                    ticker,
+                    slot_frame,
+                    reentry_signal_idx,
+                    cfg,
+                    exit_ast,
+                    new_rank,
+                    fill_model,
                 )
                 if state is None:
                     if warn:
@@ -208,45 +219,14 @@ def _run_event_driven_sim(
                 slot_states[slot_id] = state
                 del pending_reentry[slot_id]
 
+        freed_slots = day_loop.process_exits_for_day(day)
         freed: list[int] = []
-        for slot_id, state in list(slot_states.items()):
-            if state is None:
-                continue
-            bars = slot_bars[slot_id]
-            if day not in bars.index:
-                continue
-            i = bars.index.get_loc(day)
-            if (
-                isinstance(i, slice)
-                or not isinstance(i, int)
-                or i < state.entry_idx + 1
-            ):
-                continue
-            _maybe_credit_dividends(portfolio, state, bars, i, cfg)
-            _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio)
-            if portfolio.get_position(state.ticker) is None:
-                slot_states[slot_id] = None
-                freed.append(slot_id)
-                if cfg.allow_reentry and reentries_left.get(slot_id, 0) > 0:
-                    reentries_left[slot_id] -= 1
-                    pending_reentry[slot_id] = state.ticker
-                continue
-            exit_ = _check_exit_at_bar(state, bars, i, cfg)
-            if exit_ is None:
-                continue
-            fill, reason = exit_
-            portfolio.close(
-                ticker=state.ticker,
-                exit_date=day.date(),
-                exit_price=fill,
-                reason=reason,
-                commission_bps=cfg.commission_bps,
-            )
-            slot_states[slot_id] = None
+        for freed_slot in freed_slots:
+            slot_id = freed_slot.slot_id
             freed.append(slot_id)
             if cfg.allow_reentry and reentries_left.get(slot_id, 0) > 0:
                 reentries_left[slot_id] -= 1
-                pending_reentry[slot_id] = state.ticker
+                pending_reentry[slot_id] = freed_slot.state.ticker
 
         if not cfg.reinvest or not freed:
             continue
@@ -274,6 +254,7 @@ def _run_event_driven_sim(
                     cfg,
                     exit_ast,
                     int(reserve["rank"]),
+                    fill_model,
                 )
                 if state is None:
                     if warn:
@@ -299,10 +280,9 @@ def _run_event_driven_sim(
         if tail.empty:
             continue
         last_bar = tail.iloc[-1]
-        fill = _apply_slip(
-            float(last_bar["close"]),
-            "sell",
-            cfg,
+        fill = fill_model.exit_price(
+            reason="eod",
+            close=float(last_bar["close"]),
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
         )

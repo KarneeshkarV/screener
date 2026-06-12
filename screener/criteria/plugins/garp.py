@@ -6,7 +6,15 @@ from typing import Any
 
 import click
 
+from screener.cache import parse_ttl
 from screener.criteria import criterion
+from screener.display import print_csv, print_garp_results
+from screener.garp import run_garp_screen
+
+# Screen-context defaults for options the generic ``screen`` command does not
+# expose (the standalone ``garp`` command's own defaults).
+_DEFAULT_UNIVERSE_SIZE = 200
+_DEFAULT_WORKERS = 8
 
 
 @criterion("garp", pipeline=True)
@@ -19,13 +27,28 @@ def garp_pipeline(
     cache_ttl: str,
     **_: Any,
 ) -> None:
-    from screener.commands.garp import garp as garp_cmd
+    ttl = parse_ttl(cache_ttl, default=86400)
 
-    click.get_current_context().invoke(
-        garp_cmd,
-        market=market,
-        limit=limit,
-        output_csv=output_csv,
+    def _announce(universe: Any) -> None:
+        click.echo(
+            f"Universe: {len(universe)} liquid {market.upper()} tickers. Enriching...",
+            err=output_csv,
+        )
+
+    results = run_garp_screen(
+        market,
+        _DEFAULT_UNIVERSE_SIZE,
+        limit=int(limit),
+        workers=_DEFAULT_WORKERS,
+        cache_ttl=ttl,
         refresh=refresh,
-        cache_ttl=cache_ttl,
+        on_universe=_announce,
     )
+    if results is None:
+        click.echo("No tickers returned from the base universe scan.")
+        return
+
+    if output_csv:
+        print_csv(results)
+        return
+    print_garp_results(results, market)

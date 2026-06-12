@@ -33,6 +33,7 @@ import pandas as pd
 
 from screener.logging_config import get_logger
 from screener.resilience import call_with_resilience
+from screener.unusual_volume.nse_client import is_trading_day
 
 log = get_logger(__name__)
 
@@ -51,9 +52,15 @@ def latest_trading_day(d: date, *, lookback: int = TRADING_DAY_LOOKBACK) -> date
     the file for a Sunday silently returns Friday's CSV. We therefore parse
     the DATE1 column to learn the *actual* trading day represented by the
     bytes we got back, and trust that, rather than the URL date.
+
+    The trading-calendar gates candidate dates (skipping known NSE holidays
+    cheaply before we hit the network); when the holiday set is unavailable it
+    degrades to the original weekday/walk-back behaviour.
     """
     for delta in range(lookback + 1):
         candidate = d - timedelta(days=delta)
+        if not is_trading_day(candidate):
+            continue
         try:
             df = _read_cash_bhavcopy_raw(candidate)
         except (OSError, RuntimeError, FileNotFoundError, pd.errors.ParserError) as exc:

@@ -21,7 +21,6 @@ from screener.backtester.cli_common import (
 )
 from screener.backtester.core import (
     _active_or_pending_tickers,
-    _close_slot_at_day,
     _SlotState,
     _force_close_open_slots,
     _make_slot_state,
@@ -30,6 +29,8 @@ from screener.backtester.core import (
     _prepare_strategy_bars,
     _resolve_universe,
 )
+from screener.backtester.day_loop import DayLoop
+from screener.backtester.fills import FillModel
 from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
 from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.metrics import compute_metrics, compute_regime_metrics
@@ -264,23 +265,23 @@ def run_rolling_backtest(
     slot_bars: dict[int, pd.DataFrame] = {}
     selection_rows: list[dict] = []
 
+    fill_model = FillModel(cfg)
+    day_loop = DayLoop(
+        portfolio=portfolio,
+        cfg=cfg,
+        slot_states=slot_states,
+        slot_bars=slot_bars,
+        fill_model=fill_model,
+    )
+
     for day in master_dates:
-        free_slots: list[int] = []
-        for slot_id, state in list(slot_states.items()):
-            if state is None:
-                free_slots.append(slot_id)
-                continue
-            bars = slot_bars[slot_id]
-            if _close_slot_at_day(
-                slot_id=slot_id,
-                state=state,
-                bars=bars,
-                day=day,
-                cfg=cfg,
-                portfolio=portfolio,
-                slot_states=slot_states,
-            ):
-                free_slots.append(slot_id)
+        # Run the shared exit sequence, then treat every slot that is now empty
+        # (whether already idle or freed today) as available for refill. Order
+        # is slot-id ascending, matching the original interleaved loop.
+        day_loop.process_exits_for_day(day)
+        free_slots: list[int] = [
+            slot_id for slot_id, state in slot_states.items() if state is None
+        ]
 
         if not free_slots:
             continue
@@ -312,6 +313,7 @@ def run_rolling_backtest(
                     cfg,
                     exit_ast,
                     int(row["rank"]),
+                    fill_model,
                 )
                 if state is None:
                     if warn:
@@ -347,6 +349,7 @@ def run_rolling_backtest(
         cfg=cfg,
         portfolio=portfolio,
         end_ts=end_ts,
+        fill_model=fill_model,
     )
     trades = portfolio.closed_trades()
 
