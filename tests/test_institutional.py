@@ -95,8 +95,12 @@ def test_aggregate_pct_is_none_when_previous_total_not_positive():
 # ── fetch (stubbed urlopen, no network) ─────────────────────────────────────
 
 
-def test_fetch_one_returns_summary_from_stubbed_payload(monkeypatch, tmp_path):
-    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+def test_fetch_one_returns_summary_from_stubbed_payload(monkeypatch, fake_provider):
+    # Inject the provider seam instead of monkeypatching cache.CACHE_ROOT: the
+    # FakeProvider runs the fetch directly (no disk cache, no resilience).
+    monkeypatch.setattr(
+        institutional_module, "_FMP_INSTITUTIONAL_PROVIDER", fake_provider()
+    )
     seen: list[str] = []
 
     def fake_urlopen(req, timeout=20):

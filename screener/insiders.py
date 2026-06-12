@@ -30,7 +30,7 @@ from typing import Optional
 import pandas as pd
 import yfinance as yf
 
-from screener.cache import cached_json_call
+from screener.providers import CachedProvider, ProviderSpec
 from screener.resilience import call_with_resilience
 
 
@@ -44,6 +44,24 @@ _FMP_INSIDER_URL = "https://financialmodelingprep.com/api/v4/insider-trading"
 # tickers stay on the screener.in promoter feed.
 _FMP_WINDOW_DAYS = 182
 _FMP_MAX_PAGES = 10
+
+# Provider seams (cache + resilience). Default TTLs match the legacy
+# hand-wired call sites; ``cache_ttl`` is overridden per-call to honour CLI
+# flags. The yfinance feed shares the "yfinance" breaker, FMP the "fmp"
+# breaker, and the screener.in scrape the "screener-in" breaker.
+_YF_INSIDER_PROVIDER = CachedProvider(
+    ProviderSpec(provider="yfinance", namespace="yfinance_insiders", ttl_seconds=86400)
+)
+_FMP_INSIDER_PROVIDER = CachedProvider(
+    ProviderSpec(provider="fmp", namespace="fmp_insiders", ttl_seconds=86400)
+)
+_OPENSCREENER_PROVIDER = CachedProvider(
+    ProviderSpec(
+        provider="screener-in",
+        namespace="openscreener_promoters",
+        ttl_seconds=7 * 86400,
+    )
+)
 
 
 def _tv_to_yf(ticker: str, market: str) -> str:
@@ -85,14 +103,7 @@ def _fetch_yf_one(
     refresh: bool,
 ) -> Optional[dict]:
     def _fetch() -> Optional[dict]:
-        purchases = call_with_resilience(
-            "yfinance",
-            f"insider purchases {yf_symbol}",
-            lambda: yf.Ticker(yf_symbol).insider_purchases,
-            fallback=None,
-        )
-        if purchases is None:
-            return None
+        purchases = yf.Ticker(yf_symbol).insider_purchases
         if purchases is None or purchases.empty:
             return None
 
@@ -112,12 +123,13 @@ def _fetch_yf_one(
             "yf_sell_trans_6m": _row_value(purchases, "Sales", "Trans"),
         }
 
-    return cached_json_call(
-        "yfinance_insiders",
+    return _YF_INSIDER_PROVIDER.fetch(
         ("insider_purchases", name, yf_symbol),
-        ttl_seconds=cache_ttl,
+        _fetch,
         refresh=refresh,
-        fetch=_fetch,
+        fallback=None,
+        ttl_seconds=cache_ttl,
+        operation=f"insider purchases {yf_symbol}",
     )
 
 
@@ -242,47 +254,37 @@ def _fetch_fmp_insider_one(
                 payload = json.loads(resp.read().decode("utf-8", "ignore"))
             return payload if isinstance(payload, list) else None
 
-        def _request() -> Optional[list]:
-            # FMP paginates insider rows (newest first). Walk pages until one
-            # is empty/non-list, the oldest row on a page predates the 182-day
-            # window, or we hit a safety cap (no unbounded loop on bad data).
-            nonlocal truncated
-            collected: list[dict] = []
-            expected_page_size: int | None = None
-            for page in range(_FMP_MAX_PAGES):
-                rows = _request_page(page)
-                if not rows:
-                    break
-                if expected_page_size is None:
-                    expected_page_size = len(rows)
-                collected.extend(rows)
-                oldest_raw = rows[-1].get("transactionDate") or rows[-1].get(
-                    "filingDate"
+        # FMP paginates insider rows (newest first). Walk pages until one
+        # is empty/non-list, the oldest row on a page predates the 182-day
+        # window, or we hit a safety cap (no unbounded loop on bad data).
+        collected: list[dict] = []
+        expected_page_size: int | None = None
+        for page in range(_FMP_MAX_PAGES):
+            rows = _request_page(page)
+            if not rows:
+                break
+            if expected_page_size is None:
+                expected_page_size = len(rows)
+            collected.extend(rows)
+            oldest_raw = rows[-1].get("transactionDate") or rows[-1].get("filingDate")
+            oldest = pd.to_datetime(oldest_raw, errors="coerce")
+            if not pd.isna(oldest) and oldest < cutoff:
+                break
+            if (
+                page == _FMP_MAX_PAGES - 1
+                and expected_page_size is not None
+                and len(rows) >= expected_page_size
+                and not pd.isna(oldest)
+                and oldest >= cutoff
+            ):
+                truncated = True
+                logger.warning(
+                    "FMP insider trading for %s may be truncated at %d pages",
+                    symbol,
+                    _FMP_MAX_PAGES,
                 )
-                oldest = pd.to_datetime(oldest_raw, errors="coerce")
-                if not pd.isna(oldest) and oldest < cutoff:
-                    break
-                if (
-                    page == _FMP_MAX_PAGES - 1
-                    and expected_page_size is not None
-                    and len(rows) >= expected_page_size
-                    and not pd.isna(oldest)
-                    and oldest >= cutoff
-                ):
-                    truncated = True
-                    logger.warning(
-                        "FMP insider trading for %s may be truncated at %d pages",
-                        symbol,
-                        _FMP_MAX_PAGES,
-                    )
-            return collected or None
 
-        transactions = call_with_resilience(
-            "fmp",
-            f"insider trading {symbol}",
-            _request,
-            fallback=None,
-        )
+        transactions = collected or None
         if not transactions:
             return None
         agg = _aggregate_fmp_transactions(transactions)
@@ -292,12 +294,13 @@ def _fetch_fmp_insider_one(
         # 6m totals may be incomplete when the history was cut at the cap.
         return {"name": name, "fmp_symbol": symbol, "fmp_truncated": truncated, **agg}
 
-    return cached_json_call(
-        "fmp_insiders",
+    return _FMP_INSIDER_PROVIDER.fetch(
         ("insider_trading", name, symbol),
-        ttl_seconds=cache_ttl,
+        _fetch,
         refresh=refresh,
-        fetch=_fetch,
+        fallback=None,
+        ttl_seconds=cache_ttl,
+        operation=f"insider trading {symbol}",
     )
 
 
@@ -388,12 +391,7 @@ def _fetch_openscreener_one(
             from openscreener import Stock
         except ImportError:
             return None
-        rows = call_with_resilience(
-            "screener-in",
-            f"shareholding {name}",
-            lambda: Stock(name, scraper=_HttpScraper()).shareholding_quarterly(),
-            fallback=None,
-        )
+        rows = Stock(name, scraper=_HttpScraper()).shareholding_quarterly()
         if not rows:
             return None
         if len(rows) < 2:
@@ -419,12 +417,13 @@ def _fetch_openscreener_one(
             "dii_pct_latest": latest.get("diis"),
         }
 
-    return cached_json_call(
-        "openscreener_promoters",
+    return _OPENSCREENER_PROVIDER.fetch(
         ("shareholding_quarterly", name),
-        ttl_seconds=cache_ttl,
+        _fetch,
         refresh=refresh,
-        fetch=_fetch,
+        fallback=None,
+        ttl_seconds=cache_ttl,
+        operation=f"shareholding {name}",
     )
 
 

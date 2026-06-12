@@ -16,8 +16,8 @@ from typing import Optional
 
 import pandas as pd
 
-from screener.cache import cached_json_call
 from screener.insiders import _HttpScraper
+from screener.providers import CachedProvider, ProviderSpec
 from screener.unusual_volume.detector import Event
 from screener.unusual_volume.nse_client import nse_cached_json
 
@@ -27,6 +27,15 @@ _NSE_PLEDGE_URL = "https://www.nseindia.com/api/corporate-pledgedata?symbol={sym
 _OSC_PLEDGE_RE = re.compile(
     r"pledged?\s*percentage[^0-9%]{0,60}?([0-9][0-9,]*(?:\.[0-9]+)?)\s*%",
     re.IGNORECASE | re.DOTALL,
+)
+
+# screener.in pledge scrape: 7d cache, "screener-in" circuit breaker. The
+# scraper (``_HttpScraper.fetch_page``) is already resilience-wrapped, so the
+# provider's breaker is a no-op belt-and-suspenders here.
+_OSC_PLEDGE_PROVIDER = CachedProvider(
+    ProviderSpec(
+        provider="screener-in", namespace="openscreener_pledge", ttl_seconds=7 * 86400
+    )
 )
 
 
@@ -92,12 +101,12 @@ def fetch_openscreener_pledge(name: str, *, refresh: bool = False) -> Optional[f
         match = _OSC_PLEDGE_RE.search(html)
         return _as_pct(match.group(1)) if match else None
 
-    return cached_json_call(
-        "openscreener_pledge",
+    return _OSC_PLEDGE_PROVIDER.fetch(
         ("pledge", name.upper()),
-        ttl_seconds=7 * 86400,
+        _fetch,
         refresh=refresh,
-        fetch=_fetch,
+        fallback=None,
+        operation=f"pledge scrape {name}",
     )
 
 

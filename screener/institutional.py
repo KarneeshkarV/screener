@@ -21,15 +21,19 @@ from typing import Optional
 
 import pandas as pd
 
-from screener.cache import cached_json_call
 from screener.insiders import _SCREENER_HEADERS
-from screener.resilience import call_with_resilience
+from screener.providers import CachedProvider, ProviderSpec
 
 
 logger = logging.getLogger(__name__)
 
 _FMP_INSTITUTIONAL_URL = (
     "https://financialmodelingprep.com/api/v3/institutional-holder/{symbol}"
+)
+
+# FMP institutional ownership: 24h cache, "fmp" circuit breaker.
+_FMP_INSTITUTIONAL_PROVIDER = CachedProvider(
+    ProviderSpec(provider="fmp", namespace="fmp_institutional", ttl_seconds=86400)
 )
 
 
@@ -84,20 +88,12 @@ def _fetch_fmp_institutional_one(
     refresh: bool,
 ) -> Optional[dict]:
     def _fetch() -> Optional[dict]:
-        def _request() -> Optional[list]:
-            query = urllib.parse.urlencode({"apikey": api_key})
-            url = _FMP_INSTITUTIONAL_URL.format(symbol=urllib.parse.quote(symbol))
-            req = urllib.request.Request(f"{url}?{query}", headers=_SCREENER_HEADERS)
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                payload = json.loads(resp.read().decode("utf-8", "ignore"))
-            return payload if isinstance(payload, list) else None
-
-        rows = call_with_resilience(
-            "fmp",
-            f"institutional holders {symbol}",
-            _request,
-            fallback=None,
-        )
+        query = urllib.parse.urlencode({"apikey": api_key})
+        url = _FMP_INSTITUTIONAL_URL.format(symbol=urllib.parse.quote(symbol))
+        req = urllib.request.Request(f"{url}?{query}", headers=_SCREENER_HEADERS)
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "ignore"))
+        rows = payload if isinstance(payload, list) else None
         if not rows:
             return None
         agg = _aggregate_institutional_holders(rows)
@@ -105,12 +101,13 @@ def _fetch_fmp_institutional_one(
             return None
         return {"symbol": symbol, **agg}
 
-    return cached_json_call(
-        "fmp_institutional",
+    return _FMP_INSTITUTIONAL_PROVIDER.fetch(
         ("institutional_holder", symbol),
-        ttl_seconds=cache_ttl,
+        _fetch,
         refresh=refresh,
-        fetch=_fetch,
+        fallback=None,
+        ttl_seconds=cache_ttl,
+        operation=f"institutional holders {symbol}",
     )
 
 

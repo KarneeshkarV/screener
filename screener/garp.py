@@ -12,7 +12,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
 from screener.cache import cached_json_call
-from screener.resilience import call_with_resilience
+from screener.providers import CachedProvider, ProviderSpec
 from screener.scanner import scan
 
 
@@ -21,6 +21,12 @@ US_MIN_USD = 1_000_000_000.0
 
 _FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
 _FMP_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; screener-cli/1.0)"}
+
+# FMP US fundamentals: 24h cache, "fmp" circuit breaker. ``cache_ttl`` is
+# overridden per-call below to honour the screen's --cache-ttl flag.
+_FMP_US_PROVIDER = CachedProvider(
+    ProviderSpec(provider="fmp", namespace="garp_fmp_us", ttl_seconds=86400)
+)
 
 
 class GarpThresholds(BaseModel):
@@ -386,37 +392,32 @@ def _fmp_get(path: str, params: dict[str, Any], api_key: str) -> Any:
 
 
 def _fetch_fmp_us_sections(symbol: str, api_key: str) -> dict[str, Any] | None:
-    def _request() -> dict[str, Any] | None:
-        return {
-            "profile": _fmp_get(f"profile/{symbol}", {}, api_key),
-            "ratios_ttm": _fmp_get(f"ratios-ttm/{symbol}", {}, api_key),
-            "income_annual": _fmp_get(
-                f"income-statement/{symbol}",
-                {"period": "annual", "limit": 5},
-                api_key,
-            ),
-            "balance_annual": _fmp_get(
-                f"balance-sheet-statement/{symbol}",
-                {"period": "annual", "limit": 5},
-                api_key,
-            ),
-            "income_quarterly": _fmp_get(
-                f"income-statement/{symbol}",
-                {"period": "quarter", "limit": 5},
-                api_key,
-            ),
-            # FMP sorts estimates descending by date (farthest future first),
-            # so a small limit would drop the nearest upcoming quarter.
-            "estimates_quarterly": _fmp_get(
-                f"analyst-estimates/{symbol}",
-                {"period": "quarter", "limit": 40},
-                api_key,
-            ),
-        }
-
-    return call_with_resilience(
-        "fmp", f"garp fundamentals {symbol}", _request, fallback=None
-    )
+    return {
+        "profile": _fmp_get(f"profile/{symbol}", {}, api_key),
+        "ratios_ttm": _fmp_get(f"ratios-ttm/{symbol}", {}, api_key),
+        "income_annual": _fmp_get(
+            f"income-statement/{symbol}",
+            {"period": "annual", "limit": 5},
+            api_key,
+        ),
+        "balance_annual": _fmp_get(
+            f"balance-sheet-statement/{symbol}",
+            {"period": "annual", "limit": 5},
+            api_key,
+        ),
+        "income_quarterly": _fmp_get(
+            f"income-statement/{symbol}",
+            {"period": "quarter", "limit": 5},
+            api_key,
+        ),
+        # FMP sorts estimates descending by date (farthest future first),
+        # so a small limit would drop the nearest upcoming quarter.
+        "estimates_quarterly": _fmp_get(
+            f"analyst-estimates/{symbol}",
+            {"period": "quarter", "limit": 40},
+            api_key,
+        ),
+    }
 
 
 def _fetch_fmp_us_cached(
@@ -426,12 +427,13 @@ def _fetch_fmp_us_cached(
     cache_ttl: float | None,
     refresh: bool,
 ) -> dict[str, Any] | None:
-    return cached_json_call(
-        "garp_fmp_us",
+    return _FMP_US_PROVIDER.fetch(
         ("us", symbol),
-        ttl_seconds=cache_ttl,
+        lambda: _fetch_fmp_us_sections(symbol, api_key),
         refresh=refresh,
-        fetch=lambda: _fetch_fmp_us_sections(symbol, api_key),
+        fallback=None,
+        ttl_seconds=cache_ttl,
+        operation=f"garp fundamentals {symbol}",
     )
 
 

@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from screener.providers import FakeProvider
+
 
 def make_bars(
     start: str = "2024-01-01",
@@ -70,5 +72,21 @@ class StubPriceFetcher:
 def stub_fetcher_factory():
     def _make(data: dict[str, pd.DataFrame]) -> StubPriceFetcher:
         return StubPriceFetcher(data)
+
+    return _make
+
+
+@pytest.fixture
+def fake_provider():
+    """A pass-through ``CachedProvider`` double (no disk cache, no resilience).
+
+    Inject it over a module-level provider seam to exercise a fetch path
+    without a ``CACHE_ROOT`` monkeypatch, e.g.::
+
+        monkeypatch.setattr(institutional_module, "_FMP_PROVIDER", fake_provider)
+    """
+
+    def _make() -> FakeProvider:
+        return FakeProvider()
 
     return _make
