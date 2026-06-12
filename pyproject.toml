@@ -74,9 +74,7 @@ disable_error_code = [
     "no-untyped-call",
     "no-untyped-def",
     "operator",
-    "return-value",
     "type-arg",
-    "union-attr",
     "var-annotated",
 ]
 

@@ -62,7 +62,10 @@ def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
             "INSERT INTO runs (run_ts, market, criteria, total_matches) VALUES (?, ?, ?, ?)",
             (run_ts, market, criteria, int(total)),
         )
+        # sqlite types lastrowid as int | None; it is never None after an INSERT.
         run_id = cur.lastrowid
+        if run_id is None:
+            raise RuntimeError("INSERT into runs did not return a rowid")
 
         rows = []
         for rank, (_, row) in enumerate(df.iterrows(), start=1):

@@ -19,7 +19,7 @@ module attribute. See ``tests/conftest.py`` for the fake adapter.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, TypeVar
+from typing import Any, Callable, Literal, TypeVar, cast
 
 from screener.cache import cached_frame_call, cached_json_call
 from screener.resilience import RetryConfig, call_with_resilience
@@ -89,12 +89,17 @@ class CachedProvider:
             )
 
         if self.spec.kind == "frame":
-            return cached_frame_call(
-                self.spec.namespace,
-                key_parts,
-                ttl_seconds=ttl,
-                refresh=refresh,
-                fetch=resilient,
+            # kind == "frame" callers bind T to pd.DataFrame; cached_frame_call
+            # is statically typed to return DataFrame, so narrow it back to T.
+            return cast(
+                T,
+                cached_frame_call(
+                    self.spec.namespace,
+                    key_parts,
+                    ttl_seconds=ttl,
+                    refresh=refresh,
+                    fetch=resilient,
+                ),
             )
         return cached_json_call(
             self.spec.namespace,

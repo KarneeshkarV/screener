@@ -157,9 +157,9 @@ def _score_updown_volume(
     win = df.iloc[-window:]
     if len(win) < window:
         return None, None
-    close = win["close"].astype(float).values
-    open_ = win["open"].astype(float).values
-    vol = win["volume"].astype(float).values
+    close = win["close"].astype(float).to_numpy()
+    open_ = win["open"].astype(float).to_numpy()
+    vol = win["volume"].astype(float).to_numpy()
     up_mask = close > open_
     down_mask = close < open_
     up_vol = vol[up_mask].sum()
@@ -184,7 +184,7 @@ def _score_higher_lows(
     win = df.iloc[-window:]
     if len(win) < window:
         return None, None
-    lows = win["low"].astype(float).values
+    lows = win["low"].astype(float).to_numpy()
     if (lows <= 0).any():
         return None, None
     # Slope of log(low) so the score is scale-free; normalise to per-bar %.

@@ -210,7 +210,9 @@ def _fixed_hold_exits(entries: pd.DataFrame, hold: int) -> pd.DataFrame:
 
 def _ma_for_window(ma_panel: pd.DataFrame, window: int) -> pd.DataFrame:
     if isinstance(ma_panel.columns, pd.MultiIndex):
-        return ma_panel.xs(window, axis=1, level="ma_window")
+        # xs(axis=1, level=...) on a MultiIndex column frame returns a DataFrame;
+        # pandas-stubs types it as DataFrame | Series, so narrow with cast.
+        return cast(pd.DataFrame, ma_panel.xs(window, axis=1, level="ma_window"))
     return ma_panel
 
 
