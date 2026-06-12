@@ -168,6 +168,96 @@ def _candidate_rows_for_day(
     return rows, warnings
 
 
+def _simulate_day(
+    day: pd.Timestamp,
+    *,
+    day_loop: DayLoop,
+    candidate_matrices: _RollingCandidateMatrices,
+    bars_by_tv: dict[str, pd.DataFrame],
+    cfg: BacktestConfig,
+    exit_ast,
+    fill_model: FillModel,
+    portfolio: Portfolio,
+    slot_states: dict[int, _SlotState | None],
+    slot_bars: dict[int, pd.DataFrame],
+    end_ts: pd.Timestamp,
+    selection_rows: list[dict],
+    warnings: list[str],
+) -> None:
+    """Advance one trading day: process exits, then refill freed slots.
+
+    Mutates ``slot_states``, ``slot_bars``, ``portfolio``, ``selection_rows`` and
+    ``warnings`` in place, matching the original interleaved loop body.
+    """
+    # Run the shared exit sequence, then treat every slot that is now empty
+    # (whether already idle or freed today) as available for refill. Order
+    # is slot-id ascending, matching the original interleaved loop.
+    day_loop.process_exits_for_day(day)
+    free_slots: list[int] = [
+        slot_id for slot_id, state in slot_states.items() if state is None
+    ]
+
+    if not free_slots:
+        return
+
+    candidates, day_warnings = _candidate_rows_for_day(
+        day,
+        candidate_matrices,
+        exclude=_active_or_pending_tickers(slot_states),
+    )
+    warnings.extend(day_warnings)
+    if not candidates:
+        return
+    candidate_queue: deque[dict] = deque(candidates)
+
+    for slot_id in free_slots:
+        opened = False
+        while candidate_queue and not opened:
+            row = candidate_queue.popleft()
+            ticker = str(row["ticker"])
+            if ticker in _active_or_pending_tickers(slot_states):
+                continue
+            bars = bars_by_tv.get(ticker, pd.DataFrame())
+            if bars is None or bars.empty:
+                continue
+            state, warn = _make_slot_state(
+                ticker,
+                bars,
+                int(row["signal_idx"]),
+                cfg,
+                exit_ast,
+                int(row["rank"]),
+                fill_model,
+            )
+            if state is None:
+                if warn:
+                    warnings.append(f"{ticker}: {warn}")
+                continue
+            if pd.Timestamp(state.entry_date) > end_ts:
+                continue
+            portfolio.assign(ticker, int(row["rank"]), day.date())
+            portfolio.open(
+                ticker=ticker,
+                entry_date=state.entry_date,
+                entry_price=state.entry_fill,
+                commission_bps=cfg.commission_bps,
+            )
+            slot_states[slot_id] = state
+            slot_bars[slot_id] = bars
+            selection_rows.append(
+                {
+                    "ticker": ticker,
+                    "signal_date": day.date(),
+                    "as_of_close": row["as_of_close"],
+                    "as_of_volume": row["as_of_volume"],
+                    "as_of_dollar_vol": row["as_of_dollar_vol"],
+                    "rank": row["rank"],
+                    "role": "active",
+                }
+            )
+            opened = True
+
+
 def run_rolling_backtest(
     cfg: BacktestConfig,
     fetcher: PriceFetcher,
@@ -275,73 +365,21 @@ def run_rolling_backtest(
     )
 
     for day in master_dates:
-        # Run the shared exit sequence, then treat every slot that is now empty
-        # (whether already idle or freed today) as available for refill. Order
-        # is slot-id ascending, matching the original interleaved loop.
-        day_loop.process_exits_for_day(day)
-        free_slots: list[int] = [
-            slot_id for slot_id, state in slot_states.items() if state is None
-        ]
-
-        if not free_slots:
-            continue
-
-        candidates, day_warnings = _candidate_rows_for_day(
+        _simulate_day(
             day,
-            candidate_matrices,
-            exclude=_active_or_pending_tickers(slot_states),
+            day_loop=day_loop,
+            candidate_matrices=candidate_matrices,
+            bars_by_tv=bars_by_tv,
+            cfg=cfg,
+            exit_ast=exit_ast,
+            fill_model=fill_model,
+            portfolio=portfolio,
+            slot_states=slot_states,
+            slot_bars=slot_bars,
+            end_ts=end_ts,
+            selection_rows=selection_rows,
+            warnings=warnings,
         )
-        warnings.extend(day_warnings)
-        if not candidates:
-            continue
-        candidate_queue: deque[dict] = deque(candidates)
-
-        for slot_id in free_slots:
-            opened = False
-            while candidate_queue and not opened:
-                row = candidate_queue.popleft()
-                ticker = str(row["ticker"])
-                if ticker in _active_or_pending_tickers(slot_states):
-                    continue
-                bars = bars_by_tv.get(ticker, pd.DataFrame())
-                if bars is None or bars.empty:
-                    continue
-                state, warn = _make_slot_state(
-                    ticker,
-                    bars,
-                    int(row["signal_idx"]),
-                    cfg,
-                    exit_ast,
-                    int(row["rank"]),
-                    fill_model,
-                )
-                if state is None:
-                    if warn:
-                        warnings.append(f"{ticker}: {warn}")
-                    continue
-                if pd.Timestamp(state.entry_date) > end_ts:
-                    continue
-                portfolio.assign(ticker, int(row["rank"]), day.date())
-                portfolio.open(
-                    ticker=ticker,
-                    entry_date=state.entry_date,
-                    entry_price=state.entry_fill,
-                    commission_bps=cfg.commission_bps,
-                )
-                slot_states[slot_id] = state
-                slot_bars[slot_id] = bars
-                selection_rows.append(
-                    {
-                        "ticker": ticker,
-                        "signal_date": day.date(),
-                        "as_of_close": row["as_of_close"],
-                        "as_of_volume": row["as_of_volume"],
-                        "as_of_dollar_vol": row["as_of_dollar_vol"],
-                        "rank": row["rank"],
-                        "role": "active",
-                    }
-                )
-                opened = True
 
     _force_close_open_slots(
         slot_states=slot_states,
