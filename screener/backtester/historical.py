@@ -25,7 +25,7 @@ from screener.backtester.core import (
     _prepare_strategy_bars,
     _resolve_universe,
 )
-from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
+from screener.backtester.data import PriceFetcher, build_price_fetcher
 from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.metrics import compute_metrics, compute_regime_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
@@ -296,6 +296,27 @@ def _run_event_driven_sim(
         slot_states[slot_id] = None
 
 
+def _benchmark_series_from_panel(
+    price_panel: dict[str, pd.DataFrame], symbol: str
+) -> pd.Series:
+    """Return the benchmark close series from the already-fetched panel.
+
+    The benchmark (``cfg.benchmark``) is fetched into ``price_panel`` alongside
+    the portfolio symbols and, in the ``splits_only`` regime, split-adjusted by
+    ``apply_splits_only_adjustment``. Reusing it here keeps the benchmark a single
+    source of truth, consistent with the portfolio bars, instead of re-fetching it
+    raw (which would inject a phantom split jump into alpha/beta/regime metrics).
+    """
+    frame = price_panel.get(symbol)
+    if frame is None or frame.empty:
+        return pd.Series(
+            index=pd.DatetimeIndex([], name="date"), dtype=float, name=symbol
+        )
+    series = frame["close"].astype(float).copy()
+    series.name = symbol
+    return series
+
+
 def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     warnings: list[str] = []
     as_of_ts = pd.Timestamp(cfg.as_of)
@@ -345,7 +366,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
             as_of_ts, as_of_ts + pd.Timedelta(days=cfg.hold * 2), freq="B"
         )
         equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
-        benchmark = fetch_benchmark(cfg.benchmark, start, end, fetcher)
+        benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
         benchmark = benchmark.reindex(calendar, method="ffill").dropna()
         metrics = compute_metrics(equity, benchmark, [], max(cfg.top, 1))
         return BacktestResult(
@@ -402,7 +423,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         price_adjustment=cfg.price_adjustment,
     )
 
-    benchmark = fetch_benchmark(cfg.benchmark, start, end, fetcher)
+    benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
     metrics = compute_metrics(equity, benchmark_aligned, trades, slot_count)
     metrics.update(compute_regime_metrics(benchmark, trades))

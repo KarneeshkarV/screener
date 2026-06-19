@@ -539,6 +539,95 @@ def test_price_adjustment_full_skips_dividend_credit(stub_fetcher_factory):
     assert all(t.dividend_income == 0.0 for t in result.trades if t.ticker == "AAA")
 
 
+def _spy_with_2for1_split(split_bar: int = 6, n: int = 20) -> pd.DataFrame:
+    """Benchmark frame with a real 2:1 split at ``split_bar``.
+
+    Raw close is ~200 before the split and ~100 after (a phantom -50% step), and
+    the frame carries the ``split_factor`` column that ``_normalize_frame`` would
+    emit (2.0 for pre-split bars, 1.0 from the split bar onward). After
+    ``apply_splits_only_adjustment`` divides the pre-split bars by 2.0 the series
+    is flat ~100 with no phantom jump.
+    """
+    spy = make_bars(n=n, seed=9, open_base=200.0)
+    for col in ("open", "high", "low", "close"):
+        loc = spy.columns.get_loc(col)
+        spy.iloc[split_bar:, loc] = spy.iloc[split_bar:, loc] / 2.0
+    factor = pd.Series(1.0, index=spy.index)
+    factor.iloc[:split_bar] = 2.0
+    spy["split_factor"] = factor.astype(float)
+    return spy
+
+
+def test_benchmark_split_adjusted_in_splits_only(stub_fetcher_factory):
+    # The benchmark carries a 2:1 split mid-window. In splits_only mode the panel
+    # (including the benchmark) is split-adjusted, so the benchmark series used for
+    # metrics must NOT contain the phantom -50% step. Previously the benchmark was
+    # re-fetched raw and the step leaked into alpha/beta/regime metrics.
+    aaa = make_bars(n=20, seed=5, open_base=100.0)
+    spy = _spy_with_2for1_split(split_bar=6)
+    fetcher = stub_fetcher_factory({"AAA": aaa, "SPY": spy})
+    cfg = _cfg(
+        as_of=aaa.index[3].date(),
+        hold=5,
+        top=1,
+        entry_expr="close > 0",
+        tickers=("AAA",),
+        price_adjustment="splits_only",
+    )
+    result = run_backtest(cfg, fetcher)
+    bench = result.benchmark_curve
+    assert not bench.empty
+    # The split window (bar 6) is inside the hold; the adjusted series is flat
+    # ~100 with no phantom -50% daily move.
+    returns = bench.pct_change().dropna()
+    assert returns.min() > -0.4, f"phantom split jump in benchmark: {returns.min()}"
+    assert bench.max() / bench.min() < 1.5  # no ~2x step anywhere
+
+
+def test_benchmark_split_adjusted_empty_selection(stub_fetcher_factory):
+    # Empty-selection branch must also use the adjusted panel benchmark.
+    aaa = make_bars(n=20, seed=5, open_base=100.0)
+    spy = _spy_with_2for1_split(split_bar=6)
+    fetcher = stub_fetcher_factory({"AAA": aaa, "SPY": spy})
+    cfg = _cfg(
+        as_of=aaa.index[3].date(),
+        hold=5,
+        top=1,
+        entry_expr="close < 0",  # selects nothing -> empty branch
+        tickers=("AAA",),
+        price_adjustment="splits_only",
+    )
+    result = run_backtest(cfg, fetcher)
+    assert not result.trades
+    bench = result.benchmark_curve
+    assert not bench.empty
+    returns = bench.pct_change().dropna()
+    assert returns.min() > -0.4, f"phantom split jump in benchmark: {returns.min()}"
+
+
+def test_benchmark_split_unchanged_in_full_mode(stub_fetcher_factory):
+    # Full mode must be unchanged: the stub fetcher returns the raw frame (no
+    # split adjustment is applied in full mode), so the benchmark still shows the
+    # raw -50% step. This guards that the panel-reuse fix did not start adjusting
+    # full mode.
+    aaa = make_bars(n=20, seed=5, open_base=100.0)
+    spy = _spy_with_2for1_split(split_bar=6)
+    fetcher = stub_fetcher_factory({"AAA": aaa, "SPY": spy})
+    cfg = _cfg(
+        as_of=aaa.index[3].date(),
+        hold=5,
+        top=1,
+        entry_expr="close > 0",
+        tickers=("AAA",),
+        price_adjustment="full",
+    )
+    result = run_backtest(cfg, fetcher)
+    bench = result.benchmark_curve
+    returns = bench.pct_change().dropna()
+    # The raw -50% split step is still present (full mode intentionally unadjusted).
+    assert returns.min() < -0.4
+
+
 def test_price_adjustment_splits_only_credits_dividend(stub_fetcher_factory):
     bars = make_bars(n=20, seed=5, open_base=100.0)
     bars["dividend"] = 0.0
