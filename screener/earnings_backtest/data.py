@@ -38,9 +38,15 @@ _YFINANCE_TIMEOUT_PATCHED = False
 # period-end (e.g. "Mar 2024" results are announced in May 2024). screener.in
 # only exposes the fiscal PERIOD-END label, not the announcement date, so a
 # period-end keyed event would be applied before it was ever public. We add a
-# conservative filing lag to the period-end as a point-in-time floor; the real
-# NSE announcement date (when available) is preferred over this estimate.
-INDIA_EARNINGS_FILING_LAG_DAYS = 45
+# conservative filing lag to the period-end as a point-in-time floor. The value
+# 60 is deliberately the CONSERVATIVE UPPER bound of the 45-60 day window: it is
+# chosen so the synthetic point-in-time date never precedes the real
+# announcement even for late (day 46-60) filers, common at March/year-end
+# results. Using the lower bound (45) would leak EPS for late filers, since a
+# backtest as_of between day 46 and the real announcement would trade on results
+# that were not yet public. The real NSE announcement date (when available) is
+# preferred over this estimate.
+INDIA_EARNINGS_FILING_LAG_DAYS = 60
 
 
 def _install_yfinance_timeout_patch() -> None:
@@ -364,8 +370,10 @@ def fetch_earnings_dates_openscreener(
     2024-03-31). Indian results are only announced ~45-60 days later, so the
     bare period-end leaks information into the backtest. We add
     ``filing_lag_days`` to the period-end as a point-in-time floor for when the
-    result became public. Callers that have the actual NSE announcement date
-    should prefer it (see :func:`collect_earnings_events`).
+    result became public. The default is the conservative 60-day upper bound of
+    that window, so the floor never precedes the real announcement even for late
+    filers. Callers that have the actual NSE announcement date should prefer it
+    (see :func:`collect_earnings_events`).
     """
     symbol = ticker.replace(".NS", "").replace(".BO", "")
     cache_path = _json_cache_path(
@@ -404,7 +412,7 @@ def fetch_earnings_dates_openscreener(
                 continue
             if period_end < cutoff:
                 continue
-            # Apply the filing lag: the result is not public until ~45 days
+            # Apply the filing lag: the result is not public until up to ~60 days
             # after the fiscal period-end. Use that as the (estimated) event
             # date so the backtest never acts on it before it was announced.
             announce_date = period_end + pd.Timedelta(days=filing_lag_days)

@@ -62,6 +62,32 @@ def _stub_openscreener(monkeypatch):
     monkeypatch.setitem(sys.modules, "openscreener", module)
 
 
+def test_openscreener_floor_is_conservative_upper_bound_no_leak():
+    # No-leak floor: with no real NSE announcement date, the synthetic event date
+    # must sit at the CONSERVATIVE UPPER bound (>= period-end + 60 days), so a late
+    # filer announcing anywhere in the stated 45-60 day window is never preceded by
+    # the backtest as_of. The lower bound (45) would leak EPS for day 46-60 filers.
+    NO_LEAK_FLOOR_DAYS = 60
+    assert INDIA_EARNINGS_FILING_LAG_DAYS >= NO_LEAK_FLOOR_DAYS
+
+    ed = fetch_earnings_dates_openscreener("RELIANCE.NS", years=5)
+    assert ed is not None and not ed.empty
+
+    # March year-end quarter is the classic late-filer case.
+    mar_end = pd.Timestamp("2024-03-31")
+    floor = mar_end + pd.Timedelta(days=NO_LEAK_FLOOR_DAYS)
+    mar_events = [ts for ts in ed.index if (ts + pd.offsets.QuarterEnd(-1)) == mar_end]
+    assert mar_events, "expected a Mar-2024 quarter event"
+    for ts in mar_events:
+        # Emitted as_of is at or after the worst-case (day-60) real announcement.
+        assert ts >= floor
+    # A late filer announcing up to day 60 never precedes the synthetic as_of:
+    # for every plausible real announcement day in [45, 60], as_of >= announcement.
+    for delay in range(45, 61):
+        real_announcement = mar_end + pd.Timedelta(days=delay)
+        assert all(ts >= real_announcement for ts in mar_events)
+
+
 def test_openscreener_event_date_is_after_period_end():
     ed = fetch_earnings_dates_openscreener("RELIANCE.NS", years=5)
     assert ed is not None and not ed.empty
