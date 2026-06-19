@@ -48,6 +48,10 @@ Every metric below is computed from `screener.research.factor_demo`, a closed-fo
 - **Reproduction (this report):** `uv run python scripts/run_strategy_report.py`
 - **CLI form (live universes):** `uv run screener backtest-rolling -m us --strategy mom_lowvol_combo --tickers MOMA,MOMB,STDY,CALM,CHOP,WILD,DOWNA,DOWNB --top 3 --hold 21 --start 2023-01-02 --end 2023-10-20 --min-price 0 --min-avg-dollar-volume 0`
 
+## Live illustrative run
+
+The headline metrics above are deterministic/synthetic by design. For a real-market sanity check on the same strategies, see [`results/live_illustrative.md`](live_illustrative.md): a 3-year rolling backtest on a curated liquid US set where all three strategies beat the `SPY` benchmark. Those numbers are **network-dependent and survivorship-biased** (curated current names, not full point-in-time membership), so they are NOT pinned by tests and will drift with live data.
+
 ## Skipped (documented)
 
 - **Basu 1/PE value (1977):** requires point-in-time fundamentals (trailing P/E history), which this codebase does not provide for backtests (data is daily OHLCV only). The `value` criterion (`screener/criteria/plugins/value.py`) is available for **live screening** only — `uv run screener screen -m us -c value`. Backtest intentionally skipped to avoid look-ahead/survivorship bias.

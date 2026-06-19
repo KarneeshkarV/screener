@@ -124,6 +124,18 @@ def build_report() -> str:
         )
         lines.append(f"- **CLI form (live universes):** `{_cli_equivalent(spec)}`")
         lines.append("")
+    lines.append("## Live illustrative run")
+    lines.append("")
+    lines.append(
+        "The headline metrics above are deterministic/synthetic by design. For a "
+        "real-market sanity check on the same strategies, see "
+        "[`results/live_illustrative.md`](live_illustrative.md): a 3-year rolling "
+        "backtest on a curated liquid US set where all three strategies beat the "
+        "`SPY` benchmark. Those numbers are **network-dependent and "
+        "survivorship-biased** (curated current names, not full point-in-time "
+        "membership), so they are NOT pinned by tests and will drift with live data."
+    )
+    lines.append("")
     lines.append("## Skipped (documented)")
     lines.append("")
     lines.append(
