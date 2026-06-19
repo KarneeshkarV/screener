@@ -57,10 +57,10 @@ def test_momentum_selects_high_momentum_over_liquidity() -> None:
     # would skip it. The factor ranker must pick it. FLAT/LOSE have non-positive
     # momentum and are excluded by the entry gate.
     data = {
-        "WIN": _trend(50.0, 0.004, volume=5_000.0),
-        "MID": _trend(50.0, 0.001, volume=900_000.0),
+        "WIN": _trend(50.0, 0.0018, volume=5_000.0),
+        "MID": _trend(50.0, 0.0008, volume=900_000.0),
         "FLAT": _trend(50.0, 0.0, volume=900_000.0),
-        "LOSE": _trend(50.0, -0.002, volume=900_000.0),
+        "LOSE": _trend(50.0, -0.0015, volume=900_000.0),
         "SPY": _trend(400.0, 0.0005, volume=1_000_000.0),
     }
     cfg = BacktestConfig(
