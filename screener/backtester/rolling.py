@@ -61,6 +61,13 @@ class _RollingCandidateMatrices:
     close_mat: pd.DataFrame
     volume_mat: pd.DataFrame
     bar_idx_mat: pd.DataFrame
+    # Optional cross-sectional factor score. When a strategy's ``prepare_bars``
+    # hook writes a ``rank_score`` column into its bars, candidates on each day
+    # are ranked by this score (descending) instead of by signal-day dollar
+    # volume — turning the backtester into a real factor-portfolio selector.
+    # ``None`` when no ticker carries the column, which preserves the legacy
+    # dollar-volume ranking byte-for-byte.
+    rank_score_mat: pd.DataFrame | None
 
 
 def _build_rolling_candidate_matrices(
@@ -114,6 +121,10 @@ def _build_rolling_candidate_matrices(
     lookback_cols: dict[str, np.ndarray] = {}
     close_cols: dict[str, np.ndarray] = {}
     volume_cols: dict[str, np.ndarray] = {}
+    # Cross-sectional factor scores (as-of the signal bar), only populated for
+    # tickers whose prepared bars carry a ``rank_score`` column.
+    score_cols: dict[str, np.ndarray] = {}
+    any_score = False
     for tv in valid_tickers:
         bars = bars_by_tv[tv]
         close = bars["close"].astype(float).to_numpy()
@@ -126,12 +137,19 @@ def _build_rolling_candidate_matrices(
         lookback_cols[tv] = (pos + 1 >= lookback_required + 1) & (pos + 1 < n) & has_bar
         close_cols[tv] = np.where(has_bar, close[pos], np.nan)
         volume_cols[tv] = np.where(has_bar, volume[pos], np.nan)
+        if "rank_score" in bars.columns:
+            any_score = True
+            score = bars["rank_score"].astype(float).to_numpy()
+            score_cols[tv] = np.where(has_bar, score[pos], np.nan)
+        else:
+            score_cols[tv] = np.full(len(master_ix), np.nan)
 
     bar_idx_mat = pd.DataFrame(bar_cols, index=master_ix)
     lookback_ok_mat = pd.DataFrame(lookback_cols, index=master_ix).astype(bool)
     close_mat = pd.DataFrame(close_cols, index=master_ix)
     volume_mat = pd.DataFrame(volume_cols, index=master_ix)
     dollar_vol_mat = close_mat * volume_mat
+    rank_score_mat = pd.DataFrame(score_cols, index=master_ix) if any_score else None
     return _RollingCandidateMatrices(
         signal_mat=signal_mat,
         lookback_ok_mat=lookback_ok_mat,
@@ -140,6 +158,7 @@ def _build_rolling_candidate_matrices(
         close_mat=close_mat,
         volume_mat=volume_mat,
         bar_idx_mat=bar_idx_mat,
+        rank_score_mat=rank_score_mat,
     )
 
 
@@ -158,9 +177,21 @@ def _candidate_rows_for_day(
         eligible = eligible & ~eligible.index.isin(exclude)
     dollar_vol = matrices.dollar_vol_mat.loc[day]
     eligible = eligible & dollar_vol.notna()
-    ranked = dollar_vol[eligible].sort_values(ascending=False, kind="mergesort")
+    # Factor portfolios rank by cross-sectional score; everything else keeps the
+    # legacy signal-day dollar-volume ordering. The dollar-volume value is still
+    # surfaced as ``as_of_dollar_vol`` either way for reporting/liquidity audit.
+    if matrices.rank_score_mat is not None:
+        rank_score = matrices.rank_score_mat.loc[day]
+        eligible = eligible & rank_score.notna()
+        ranked_keys = rank_score[eligible].sort_values(
+            ascending=False, kind="mergesort"
+        )
+    else:
+        ranked_keys = dollar_vol[eligible].sort_values(
+            ascending=False, kind="mergesort"
+        )
     rows: list[dict] = []
-    for rank, (ticker, as_of_dollar_vol) in enumerate(ranked.items(), start=1):
+    for rank, (ticker, _key) in enumerate(ranked_keys.items(), start=1):
         rows.append(
             {
                 "ticker": ticker,
@@ -169,7 +200,7 @@ def _candidate_rows_for_day(
                 "signal_idx": int(cast(Any, matrices.bar_idx_mat.at[day, ticker])),
                 "as_of_close": float(cast(Any, matrices.close_mat.at[day, ticker])),
                 "as_of_volume": float(cast(Any, matrices.volume_mat.at[day, ticker])),
-                "as_of_dollar_vol": float(as_of_dollar_vol),
+                "as_of_dollar_vol": float(cast(Any, dollar_vol.at[ticker])),
                 "rank": rank,
                 "role": "active",
             }
