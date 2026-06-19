@@ -310,3 +310,72 @@ uv run screener backtest-historical --tickers AAPL,MSFT --entry "close > sma(clo
 FMP responses are cached under `~/.screener/fmp_prices`. Use a command's existing `--refresh` option where available to bypass cached price data.
 
 To force one provider instead of fallback mode, set `SCREENER_PRICE_PROVIDER` to `yfinance` or `fmp`.
+
+## Code Review — PR #54 (`pr53` → `main`)
+
+A quantitative-correctness pass addressing audit findings (H-2, H-3, M-1, M-4)
+plus point-in-time (PIT) leakage fixes. +1,657 / −136 across 24 files, backed by
+~860 lines of offline/synthetic tests.
+
+### What changed
+- **Corporate actions**: `apply_splits_only_adjustment` now consumes the
+  previously-dead `split_factor` column (H-2); cash dividends are threaded into
+  `Trade.pnl` and `build_equity_curve` (H-3); FMP frames are left unadjusted with
+  a loud warning rather than mis-reconstructing splits from `adj_close` (M-1).
+- **Metrics**: alpha annualized geometrically `(1+a)^252 - 1`; Sortino switched
+  to canonical target-downside-deviation (RMS over all N periods).
+- **PIT**: S&P 500 membership reconstructed from the Wikipedia change log;
+  conviction pillars skip undated "latest-only" loaders for stale `as_of`; Indian
+  earnings get a 45-day filing-lag floor with NSE/openscreener dedup.
+- **Indicators**: RSI warm-up region now NaN (matches RMA/ATR convention); GARP
+  NaNs non-positive PEG before ranking.
+
+### Verification performed
+- 146 of the new/changed tests pass locally; the only failures were a missing
+  local `empyrical` dep (declared as `empyrical-reloaded`).
+- After installing `empyrical-reloaded`, all 22 metrics oracle tests pass — alpha
+  and Sortino match empyrical to FP precision.
+- Confirmed `split_factor` had no other consumer → no double-adjustment.
+- Confirmed `build_equity_curve`'s dividend window `(index > entry) & (index <=
+  exit)` mirrors the engine's crediting window; test asserts agreement to 1e-9.
+
+### Issues & risks
+
+**Medium**
+- `_load_smart_money_india` bypasses provider-level resilience. The old path went
+  through `_OPENSCREENER_PROVIDER.fetch(...)` (rate-limiting / shared resilience);
+  the new PIT path calls `Stock(...).shareholding_quarterly()` directly under a
+  different cache namespace (`conviction_shareholding`). Net: live and historical
+  cards no longer share cached data → duplicate fetches, and any provider
+  rate-limit/circuit-breaker is lost for this call.
+- `PIT_STALE_TOLERANCE_DAYS = 7` silently changes score composition. A card for
+  `as_of` >7 days back drops fundamentals/risk/(US smart-money) pillars, and
+  `compose` renormalizes over survivors — so a historical conviction score
+  becomes technical-heavy and not comparable to a live card.
+
+**Low**
+- Two Wikipedia GETs on a cold S&P cache (`_fetch_sp500` and
+  `_fetch_sp500_changes` each parse the same page).
+- Duplicated import+call block (`apply_splits_only_adjustment` /
+  `warn_unadjustable_fmp_frames`) copy-pasted into `historical.py` and
+  `rolling.py`.
+- `warn_unadjustable_fmp_frames` returns `bars_dict` but every caller ignores the
+  return (pure side-effect) — misleading API.
+- `_warn_not_point_in_time` fires on every cache hit (both `LOG.warning` and
+  `warnings.warn`) — noisy for nifty50 historical sweeps.
+
+**Coverage gap (low)**
+- The split×dividend interaction isn't tested together: the dividend test uses a
+  no-split frame and the split test has zero dividends.
+
+### Security
+- No real concerns. `write_html_report`'s `disclaimer` is a module constant
+  (no injection surface). The pre-existing unescaped `<pre>{payload}</pre>`
+  predates this PR.
+
+### Verdict
+Approve with minor follow-ups. High-quality correctness PR — the riskiest pieces
+(dividend/equity reconciliation, metrics) are verified against an independent
+oracle and to machine precision, and failure modes favor "skip/warn" over silent
+corruption. The medium items are worth addressing or acknowledging before merge,
+but none block.
