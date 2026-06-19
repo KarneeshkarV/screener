@@ -251,11 +251,7 @@ def apply_splits_only_adjustment(
     """
     out: dict[str, pd.DataFrame] = {}
     for ticker, frame in bars_dict.items():
-        if (
-            frame is None
-            or frame.empty
-            or "split_factor" not in frame.columns
-        ):
+        if frame is None or frame.empty or "split_factor" not in frame.columns:
             out[ticker] = frame
             continue
         factor = frame["split_factor"].astype(float)

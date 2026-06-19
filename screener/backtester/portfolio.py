@@ -214,7 +214,9 @@ class Portfolio:
         # Total PnL includes the pro-rata dividend income for the closed sleeve
         # (0 in full mode). ``return_pct`` stays capital-only for continuity.
         pnl = exit_value - pro_rata_cost + pro_rata_div
-        return_pct = (exit_value - pro_rata_cost) / pro_rata_cost if pro_rata_cost else 0.0
+        return_pct = (
+            (exit_value - pro_rata_cost) / pro_rata_cost if pro_rata_cost else 0.0
+        )
         trade = Trade(
             ticker=ticker,
             rank=self._ranks.get(ticker, 0),

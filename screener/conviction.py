@@ -664,9 +664,7 @@ def build_conviction_card(
         display_symbol = india_symbol(symbol) if market == "india" else yf_sym
         pillars.append(score_volume(display_symbol, bars, as_of, delivery=delivery))
     pillars.append(
-        _smart_money_pillar(
-            symbol, market, as_of, cache_ttl=cache_ttl, refresh=refresh
-        )
+        _smart_money_pillar(symbol, market, as_of, cache_ttl=cache_ttl, refresh=refresh)
     )
     pillars.append(
         _fundamentals_pillar(

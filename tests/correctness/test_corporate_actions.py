@@ -179,18 +179,14 @@ def test_full_mode_ignores_dividend_column():
 
     cfg = _cfg(as_of=bars.index[4].date(), hold=6, price_adjustment="full")
 
-    result_div = run_backtest(
-        cfg, StubPriceFetcher({"AAA": bars_with_div, "SPY": spy})
-    )
+    result_div = run_backtest(cfg, StubPriceFetcher({"AAA": bars_with_div, "SPY": spy}))
     result_plain = run_backtest(cfg, StubPriceFetcher({"AAA": bars, "SPY": spy}))
 
     assert result_div.trades
     # full mode never credits explicit dividends.
     assert all(t.dividend_income == 0.0 for t in result_div.trades)
     # The dividend column is inert: identical trades and identical equity curve.
-    assert [t.pnl for t in result_div.trades] == [
-        t.pnl for t in result_plain.trades
-    ]
+    assert [t.pnl for t in result_div.trades] == [t.pnl for t in result_plain.trades]
     assert result_div.equity_curve.tolist() == result_plain.equity_curve.tolist()
 
 

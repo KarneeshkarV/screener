@@ -464,9 +464,7 @@ class TestGarpNegativePeg:
         # Row 0 has a negative PEG and the WORST other metrics. Pre-fix it would
         # rank lowest on peg → inv_peg ~ 1.0 → 30 points of value score. After
         # the fix its inv_peg term is 0, so its score is only the other 70*0.x.
-        df = pd.DataFrame(
-            {"peg": [-1.0, 1.0, 2.0, 4.0], **self._other_cols(4)}
-        )
+        df = pd.DataFrame({"peg": [-1.0, 1.0, 2.0, 4.0], **self._other_cols(4)})
         result = add_garp_score(df).set_index("peg")
         # Negative-peg row (row 0) has the smallest other metrics → each pct=0.25.
         # inv_peg must be 0 (NaN'd → fillna(0)), so score = 0 + 70*0.25 = 17.5,

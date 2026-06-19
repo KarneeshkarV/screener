@@ -452,7 +452,11 @@ def _assemble_results(
         date_set.update(dates.tolist())
     calendar = pd.DatetimeIndex(sorted(date_set))
     equity = build_equity_curve(
-        calendar, trades, bars_by_tv, cfg.initial_capital, price_adjustment=cfg.price_adjustment
+        calendar,
+        trades,
+        bars_by_tv,
+        cfg.initial_capital,
+        price_adjustment=cfg.price_adjustment,
     )
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
     metrics = compute_metrics(equity, benchmark_aligned, trades, max(cfg.top, 1))

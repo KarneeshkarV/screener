@@ -543,11 +543,7 @@ def collect_earnings_events(
                     quarter = pd.Timestamp(pe).to_period("Q")
                     if (str(osc_row["ticker"]), quarter) in nse_quarters:
                         continue
-                rows.append(
-                    {
-                        k: v for k, v in osc_row.items() if k != "period_end"
-                    }
-                )
+                rows.append({k: v for k, v in osc_row.items() if k != "period_end"})
     else:
         # US: yfinance
         for i in range(0, len(tickers), batch_size):
