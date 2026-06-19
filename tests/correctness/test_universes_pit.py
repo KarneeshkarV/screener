@@ -8,6 +8,8 @@ These tests inject synthetic raw tables (a current-members table plus a
 from __future__ import annotations
 
 from datetime import date
+import os
+import time
 from types import SimpleNamespace
 
 import pandas as pd
@@ -19,17 +21,24 @@ from screener import universes
 # Current members: STAYC has always been in; NEWCO was added in 2020; OLDCO was
 # removed in 2019 (so it is NOT in the current table but should be reconstructed
 # back into a pre-2019 universe).
-def _members_table() -> pd.DataFrame:
+def _members_table(*, include_newer_change: bool = False) -> pd.DataFrame:
+    symbols = ["STAYC", "NEWCO"]
+    securities = ["Stay Corp", "New Co"]
+    added = ["2005-01-03", "2020-07-01"]
+    if include_newer_change:
+        symbols.append("NEW2")
+        securities.append("New Two")
+        added.append("2022-05-01")
     return pd.DataFrame(
         {
-            "Symbol": ["STAYC", "NEWCO"],
-            "Security": ["Stay Corp", "New Co"],
-            "Date added": ["2005-01-03", "2020-07-01"],
+            "Symbol": symbols,
+            "Security": securities,
+            "Date added": added,
         }
     )
 
 
-def _changes_table() -> pd.DataFrame:
+def _changes_table(*, include_newer_change: bool = False) -> pd.DataFrame:
     # Mirror the Wikipedia "changes" table shape: a MultiIndex with Date /
     # Added{Ticker} / Removed{Ticker}.
     columns = pd.MultiIndex.from_tuples(
@@ -50,6 +59,8 @@ def _changes_table() -> pd.DataFrame:
         # 2010 is <= a 2018 as_of, so it is not undone during reconstruction).
         ["January 4, 2010", "EARLY", "Early Co", "EARLYGONE", "Early Gone", "r0"],
     ]
+    if include_newer_change:
+        rows.insert(0, ["May 1, 2022", "NEW2", "New Two", "OLD2", "Old Two", "r3"])
     return pd.DataFrame(rows, columns=columns)
 
 
@@ -94,9 +105,7 @@ def test_removed_ticker_included_for_past_date(monkeypatch, tmp_path):
 
 def test_current_as_of_returns_current_members(monkeypatch, tmp_path):
     _patch(monkeypatch, tmp_path)
-    univ = universes.load_current_universe(
-        "sp500", as_of=date.today(), use_cache=False
-    )
+    univ = universes.load_current_universe("sp500", as_of=date.today(), use_cache=False)
     assert set(univ.symbols) == {"STAYC", "NEWCO"}
 
 
@@ -106,6 +115,71 @@ def test_dot_ticker_normalized_in_reconstruction(monkeypatch, tmp_path):
     rows = universes._fetch_sp500_changes()
     syms = {added for _, added, _ in rows} | {removed for _, _, removed in rows}
     assert "NEWCO" in syms and "OLDCO" in syms
+
+
+def test_sp500_change_log_cache_expires(monkeypatch, tmp_path):
+    counter = {"fetches": 0}
+    source = {"newer_change": False}
+    monkeypatch.setattr(universes, "CACHE_DIR", tmp_path)
+
+    def fake_get(url, **kwargs):
+        counter["fetches"] += 1
+        return SimpleNamespace(text="<html></html>", raise_for_status=lambda: None)
+
+    monkeypatch.setattr(universes, "requests", SimpleNamespace(get=fake_get))
+    monkeypatch.setattr(
+        universes.pd,
+        "read_html",
+        lambda *a, **k: [
+            _members_table(include_newer_change=source["newer_change"]),
+            _changes_table(include_newer_change=source["newer_change"]),
+        ],
+    )
+
+    first = universes._load_sp500_changes()
+    second = universes._load_sp500_changes()
+    assert first == second
+    assert counter["fetches"] == 1
+
+    stale = time.time() - universes._SP500_CHANGES_CACHE_TTL_SECONDS - 60
+    os.utime(universes._changes_cache_path(), (stale, stale))
+    source["newer_change"] = True
+
+    refreshed = universes._load_sp500_changes()
+    assert counter["fetches"] == 2
+    assert any(removed == "OLD2" for _, _, removed in refreshed)
+
+
+def test_stale_sp500_pit_universe_cache_recomputes(monkeypatch, tmp_path):
+    counter = {"fetches": 0}
+    source = {"newer_change": False}
+    monkeypatch.setattr(universes, "CACHE_DIR", tmp_path)
+
+    def fake_get(url, **kwargs):
+        counter["fetches"] += 1
+        return SimpleNamespace(text="<html></html>", raise_for_status=lambda: None)
+
+    monkeypatch.setattr(universes, "requests", SimpleNamespace(get=fake_get))
+    monkeypatch.setattr(
+        universes.pd,
+        "read_html",
+        lambda *a, **k: [
+            _members_table(include_newer_change=source["newer_change"]),
+            _changes_table(include_newer_change=source["newer_change"]),
+        ],
+    )
+
+    first = universes.load_current_universe("sp500", as_of=date(2018, 1, 1))
+    assert "OLD2" not in first.symbols
+
+    stale = time.time() - universes._SP500_CHANGES_CACHE_TTL_SECONDS - 60
+    os.utime(universes._changes_cache_path(), (stale, stale))
+    source["newer_change"] = True
+
+    refreshed = universes.load_current_universe("sp500", as_of=date(2018, 1, 1))
+    assert "OLD2" in refreshed.symbols
+    assert "NEW2" not in refreshed.symbols
+    assert counter["fetches"] == 4
 
 
 def test_nifty_past_as_of_warns_not_point_in_time(monkeypatch, tmp_path):

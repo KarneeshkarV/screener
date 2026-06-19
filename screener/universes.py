@@ -13,12 +13,14 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, field_validator
 import requests
 
+from screener.cache import is_fresh
 from screener.resilience import call_with_resilience
 
 
 LOG = logging.getLogger(__name__)
 
 CACHE_DIR = Path.home() / ".screener" / "universes"
+_SP500_CHANGES_CACHE_TTL_SECONDS = 24 * 60 * 60
 UniverseName = Literal["sp500", "nifty50"]
 
 
@@ -62,6 +64,7 @@ def _write_cache(
     source: str,
     *,
     point_in_time: bool,
+    metadata: dict[str, str] | None = None,
 ) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = _cache_path(name, as_of)
@@ -70,14 +73,17 @@ def _write_cache(
         f"# as_of={as_of.isoformat()}",
         f"# source={source}",
         f"# point_in_time={'true' if point_in_time else 'false'}",
+        *(f"# {key}={value}" for key, value in (metadata or {}).items()),
         *symbols,
     ]
     path.write_text("\n".join(lines) + "\n")
     return path
 
 
-def _read_cache(name: UniverseName, as_of: date) -> tuple[Universe, bool] | None:
-    """Return ``(universe, point_in_time)`` from cache, or ``None`` to refetch.
+def _read_cache(
+    name: UniverseName, as_of: date
+) -> tuple[Universe, bool, dict[str, str]] | None:
+    """Return ``(universe, point_in_time, metadata)`` or ``None`` to refetch.
 
     A cache file missing the ``point_in_time`` header was not written by the
     PIT-aware writer (or is corrupt) and is treated as a miss so we never serve
@@ -88,6 +94,7 @@ def _read_cache(name: UniverseName, as_of: date) -> tuple[Universe, bool] | None
         return None
     source = "cache"
     point_in_time: bool | None = None
+    metadata: dict[str, str] = {}
     symbols: list[str] = []
     for line in path.read_text().splitlines():
         line = line.strip()
@@ -100,6 +107,9 @@ def _read_cache(name: UniverseName, as_of: date) -> tuple[Universe, bool] | None
             point_in_time = line.split("=", 1)[1].strip().lower() == "true"
             continue
         if line.startswith("#"):
+            key, sep, value = line[1:].partition("=")
+            if sep:
+                metadata[key.strip()] = value.strip()
             continue
         symbols.append(line)
     if not symbols or point_in_time is None:
@@ -107,7 +117,7 @@ def _read_cache(name: UniverseName, as_of: date) -> tuple[Universe, bool] | None
     universe = Universe(
         name=name, symbols=tuple(symbols), source=source, cached_path=path
     )
-    return universe, point_in_time
+    return universe, point_in_time, metadata
 
 
 def load_current_universe(
@@ -136,13 +146,24 @@ def load_current_universe(
     if use_cache:
         cached = _read_cache(name, as_of)
         if cached is not None:
-            universe, point_in_time = cached
-            # Warn on cache hits too — otherwise a second load of a past-date
-            # universe written earlier this run (or a prior run) would silently
-            # return the survivorship-biased set with no warning.
-            if is_past and not point_in_time:
-                _warn_not_point_in_time(name, as_of)
-            return universe
+            universe, point_in_time, metadata = cached
+            if (
+                name == "sp500"
+                and is_past
+                and not _sp500_pit_cache_matches_change_log(metadata)
+            ):
+                LOG.debug(
+                    "%s cache for as_of=%s is stale relative to S&P change log",
+                    name,
+                    as_of.isoformat(),
+                )
+            else:
+                # Warn on cache hits too — otherwise a second load of a past-date
+                # universe written earlier this run (or a prior run) would silently
+                # return the survivorship-biased set with no warning.
+                if is_past and not point_in_time:
+                    _warn_not_point_in_time(name, as_of)
+                return universe
     if name == "sp500":
         symbols, source, point_in_time = _fetch_sp500_pit(as_of, use_cache=use_cache)
     elif name == "nifty50":
@@ -152,7 +173,17 @@ def load_current_universe(
         raise ValueError(f"unknown universe: {name}")
     if is_past and not point_in_time:
         _warn_not_point_in_time(name, as_of)
-    path = _write_cache(name, as_of, symbols, source, point_in_time=point_in_time)
+    write_metadata = (
+        _sp500_changes_cache_metadata() if name == "sp500" and is_past else None
+    )
+    path = _write_cache(
+        name,
+        as_of,
+        symbols,
+        source,
+        point_in_time=point_in_time,
+        metadata=write_metadata,
+    )
     return Universe(name=name, symbols=tuple(symbols), source=source, cached_path=path)
 
 
@@ -213,6 +244,25 @@ def _fetch_sp500() -> tuple[list[str], str]:
 
 def _changes_cache_path() -> Path:
     return CACHE_DIR / "sp500_changes.json"
+
+
+def _sp500_changes_cache_metadata() -> dict[str, str] | None:
+    path = _changes_cache_path()
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return {"sp500_changes_mtime_ns": str(stat.st_mtime_ns)}
+
+
+def _sp500_pit_cache_matches_change_log(metadata: dict[str, str]) -> bool:
+    path = _changes_cache_path()
+    if not is_fresh(path, _SP500_CHANGES_CACHE_TTL_SECONDS):
+        return False
+    expected = _sp500_changes_cache_metadata()
+    if expected is None:
+        return False
+    return metadata.get("sp500_changes_mtime_ns") == expected["sp500_changes_mtime_ns"]
 
 
 def _fetch_sp500_changes() -> list[tuple[date, str, str]]:
@@ -283,15 +333,16 @@ def _clean_change_symbol(value: object) -> str:
 
 def _load_sp500_changes(*, use_cache: bool = True) -> list[tuple[date, str, str]]:
     path = _changes_cache_path()
-    if use_cache and path.exists():
+    if use_cache and is_fresh(path, _SP500_CHANGES_CACHE_TTL_SECONDS):
         try:
             payload = json.loads(path.read_text())
             return [
-                (date.fromisoformat(d), added, removed)
-                for d, added, removed in payload
+                (date.fromisoformat(d), added, removed) for d, added, removed in payload
             ]
         except (ValueError, OSError):
             LOG.debug("sp500 changes cache at %s unreadable; refetching", path)
+    elif use_cache and path.exists():
+        LOG.debug("sp500 changes cache at %s is stale; refetching", path)
 
     changes = _fetch_sp500_changes()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
