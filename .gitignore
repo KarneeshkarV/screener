@@ -14,6 +14,12 @@ matrix_*.txt
 .env
 .screener/
 
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
 # Generated local reports
 *.html
 *_report_*.md

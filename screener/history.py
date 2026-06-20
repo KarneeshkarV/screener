@@ -64,7 +64,9 @@ def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
         )
         # sqlite types lastrowid as int | None; it is never None after an INSERT.
         run_id = cur.lastrowid
-        if run_id is None:
+        if (
+            run_id is None
+        ):  # pragma: no cover - sqlite always sets lastrowid post-INSERT
             raise RuntimeError("INSERT into runs did not return a rowid")
 
         rows = []

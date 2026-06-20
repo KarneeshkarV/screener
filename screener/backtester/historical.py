@@ -65,7 +65,7 @@ def select_candidates(
         except PineError as exc:
             warnings.append(f"entry eval failed: {ticker}: {exc}")
             continue
-        if signal.empty:
+        if signal.empty:  # pragma: no cover - history is non-empty here
             continue
         last = signal.iloc[-1]
         if pd.isna(last) or not bool(last):
@@ -186,7 +186,9 @@ def _run_event_driven_sim(
         if pending_reentry:
             for slot_id, ticker in list(pending_reentry.items()):
                 slot_frame = slot_bars.get(slot_id)
-                if slot_frame is None or slot_frame.empty:
+                if (  # pragma: no cover - freed slots always have slot_bars set
+                    slot_frame is None or slot_frame.empty
+                ):
                     del pending_reentry[slot_id]
                     continue
                 reentry_signal_idx = _eligible_reserve_signal_idx(
@@ -401,14 +403,14 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     date_set: set[pd.Timestamp] = {as_of_ts.normalize()}
     for trade in trades:
         frame = bars_by_tv.get(trade.ticker)
-        if frame is None or frame.empty:
+        if frame is None or frame.empty:  # pragma: no cover - traded ticker has bars
             continue
         dates = frame.loc[
             (frame.index >= pd.Timestamp(trade.entry_date))
             & (frame.index <= pd.Timestamp(trade.exit_date))
         ].index
         date_set.update(dates.tolist())
-    if not date_set:
+    if not date_set:  # pragma: no cover - date_set always seeded with as_of
         date_set.update(
             pd.date_range(
                 as_of_ts, as_of_ts + pd.Timedelta(days=cfg.hold * 2), freq="B"

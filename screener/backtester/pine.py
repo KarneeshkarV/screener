@@ -417,7 +417,9 @@ def _eval(node: Node, bars: pd.DataFrame):
             return left * right
         if node.op == "/":
             return left / right
-        raise PineSyntaxError(f"Unknown operator: {node.op!r}")
+        raise PineSyntaxError(  # pragma: no cover - op is a validated Literal
+            f"Unknown operator: {node.op!r}"
+        )
     if isinstance(node, Compare):
         left = _eval(node.left, bars)
         right = _eval(node.right, bars)
@@ -441,7 +443,9 @@ def _eval(node: Node, bars: pd.DataFrame):
         return left | right
     if isinstance(node, Call):
         return _eval_call(node, bars)
-    raise PineSyntaxError(f"Unknown AST node: {type(node).__name__}")
+    raise PineSyntaxError(  # pragma: no cover - all Node variants handled above
+        f"Unknown AST node: {type(node).__name__}"
+    )
 
 
 def _eval_call(node: Call, bars: pd.DataFrame):
@@ -480,7 +484,9 @@ def _eval_call(node: Call, bars: pd.DataFrame):
         a = _as_series(_eval(node.args[0], bars), bars.index)
         b = _as_series(_eval(node.args[1], bars), bars.index)
         return _crossover(a, b) if name == "crossover" else _crossunder(a, b)
-    raise PineNameError(f"Unknown function: {name!r}")
+    raise PineNameError(  # pragma: no cover - name already validated in FUNC_NAMES
+        f"Unknown function: {name!r}"
+    )
 
 
 def evaluate(node: Node, bars: pd.DataFrame) -> pd.Series:

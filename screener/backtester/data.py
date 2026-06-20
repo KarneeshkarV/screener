@@ -695,7 +695,7 @@ def ensure_date(value) -> date:
         return value
     if isinstance(value, datetime):
         return value.date()
-    if isinstance(value, pd.Timestamp):
+    if isinstance(value, pd.Timestamp):  # pragma: no cover - Timestamp is a datetime
         return value.to_pydatetime().date()
     if isinstance(value, str):
         return datetime.fromisoformat(value).date()

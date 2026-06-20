@@ -142,7 +142,9 @@ def run_earnings_backtest(
         entry_bar = bars[bars.index == pd.Timestamp(entry_date)]
         exit_bar = bars[bars.index == pd.Timestamp(exit_date)]
 
-        if entry_bar.empty or exit_bar.empty:
+        if (
+            entry_bar.empty or exit_bar.empty
+        ):  # pragma: no cover - defensive: dates come from bars.index
             continue
 
         entry_price = float(entry_bar.iloc[-1]["close"])
@@ -197,7 +199,7 @@ def run_earnings_backtest(
                 if iv_key not in iv_cache:
                     iv_cache[iv_key] = fetch_iv_sentiment(ticker, market)
                 result = func(ticker, ed, iv_cache.get(iv_key), threshold=0.0)
-            else:
+            else:  # pragma: no cover - defensive: _resolve_strategies yields only known names
                 continue
             scores[strat_name] = result.score
             signal_details[strat_name] = result.details
@@ -282,7 +284,9 @@ def _find_entry_exit(
         return None, None
 
     exit_idx_raw = bars.index.get_loc(exit_bars.index[-1])
-    if isinstance(exit_idx_raw, slice):
+    if isinstance(
+        exit_idx_raw, slice
+    ):  # pragma: no cover - defensive: bars have a unique index
         # Fallback: use integer position
         exit_idx = (
             len(bars)
@@ -296,7 +300,9 @@ def _find_entry_exit(
         return None, None
 
     entry_idx = exit_idx - days_before
-    if entry_idx < 0:
+    if (
+        entry_idx < 0
+    ):  # pragma: no cover - defensive: guarded by the exit_idx<days_before check above
         return None, None
 
     exit_ts = bars.index[exit_idx]

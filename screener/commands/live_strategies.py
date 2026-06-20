@@ -253,7 +253,7 @@ def run_vol_breakout_live(
         entry_px = float(close.iloc[entry_row][c])
         last_px = float(close.iloc[today_idx][c])
         if not (np.isfinite(entry_px) and entry_px > 0 and np.isfinite(last_px)):
-            continue
+            continue  # pragma: no cover - panel ffill+dropna guarantees finite >0 prices
         pnl = (last_px / entry_px - 1.0) * 100.0
         days_held = (n_rows - 1) - entry_row
         active.append((yf_to_tv.get(c, c), entry_dt, entry_px, last_px, pnl, days_held))
@@ -375,7 +375,7 @@ def run_obv_trend_live(
         entry_px = float(close.iloc[last_e][c])
         last_px = float(close.iloc[today_idx][c])
         if not (np.isfinite(entry_px) and entry_px > 0 and np.isfinite(last_px)):
-            continue
+            continue  # pragma: no cover - panel ffill+dropna guarantees finite >0 prices
         pnl = (last_px / entry_px - 1.0) * 100.0
         days_held = (n_rows - 1) - last_e
         long_rows.append(

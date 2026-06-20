@@ -4,11 +4,14 @@ import pytest
 import requests
 from pydantic import ValidationError
 
+from screener import resilience
 from screener.resilience import (
     CircuitBreaker,
     CircuitBreakerConfig,
+    CircuitOpenError,
     RetryConfig,
     call_with_resilience,
+    get_breaker,
     redact_secrets,
 )
 
@@ -70,6 +73,50 @@ def test_circuit_opens_and_closes_after_success() -> None:
     breaker.before_call()
     breaker.record_success()
     breaker.before_call()
+
+
+def test_before_call_raises_while_open_within_cooldown() -> None:
+    breaker = CircuitBreaker(
+        "unit-open",
+        CircuitBreakerConfig(failure_threshold=1, cooldown_seconds=60.0),
+    )
+    breaker.record_failure()  # opens the circuit
+    with pytest.raises(CircuitOpenError, match="unit-open circuit is open"):
+        breaker.before_call()
+
+
+def test_call_with_resilience_returns_fallback_when_circuit_open(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    provider = "test-open-circuit"
+    # Force this provider's shared breaker open with a long cooldown so the
+    # next call short-circuits in before_call().
+    breaker = get_breaker(provider)
+    breaker.config = CircuitBreakerConfig(failure_threshold=1, cooldown_seconds=60.0)
+    breaker.record_failure()
+
+    called = False
+
+    def should_not_run() -> str:
+        nonlocal called
+        called = True
+        return "live"
+
+    with caplog.at_level(logging.WARNING, logger="screener.resilience"):
+        result = call_with_resilience(
+            provider,
+            "op",
+            should_not_run,
+            fallback="fallback",
+        )
+
+    assert result == "fallback"
+    assert called is False
+    assert "unavailable" in caplog.text
+    # Clean up the module-level breaker registry to avoid cross-test leakage.
+    resilience._BREAKERS.pop(provider, None)
 
 
 def test_retry_config_rejects_invalid_attempts() -> None:

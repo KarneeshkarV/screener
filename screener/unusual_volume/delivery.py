@@ -172,7 +172,7 @@ def overlay_events(events: list[Event], panel: pd.DataFrame) -> list[Event]:
         if key not in indexed.index:
             continue
         row = indexed.loc[key]
-        if isinstance(row, pd.DataFrame):
+        if isinstance(row, pd.DataFrame):  # pragma: no cover - keys deduped above
             row = row.iloc[0]
         ev.delivery_qty = (
             float(row["DELIV_QTY"]) if not pd.isna(row["DELIV_QTY"]) else None
