@@ -97,3 +97,46 @@ def test_no_rank_score_keeps_dollar_volume_ranking() -> None:
         end_date=_INDEX[-1].date(),
     )
     assert {t.ticker for t in result.trades} == {"HIVOL"}
+
+
+def test_equal_rank_score_breaks_tie_by_dollar_volume() -> None:
+    # Two names share the SAME factor score, so the cross-sectional ordering is a
+    # tie; it must resolve by signal-day dollar volume (liquidity) rather than by
+    # arbitrary universe/column order. The high-volume name should win the slot.
+    data = {
+        "TIE_LOWVOL": _frame(100.0, volume=10_000.0, score=5.0),
+        "TIE_HIVOL": _frame(100.0, volume=999_000.0, score=5.0),
+        "SPY": _frame(400.0, volume=1_000_000.0, score=None),
+    }
+    cfg = _cfg().model_copy(update={"tickers": ("TIE_LOWVOL", "TIE_HIVOL")})
+    result = run_rolling_backtest(
+        cfg,
+        StubPriceFetcher(data),
+        start_date=_INDEX[0].date(),
+        end_date=_INDEX[-1].date(),
+    )
+    assert {t.ticker for t in result.trades} == {"TIE_HIVOL"}
+
+
+def test_mixed_universe_missing_rank_score_warns() -> None:
+    # Factor ranking is active (one name carries a score), but another candidate
+    # lacks the column entirely. That name is silently excluded from selection;
+    # the run must surface a warning naming it rather than dropping it without
+    # trace.
+    data = {
+        "HAS_SCORE": _frame(100.0, volume=10_000.0, score=9.0),
+        "NO_SCORE": _frame(100.0, volume=999_000.0, score=None),
+        "SPY": _frame(400.0, volume=1_000_000.0, score=None),
+    }
+    cfg = _cfg().model_copy(update={"tickers": ("HAS_SCORE", "NO_SCORE")})
+    result = run_rolling_backtest(
+        cfg,
+        StubPriceFetcher(data),
+        start_date=_INDEX[0].date(),
+        end_date=_INDEX[-1].date(),
+    )
+    # Only the scored name is selectable.
+    assert {t.ticker for t in result.trades} == {"HAS_SCORE"}
+    assert any("rank_score" in w and "NO_SCORE" in w for w in result.warnings), (
+        result.warnings
+    )

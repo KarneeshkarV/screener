@@ -23,6 +23,20 @@ where BOTH factors are defined, so ``rank_score`` is NaN (ineligible) until 252
 days of history exist. The entry gate additionally requires positive momentum, so
 the portfolio is "low-volatility *winners*". Each cross-sectional rank at bar ``t``
 uses only bar-``t`` factor values (themselves causal), so the blend is causal.
+
+Ranking-universe note (intentional difference vs the single-factor strategies):
+``momentum_12_1`` and ``low_volatility`` emit a *raw* ``rank_score`` and let the
+rolling backtester do the cross-sectional ordering at selection time over the
+*per-day eligible* subset (post min-price / ADV / membership / regime filters).
+This combo instead bakes the percentile ranks in at prepare time over the *full
+prepared universe* (``ctx.bars_by_tv``), because blending two factors requires a
+common, scale-free scale and the percentile transform must therefore precede the
+weighted sum. A name's combo score consequently reflects percentiles computed
+against names that may later be filtered out. This is a defensible and stable
+definition (the relative ordering of two co-eligible names is unchanged by the
+presence of a third, ineligible name, since both legs are monotonic in the
+percentile rank), but it is deliberately not identical to the other two — noted
+here so the difference is documented rather than surprising.
 """
 
 from __future__ import annotations
