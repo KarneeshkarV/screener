@@ -69,7 +69,9 @@ def _trailing_liquidity(
         sigma = float(rets.std()) if rets.size else 0.0
     if not np.isfinite(adv):
         adv = 0.0
-    if not np.isfinite(sigma):  # pragma: no cover - defensive guard for pathological data
+    if not np.isfinite(
+        sigma
+    ):  # pragma: no cover - defensive guard for pathological data
         sigma = 0.0
     return adv, sigma
 
