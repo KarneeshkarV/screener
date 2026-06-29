@@ -28,6 +28,14 @@ _METRIC_LABELS = {
     "benchmark_return": "Benchmark Return",
     "trade_count": "Trades",
     "unique_tickers": "Unique Tickers",
+    "median_trade_return": "Median Trade Return",
+    "avg_trade_return": "Avg Trade Return",
+    "best_trade_return": "Best Trade",
+    "worst_trade_return": "Worst Trade",
+    "profit_factor": "Profit Factor",
+    "expectancy": "Expectancy",
+    "winning_trades": "Winning Trades",
+    "losing_trades": "Losing Trades",
 }
 
 _PCT_METRICS = {
@@ -40,6 +48,11 @@ _PCT_METRICS = {
     "alpha_annual",
     "exposure",
     "benchmark_return",
+    "median_trade_return",
+    "avg_trade_return",
+    "best_trade_return",
+    "worst_trade_return",
+    "expectancy",
 }
 
 

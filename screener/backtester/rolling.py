@@ -702,6 +702,12 @@ def run_rolling_backtest(
     help="Write a static, self-contained HTML tear-sheet to this file.",
 )
 @click.option(
+    "--open-report",
+    is_flag=True,
+    default=False,
+    help="Open the generated HTML report in the default browser.",
+)
+@click.option(
     "--dashboard",
     is_flag=True,
     default=False,
@@ -758,6 +764,7 @@ def backtest_rolling(
     regime_filter_args,
     output_csv,
     report_path,
+    open_report,
     dashboard,
     dashboard_port,
     dashboard_dir,
@@ -868,12 +875,17 @@ def backtest_rolling(
     result = run_rolling_backtest(
         cfg, fetcher, start_date=start_date, end_date=end_date
     )
-    if report_path:
+    generated_report = report_path
+    if generated_report is None and not output_csv:
+        from screener.reporting import temp_report_path
+
+        generated_report = temp_report_path("backtest-rolling")
+    if generated_report:
         from screener.backtester.tearsheet import render_tearsheet
 
         render_tearsheet(
             result,
-            report_path,
+            generated_report,
             title="Rolling Backtest Tear Sheet",
             extra_notes=[universe_note] if universe_note else [],
         )
@@ -888,8 +900,12 @@ def backtest_rolling(
     if universe_note:
         console.print(f"[dim]Universe: {universe_note}[/dim]")
     print_backtest(result)
-    if report_path:
-        console.print(f"[green]Report:[/green] {report_path}")
+    if generated_report:
+        console.print(f"[green]Report:[/green] {generated_report}")
+        if open_report:
+            from screener.reporting import open_report as open_report_file
+
+            open_report_file(generated_report)
     if dashboard:
         from screener.backtester.dashboard import render_dashboard, serve_dashboard
 

@@ -193,6 +193,43 @@ def _invested_return(trades: Iterable[Trade]) -> float:
     return total_pnl / total_cost
 
 
+def _trade_return_stats(trades: Iterable[Trade]) -> dict[str, float | int]:
+    """Return realized trade-level diagnostics."""
+    trades = list(trades)
+    if not trades:
+        return {
+            "median_trade_return": 0.0,
+            "avg_trade_return": 0.0,
+            "best_trade_return": 0.0,
+            "worst_trade_return": 0.0,
+            "profit_factor": 0.0,
+            "expectancy": 0.0,
+            "winning_trades": 0,
+            "losing_trades": 0,
+        }
+    returns = [float(t.return_pct) for t in trades]
+    profits = [float(t.pnl) for t in trades if t.pnl > 0]
+    losses = [abs(float(t.pnl)) for t in trades if t.pnl < 0]
+    gross_profit = sum(profits)
+    gross_loss = sum(losses)
+    if gross_loss > 0:
+        profit_factor = gross_profit / gross_loss
+    elif gross_profit > 0:
+        profit_factor = float("inf")
+    else:
+        profit_factor = 0.0
+    return {
+        "median_trade_return": float(np.median(returns)),
+        "avg_trade_return": float(np.mean(returns)),
+        "best_trade_return": float(max(returns)),
+        "worst_trade_return": float(min(returns)),
+        "profit_factor": float(profit_factor),
+        "expectancy": float(np.mean(returns)),
+        "winning_trades": sum(1 for t in trades if t.pnl > 0),
+        "losing_trades": sum(1 for t in trades if t.pnl < 0),
+    }
+
+
 def compute_regime_metrics(benchmark: pd.Series, trades: list[Trade]) -> dict:
     """Per-regime trade stats keyed by each trade's entry-date regime.
 
@@ -244,7 +281,7 @@ def compute_metrics(
         if len(benchmark) >= 2 and benchmark.iloc[0] > 0
         else 0.0
     )
-    return {
+    metrics = {
         "total_return": total_return,
         "cagr": _cagr(equity),
         "vol_annual": _vol_annual(daily),
@@ -262,3 +299,5 @@ def compute_metrics(
         "trade_count": len(trades),
         "invested_return": _invested_return(trades),
     }
+    metrics.update(_trade_return_stats(trades))
+    return metrics

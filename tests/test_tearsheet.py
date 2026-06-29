@@ -17,6 +17,10 @@ SECTION_MARKERS = [
     'id="equity-vs-benchmark"',
     'id="drawdown-curve"',
     'id="monthly-heatmap"',
+    'id="trade-timeline"',
+    'id="tab-ledger"',
+    'id="trade-ledger"',
+    'id="trade-ledger-table"',
     'id="trade-histogram"',
     'id="winners-losers"',
     'id="top-winners-table"',
@@ -85,6 +89,9 @@ def test_render_tearsheet_from_engine_result(tmp_path, stub_fetcher_factory):
         assert marker in html, f"missing section marker {marker}"
     assert "survivorship bias: today&#x27;s members applied" in html
     assert "close &gt; sma(close, 3)" in html
+    assert "Median Trade" in html
+    assert "--paper: #07090d" in html
+    assert '"plot_bgcolor":"#0d1117"' in html
 
 
 def test_backtest_rolling_report_option(tmp_path, stub_fetcher_factory):
@@ -150,3 +157,67 @@ def test_backtest_historical_report_option(tmp_path, stub_fetcher_factory):
     for marker in SECTION_MARKERS:
         assert marker in html, f"missing section marker {marker}"
     assert "survivorship bias" in html
+
+
+def test_backtest_historical_auto_temp_report(
+    tmp_path, monkeypatch, stub_fetcher_factory
+):
+    fetcher = stub_fetcher_factory(_stub_data())
+    report = tmp_path / "auto-historical.html"
+    monkeypatch.setattr("screener.reporting.temp_report_path", lambda prefix: report)
+    runner = CliRunner()
+    result = runner.invoke(
+        backtest_historical,
+        [
+            "--tickers",
+            "AAA,BBB",
+            "--entry",
+            "close > sma(close, 3)",
+            "--hold",
+            "3",
+            "--top",
+            "2",
+            "--as-of",
+            "2024-02-15",
+        ],
+        obj=fetcher,
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert f"Report: {report}" in result.output
+    assert report.exists()
+    html = report.read_text(encoding="utf-8")
+    assert 'id="trade-timeline"' in html
+    assert "Median Trade" in html
+
+
+def test_backtest_historical_csv_skips_implicit_temp_report(
+    tmp_path, monkeypatch, stub_fetcher_factory
+):
+    fetcher = stub_fetcher_factory(_stub_data())
+    report = tmp_path / "should-not-exist.html"
+    monkeypatch.setattr("screener.reporting.temp_report_path", lambda prefix: report)
+    runner = CliRunner()
+    result = runner.invoke(
+        backtest_historical,
+        [
+            "--tickers",
+            "AAA,BBB",
+            "--entry",
+            "close > sma(close, 3)",
+            "--hold",
+            "3",
+            "--top",
+            "2",
+            "--as-of",
+            "2024-02-15",
+            "--csv",
+        ],
+        obj=fetcher,
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Report:" not in result.output
+    assert not report.exists()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 
 from screener.cache import parse_ttl
@@ -51,6 +53,19 @@ from screener.scanner import MARKETS, scan
     show_default=True,
     help="TradingView cache TTL, e.g. 30s, 15m, 1h, off.",
 )
+@click.option(
+    "--report",
+    "report_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write a static, self-contained HTML report to this file.",
+)
+@click.option(
+    "--open-report",
+    is_flag=True,
+    default=False,
+    help="Open the generated HTML report in the default browser.",
+)
 def screen(
     market: str,
     criteria_names: tuple[str, ...],
@@ -60,6 +75,8 @@ def screen(
     detail: bool,
     refresh: bool,
     cache_ttl: str,
+    report_path: Path | None,
+    open_report: bool,
 ) -> None:
     """Screen stocks based on technical criteria."""
     pipeline_names = [n for n in criteria_names if is_pipeline(n)]
@@ -116,3 +133,29 @@ def screen(
         removed=removed,
         first_run=first_run,
     )
+    generated_report = report_path
+    if generated_report is None:
+        from screener.reporting import temp_report_path
+
+        generated_report = temp_report_path("screen")
+    from screener.commands.screen_report import render_screen_report
+
+    render_screen_report(
+        df,
+        total,
+        market,
+        label,
+        generated_report,
+        added=added,
+        removed=removed,
+        first_run=first_run,
+        detail=detail,
+        refresh=refresh,
+        cache_ttl=cache_ttl,
+        order_by=order_by,
+    )
+    click.echo(f"Report: {generated_report}")
+    if open_report:
+        from screener.reporting import open_report as open_report_file
+
+        open_report_file(generated_report)

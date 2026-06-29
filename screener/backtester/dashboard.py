@@ -97,14 +97,20 @@ def dashboard_frames(result: BacktestResult) -> dict[str, pd.DataFrame]:
 
 def _figure_html(fig: go.Figure, div_id: str) -> str:
     fig.update_layout(
-        template="plotly_white",
-        paper_bgcolor="#f7f5ef",
-        plot_bgcolor="#fbfaf6",
-        font={"family": "IBM Plex Sans, Aptos, sans-serif", "size": 12},
+        template="plotly_dark",
+        paper_bgcolor="#07090d",
+        plot_bgcolor="#0d1117",
+        font={
+            "family": "IBM Plex Sans, Aptos, sans-serif",
+            "size": 12,
+            "color": "#e5e7eb",
+        },
         margin={"l": 56, "r": 28, "t": 44, "b": 42},
         hovermode="x unified",
-        legend={"orientation": "h", "y": 1.08},
+        legend={"orientation": "h", "y": 1.08, "font": {"color": "#e5e7eb"}},
     )
+    fig.update_xaxes(gridcolor="#242b36", zerolinecolor="#374151")
+    fig.update_yaxes(gridcolor="#242b36", zerolinecolor="#374151")
     return str(  # plotly.io.to_html is untyped -> Any; it returns the HTML str
         to_html(
             fig,
@@ -156,6 +162,8 @@ def _metric_cards(result: BacktestResult) -> str:
         "benchmark_return": "Benchmark",
         "max_drawdown": "Max DD",
         "sharpe": "Sharpe",
+        "median_trade_return": "Median Trade",
+        "profit_factor": "Profit Factor",
         "trade_count": "Trades",
         "unique_tickers": "Tickers",
         "exposure": "Exposure",
@@ -167,6 +175,8 @@ def _metric_cards(result: BacktestResult) -> str:
         "benchmark_return",
         "max_drawdown",
         "sharpe",
+        "median_trade_return",
+        "profit_factor",
         "trade_count",
         "unique_tickers",
         "exposure",
@@ -349,13 +359,14 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
   <script>{plotly_js}</script>
   <style>
     :root {{
-      --ink: #1e2320;
-      --muted: #69716b;
-      --paper: #f7f5ef;
-      --panel: #fffefa;
-      --line: #d9d4c7;
-      --accent: #0f766e;
-      --warn: #b91c1c;
+      --ink: #e5e7eb;
+      --muted: #9ca3af;
+      --paper: #07090d;
+      --panel: #0d1117;
+      --panel-strong: #111827;
+      --line: #242b36;
+      --accent: #22c55e;
+      --warn: #ef4444;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -368,7 +379,7 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
     header {{
       border-bottom: 1px solid var(--line);
       padding: 24px 32px 18px;
-      background: #ebe7dc;
+      background: #0b0f16;
     }}
     h1, h2 {{ margin: 0; font-weight: 700; }}
     h1 {{ font-size: 28px; }}
@@ -430,7 +441,7 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
     .data-table th {{
       position: sticky;
       top: 0;
-      background: #ebe7dc;
+      background: var(--panel-strong);
       color: var(--ink);
       text-align: left;
       z-index: 1;

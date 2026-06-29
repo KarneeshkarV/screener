@@ -105,6 +105,53 @@ def _winners_losers_frames(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataF
     return winners, losers
 
 
+def _trade_ledger_frame(trades: pd.DataFrame) -> pd.DataFrame:
+    """Return display-ready trade ledger rows without dropping columns."""
+    ledger = trades.copy()
+    if ledger.empty:
+        return ledger
+    for col in ["return_pct"]:
+        if col in ledger.columns:
+            ledger[col] = ledger[col].map(_pct)
+    for col in ["entry_price", "exit_price", "shares", "pnl"]:
+        if col in ledger.columns:
+            ledger[col] = ledger[col].map(lambda v: f"{float(v):,.2f}")
+    return ledger
+
+
+def _trade_timeline_html(trades: pd.DataFrame) -> str:
+    if trades.empty:
+        return '<p class="empty">No trades.</p>'
+    frame = trades.copy().sort_values(["entry_date", "exit_date", "ticker"])
+    frame["label"] = frame["ticker"].astype(str) + " #" + frame["rank"].astype(str)
+    frame["return_label"] = frame["return_pct"].map(_pct)
+    frame["pnl_label"] = frame["pnl"].map(lambda v: f"{float(v):,.2f}")
+    frame["holding_days"] = (
+        pd.to_datetime(frame["exit_date"]) - pd.to_datetime(frame["entry_date"])
+    ).dt.days
+    fig = px.timeline(
+        frame,
+        x_start="entry_date",
+        x_end="exit_date",
+        y="label",
+        color="return_pct",
+        color_continuous_scale=["#ef4444", "#1f2937", "#22c55e"],
+        hover_data={
+            "ticker": True,
+            "rank": True,
+            "return_label": True,
+            "pnl_label": True,
+            "exit_reason": True,
+            "holding_days": True,
+            "return_pct": False,
+            "label": False,
+        },
+        labels={"label": "Trade", "return_pct": "Return"},
+    )
+    fig.update_yaxes(autorange="reversed")
+    return _figure_html(fig, "tearsheet-trade-timeline")
+
+
 def _config_rows(result: BacktestResult) -> str:
     dump = result.config.model_dump(exclude={"slippage_model"})
     if dump.get("membership_added"):
@@ -138,6 +185,11 @@ def render_tearsheet(
     monthly = frames["monthly"]
 
     sections: list[str] = []
+    ledger_html = (
+        '<p class="empty">No trades.</p>'
+        if trades.empty
+        else _table_html(_trade_ledger_frame(trades), "trade-ledger-table", limit=5000)
+    )
 
     if curves.empty:
         sections.append(
@@ -191,12 +243,20 @@ def render_tearsheet(
 
     if trades.empty:
         sections.append(
+            _empty_section("trade-timeline", "Trade Timeline", "No trades.")
+        )
+        sections.append(
             _empty_section("trade-histogram", "Trade Return Distribution", "No trades.")
         )
         sections.append(
             _empty_section("winners-losers", "Top Winners & Losers", "No trades.")
         )
     else:
+        sections.append(
+            '<section class="panel wide" id="trade-timeline"><h2>Trade Timeline</h2>'
+            + _trade_timeline_html(trades)
+            + "</section>"
+        )
         hist = px.histogram(
             trades,
             x="return_pct",
@@ -235,11 +295,13 @@ def render_tearsheet(
   <script>{get_plotlyjs()}</script>
   <style>
     :root {{
-      --ink: #1e2320;
-      --muted: #69716b;
-      --paper: #f7f5ef;
-      --panel: #fffefa;
-      --line: #d9d4c7;
+      --ink: #e5e7eb;
+      --muted: #9ca3af;
+      --paper: #07090d;
+      --panel: #0d1117;
+      --panel-strong: #111827;
+      --line: #242b36;
+      --accent: #22c55e;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -251,7 +313,7 @@ def render_tearsheet(
     header {{
       border-bottom: 1px solid var(--line);
       padding: 24px 32px 18px;
-      background: #ebe7dc;
+      background: #0b0f16;
     }}
     h1, h2, h3 {{ margin: 0; font-weight: 700; }}
     h1 {{ font-size: 28px; }}
@@ -267,6 +329,32 @@ def render_tearsheet(
     }}
     main {{
       padding: 22px 32px 36px;
+    }}
+    .tab-radio {{ position: absolute; opacity: 0; pointer-events: none; }}
+    .tabs {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }}
+    .tabs label {{
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 8px 12px;
+      background: var(--panel);
+      font-size: 13px;
+    }}
+    #tab-overview:checked ~ .tabs label[for="tab-overview"],
+    #tab-ledger:checked ~ .tabs label[for="tab-ledger"] {{
+      color: var(--ink);
+      border-color: var(--accent);
+      background: #10261c;
+    }}
+    .tab-panel {{ display: none; }}
+    #tab-overview:checked ~ #overview-panel,
+    #tab-ledger:checked ~ #ledger-panel {{
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 16px;
@@ -309,13 +397,15 @@ def render_tearsheet(
       padding: 7px 9px;
       text-align: left;
     }}
-    .data-table th {{ background: #ebe7dc; }}
+    .data-table th {{ background: var(--panel-strong); color: var(--ink); }}
     .heatmap td {{ text-align: right; }}
     .empty, .warnings {{ color: var(--muted); font-size: 13px; }}
     .warnings {{ margin: 0; padding-left: 18px; }}
     @media (max-width: 900px) {{
       header, main {{ padding-left: 16px; padding-right: 16px; }}
-      main, .chart-grid {{ grid-template-columns: 1fr; }}
+      #tab-overview:checked ~ #overview-panel,
+      #tab-ledger:checked ~ #ledger-panel,
+      .chart-grid {{ grid-template-columns: 1fr; }}
       .wide, .metrics {{ grid-column: auto; }}
     }}
   </style>
@@ -333,10 +423,21 @@ def render_tearsheet(
     </div>
   </header>
   <main>
-    <section class="metrics" id="metrics-summary">{_metric_cards(result)}</section>
-    {"".join(sections)}
-    <section class="panel" id="config"><h2>Config</h2><div class="table-wrap"><table class="data-table" id="config-table">{_config_rows(result)}</table></div></section>
-    <section class="panel" id="warnings"><h2>Warnings</h2><ul class="warnings">{warnings_html}</ul></section>
+    <input class="tab-radio" type="radio" name="report-tab" id="tab-overview" checked>
+    <input class="tab-radio" type="radio" name="report-tab" id="tab-ledger">
+    <nav class="tabs" aria-label="Backtest report tabs">
+      <label for="tab-overview">Overview</label>
+      <label for="tab-ledger">Trade Ledger</label>
+    </nav>
+    <section class="tab-panel" id="overview-panel">
+      <section class="metrics" id="metrics-summary">{_metric_cards(result)}</section>
+      {"".join(sections)}
+      <section class="panel" id="config"><h2>Config</h2><div class="table-wrap"><table class="data-table" id="config-table">{_config_rows(result)}</table></div></section>
+      <section class="panel" id="warnings"><h2>Warnings</h2><ul class="warnings">{warnings_html}</ul></section>
+    </section>
+    <section class="tab-panel" id="ledger-panel">
+      <section class="panel wide" id="trade-ledger"><h2>Trade Ledger</h2><div class="table-wrap ledger-wrap">{ledger_html}</div></section>
+    </section>
   </main>
 </body>
 </html>

@@ -593,6 +593,12 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     default=None,
     help="Write a static, self-contained HTML tear-sheet to this file.",
 )
+@click.option(
+    "--open-report",
+    is_flag=True,
+    default=False,
+    help="Open the generated HTML report in the default browser.",
+)
 def backtest_historical(
     market,
     as_of,
@@ -628,6 +634,7 @@ def backtest_historical(
     price_adjustment,
     output_csv,
     report_path,
+    open_report,
 ):
     """Run an accurate historical backtest with Pine-like entry/exit expressions."""
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
@@ -687,7 +694,12 @@ def backtest_historical(
         auto_adjust=price_adjustment == "full"
     )
     result = run_backtest(cfg, fetcher)
-    if report_path:
+    generated_report = report_path
+    if generated_report is None and not output_csv:
+        from screener.reporting import temp_report_path
+
+        generated_report = temp_report_path("backtest-historical")
+    if generated_report:
         from screener.backtester.tearsheet import render_tearsheet
 
         universe_note = (
@@ -697,7 +709,7 @@ def backtest_historical(
         ) + "; survivorship bias: supplied list is not point-in-time"
         render_tearsheet(
             result,
-            report_path,
+            generated_report,
             title="Historical Backtest Tear Sheet",
             extra_notes=[universe_note],
         )
@@ -705,5 +717,9 @@ def backtest_historical(
         print_ledger_csv(result)
         return
     print_backtest(result)
-    if report_path:
-        click.echo(f"Report: {report_path}")
+    if generated_report:
+        click.echo(f"Report: {generated_report}")
+        if open_report:
+            from screener.reporting import open_report as open_report_file
+
+            open_report_file(generated_report)

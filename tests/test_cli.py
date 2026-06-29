@@ -13,6 +13,8 @@ from main import cli
 from screener.backtester import historical as historical_cli
 from screener.backtester.models import BacktestResult
 from screener.backtester.optimization import cli as optimize_cli
+from screener import history as history_mod
+from screener.commands import screen as screen_mod
 from screener.cli import cli as package_cli
 
 from tests.conftest import StubPriceFetcher, make_bars
@@ -71,6 +73,7 @@ def test_backtest_help_lists_flags():
         "--csv",
         "--strategy",
         "--tickers",
+        "--open-report",
     ]:
         assert flag in res.output, f"missing flag in help: {flag}"
 
@@ -94,8 +97,67 @@ def test_rolling_backtest_help_lists_core_flags():
         "--dashboard",
         "--dashboard-port",
         "--dashboard-dir",
+        "--open-report",
     ]:
         assert flag in res.output, f"missing flag in help: {flag}"
+
+
+def _screen_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "name": "AAA",
+                "description": "Alpha Corp",
+                "close": 100.0,
+                "change": 2.5,
+                "volume": 1_500_000,
+                "market_cap_basic": 10_000_000_000,
+                "setup_score": 91.0,
+            },
+            {
+                "name": "BBB",
+                "description": "Beta Corp",
+                "close": 50.0,
+                "change": -1.0,
+                "volume": 900_000,
+                "market_cap_basic": 5_000_000_000,
+                "setup_score": 72.0,
+            },
+        ]
+    )
+
+
+def test_screen_auto_temp_report(tmp_path, monkeypatch):
+    report = tmp_path / "screen.html"
+    monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
+    monkeypatch.setattr("screener.reporting.temp_report_path", lambda prefix: report)
+    monkeypatch.setattr(screen_mod, "scan", lambda **kwargs: (2, _screen_df()))
+
+    res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2"])
+
+    assert res.exit_code == 0, res.output
+    assert f"Report: {report}" in res.output
+    html = report.read_text(encoding="utf-8")
+    assert 'id="screen-summary"' in html
+    assert 'id="screen-results"' in html
+    assert "Important Metrics" in html
+    assert "--paper: #07090d" in html
+    assert '"plot_bgcolor":"#0d1117"' in html
+
+
+def test_screen_csv_skips_auto_temp_report(tmp_path, monkeypatch):
+    report = tmp_path / "screen.html"
+    monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
+    monkeypatch.setattr("screener.reporting.temp_report_path", lambda prefix: report)
+    monkeypatch.setattr(screen_mod, "scan", lambda **kwargs: (2, _screen_df()))
+
+    res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2", "--csv"])
+
+    assert res.exit_code == 0, res.output
+    assert "Report:" not in res.output
+    assert not report.exists()
+    parsed = pd.read_csv(io.StringIO(res.output))
+    assert parsed["name"].tolist() == ["AAA", "BBB"]
 
 
 def test_rolling_backtest_rejects_csv_with_dashboard():
