@@ -72,9 +72,11 @@ def _ticker_list(title: str, tickers: Sequence[str], section_id: str) -> str:
     if not tickers:
         body = '<p class="empty">None.</p>'
     else:
-        body = '<div class="chips">' + "".join(
-            f"<span>{html.escape(t)}</span>" for t in tickers
-        ) + "</div>"
+        body = (
+            '<div class="chips">'
+            + "".join(f"<span>{html.escape(t)}</span>" for t in tickers)
+            + "</div>"
+        )
     return f'<section class="panel" id="{section_id}"><h2>{title}</h2>{body}</section>'
 
 
