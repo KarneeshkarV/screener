@@ -40,6 +40,12 @@ class BacktestConfig(BaseModel):
     # ``screener.regime.classify_regimes``) is not in this set. Days with an
     # 'unknown' (warmup) regime are also suppressed.
     regime_filter: tuple[str, ...] = ()
+    # Optional rolling-backtest fundamental enrichment. When configured, dated
+    # fundamental columns are merged into each ticker's bars before entry/exit
+    # expressions are evaluated.
+    fundamentals_provider: Optional[str] = None
+    fundamental_fields: tuple[str, ...] = ()
+    fundamental_lag_days: int = 1
     max_universe: int = 200
     min_price: Optional[float] = None
     min_avg_dollar_volume: Optional[float] = None
