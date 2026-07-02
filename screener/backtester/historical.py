@@ -117,8 +117,13 @@ def _run_event_driven_sim(
     exit_ast,
     lookback: int,
     warnings: list[str],
-) -> None:
-    """Chronological event-driven simulator with optional reserve rotation."""
+) -> list[pd.Timestamp]:
+    """Chronological event-driven simulator with optional reserve rotation.
+
+    Returns ``master_dates``, the full cross-universe trading-day calendar the
+    simulation ran over, so the caller can seed the equity-curve calendar with
+    every real trading day in the horizon (not just trade-covered days).
+    """
     from screener.backtester.day_loop import DayLoop
     from screener.backtester.fills import FillModel
 
@@ -297,6 +302,8 @@ def _run_event_driven_sim(
         )
         slot_states[slot_id] = None
 
+    return master_dates
+
 
 def _benchmark_series_from_panel(
     price_panel: dict[str, pd.DataFrame], symbol: str
@@ -386,7 +393,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     slot_count = max(cfg.top, len(actives_df))
     portfolio = Portfolio(cfg.initial_capital, slot_count)
 
-    _run_event_driven_sim(
+    master_dates = _run_event_driven_sim(
         portfolio=portfolio,
         actives_df=actives_df,
         reserves_df=reserves_df,
@@ -400,7 +407,13 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     )
 
     trades = portfolio.closed_trades()
-    date_set: set[pd.Timestamp] = {as_of_ts.normalize()}
+    # Seed the equity-curve calendar with the full cross-universe trading-day
+    # horizon (``master_dates``), not just trade-covered days. Otherwise any day
+    # where every slot is simultaneously flat is dropped from the index, and the
+    # bar-count annualization in metrics.py silently compresses elapsed time,
+    # wildly inflating cagr/sharpe/vol. Mirrors rolling.py's _assemble_results.
+    date_set: set[pd.Timestamp] = set(master_dates)
+    date_set.add(as_of_ts.normalize())
     for trade in trades:
         frame = bars_by_tv.get(trade.ticker)
         if frame is None or frame.empty:  # pragma: no cover - traded ticker has bars
