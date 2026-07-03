@@ -14,6 +14,7 @@ from screener import fmp
 from screener.cache import cached_json_call
 from screener.providers import CachedProvider, ProviderSpec
 from screener.scanner import scan
+from screener.symbols import tv_to_nse, tv_to_yf
 
 
 INDIA_MIN_CRORE = 1000.0
@@ -59,6 +60,13 @@ def _num(value: Any) -> float | None:
     if pd.isna(out):
         return None
     return out
+
+
+#: Public alias for the shared numeric coercion used to turn possibly-string,
+#: percent- or comma-formatted values into ``float | None``. Exposed so callers
+#: (e.g. the conviction card) can parse provider rows without reaching into a
+#: private helper.
+to_number = _num
 
 
 def _first_num(mapping: dict[str, Any], *keys: str) -> float | None:
@@ -614,6 +622,51 @@ def screen_us_garp(
             if _passes_garp(row, US_THRESHOLDS):
                 rows.append(row)
     return add_garp_score(pd.DataFrame(rows)).head(limit)
+
+
+def load_garp_row(
+    symbol: str,
+    market: str,
+    *,
+    cache_ttl: float | None,
+    refresh: bool,
+) -> dict[str, Any] | None:
+    """Load the per-symbol GARP fundamentals row used for single-ticker scoring.
+
+    Composes the same fetch + map path the market screens use, for one symbol:
+
+    * India — the cached openscreener sections (``garp_india`` namespace) mapped
+      through :func:`_india_row`.
+    * US — the cached FMP payload mapped through :func:`_fmp_us_row` when an
+      ``FMP_API_KEY`` is configured, falling back to the yfinance
+      :func:`_us_row` when no key is set or FMP has no statement data.
+
+    Returns ``None`` when no fundamentals are available. Cache namespaces, keys,
+    TTLs and network calls are identical to the screen path.
+    """
+    if market == "india":
+        sym = tv_to_nse(symbol, strip_suffix=True)
+        payload = cached_json_call(
+            "garp_india",
+            ("india", sym),
+            ttl_seconds=cache_ttl,
+            refresh=refresh,
+            fetch=lambda: _fetch_india_sections(sym),
+        )
+        if not isinstance(payload, dict):
+            return None
+        return _india_row(sym, "", payload)
+    yf_sym = tv_to_yf(symbol, market)
+    api_key = _fmp_api_key()
+    if api_key:
+        fmp_payload = _fetch_fmp_us_cached(
+            yf_sym, api_key, cache_ttl=cache_ttl, refresh=refresh
+        )
+        if isinstance(fmp_payload, dict):
+            row = _fmp_us_row(yf_sym, "", fmp_payload)
+            if row is not None:
+                return row
+    return _us_row(yf_sym, "")
 
 
 def run_garp_screen(

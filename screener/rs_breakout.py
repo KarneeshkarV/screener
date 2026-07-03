@@ -7,7 +7,6 @@ high, and NSE delivery bhavcopy data.
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,6 +23,7 @@ from rich.console import Console, JustifyMethod
 from rich.table import Table
 
 from screener.backtester.data import PriceFetcher, tv_to_yf
+from screener.reporting import dump_json_file, markdown_row
 from screener.symbols import normalize_symbol, tv_to_nse
 from screener.unusual_volume.delivery import load_delivery_panel
 
@@ -639,7 +639,7 @@ def _render_bucket(title: str, rows: list[RsBreakoutRow], console: Console) -> N
 
 def write_json(result: RsBreakoutResult, path: Path) -> None:
     payload = result.model_dump(mode="json")
-    path.write_text(json.dumps(payload, indent=2, default=str))
+    dump_json_file(payload, path)
 
 
 def write_markdown(result: RsBreakoutResult, path: Path, market: str = "india") -> None:
@@ -663,8 +663,7 @@ def write_markdown(result: RsBreakoutResult, path: Path, market: str = "india") 
         )
         for i, row in enumerate(rows, 1):
             lines.append(
-                "| "
-                + " | ".join(
+                markdown_row(
                     [
                         str(i),
                         f"**{row.symbol}**",
@@ -677,7 +676,6 @@ def write_markdown(result: RsBreakoutResult, path: Path, market: str = "india") 
                         _fmt_float(row.previous_delivery_pct),
                     ]
                 )
-                + " |"
             )
         lines.append("")
     path.write_text("\n".join(lines))

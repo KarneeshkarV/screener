@@ -16,6 +16,7 @@ from typing import Any, Protocol, cast
 import pandas as pd
 import requests
 
+from screener import fmp
 from screener.backtester.data import load_env_file
 from screener.providers import CachedProvider, ProviderSpec
 
@@ -32,7 +33,7 @@ DEFAULT_FUNDAMENTAL_FIELDS: tuple[str, ...] = (
     "market_cap",
 )
 
-_FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
+_FMP_BASE_URL = fmp.FMP_V3_BASE_URL
 _FMP_PROVIDER = CachedProvider(
     ProviderSpec(
         provider="fmp", namespace="backtester_fmp_fundamentals", ttl_seconds=86400
@@ -164,19 +165,28 @@ def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | Non
     return ts
 
 
+_FMP_TIMEOUT = 30.0
+
+
 def _fmp_get(
     session: requests.Session,
     path: str,
     params: Mapping[str, Any],
     api_key: str,
 ) -> object:
-    response = session.get(
-        f"{_FMP_BASE_URL}/{path}",
-        params={**dict(params), "apikey": api_key},
-        timeout=30,
+    # Route through the shared FMP client, injecting this call site's pooled
+    # ``requests`` session as the transport. ``headers={}`` keeps the legacy
+    # requests-default User-Agent (this site never sent the Mozilla UA); the
+    # session path preserves ``timeout=30``, ``raise_for_status`` (so non-2xx
+    # still raises ``requests.HTTPError``) and ``.json()`` decoding verbatim.
+    client = fmp.FmpClient(
+        api_key,
+        base_url=_FMP_BASE_URL,
+        headers={},
+        timeout=_FMP_TIMEOUT,
+        session=session,
     )
-    response.raise_for_status()
-    return response.json()
+    return client.get(path, params)
 
 
 def _fetch_fmp_sections(

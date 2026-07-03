@@ -99,7 +99,7 @@ def test_us_skips_unavailable_pillars(monkeypatch):
     bars, bench = _price_env()
     as_of = bars.index[-1].date()
     fetcher = StubPriceFetcher({"AAPL": bars, "SPY": bench})
-    monkeypatch.setattr(conviction_mod, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(conviction_mod, "resolve_fmp_api_key", lambda: None)
     monkeypatch.setattr(
         conviction_mod,
         "_load_fundamentals",
@@ -128,7 +128,7 @@ def test_us_skips_unavailable_pillars(monkeypatch):
 
 def test_no_price_data_yields_skipped_card(monkeypatch):
     fetcher = StubPriceFetcher({})
-    monkeypatch.setattr(conviction_mod, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(conviction_mod, "resolve_fmp_api_key", lambda: None)
     monkeypatch.setattr(
         conviction_mod,
         "_load_fundamentals",
@@ -158,7 +158,7 @@ def test_cli_json_shape(monkeypatch):
     bars, bench = _price_env()
     as_of = bars.index[-1].date()
     fetcher = StubPriceFetcher({"AAPL": bars, "SPY": bench})
-    monkeypatch.setattr(conviction_mod, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(conviction_mod, "resolve_fmp_api_key", lambda: None)
     monkeypatch.setattr(
         conviction_mod,
         "_load_fundamentals",

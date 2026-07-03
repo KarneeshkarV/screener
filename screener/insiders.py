@@ -159,6 +159,15 @@ def _fmp_api_key() -> Optional[str]:
     return fmp.resolve_api_key()
 
 
+def resolve_fmp_api_key() -> Optional[str]:
+    """Public resolver for the configured FMP API key (or ``None``).
+
+    Thin public seam over :func:`_fmp_api_key` so callers such as the
+    conviction card can check for a key without importing a private helper.
+    """
+    return _fmp_api_key()
+
+
 def _aggregate_fmp_transactions(
     transactions: list[dict], window_days: int = _FMP_WINDOW_DAYS
 ) -> Optional[dict]:
@@ -283,6 +292,25 @@ def _fetch_fmp_insider_one(
         fallback=None,
         ttl_seconds=cache_ttl,
         operation=f"insider trading {symbol}",
+    )
+
+
+def load_insider_aggregate(
+    symbol: str,
+    *,
+    api_key: str,
+    cache_ttl: float | None,
+    refresh: bool,
+) -> Optional[dict]:
+    """Load the trailing 6-month FMP Form 4 net buy/sell aggregate for one symbol.
+
+    Public per-symbol seam over :func:`_fetch_fmp_insider_one`: single-ticker
+    callers (the conviction card) key both the display ``name`` and the FMP
+    ``symbol`` on the same value, so this hides that redundant dual argument.
+    Returns ``None`` when there is no aggregatable Form 4 activity in the window.
+    """
+    return _fetch_fmp_insider_one(
+        symbol, symbol, api_key=api_key, cache_ttl=cache_ttl, refresh=refresh
     )
 
 

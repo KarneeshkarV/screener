@@ -15,6 +15,7 @@ import pytest
 from click.testing import CliRunner
 
 from screener import conviction as conviction_mod
+from screener import garp as garp_module
 from screener import insiders as insiders_mod
 from screener import pledge as pledge_mod
 from screener.cli import cli as package_cli
@@ -661,8 +662,8 @@ def test_score_breakout_near_pivot(monkeypatch):
 def test_load_smart_money_us(monkeypatch):
     monkeypatch.setattr(
         conviction_mod,
-        "_fetch_fmp_insider_one",
-        lambda name, symbol, *, api_key, cache_ttl, refresh: {"fmp_net_shares_6m": 1.0},
+        "load_insider_aggregate",
+        lambda symbol, *, api_key, cache_ttl, refresh: {"fmp_net_shares_6m": 1.0},
     )
     out = conviction_mod._load_smart_money_us(
         "AAPL", "k", cache_ttl=None, refresh=False
@@ -803,7 +804,7 @@ def test_smart_money_pillar_us_pit_stale():
 
 
 def test_smart_money_pillar_us_error(monkeypatch):
-    monkeypatch.setattr(conviction_mod, "_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(conviction_mod, "resolve_fmp_api_key", lambda: "k")
 
     def boom(*a, **k):
         raise RuntimeError("provider down")
@@ -817,7 +818,7 @@ def test_smart_money_pillar_us_error(monkeypatch):
 
 
 def test_smart_money_pillar_us_no_payload(monkeypatch):
-    monkeypatch.setattr(conviction_mod, "_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(conviction_mod, "resolve_fmp_api_key", lambda: "k")
     monkeypatch.setattr(conviction_mod, "_load_smart_money_us", lambda *a, **k: None)
     res = conviction_mod._smart_money_pillar(
         "AAPL", "us", date.today(), cache_ttl=None, refresh=False
@@ -827,7 +828,7 @@ def test_smart_money_pillar_us_no_payload(monkeypatch):
 
 
 def test_smart_money_pillar_us_ok(monkeypatch):
-    monkeypatch.setattr(conviction_mod, "_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(conviction_mod, "resolve_fmp_api_key", lambda: "k")
     monkeypatch.setattr(
         conviction_mod,
         "_load_smart_money_us",
@@ -887,10 +888,13 @@ def test_score_fundamentals_with_failures():
     assert "missed" in res.evidence
 
 
+# The per-symbol fundamentals composition now lives in ``garp.load_garp_row``;
+# conviction's ``_load_fundamentals`` is a thin delegator, so these exercise the
+# wrapper + garp path together by patching the garp-module seams it drives.
 def test_load_fundamentals_india(monkeypatch):
-    monkeypatch.setattr(conviction_mod, "cached_json_call", lambda *a, **k: {"x": 1})
+    monkeypatch.setattr(garp_module, "cached_json_call", lambda *a, **k: {"x": 1})
     monkeypatch.setattr(
-        conviction_mod, "_india_row", lambda sym, name, payload: {"peg": 1.0}
+        garp_module, "_india_row", lambda sym, name, payload: {"peg": 1.0}
     )
     out = conviction_mod._load_fundamentals(
         "RELIANCE", "india", cache_ttl=None, refresh=False
@@ -899,7 +903,7 @@ def test_load_fundamentals_india(monkeypatch):
 
 
 def test_load_fundamentals_india_non_dict(monkeypatch):
-    monkeypatch.setattr(conviction_mod, "cached_json_call", lambda *a, **k: None)
+    monkeypatch.setattr(garp_module, "cached_json_call", lambda *a, **k: None)
     out = conviction_mod._load_fundamentals(
         "RELIANCE", "india", cache_ttl=None, refresh=False
     )
@@ -907,31 +911,27 @@ def test_load_fundamentals_india_non_dict(monkeypatch):
 
 
 def test_load_fundamentals_us_fmp(monkeypatch):
-    monkeypatch.setattr(conviction_mod, "_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(garp_module, "_fetch_fmp_us_cached", lambda *a, **k: {"raw": 1})
     monkeypatch.setattr(
-        conviction_mod, "_fetch_fmp_us_cached", lambda *a, **k: {"raw": 1}
-    )
-    monkeypatch.setattr(
-        conviction_mod, "_fmp_us_row", lambda sym, name, payload: {"peg": 1.0}
+        garp_module, "_fmp_us_row", lambda sym, name, payload: {"peg": 1.0}
     )
     out = conviction_mod._load_fundamentals("AAPL", "us", cache_ttl=None, refresh=False)
     assert out == {"peg": 1.0}
 
 
 def test_load_fundamentals_us_fmp_row_none_falls_back(monkeypatch):
-    monkeypatch.setattr(conviction_mod, "_fmp_api_key", lambda: "k")
-    monkeypatch.setattr(
-        conviction_mod, "_fetch_fmp_us_cached", lambda *a, **k: {"raw": 1}
-    )
-    monkeypatch.setattr(conviction_mod, "_fmp_us_row", lambda sym, name, payload: None)
-    monkeypatch.setattr(conviction_mod, "_us_row", lambda sym, name: {"peg": 2.0})
+    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(garp_module, "_fetch_fmp_us_cached", lambda *a, **k: {"raw": 1})
+    monkeypatch.setattr(garp_module, "_fmp_us_row", lambda sym, name, payload: None)
+    monkeypatch.setattr(garp_module, "_us_row", lambda sym, name: {"peg": 2.0})
     out = conviction_mod._load_fundamentals("AAPL", "us", cache_ttl=None, refresh=False)
     assert out == {"peg": 2.0}
 
 
 def test_load_fundamentals_us_no_key(monkeypatch):
-    monkeypatch.setattr(conviction_mod, "_fmp_api_key", lambda: None)
-    monkeypatch.setattr(conviction_mod, "_us_row", lambda sym, name: {"peg": 3.0})
+    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(garp_module, "_us_row", lambda sym, name: {"peg": 3.0})
     out = conviction_mod._load_fundamentals("AAPL", "us", cache_ttl=None, refresh=False)
     assert out == {"peg": 3.0}
 
@@ -1237,3 +1237,32 @@ def test_run_promoter_buys_us_outer_merge(monkeypatch):
     res = CliRunner().invoke(package_cli, ["promoter-buys", "-m", "us"])
     assert res.exit_code == 0, res.output
     assert "ACME" in res.output
+
+
+# ── public insiders seams (used by the conviction card) ──────────────────────
+
+
+def test_resolve_fmp_api_key_delegates(monkeypatch):
+    monkeypatch.setattr(insiders_mod, "_fmp_api_key", lambda: "pub-key")
+    assert insiders_mod.resolve_fmp_api_key() == "pub-key"
+
+
+def test_load_insider_aggregate_keys_name_on_symbol(monkeypatch):
+    captured: dict = {}
+
+    def fake(name, symbol, *, api_key, cache_ttl, refresh):
+        captured.update(name=name, symbol=symbol, api_key=api_key, refresh=refresh)
+        return {"name": name, "fmp_net_shares_6m": 5.0}
+
+    monkeypatch.setattr(insiders_mod, "_fetch_fmp_insider_one", fake)
+    out = insiders_mod.load_insider_aggregate(
+        "AAPL", api_key="k", cache_ttl=None, refresh=True
+    )
+    assert out == {"name": "AAPL", "fmp_net_shares_6m": 5.0}
+    # Both the display name and the FMP symbol are keyed on the single argument.
+    assert captured == {
+        "name": "AAPL",
+        "symbol": "AAPL",
+        "api_key": "k",
+        "refresh": True,
+    }

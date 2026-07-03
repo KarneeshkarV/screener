@@ -6,19 +6,18 @@ Markdown summary.
 
 from __future__ import annotations
 
-import json
 import math
-from numbers import Integral, Real
 from pathlib import Path
 from typing import Iterable
 
-import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
 from screener.format import fmt_float as _fmt_float
 from screener.format import fmt_pct as _fmt_pct
 from screener.format import fmt_volume as _fmt_volume
+from screener.reporting import dump_json_file, json_safe, markdown_row
+from screener.reporting import json_safe as _json_safe  # noqa: F401  back-compat
 
 from .detector import Event
 
@@ -145,31 +144,9 @@ def _color_strength(s: str) -> str:
     }.get(s, s)
 
 
-def _json_safe(value):
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(v) for v in value]
-    try:
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        pass
-    if isinstance(value, Real) and not isinstance(value, bool):
-        as_float = float(value)
-        if not math.isfinite(as_float):
-            return None
-        if isinstance(value, Integral):
-            return int(value)
-        return as_float
-    return value
-
-
 def write_json(events: list[Event], path: Path) -> None:
-    payload = [_json_safe(ev.to_dict()) for ev in sort_events(events)]
-    Path(path).write_text(json.dumps(payload, indent=2, default=str, allow_nan=False))
+    payload = [json_safe(ev.to_dict()) for ev in sort_events(events)]
+    dump_json_file(payload, path, allow_nan=False)
 
 
 def write_markdown(events: list[Event], path: Path, market: str, as_of) -> None:
@@ -213,8 +190,7 @@ def write_markdown(events: list[Event], path: Path, market: str, as_of) -> None:
             lines.append("|---|--------|-----:|-------|------:|----:|--------|")
             for i, ev in enumerate(_sort_by_buildup(evs)[:25], 1):
                 lines.append(
-                    "| "
-                    + " | ".join(
+                    markdown_row(
                         [
                             str(i),
                             f"**{ev.symbol}**",
@@ -225,7 +201,6 @@ def write_markdown(events: list[Event], path: Path, market: str, as_of) -> None:
                             ev.sector or "-",
                         ]
                     )
-                    + " |"
                 )
             lines.append("")
             continue
@@ -278,7 +253,7 @@ def write_markdown(events: list[Event], path: Path, market: str, as_of) -> None:
                     _fmt_float(ev.buildup_score, 3),
                     ev.sector or "-",
                 ]
-            lines.append("| " + " | ".join(row) + " |")
+            lines.append(markdown_row(row))
         lines.append("")
     Path(path).write_text("\n".join(lines))
 

@@ -5,10 +5,12 @@ from typing import Iterable
 
 import pandas as pd
 import pytest
+import requests
 from click.testing import CliRunner
 
 from main import cli
 
+from screener import fmp
 from screener.backtester import fundamentals, rolling
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling import run_rolling_backtest
@@ -94,6 +96,90 @@ def test_fmp_payload_normalizes_effective_dates_and_fields():
     assert row["eps_growth_yoy"] == pytest.approx(20.0)
     assert row["revenue_up_3q"] == 1.0
     assert row["market_cap"] == 5_000_000_000.0
+
+
+class _FakeResponse:
+    def __init__(self, payload: object, status: int = 200) -> None:
+        self._payload = payload
+        self.status = status
+
+    def raise_for_status(self) -> None:
+        if self.status >= 400:
+            raise requests.HTTPError(f"HTTP {self.status}")
+
+    def json(self) -> object:
+        return self._payload
+
+
+class _FakeSession:
+    """Records every GET; stands in for a pooled ``requests.Session``."""
+
+    def __init__(self, response: _FakeResponse) -> None:
+        self.response = response
+        self.calls: list[tuple[str, dict[str, str], float]] = []
+
+    def get(self, url: str, *, headers: dict[str, str], timeout: float) -> _FakeResponse:
+        self.calls.append((url, dict(headers), timeout))
+        return self.response
+
+
+def test_fmp_get_routes_through_shared_client_apikey_last_timeout_30():
+    session = _FakeSession(_FakeResponse({"ok": True}))
+
+    out = fundamentals._fmp_get(
+        session,  # type: ignore[arg-type]
+        "income-statement/AAPL",
+        {"period": "quarter", "limit": 4},
+        "SECRET",
+    )
+
+    assert out == {"ok": True}
+    url, headers, timeout = session.calls[0]
+    # Shared v3 base URL, param order preserved with apikey appended last.
+    assert url == (
+        f"{fmp.FMP_V3_BASE_URL}/income-statement/AAPL"
+        "?period=quarter&limit=4&apikey=SECRET"
+    )
+    # timeout=30 (not the fmp default 20) preserved, legacy empty-header UA kept.
+    assert timeout == 30.0
+    assert headers == {}
+
+
+def test_fmp_get_preserves_requests_http_error_on_non_2xx():
+    session = _FakeSession(_FakeResponse(None, status=404))
+
+    with pytest.raises(requests.HTTPError):
+        fundamentals._fmp_get(
+            session,  # type: ignore[arg-type]
+            "income-statement/AAPL",
+            {"limit": 1},
+            "SECRET",
+        )
+
+
+def test_fetch_fmp_sections_uses_injected_session_for_all_endpoints():
+    session = _FakeSession(_FakeResponse([{"date": "2024-01-31"}]))
+
+    payload = fundamentals._fetch_fmp_sections(
+        "AAPL",
+        api_key="SECRET",
+        session=session,  # type: ignore[arg-type]
+        limit=4,
+        fields=fundamentals.DEFAULT_FUNDAMENTAL_FIELDS,
+    )
+
+    assert set(payload) == {
+        "income",
+        "balance",
+        "ratios",
+        "key_metrics",
+        "enterprise_values",
+    }
+    requested = [url for url, _headers, _timeout in session.calls]
+    assert any("income-statement/AAPL" in u for u in requested)
+    assert any("enterprise-values/AAPL" in u for u in requested)
+    assert all(u.startswith(fmp.FMP_V3_BASE_URL) for u in requested)
+    assert all(u.endswith("apikey=SECRET") for u in requested)
 
 
 def test_openscreener_payload_normalizes_revenue_up_3q_with_india_lag():

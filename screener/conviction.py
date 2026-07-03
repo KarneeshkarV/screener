@@ -46,18 +46,14 @@ from screener.garp import (
     GarpThresholds,
     INDIA_THRESHOLDS,
     US_THRESHOLDS,
-    _fetch_fmp_us_cached,
-    _fetch_india_sections,
-    _fmp_us_row,
-    _india_row,
-    _num,
-    _us_row,
+    load_garp_row,
+    to_number,
 )
 from screener.indicators.plugins.ema import ema
 from screener.indicators.plugins.rsi import rsi
 from screener.insiders import (
-    _fetch_fmp_insider_one,
-    _fmp_api_key,
+    load_insider_aggregate,
+    resolve_fmp_api_key,
 )
 from screener.pledge import resolve_pledge_pct
 from screener.rs_breakout import (
@@ -373,11 +369,11 @@ def _score_smart_money_us(payload: dict[str, Any]) -> PillarResult:
 
 
 def _score_smart_money_india(payload: dict[str, Any]) -> PillarResult:
-    change = _num(payload.get("promoter_change"))
+    change = to_number(payload.get("promoter_change"))
     if change is None:
         return _skipped("smart_money", "no promoter change data")
-    latest = _num(payload.get("promoter_pct_latest"))
-    prev = _num(payload.get("promoter_pct_prev"))
+    latest = to_number(payload.get("promoter_pct_latest"))
+    prev = to_number(payload.get("promoter_pct_prev"))
     quarter = payload.get("latest_quarter")
     # ±2pp promoter-holding change maps to the 0-100 extremes; 0pp → 50.
     score = _clamp(50.0 + 25.0 * change)
@@ -392,8 +388,8 @@ def _score_smart_money_india(payload: dict[str, Any]) -> PillarResult:
 def _load_smart_money_us(
     symbol: str, api_key: str, *, cache_ttl: float | None, refresh: bool
 ) -> Optional[dict[str, Any]]:
-    return _fetch_fmp_insider_one(
-        symbol, symbol, api_key=api_key, cache_ttl=cache_ttl, refresh=refresh
+    return load_insider_aggregate(
+        symbol, api_key=api_key, cache_ttl=cache_ttl, refresh=refresh
     )
 
 
@@ -413,8 +409,8 @@ def _promoter_pair_as_of(
     if len(public) < 2:
         return None
     latest, prev = public[-1], public[-2]
-    p_latest = _num(latest.get("promoters"))
-    p_prev = _num(prev.get("promoters"))
+    p_latest = to_number(latest.get("promoters"))
+    p_prev = to_number(prev.get("promoters"))
     if p_latest is None or p_prev is None:
         return None
     return {
@@ -459,7 +455,7 @@ def _smart_money_pillar(
         # filings. Skip rather than fabricate a back-dated signal.
         if _is_pit_stale(as_of):
             return _skipped(name, f"no point-in-time Form 4 data for {as_of}")
-        api_key = _fmp_api_key()
+        api_key = resolve_fmp_api_key()
         if not api_key:
             return _skipped(name, "FMP_API_KEY not configured")
         try:
@@ -493,7 +489,7 @@ def _garp_checks(
     row: dict[str, Any], thresholds: GarpThresholds
 ) -> list[tuple[str, Optional[bool]]]:
     def check(key: str, predicate: Any) -> Optional[bool]:
-        value = _num(row.get(key))
+        value = to_number(row.get(key))
         if value is None:
             return None
         return bool(predicate(value))
@@ -543,29 +539,10 @@ def score_fundamentals(row: dict[str, Any], thresholds: GarpThresholds) -> Pilla
 def _load_fundamentals(
     symbol: str, market: str, *, cache_ttl: float | None, refresh: bool
 ) -> Optional[dict[str, Any]]:
-    if market == "india":
-        sym = india_symbol(symbol)
-        payload = cached_json_call(
-            "garp_india",
-            ("india", sym),
-            ttl_seconds=cache_ttl,
-            refresh=refresh,
-            fetch=lambda: _fetch_india_sections(sym),
-        )
-        if not isinstance(payload, dict):
-            return None
-        return _india_row(sym, "", payload)
-    yf_sym = tv_to_yf(symbol, market)
-    api_key = _fmp_api_key()
-    if api_key:
-        fmp_payload = _fetch_fmp_us_cached(
-            yf_sym, api_key, cache_ttl=cache_ttl, refresh=refresh
-        )
-        if isinstance(fmp_payload, dict):
-            row = _fmp_us_row(yf_sym, "", fmp_payload)
-            if row is not None:
-                return row
-    return _us_row(yf_sym, "")
+    # Per-symbol GARP row via the public loader; the fetch+map composition
+    # (India openscreener sections / US FMP payload with yfinance fallback)
+    # lives in :mod:`screener.garp` and is shared with the market screens.
+    return load_garp_row(symbol, market, cache_ttl=cache_ttl, refresh=refresh)
 
 
 def _fundamentals_pillar(
