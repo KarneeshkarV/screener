@@ -8,11 +8,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from screener.backtester.engine import (
-    run_backtest,
-    run_rolling_backtest,
-    simulate_ticker,
-)
+from screener.backtester.core import simulate_ticker
+from screener.backtester.historical import run_backtest
+from screener.backtester.rolling import run_rolling_backtest
 from screener.backtester.metrics import compute_metrics
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.pine import parse
@@ -636,7 +634,7 @@ def test_insufficient_lookback_emits_warning(stub_fetcher_factory):
 
 def test_run_backtest_errors_when_no_universe_provided():
     """The TradingView fallback was removed; no universe → ValueError."""
-    from screener.backtester.engine import _resolve_universe
+    from screener.backtester.core import _resolve_universe
 
     cfg = _cfg(tickers=None)
     with pytest.raises(ValueError, match="No universe provided"):

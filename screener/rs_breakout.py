@@ -24,6 +24,7 @@ from rich.console import Console, JustifyMethod
 from rich.table import Table
 
 from screener.backtester.data import PriceFetcher, tv_to_yf
+from screener.symbols import normalize_symbol, tv_to_nse
 from screener.unusual_volume.delivery import load_delivery_panel
 
 
@@ -55,10 +56,7 @@ class RsBreakoutRow(BaseModel):
     @field_validator("symbol")
     @classmethod
     def _normalize_symbol(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("symbol must not be empty")
-        return normalized
+        return normalize_symbol(value)
 
     def to_dict(self) -> dict[str, object]:
         return self.model_dump(mode="json")
@@ -379,9 +377,7 @@ def load_india_delivery_for_scan(symbols: Iterable[str], as_of: date) -> pd.Data
 
 
 def india_symbol(symbol: str) -> str:
-    if ":" in symbol:
-        return symbol.split(":", 1)[1].upper()
-    return symbol.replace(".NS", "").replace(".BO", "").upper()
+    return tv_to_nse(symbol, strip_suffix=True)
 
 
 def sort_rows(rows: Iterable[RsBreakoutRow]) -> list[RsBreakoutRow]:

@@ -13,11 +13,20 @@ Two backtest engines run a near-identical per-day skeleton:
 
 The *exit* half of each day is identical between the two and is owned here by
 :class:`DayLoop`. The *fill* half genuinely differs (reserve queue + re-entry
-vs. daily candidate refill) and is therefore left to each engine as a
-candidate-source adapter — see the module docstrings of ``historical`` and
+vs. daily candidate refill) and is therefore expressed as the explicit
+:class:`CandidateSource` interface, with the historical and rolling behaviours
+as its two adapters — see the module docstrings of ``historical`` and
 ``rolling``. Modelling the difference at the candidate seam (rather than
 branching on a ``mode`` flag inside the day-loop) keeps each path's exact
 ordering and semantics intact.
+
+The per-day skeleton shared by both engines is :func:`run_day_loop`, which
+drives one ``CandidateSource`` and one ``DayLoop`` over a calendar:
+
+    for each day:
+        source.before_exits(day)              # engine-specific pre-exit fill
+        freed = day_loop.process_exits_for_day(day)
+        source.after_exits(day, freed)         # engine-specific refill
 
 The exit sequence per slot, per day, is invariant:
 
@@ -30,6 +39,7 @@ exactly; :class:`DayLoop` is the single home for it.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Iterable, Protocol
 
 import pandas as pd
 
@@ -101,3 +111,48 @@ class DayLoop:
             ):
                 freed.append(FreedSlot(slot_id=slot_id, state=state))
         return freed
+
+
+class CandidateSource(Protocol):
+    """The engine-specific *fill* half of a backtest day.
+
+    :class:`DayLoop` owns the invariant *exit* half. Refilling slots with new
+    entries is where the two engines genuinely diverge:
+
+    * historical rotates a fixed reserve queue selected once at ``as_of`` and
+      may re-enter the same ticker into the slot it just vacated;
+    * rolling refills from that day's freshly ranked candidate scan.
+
+    Each engine supplies an adapter implementing this Protocol; :func:`run_day_loop`
+    interleaves it with the shared exit sequence. ``before_exits`` runs any
+    pre-exit fill work (historical re-entry promotion); ``after_exits`` receives
+    the slots that freed during the exit sweep and refills them. Both mutate the
+    shared slot/portfolio state in place — the return value is intentionally
+    ``None`` so neither engine's exact ordering leaks into the driver.
+    """
+
+    def before_exits(self, day: pd.Timestamp) -> None:
+        """Fill work that must happen *before* the day's exit sweep."""
+        ...
+
+    def after_exits(self, day: pd.Timestamp, freed: list[FreedSlot]) -> None:
+        """Refill slots given those that freed during the exit sweep."""
+        ...
+
+
+def run_day_loop(
+    days: Iterable[pd.Timestamp],
+    day_loop: DayLoop,
+    source: CandidateSource,
+) -> None:
+    """Drive one ``DayLoop`` and one ``CandidateSource`` over ``days``.
+
+    The single shared per-day skeleton: pre-exit fill, the invariant exit sweep,
+    then post-exit refill. Both engines' full per-day semantics live in their
+    ``CandidateSource`` adapter; this driver only fixes the ordering between the
+    exit half and the fill half.
+    """
+    for day in days:
+        source.before_exits(day)
+        freed = day_loop.process_exits_for_day(day)
+        source.after_exits(day, freed)

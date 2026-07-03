@@ -19,12 +19,9 @@ import pandas as pd
 import pytest
 
 from screener.backtester.data import _normalize_frame
-from screener.backtester.engine import (
-    _resolve_stop_fill,
-    _resolve_target_fill,
-    run_backtest,
-    simulate_ticker,
-)
+from screener.backtester.core import simulate_ticker
+from screener.backtester.fills import _resolve_stop_fill, _resolve_target_fill
+from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
 from screener.backtester.portfolio import Portfolio
 from screener.backtester.slippage import (

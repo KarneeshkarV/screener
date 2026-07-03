@@ -19,10 +19,7 @@ For US the yfinance feed is the only signal.
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, cast
@@ -30,6 +27,7 @@ from typing import Optional, cast
 import pandas as pd
 import yfinance as yf
 
+from screener import fmp
 from screener.backtester.data import tv_to_yf
 from screener.providers import CachedProvider, ProviderSpec
 from screener.resilience import call_with_resilience
@@ -158,15 +156,7 @@ def fetch_yfinance_insiders(
 
 def _fmp_api_key() -> Optional[str]:
     """Resolve FMP_API_KEY, loading the project .env once like the backtester."""
-    key = os.environ.get("FMP_API_KEY")
-    if key:
-        return key
-    try:
-        from screener.backtester.data import load_env_file
-    except Exception:
-        return None
-    load_env_file()
-    return os.environ.get("FMP_API_KEY")
+    return fmp.resolve_api_key()
 
 
 def _aggregate_fmp_transactions(
@@ -235,16 +225,15 @@ def _fetch_fmp_insider_one(
     def _fetch() -> Optional[dict]:
         cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=_FMP_WINDOW_DAYS)
         truncated = False
+        client = fmp.FmpClient(
+            api_key,
+            base_url=fmp.FMP_V4_BASE_URL,
+            headers=_SCREENER_HEADERS,
+            timeout=20,
+        )
 
         def _request_page(page: int) -> Optional[list]:
-            query = urllib.parse.urlencode(
-                {"symbol": symbol, "page": page, "apikey": api_key}
-            )
-            req = urllib.request.Request(
-                f"{_FMP_INSIDER_URL}?{query}", headers=_SCREENER_HEADERS
-            )
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                payload = json.loads(resp.read().decode("utf-8", "ignore"))
+            payload = client.get("insider-trading", {"symbol": symbol, "page": page})
             return payload if isinstance(payload, list) else None
 
         # FMP paginates insider rows (newest first). Walk pages until one

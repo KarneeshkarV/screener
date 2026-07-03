@@ -1,8 +1,10 @@
-"""Registry for callable research strategies.
+"""Callable-strategy view over the unified strategy registry.
 
-Backwards-compatible view over the unified ``screener.strategies.spec.registry``.
-``STRATEGIES`` and friends remain a plain dict for the pine_runner; expression-
-flavored strategies are surfaced separately through
+``STRATEGIES`` is a live, read-only projection of
+``screener.strategies.spec.registry`` restricted to callable strategies
+(``fn(df) -> list[Trade]``), used by the pine_runner. It holds no state of its
+own — every access re-reads the one registry, so it can never drift from it.
+Expression-flavored strategies are surfaced through
 ``screener.strategies.expressions``.
 
 Add a new strategy by dropping a plugin file in ``screener/strategies/plugins/``
@@ -12,18 +14,23 @@ with an ``@strategy(...)`` decorator. No edits to this file are needed.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import Optional
 
 from screener.strategies.base import StrategyFn
-from screener.strategies.spec import discover_plugins, registry
+from screener.strategies.spec import (
+    DerivedView,
+    StrategySpec,
+    discover_plugins,
+)
 
 discover_plugins()
 
 
-STRATEGIES: dict[str, StrategyFn] = {
-    name: spec.callable_fn
-    for name, spec in registry.items()
-    if spec.callable_fn is not None
-}
+def _callable_of(spec: StrategySpec) -> Optional[StrategyFn]:
+    return spec.callable_fn
+
+
+STRATEGIES: DerivedView[StrategyFn] = DerivedView(_callable_of)
 
 
 def get_strategy(name: str) -> StrategyFn:

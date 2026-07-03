@@ -17,7 +17,8 @@ from datetime import date
 
 import pytest
 
-from screener.backtester.engine import run_backtest, run_rolling_backtest
+from screener.backtester.historical import run_backtest
+from screener.backtester.rolling import run_rolling_backtest
 from screener.backtester.models import BacktestConfig
 
 from tests.conftest import StubPriceFetcher, make_bars

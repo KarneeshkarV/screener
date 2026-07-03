@@ -34,6 +34,8 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from screener.symbols import normalize_symbol
+
 
 DEFAULT_WINDOW = 20
 DEFAULT_MIN_SCORE = 0.6
@@ -80,10 +82,7 @@ class BuildupScore(BaseModel):
     @field_validator("symbol")
     @classmethod
     def _normalize_symbol(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("symbol must not be empty")
-        return normalized
+        return normalize_symbol(value)
 
     def to_dict(self) -> dict[str, object]:
         return self.model_dump(mode="json")

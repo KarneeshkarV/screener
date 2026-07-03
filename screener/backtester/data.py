@@ -23,6 +23,11 @@ import requests
 
 from screener.resilience import call_with_resilience
 
+# Re-exported for backward compatibility: several modules and the docs import
+# ``tv_to_yf`` from ``screener.backtester.data``. The definition now lives in
+# ``screener.symbols``.
+from screener.symbols import tv_to_yf as tv_to_yf
+
 
 CACHE_DIR = Path.home() / ".screener" / "prices"
 FMP_CACHE_DIR = Path.home() / ".screener" / "fmp_prices"
@@ -114,29 +119,6 @@ class PriceFetcher(Protocol):
         Frames must have lowercase columns: open, high, low, close, volume.
         ``adj_close`` is optional; absent means ``close`` is already adjusted.
         """
-
-
-def tv_to_yf(symbol: str, market: str) -> str:
-    """Translate a TradingView-style symbol to a yfinance symbol.
-
-    Examples:
-      'NSE:RELIANCE' + india → 'RELIANCE.NS'
-      'BSE:TCS'     + india → 'TCS.BO'
-      'NASDAQ:AAPL' + us    → 'AAPL'
-      'AAPL'        + us    → 'AAPL'
-      'RELIANCE'    + india → 'RELIANCE.NS'
-    """
-    sym = symbol.strip().upper()
-    if ":" in sym:
-        exch, rest = sym.split(":", 1)
-        if exch == "NSE":
-            return f"{rest}.NS"
-        if exch == "BSE":
-            return f"{rest}.BO"
-        return rest
-    if market == "india" and "." not in sym:
-        return f"{sym}.NS"
-    return sym
 
 
 def _cache_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
