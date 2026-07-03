@@ -124,6 +124,39 @@ def test_fetch_one_returns_summary_from_stubbed_payload(monkeypatch, fake_provid
     assert "apikey=key" in seen[0]
 
 
+def test_fetch_one_routes_through_shared_fmp(monkeypatch, fake_provider):
+    # The HTTP transport must go through screener.fmp (shared client), not a
+    # hand-rolled urllib call. Patch fmp.request_json and assert the exact URL,
+    # headers and timeout the shared client hands it.
+    from screener import fmp as fmp_module
+
+    monkeypatch.setattr(
+        institutional_module, "_FMP_INSTITUTIONAL_PROVIDER", fake_provider()
+    )
+    seen: dict = {}
+
+    def fake_request_json(url, *, headers, timeout):
+        seen["url"] = url
+        seen["headers"] = headers
+        seen["timeout"] = timeout
+        return [_holder(1_000, change=100)]
+
+    monkeypatch.setattr(fmp_module, "request_json", fake_request_json)
+
+    out = _fetch_fmp_institutional_one(
+        "AAPL", api_key="key", cache_ttl=None, refresh=True
+    )
+
+    assert out is not None and out["symbol"] == "AAPL"
+    assert (
+        seen["url"]
+        == "https://financialmodelingprep.com/api/v3/institutional-holder/AAPL"
+        "?apikey=key"
+    )
+    assert seen["headers"] == fmp_module.DEFAULT_HEADERS
+    assert seen["timeout"] == 20
+
+
 def test_fetch_one_returns_none_for_empty_or_non_list_payload(monkeypatch, tmp_path):
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
 

@@ -286,3 +286,90 @@ def test_screen_us_garp_falls_back_when_fmp_has_no_statements(
 
     assert called == ["AAA"]
     assert list(out["name"]) == ["AAA"]
+
+
+# ── public per-symbol GARP loader (used by the conviction card) ─────────────
+
+_GARP_ROW_KEYS = (
+    "peg",
+    "sales_growth_5y",
+    "operating_profit_growth",
+    "eps_growth_5y",
+    "roe_5y",
+    "roce_or_roic",
+    "quarterly_profit_growth",
+)
+
+
+def test_load_garp_row_india_returns_scorer_shape(monkeypatch) -> None:
+    sections = {
+        "ratios": {
+            "peg_ratio": 1.2,
+            "sales_growth_5years": 20.0,
+            "operating_profit_growth": 15.0,
+            "eps_growth_5years": 18.0,
+            "average_return_on_equity_5years": 20.0,
+            "average_return_on_capital_employed_3years": 22.0,
+        },
+        "profit_loss": {},
+        "quarterly_results": {},
+    }
+    monkeypatch.setattr(
+        garp_module,
+        "cached_json_call",
+        lambda ns, kp, *, ttl_seconds, refresh, fetch: fetch(),
+    )
+    monkeypatch.setattr(garp_module, "_fetch_india_sections", lambda sym: sections)
+
+    row = garp_module.load_garp_row("RELIANCE", "india", cache_ttl=None, refresh=False)
+
+    assert row is not None
+    assert row["name"] == "RELIANCE"
+    assert set(_GARP_ROW_KEYS) <= set(row)
+    assert row["peg"] == pytest.approx(1.2)
+
+
+def test_load_garp_row_india_non_dict_payload(monkeypatch) -> None:
+    monkeypatch.setattr(
+        garp_module,
+        "cached_json_call",
+        lambda ns, kp, *, ttl_seconds, refresh, fetch: None,
+    )
+    out = garp_module.load_garp_row("RELIANCE", "india", cache_ttl=None, refresh=False)
+    assert out is None
+
+
+def test_load_garp_row_us_uses_fmp(monkeypatch) -> None:
+    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(
+        garp_module, "_fetch_fmp_us_cached", lambda *a, **k: _fmp_payload()
+    )
+
+    def _no_yfinance(*a, **k):
+        raise AssertionError("yfinance path must not run when FMP has data")
+
+    monkeypatch.setattr(garp_module, "_us_row", _no_yfinance)
+
+    row = garp_module.load_garp_row("AAPL", "us", cache_ttl=None, refresh=False)
+
+    assert row is not None
+    assert row["name"] == "AAPL"
+    assert set(_GARP_ROW_KEYS) <= set(row)
+    assert row["peg"] == pytest.approx(1.2)
+
+
+def test_load_garp_row_us_falls_back_to_yfinance(monkeypatch) -> None:
+    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(
+        garp_module, "_us_row", lambda symbol, description: {"name": symbol, "peg": 2.0}
+    )
+    row = garp_module.load_garp_row("AAPL", "us", cache_ttl=None, refresh=False)
+    assert row == {"name": "AAPL", "peg": 2.0}
+
+
+def test_to_number_is_public_num_alias() -> None:
+    assert garp_module.to_number is garp_module._num
+    assert garp_module.to_number("1,234.5") == pytest.approx(1234.5)
+    assert garp_module.to_number("12%") == pytest.approx(12.0)
+    assert garp_module.to_number(None) is None
+    assert garp_module.to_number("x") is None

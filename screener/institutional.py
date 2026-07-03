@@ -12,24 +12,18 @@ Request/caching/resilience follow the FMP patterns in ``screener.insiders``.
 
 from __future__ import annotations
 
-import json
 import logging
 import urllib.parse
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import pandas as pd
 
-from screener.insiders import _SCREENER_HEADERS
+from screener import fmp
 from screener.providers import CachedProvider, ProviderSpec
 
 
 logger = logging.getLogger(__name__)
-
-_FMP_INSTITUTIONAL_URL = (
-    "https://financialmodelingprep.com/api/v3/institutional-holder/{symbol}"
-)
 
 # FMP institutional ownership: 24h cache, "fmp" circuit breaker.
 _FMP_INSTITUTIONAL_PROVIDER = CachedProvider(
@@ -88,11 +82,12 @@ def _fetch_fmp_institutional_one(
     refresh: bool,
 ) -> Optional[dict]:
     def _fetch() -> Optional[dict]:
-        query = urllib.parse.urlencode({"apikey": api_key})
-        url = _FMP_INSTITUTIONAL_URL.format(symbol=urllib.parse.quote(symbol))
-        req = urllib.request.Request(f"{url}?{query}", headers=_SCREENER_HEADERS)
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            payload = json.loads(resp.read().decode("utf-8", "ignore"))
+        # Route through the shared FMP transport (base URL + apikey-last query +
+        # urllib error mode). ``institutional-holder/{symbol}`` is a path-only
+        # endpoint, so the symbol is quoted into the path and ``apikey`` is the
+        # sole query param, preserving the legacy URL shape exactly.
+        client = fmp.FmpClient(api_key, timeout=20)
+        payload = client.get(f"institutional-holder/{urllib.parse.quote(symbol)}")
         rows = payload if isinstance(payload, list) else None
         if not rows:
             return None
