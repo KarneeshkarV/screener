@@ -34,6 +34,10 @@ from screener.backtester.day_loop import DayLoop
 from screener.backtester.fills import FillModel
 from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
 from screener.backtester.display import print_backtest, print_ledger_csv
+from screener.backtester.fundamentals import (
+    build_fundamental_fetcher,
+    merge_fundamentals_into_bars,
+)
 from screener.backtester.metrics import compute_metrics, compute_regime_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.pine import parse, required_lookback
@@ -248,6 +252,21 @@ def _prepare_simulation(
         warnings,
     )
     lookback = max(lookback, strategy_lookback)
+
+    if cfg.fundamentals_provider:
+        fundamental_fetcher = build_fundamental_fetcher(
+            cfg.fundamentals_provider,
+            fields=cfg.fundamental_fields or None,
+            lag_days=cfg.fundamental_lag_days,
+        )
+        if fundamental_fetcher is not None:
+            fundamentals = fundamental_fetcher.fetch(
+                yf_by_tv.values(), fetch_start, fetch_end, cfg.market
+            )
+            bars_by_tv = merge_fundamentals_into_bars(
+                bars_by_tv, fundamentals, yf_by_tv
+            )
+
     entry_signals_by_tv = _precompute_entry_signals(bars_by_tv, entry_ast, warnings)
     filter_signals_by_tv = _precompute_filter_signals(bars_by_tv, cfg)
 
@@ -693,6 +712,28 @@ def run_rolling_backtest(
         "(repeatable). Warmup days with an unknown regime are suppressed."
     ),
 )
+@click.option(
+    "--fundamentals-provider",
+    type=click.Choice(["fmp", "openscreener", "yfinance"]),
+    default=None,
+    help="Merge dated fundamentals into rolling backtest bars (US: fmp, India: openscreener or yfinance).",
+)
+@click.option(
+    "--fundamental-field",
+    "fundamental_field_args",
+    multiple=True,
+    help=(
+        "Fundamental field to fetch for expressions (repeatable). Defaults to "
+        "pe_ttm, pb_ttm, roe_ttm, debt_to_equity, revenue_growth_yoy, "
+        "eps_growth_yoy, revenue_up_3q, market_cap."
+    ),
+)
+@click.option(
+    "--fundamental-lag-days",
+    type=int,
+    default=None,
+    help="Calendar-day lag applied to fundamental effective dates (defaults: fmp=1, openscreener=60).",
+)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
 @click.option(
     "--report",
@@ -762,6 +803,9 @@ def backtest_rolling(
     partial_exit_args,
     price_adjustment,
     regime_filter_args,
+    fundamentals_provider,
+    fundamental_field_args,
+    fundamental_lag_days,
     output_csv,
     report_path,
     open_report,
@@ -772,6 +816,14 @@ def backtest_rolling(
     """Run a true daily rolling backtest over a date window."""
     if output_csv and dashboard:
         raise click.UsageError("--csv and --dashboard cannot be used together.")
+    if fundamentals_provider == "fmp" and market != "us":
+        raise click.UsageError(
+            "--fundamentals-provider fmp currently supports only -m us."
+        )
+    if fundamentals_provider in {"openscreener", "yfinance"} and market != "india":
+        raise click.UsageError(
+            f"--fundamentals-provider {fundamentals_provider} currently supports only -m india."
+        )
 
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
     slip_model = build_slippage_model(
@@ -791,6 +843,11 @@ def backtest_rolling(
         else (start_arg or (end_date - timedelta(days=365 * int(years))))
     )
     bench = benchmark or DEFAULT_BENCHMARK.get(market, "SPY")
+    resolved_fundamental_lag_days = (
+        int(fundamental_lag_days)
+        if fundamental_lag_days is not None
+        else (60 if fundamentals_provider in {"openscreener", "yfinance"} else 1)
+    )
 
     ticker_tuple = None
     universe_note = None
@@ -867,6 +924,9 @@ def backtest_rolling(
         partial_exits=partial_exits,
         price_adjustment=price_adjustment,
         regime_filter=tuple(dict.fromkeys(regime_filter_args)),
+        fundamentals_provider=fundamentals_provider,
+        fundamental_fields=tuple(dict.fromkeys(fundamental_field_args)),
+        fundamental_lag_days=max(resolved_fundamental_lag_days, 0),
     )
 
     fetcher = click.get_current_context().obj or build_price_fetcher(
