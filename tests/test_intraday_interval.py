@@ -44,12 +44,16 @@ def _intraday_index(sessions: int) -> pd.DatetimeIndex:
     day = pd.Timestamp("2024-03-04 09:30")  # a Monday
     for _ in range(sessions):
         base = day
-        stamps.extend(base + pd.Timedelta(minutes=15 * b) for b in range(_BARS_PER_SESSION))
+        stamps.extend(
+            base + pd.Timedelta(minutes=15 * b) for b in range(_BARS_PER_SESSION)
+        )
         day = day + pd.Timedelta(days=1)
     return pd.DatetimeIndex(stamps)
 
 
-def _rising_frame(index: pd.DatetimeIndex, start_px: float, volume: float) -> pd.DataFrame:
+def _rising_frame(
+    index: pd.DatetimeIndex, start_px: float, volume: float
+) -> pd.DataFrame:
     """A monotonically rising OHLCV frame so the entry signal fires every bar."""
     n = len(index)
     close = pd.Series(np.linspace(start_px, start_px + n, n), index=index, dtype=float)
@@ -186,7 +190,9 @@ def test_rolling_intraday_carries_timestamps_and_does_not_collapse():
     # Bars are NOT collapsed: the simulation calendar (equity curve index) has
     # intraday resolution — far more points than the 2 calendar days spanned.
     assert len(result.equity_curve) > 2 * 10
-    assert any(ts.time() != datetime(2024, 1, 1).time() for ts in result.equity_curve.index)
+    assert any(
+        ts.time() != datetime(2024, 1, 1).time() for ts in result.equity_curve.index
+    )
 
     bars = data["AAA"]
     for trade in result.trades:

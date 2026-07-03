@@ -143,7 +143,14 @@ def _naive_normalized_index(idx: pd.Index, interval: str = "1d") -> pd.DatetimeI
     if not isinstance(idx, pd.DatetimeIndex):
         idx = pd.to_datetime(idx)
     if idx.tz is not None:
-        idx = idx.tz_localize(None)
+        if interval == "1d":
+            idx = idx.tz_localize(None)
+        else:
+            # Canonical intraday wall-clock is naive UTC. yfinance batches
+            # already arrive UTC-aware, but pin it explicitly so single-ticker
+            # downloads (exchange-local tz) and other providers line up on the
+            # same simulation calendar.
+            idx = idx.tz_convert("UTC").tz_localize(None)
     if interval == "1d":
         return idx.normalize()
     return idx
@@ -540,15 +547,35 @@ class YFinancePriceFetcher:
         return results
 
 
-def _fmp_cache_key(ticker: str, auto_adjust: bool) -> str:
+# FMP spells intraday intervals differently from yfinance; the daily endpoint
+# is a separate URL entirely (``historical-price-full`` vs ``historical-chart``).
+_FMP_INTRADAY_INTERVALS = {
+    "1m": "1min",
+    "5m": "5min",
+    "15m": "15min",
+    "30m": "30min",
+    "1h": "1hour",
+}
+
+
+def _fmp_cache_key(ticker: str, auto_adjust: bool, interval: str = "1d") -> str:
     suffix = "" if auto_adjust else "__raw"
-    return f"fmp_{ticker}{suffix}"
+    base = ticker if interval == "1d" else f"{ticker}__{interval}"
+    return f"fmp_{base}{suffix}"
 
 
-def _normalize_fmp_historical(payload: object, auto_adjust: bool) -> pd.DataFrame:
-    if not isinstance(payload, dict):
-        return pd.DataFrame(columns=OHLCV_COLUMNS)
-    rows = payload.get("historical")
+def _normalize_fmp_historical(
+    payload: object, auto_adjust: bool, interval: str = "1d"
+) -> pd.DataFrame:
+    rows: object
+    if interval == "1d":
+        if not isinstance(payload, dict):
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+        rows = payload.get("historical")
+    else:
+        # The intraday historical-chart endpoint returns a bare list of bars
+        # (newest first) instead of a dict with a "historical" key.
+        rows = payload
     if not isinstance(rows, list) or not rows:
         return pd.DataFrame(columns=OHLCV_COLUMNS)
 
@@ -568,7 +595,18 @@ def _normalize_fmp_historical(payload: object, auto_adjust: bool) -> pd.DataFram
     out = df[["date", *keep]].rename(columns=rename).copy()
     out.index = pd.to_datetime(out.pop("date"), errors="coerce")
     out = out[out.index.notna()]
-    out.index = cast(pd.DatetimeIndex, out.index).tz_localize(None).normalize()
+    idx = cast(pd.DatetimeIndex, out.index)
+    if interval == "1d":
+        if idx.tz is not None:
+            idx = idx.tz_localize(None)
+        out.index = idx.normalize()
+    else:
+        # FMP intraday timestamps are US/Eastern wall-clock with no tz marker.
+        # Convert to naive UTC so FMP bars land on the same simulation calendar
+        # as yfinance intraday bars (see _naive_normalized_index).
+        if idx.tz is None:
+            idx = idx.tz_localize("America/New_York")
+        out.index = idx.tz_convert("UTC").tz_localize(None)
 
     for col in [*OHLCV_COLUMNS, "adj_close"]:
         if col in out.columns:
@@ -586,12 +624,19 @@ def _normalize_fmp_historical(payload: object, auto_adjust: bool) -> pd.DataFram
 
 
 class FMPPriceFetcher:
-    """Fetch daily OHLCV from Financial Modeling Prep.
+    """Fetch OHLCV from Financial Modeling Prep.
+
+    Daily bars come from ``historical-price-full`` (dividend/split adjusted via
+    ``adjClose`` when ``auto_adjust`` is set). Intraday bars come from
+    ``historical-chart/{interval}`` and are always raw — FMP publishes no
+    adjusted intraday prices, which is acceptable inside the short history
+    windows intraday backtests use.
 
     The API key is read from ``FMP_API_KEY`` unless passed explicitly.
     """
 
     base_url = "https://financialmodelingprep.com/api/v3/historical-price-full"
+    intraday_base_url = "https://financialmodelingprep.com/api/v3/historical-chart"
 
     def __init__(
         self,
@@ -602,12 +647,10 @@ class FMPPriceFetcher:
         session: requests.Session | None = None,
         interval: str = "1d",
     ) -> None:
-        # FMP intraday history is out of scope for Phase 1: only the daily
-        # endpoint is wired up here. Fail loudly rather than silently serving
-        # daily bars for an intraday request.
-        if interval != "1d":
+        if interval != "1d" and interval not in _FMP_INTRADAY_INTERVALS:
             raise ValueError(
-                f"FMPPriceFetcher supports only interval='1d'; got {interval!r}"
+                f"FMPPriceFetcher supports intervals '1d' and "
+                f"{sorted(_FMP_INTRADAY_INTERVALS)}; got {interval!r}"
             )
         self.interval = interval
         self.api_key = api_key or os.environ.get("FMP_API_KEY")
@@ -626,8 +669,12 @@ class FMPPriceFetcher:
         results: dict[str, pd.DataFrame] = {}
 
         for ticker in [t for t in tickers if t]:
-            cache_key = _fmp_cache_key(ticker, self.auto_adjust)
-            cached = None if self.refresh else _load_cached(cache_key, self.cache_dir)
+            cache_key = _fmp_cache_key(ticker, self.auto_adjust, self.interval)
+            cached = (
+                None
+                if self.refresh
+                else _load_cached(cache_key, self.cache_dir, self.interval)
+            )
             if (
                 not self.refresh
                 and cached is not None
@@ -638,9 +685,15 @@ class FMPPriceFetcher:
                 ]
                 continue
 
-            def request_payload() -> object:
+            if self.interval == "1d":
+                url = f"{self.base_url}/{ticker}"
+            else:
+                fmp_interval = _FMP_INTRADAY_INTERVALS[self.interval]
+                url = f"{self.intraday_base_url}/{fmp_interval}/{ticker}"
+
+            def request_payload(url: str = url) -> object:
                 response = self.session.get(
-                    f"{self.base_url}/{ticker}",
+                    url,
                     params={
                         "from": start_ts.date().isoformat(),
                         "to": end_ts.date().isoformat(),
@@ -658,8 +711,8 @@ class FMPPriceFetcher:
                 request_payload,
                 fallback=empty_payload,
             )
-            norm = _normalize_fmp_historical(payload, self.auto_adjust)
-            merged = _merge_cached(cached, norm)
+            norm = _normalize_fmp_historical(payload, self.auto_adjust, self.interval)
+            merged = _merge_cached(cached, norm, self.interval)
             if not merged.empty:
                 _save_cache(cache_key, merged, self.cache_dir)
                 results[ticker] = merged.loc[
@@ -716,10 +769,10 @@ def build_price_fetcher(
         primary = YFinancePriceFetcher(
             auto_adjust=auto_adjust, refresh=refresh, interval=interval
         )
-        # FMP is daily-only; never construct the intraday fallback (it would
-        # raise), so intraday "auto" runs are yfinance-only.
-        if interval == "1d" and os.environ.get("FMP_API_KEY"):
-            fallback = FMPPriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
+        if os.environ.get("FMP_API_KEY"):
+            fallback = FMPPriceFetcher(
+                auto_adjust=auto_adjust, refresh=refresh, interval=interval
+            )
             return FallbackPriceFetcher(primary, fallback)
         return primary
     if resolved in {"yf", "yfinance"}:

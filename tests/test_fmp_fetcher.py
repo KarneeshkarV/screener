@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from screener.backtester.data import (
     FallbackPriceFetcher,
@@ -13,18 +14,18 @@ from screener.backtester import data as data_module
 
 
 class DummyResponse:
-    def __init__(self, payload: dict) -> None:
+    def __init__(self, payload: object) -> None:
         self.payload = payload
 
     def raise_for_status(self) -> None:
         return None
 
-    def json(self) -> dict:
+    def json(self) -> object:
         return self.payload
 
 
 class DummySession:
-    def __init__(self, payload: dict) -> None:
+    def __init__(self, payload: object) -> None:
         self.payload = payload
         self.calls: list[tuple[str, dict]] = []
 
@@ -101,6 +102,94 @@ def test_fmp_fetcher_uses_cache_on_second_call(tmp_path):
 
     assert len(session.calls) == 1
     assert first["AAA"].equals(second["AAA"])
+
+
+def _intraday_payload() -> list[dict]:
+    # historical-chart returns a bare list of bars, newest first.
+    return [
+        {
+            "date": "2024-06-20 15:45:00",
+            "open": 105,
+            "low": 104,
+            "high": 110,
+            "close": 108,
+            "volume": 1200,
+        },
+        {
+            "date": "2024-06-20 15:30:00",
+            "open": 100,
+            "low": 99,
+            "high": 106,
+            "close": 104,
+            "volume": 1000,
+        },
+    ]
+
+
+def test_fmp_intraday_uses_historical_chart_and_keeps_timestamps(tmp_path):
+    session = DummySession(_intraday_payload())
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+        interval="15m",
+    )
+
+    out = fetcher.fetch(["AAA"], date(2024, 6, 18), date(2024, 6, 21))
+
+    assert session.calls[0][0].endswith("/historical-chart/15min/AAA")
+    frame = out["AAA"]
+    # FMP's Eastern wall-clock is converted to naive UTC (EDT = UTC-4) so the
+    # bars align with yfinance intraday frames.
+    assert frame.index.tolist() == [
+        pd.Timestamp("2024-06-20 19:30:00"),
+        pd.Timestamp("2024-06-20 19:45:00"),
+    ]
+    assert frame.loc[pd.Timestamp("2024-06-20 19:30:00"), "close"] == 104
+    assert "adj_close" not in frame.columns
+
+
+def test_fmp_intraday_cache_round_trip_preserves_timestamps(tmp_path):
+    session = DummySession(_intraday_payload())
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+        interval="15m",
+    )
+
+    first = fetcher.fetch(["AAA"], date(2024, 6, 18), date(2024, 6, 21))
+    second = fetcher.fetch(["AAA"], date(2024, 6, 18), date(2024, 6, 21))
+
+    assert len(session.calls) == 1
+    assert first["AAA"].equals(second["AAA"])
+    assert second["AAA"].index.tolist() == [
+        pd.Timestamp("2024-06-20 19:30:00"),
+        pd.Timestamp("2024-06-20 19:45:00"),
+    ]
+
+
+def test_fmp_intraday_cache_key_is_namespaced_per_interval():
+    assert data_module._fmp_cache_key("AAA", True) == "fmp_AAA"
+    assert data_module._fmp_cache_key("AAA", False) == "fmp_AAA__raw"
+    assert data_module._fmp_cache_key("AAA", True, "15m") == "fmp_AAA__15m"
+    assert data_module._fmp_cache_key("AAA", False, "15m") == "fmp_AAA__15m__raw"
+
+
+def test_fmp_fetcher_rejects_unsupported_interval():
+    with pytest.raises(ValueError, match="interval"):
+        FMPPriceFetcher(api_key="test-key", interval="45m")
+
+
+def test_build_price_fetcher_intraday_includes_fmp_fallback(monkeypatch):
+    monkeypatch.delenv("SCREENER_PRICE_PROVIDER", raising=False)
+    monkeypatch.setenv("FMP_API_KEY", "env-key")
+
+    fetcher = build_price_fetcher(interval="15m")
+
+    assert isinstance(fetcher, FallbackPriceFetcher)
+    assert isinstance(fetcher.fallback, FMPPriceFetcher)
+    assert fetcher.fallback.interval == "15m"
 
 
 def test_build_price_fetcher_selects_fmp_from_env(monkeypatch):
