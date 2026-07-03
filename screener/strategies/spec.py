@@ -14,6 +14,7 @@ Strategies that need bar prep before the backtester evaluates signals attach a
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from datetime import date
 from typing import Any, Callable, Optional, TypeVar, cast
 
@@ -34,6 +35,7 @@ from screener.strategies.trades import Trade
 
 StrategyFn = Callable[[pd.DataFrame], list[Trade]]
 F = TypeVar("F", bound=Callable[..., Any])
+V = TypeVar("V")
 
 
 class PrepareCtx(BaseModel):
@@ -85,6 +87,42 @@ class StrategySpec(BaseModel):
 
 
 registry: Registry[StrategySpec] = Registry("strategy")
+
+
+class DerivedView(Mapping[str, V]):
+    """Read-only, live ``name -> value`` projection of :data:`registry`.
+
+    This is *not* a stored dict: every lookup and iteration re-reads the
+    underlying :data:`registry`, so there is no second copy of the strategy
+    table that can drift out of sync (e.g. if a plugin registers late). The
+    ``project`` callback maps a :class:`StrategySpec` to a value, or to ``None``
+    to exclude that spec from the view.
+
+    Exists so the historical import sites — ``registry.STRATEGIES`` (callable
+    strategies for the pine runner) and ``expressions.NAMED_STRATEGIES``
+    (entry/exit expression strategies for the backtester) — keep working as
+    thin derived accessors of the one registry.
+    """
+
+    def __init__(self, project: Callable[[StrategySpec], Optional[V]]) -> None:
+        self._project = project
+
+    def _snapshot(self) -> dict[str, V]:
+        out: dict[str, V] = {}
+        for name, spec in registry.items():
+            value = self._project(spec)
+            if value is not None:
+                out[name] = value
+        return out
+
+    def __getitem__(self, key: str) -> V:
+        return self._snapshot()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._snapshot())
+
+    def __len__(self) -> int:
+        return len(self._snapshot())
 
 
 def strategy(

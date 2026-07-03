@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, cast
@@ -12,6 +10,7 @@ from typing import Any, cast
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
+from screener import fmp
 from screener.cache import cached_json_call
 from screener.providers import CachedProvider, ProviderSpec
 from screener.scanner import scan
@@ -392,11 +391,9 @@ def _fmp_api_key() -> str | None:
 
 def _fmp_get(path: str, params: dict[str, Any], api_key: str) -> Any:
     query = urllib.parse.urlencode({**params, "apikey": api_key})
-    req = urllib.request.Request(
-        f"{_FMP_BASE_URL}/{path}?{query}", headers=_FMP_HEADERS
+    return fmp.request_json(
+        f"{_FMP_BASE_URL}/{path}?{query}", headers=_FMP_HEADERS, timeout=20
     )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode("utf-8", "ignore"))
 
 
 def _fetch_fmp_us_sections(symbol: str, api_key: str) -> dict[str, Any] | None:

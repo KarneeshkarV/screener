@@ -23,8 +23,14 @@ from screener.strategies import spec as strategy_spec_module
 from screener.strategies.pine_ports import (
     strat_ma_cross_st_entry,
 )
+from screener.strategies.expressions import NAMED_STRATEGIES, resolve_strategy
 from screener.strategies.registry import STRATEGIES, get_strategy, iter_strategies
-from screener.strategies.spec import PrepareCtx, StrategySpec, strategy
+from screener.strategies.spec import (
+    DerivedView,
+    PrepareCtx,
+    StrategySpec,
+    strategy,
+)
 
 
 def test_strategy_registry_preserves_pine_runner_names():
@@ -43,6 +49,25 @@ def test_strategy_registry_preserves_pine_runner_names():
     assert set(STRATEGIES) == expected
     assert set(pine_runner.STRATEGIES) == expected
     assert dict(iter_strategies()) == STRATEGIES
+
+
+def test_strategy_views_are_live_derived_over_single_registry():
+    # Both public views are read-only projections of spec.registry, not stored
+    # dicts, so a late registration is reflected without any rebuild.
+    assert isinstance(STRATEGIES, DerivedView)
+    assert isinstance(NAMED_STRATEGIES, DerivedView)
+
+    name = "unit_live_view_probe"
+
+    @strategy(name, entry="close > 0")
+    def placeholder() -> None:
+        return None
+
+    # Visible immediately in the expression view (and its resolver)...
+    assert name in NAMED_STRATEGIES
+    assert resolve_strategy(name).entry == "close > 0"
+    # ...but partitioned out of the callable view, since it has no callable_fn.
+    assert name not in STRATEGIES
 
 
 def test_strategy_registry_lookup_returns_callable():

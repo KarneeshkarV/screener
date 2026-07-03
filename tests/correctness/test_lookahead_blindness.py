@@ -17,11 +17,8 @@ import pandas as pd
 import pytest
 
 from screener.backtester.core import simulate_ticker
-from screener.backtester.engine import (
-    run_backtest,
-    run_rolling_backtest,
-    select_candidates,
-)
+from screener.backtester.historical import run_backtest, select_candidates
+from screener.backtester.rolling import run_rolling_backtest
 from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import parse
 

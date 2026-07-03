@@ -11,6 +11,7 @@ import requests
 from rich.console import Console
 
 from screener.backtester.data import build_price_fetcher, tv_to_yf
+from screener.symbols import tv_to_nse
 from .buildup import BuildupScore, compute_buildup_score, scan_buildups
 from .delivery import load_delivery_panel, overlay_events, quiet_accumulation_events
 from .detector import Event, detect_market
@@ -117,10 +118,7 @@ def fetch_bars(
 
 def india_symbol(tv_sym: str) -> str:
     """Return the NSE bhavcopy symbol for a TradingView-style symbol."""
-    if ":" in tv_sym:
-        _exch, rest = tv_sym.split(":", 1)
-        return rest.upper()
-    return tv_sym.upper()
+    return tv_to_nse(tv_sym)
 
 
 def bars_on_or_before_as_of(bars: pd.DataFrame, as_of: date) -> pd.DataFrame:

@@ -20,6 +20,7 @@ import requests
 from rich.console import Console
 
 from screener.backtester.data import build_price_fetcher, tv_to_yf
+from screener.symbols import tv_to_nse
 from .buildup import (
     BuildupScore,
     DEFAULT_MIN_SCORE as DEFAULT_BUILDUP_MIN,
@@ -103,10 +104,7 @@ def _fetch_bars(
 
 def _india_symbol(tv_sym: str) -> str:
     """`NSE:RELIANCE` or `RELIANCE` → `RELIANCE` (matches NSE bhavcopy SYMBOL)."""
-    if ":" in tv_sym:
-        _exch, rest = tv_sym.split(":", 1)
-        return rest.upper()
-    return tv_sym.upper()
+    return tv_to_nse(tv_sym)
 
 
 def _bars_on_or_before_as_of(bars: pd.DataFrame, as_of: date) -> pd.DataFrame:

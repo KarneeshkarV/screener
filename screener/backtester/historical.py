@@ -26,7 +26,9 @@ from screener.backtester.core import (
     _resolve_universe,
 )
 from screener.backtester.data import PriceFetcher, build_price_fetcher
+from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.display import print_backtest, print_ledger_csv
+from screener.backtester.fills import FillModel
 from screener.backtester.metrics import compute_metrics, compute_regime_metrics
 from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.pine import PineError, evaluate, parse, required_lookback
@@ -105,6 +107,147 @@ def select_candidates(
     return df, warnings
 
 
+class _ReserveRotationSource:
+    """Historical :class:`~screener.backtester.day_loop.CandidateSource` adapter.
+
+    Owns the historical fill half: a fixed reserve queue selected once at
+    ``as_of`` plus optional same-ticker re-entry into a just-vacated slot.
+    ``before_exits`` promotes any pending re-entries whose entry signal has
+    re-fired; ``after_exits`` schedules re-entries for the slots that freed this
+    day and rotates the reserve queue into the rest. All state (slot maps,
+    portfolio, queues) is shared by reference with the driver.
+    """
+
+    def __init__(
+        self,
+        *,
+        portfolio: Portfolio,
+        cfg: BacktestConfig,
+        entry_ast,
+        exit_ast,
+        lookback: int,
+        fill_model: FillModel,
+        bars_by_tv: dict[str, pd.DataFrame],
+        slot_states: dict[int, _SlotState | None],
+        slot_bars: dict[int, pd.DataFrame],
+        reentries_left: dict[int, int],
+        pending_reentry: dict[int, str],
+        reserve_queue: deque[dict],
+        taken: set[str],
+        warnings: list[str],
+    ) -> None:
+        self.portfolio = portfolio
+        self.cfg = cfg
+        self.entry_ast = entry_ast
+        self.exit_ast = exit_ast
+        self.lookback = lookback
+        self.fill_model = fill_model
+        self.bars_by_tv = bars_by_tv
+        self.slot_states = slot_states
+        self.slot_bars = slot_bars
+        self.reentries_left = reentries_left
+        self.pending_reentry = pending_reentry
+        self.reserve_queue = reserve_queue
+        self.taken = taken
+        self.warnings = warnings
+
+    def before_exits(self, day: pd.Timestamp) -> None:
+        cfg = self.cfg
+        portfolio = self.portfolio
+        if self.pending_reentry:
+            for slot_id, ticker in list(self.pending_reentry.items()):
+                slot_frame = self.slot_bars.get(slot_id)
+                if (  # pragma: no cover - freed slots always have slot_bars set
+                    slot_frame is None or slot_frame.empty
+                ):
+                    del self.pending_reentry[slot_id]
+                    continue
+                reentry_signal_idx = _eligible_reserve_signal_idx(
+                    slot_frame, day, cfg, self.entry_ast, self.lookback
+                )
+                if reentry_signal_idx is None:
+                    continue
+                new_rank = portfolio._ranks.get(ticker, 0)
+                state, warn = _make_slot_state(
+                    ticker,
+                    slot_frame,
+                    reentry_signal_idx,
+                    cfg,
+                    self.exit_ast,
+                    new_rank,
+                    self.fill_model,
+                )
+                if state is None:
+                    if warn:
+                        self.warnings.append(f"{ticker} re-entry: {warn}")
+                    del self.pending_reentry[slot_id]
+                    continue
+                portfolio.assign(ticker, new_rank, day.date())
+                portfolio.open(
+                    ticker=ticker,
+                    entry_date=state.entry_date,
+                    entry_price=state.entry_fill,
+                    commission_bps=cfg.commission_bps,
+                )
+                self.slot_states[slot_id] = state
+                del self.pending_reentry[slot_id]
+
+    def after_exits(self, day: pd.Timestamp, freed_slots: list[FreedSlot]) -> None:
+        cfg = self.cfg
+        portfolio = self.portfolio
+        freed: list[int] = []
+        for freed_slot in freed_slots:
+            slot_id = freed_slot.slot_id
+            freed.append(slot_id)
+            if cfg.allow_reentry and self.reentries_left.get(slot_id, 0) > 0:
+                self.reentries_left[slot_id] -= 1
+                self.pending_reentry[slot_id] = freed_slot.state.ticker
+
+        if not cfg.reinvest or not freed:
+            return
+
+        for slot_id in freed:
+            if slot_id in self.pending_reentry:
+                continue
+            while self.reserve_queue:
+                reserve = self.reserve_queue.popleft()
+                ticker = str(reserve["ticker"])
+                if ticker in self.taken:
+                    continue
+                reserve_bars = self.bars_by_tv.get(ticker, pd.DataFrame())
+                if reserve_bars is None or reserve_bars.empty:
+                    continue
+                reserve_signal_idx = _eligible_reserve_signal_idx(
+                    reserve_bars, day, cfg, self.entry_ast, self.lookback
+                )
+                if reserve_signal_idx is None:
+                    continue
+                state, warn = _make_slot_state(
+                    ticker,
+                    reserve_bars,
+                    reserve_signal_idx,
+                    cfg,
+                    self.exit_ast,
+                    int(reserve["rank"]),
+                    self.fill_model,
+                )
+                if state is None:
+                    if warn:
+                        self.warnings.append(f"{ticker}: {warn}")
+                    continue
+                portfolio.assign(ticker, int(reserve["rank"]), day.date())
+                portfolio.open(
+                    ticker=ticker,
+                    entry_date=state.entry_date,
+                    entry_price=state.entry_fill,
+                    commission_bps=cfg.commission_bps,
+                )
+                self.slot_states[slot_id] = state
+                self.slot_bars[slot_id] = reserve_bars
+                self.taken.add(ticker)
+                break
+
+
 def _run_event_driven_sim(
     *,
     portfolio: Portfolio,
@@ -124,9 +267,6 @@ def _run_event_driven_sim(
     simulation ran over, so the caller can seed the equity-curve calendar with
     every real trading day in the horizon (not just trade-covered days).
     """
-    from screener.backtester.day_loop import DayLoop
-    from screener.backtester.fills import FillModel
-
     fill_model = FillModel(cfg)
     slot_states: dict[int, _SlotState | None] = {}
     slot_bars: dict[int, pd.DataFrame] = {}
@@ -187,97 +327,23 @@ def _run_event_driven_sim(
         fill_model=fill_model,
     )
 
-    for day in master_dates:
-        if pending_reentry:
-            for slot_id, ticker in list(pending_reentry.items()):
-                slot_frame = slot_bars.get(slot_id)
-                if (  # pragma: no cover - freed slots always have slot_bars set
-                    slot_frame is None or slot_frame.empty
-                ):
-                    del pending_reentry[slot_id]
-                    continue
-                reentry_signal_idx = _eligible_reserve_signal_idx(
-                    slot_frame, day, cfg, entry_ast, lookback
-                )
-                if reentry_signal_idx is None:
-                    continue
-                new_rank = portfolio._ranks.get(ticker, 0)
-                state, warn = _make_slot_state(
-                    ticker,
-                    slot_frame,
-                    reentry_signal_idx,
-                    cfg,
-                    exit_ast,
-                    new_rank,
-                    fill_model,
-                )
-                if state is None:
-                    if warn:
-                        warnings.append(f"{ticker} re-entry: {warn}")
-                    del pending_reentry[slot_id]
-                    continue
-                portfolio.assign(ticker, new_rank, day.date())
-                portfolio.open(
-                    ticker=ticker,
-                    entry_date=state.entry_date,
-                    entry_price=state.entry_fill,
-                    commission_bps=cfg.commission_bps,
-                )
-                slot_states[slot_id] = state
-                del pending_reentry[slot_id]
-
-        freed_slots = day_loop.process_exits_for_day(day)
-        freed: list[int] = []
-        for freed_slot in freed_slots:
-            slot_id = freed_slot.slot_id
-            freed.append(slot_id)
-            if cfg.allow_reentry and reentries_left.get(slot_id, 0) > 0:
-                reentries_left[slot_id] -= 1
-                pending_reentry[slot_id] = freed_slot.state.ticker
-
-        if not cfg.reinvest or not freed:
-            continue
-
-        for slot_id in freed:
-            if slot_id in pending_reentry:
-                continue
-            while reserve_queue:
-                reserve = reserve_queue.popleft()
-                ticker = str(reserve["ticker"])
-                if ticker in taken:
-                    continue
-                reserve_bars = bars_by_tv.get(ticker, pd.DataFrame())
-                if reserve_bars is None or reserve_bars.empty:
-                    continue
-                reserve_signal_idx = _eligible_reserve_signal_idx(
-                    reserve_bars, day, cfg, entry_ast, lookback
-                )
-                if reserve_signal_idx is None:
-                    continue
-                state, warn = _make_slot_state(
-                    ticker,
-                    reserve_bars,
-                    reserve_signal_idx,
-                    cfg,
-                    exit_ast,
-                    int(reserve["rank"]),
-                    fill_model,
-                )
-                if state is None:
-                    if warn:
-                        warnings.append(f"{ticker}: {warn}")
-                    continue
-                portfolio.assign(ticker, int(reserve["rank"]), day.date())
-                portfolio.open(
-                    ticker=ticker,
-                    entry_date=state.entry_date,
-                    entry_price=state.entry_fill,
-                    commission_bps=cfg.commission_bps,
-                )
-                slot_states[slot_id] = state
-                slot_bars[slot_id] = reserve_bars
-                taken.add(ticker)
-                break
+    source = _ReserveRotationSource(
+        portfolio=portfolio,
+        cfg=cfg,
+        entry_ast=entry_ast,
+        exit_ast=exit_ast,
+        lookback=lookback,
+        fill_model=fill_model,
+        bars_by_tv=bars_by_tv,
+        slot_states=slot_states,
+        slot_bars=slot_bars,
+        reentries_left=reentries_left,
+        pending_reentry=pending_reentry,
+        reserve_queue=reserve_queue,
+        taken=taken,
+        warnings=warnings,
+    )
+    run_day_loop(master_dates, day_loop, source)
 
     for slot_id, state in list(slot_states.items()):
         if state is None:

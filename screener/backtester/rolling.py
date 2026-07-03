@@ -30,7 +30,7 @@ from screener.backtester.core import (
     _prepare_strategy_bars,
     _resolve_universe,
 )
-from screener.backtester.day_loop import DayLoop
+from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.fills import FillModel
 from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
 from screener.backtester.display import print_backtest, print_ledger_csv
@@ -356,105 +356,132 @@ def _prepare_simulation(
     )
 
 
-def _simulate_day(
-    day: pd.Timestamp,
-    *,
-    day_loop: DayLoop,
-    candidate_matrices: _RollingCandidateMatrices,
-    bars_by_tv: dict[str, pd.DataFrame],
-    cfg: BacktestConfig,
-    exit_ast,
-    fill_model: FillModel,
-    portfolio: Portfolio,
-    slot_states: dict[int, _SlotState | None],
-    slot_bars: dict[int, pd.DataFrame],
-    end_ts: pd.Timestamp,
-    selection_rows: list[dict],
-    warnings: list[str],
-) -> None:
-    """Advance one trading day: process exits, then refill freed slots.
+class _DailyRankingSource:
+    """Rolling :class:`~screener.backtester.day_loop.CandidateSource` adapter.
 
-    Mutates ``slot_states``, ``slot_bars``, ``portfolio``, ``selection_rows`` and
-    ``warnings`` in place, matching the original interleaved loop body.
+    Owns the rolling fill half: after the shared exit sweep, every slot that is
+    now empty (whether idle since setup or freed today) is refilled from that
+    day's freshly ranked candidate scan. There is no pre-exit work, so
+    ``before_exits`` is a no-op. All state (slot maps, portfolio, selection rows,
+    warnings) is shared by reference with the driver.
     """
-    # Run the shared exit sequence, then treat every slot that is now empty
-    # (whether already idle or freed today) as available for refill. Order
-    # is slot-id ascending, matching the original interleaved loop.
-    day_loop.process_exits_for_day(day)
-    free_slots: list[int] = [
-        slot_id for slot_id, state in slot_states.items() if state is None
-    ]
 
-    if not free_slots:
-        return
+    def __init__(
+        self,
+        *,
+        candidate_matrices: _RollingCandidateMatrices,
+        bars_by_tv: dict[str, pd.DataFrame],
+        cfg: BacktestConfig,
+        exit_ast,
+        fill_model: FillModel,
+        portfolio: Portfolio,
+        slot_states: dict[int, _SlotState | None],
+        slot_bars: dict[int, pd.DataFrame],
+        end_ts: pd.Timestamp,
+        selection_rows: list[dict],
+        warnings: list[str],
+    ) -> None:
+        self.candidate_matrices = candidate_matrices
+        self.bars_by_tv = bars_by_tv
+        self.cfg = cfg
+        self.exit_ast = exit_ast
+        self.fill_model = fill_model
+        self.portfolio = portfolio
+        self.slot_states = slot_states
+        self.slot_bars = slot_bars
+        self.end_ts = end_ts
+        self.selection_rows = selection_rows
+        self.warnings = warnings
 
-    candidates, day_warnings = _candidate_rows_for_day(
-        day,
-        candidate_matrices,
-        exclude=_active_or_pending_tickers(slot_states),
-    )
-    warnings.extend(day_warnings)
-    if not candidates:
-        return
-    candidate_queue: deque[dict] = deque(candidates)
+    def before_exits(self, day: pd.Timestamp) -> None:
+        return None
 
-    for slot_id in free_slots:
-        opened = False
-        while candidate_queue and not opened:
-            row = candidate_queue.popleft()
-            ticker = str(row["ticker"])
-            if (
-                ticker
-                in _active_or_pending_tickers(  # pragma: no cover - candidates pre-excluded
-                    slot_states
+    def after_exits(self, day: pd.Timestamp, freed: list[FreedSlot]) -> None:
+        """Refill freed slots from the day's candidate ranking.
+
+        Mutates ``slot_states``, ``slot_bars``, ``portfolio``, ``selection_rows``
+        and ``warnings`` in place, matching the original interleaved loop body.
+        """
+        cfg = self.cfg
+        portfolio = self.portfolio
+        slot_states = self.slot_states
+        # Treat every slot that is now empty (whether already idle or freed
+        # today) as available for refill. Order is slot-id ascending, matching
+        # the original interleaved loop.
+        free_slots: list[int] = [
+            slot_id for slot_id, state in slot_states.items() if state is None
+        ]
+
+        if not free_slots:
+            return
+
+        candidates, day_warnings = _candidate_rows_for_day(
+            day,
+            self.candidate_matrices,
+            exclude=_active_or_pending_tickers(slot_states),
+        )
+        self.warnings.extend(day_warnings)
+        if not candidates:
+            return
+        candidate_queue: deque[dict] = deque(candidates)
+
+        for slot_id in free_slots:
+            opened = False
+            while candidate_queue and not opened:
+                row = candidate_queue.popleft()
+                ticker = str(row["ticker"])
+                if (
+                    ticker
+                    in _active_or_pending_tickers(  # pragma: no cover - candidates pre-excluded
+                        slot_states
+                    )
+                ):
+                    continue
+                bars = self.bars_by_tv.get(ticker, pd.DataFrame())
+                if (
+                    bars is None or bars.empty
+                ):  # pragma: no cover - only valid tickers ranked
+                    continue
+                state, warn = _make_slot_state(
+                    ticker,
+                    bars,
+                    int(row["signal_idx"]),
+                    cfg,
+                    self.exit_ast,
+                    int(row["rank"]),
+                    self.fill_model,
                 )
-            ):
-                continue
-            bars = bars_by_tv.get(ticker, pd.DataFrame())
-            if (
-                bars is None or bars.empty
-            ):  # pragma: no cover - only valid tickers ranked
-                continue
-            state, warn = _make_slot_state(
-                ticker,
-                bars,
-                int(row["signal_idx"]),
-                cfg,
-                exit_ast,
-                int(row["rank"]),
-                fill_model,
-            )
-            if (
-                state is None
-            ):  # pragma: no cover - lookback_ok guarantees a post-signal bar
-                if warn:
-                    warnings.append(f"{ticker}: {warn}")
-                continue
-            if (
-                pd.Timestamp(state.entry_date) > end_ts
-            ):  # pragma: no cover - fetch_end == end_ts
-                continue
-            portfolio.assign(ticker, int(row["rank"]), day.date())
-            portfolio.open(
-                ticker=ticker,
-                entry_date=state.entry_date,
-                entry_price=state.entry_fill,
-                commission_bps=cfg.commission_bps,
-            )
-            slot_states[slot_id] = state
-            slot_bars[slot_id] = bars
-            selection_rows.append(
-                {
-                    "ticker": ticker,
-                    "signal_date": day.date(),
-                    "as_of_close": row["as_of_close"],
-                    "as_of_volume": row["as_of_volume"],
-                    "as_of_dollar_vol": row["as_of_dollar_vol"],
-                    "rank": row["rank"],
-                    "role": "active",
-                }
-            )
-            opened = True
+                if (
+                    state is None
+                ):  # pragma: no cover - lookback_ok guarantees a post-signal bar
+                    if warn:
+                        self.warnings.append(f"{ticker}: {warn}")
+                    continue
+                if (
+                    pd.Timestamp(state.entry_date) > self.end_ts
+                ):  # pragma: no cover - fetch_end == end_ts
+                    continue
+                portfolio.assign(ticker, int(row["rank"]), day.date())
+                portfolio.open(
+                    ticker=ticker,
+                    entry_date=state.entry_date,
+                    entry_price=state.entry_fill,
+                    commission_bps=cfg.commission_bps,
+                )
+                slot_states[slot_id] = state
+                self.slot_bars[slot_id] = bars
+                self.selection_rows.append(
+                    {
+                        "ticker": ticker,
+                        "signal_date": day.date(),
+                        "as_of_close": row["as_of_close"],
+                        "as_of_volume": row["as_of_volume"],
+                        "as_of_dollar_vol": row["as_of_dollar_vol"],
+                        "rank": row["rank"],
+                        "role": "active",
+                    }
+                )
+                opened = True
 
 
 def _assemble_results(
@@ -545,22 +572,20 @@ def run_rolling_backtest(
     assert setup.fill_model is not None
     assert setup.day_loop is not None
 
-    for day in setup.master_dates:
-        _simulate_day(
-            day,
-            day_loop=setup.day_loop,
-            candidate_matrices=setup.candidate_matrices,
-            bars_by_tv=setup.bars_by_tv,
-            cfg=cfg,
-            exit_ast=setup.exit_ast,
-            fill_model=setup.fill_model,
-            portfolio=setup.portfolio,
-            slot_states=setup.slot_states,
-            slot_bars=setup.slot_bars,
-            end_ts=end_ts,
-            selection_rows=setup.selection_rows,
-            warnings=warnings,
-        )
+    source = _DailyRankingSource(
+        candidate_matrices=setup.candidate_matrices,
+        bars_by_tv=setup.bars_by_tv,
+        cfg=cfg,
+        exit_ast=setup.exit_ast,
+        fill_model=setup.fill_model,
+        portfolio=setup.portfolio,
+        slot_states=setup.slot_states,
+        slot_bars=setup.slot_bars,
+        end_ts=end_ts,
+        selection_rows=setup.selection_rows,
+        warnings=warnings,
+    )
+    run_day_loop(setup.master_dates, setup.day_loop, source)
 
     _force_close_open_slots(
         slot_states=setup.slot_states,

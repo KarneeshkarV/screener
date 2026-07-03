@@ -5,7 +5,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from screener.backtester.engine import run_backtest
+from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
 from screener.backtester.strategies import resolve_strategy
 from screener.backtester.vivek_equity import (
