@@ -415,7 +415,7 @@ def _parse_india_period_end(label: Any) -> pd.Timestamp | None:
     return cast(pd.Timestamp, ts).tz_localize(None).normalize() + pd.offsets.MonthEnd(0)
 
 
-def _fetch_openscreener_quarterly(symbol: str) -> dict[str, Any]:
+def _fetch_openscreener_quarterly(symbol: str) -> dict[str, Any]:  # pragma: no cover
     from openscreener import Stock
     from screener.insiders import _HttpScraper
 
@@ -423,7 +423,9 @@ def _fetch_openscreener_quarterly(symbol: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _fetch_yfinance_quarterly_revenue(ticker: str) -> dict[str, Any]:
+def _fetch_yfinance_quarterly_revenue(
+    ticker: str,
+) -> dict[str, Any]:  # pragma: no cover
     import yfinance as yf
 
     stock = yf.Ticker(ticker)
