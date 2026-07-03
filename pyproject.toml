@@ -42,6 +42,7 @@ dev = [
     "pandas-stubs>=2.0",
     "pandas-ta-classic>=0.6.20",
     "pytest>=8.0",
+    "pytest-cov>=7.1.0",
     "ruff>=0.5",
     "types-requests>=2.31",
 ]
@@ -59,6 +60,9 @@ branch = false
 
 [tool.coverage.report]
 show_missing = true
+# Current coverage is 99.75%; keep a small buffer so an incidental line does
+# not break CI, but any meaningfully untested new code does.
+fail_under = 99.5
 exclude_also = [
     "def __repr__",
     "if self\\.debug",
