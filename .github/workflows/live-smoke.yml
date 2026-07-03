@@ -1,0 +1,47 @@
+name: Live smoke
+
+# Nightly canary against the real data providers (yfinance, TradingView, NSE).
+# The main CI suite is fully offline against stubs, so upstream API breakage
+# only shows up here. Each provider gets its own step so a red run points at
+# what broke.
+
+on:
+  schedule:
+    - cron: "30 2 * * 1-5" # 02:30 UTC on weekdays (markets closed, data settled)
+  workflow_dispatch:
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Run live network tests
+        env:
+          SCREENER_LIVE_TESTS: "1"
+        run: uv run pytest -m network -v
+
+      - name: US backtest smoke (yfinance)
+        if: ${{ !cancelled() }}
+        run: uv run screener backtest-historical -m us --as-of 2026-03-20 --entry "close > 0" --exit false --tickers AAPL,MSFT,NVDA,AMD --hold 5 --top 2 --stop-loss 0.05 --take-profit 0.08 --trailing-stop 0.04
+
+      - name: India backtest smoke (yfinance NSE tickers)
+        if: ${{ !cancelled() }}
+        run: uv run screener backtest-historical -m india --as-of 2026-03-20 --entry "close > 0" --exit false --tickers RELIANCE,TCS,INFY,HDFCBANK --hold 5 --top 2 --min-price 0 --min-avg-dollar-volume 0
+
+      - name: US screen smoke (TradingView)
+        if: ${{ !cancelled() }}
+        run: uv run screener screen -m us -n 5 --csv --refresh

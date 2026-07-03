@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 import types
+import warnings
 from datetime import date
 
 import numpy as np
@@ -242,12 +243,18 @@ def fake_vbt(monkeypatch):
     monkeypatch.setitem(sys.modules, "vectorbt.generic", generic_mod)
     monkeypatch.setitem(sys.modules, "vectorbt.generic.nb", nb_mod)
 
-    # Register the ``.vbt`` accessor on DataFrame.
-    try:
+    # Register the ``.vbt`` accessor on DataFrame, keeping any existing
+    # registration (real vectorbt's, when the extra is installed) so teardown
+    # can restore it instead of leaking the fake into later tests.
+    prev_accessor = pd.DataFrame.__dict__.get("vbt")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
         pd.api.extensions.register_dataframe_accessor("vbt")(_VbtAccessor)
-    except Exception:  # pragma: no cover - already registered
-        pass
-    return fake
+    yield fake
+    if prev_accessor is None:
+        delattr(pd.DataFrame, "vbt")
+    else:
+        setattr(pd.DataFrame, "vbt", prev_accessor)
 
 
 # ---------------------------------------------------------------------------
