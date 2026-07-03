@@ -401,6 +401,14 @@ def _benchmark_series_from_panel(
     return series
 
 
+def _warmup_days_for_interval(lookback: int, interval: str) -> int:
+    warmup_bars = lookback * 2 + 30
+    if interval == "1d":
+        return max(warmup_bars, 365)
+    bars_per_day = max(periods_per_year_for_interval(interval) // 252, 1)
+    return int(np.ceil(warmup_bars / bars_per_day) * 1.6) + 5
+
+
 def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     warnings: list[str] = []
     as_of_ts = pd.Timestamp(cfg.as_of)
@@ -419,7 +427,9 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     yf_by_tv = {tv: tv_to_yf(tv, cfg.market) for tv in tv_symbols}
     yf_symbols = list(dict.fromkeys(list(yf_by_tv.values()) + [cfg.benchmark]))
 
-    start = (as_of_ts - pd.Timedelta(days=max(lookback * 2 + 30, 365))).date()
+    start = (
+        as_of_ts - pd.Timedelta(days=_warmup_days_for_interval(lookback, cfg.interval))
+    ).date()
     end = (as_of_ts + pd.Timedelta(days=cfg.hold * 2 + 30)).date()
     price_panel = fetcher.fetch(yf_symbols, start, end)
 

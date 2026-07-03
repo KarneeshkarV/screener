@@ -169,6 +169,23 @@ def test_fmp_intraday_cache_round_trip_preserves_timestamps(tmp_path):
     ]
 
 
+def test_fmp_intraday_fetch_includes_whole_end_date(tmp_path):
+    session = DummySession(_intraday_payload())
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+        interval="15m",
+    )
+
+    out = fetcher.fetch(["AAA"], date(2024, 6, 20), date(2024, 6, 20))
+
+    assert out["AAA"].index.tolist() == [
+        pd.Timestamp("2024-06-20 19:30:00"),
+        pd.Timestamp("2024-06-20 19:45:00"),
+    ]
+
+
 def test_fmp_intraday_cache_key_is_namespaced_per_interval():
     assert data_module._fmp_cache_key("AAA", True) == "fmp_AAA"
     assert data_module._fmp_cache_key("AAA", False) == "fmp_AAA__raw"

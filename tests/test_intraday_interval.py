@@ -22,7 +22,9 @@ from screener.backtester.data import (
     YFinancePriceFetcher,
     _naive_normalized_index,
     _normalize_frame,
+    _save_cache,
 )
+from screener.backtester.historical import _warmup_days_for_interval
 from screener.backtester.metrics import (
     compute_metrics,
     periods_per_year_for_interval,
@@ -112,6 +114,17 @@ def test_cache_key_namespaces_intraday_but_not_daily():
     assert intraday_raw._cache_key("AAPL") == "AAPL__15m__raw"
 
 
+def test_yfinance_intraday_fetch_includes_whole_end_date_from_cache(tmp_path):
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1h")
+    index = pd.DatetimeIndex(["2026-07-01 13:30", "2026-07-01 14:30"])
+    frame = _rising_frame(index, 100.0, 10_000.0)
+    _save_cache(fetcher._cache_key("AAPL"), frame, tmp_path)
+
+    out = fetcher.fetch(["AAPL"], date(2026, 7, 1), date(2026, 7, 1))["AAPL"]
+
+    assert out.index.tolist() == index.tolist()
+
+
 # --------------------------------------------------------------------------- #
 # metrics.py: annualization factor
 # --------------------------------------------------------------------------- #
@@ -122,6 +135,11 @@ def test_periods_per_year_mapping():
     assert periods_per_year_for_interval("15m") == 252 * 26
     assert periods_per_year_for_interval("5m") == 252 * 78
     assert periods_per_year_for_interval("1m") == 252 * 390
+
+
+def test_historical_intraday_warmup_uses_bars_not_daily_year():
+    assert _warmup_days_for_interval(2, "1d") == 365
+    assert _warmup_days_for_interval(2, "15m") < 60
 
 
 def test_metrics_daily_default_unchanged():

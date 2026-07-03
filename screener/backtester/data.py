@@ -320,7 +320,22 @@ def _merge_cached(
     return merged[~merged.index.duplicated(keep="last")].sort_index()
 
 
-def _has_range(df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> bool:
+def _inclusive_fetch_bounds(
+    start: date, end: date, interval: str = "1d"
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end)
+    if interval != "1d" and end_ts == end_ts.normalize():
+        end_ts = end_ts + pd.Timedelta(days=1) - pd.Timedelta(1, "ns")
+    return start_ts, end_ts
+
+
+def _has_range(
+    df: pd.DataFrame,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    interval: str = "1d",
+) -> bool:
     if df is None or df.empty:
         return False
     in_range = df.loc[(df.index >= start_ts) & (df.index <= end_ts)]
@@ -421,8 +436,7 @@ class YFinancePriceFetcher:
     ) -> dict[str, pd.DataFrame]:
         tickers = [t for t in tickers if t]
         results: dict[str, pd.DataFrame] = {}
-        start_ts = pd.Timestamp(start)
-        end_ts = pd.Timestamp(end)
+        start_ts, end_ts = _inclusive_fetch_bounds(start, end, self.interval)
         cached_by_ticker: dict[str, pd.DataFrame] = {}
         missing: dict[tuple[pd.Timestamp, pd.Timestamp], list[str]] = {}
 
@@ -438,7 +452,7 @@ class YFinancePriceFetcher:
             if (
                 not self.refresh
                 and cached is not None
-                and _has_range(cached, start_ts, end_ts)
+                and _has_range(cached, start_ts, end_ts, self.interval)
             ):
                 results[ticker] = cached.loc[
                     (cached.index >= start_ts) & (cached.index <= end_ts)
@@ -474,11 +488,14 @@ class YFinancePriceFetcher:
             job: tuple[pd.Timestamp, pd.Timestamp, list[str]],
         ) -> tuple[list[str], pd.DataFrame]:
             fetch_start, fetch_end, batch = job
+            download_end = fetch_end + pd.Timedelta(days=1)
+            if self.interval != "1d":
+                download_end = fetch_end.normalize() + pd.Timedelta(days=1)
             download_kwargs = dict(
                 start=fetch_start,
                 # yfinance treats ``end`` as exclusive for both daily and
                 # intraday; keep the +1 day so the last requested bar is included.
-                end=fetch_end + pd.Timedelta(days=1),
+                end=download_end,
                 interval=self.interval,
                 auto_adjust=self.auto_adjust,
                 progress=False,
@@ -664,8 +681,7 @@ class FMPPriceFetcher:
     def fetch(
         self, tickers: Iterable[str], start: date, end: date
     ) -> dict[str, pd.DataFrame]:
-        start_ts = pd.Timestamp(start)
-        end_ts = pd.Timestamp(end)
+        start_ts, end_ts = _inclusive_fetch_bounds(start, end, self.interval)
         results: dict[str, pd.DataFrame] = {}
 
         for ticker in [t for t in tickers if t]:
@@ -678,7 +694,7 @@ class FMPPriceFetcher:
             if (
                 not self.refresh
                 and cached is not None
-                and _has_range(cached, start_ts, end_ts)
+                and _has_range(cached, start_ts, end_ts, self.interval)
             ):
                 results[ticker] = cached.loc[
                     (cached.index >= start_ts) & (cached.index <= end_ts)
