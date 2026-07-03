@@ -22,6 +22,7 @@ from screener.backtester.cli_common import (
 )
 from screener.backtester.core import (
     _active_or_pending_tickers,
+    _bar_label,
     _SlotState,
     _force_close_open_slots,
     _make_slot_state,
@@ -38,8 +39,16 @@ from screener.backtester.fundamentals import (
     build_fundamental_fetcher,
     merge_fundamentals_into_bars,
 )
-from screener.backtester.metrics import compute_metrics, compute_regime_metrics
-from screener.backtester.models import BacktestConfig, BacktestResult
+from screener.backtester.metrics import (
+    compute_metrics,
+    compute_regime_metrics,
+    periods_per_year_for_interval,
+)
+from screener.backtester.models import (
+    SUPPORTED_INTERVALS,
+    BacktestConfig,
+    BacktestResult,
+)
 from screener.backtester.pine import parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.regime import TREND_LABELS, classify_regimes
@@ -222,7 +231,18 @@ def _prepare_simulation(
     yf_by_tv = {tv: tv_to_yf(tv, cfg.market) for tv in tv_symbols}
     yf_symbols = list(dict.fromkeys(list(yf_by_tv.values()) + [cfg.benchmark]))
 
-    warmup_days = max(lookback * 3 + 30, 365)
+    # Warmup is measured in BARS (enough history for the longest indicator).
+    # For daily bars one bar ~ one calendar day, so the legacy day-based padding
+    # stands. For intraday, convert the required warmup bars into calendar days
+    # via bars-per-session (with slack for weekends/holidays) so we don't request
+    # ~365 days of minute data — which both blows past yfinance's intraday cap
+    # and is unnecessary. Chunking longer intraday windows is Phase 2.
+    warmup_bars = lookback * 3 + 30
+    if cfg.interval == "1d":
+        warmup_days = max(warmup_bars, 365)
+    else:
+        bars_per_day = max(periods_per_year_for_interval(cfg.interval) // 252, 1)
+        warmup_days = int(np.ceil(warmup_bars / bars_per_day) * 1.6) + 5
     fetch_start = (start_ts - pd.Timedelta(days=warmup_days)).date()
     fetch_end = end_ts.date()
     price_panel = fetcher.fetch(yf_symbols, fetch_start, fetch_end)
@@ -287,7 +307,13 @@ def _prepare_simulation(
         calendar = pd.bdate_range(start_ts, end_ts)
         equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
         benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
-        metrics = compute_metrics(equity, benchmark_aligned, [], max(cfg.top, 1))
+        metrics = compute_metrics(
+            equity,
+            benchmark_aligned,
+            [],
+            max(cfg.top, 1),
+            periods_per_year=periods_per_year_for_interval(cfg.interval),
+        )
         metrics["unique_tickers"] = 0
         early_result = BacktestResult(
             config=cfg,
@@ -459,7 +485,7 @@ class _DailyRankingSource:
                     pd.Timestamp(state.entry_date) > self.end_ts
                 ):  # pragma: no cover - fetch_end == end_ts
                     continue
-                portfolio.assign(ticker, int(row["rank"]), day.date())
+                portfolio.assign(ticker, int(row["rank"]), _bar_label(day, cfg))
                 portfolio.open(
                     ticker=ticker,
                     entry_date=state.entry_date,
@@ -471,7 +497,7 @@ class _DailyRankingSource:
                 self.selection_rows.append(
                     {
                         "ticker": ticker,
-                        "signal_date": day.date(),
+                        "signal_date": _bar_label(day, cfg),
                         "as_of_close": row["as_of_close"],
                         "as_of_volume": row["as_of_volume"],
                         "as_of_dollar_vol": row["as_of_dollar_vol"],
@@ -514,7 +540,13 @@ def _assemble_results(
         price_adjustment=cfg.price_adjustment,
     )
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
-    metrics = compute_metrics(equity, benchmark_aligned, trades, max(cfg.top, 1))
+    metrics = compute_metrics(
+        equity,
+        benchmark_aligned,
+        trades,
+        max(cfg.top, 1),
+        periods_per_year=periods_per_year_for_interval(cfg.interval),
+    )
     metrics["unique_tickers"] = len({trade.ticker for trade in trades})
     metrics.update(compute_regime_metrics(benchmark, trades))
 
@@ -551,7 +583,18 @@ def run_rolling_backtest(
     """Run a daily rolling simulation over ``[start_date, end_date]``."""
     warnings: list[str] = []
     start_ts = pd.Timestamp(start_date).normalize()
-    end_ts = pd.Timestamp(end_date).normalize()
+    # For daily bars the window upper bound is midnight of end_date (bar
+    # timestamps are midnight-normalized). Intraday bars carry a time-of-day, so
+    # midnight would exclude every bar on the final session — extend the bound to
+    # the last instant of end_date so the closing session is included.
+    if cfg.interval == "1d":
+        end_ts = pd.Timestamp(end_date).normalize()
+    else:
+        end_ts = (
+            pd.Timestamp(end_date).normalize()
+            + pd.Timedelta(days=1)
+            - pd.Timedelta(1, "ns")
+        )
     if end_ts < start_ts:
         raise ValueError("end_date must be >= start_date")
 
@@ -726,6 +769,16 @@ def run_rolling_backtest(
     default="full",
 )
 @click.option(
+    "--interval",
+    type=click.Choice(list(SUPPORTED_INTERVALS)),
+    default="1d",
+    show_default=True,
+    help=(
+        "Bar interval. Intraday values (1h/30m/15m/5m/1m) fetch from yfinance "
+        "and are subject to its history caps (1m ~30d, 15m/30m ~60d, 1h ~730d)."
+    ),
+)
+@click.option(
     "--regime-filter",
     "regime_filter_args",
     multiple=True,
@@ -825,6 +878,7 @@ def backtest_rolling(
     entry_limit_bps,
     partial_exit_args,
     price_adjustment,
+    interval,
     regime_filter_args,
     fundamentals_provider,
     fundamental_field_args,
@@ -946,6 +1000,7 @@ def backtest_rolling(
         entry_limit_bps=entry_limit_bps,
         partial_exits=partial_exits,
         price_adjustment=price_adjustment,
+        interval=interval,
         regime_filter=tuple(dict.fromkeys(regime_filter_args)),
         fundamentals_provider=fundamentals_provider,
         fundamental_fields=tuple(dict.fromkeys(fundamental_field_args)),
@@ -953,7 +1008,7 @@ def backtest_rolling(
     )
 
     fetcher = click.get_current_context().obj or build_price_fetcher(
-        auto_adjust=price_adjustment == "full"
+        auto_adjust=price_adjustment == "full", interval=interval
     )
     result = run_rolling_backtest(
         cfg, fetcher, start_date=start_date, end_date=end_date

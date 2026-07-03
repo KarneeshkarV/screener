@@ -18,6 +18,7 @@ from screener.backtester.cli_common import (
     resolve_strategy_exprs,
 )
 from screener.backtester.core import (
+    _bar_label,
     _SlotState,
     _eligible_reserve_signal_idx,
     _make_slot_state,
@@ -29,8 +30,16 @@ from screener.backtester.data import PriceFetcher, build_price_fetcher
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.fills import FillModel
-from screener.backtester.metrics import compute_metrics, compute_regime_metrics
-from screener.backtester.models import BacktestConfig, BacktestResult
+from screener.backtester.metrics import (
+    compute_metrics,
+    compute_regime_metrics,
+    periods_per_year_for_interval,
+)
+from screener.backtester.models import (
+    SUPPORTED_INTERVALS,
+    BacktestConfig,
+    BacktestResult,
+)
 from screener.backtester.pine import PineError, evaluate, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 
@@ -182,7 +191,7 @@ class _ReserveRotationSource:
                         self.warnings.append(f"{ticker} re-entry: {warn}")
                     del self.pending_reentry[slot_id]
                     continue
-                portfolio.assign(ticker, new_rank, day.date())
+                portfolio.assign(ticker, new_rank, _bar_label(day, cfg))
                 portfolio.open(
                     ticker=ticker,
                     entry_date=state.entry_date,
@@ -235,7 +244,7 @@ class _ReserveRotationSource:
                     if warn:
                         self.warnings.append(f"{ticker}: {warn}")
                     continue
-                portfolio.assign(ticker, int(reserve["rank"]), day.date())
+                portfolio.assign(ticker, int(reserve["rank"]), _bar_label(day, cfg))
                 portfolio.open(
                     ticker=ticker,
                     entry_date=state.entry_date,
@@ -361,7 +370,7 @@ def _run_event_driven_sim(
         )
         portfolio.close(
             ticker=state.ticker,
-            exit_date=tail.index[-1].date(),
+            exit_date=_bar_label(tail.index[-1], cfg),
             exit_price=fill,
             reason="eod",
             commission_bps=cfg.commission_bps,
@@ -443,7 +452,13 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
         benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
         benchmark = benchmark.reindex(calendar, method="ffill").dropna()
-        metrics = compute_metrics(equity, benchmark, [], max(cfg.top, 1))
+        metrics = compute_metrics(
+            equity,
+            benchmark,
+            [],
+            max(cfg.top, 1),
+            periods_per_year=periods_per_year_for_interval(cfg.interval),
+        )
         return BacktestResult(
             config=cfg,
             trades=[],
@@ -506,7 +521,13 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
 
     benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
-    metrics = compute_metrics(equity, benchmark_aligned, trades, slot_count)
+    metrics = compute_metrics(
+        equity,
+        benchmark_aligned,
+        trades,
+        slot_count,
+        periods_per_year=periods_per_year_for_interval(cfg.interval),
+    )
     metrics.update(compute_regime_metrics(benchmark, trades))
 
     return BacktestResult(
@@ -664,6 +685,16 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     default="full",
     help="Price-adjustment regime. full=legacy (yfinance auto_adjust=True); splits_only=split-adjust OHLC and credit dividends as cash; none=raw OHLC.",
 )
+@click.option(
+    "--interval",
+    type=click.Choice(list(SUPPORTED_INTERVALS)),
+    default="1d",
+    show_default=True,
+    help=(
+        "Bar interval. Intraday values (1h/30m/15m/5m/1m) fetch from yfinance "
+        "and are subject to its history caps (1m ~30d, 15m/30m ~60d, 1h ~730d)."
+    ),
+)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
 @click.option(
     "--report",
@@ -711,6 +742,7 @@ def backtest_historical(
     max_reentries,
     partial_exit_args,
     price_adjustment,
+    interval,
     output_csv,
     report_path,
     open_report,
@@ -767,10 +799,11 @@ def backtest_historical(
         max_reentries=int(max_reentries),
         partial_exits=partial_exits,
         price_adjustment=price_adjustment,
+        interval=interval,
     )
 
     fetcher = click.get_current_context().obj or build_price_fetcher(
-        auto_adjust=price_adjustment == "full"
+        auto_adjust=price_adjustment == "full", interval=interval
     )
     result = run_backtest(cfg, fetcher)
     generated_report = report_path
