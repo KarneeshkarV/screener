@@ -29,6 +29,7 @@ uv run screener unusual-volume -m us --tickers AAPL,MSFT
 uv run screener promoter-buys -m india --min-change 0.5
 uv run screener garp -m us --universe-size 300 --workers 8
 uv run screener backtest-rolling -m us --years 2 --strategy rs_breakout --top 10
+uv run screener backtest-rolling -m us --tickers AAPL,MSFT --start 2026-06-22 --end 2026-07-02 --interval 15m --entry "close > sma(close,5)" --hold 4
 ```
 
 Use Rust when the task is parity, speed, CLI migration, or checking behavior against the migration target:
@@ -54,7 +55,8 @@ uv run pytest
 - Prefer existing repo providers and caches before writing ad hoc network code.
 - Use TradingView scanner data for broad technical universes in `screen`.
 - Use yfinance-backed OHLCV through `screener.backtester.data.build_price_fetcher()` for time-series analysis.
-- Use FMP only when `FMP_API_KEY` is present, mostly for US insider/fundamental/event context.
+- Intraday bars: `backtest-rolling` / `backtest-historical` accept `--interval` (`1d` default, `1h`, `30m`, `15m`, `5m`, `1m`); `build_price_fetcher(interval=...)` threads it through. yfinance caps history (1m ~30d, 5m-30m ~60d, 1h ~730d; no chunking yet), FMP serves intraday via `historical-chart` when `FMP_API_KEY` is set (raw, unadjusted bars). All intraday timestamps are canonical naive UTC across providers; intraday caches are namespaced per interval (`AAPL__15m`, `fmp_AAPL__15m`) so daily parquet files are never polluted. Metrics annualize by bars-per-year for the interval. Long-warmup strategies (e.g. SMA200) usually cannot fill their lookback inside the capped intraday windows.
+- Use FMP only when `FMP_API_KEY` is present, mostly for US insider/fundamental/event context (plus intraday/daily price fallback).
 - Use screener.in / openscreener for Indian fundamentals and promoter/shareholding context.
 - Use NSE cash/F&O bhavcopy and option-chain helpers for India delivery, operator intent, and unusual-volume overlays.
 - When giving current stock advice, verify the latest available data timestamp and state it. Do not invent fundamentals, analyst targets, earnings dates, or promoter changes.
@@ -67,7 +69,7 @@ Use these modules instead of recreating logic:
 - Technical screen: `screener/screener/commands/screen.py`, `screener/screener/scanner.py`, `screener/screener/criteria/plugins/`.
 - Custom criteria: add a plugin in `screener/screener/criteria/plugins/` with `@criterion("name")`; use `pipeline=True` only when the scan needs enrichment/history/external providers.
 - Backtests: `screener/screener/backtester/historical.py`, `rolling.py`, `core.py`, `models.py`, `metrics.py`.
-- Price data: `screener/screener/backtester/data.py`; use `tv_to_yf()` for symbol mapping and injected `PriceFetcher` for tests.
+- Price data: `screener/screener/backtester/data.py`; use `tv_to_yf()` for symbol mapping and injected `PriceFetcher` for tests. Interval-aware: pass `interval=` to the fetcher constructors, never mix intervals in one cache key.
 - Pine-like expressions: `screener/screener/backtester/pine.py`.
 - Named strategies: `screener/screener/strategies/plugins/` with `@strategy(...)`; expressions flow through `screener/strategies/expressions.py`.
 - GARP: `screener/screener/garp.py` and `screener/screener/commands/garp.py`.

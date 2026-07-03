@@ -107,7 +107,7 @@ just backtest -m india --as-of 2026-03-20 --entry "close > 0" --tickers RELIANCE
 
 ### `backtest-rolling`
 
-Runs a daily rolling backtest across a date window.
+Runs a rolling backtest across a date window.
 
 ```bash
 uv run screener backtest-rolling -m us --years 2 --strategy rs_breakout --top 10
@@ -116,6 +116,21 @@ just backtest-rolling -m us --years 2 --strategy rs_breakout --top 10
 ```
 
 Supports position sizing slots, holding period, stop loss, take profit, trailing stop, slippage/commission, benchmark, liquidity filters, custom tickers, CSV ledger output, and optional dashboard output.
+
+### Intraday intervals
+
+Both backtest commands accept `--interval` (default `1d`; also `1h`, `30m`, `15m`, `5m`, `1m`). All bar-count parameters (`--hold`, lookbacks in entry/exit expressions) are interpreted in bars of the chosen interval, trades carry full timestamps, and metrics annualize by bars-per-year for the interval.
+
+```bash
+uv run screener backtest-rolling -m us --tickers AAPL,MSFT --start 2026-06-22 --end 2026-07-02 --interval 15m --entry "close > sma(close,5)" --hold 4
+```
+
+Notes:
+
+- yfinance caps intraday history (1m ≈ last 30 days, 5m–30m ≈ 60 days, 1h ≈ 730 days); requests past the cap log a warning and return what is available.
+- With `FMP_API_KEY` set, FMP serves intraday bars (raw, unadjusted) via `historical-chart` — both as the automatic fallback and with `SCREENER_PRICE_PROVIDER=fmp`.
+- Intraday timestamps are canonical naive UTC across providers; intraday bars are cached under interval-namespaced keys so daily caches are never polluted.
+- Long-warmup strategies (e.g. anything needing SMA200) usually cannot fill their lookback inside the capped intraday windows.
 
 ### `backtest-lab`
 
