@@ -81,8 +81,7 @@ def _build_rolling_candidate_matrices(
         pd.DataFrame(entry_signals_by_tv)
         .reindex(master_ix)
         .reindex(columns=valid_tickers)
-        .fillna(False)
-        .astype(bool)
+        .eq(True)
     )
     # Point-in-time eligibility: suppress entry signals before a symbol's
     # index "date added" so today's constituents are not backtested through
@@ -106,8 +105,7 @@ def _build_rolling_candidate_matrices(
             pd.DataFrame(filter_signals_by_tv)
             .reindex(master_ix)
             .reindex(columns=valid_tickers)
-            .fillna(False)
-            .astype(bool)
+            .eq(True)
         )
     else:
         filter_mat = None
