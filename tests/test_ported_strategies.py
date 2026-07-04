@@ -15,6 +15,7 @@ PORTED_STRATEGIES = [
     "shooting_star",
 ]
 
+
 def _ohlcv(n: int = 700) -> pd.DataFrame:
     dates = pd.date_range("2022-01-01", periods=n, freq="D")
     x = np.linspace(0, 18, n)
@@ -35,9 +36,11 @@ def _ohlcv(n: int = 700) -> pd.DataFrame:
         }
     )
 
+
 def test_ported_strategies_registered():
     for name in PORTED_STRATEGIES:
         assert name in STRATEGIES
+
 
 def test_ported_strategies_smoke():
     df = _ohlcv()
