@@ -216,6 +216,69 @@ def test_rs_breakout_prepare_india_delivery_failure_warns(monkeypatch) -> None:
     assert any("delivery panel unavailable" in w for w in ctx.warnings)
 
 
+def test_momentum_prepare_skips_empty_bars() -> None:
+    from screener.strategies.plugins.momentum_12_1 import _prepare_momentum
+
+    ctx = _prepare_ctx(
+        "us",
+        price_panel={},
+        bars_by_tv={"EMPTY": pd.DataFrame()},
+    )
+    out = _prepare_momentum(ctx)
+    # Empty frames are passed through untouched (no factor columns added).
+    assert list(out) == ["EMPTY"]
+    assert out["EMPTY"].empty
+
+
+def test_low_vol_prepare_skips_empty_bars() -> None:
+    from screener.strategies.plugins.low_volatility import _prepare_low_vol
+
+    ctx = _prepare_ctx(
+        "us",
+        price_panel={},
+        bars_by_tv={"EMPTY": pd.DataFrame()},
+    )
+    out = _prepare_low_vol(ctx)
+    assert out["EMPTY"].empty
+
+
+def test_combo_prepare_all_empty_returns_passthrough() -> None:
+    from screener.strategies.plugins.mom_lowvol_combo import _prepare_combo
+
+    ctx = _prepare_ctx(
+        "us",
+        price_panel={},
+        bars_by_tv={"EMPTY": pd.DataFrame()},
+    )
+    out = _prepare_combo(ctx)
+    # No factor could be computed -> early passthrough of the input bars.
+    assert out["EMPTY"].empty
+
+
+def test_combo_prepare_mixes_empty_and_real_bars() -> None:
+    from screener.strategies.plugins.mom_lowvol_combo import _prepare_combo
+
+    ctx = _prepare_ctx(
+        "us",
+        price_panel={},
+        bars_by_tv={"AAA": make_bars(n=300), "EMPTY": pd.DataFrame()},
+    )
+    out = _prepare_combo(ctx)
+    # Real symbol gets the blended rank_score; the empty one is skipped.
+    assert "rank_score" in out["AAA"].columns
+    assert out["EMPTY"].empty
+
+
+def test_mark_minervini_prepare_delegates(monkeypatch) -> None:
+    from screener.strategies.plugins import mark_minervini as plugin
+
+    sentinel = {"AAA": make_bars(n=5)}
+    monkeypatch.setattr(plugin, "prepare_backtest_frames", lambda b: sentinel)
+    ctx = _prepare_ctx("us", price_panel={}, bars_by_tv={"AAA": make_bars(n=5)})
+    out = plugin._prepare_mark_minervini(ctx)
+    assert out is sentinel
+
+
 def test_rs_breakout_expression_strategy_registered() -> None:
     spec = strategy_registry.get("rs_breakout")
     assert spec.entry == "rs_breakout_entry > 0"
