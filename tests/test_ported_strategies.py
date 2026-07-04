@@ -94,11 +94,17 @@ def test_heikin_ashi_entry_and_exit():
     price = 200.0
     for _ in range(10):  # strong downtrend
         top, bot = price, price - 5
-        open_.append(top); high.append(top); low.append(bot); close.append(bot)
+        open_.append(top)
+        high.append(top)
+        low.append(bot)
+        close.append(bot)
         price = bot
     for _ in range(10):  # strong uptrend
         bot, top = price, price + 5
-        open_.append(bot); low.append(bot); high.append(top); close.append(top)
+        open_.append(bot)
+        low.append(bot)
+        high.append(top)
+        close.append(top)
         price = top
     trades = STRATEGIES["heikin_ashi"](_mkdf(open_, high, low, close))
     assert len(trades) >= 1

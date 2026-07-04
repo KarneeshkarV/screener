@@ -49,17 +49,17 @@ def strat_rsi_pattern(df: pd.DataFrame) -> list[Trade]:
                         
             if moveon:
                 moveon = False
-                l = -1
+                node_l = -1
                 for _l in range(j, i - period, -1):
                     if np.abs(cl[_l] - bottom) < delta:
                         moveon = True
-                        l = _l
+                        node_l = _l
                         break
                         
             if moveon:
                 moveon = False
                 m = -1
-                for _m in range(i - period, l):
+                for _m in range(i - period, node_l):
                     if np.abs(cl[_m] - bottom) < delta:
                         moveon = True
                         m = _m
@@ -67,7 +67,7 @@ def strat_rsi_pattern(df: pd.DataFrame) -> list[Trade]:
                         
             if moveon:
                 moveon = False
-                n = m + np.argmax(cl[m:l]) if l > m else m
+                n = m + np.argmax(cl[m:node_l]) if node_l > m else m
                 if (cl[n] - bottom > shoulder * delta) and (cl[j] - cl[n] > shoulder * delta):
                     top = cl[n]
                     moveon = True

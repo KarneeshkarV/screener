@@ -49,12 +49,12 @@ def strat_bb_pattern(df: pd.DataFrame) -> list[Trade]:
                 
                 if moveon:
                     moveon = False
-                    l = -1
+                    _node_l = -1
                     for _l in range(k, i - period, -1):
                         # Node L (for pattern)
                         if middle[_l] < cl[_l]:
                             moveon = True
-                            l = _l
+                            _node_l = _l
                             break
                             
                 if moveon:
