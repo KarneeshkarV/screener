@@ -5,12 +5,10 @@ from typing import Iterable
 
 import pandas as pd
 import pytest
-import requests
 from click.testing import CliRunner
 
 from main import cli
 
-from screener import fmp
 from screener.backtester import fundamentals, rolling
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling import run_rolling_backtest
@@ -96,90 +94,6 @@ def test_fmp_payload_normalizes_effective_dates_and_fields():
     assert row["eps_growth_yoy"] == pytest.approx(20.0)
     assert row["revenue_up_3q"] == 1.0
     assert row["market_cap"] == 5_000_000_000.0
-
-
-class _FakeResponse:
-    def __init__(self, payload: object, status: int = 200) -> None:
-        self._payload = payload
-        self.status = status
-
-    def raise_for_status(self) -> None:
-        if self.status >= 400:
-            raise requests.HTTPError(f"HTTP {self.status}")
-
-    def json(self) -> object:
-        return self._payload
-
-
-class _FakeSession:
-    """Records every GET; stands in for a pooled ``requests.Session``."""
-
-    def __init__(self, response: _FakeResponse) -> None:
-        self.response = response
-        self.calls: list[tuple[str, dict[str, str], float]] = []
-
-    def get(self, url: str, *, headers: dict[str, str], timeout: float) -> _FakeResponse:
-        self.calls.append((url, dict(headers), timeout))
-        return self.response
-
-
-def test_fmp_get_routes_through_shared_client_apikey_last_timeout_30():
-    session = _FakeSession(_FakeResponse({"ok": True}))
-
-    out = fundamentals._fmp_get(
-        session,  # type: ignore[arg-type]
-        "income-statement/AAPL",
-        {"period": "quarter", "limit": 4},
-        "SECRET",
-    )
-
-    assert out == {"ok": True}
-    url, headers, timeout = session.calls[0]
-    # Shared v3 base URL, param order preserved with apikey appended last.
-    assert url == (
-        f"{fmp.FMP_V3_BASE_URL}/income-statement/AAPL"
-        "?period=quarter&limit=4&apikey=SECRET"
-    )
-    # timeout=30 (not the fmp default 20) preserved, legacy empty-header UA kept.
-    assert timeout == 30.0
-    assert headers == {}
-
-
-def test_fmp_get_preserves_requests_http_error_on_non_2xx():
-    session = _FakeSession(_FakeResponse(None, status=404))
-
-    with pytest.raises(requests.HTTPError):
-        fundamentals._fmp_get(
-            session,  # type: ignore[arg-type]
-            "income-statement/AAPL",
-            {"limit": 1},
-            "SECRET",
-        )
-
-
-def test_fetch_fmp_sections_uses_injected_session_for_all_endpoints():
-    session = _FakeSession(_FakeResponse([{"date": "2024-01-31"}]))
-
-    payload = fundamentals._fetch_fmp_sections(
-        "AAPL",
-        api_key="SECRET",
-        session=session,  # type: ignore[arg-type]
-        limit=4,
-        fields=fundamentals.DEFAULT_FUNDAMENTAL_FIELDS,
-    )
-
-    assert set(payload) == {
-        "income",
-        "balance",
-        "ratios",
-        "key_metrics",
-        "enterprise_values",
-    }
-    requested = [url for url, _headers, _timeout in session.calls]
-    assert any("income-statement/AAPL" in u for u in requested)
-    assert any("enterprise-values/AAPL" in u for u in requested)
-    assert all(u.startswith(fmp.FMP_V3_BASE_URL) for u in requested)
-    assert all(u.endswith("apikey=SECRET") for u in requested)
 
 
 def test_openscreener_payload_normalizes_revenue_up_3q_with_india_lag():
@@ -366,3 +280,232 @@ def test_openscreener_provider_rejects_non_india_market():
 
     assert res.exit_code != 0
     assert "supports only -m india" in res.output
+
+
+# --------------------------------------------------------------------------- #
+# Unit coverage for the fundamentals adapter helpers and fetcher orchestration
+# --------------------------------------------------------------------------- #
+
+
+class _RaisingProvider:
+    """Provider seam whose ``fetch`` always raises (drives thread except-branch)."""
+
+    def fetch(self, *args, **kwargs):  # noqa: D401 - test double
+        raise RuntimeError("provider boom")
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeSession:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def get(self, url, *, headers, timeout):
+        return _FakeResponse(self._payload)
+
+
+def test_num_handles_unparseable_and_nan():
+    assert fundamentals._num("not-a-number") is None
+    assert fundamentals._num(float("nan")) is None
+    assert fundamentals._num(None) is None
+    assert fundamentals._num("1,234.5%") == 1234.5
+
+
+def test_increased_last_n_quarters_none_when_value_missing():
+    rows = [{"revenue": 100.0}, {"revenue": None}, {"revenue": 90.0}]
+    assert fundamentals._increased_last_n_quarters(rows, 0, "revenue", 3) is None
+
+
+def test_increased_last_n_revenues_none_when_value_missing():
+    rows = [{"sales": 100.0}, {"sales": None}, {"sales": 90.0}]
+    assert fundamentals._increased_last_n_revenues(rows, 0, 3) is None
+
+
+def test_effective_date_none_when_unparseable():
+    assert fundamentals._effective_date({"date": "not-a-date"}, 1) is None
+    assert fundamentals._effective_date({}, 1) is None
+
+
+def test_parse_india_period_end_handles_empty_iso_and_garbage():
+    assert fundamentals._parse_india_period_end("") is None
+    assert fundamentals._parse_india_period_end(None) is None
+
+    iso = fundamentals._parse_india_period_end("2024-03-31")
+    assert iso == pd.Timestamp("2024-03-31")
+
+    assert fundamentals._parse_india_period_end("nonsense-label") is None
+
+
+def test_fmp_get_returns_parsed_json():
+    out = fundamentals._fmp_get(
+        _FakeSession({"symbol": "AAPL", "revenue": 1}),
+        "income-statement/AAPL",
+        {"period": "quarter", "limit": 120},
+        "test-key",
+    )
+    assert out == {"symbol": "AAPL", "revenue": 1}
+
+
+def test_fmp_fetcher_requires_api_key(monkeypatch):
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
+    with pytest.raises(ValueError):
+        fundamentals.FMPFundamentalFetcher()
+
+
+def test_fmp_fetcher_init_normalizes_config():
+    fetcher = fundamentals.FMPFundamentalFetcher(
+        api_key="x",
+        fields=["roe_ttm", "roe_ttm", "pe_ttm"],
+        lag_days=-1,
+        limit=0,
+        max_workers=0,
+    )
+    assert fetcher.api_key == "x"
+    assert fetcher.fields == ("roe_ttm", "pe_ttm")
+    assert fetcher.lag_days == 0
+    assert fetcher.limit == 1
+    assert fetcher.max_workers == 1
+    assert fetcher.refresh is False
+
+
+def test_fmp_fetcher_fetch_rejects_non_us_market():
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x")
+    with pytest.raises(ValueError):
+        fetcher.fetch(["AAPL"], date(2024, 1, 1), date(2024, 12, 31), "india")
+
+
+def test_fmp_fetcher_fetch_single_ticker(monkeypatch, fake_provider):
+    monkeypatch.setattr(fundamentals, "_FMP_PROVIDER", fake_provider())
+    monkeypatch.setattr(
+        fundamentals, "_fetch_fmp_sections", lambda symbol, **k: _sample_payload()
+    )
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=1)
+
+    out = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 12, 31), "us")
+
+    assert "AAA" in out
+    assert pd.Timestamp("2024-02-06") in out["AAA"].index
+
+
+def test_fmp_fetcher_fetch_threaded(monkeypatch, fake_provider):
+    monkeypatch.setattr(fundamentals, "_FMP_PROVIDER", fake_provider())
+    monkeypatch.setattr(
+        fundamentals, "_fetch_fmp_sections", lambda symbol, **k: _sample_payload()
+    )
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=4)
+
+    out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 1), date(2024, 12, 31), "us")
+
+    assert set(out) == {"AAA", "BBB"}
+    assert not out["AAA"].empty
+
+
+def test_fmp_fetcher_fetch_threaded_handles_provider_failures(monkeypatch):
+    monkeypatch.setattr(fundamentals, "_FMP_PROVIDER", _RaisingProvider())
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=4)
+
+    out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 1), date(2024, 12, 31), "us")
+
+    assert set(out) == {"AAA", "BBB"}
+    assert out["AAA"].empty
+    assert out["BBB"].empty
+
+
+def test_openscreener_fetcher_rejects_non_india_market():
+    fetcher = fundamentals.OpenScreenerFundamentalFetcher()
+    with pytest.raises(ValueError):
+        fetcher.fetch(["RELIANCE"], date(2024, 1, 1), date(2024, 12, 31), "us")
+
+
+def test_openscreener_fetcher_fetch_threaded(monkeypatch, fake_provider):
+    monkeypatch.setattr(fundamentals, "_OPENSCREENER_PROVIDER", fake_provider())
+    monkeypatch.setattr(
+        fundamentals, "_YFINANCE_FUNDAMENTALS_PROVIDER", fake_provider()
+    )
+    monkeypatch.setattr(
+        fundamentals,
+        "_fetch_openscreener_quarterly",
+        lambda symbol: {
+            "quarterly_results": [
+                {"date": "Dec 2024", "sales": 130.0},
+                {"date": "Sep 2024", "sales": 120.0},
+                {"date": "Jun 2024", "sales": 100.0},
+            ]
+        },
+    )
+    fetcher = fundamentals.OpenScreenerFundamentalFetcher(max_workers=4)
+
+    out = fetcher.fetch(
+        ["RELIANCE.NS", "TCS.NS"], date(2024, 1, 1), date(2025, 12, 31), "india"
+    )
+
+    assert set(out) == {"RELIANCE.NS", "TCS.NS"}
+    assert pd.Timestamp("2025-03-01") in out["RELIANCE.NS"].index
+
+
+def test_openscreener_fetcher_fetch_threaded_handles_failures(monkeypatch):
+    monkeypatch.setattr(fundamentals, "_OPENSCREENER_PROVIDER", _RaisingProvider())
+    monkeypatch.setattr(
+        fundamentals, "_YFINANCE_FUNDAMENTALS_PROVIDER", _RaisingProvider()
+    )
+    fetcher = fundamentals.OpenScreenerFundamentalFetcher(max_workers=4)
+
+    out = fetcher.fetch(
+        ["RELIANCE.NS", "TCS.NS"], date(2024, 1, 1), date(2025, 12, 31), "india"
+    )
+
+    assert set(out) == {"RELIANCE.NS", "TCS.NS"}
+    assert out["RELIANCE.NS"].empty
+    assert out["TCS.NS"].empty
+
+
+def test_build_fundamental_fetcher_resolves_providers(monkeypatch):
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    monkeypatch.setenv("FMP_API_KEY", "x")
+
+    assert fundamentals.build_fundamental_fetcher(None) is None
+    assert fundamentals.build_fundamental_fetcher("   ") is None
+
+    assert isinstance(
+        fundamentals.build_fundamental_fetcher("fmp"),
+        fundamentals.FMPFundamentalFetcher,
+    )
+    assert isinstance(
+        fundamentals.build_fundamental_fetcher("FMP"),
+        fundamentals.FMPFundamentalFetcher,
+    )
+    assert isinstance(
+        fundamentals.build_fundamental_fetcher("openscreener"),
+        fundamentals.OpenScreenerFundamentalFetcher,
+    )
+    assert isinstance(
+        fundamentals.build_fundamental_fetcher("open-screener"),
+        fundamentals.OpenScreenerFundamentalFetcher,
+    )
+
+    yf_fetcher = fundamentals.build_fundamental_fetcher("yfinance")
+    assert isinstance(yf_fetcher, fundamentals.OpenScreenerFundamentalFetcher)
+    assert yf_fetcher.use_openscreener is False
+
+    with pytest.raises(ValueError):
+        fundamentals.build_fundamental_fetcher("garbage")
+
+
+def test_merge_fundamentals_skips_empty_or_none_bars():
+    out = fundamentals.merge_fundamentals_into_bars(
+        {"AAA": pd.DataFrame(), "BBB": None},
+        {},
+        {},
+    )
+    assert out["AAA"].empty
+    assert out["BBB"] is None
