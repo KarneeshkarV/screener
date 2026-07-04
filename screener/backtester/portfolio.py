@@ -25,6 +25,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Iterable, Optional, Union, cast
 
+import numpy as np
 import pandas as pd
 
 from screener.backtester.models import ExitReason, Position, Trade
@@ -315,19 +316,63 @@ def build_equity_curve(
                     dividend_cash_by_day.get(ex_ts, 0.0) + t.shares * div
                 )
 
+    # Vectorised mark-to-market: pre-align each traded ticker's valid closes
+    # to the calendar once, forward-filled — a calendar day with no valid
+    # close for the ticker (holiday mismatch, trading halt, delisting tail)
+    # carries the most recent prior close, and days before the first valid
+    # close fall back to the trade's entry price, exactly like the per-day
+    # scalar lookups this replaces. Each trade contributes ``shares * close``
+    # over its open calendar span [entry_date, exit_date). Trades accumulate
+    # in the order the open events were applied — (entry date, sequence) — so
+    # per-day float summation order matches the original open-positions loop
+    # bit for bit.
+    aligned_close: dict[str, np.ndarray] = {}
+    mtm = np.zeros(len(calendar), dtype=float)
+    for _seq, trade in sorted(
+        enumerate(trades), key=lambda item: (pd.Timestamp(item[1].entry_date), item[0])
+    ):
+        arr = aligned_close.get(trade.ticker)
+        if arr is None:
+            frame = price_panel.get(trade.ticker)
+            valid = (
+                frame["close"].dropna()
+                if frame is not None and not frame.empty
+                else None
+            )
+            if valid is None or valid.empty:
+                arr = np.full(len(calendar), np.nan)
+            else:
+                arr = valid.reindex(calendar, method="ffill").to_numpy(dtype=float)
+            aligned_close[trade.ticker] = arr
+        entry_ts = pd.Timestamp(trade.entry_date)
+        exit_ts = pd.Timestamp(trade.exit_date)
+        lo = int(calendar.searchsorted(entry_ts, side="left"))
+        if exit_ts <= entry_ts:
+            # Same-day entry and exit (e.g. a force-close of a position opened
+            # on the window's last bar): the event loop orders closes before
+            # opens on the same day, so the close never pops this position and
+            # it stays marked-to-market for every remaining calendar day.
+            # Preserved exactly for bit-identical curves.
+            hi = len(calendar)
+        else:
+            hi = int(calendar.searchsorted(exit_ts, side="left"))
+        if lo >= hi:
+            continue
+        prices = arr[lo:hi]
+        if np.isnan(prices).any():
+            prices = np.where(np.isnan(prices), trade.entry_price, prices)
+        mtm[lo:hi] += trade.shares * prices
+
     cash = float(initial_capital)
-    open_positions: dict[int, Trade] = {}
-    equity = pd.Series(0.0, index=calendar, dtype=float)
+    values = np.empty(len(calendar), dtype=float)
     ev_idx = 0
 
-    for day in calendar:
+    for day_idx, day in enumerate(calendar):
         while ev_idx < len(events) and events[ev_idx][0] <= day:
-            _, kind, seq, trade = events[ev_idx]
+            _, kind, _seq2, trade = events[ev_idx]
             if kind == 1:  # open
                 cash -= trade.entry_cost
-                open_positions[seq] = trade
             else:  # close
-                open_positions.pop(seq, None)
                 cash += trade.exit_value
             ev_idx += 1
 
@@ -339,23 +384,5 @@ def build_equity_curve(
             for ex_ts in [d for d in dividend_cash_by_day if d <= day]:
                 cash += dividend_cash_by_day.pop(ex_ts)
 
-        mtm = 0.0
-        for trade in open_positions.values():
-            frame = price_panel.get(trade.ticker)
-            if frame is None or frame.empty:
-                mtm += trade.shares * trade.entry_price
-                continue
-            if day in frame.index:
-                price = float(cast(Any, frame.loc[day, "close"]))
-            else:
-                price = float("nan")
-            if pd.isna(price):
-                # Bar present on the calendar but no valid close for this
-                # ticker (holiday mismatch, trading halt, delisting tail):
-                # carry the lot at its most recent valid close so one missing
-                # bar can't poison the equity endpoint (NaN -> NaN total return).
-                prior = frame.loc[frame.index <= day, "close"].dropna()
-                price = float(prior.iloc[-1]) if not prior.empty else trade.entry_price
-            mtm += trade.shares * price
-        equity.loc[day] = cash + mtm
-    return equity
+        values[day_idx] = cash + mtm[day_idx]
+    return pd.Series(values, index=calendar, dtype=float)
