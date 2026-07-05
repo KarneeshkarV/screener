@@ -19,6 +19,21 @@ from screener.regime import classify_regimes
 TRADING_DAYS_PER_YEAR = 252
 _EULER_MASCHERONI = 0.5772156649015329
 
+# Regular-session bars per trading day for each supported interval (US markets:
+# a 6.5h session). Used to scale the 252-trading-day annualization factor so
+# intraday equity curves annualize over the right number of periods. Daily is
+# 1 bar/day, reproducing the legacy 252 factor exactly.
+_BARS_PER_SESSION = {"1d": 1, "1h": 7, "30m": 13, "15m": 26, "5m": 78, "1m": 390}
+
+
+def periods_per_year_for_interval(interval: str) -> int:
+    """Return the annualization period count for ``interval``.
+
+    ``1d`` -> 252 (unchanged); intraday intervals scale 252 by the number of
+    regular-session bars per day so Sharpe/vol/CAGR annualize consistently.
+    """
+    return TRADING_DAYS_PER_YEAR * _BARS_PER_SESSION.get(interval, 1)
+
 
 def _daily_returns(equity: pd.Series) -> pd.Series:
     if equity.empty or len(equity) < 2:
@@ -26,7 +41,7 @@ def _daily_returns(equity: pd.Series) -> pd.Series:
     return equity.pct_change().dropna()
 
 
-def _cagr(equity: pd.Series) -> float:
+def _cagr(equity: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
     if equity.empty or len(equity) < 2:
         return 0.0
     start = float(equity.iloc[0])
@@ -34,10 +49,10 @@ def _cagr(equity: pd.Series) -> float:
     if start <= 0:
         return 0.0
     # Annualize over the elapsed return periods (N-1 for an N-point curve), not
-    # the point count: an N-bar equity curve spans N-1 daily returns, so the
-    # horizon is (N-1)/252 years. Using len(equity)/252 overstated the horizon
-    # by one bar and understated CAGR; this matches empyrical's convention.
-    years = max((len(equity) - 1) / TRADING_DAYS_PER_YEAR, 1e-9)
+    # the point count: an N-bar equity curve spans N-1 return periods, so the
+    # horizon is (N-1)/periods_per_year years. Using len(equity)/... overstated
+    # the horizon by one bar and understated CAGR; matches empyrical's convention.
+    years = max((len(equity) - 1) / periods_per_year, 1e-9)
     return float((end / start) ** (1.0 / years) - 1.0)
 
 
@@ -49,20 +64,30 @@ def _max_drawdown(equity: pd.Series) -> float:
     return float(dd.min()) if not dd.empty else 0.0
 
 
-def _sharpe(daily: pd.Series, rf: float = 0.0) -> float:
+def _sharpe(
+    daily: pd.Series,
+    rf: float = 0.0,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> float:
     if daily.empty or daily.std(ddof=0) == 0:
         return 0.0
-    excess = daily - rf / TRADING_DAYS_PER_YEAR
-    return float(excess.mean() / excess.std(ddof=0) * np.sqrt(TRADING_DAYS_PER_YEAR))
+    excess = daily - rf / periods_per_year
+    return float(excess.mean() / excess.std(ddof=0) * np.sqrt(periods_per_year))
 
 
-def _vol_annual(daily: pd.Series) -> float:
+def _vol_annual(
+    daily: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR
+) -> float:
     if daily.empty:
         return 0.0
-    return float(daily.std(ddof=0) * np.sqrt(TRADING_DAYS_PER_YEAR))
+    return float(daily.std(ddof=0) * np.sqrt(periods_per_year))
 
 
-def _alpha_beta(daily: pd.Series, bench_daily: pd.Series) -> tuple[float, float]:
+def _alpha_beta(
+    daily: pd.Series,
+    bench_daily: pd.Series,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> tuple[float, float]:
     if daily.empty or bench_daily.empty:
         return 0.0, 0.0
     aligned = pd.concat([daily, bench_daily], axis=1).dropna()
@@ -73,9 +98,9 @@ def _alpha_beta(daily: pd.Series, bench_daily: pd.Series) -> tuple[float, float]
     if x.std() == 0:
         return 0.0, 0.0
     slope, intercept = np.polyfit(x, y, 1)
-    # annualize alpha geometrically (intercept is per-day): (1+a)^252 - 1.
-    # Matches empyrical/quantstats; arithmetic intercept*252 ignored compounding.
-    return float((1.0 + intercept) ** TRADING_DAYS_PER_YEAR - 1.0), float(slope)
+    # annualize alpha geometrically (intercept is per-period): (1+a)^ppy - 1.
+    # Matches empyrical/quantstats; arithmetic intercept*ppy ignored compounding.
+    return float((1.0 + intercept) ** periods_per_year - 1.0), float(slope)
 
 
 def _exposure(
@@ -93,25 +118,29 @@ def _exposure(
     return float(open_count.mean() / max(slot_count, 1))
 
 
-def _sortino(daily: pd.Series, rf: float = 0.0) -> float:
+def _sortino(
+    daily: pd.Series,
+    rf: float = 0.0,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> float:
     if daily.empty:
         return 0.0
-    excess = daily - rf / TRADING_DAYS_PER_YEAR
+    excess = daily - rf / periods_per_year
     # Canonical target-downside-deviation: RMS of min(excess, 0) over ALL N
     # periods (target = per-period rf). Matches empyrical.sortino_ratio.
     downside_dev = float(np.sqrt(np.mean(np.minimum(excess, 0.0) ** 2)))
     if downside_dev == 0:
         return 0.0
-    return float(excess.mean() / downside_dev * np.sqrt(TRADING_DAYS_PER_YEAR))
+    return float(excess.mean() / downside_dev * np.sqrt(periods_per_year))
 
 
-def _calmar(equity: pd.Series) -> float:
+def _calmar(equity: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
     if equity.empty or len(equity) < 2:
         return 0.0
     mdd = _max_drawdown(equity)
     if mdd >= 0:
         return 0.0
-    return float(_cagr(equity) / abs(mdd))
+    return float(_cagr(equity, periods_per_year) / abs(mdd))
 
 
 def _phi(x: float) -> float:
@@ -134,7 +163,11 @@ def _phi_inv(p: float) -> float:
     return 0.5 * (lo + hi)
 
 
-def _psr(daily: pd.Series, sr_benchmark_annual: float = 0.0) -> float:
+def _psr(
+    daily: pd.Series,
+    sr_benchmark_annual: float = 0.0,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> float:
     """Probabilistic Sharpe Ratio (López de Prado, 2012).
 
     Probability that the *true* annualized Sharpe exceeds ``sr_benchmark_annual``,
@@ -144,8 +177,10 @@ def _psr(daily: pd.Series, sr_benchmark_annual: float = 0.0) -> float:
     if daily.empty or len(daily) < 30:
         return 0.0
     T = len(daily)
-    sr_per = _sharpe(daily) / math.sqrt(TRADING_DAYS_PER_YEAR)
-    sr_bench_per = sr_benchmark_annual / math.sqrt(TRADING_DAYS_PER_YEAR)
+    sr_per = _sharpe(daily, periods_per_year=periods_per_year) / math.sqrt(
+        periods_per_year
+    )
+    sr_bench_per = sr_benchmark_annual / math.sqrt(periods_per_year)
     skew = float(cast(Any, daily.skew())) if daily.std(ddof=0) else 0.0
     kurt_excess = float(cast(Any, daily.kurt())) if daily.std(ddof=0) else 0.0
     denom_sq = 1.0 - skew * sr_per + (kurt_excess / 4.0) * sr_per * sr_per
@@ -158,6 +193,7 @@ def _dsr(
     daily: pd.Series,
     n_trials: int = 1,
     sr_trial_std_annual: float = 0.5,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> float:
     """Deflated Sharpe Ratio (López de Prado, 2014).
 
@@ -168,12 +204,14 @@ def _dsr(
     for equity strategies); pass the measured value if you have it.
     """
     if n_trials <= 1:
-        return _psr(daily, 0.0)
+        return _psr(daily, 0.0, periods_per_year=periods_per_year)
     sr0_annual = sr_trial_std_annual * (
         (1.0 - _EULER_MASCHERONI) * _phi_inv(1.0 - 1.0 / n_trials)
         + _EULER_MASCHERONI * _phi_inv(1.0 - 1.0 / (n_trials * math.e))
     )
-    return _psr(daily, sr_benchmark_annual=sr0_annual)
+    return _psr(
+        daily, sr_benchmark_annual=sr0_annual, periods_per_year=periods_per_year
+    )
 
 
 def _invested_return(trades: Iterable[Trade]) -> float:
@@ -262,6 +300,7 @@ def compute_metrics(
     trades: list[Trade],
     slot_count: int,
     n_trials: int = 1,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> dict:
     daily = _daily_returns(equity)
     bench_daily = (
@@ -272,7 +311,7 @@ def compute_metrics(
         if len(equity) >= 2 and equity.iloc[0] > 0
         else 0.0
     )
-    alpha, beta = _alpha_beta(daily, bench_daily)
+    alpha, beta = _alpha_beta(daily, bench_daily, periods_per_year)
     hit_rate = (
         float(sum(1 for t in trades if t.pnl > 0) / len(trades)) if trades else 0.0
     )
@@ -283,13 +322,13 @@ def compute_metrics(
     )
     metrics = {
         "total_return": total_return,
-        "cagr": _cagr(equity),
-        "vol_annual": _vol_annual(daily),
-        "sharpe": _sharpe(daily),
-        "sortino": _sortino(daily),
-        "calmar": _calmar(equity),
-        "psr": _psr(daily, sr_benchmark_annual=0.0),
-        "dsr": _dsr(daily, n_trials=n_trials),
+        "cagr": _cagr(equity, periods_per_year),
+        "vol_annual": _vol_annual(daily, periods_per_year),
+        "sharpe": _sharpe(daily, periods_per_year=periods_per_year),
+        "sortino": _sortino(daily, periods_per_year=periods_per_year),
+        "calmar": _calmar(equity, periods_per_year),
+        "psr": _psr(daily, sr_benchmark_annual=0.0, periods_per_year=periods_per_year),
+        "dsr": _dsr(daily, n_trials=n_trials, periods_per_year=periods_per_year),
         "max_drawdown": _max_drawdown(equity),
         "hit_rate": hit_rate,
         "alpha_annual": alpha,

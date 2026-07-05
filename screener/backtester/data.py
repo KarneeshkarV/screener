@@ -126,29 +126,45 @@ def _cache_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
     return cache_dir / f"{safe}.parquet"
 
 
-def _naive_normalized_index(idx: pd.Index) -> pd.DatetimeIndex:
-    """Normalize to tz-naive midnight without re-parsing an already-datetime index.
+def _naive_normalized_index(idx: pd.Index, interval: str = "1d") -> pd.DatetimeIndex:
+    """Normalize to tz-naive index without re-parsing an already-datetime index.
 
     ``pd.to_datetime()`` on a ``DatetimeIndex`` is a no-op conversion, but its
     ``should_cache`` heuristic iterates the whole index in Python — the single
     largest leaf in the sp500 profiles. Skip it when the index is already
-    datetime, and only ``tz_localize`` when actually tz-aware. ``.normalize()``
-    stays (it is vectorized C, not the hotspot).
+    datetime, and only ``tz_localize`` when actually tz-aware.
+
+    For daily bars (``interval == "1d"``) the index is truncated to midnight via
+    ``.normalize()`` — the historical behaviour, one bar per calendar day. For
+    intraday intervals normalization is skipped so each bar keeps its
+    time-of-day; only the tz is dropped (yfinance returns exchange-local time),
+    leaving distinct tz-naive timestamps that the dedup pass no longer collapses.
     """
     if not isinstance(idx, pd.DatetimeIndex):
         idx = pd.to_datetime(idx)
     if idx.tz is not None:
-        idx = idx.tz_localize(None)
-    return idx.normalize()
+        if interval == "1d":
+            idx = idx.tz_localize(None)
+        else:
+            # Canonical intraday wall-clock is naive UTC. yfinance batches
+            # already arrive UTC-aware, but pin it explicitly so single-ticker
+            # downloads (exchange-local tz) and other providers line up on the
+            # same simulation calendar.
+            idx = idx.tz_convert("UTC").tz_localize(None)
+    if interval == "1d":
+        return idx.normalize()
+    return idx
 
 
-def _load_cached(ticker: str, cache_dir: Path = CACHE_DIR) -> Optional[pd.DataFrame]:
+def _load_cached(
+    ticker: str, cache_dir: Path = CACHE_DIR, interval: str = "1d"
+) -> Optional[pd.DataFrame]:
     p = _cache_path(ticker, cache_dir)
     if not p.exists():
         return None
     try:
         df = pd.read_parquet(p)
-        df.index = _naive_normalized_index(df.index)
+        df.index = _naive_normalized_index(df.index, interval)
         # Clean NaN-OHLCV rows that older cache writes may have persisted, so a
         # cache hit can't reintroduce the NaN bars that _normalize_frame drops.
         price_cols = [c for c in OHLCV_COLUMNS if c in df.columns]
@@ -175,7 +191,7 @@ def _empty_ohlcv_frame() -> pd.DataFrame:
     )
 
 
-def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
+def _normalize_frame(df: pd.DataFrame, interval: str = "1d") -> pd.DataFrame:
     if df is None or df.empty:
         return _empty_ohlcv_frame()
     # yfinance returns MultiIndex columns when multiple tickers; callers should
@@ -202,7 +218,7 @@ def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
         factor = splits.replace(0.0, 1.0)[::-1].cumprod()[::-1].shift(-1).fillna(1.0)
         out["split_factor"] = factor.astype(float)
         out["stock_splits"] = splits
-    out.index = _naive_normalized_index(out.index)
+    out.index = _naive_normalized_index(out.index, interval)
     out = out[~out.index.duplicated(keep="last")].sort_index()
     # Drop bars with no valid OHLCV (yfinance emits NaN rows for halts,
     # illiquid/delisting tails, and multi-ticker index-union gaps). These are
@@ -289,7 +305,9 @@ def warn_unadjustable_fmp_frames(
     return bars_dict
 
 
-def _merge_cached(existing: Optional[pd.DataFrame], new: pd.DataFrame) -> pd.DataFrame:
+def _merge_cached(
+    existing: Optional[pd.DataFrame], new: pd.DataFrame, interval: str = "1d"
+) -> pd.DataFrame:
     if existing is None or existing.empty:
         merged = new.copy()
     elif new.empty:
@@ -298,11 +316,26 @@ def _merge_cached(existing: Optional[pd.DataFrame], new: pd.DataFrame) -> pd.Dat
         merged = pd.concat([existing, new], axis=0)
     if merged.empty:
         return merged
-    merged.index = _naive_normalized_index(merged.index)
+    merged.index = _naive_normalized_index(merged.index, interval)
     return merged[~merged.index.duplicated(keep="last")].sort_index()
 
 
-def _has_range(df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> bool:
+def _inclusive_fetch_bounds(
+    start: date, end: date, interval: str = "1d"
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end)
+    if interval != "1d" and end_ts == end_ts.normalize():
+        end_ts = end_ts + pd.Timedelta(days=1) - pd.Timedelta(1, "ns")
+    return start_ts, end_ts
+
+
+def _has_range(
+    df: pd.DataFrame,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    interval: str = "1d",
+) -> bool:
     if df is None or df.empty:
         return False
     in_range = df.loc[(df.index >= start_ts) & (df.index <= end_ts)]
@@ -313,12 +346,14 @@ def _has_range(df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -
     )
 
 
-def _split_download(raw: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataFrame]:
+def _split_download(
+    raw: pd.DataFrame, tickers: list[str], interval: str = "1d"
+) -> dict[str, pd.DataFrame]:
     if raw is None or raw.empty:
         return {ticker: _empty_ohlcv_frame() for ticker in tickers}
     if not isinstance(raw.columns, pd.MultiIndex):
         ticker = tickers[0] if tickers else ""
-        return {ticker: _normalize_frame(raw)}
+        return {ticker: _normalize_frame(raw, interval)}
 
     frames: dict[str, pd.DataFrame] = {}
     level_values = [
@@ -333,7 +368,7 @@ def _split_download(raw: pd.DataFrame, tickers: list[str]) -> dict[str, pd.DataF
                     selected.to_frame() if isinstance(selected, pd.Series) else selected
                 )
                 break
-        frames[ticker] = _normalize_frame(frame)
+        frames[ticker] = _normalize_frame(frame, interval)
     return frames
 
 
@@ -364,35 +399,60 @@ class YFinancePriceFetcher:
         batch_size: int = 75,
         refresh: bool = False,
         max_workers: int = 4,
+        interval: str = "1d",
     ) -> None:
         self.cache_dir = cache_dir or CACHE_DIR
         self.auto_adjust = bool(auto_adjust)
         self.batch_size = max(1, int(batch_size))
         self.refresh = bool(refresh)
         self.max_workers = max(1, int(max_workers))
+        self.interval = str(interval)
 
     def _cache_key(self, ticker: str) -> str:
-        return ticker if self.auto_adjust else f"{ticker}__raw"
+        # Intraday intervals get their own cache namespace so the existing daily
+        # parquet files stay valid and are never polluted with 15m/1h bars.
+        base = ticker if self.interval == "1d" else f"{ticker}__{self.interval}"
+        return base if self.auto_adjust else f"{base}__raw"
+
+    # Approximate yfinance intraday history caps, in calendar days.
+    _INTRADAY_CAP_DAYS = {
+        "1m": 30,
+        "5m": 60,
+        "15m": 60,
+        "30m": 60,
+        "1h": 730,
+    }
+
+    def _beyond_intraday_cap(self, fetch_start: pd.Timestamp) -> bool:
+        cap = self._INTRADAY_CAP_DAYS.get(self.interval)
+        if cap is None:
+            return False
+        return pd.Timestamp(
+            fetch_start
+        ) < pd.Timestamp.now().normalize() - pd.Timedelta(days=cap)
 
     def fetch(
         self, tickers: Iterable[str], start: date, end: date
     ) -> dict[str, pd.DataFrame]:
         tickers = [t for t in tickers if t]
         results: dict[str, pd.DataFrame] = {}
-        start_ts = pd.Timestamp(start)
-        end_ts = pd.Timestamp(end)
+        start_ts, end_ts = _inclusive_fetch_bounds(start, end, self.interval)
         cached_by_ticker: dict[str, pd.DataFrame] = {}
         missing: dict[tuple[pd.Timestamp, pd.Timestamp], list[str]] = {}
 
         for ticker in tickers:
             cache_key = self._cache_key(ticker)
-            cached = None if self.refresh else _load_cached(cache_key, self.cache_dir)
+            cached = (
+                None
+                if self.refresh
+                else _load_cached(cache_key, self.cache_dir, self.interval)
+            )
             if cached is not None and not cached.empty:
                 cached_by_ticker[ticker] = cached
             if (
                 not self.refresh
                 and cached is not None
-                and _has_range(cached, start_ts, end_ts)
+                and _has_range(cached, start_ts, end_ts, self.interval)
             ):
                 results[ticker] = cached.loc[
                     (cached.index >= start_ts) & (cached.index <= end_ts)
@@ -428,9 +488,15 @@ class YFinancePriceFetcher:
             job: tuple[pd.Timestamp, pd.Timestamp, list[str]],
         ) -> tuple[list[str], pd.DataFrame]:
             fetch_start, fetch_end, batch = job
+            download_end = fetch_end + pd.Timedelta(days=1)
+            if self.interval != "1d":
+                download_end = fetch_end.normalize() + pd.Timedelta(days=1)
             download_kwargs = dict(
                 start=fetch_start,
-                end=fetch_end + pd.Timedelta(days=1),
+                # yfinance treats ``end`` as exclusive for both daily and
+                # intraday; keep the +1 day so the last requested bar is included.
+                end=download_end,
+                interval=self.interval,
                 auto_adjust=self.auto_adjust,
                 progress=False,
                 threads=True,
@@ -445,6 +511,24 @@ class YFinancePriceFetcher:
                 lambda: yf.download(target, **download_kwargs),
                 fallback=pd.DataFrame(),
             )
+            if (
+                (raw is None or raw.empty)
+                and self.interval != "1d"
+                and self._beyond_intraday_cap(fetch_start)
+            ):
+                from screener.logging_config import get_logger
+
+                get_logger(__name__).warning(
+                    "yfinance_intraday_history_cap",
+                    interval=self.interval,
+                    requested_start=str(pd.Timestamp(fetch_start).date()),
+                    reason=(
+                        "yfinance caps intraday history (1m ~30d, 15m/30m ~60d, "
+                        "1h ~730d); the requested start predates the cap so the "
+                        "download came back empty. Use a more recent window "
+                        "(Phase 2 will add chunking)."
+                    ),
+                )
             return batch, raw
 
         # yfinance prints expected "possibly delisted" messages directly to
@@ -465,11 +549,13 @@ class YFinancePriceFetcher:
         # Each ticker belongs to exactly one job, so merge + cache writes can
         # stay on the main thread without coordination.
         for batch, raw in downloads:
-            downloaded = _split_download(raw, batch)
+            downloaded = _split_download(raw, batch, self.interval)
             for ticker in batch:
                 cache_key = self._cache_key(ticker)
                 norm = downloaded.get(ticker, _empty_ohlcv_frame())
-                merged = _merge_cached(cached_by_ticker.get(ticker), norm)
+                merged = _merge_cached(
+                    cached_by_ticker.get(ticker), norm, self.interval
+                )
                 if not merged.empty:
                     _save_cache(cache_key, merged, self.cache_dir)
                 results[ticker] = merged.loc[
@@ -478,15 +564,35 @@ class YFinancePriceFetcher:
         return results
 
 
-def _fmp_cache_key(ticker: str, auto_adjust: bool) -> str:
+# FMP spells intraday intervals differently from yfinance; the daily endpoint
+# is a separate URL entirely (``historical-price-full`` vs ``historical-chart``).
+_FMP_INTRADAY_INTERVALS = {
+    "1m": "1min",
+    "5m": "5min",
+    "15m": "15min",
+    "30m": "30min",
+    "1h": "1hour",
+}
+
+
+def _fmp_cache_key(ticker: str, auto_adjust: bool, interval: str = "1d") -> str:
     suffix = "" if auto_adjust else "__raw"
-    return f"fmp_{ticker}{suffix}"
+    base = ticker if interval == "1d" else f"{ticker}__{interval}"
+    return f"fmp_{base}{suffix}"
 
 
-def _normalize_fmp_historical(payload: object, auto_adjust: bool) -> pd.DataFrame:
-    if not isinstance(payload, dict):
-        return pd.DataFrame(columns=OHLCV_COLUMNS)
-    rows = payload.get("historical")
+def _normalize_fmp_historical(
+    payload: object, auto_adjust: bool, interval: str = "1d"
+) -> pd.DataFrame:
+    rows: object
+    if interval == "1d":
+        if not isinstance(payload, dict):
+            return pd.DataFrame(columns=OHLCV_COLUMNS)
+        rows = payload.get("historical")
+    else:
+        # The intraday historical-chart endpoint returns a bare list of bars
+        # (newest first) instead of a dict with a "historical" key.
+        rows = payload
     if not isinstance(rows, list) or not rows:
         return pd.DataFrame(columns=OHLCV_COLUMNS)
 
@@ -506,7 +612,18 @@ def _normalize_fmp_historical(payload: object, auto_adjust: bool) -> pd.DataFram
     out = df[["date", *keep]].rename(columns=rename).copy()
     out.index = pd.to_datetime(out.pop("date"), errors="coerce")
     out = out[out.index.notna()]
-    out.index = cast(pd.DatetimeIndex, out.index).tz_localize(None).normalize()
+    idx = cast(pd.DatetimeIndex, out.index)
+    if interval == "1d":
+        if idx.tz is not None:
+            idx = idx.tz_localize(None)
+        out.index = idx.normalize()
+    else:
+        # FMP intraday timestamps are US/Eastern wall-clock with no tz marker.
+        # Convert to naive UTC so FMP bars land on the same simulation calendar
+        # as yfinance intraday bars (see _naive_normalized_index).
+        if idx.tz is None:
+            idx = idx.tz_localize("America/New_York")
+        out.index = idx.tz_convert("UTC").tz_localize(None)
 
     for col in [*OHLCV_COLUMNS, "adj_close"]:
         if col in out.columns:
@@ -524,12 +641,19 @@ def _normalize_fmp_historical(payload: object, auto_adjust: bool) -> pd.DataFram
 
 
 class FMPPriceFetcher:
-    """Fetch daily OHLCV from Financial Modeling Prep.
+    """Fetch OHLCV from Financial Modeling Prep.
+
+    Daily bars come from ``historical-price-full`` (dividend/split adjusted via
+    ``adjClose`` when ``auto_adjust`` is set). Intraday bars come from
+    ``historical-chart/{interval}`` and are always raw — FMP publishes no
+    adjusted intraday prices, which is acceptable inside the short history
+    windows intraday backtests use.
 
     The API key is read from ``FMP_API_KEY`` unless passed explicitly.
     """
 
     base_url = "https://financialmodelingprep.com/api/v3/historical-price-full"
+    intraday_base_url = "https://financialmodelingprep.com/api/v3/historical-chart"
 
     def __init__(
         self,
@@ -538,7 +662,14 @@ class FMPPriceFetcher:
         auto_adjust: bool = True,
         refresh: bool = False,
         session: requests.Session | None = None,
+        interval: str = "1d",
     ) -> None:
+        if interval != "1d" and interval not in _FMP_INTRADAY_INTERVALS:
+            raise ValueError(
+                f"FMPPriceFetcher supports intervals '1d' and "
+                f"{sorted(_FMP_INTRADAY_INTERVALS)}; got {interval!r}"
+            )
+        self.interval = interval
         self.api_key = api_key or os.environ.get("FMP_API_KEY")
         if not self.api_key:
             raise ValueError("FMP_API_KEY is required to use the FMP price fetcher")
@@ -550,26 +681,35 @@ class FMPPriceFetcher:
     def fetch(
         self, tickers: Iterable[str], start: date, end: date
     ) -> dict[str, pd.DataFrame]:
-        start_ts = pd.Timestamp(start)
-        end_ts = pd.Timestamp(end)
+        start_ts, end_ts = _inclusive_fetch_bounds(start, end, self.interval)
         results: dict[str, pd.DataFrame] = {}
 
         for ticker in [t for t in tickers if t]:
-            cache_key = _fmp_cache_key(ticker, self.auto_adjust)
-            cached = None if self.refresh else _load_cached(cache_key, self.cache_dir)
+            cache_key = _fmp_cache_key(ticker, self.auto_adjust, self.interval)
+            cached = (
+                None
+                if self.refresh
+                else _load_cached(cache_key, self.cache_dir, self.interval)
+            )
             if (
                 not self.refresh
                 and cached is not None
-                and _has_range(cached, start_ts, end_ts)
+                and _has_range(cached, start_ts, end_ts, self.interval)
             ):
                 results[ticker] = cached.loc[
                     (cached.index >= start_ts) & (cached.index <= end_ts)
                 ]
                 continue
 
-            def request_payload() -> object:
+            if self.interval == "1d":
+                url = f"{self.base_url}/{ticker}"
+            else:
+                fmp_interval = _FMP_INTRADAY_INTERVALS[self.interval]
+                url = f"{self.intraday_base_url}/{fmp_interval}/{ticker}"
+
+            def request_payload(url: str = url) -> object:
                 response = self.session.get(
-                    f"{self.base_url}/{ticker}",
+                    url,
                     params={
                         "from": start_ts.date().isoformat(),
                         "to": end_ts.date().isoformat(),
@@ -587,8 +727,8 @@ class FMPPriceFetcher:
                 request_payload,
                 fallback=empty_payload,
             )
-            norm = _normalize_fmp_historical(payload, self.auto_adjust)
-            merged = _merge_cached(cached, norm)
+            norm = _normalize_fmp_historical(payload, self.auto_adjust, self.interval)
+            merged = _merge_cached(cached, norm, self.interval)
             if not merged.empty:
                 _save_cache(cache_key, merged, self.cache_dir)
                 results[ticker] = merged.loc[
@@ -637,19 +777,28 @@ def build_price_fetcher(
     *,
     auto_adjust: bool = True,
     refresh: bool = False,
+    interval: str = "1d",
 ) -> PriceFetcher:
     _load_env_file()
     resolved = (provider or os.environ.get("SCREENER_PRICE_PROVIDER") or "auto").lower()
     if resolved in {"auto", "default"}:
-        primary = YFinancePriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
+        primary = YFinancePriceFetcher(
+            auto_adjust=auto_adjust, refresh=refresh, interval=interval
+        )
         if os.environ.get("FMP_API_KEY"):
-            fallback = FMPPriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
+            fallback = FMPPriceFetcher(
+                auto_adjust=auto_adjust, refresh=refresh, interval=interval
+            )
             return FallbackPriceFetcher(primary, fallback)
         return primary
     if resolved in {"yf", "yfinance"}:
-        return YFinancePriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
+        return YFinancePriceFetcher(
+            auto_adjust=auto_adjust, refresh=refresh, interval=interval
+        )
     if resolved in {"fmp", "financialmodelingprep"}:
-        return FMPPriceFetcher(auto_adjust=auto_adjust, refresh=refresh)
+        return FMPPriceFetcher(
+            auto_adjust=auto_adjust, refresh=refresh, interval=interval
+        )
     raise ValueError(f"Unknown price provider: {provider}")
 
 

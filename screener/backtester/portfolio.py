@@ -22,12 +22,16 @@ ticker cannot be opened twice through the legacy API.
 
 from __future__ import annotations
 
-from datetime import date
-from typing import Any, Iterable, Optional, cast
+from datetime import date, datetime
+from typing import Any, Iterable, Optional, Union, cast
 
 import pandas as pd
 
 from screener.backtester.models import ExitReason, Position, Trade
+
+# Trade/position stamps are date-only for daily runs and full datetimes for
+# intraday runs (see ``screener.backtester.core._bar_label``).
+_Stamp = Union[date, datetime]
 
 
 class Portfolio:
@@ -44,9 +48,9 @@ class Portfolio:
         self._open_seq: dict[str, int] = {}
         self._closed: list[Trade] = []
         self._ranks: dict[str, int] = {}
-        self._signal_dates: dict[str, date] = {}
+        self._signal_dates: dict[str, _Stamp] = {}
 
-    def assign(self, ticker: str, rank: int, signal_date: date) -> None:
+    def assign(self, ticker: str, rank: int, signal_date: _Stamp) -> None:
         self._ranks[ticker] = rank
         self._signal_dates[ticker] = signal_date
 
@@ -62,7 +66,7 @@ class Portfolio:
     def open(
         self,
         ticker: str,
-        entry_date: date,
+        entry_date: _Stamp,
         entry_price: float,
         commission_bps: float,
         *,
@@ -134,7 +138,7 @@ class Portfolio:
     def close(
         self,
         ticker: str,
-        exit_date: date,
+        exit_date: _Stamp,
         exit_price: float,
         reason: ExitReason,
         commission_bps: float,
@@ -179,7 +183,7 @@ class Portfolio:
     def partial_close(
         self,
         ticker: str,
-        exit_date: date,
+        exit_date: _Stamp,
         exit_price: float,
         reason: ExitReason,
         fraction: float,
