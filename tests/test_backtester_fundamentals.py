@@ -282,6 +282,101 @@ def test_openscreener_provider_rejects_non_india_market():
     assert "supports only -m india" in res.output
 
 
+def test_referenced_fundamental_fields_detects_known_fields():
+    from screener.backtester.cli_common import referenced_fundamental_fields
+
+    assert referenced_fundamental_fields("revenue_up_3q > 0 and close > 0", None) == {
+        "revenue_up_3q"
+    }
+    # Pure-price expressions reference no fundamentals.
+    assert referenced_fundamental_fields("ema(close, 150) > ema(close, 200)", None) == (
+        set()
+    )
+    # Exit expressions are inspected too.
+    assert referenced_fundamental_fields("close > 0", "pe_ttm > 30") == {"pe_ttm"}
+
+
+class _StopSimulation(Exception):
+    """Sentinel to short-circuit the CLI after config assembly."""
+
+
+def _capture_cfg(monkeypatch) -> dict:
+    captured: dict = {}
+
+    def _capture(cfg, fetcher, *, start_date, end_date):
+        captured["cfg"] = cfg
+        raise _StopSimulation
+
+    monkeypatch.setattr(rolling, "run_rolling_backtest", _capture)
+    return captured
+
+
+def test_rolling_cli_auto_enables_fundamentals_for_fundamental_expr(monkeypatch):
+    captured = _capture_cfg(monkeypatch)
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-rolling",
+            "-m",
+            "us",
+            "--tickers",
+            "AAPL",
+            "--strategy",
+            "ema150_200_revenue_up_3q",
+        ],
+        obj=StubPriceFetcher({}),
+    )
+
+    assert isinstance(res.exception, _StopSimulation)
+    # Provider auto-enabled for the market so revenue_up_3q resolves; empty field
+    # list falls back to provider defaults, which include revenue_up_3q.
+    assert captured["cfg"].fundamentals_provider == "fmp"
+
+
+def test_rolling_cli_does_not_enable_fundamentals_for_price_only_expr(monkeypatch):
+    captured = _capture_cfg(monkeypatch)
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-rolling",
+            "-m",
+            "us",
+            "--tickers",
+            "AAPL",
+            "--entry",
+            "ema(close, 150) > ema(close, 200)",
+        ],
+        obj=StubPriceFetcher({}),
+    )
+
+    assert isinstance(res.exception, _StopSimulation)
+    assert captured["cfg"].fundamentals_provider is None
+
+
+def test_rolling_cli_unions_referenced_field_into_explicit_field_list(monkeypatch):
+    captured = _capture_cfg(monkeypatch)
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-rolling",
+            "-m",
+            "us",
+            "--tickers",
+            "AAPL",
+            "--entry",
+            "revenue_up_3q > 0",
+            "--fundamental-field",
+            "roe_ttm",
+        ],
+        obj=StubPriceFetcher({}),
+    )
+
+    assert isinstance(res.exception, _StopSimulation)
+    assert captured["cfg"].fundamentals_provider == "fmp"
+    # The pinned field is kept and the referenced field is added.
+    assert set(captured["cfg"].fundamental_fields) == {"roe_ttm", "revenue_up_3q"}
+
+
 # --------------------------------------------------------------------------- #
 # Unit coverage for the fundamentals adapter helpers and fetcher orchestration
 # --------------------------------------------------------------------------- #

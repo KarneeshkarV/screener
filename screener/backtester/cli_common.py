@@ -25,6 +25,23 @@ def resolve_strategy_exprs(strategy_name, entry_expr, exit_expr):
     return entry_expr, exit_expr
 
 
+def referenced_fundamental_fields(entry_expr, exit_expr):
+    """Return the known fundamental fields referenced by the entry/exit exprs.
+
+    Fundamental identifiers (e.g. ``revenue_up_3q``) only resolve once a
+    fundamentals provider has merged those dated columns into the bars, so
+    callers use this to decide whether a strategy needs fundamentals enabled.
+    """
+    from screener.backtester.fundamentals import DEFAULT_FUNDAMENTAL_FIELDS
+    from screener.backtester.pine import collect_names, parse
+
+    names: set[str] = set()
+    for expr in (entry_expr, exit_expr):
+        if expr:
+            names |= collect_names(parse(expr))
+    return names & set(DEFAULT_FUNDAMENTAL_FIELDS)
+
+
 def build_slippage_model(slippage_model, slippage_bps, half_spread_bps, vol_impact_k):
     from screener.backtester.slippage import (
         CompositeSlippage,

@@ -17,6 +17,7 @@ from screener.backtester.cli_common import (
     DEFAULT_BENCHMARK,
     build_slippage_model,
     parse_partial_exits,
+    referenced_fundamental_fields,
     resolve_min_filters,
     resolve_strategy_exprs,
 )
@@ -1012,6 +1013,16 @@ def backtest_rolling(
         )
 
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
+
+    # A strategy/expression may reference dated fundamental fields (e.g.
+    # revenue_up_3q). Those columns only exist once a fundamentals provider is
+    # merged into the bars, so auto-enable the market's default provider when the
+    # expressions need fundamentals and none was requested explicitly. Otherwise
+    # the entry evaluator fails with "Unknown identifier".
+    needed_fundamentals = referenced_fundamental_fields(entry_expr, exit_expr)
+    if needed_fundamentals and fundamentals_provider is None:
+        fundamentals_provider = "fmp" if market == "us" else "openscreener"
+
     slip_model = build_slippage_model(
         slippage_model, slippage_bps, half_spread_bps, vol_impact_k
     )
@@ -1034,6 +1045,14 @@ def backtest_rolling(
         if fundamental_lag_days is not None
         else (60 if fundamentals_provider in {"openscreener", "yfinance"} else 1)
     )
+    # When the user pins an explicit field list, make sure the fields the
+    # expressions actually reference are fetched too; an empty list falls back to
+    # the provider defaults, which already cover every known fundamental field.
+    resolved_fundamental_fields = tuple(dict.fromkeys(fundamental_field_args))
+    if resolved_fundamental_fields:
+        resolved_fundamental_fields = tuple(
+            dict.fromkeys((*resolved_fundamental_fields, *sorted(needed_fundamentals)))
+        )
 
     ticker_tuple = None
     universe_note = None
@@ -1112,7 +1131,7 @@ def backtest_rolling(
         interval=interval,
         regime_filter=tuple(dict.fromkeys(regime_filter_args)),
         fundamentals_provider=fundamentals_provider,
-        fundamental_fields=tuple(dict.fromkeys(fundamental_field_args)),
+        fundamental_fields=resolved_fundamental_fields,
         fundamental_lag_days=max(resolved_fundamental_lag_days, 0),
     )
 

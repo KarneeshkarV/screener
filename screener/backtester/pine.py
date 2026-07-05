@@ -538,3 +538,28 @@ def required_lookback(node: Node) -> int:
 
     visit(node)
     return max_len
+
+
+def collect_names(node: Node) -> set[str]:
+    """Return every bare identifier (``Name``) referenced in the expression.
+
+    Function names (``Call.name``) are excluded — only series/column identifiers
+    like ``close`` or ``revenue_up_3q`` are collected. Callers use this to decide
+    which non-price columns (e.g. dated fundamentals) an expression depends on.
+    """
+    names: set[str] = set()
+
+    def visit(n: Node) -> None:
+        if isinstance(n, Name):
+            names.add(n.name)
+        elif isinstance(n, Call):
+            for arg in n.args:
+                visit(arg)
+        elif isinstance(n, (BinOp, Compare, BoolOp)):
+            visit(n.left)
+            visit(n.right)
+        elif isinstance(n, (UnaryOp, Not)):
+            visit(n.operand)
+
+    visit(node)
+    return names
