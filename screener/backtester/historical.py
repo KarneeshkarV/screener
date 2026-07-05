@@ -18,6 +18,7 @@ from screener.backtester.cli_common import (
     resolve_strategy_exprs,
 )
 from screener.backtester.core import (
+    _bar_label,
     _SlotState,
     _benchmark_series_from_panel,
     _eligible_reserve_signal_idx,
@@ -30,8 +31,16 @@ from screener.backtester.data import PriceFetcher, build_price_fetcher
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.fills import FillModel
-from screener.backtester.metrics import compute_metrics, compute_regime_metrics
-from screener.backtester.models import BacktestConfig, BacktestResult
+from screener.backtester.metrics import (
+    compute_metrics,
+    compute_regime_metrics,
+    periods_per_year_for_interval,
+)
+from screener.backtester.models import (
+    SUPPORTED_INTERVALS,
+    BacktestConfig,
+    BacktestResult,
+)
 from screener.backtester.pine import PineError, evaluate, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 
@@ -183,7 +192,7 @@ class _ReserveRotationSource:
                         self.warnings.append(f"{ticker} re-entry: {warn}")
                     del self.pending_reentry[slot_id]
                     continue
-                portfolio.assign(ticker, new_rank, day.date())
+                portfolio.assign(ticker, new_rank, _bar_label(day, cfg))
                 portfolio.open(
                     ticker=ticker,
                     entry_date=state.entry_date,
@@ -236,7 +245,7 @@ class _ReserveRotationSource:
                     if warn:
                         self.warnings.append(f"{ticker}: {warn}")
                     continue
-                portfolio.assign(ticker, int(reserve["rank"]), day.date())
+                portfolio.assign(ticker, int(reserve["rank"]), _bar_label(day, cfg))
                 portfolio.open(
                     ticker=ticker,
                     entry_date=state.entry_date,
@@ -362,7 +371,7 @@ def _run_event_driven_sim(
         )
         portfolio.close(
             ticker=state.ticker,
-            exit_date=tail.index[-1].date(),
+            exit_date=_bar_label(tail.index[-1], cfg),
             exit_price=fill,
             reason="eod",
             commission_bps=cfg.commission_bps,
@@ -370,6 +379,35 @@ def _run_event_driven_sim(
         slot_states[slot_id] = None
 
     return master_dates
+
+
+def _benchmark_series_from_panel(
+    price_panel: dict[str, pd.DataFrame], symbol: str
+) -> pd.Series:
+    """Return the benchmark close series from the already-fetched panel.
+
+    The benchmark (``cfg.benchmark``) is fetched into ``price_panel`` alongside
+    the portfolio symbols and, in the ``splits_only`` regime, split-adjusted by
+    ``apply_splits_only_adjustment``. Reusing it here keeps the benchmark a single
+    source of truth, consistent with the portfolio bars, instead of re-fetching it
+    raw (which would inject a phantom split jump into alpha/beta/regime metrics).
+    """
+    frame = price_panel.get(symbol)
+    if frame is None or frame.empty:
+        return pd.Series(
+            index=pd.DatetimeIndex([], name="date"), dtype=float, name=symbol
+        )
+    series = frame["close"].astype(float).copy()
+    series.name = symbol
+    return series
+
+
+def _warmup_days_for_interval(lookback: int, interval: str) -> int:
+    warmup_bars = lookback * 2 + 30
+    if interval == "1d":
+        return max(warmup_bars, 365)
+    bars_per_day = max(periods_per_year_for_interval(interval) // 252, 1)
+    return int(np.ceil(warmup_bars / bars_per_day) * 1.6) + 5
 
 
 def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
@@ -390,7 +428,9 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     yf_by_tv = {tv: tv_to_yf(tv, cfg.market) for tv in tv_symbols}
     yf_symbols = list(dict.fromkeys(list(yf_by_tv.values()) + [cfg.benchmark]))
 
-    start = (as_of_ts - pd.Timedelta(days=max(lookback * 2 + 30, 365))).date()
+    start = (
+        as_of_ts - pd.Timedelta(days=_warmup_days_for_interval(lookback, cfg.interval))
+    ).date()
     end = (as_of_ts + pd.Timedelta(days=cfg.hold * 2 + 30)).date()
     price_panel = fetcher.fetch(yf_symbols, start, end)
 
@@ -423,7 +463,13 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
         benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
         benchmark = benchmark.reindex(calendar, method="ffill").dropna()
-        metrics = compute_metrics(equity, benchmark, [], max(cfg.top, 1))
+        metrics = compute_metrics(
+            equity,
+            benchmark,
+            [],
+            max(cfg.top, 1),
+            periods_per_year=periods_per_year_for_interval(cfg.interval),
+        )
         return BacktestResult(
             config=cfg,
             trades=[],
@@ -486,7 +532,13 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
 
     benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
-    metrics = compute_metrics(equity, benchmark_aligned, trades, slot_count)
+    metrics = compute_metrics(
+        equity,
+        benchmark_aligned,
+        trades,
+        slot_count,
+        periods_per_year=periods_per_year_for_interval(cfg.interval),
+    )
     metrics.update(compute_regime_metrics(benchmark, trades))
 
     return BacktestResult(
@@ -644,6 +696,16 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     default="full",
     help="Price-adjustment regime. full=legacy (yfinance auto_adjust=True); splits_only=split-adjust OHLC and credit dividends as cash; none=raw OHLC.",
 )
+@click.option(
+    "--interval",
+    type=click.Choice(list(SUPPORTED_INTERVALS)),
+    default="1d",
+    show_default=True,
+    help=(
+        "Bar interval. Intraday values (1h/30m/15m/5m/1m) fetch from yfinance "
+        "and are subject to its history caps (1m ~30d, 15m/30m ~60d, 1h ~730d)."
+    ),
+)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
 @click.option(
     "--report",
@@ -691,6 +753,7 @@ def backtest_historical(
     max_reentries,
     partial_exit_args,
     price_adjustment,
+    interval,
     output_csv,
     report_path,
     open_report,
@@ -747,10 +810,11 @@ def backtest_historical(
         max_reentries=int(max_reentries),
         partial_exits=partial_exits,
         price_adjustment=price_adjustment,
+        interval=interval,
     )
 
     fetcher = click.get_current_context().obj or build_price_fetcher(
-        auto_adjust=price_adjustment == "full"
+        auto_adjust=price_adjustment == "full", interval=interval
     )
     result = run_backtest(cfg, fetcher)
     generated_report = report_path

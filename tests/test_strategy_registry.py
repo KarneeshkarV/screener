@@ -44,6 +44,13 @@ def test_strategy_registry_preserves_pine_runner_names():
         "rsi_ema",
         "supertrend",
         "supertrend_rsi",
+        "awesome_oscillator",
+        "bb_pattern",
+        "heikin_ashi",
+        "macd_oscillator",
+        "parabolic_sar",
+        "rsi_pattern",
+        "shooting_star",
     }
 
     assert set(STRATEGIES) == expected

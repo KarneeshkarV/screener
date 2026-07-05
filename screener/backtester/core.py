@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import date
-from typing import Optional
+from datetime import date, datetime
+from typing import Optional, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -28,6 +28,20 @@ from screener.backtester.slippage import Side
 class _SimOutcome:
     trade: Optional[Trade]
     warning: Optional[str]
+
+
+def _bar_label(ts, cfg: BacktestConfig) -> Union[date, datetime]:
+    """Return the trade/position stamp for a bar timestamp.
+
+    Daily bars are midnight-normalized, so a plain ``date`` is returned — this
+    keeps the ledger byte-for-byte identical to the pre-intraday engine and
+    comparable to the ``date``-typed test fixtures. Intraday bars return a full
+    ``datetime`` so time-of-day survives into ``Trade``/``Position``.
+    """
+    ts = pd.Timestamp(ts)
+    if cfg.interval == "1d":
+        return cast(date, ts.date())
+    return cast(datetime, ts.to_pydatetime())
 
 
 def _apply_slip(
@@ -110,9 +124,9 @@ class _SlotState:
 
     ticker: str
     entry_idx: int
-    entry_date: date
+    entry_date: Union[date, datetime]
     entry_fill: float
-    signal_date: date
+    signal_date: Union[date, datetime]
     rank: int
     stop_ref: Optional[float]
     target_ref: Optional[float]
@@ -159,9 +173,9 @@ def _make_slot_state(
         _SlotState(
             ticker=ticker,
             entry_idx=entry_idx,
-            entry_date=bars.index[entry_idx].date(),
+            entry_date=_bar_label(bars.index[entry_idx], cfg),
             entry_fill=entry_fill,
-            signal_date=bars.index[signal_idx].date(),
+            signal_date=_bar_label(bars.index[signal_idx], cfg),
             rank=rank,
             stop_ref=stop_ref,
             target_ref=target_ref,
@@ -214,7 +228,7 @@ def _fire_partial_exits_at_bar(
     bar = bars.iloc[i]
     bar_open = float(bar["open"])
     high = float(bar["high"])
-    bar_date = bars.index[i].date()
+    bar_date = _bar_label(bars.index[i], cfg)
     for tier_idx, target_price in enumerate(state.partial_targets):
         if state.partial_fired[tier_idx] or high < target_price:
             continue
@@ -314,7 +328,7 @@ def simulate_ticker(
                 trade=_make_exit(
                     state.entry_date,
                     state.entry_fill,
-                    bars.index[i].date(),
+                    _bar_label(bars.index[i], cfg),
                     fill,
                     reason,
                     signal_idx_bar=state.signal_date,
@@ -333,7 +347,7 @@ def simulate_ticker(
         trade=_make_exit(
             state.entry_date,
             state.entry_fill,
-            bars.index[-1].date(),
+            _bar_label(bars.index[-1], cfg),
             fill,
             "eod",
             signal_idx_bar=state.signal_date,
@@ -343,12 +357,12 @@ def simulate_ticker(
 
 
 def _make_exit(
-    entry_date: date,
+    entry_date: Union[date, datetime],
     entry_fill: float,
-    exit_date: date,
+    exit_date: Union[date, datetime],
     exit_fill: float,
     reason: ExitReason,
-    signal_idx_bar: date,
+    signal_idx_bar: Union[date, datetime],
 ) -> Trade:
     """Return a partial Trade with only price/date/reason fields set."""
     return Trade(
@@ -580,7 +594,7 @@ def _close_slot_at_day(
     fill, reason = exit_
     portfolio.close(
         ticker=state.ticker,
-        exit_date=day.date(),
+        exit_date=_bar_label(day, cfg),
         exit_price=fill,
         reason=reason,
         commission_bps=cfg.commission_bps,
@@ -616,7 +630,7 @@ def _force_close_open_slots(
         )
         portfolio.close(
             ticker=state.ticker,
-            exit_date=tail.index[-1].date(),
+            exit_date=_bar_label(tail.index[-1], cfg),
             exit_price=fill,
             reason="eod",
             commission_bps=cfg.commission_bps,

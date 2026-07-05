@@ -1,24 +1,35 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Literal, Optional
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from screener.backtester.slippage import FixedBpsSlippage, SlippageModel
 
 
 ExitReason = Literal["stop", "target", "trail", "time", "exit_expr", "eod"]
 
+# Supported bar intervals. "1d" is the default daily bar; the rest are intraday
+# bars sourced from yfinance. A ``date | datetime`` union is used on all the
+# temporal fields below so the daily path keeps emitting plain ``date`` objects
+# (byte-for-byte identical to the pre-intraday engine) while intraday runs carry
+# full timestamps.
+SUPPORTED_INTERVALS = ("1d", "1h", "30m", "15m", "5m", "1m")
+
 
 class BacktestConfig(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     market: str
-    as_of: date
+    as_of: date | datetime
     hold: int
     top: int
+    # Bar interval for the whole run. "1d" reproduces the daily engine exactly;
+    # intraday values thread through data fetch, the simulation calendar and the
+    # metrics annualization factor.
+    interval: str = "1d"
     entry_expr: str
     exit_expr: Optional[str]
     stop_loss: Optional[float]
@@ -87,10 +98,20 @@ class BacktestConfig(BaseModel):
             data["slippage_model"] = FixedBpsSlippage(bps=bps)
         return data
 
+    @field_validator("interval")
+    @classmethod
+    def _validate_interval(cls, value: str) -> str:
+        if value not in SUPPORTED_INTERVALS:
+            raise ValueError(
+                f"unsupported interval {value!r}; expected one of "
+                f"{', '.join(SUPPORTED_INTERVALS)}"
+            )
+        return value
+
 
 class Position(BaseModel):
     ticker: str
-    entry_date: date
+    entry_date: date | datetime
     entry_fill: float
     shares: float
     slot_capital: float
@@ -103,10 +124,10 @@ class Trade(BaseModel):
 
     ticker: str
     rank: int
-    signal_date: date
-    entry_date: date
+    signal_date: date | datetime
+    entry_date: date | datetime
     entry_price: float
-    exit_date: date
+    exit_date: date | datetime
     exit_price: float
     exit_reason: ExitReason
     shares: float
