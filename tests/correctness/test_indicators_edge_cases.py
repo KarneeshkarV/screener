@@ -14,6 +14,7 @@ from screener.indicators.plugins.bollinger_bands import bollinger_bands
 from screener.indicators.plugins.ema import ema
 from screener.indicators.plugins.rma import rma
 from screener.indicators.plugins.rsi import rsi
+from screener.indicators.plugins.sar import sar
 from screener.indicators.plugins.sma import sma
 from screener.indicators.plugins.stdev import stdev
 
@@ -106,6 +107,8 @@ def test_single_element_series():
     assert np.isnan(rma(x, 3)).all()
     # rsi must not raise on a length-1 input
     assert rsi(x, 14).shape == (1,)
+    # sar short-circuits when there are fewer than two bars.
+    np.testing.assert_array_equal(sar(x, x, x), [0.0])
 
 
 # --------------------------------------------------------------------------- #

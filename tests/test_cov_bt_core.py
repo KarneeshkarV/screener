@@ -2394,3 +2394,221 @@ def test_run_backtest_with_exit_expr_and_empty_frame_trade():
     )
     result = run_backtest(cfg, fetcher)
     assert isinstance(result.trades, list)
+
+
+# ─────── frame-cache optimized hot paths (branch: backtester-optimizations) ───────
+
+from screener.backtester.core import (  # noqa: E402
+    _build_frame_cache,
+    _cached_trailing_liquidity,
+    _RunCaches,
+)
+from screener.backtester.models import Trade  # noqa: E402
+from screener.backtester.portfolio import build_equity_curve  # noqa: E402
+
+
+def test_cached_trailing_liquidity_guard_and_memo():
+    bars = make_bars(n=30, open_base=100.0)
+    fc = _build_frame_cache(bars)
+    # signal_idx < 0 / window <= 0 short-circuit.
+    assert _cached_trailing_liquidity(fc, bars, -1) == (0.0, 0.0)
+    assert _cached_trailing_liquidity(fc, bars, 5, window=0) == (0.0, 0.0)
+    # first call populates the memo; second returns the cached tuple.
+    first = _cached_trailing_liquidity(fc, bars, 10, window=5)
+    second = _cached_trailing_liquidity(fc, bars, 10, window=5)
+    assert first == second
+    assert (10, 5) in fc.liquidity_by_idx
+
+
+def test_cached_trailing_liquidity_empty_window():
+    bars = make_bars(n=5, open_base=100.0)
+    fc = _build_frame_cache(bars)
+    # signal_idx past the end -> the close window slice is empty.
+    assert _cached_trailing_liquidity(fc, bars, 100, window=5) == (0.0, 0.0)
+
+
+def test_cached_trailing_liquidity_nan_close_fallback():
+    bars = make_bars(n=20, open_base=100.0)
+    bars.iloc[10, bars.columns.get_loc("close")] = np.nan
+    fc = _build_frame_cache(bars)
+    # A NaN inside the window defers to the slice-based original for exact parity.
+    assert _cached_trailing_liquidity(fc, bars, 12, window=5) == _trailing_liquidity(
+        bars, 12, 5
+    )
+
+
+def test_cached_trailing_liquidity_non_finite_adv():
+    bars = make_bars(n=20, open_base=100.0)
+    bars["volume"] = np.inf  # adv mean -> inf -> reset to 0.0
+    fc = _build_frame_cache(bars)
+    adv, sigma = _cached_trailing_liquidity(fc, bars, 10, window=5)
+    assert adv == 0.0
+    assert np.isfinite(sigma)
+
+
+def test_make_slot_state_cached_exit_warning_string():
+    bars = make_bars(n=20, open_base=100.0)
+    caches = _RunCaches()
+    caches.exit_signals["AAA"] = "exit eval failed: boom"
+    state, warn = _make_slot_state(
+        "AAA", bars, 5, _cfg(), parse("close > 0"), 1, caches=caches
+    )
+    assert state is None
+    assert warn == "exit eval failed: boom"
+
+
+def test_make_slot_state_caches_exit_eval_failure():
+    bars = make_bars(n=20, open_base=100.0)
+    caches = _RunCaches()
+    state, warn = _make_slot_state(
+        "AAA", bars, 5, _cfg(), parse("nonexistent_col > 0"), 1, caches=caches
+    )
+    assert state is None
+    assert warn and "exit eval failed" in warn
+    # failure is memoised so repeat callers keep the same warning.
+    assert caches.exit_signals["AAA"] == warn
+
+
+def test_maybe_credit_dividends_frame_cache_bad_value():
+    bars = make_bars(n=5, open_base=100.0)
+    bars["dividend"] = ["x", "y", "z", "w", "v"]  # non-numeric
+    fc = _build_frame_cache(bars)
+    cfg = _cfg(price_adjustment="none")
+    portfolio = Portfolio(cfg.initial_capital, 1)
+    state = _SlotState(
+        ticker="AAA",
+        entry_idx=0,
+        entry_date=bars.index[0].date(),
+        entry_fill=100.0,
+        signal_date=bars.index[0].date(),
+        rank=1,
+        stop_ref=None,
+        target_ref=None,
+        hold_limit_idx=5,
+        peak=100.0,
+        exit_signal=None,
+        frame_cache=fc,
+    )
+    # float("y") raises ValueError -> swallowed, nothing credited.
+    _maybe_credit_dividends(portfolio, state, bars, 1, cfg)
+
+
+def test_eligible_reserve_signal_idx_cached_entry_error():
+    bars = make_bars(n=30, open_base=100.0)
+    cfg = _cfg(min_price=None, min_avg_dollar_volume=None)
+    caches = _RunCaches()
+    # the cached full-frame entry evaluation raises PineError -> None.
+    assert (
+        _eligible_reserve_signal_idx(
+            bars,
+            bars.index[20],
+            cfg,
+            parse("nonexistent_col > 0"),
+            3,
+            ticker="AAA",
+            caches=caches,
+        )
+        is None
+    )
+
+
+def test_eligible_reserve_signal_idx_non_cache_success():
+    bars = make_bars(n=30, open_base=100.0)
+    cfg = _cfg(min_price=None, min_avg_dollar_volume=None)
+    # entry always true, filters off -> the non-cache path returns the position.
+    pos = _eligible_reserve_signal_idx(bars, bars.index[20], cfg, parse("close > 0"), 3)
+    assert pos == 20
+
+
+def test_build_equity_curve_trade_outside_calendar():
+    calendar = pd.bdate_range("2024-01-01", periods=5)
+    frame = make_bars(n=5, open_base=100.0)
+    frame.index = calendar
+    trade = Trade(
+        ticker="AAA",
+        rank=1,
+        signal_date=date(2024, 6, 1),
+        entry_date=date(2024, 6, 3),
+        entry_price=100.0,
+        exit_date=date(2024, 6, 5),
+        exit_price=101.0,
+        exit_reason="eod",
+        shares=1.0,
+        entry_cost=100.0,
+        exit_value=101.0,
+        pnl=1.0,
+        return_pct=0.01,
+    )
+    # The trade's span falls entirely after the calendar (lo >= hi) -> skipped.
+    curve = build_equity_curve(
+        calendar, [trade], {"AAA": frame}, 10_000.0, price_adjustment="none"
+    )
+    assert (curve.to_numpy() == 10_000.0).all()
+
+
+def test_historical_cli_open_report(monkeypatch, tmp_path):
+    import screener.reporting as reporting
+
+    opened: list = []
+    monkeypatch.setattr(reporting, "open_report", lambda p: opened.append(p))
+    report = tmp_path / "open.html"
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-historical",
+            "--tickers",
+            "AAA,BBB",
+            "--as-of",
+            "2024-02-15",
+            "--hold",
+            "5",
+            "--entry",
+            "close > sma(close, 3)",
+            "--min-price",
+            "0",
+            "--min-avg-dollar-volume",
+            "0",
+            "--report",
+            str(report),
+            "--open-report",
+        ],
+        obj=_stub_env(),
+    )
+    assert res.exit_code == 0, res.output
+    assert opened  # open_report was invoked
+
+
+def test_rolling_cli_open_report(monkeypatch, tmp_path):
+    import screener.reporting as reporting
+
+    opened: list = []
+    monkeypatch.setattr(reporting, "open_report", lambda p: opened.append(p))
+    report = tmp_path / "openroll.html"
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-rolling",
+            "--tickers",
+            "AAA,BBB",
+            "--start",
+            "2024-01-15",
+            "--end",
+            "2024-02-20",
+            "--hold",
+            "5",
+            "--top",
+            "2",
+            "--entry",
+            "close > sma(close, 3)",
+            "--min-price",
+            "0",
+            "--min-avg-dollar-volume",
+            "0",
+            "--report",
+            str(report),
+            "--open-report",
+        ],
+        obj=_stub_env(),
+    )
+    assert res.exit_code == 0, res.output
+    assert opened  # open_report was invoked
