@@ -18,8 +18,9 @@ from screener.backtester.cli_common import (
     resolve_strategy_exprs,
 )
 from screener.backtester.core import (
-    _bar_label,
+    _RunCaches,
     _SlotState,
+    _bar_label,
     _benchmark_series_from_panel,
     _eligible_reserve_signal_idx,
     _make_slot_state,
@@ -41,7 +42,7 @@ from screener.backtester.models import (
     BacktestConfig,
     BacktestResult,
 )
-from screener.backtester.pine import PineError, evaluate, parse, required_lookback
+from screener.backtester.pine import PineError, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 
 
@@ -52,37 +53,48 @@ def select_candidates(
     top_n: int,
     lookback_required: int,
     cfg: BacktestConfig | None = None,
+    caches: _RunCaches | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
-    """Evaluate entry AST at ``as_of`` for each ticker and rank survivors."""
+    """Evaluate entry AST at ``as_of`` for each ticker and rank survivors.
+
+    The entry AST is evaluated once over each ticker's full frame and indexed
+    positionally at the ``as_of`` bar (every Pine op is causal, so this matches
+    the truncated-history evaluation — the same discipline the rolling engine's
+    ``_precompute_entry_signals`` relies on). Pass ``caches`` to share those
+    evaluations with the reserve-rotation simulator.
+    """
     rows = []
     warnings: list[str] = []
     filtered_count = 0
     reserve_multiple = cfg.reserve_multiple if cfg is not None else 1
     pool_limit = max(top_n * max(reserve_multiple, 1), top_n)
+    if caches is None:
+        caches = _RunCaches()
     for ticker, bars in bars_by_ticker.items():
         if bars is None or bars.empty:
             warnings.append(f"no data: {ticker}")
             continue
-        history = bars.loc[bars.index <= as_of]
-        if len(history) < lookback_required + 1:
-            warnings.append(f"insufficient lookback ({len(history)} bars): {ticker}")
+        # bars.index is a sorted DatetimeIndex; searchsorted mirrors the
+        # previous ``bars.index <= as_of`` mask without copying the history.
+        pos = int(bars.index.searchsorted(as_of, side="right")) - 1
+        if pos + 1 < lookback_required + 1:
+            warnings.append(f"insufficient lookback ({pos + 1} bars): {ticker}")
             continue
         if cfg is not None:
             passes, _reason = _passes_entry_filters(bars, as_of, cfg)
             if not passes:
                 filtered_count += 1
                 continue
-        try:
-            signal = evaluate(entry_ast, history)
-        except PineError as exc:
-            warnings.append(f"entry eval failed: {ticker}: {exc}")
+        signal = caches.entry_signal(ticker, bars, entry_ast)
+        if isinstance(signal, PineError):
+            warnings.append(f"entry eval failed: {ticker}: {signal}")
             continue
-        if signal.empty:  # pragma: no cover - history is non-empty here
+        if signal.empty:  # pragma: no cover - bars are non-empty here
             continue
-        last = signal.iloc[-1]
+        last = signal.iloc[pos]
         if pd.isna(last) or not bool(last):
             continue
-        last_bar = history.iloc[-1]
+        last_bar = bars.iloc[pos]
         close = float(last_bar["close"])
         volume = float(last_bar["volume"])
         rows.append(
@@ -145,6 +157,7 @@ class _ReserveRotationSource:
         reserve_queue: deque[dict],
         taken: set[str],
         warnings: list[str],
+        caches: _RunCaches,
     ) -> None:
         self.portfolio = portfolio
         self.cfg = cfg
@@ -160,6 +173,7 @@ class _ReserveRotationSource:
         self.reserve_queue = reserve_queue
         self.taken = taken
         self.warnings = warnings
+        self.caches = caches
 
     def before_exits(self, day: pd.Timestamp) -> None:
         cfg = self.cfg
@@ -173,7 +187,13 @@ class _ReserveRotationSource:
                     del self.pending_reentry[slot_id]
                     continue
                 reentry_signal_idx = _eligible_reserve_signal_idx(
-                    slot_frame, day, cfg, self.entry_ast, self.lookback
+                    slot_frame,
+                    day,
+                    cfg,
+                    self.entry_ast,
+                    self.lookback,
+                    ticker=ticker,
+                    caches=self.caches,
                 )
                 if reentry_signal_idx is None:
                     continue
@@ -186,6 +206,7 @@ class _ReserveRotationSource:
                     self.exit_ast,
                     new_rank,
                     self.fill_model,
+                    caches=self.caches,
                 )
                 if state is None:
                     if warn:
@@ -228,7 +249,13 @@ class _ReserveRotationSource:
                 if reserve_bars is None or reserve_bars.empty:
                     continue
                 reserve_signal_idx = _eligible_reserve_signal_idx(
-                    reserve_bars, day, cfg, self.entry_ast, self.lookback
+                    reserve_bars,
+                    day,
+                    cfg,
+                    self.entry_ast,
+                    self.lookback,
+                    ticker=ticker,
+                    caches=self.caches,
                 )
                 if reserve_signal_idx is None:
                     continue
@@ -240,6 +267,7 @@ class _ReserveRotationSource:
                     self.exit_ast,
                     int(reserve["rank"]),
                     self.fill_model,
+                    caches=self.caches,
                 )
                 if state is None:
                     if warn:
@@ -270,6 +298,7 @@ def _run_event_driven_sim(
     exit_ast,
     lookback: int,
     warnings: list[str],
+    caches: _RunCaches | None = None,
 ) -> list[pd.Timestamp]:
     """Chronological event-driven simulator with optional reserve rotation.
 
@@ -277,6 +306,8 @@ def _run_event_driven_sim(
     simulation ran over, so the caller can seed the equity-curve calendar with
     every real trading day in the horizon (not just trade-covered days).
     """
+    if caches is None:
+        caches = _RunCaches()
     fill_model = FillModel(cfg)
     slot_states: dict[int, _SlotState | None] = {}
     slot_bars: dict[int, pd.DataFrame] = {}
@@ -298,7 +329,14 @@ def _run_event_driven_sim(
             continue
         signal_idx = int(np.where(mask)[0][-1])
         state, warn = _make_slot_state(
-            ticker, bars, signal_idx, cfg, exit_ast, int(row["rank"]), fill_model
+            ticker,
+            bars,
+            signal_idx,
+            cfg,
+            exit_ast,
+            int(row["rank"]),
+            fill_model,
+            caches=caches,
         )
         if state is None:
             if warn:
@@ -324,9 +362,8 @@ def _run_event_driven_sim(
     for bars in bars_by_tv.values():
         if bars is None or bars.empty:
             continue
-        for current_day in bars.index:
-            if as_of_ts < current_day <= horizon_end:
-                day_set.add(current_day)
+        idx = bars.index
+        day_set.update(idx[(idx > as_of_ts) & (idx <= horizon_end)])
     master_dates = sorted(day_set)
 
     day_loop = DayLoop(
@@ -352,6 +389,7 @@ def _run_event_driven_sim(
         reserve_queue=reserve_queue,
         taken=taken,
         warnings=warnings,
+        caches=caches,
     )
     run_day_loop(master_dates, day_loop, source)
 
@@ -430,8 +468,9 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     )
     lookback = max(lookback, strategy_lookback)
 
+    caches = _RunCaches()
     selection, sel_warnings = select_candidates(
-        bars_by_tv, entry_ast, as_of_ts, cfg.top, lookback, cfg
+        bars_by_tv, entry_ast, as_of_ts, cfg.top, lookback, cfg, caches=caches
     )
     warnings.extend(sel_warnings)
 
@@ -475,6 +514,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         exit_ast=exit_ast,
         lookback=lookback,
         warnings=warnings,
+        caches=caches,
     )
 
     trades = portfolio.closed_trades()
@@ -489,11 +529,11 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         frame = bars_by_tv.get(trade.ticker)
         if frame is None or frame.empty:  # pragma: no cover - traded ticker has bars
             continue
-        dates = frame.loc[
-            (frame.index >= pd.Timestamp(trade.entry_date))
-            & (frame.index <= pd.Timestamp(trade.exit_date))
-        ].index
-        date_set.update(dates.tolist())
+        # frame.index is a sorted DatetimeIndex; slice by position instead of
+        # building two boolean masks per trade.
+        lo = frame.index.searchsorted(pd.Timestamp(trade.entry_date), side="left")
+        hi = frame.index.searchsorted(pd.Timestamp(trade.exit_date), side="right")
+        date_set.update(frame.index[lo:hi].tolist())
     if not date_set:  # pragma: no cover - date_set always seeded with as_of
         date_set.update(
             pd.date_range(

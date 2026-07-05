@@ -90,6 +90,146 @@ def _trailing_liquidity(
     return adv, sigma
 
 
+@dataclass
+class _FrameCache:
+    """Once-per-frame primitives shared by every slot opened on one ticker.
+
+    Raw numpy copies of the OHLC(+dividend) columns plus a date->position map
+    let the per-bar hot loops (``_check_exit_at_bar``, ``_close_slot_at_day``,
+    ``_fire_partial_exits_at_bar``) run on integer positions instead of the
+    pandas scalar-access family (``bars.iloc[i]`` / ``Index.get_loc``). The
+    float volume Series and precomputed close-to-close returns back
+    :func:`_cached_trailing_liquidity` so per-slot liquidity stats reuse the
+    exact original arithmetic without re-slicing the frame. Built lazily by
+    :meth:`_RunCaches.frame`.
+    """
+
+    open_arr: np.ndarray
+    high_arr: np.ndarray
+    low_arr: np.ndarray
+    close_arr: np.ndarray
+    dividend_arr: Optional[np.ndarray]
+    # int64 epoch-nanosecond view of a unique, naive datetime64[ns] index for
+    # O(log n) day->position lookups; None otherwise, and callers then keep
+    # the original ``Index.get_loc`` semantics (duplicates, exotic dtypes).
+    index_i8: Optional[np.ndarray]
+    volume_f: pd.Series
+    # close[i] / close[i-1] - 1: the exact ``pct_change`` arithmetic for
+    # NaN-free windows (NaN-containing windows fall back to the original).
+    rets_f: pd.Series
+    liquidity_by_idx: dict[tuple[int, int], tuple[float, float]] = field(
+        default_factory=dict
+    )
+
+
+def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
+    close_f = bars["close"].astype(float)
+    index = bars.index
+    index_i8: Optional[np.ndarray] = None
+    if (
+        isinstance(index, pd.DatetimeIndex)
+        and index.dtype == np.dtype("datetime64[ns]")
+        and index.is_unique
+    ):
+        index_i8 = index.to_numpy().view("i8")
+    return _FrameCache(
+        open_arr=bars["open"].astype(float).to_numpy(),
+        high_arr=bars["high"].astype(float).to_numpy(),
+        low_arr=bars["low"].astype(float).to_numpy(),
+        close_arr=close_f.to_numpy(),
+        dividend_arr=(
+            bars["dividend"].to_numpy() if "dividend" in bars.columns else None
+        ),
+        index_i8=index_i8,
+        volume_f=bars["volume"].astype(float),
+        rets_f=close_f / close_f.shift(1) - 1,
+    )
+
+
+@dataclass
+class _RunCaches:
+    """Per-run memoisation shared across slot opens and candidate checks.
+
+    Keyed by ticker: each engine holds one immutable frame per ticker for the
+    whole run, so full-frame signal evaluations and frame primitives are
+    computed once and reused. ``entry_signals`` stores the raw entry-AST
+    evaluation (or the :class:`PineError` it raised, so repeat callers keep
+    the original per-call failure semantics); ``exit_signals`` stores the
+    normalised boolean exit Series (or the warning string its failure
+    produced).
+    """
+
+    entry_signals: dict[str, pd.Series | PineError] = field(default_factory=dict)
+    exit_signals: dict[str, pd.Series | str] = field(default_factory=dict)
+    frames: dict[str, _FrameCache] = field(default_factory=dict)
+
+    def frame(self, ticker: str, bars: pd.DataFrame) -> _FrameCache:
+        cache = self.frames.get(ticker)
+        if cache is None:
+            cache = _build_frame_cache(bars)
+            self.frames[ticker] = cache
+        return cache
+
+    def entry_signal(
+        self, ticker: str, bars: pd.DataFrame, entry_ast
+    ) -> pd.Series | PineError:
+        cached = self.entry_signals.get(ticker)
+        if cached is None:
+            try:
+                cached = evaluate(entry_ast, bars)
+            except PineError as exc:
+                cached = exc
+            self.entry_signals[ticker] = cached
+        return cached
+
+
+def _cached_trailing_liquidity(
+    frame_cache: _FrameCache,
+    bars: pd.DataFrame,
+    signal_idx: int,
+    window: int = 20,
+) -> tuple[float, float]:
+    """:func:`_trailing_liquidity` backed by a :class:`_FrameCache`.
+
+    Identical arithmetic: the volume mean and return std run over the same
+    float values in the same order (pandas ``Series.mean``/``std``), just
+    without re-slicing the frame and re-converting dtypes per slot open, and
+    memoised per ``(signal_idx, window)``.
+    """
+    if signal_idx < 0 or window <= 0:
+        return 0.0, 0.0
+    memo = frame_cache.liquidity_by_idx
+    cached = memo.get((signal_idx, window))
+    if cached is not None:
+        return cached
+    start = max(0, signal_idx - window + 1)
+    close_win = frame_cache.close_arr[start : signal_idx + 1]
+    if close_win.size == 0:
+        result = (0.0, 0.0)
+    elif np.isnan(close_win).any():
+        # A NaN close inside the window changes ``pct_change``'s pad-fill
+        # across the window boundary; defer to the original slice-based
+        # computation for exact parity.
+        result = _trailing_liquidity(bars, signal_idx, window)
+    else:
+        vol = frame_cache.volume_f.iloc[start : signal_idx + 1]
+        adv = float(vol.mean()) if vol.size else 0.0
+        if close_win.size < 2:
+            sigma = 0.0
+        else:
+            rets = frame_cache.rets_f.iloc[start + 1 : signal_idx + 1].dropna()
+            sigma = float(rets.std()) if rets.size else 0.0
+        if not np.isfinite(adv):
+            adv = 0.0
+        if not np.isfinite(
+            sigma
+        ):  # pragma: no cover - defensive guard for pathological data
+            sigma = 0.0
+        result = (adv, sigma)
+    memo[(signal_idx, window)] = result
+    return result
+
+
 def _passes_entry_filters(
     bars: pd.DataFrame,
     as_of_ts: pd.Timestamp,
@@ -138,6 +278,11 @@ class _SlotState:
     partial_targets: tuple[float, ...] = ()
     partial_fractions: tuple[float, ...] = ()
     partial_fired: list[bool] = field(default_factory=list)
+    # Optional hot-loop accelerators set by _make_slot_state when a _RunCaches
+    # is threaded through; direct constructors (tests) leave them None and the
+    # per-bar helpers fall back to the original pandas access paths.
+    frame_cache: Optional[_FrameCache] = None
+    exit_signal_values: Optional[np.ndarray] = None
 
 
 def _make_slot_state(
@@ -148,10 +293,16 @@ def _make_slot_state(
     exit_ast,
     rank: int,
     fill_model: Optional[FillModel] = None,
+    caches: Optional[_RunCaches] = None,
 ) -> tuple[Optional[_SlotState], Optional[str]]:
     """Build the per-slot state used by both historical and rolling flows."""
     fills = fill_model if fill_model is not None else FillModel(cfg)
-    adv_shares, sigma_daily = _trailing_liquidity(bars, signal_idx)
+    frame_cache = caches.frame(ticker, bars) if caches is not None else None
+    adv_shares, sigma_daily = (
+        _cached_trailing_liquidity(frame_cache, bars, signal_idx)
+        if frame_cache is not None
+        else _trailing_liquidity(bars, signal_idx)
+    )
     entry_idx, entry_fill, entry_warn = fills.entry_price(
         bars, signal_idx, adv_shares=adv_shares, sigma_daily=sigma_daily
     )
@@ -159,10 +310,21 @@ def _make_slot_state(
         return None, entry_warn
     exit_signal = None
     if exit_ast is not None:
-        try:
-            exit_signal = evaluate(exit_ast, bars).fillna(False).astype(bool)
-        except PineError as exc:
-            return None, f"exit eval failed: {exc}"
+        cached_exit = caches.exit_signals.get(ticker) if caches is not None else None
+        if isinstance(cached_exit, str):
+            return None, cached_exit
+        if cached_exit is not None:
+            exit_signal = cached_exit
+        else:
+            try:
+                exit_signal = evaluate(exit_ast, bars).fillna(False).astype(bool)
+            except PineError as exc:
+                warn = f"exit eval failed: {exc}"
+                if caches is not None:
+                    caches.exit_signals[ticker] = warn
+                return None, warn
+            if caches is not None:
+                caches.exit_signals[ticker] = exit_signal
     stop_ref = entry_fill * (1.0 - cfg.stop_loss) if cfg.stop_loss else None
     target_ref = entry_fill * (1.0 + cfg.take_profit) if cfg.take_profit else None
     partial_targets = tuple(
@@ -187,6 +349,10 @@ def _make_slot_state(
             partial_targets=partial_targets,
             partial_fractions=partial_fractions,
             partial_fired=[False] * len(partial_targets),
+            frame_cache=frame_cache,
+            exit_signal_values=(
+                exit_signal.to_numpy() if exit_signal is not None else None
+            ),
         ),
         None,
     )
@@ -200,12 +366,23 @@ def _maybe_credit_dividends(
     cfg: BacktestConfig,
 ) -> None:
     """Credit a cash dividend on an ex-date bar if the frame carries one."""
-    if cfg.price_adjustment == "full" or "dividend" not in bars.columns:
+    if cfg.price_adjustment == "full":
         return
-    try:
-        div = float(bars.iloc[i]["dividend"])
-    except (KeyError, TypeError, ValueError):
-        return
+    frame_cache = state.frame_cache
+    if frame_cache is not None:
+        if frame_cache.dividend_arr is None:
+            return
+        try:
+            div = float(frame_cache.dividend_arr[i])
+        except (TypeError, ValueError):
+            return
+    else:
+        if "dividend" not in bars.columns:
+            return
+        try:
+            div = float(bars.iloc[i]["dividend"])
+        except (KeyError, TypeError, ValueError):
+            return
     if not math.isfinite(div) or div <= 0:
         return
     portfolio.credit_dividends(state.ticker, div)
@@ -225,9 +402,14 @@ def _fire_partial_exits_at_bar(
     pos = portfolio.get_position(state.ticker)
     if pos is None or pos.shares <= 0:
         return
-    bar = bars.iloc[i]
-    bar_open = float(bar["open"])
-    high = float(bar["high"])
+    frame_cache = state.frame_cache
+    if frame_cache is not None:
+        bar_open = float(frame_cache.open_arr[i])
+        high = float(frame_cache.high_arr[i])
+    else:
+        bar = bars.iloc[i]
+        bar_open = float(bar["open"])
+        high = float(bar["high"])
     bar_date = _bar_label(bars.index[i], cfg)
     for tier_idx, target_price in enumerate(state.partial_targets):
         if state.partial_fired[tier_idx] or high < target_price:
@@ -260,11 +442,18 @@ def _check_exit_at_bar(
     fill_model: FillModel,
 ) -> Optional[tuple[float, ExitReason]]:
     """Evaluate exit rules for ``state`` at ``bars[i]``."""
-    bar = bars.iloc[i]
-    bar_open = float(bar["open"])
-    high = float(bar["high"])
-    low = float(bar["low"])
-    close = float(bar["close"])
+    frame_cache = state.frame_cache
+    if frame_cache is not None:
+        bar_open = float(frame_cache.open_arr[i])
+        high = float(frame_cache.high_arr[i])
+        low = float(frame_cache.low_arr[i])
+        close = float(frame_cache.close_arr[i])
+    else:
+        bar = bars.iloc[i]
+        bar_open = float(bar["open"])
+        high = float(bar["high"])
+        low = float(bar["low"])
+        close = float(bar["close"])
 
     trail_ref = state.peak * (1.0 - cfg.trailing_stop) if cfg.trailing_stop else None
     stop_hit = state.stop_ref is not None and low <= state.stop_ref
@@ -293,8 +482,14 @@ def _check_exit_at_bar(
     if high > state.peak:
         state.peak = high
 
-    if state.exit_signal is not None and bool(state.exit_signal.iloc[i]):
-        return _sell("exit_expr"), "exit_expr"
+    if state.exit_signal is not None:
+        fired = (
+            bool(state.exit_signal_values[i])
+            if state.exit_signal_values is not None
+            else bool(state.exit_signal.iloc[i])
+        )
+        if fired:
+            return _sell("exit_expr"), "exit_expr"
     if i >= state.hold_limit_idx:
         return _sell("time"), "time"
     return None
@@ -480,24 +675,45 @@ def _eligible_reserve_signal_idx(
     cfg: BacktestConfig,
     entry_ast,
     lookback: int,
+    *,
+    ticker: Optional[str] = None,
+    caches: Optional[_RunCaches] = None,
 ) -> Optional[int]:
-    """Return signal index if a reserve passes filters and entry AST on ``exit_day``."""
-    history_mask = bars.index <= exit_day
-    if not history_mask.any():
+    """Return signal index if a reserve passes filters and entry AST on ``exit_day``.
+
+    When ``ticker`` and ``caches`` are given, the entry AST is evaluated once
+    over the full frame and reused across calls (positional indexing at the
+    signal bar; every Pine op is causal, so the value matches the
+    truncated-history evaluation — the same discipline the rolling engine's
+    ``_precompute_entry_signals`` relies on).
+    """
+    # bars.index is a sorted DatetimeIndex; searchsorted is O(log n).
+    pos = int(bars.index.searchsorted(exit_day, side="right")) - 1
+    if pos < 0:
         return None
-    history = bars.loc[history_mask]
-    if len(history) < lookback + 1:
+    if pos + 1 < lookback + 1:
         return None
     passes, _ = _passes_entry_filters(bars, exit_day, cfg)
     if not passes:
         return None
-    try:
-        signal = evaluate(entry_ast, history)
-    except PineError:
+    if caches is not None and ticker is not None:
+        signal = caches.entry_signal(ticker, bars, entry_ast)
+        if isinstance(signal, PineError):
+            return None
+        if signal.empty:  # pragma: no cover - bars are non-empty here
+            return None
+        last = signal.iloc[pos]
+    else:
+        try:
+            signal = evaluate(entry_ast, bars.iloc[: pos + 1])
+        except PineError:
+            return None
+        if signal.empty:  # pragma: no cover - history is non-empty here
+            return None
+        last = signal.iloc[-1]
+    if pd.isna(last) or not bool(last):
         return None
-    if signal.empty or pd.isna(signal.iloc[-1]) or not bool(signal.iloc[-1]):
-        return None
-    return int(np.where(history_mask)[0][-1])
+    return pos
 
 
 def _bar_index_on_or_before(bars: pd.DataFrame, day: pd.Timestamp) -> Optional[int]:
@@ -576,11 +792,20 @@ def _close_slot_at_day(
     fill_model: FillModel,
 ) -> bool:
     """Process one slot for a day. Returns True when the slot becomes free."""
-    if day not in bars.index:
-        return False
-    i = bars.index.get_loc(day)
-    if isinstance(i, slice) or not isinstance(i, int):
-        return False
+    frame_cache = state.frame_cache
+    if frame_cache is not None and frame_cache.index_i8 is not None:
+        index_i8 = frame_cache.index_i8
+        pos = int(np.searchsorted(index_i8, day.value))
+        if pos >= index_i8.size or index_i8[pos] != day.value:
+            return False
+        i: int = pos
+    else:
+        if day not in bars.index:
+            return False
+        loc = bars.index.get_loc(day)
+        if isinstance(loc, slice) or not isinstance(loc, int):
+            return False
+        i = loc
     if i < state.entry_idx + 1:
         return False
     _maybe_credit_dividends(portfolio, state, bars, i, cfg)

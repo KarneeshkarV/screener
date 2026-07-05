@@ -6,7 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import click
 import numpy as np
@@ -22,8 +22,9 @@ from screener.backtester.cli_common import (
 )
 from screener.backtester.core import (
     _active_or_pending_tickers,
-    _bar_label,
+    _RunCaches,
     _SlotState,
+    _bar_label,
     _benchmark_series_from_panel,
     _force_close_open_slots,
     _make_slot_state,
@@ -62,7 +63,13 @@ from screener.universes import (
 
 @dataclass(frozen=True)
 class _RollingCandidateMatrices:
-    """Precomputed per-day matrices for vectorized candidate selection."""
+    """Precomputed per-day matrices for vectorized candidate selection.
+
+    The numpy mirrors (``*_np``, ``row_by_day``, ``col_by_ticker``, ``tickers``)
+    are derived once from the DataFrames so the per-day scan in
+    :func:`_candidate_rows_for_day` runs on raw arrays and integer positions
+    instead of pandas label lookups (``.loc[day]`` / ``.at[day, ticker]``).
+    """
 
     signal_mat: pd.DataFrame
     lookback_ok_mat: pd.DataFrame
@@ -78,6 +85,19 @@ class _RollingCandidateMatrices:
     # ``None`` when no ticker carries the column, which preserves the legacy
     # dollar-volume ranking byte-for-byte.
     rank_score_mat: pd.DataFrame | None
+    tickers: tuple[str, ...]
+    row_by_day: dict[pd.Timestamp, int]
+    col_by_ticker: dict[str, int]
+    signal_np: np.ndarray
+    lookback_ok_np: np.ndarray
+    filter_np: np.ndarray | None
+    dollar_vol_np: np.ndarray
+    close_np: np.ndarray
+    volume_np: np.ndarray
+    bar_idx_np: np.ndarray
+    # Numpy mirror of ``rank_score_mat`` (``None`` when no factor scores), kept
+    # aligned column-for-column with the other ``*_np`` arrays.
+    rank_score_np: np.ndarray | None
 
 
 def _build_rolling_candidate_matrices(
@@ -184,6 +204,17 @@ def _build_rolling_candidate_matrices(
         volume_mat=volume_mat,
         bar_idx_mat=bar_idx_mat,
         rank_score_mat=rank_score_mat,
+        tickers=tuple(valid_tickers),
+        row_by_day={ts: i for i, ts in enumerate(master_ix)},
+        col_by_ticker={tv: j for j, tv in enumerate(valid_tickers)},
+        signal_np=signal_mat.to_numpy(),
+        lookback_ok_np=lookback_ok_mat.to_numpy(),
+        filter_np=filter_mat.to_numpy() if filter_mat is not None else None,
+        dollar_vol_np=dollar_vol_mat.to_numpy(),
+        close_np=close_mat.to_numpy(),
+        volume_np=volume_mat.to_numpy(),
+        bar_idx_np=bar_idx_mat.to_numpy(),
+        rank_score_np=rank_score_mat.to_numpy() if rank_score_mat is not None else None,
     )
 
 
@@ -195,46 +226,61 @@ def _candidate_rows_for_day(
 ) -> tuple[list[dict], list[str]]:
     """Evaluate entry signals for the full universe on one trading day."""
     warnings: list[str] = []
-    eligible = matrices.signal_mat.loc[day] & matrices.lookback_ok_mat.loc[day]
-    if matrices.filter_mat is not None:
-        eligible = eligible & matrices.filter_mat.loc[day]
+    row = matrices.row_by_day[day]
+    eligible = matrices.signal_np[row] & matrices.lookback_ok_np[row]
+    if matrices.filter_np is not None:
+        eligible = eligible & matrices.filter_np[row]
     if exclude:
-        eligible = eligible & ~eligible.index.isin(exclude)
-    dollar_vol = matrices.dollar_vol_mat.loc[day]
-    eligible = eligible & dollar_vol.notna()
+        for ticker in exclude:
+            col = matrices.col_by_ticker.get(ticker)
+            if col is not None:
+                eligible[col] = False
+    dollar_vol = matrices.dollar_vol_np[row]
+    eligible = eligible & ~np.isnan(dollar_vol)
     # Factor portfolios rank by cross-sectional score; everything else keeps the
     # legacy signal-day dollar-volume ordering. The dollar-volume value is still
     # surfaced as ``as_of_dollar_vol`` either way for reporting/liquidity audit.
-    if matrices.rank_score_mat is not None:
-        rank_score = matrices.rank_score_mat.loc[day]
-        eligible = eligible & rank_score.notna()
+    if matrices.rank_score_np is not None:
+        rank_score = matrices.rank_score_np[row]
+        eligible = eligible & ~np.isnan(rank_score)
+        eligible_cols = np.nonzero(eligible)[0]
+        if eligible_cols.size == 0:
+            return [], warnings
         # Rank by cross-sectional factor score (descending), breaking ties by
         # signal-day dollar volume so equal-score names resolve by liquidity —
         # a principled deterministic fallback — rather than by arbitrary
-        # universe/column insertion order.
-        ranked_keys = pd.DataFrame(
-            {
-                "rank_score": rank_score[eligible],
-                "dollar_vol": dollar_vol[eligible],
-            }
-        ).sort_values(["rank_score", "dollar_vol"], ascending=False, kind="mergesort")[
-            "rank_score"
-        ]
-    else:
-        ranked_keys = dollar_vol[eligible].sort_values(
-            ascending=False, kind="mergesort"
+        # universe/column insertion order. The DataFrame rows are in ascending
+        # column order (``eligible_cols``), so a stable mergesort reproduces the
+        # legacy pandas ranking byte-for-byte.
+        order = (
+            pd.DataFrame(
+                {
+                    "rank_score": rank_score[eligible_cols],
+                    "dollar_vol": dollar_vol[eligible_cols],
+                }
+            )
+            .sort_values(
+                ["rank_score", "dollar_vol"], ascending=False, kind="mergesort"
+            )
+            .index.to_numpy()
         )
+    else:
+        eligible_cols = np.nonzero(eligible)[0]
+        if eligible_cols.size == 0:
+            return [], warnings
+        # Match ``sort_values(ascending=False, kind="mergesort")`` exactly: pandas
+        # reverses the stable ascending order, so ties land in reversed column
+        # order (see pandas ``nargsort``).
+        order = dollar_vol[eligible_cols].argsort(kind="mergesort")[::-1]
     rows: list[dict] = []
-    for rank, (ticker, _key) in enumerate(ranked_keys.items(), start=1):
+    for rank, col in enumerate(eligible_cols[order], start=1):
         rows.append(
             {
-                "ticker": ticker,
-                # .at[...] is typed as a broad pandas Scalar union; these cells
-                # are always numeric, so cast to Any before int/float coercion.
-                "signal_idx": int(cast(Any, matrices.bar_idx_mat.at[day, ticker])),
-                "as_of_close": float(cast(Any, matrices.close_mat.at[day, ticker])),
-                "as_of_volume": float(cast(Any, matrices.volume_mat.at[day, ticker])),
-                "as_of_dollar_vol": float(cast(Any, dollar_vol.at[ticker])),
+                "ticker": matrices.tickers[col],
+                "signal_idx": int(matrices.bar_idx_np[row, col]),
+                "as_of_close": float(matrices.close_np[row, col]),
+                "as_of_volume": float(matrices.volume_np[row, col]),
+                "as_of_dollar_vol": float(dollar_vol[col]),
                 "rank": rank,
                 "role": "active",
             }
@@ -475,6 +521,9 @@ class _DailyRankingSource:
         self.end_ts = end_ts
         self.selection_rows = selection_rows
         self.warnings = warnings
+        # Per-run memo: exit-AST evaluations and frame primitives are computed
+        # once per ticker instead of once per slot open.
+        self.caches = _RunCaches()
 
     def before_exits(self, day: pd.Timestamp) -> None:
         return None
@@ -533,6 +582,7 @@ class _DailyRankingSource:
                     self.exit_ast,
                     int(row["rank"]),
                     self.fill_model,
+                    caches=self.caches,
                 )
                 if (
                     state is None
@@ -585,11 +635,11 @@ def _assemble_results(
         frame = bars_by_tv.get(trade.ticker)
         if frame is None or frame.empty:  # pragma: no cover - traded ticker has bars
             continue
-        dates = frame.loc[
-            (frame.index >= pd.Timestamp(trade.entry_date))
-            & (frame.index <= pd.Timestamp(trade.exit_date))
-        ].index
-        date_set.update(dates.tolist())
+        # frame.index is a sorted DatetimeIndex; slice by position instead of
+        # building two boolean masks per trade.
+        lo = frame.index.searchsorted(pd.Timestamp(trade.entry_date), side="left")
+        hi = frame.index.searchsorted(pd.Timestamp(trade.exit_date), side="right")
+        date_set.update(frame.index[lo:hi].tolist())
     calendar = pd.DatetimeIndex(sorted(date_set))
     equity = build_equity_curve(
         calendar,

@@ -18,8 +18,8 @@ uv run mypy && uv run ruff check screener   # quality gates
 
 | Gate | Result |
 |---|---|
-| `tests/correctness` (offline) | **275 passed, 14 skipped** (live, network-gated) |
-| Full suite (regression) | **509 passed, 14 skipped** (234 pre-existing + 275 new) |
+| `tests/correctness` (offline) | **298 passed, 18 skipped** (live, network-gated; includes the 8 new cost/stop cross-engine tests) |
+| Full suite (regression) | no regressions from this suite; unrelated pre-existing failures live only in the working tree's *untracked/experimental* files (a `bb_breakout_sar_exit` plugin + a `trades.py` `INTERCEPT_MODE` hack), not in `screener` or `tests/correctness` |
 | mypy | clean (136 source files) |
 | ruff (`screener` + `tests/correctness`) | clean |
 
@@ -91,6 +91,64 @@ active `as_of`-to-last-exit sub-window (~127 traded bars); vbt computes it over 
 annualized Sharpe. The plan's `rtol=5e-2` is **not achievable** without forcing both onto
 an identical window; the test instead asserts both are finite, positive, and the gap is
 bounded (<100%), and documents the cause.
+
+### 3a. Cross-engine reconciliation *with costs and stops* (`test_cross_engine_costs_stops.py`)
+
+Extends the frictionless proof to the regimes that matter for realism. Installed vectorbt
+is **1.0.0**; the stop family (`sl_stop` / `tp_stop` / `sl_trail` / `stop_entry_price` /
+`stop_exit_price`) was confirmed against the actual installed signature, not a remembered
+0.x API. **8 tests, all reconcile to the tolerances below — no engine bug found.**
+
+| # | Scenario | Engine ⇄ vbt hand-off | Exit-date rule | Net `total_return` diff (target ≤1e-8) |
+|---|---|---|---|---|
+| 1 | Commission | `commission_bps=10` ⇄ `fees=0.001` | +1 bday (crossunder) | ~5e-16 |
+| 2 | Slippage | `slippage_bps=20` ⇄ `slippage=0.002` | +1 bday (crossunder) | ~4e-16 |
+| 3 | Commission + slippage | both, per side | +1 bday (crossunder) | ~1e-15 |
+| 4 | Stop-loss | `stop_loss=0.05` ⇄ `sl_stop=0.05` | **0 (exact)** | ~7e-18 |
+| 5 | Take-profit | `take_profit=0.10` ⇄ `tp_stop=0.10` | **0 (exact)** | ~8e-17 |
+| 6 | Trailing stop | `trailing_stop=0.08` ⇄ `sl_stop=0.08, sl_trail=True` | **0 (exact)** | ~3e-17 |
+| 7 | Stop-loss + costs | `sl_stop` on the slipped fill base | **0 (exact)** | ~1e-16 |
+| 8 | **Control** | vbt fed raw bps `fees=10.0` (no conversion) | — | diverges by **1.8** (proves non-trivial) |
+
+All per-trade entry/exit prices match to `rtol=1e-9`; entry dates match exactly.
+
+**Reconciliation rules pinned (design choices, not bugs):**
+
+- **Units.** Engine is basis points, vbt is fractions; `reference_adapters.bps_to_fraction`
+  (10 bps → 0.001) is applied on every hand-off. Test 8 shows skipping it diverges by 1.8.
+- **Net-return methodology.** The engine's per-slot sizing does not compound, so the fair
+  comparison chains each trade's capital-independent net ratio `exit_value/entry_cost`
+  (`reference_adapters.net_compound_return`). This equals vbt's fully-reinvested
+  `pf.total_return()` *exactly* (both apply commission as a per-notional fraction on each
+  side and multiply capital by the same factor per trade) — hence machine-precision (≤1e-15)
+  agreement, far inside the ≤1e-8 target.
+- **Exit-date shift is mechanism-dependent.** `exit_expr` (crossunder) exits keep the
+  documented **+1 bday** shift (engine exits on the signal bar at close; vbt shifts +1 and
+  fills at next open — equal price via `open[t]=close[t-1]`). **Stop / target / trailing**
+  exits fill *intrabar on the trigger bar* in **both** engines, so their exit dates match
+  with **zero** shift. This stronger equality is asserted in tests 4–7.
+- **Stop base = slippage-adjusted entry fill.** The engine's `stop_ref = entry_fill·(1−sl)`
+  is measured off the *slipped* fill. vbt's default `stop_entry_price` is `Close`, which does
+  **not** match; the test passes `StopEntryPrice.FillPrice`. Test 7 (stop + slippage) is the
+  one that would fail if this base were wrong.
+- **Stop exit applies slippage.** The engine slips the stop fill on the sell side; vbt's
+  default `stop_exit_price=StopLimit` does **not** apply slippage, so the test passes
+  `StopExitPrice.StopMarket`. (With zero slippage the two vbt modes coincide.)
+- **Gap handling avoided by construction.** The engine's `gap_fills=True` matches vbt's
+  StopMarket "opened-through → fill at open" rule, but the stop frames are built gap-free
+  (trigger bar's open on the safe side of the level, only the intrabar `low`/`high` pierces),
+  so every stop is a clean intrabar fill *at the reference* and the comparison is exact
+  regardless of gap semantics. The gap-fill divergence itself is already covered by
+  `test_hand_computed_trades.py` and is not re-litigated here.
+- **Stops isolated.** Tests 4–7 set `exit_expr=None` (engine) and an all-`False` exit mask
+  (vbt) so the stop is the sole exit path — required because the stop-loss frame's declining
+  tail would otherwise trip an SMA crossunder before the stop. Each stop test asserts the
+  recorded `exit_reason` so it cannot pass vacuously.
+
+**No engine bug found:** every discrepancy above is a convention difference reconciled at the
+adapter/parameter boundary, and the underlying arithmetic (worked by hand on minimal frames:
+`stop_ref=entry_fill·(1−sl)`, `exit=stop_ref·(1−slip)`, `entry_cost/exit_value` per-side
+commission) agrees with vectorbt to machine precision.
 
 ---
 
@@ -166,7 +224,8 @@ tests/correctness/
   test_reference_witnesses.py        # scipy witnesses for PSR/DSR/phi/skew/kurt
   fixtures/explicit_bars.py          # deterministic pinned OHLC (no RNG)
   test_hand_computed_trades.py       # 9 hand-computed trade scenarios, two assertion layers
-  test_cross_engine_reconciliation.py# event-driven vs vectorbt
+  test_cross_engine_reconciliation.py# event-driven vs vectorbt (frictionless)
+  test_cross_engine_costs_stops.py   # event-driven vs vectorbt (commission/slippage/SL/TP/trailing)
   test_lookahead_blindness.py        # T1–T4 future-perturbation invariance
   test_data_layer.py                 # US + India transforms, offline
   test_data_layer_live.py            # @pytest.mark.network live sanity (skipped by default)
