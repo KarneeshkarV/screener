@@ -25,6 +25,7 @@ from screener.backtester.core import (
     _RunCaches,
     _SlotState,
     _bar_label,
+    _benchmark_series_from_panel,
     _force_close_open_slots,
     _make_slot_state,
     _precompute_entry_signals,
@@ -34,7 +35,7 @@ from screener.backtester.core import (
 )
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.fills import FillModel
-from screener.backtester.data import PriceFetcher, build_price_fetcher, fetch_benchmark
+from screener.backtester.data import PriceFetcher, build_price_fetcher
 from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.fundamentals import (
     build_fundamental_fetcher,
@@ -77,6 +78,13 @@ class _RollingCandidateMatrices:
     close_mat: pd.DataFrame
     volume_mat: pd.DataFrame
     bar_idx_mat: pd.DataFrame
+    # Optional cross-sectional factor score. When a strategy's ``prepare_bars``
+    # hook writes a ``rank_score`` column into its bars, candidates on each day
+    # are ranked by this score (descending) instead of by signal-day dollar
+    # volume — turning the backtester into a real factor-portfolio selector.
+    # ``None`` when no ticker carries the column, which preserves the legacy
+    # dollar-volume ranking byte-for-byte.
+    rank_score_mat: pd.DataFrame | None
     tickers: tuple[str, ...]
     row_by_day: dict[pd.Timestamp, int]
     col_by_ticker: dict[str, int]
@@ -87,6 +95,9 @@ class _RollingCandidateMatrices:
     close_np: np.ndarray
     volume_np: np.ndarray
     bar_idx_np: np.ndarray
+    # Numpy mirror of ``rank_score_mat`` (``None`` when no factor scores), kept
+    # aligned column-for-column with the other ``*_np`` arrays.
+    rank_score_np: np.ndarray | None
 
 
 def _build_rolling_candidate_matrices(
@@ -97,6 +108,7 @@ def _build_rolling_candidate_matrices(
     lookback_required: int,
     membership_added: dict[str, date] | None = None,
     regime_allowed: pd.Series | None = None,
+    warnings: list[str] | None = None,
 ) -> _RollingCandidateMatrices:
     """Build once-per-run matrices for daily candidate scans."""
     master_ix = pd.DatetimeIndex(master_dates)
@@ -140,6 +152,11 @@ def _build_rolling_candidate_matrices(
     lookback_cols: dict[str, np.ndarray] = {}
     close_cols: dict[str, np.ndarray] = {}
     volume_cols: dict[str, np.ndarray] = {}
+    # Cross-sectional factor scores (as-of the signal bar), only populated for
+    # tickers whose prepared bars carry a ``rank_score`` column.
+    score_cols: dict[str, np.ndarray] = {}
+    any_score = False
+    missing_score: list[str] = []
     for tv in valid_tickers:
         bars = bars_by_tv[tv]
         close = bars["close"].astype(float).to_numpy()
@@ -152,12 +169,32 @@ def _build_rolling_candidate_matrices(
         lookback_cols[tv] = (pos + 1 >= lookback_required + 1) & (pos + 1 < n) & has_bar
         close_cols[tv] = np.where(has_bar, close[pos], np.nan)
         volume_cols[tv] = np.where(has_bar, volume[pos], np.nan)
+        if "rank_score" in bars.columns:
+            any_score = True
+            score = bars["rank_score"].astype(float).to_numpy()
+            score_cols[tv] = np.where(has_bar, score[pos], np.nan)
+        else:
+            missing_score.append(tv)
+            score_cols[tv] = np.full(len(master_ix), np.nan)
+
+    # Mixed universe: a factor strategy is ranking by ``rank_score`` but some
+    # tickers never received the column (e.g. a partial/heterogeneous prepare).
+    # Those names get an all-NaN score and are silently dropped at selection
+    # time, so surface them explicitly rather than excluding them without trace.
+    if any_score and missing_score and warnings is not None:
+        preview = ", ".join(sorted(missing_score)[:5])
+        more = "" if len(missing_score) <= 5 else f" (+{len(missing_score) - 5} more)"
+        warnings.append(
+            f"factor ranking active but {len(missing_score)} ticker(s) lack a "
+            f"rank_score column; excluded from selection: {preview}{more}"
+        )
 
     bar_idx_mat = pd.DataFrame(bar_cols, index=master_ix)
     lookback_ok_mat = pd.DataFrame(lookback_cols, index=master_ix).astype(bool)
     close_mat = pd.DataFrame(close_cols, index=master_ix)
     volume_mat = pd.DataFrame(volume_cols, index=master_ix)
     dollar_vol_mat = close_mat * volume_mat
+    rank_score_mat = pd.DataFrame(score_cols, index=master_ix) if any_score else None
     return _RollingCandidateMatrices(
         signal_mat=signal_mat,
         lookback_ok_mat=lookback_ok_mat,
@@ -166,6 +203,7 @@ def _build_rolling_candidate_matrices(
         close_mat=close_mat,
         volume_mat=volume_mat,
         bar_idx_mat=bar_idx_mat,
+        rank_score_mat=rank_score_mat,
         tickers=tuple(valid_tickers),
         row_by_day={ts: i for i, ts in enumerate(master_ix)},
         col_by_ticker={tv: j for j, tv in enumerate(valid_tickers)},
@@ -176,6 +214,7 @@ def _build_rolling_candidate_matrices(
         close_np=close_mat.to_numpy(),
         volume_np=volume_mat.to_numpy(),
         bar_idx_np=bar_idx_mat.to_numpy(),
+        rank_score_np=rank_score_mat.to_numpy() if rank_score_mat is not None else None,
     )
 
 
@@ -198,13 +237,41 @@ def _candidate_rows_for_day(
                 eligible[col] = False
     dollar_vol = matrices.dollar_vol_np[row]
     eligible = eligible & ~np.isnan(dollar_vol)
-    eligible_cols = np.nonzero(eligible)[0]
-    if eligible_cols.size == 0:
-        return [], warnings
-    # Match ``sort_values(ascending=False, kind="mergesort")`` exactly: pandas
-    # reverses the stable ascending order, so ties land in reversed column
-    # order (see pandas ``nargsort``).
-    order = dollar_vol[eligible_cols].argsort(kind="mergesort")[::-1]
+    # Factor portfolios rank by cross-sectional score; everything else keeps the
+    # legacy signal-day dollar-volume ordering. The dollar-volume value is still
+    # surfaced as ``as_of_dollar_vol`` either way for reporting/liquidity audit.
+    if matrices.rank_score_np is not None:
+        rank_score = matrices.rank_score_np[row]
+        eligible = eligible & ~np.isnan(rank_score)
+        eligible_cols = np.nonzero(eligible)[0]
+        if eligible_cols.size == 0:
+            return [], warnings
+        # Rank by cross-sectional factor score (descending), breaking ties by
+        # signal-day dollar volume so equal-score names resolve by liquidity —
+        # a principled deterministic fallback — rather than by arbitrary
+        # universe/column insertion order. The DataFrame rows are in ascending
+        # column order (``eligible_cols``), so a stable mergesort reproduces the
+        # legacy pandas ranking byte-for-byte.
+        order = (
+            pd.DataFrame(
+                {
+                    "rank_score": rank_score[eligible_cols],
+                    "dollar_vol": dollar_vol[eligible_cols],
+                }
+            )
+            .sort_values(
+                ["rank_score", "dollar_vol"], ascending=False, kind="mergesort"
+            )
+            .index.to_numpy()
+        )
+    else:
+        eligible_cols = np.nonzero(eligible)[0]
+        if eligible_cols.size == 0:
+            return [], warnings
+        # Match ``sort_values(ascending=False, kind="mergesort")`` exactly: pandas
+        # reverses the stable ascending order, so ties land in reversed column
+        # order (see pandas ``nargsort``).
+        order = dollar_vol[eligible_cols].argsort(kind="mergesort")[::-1]
     rows: list[dict] = []
     for rank, col in enumerate(eligible_cols[order], start=1):
         rows.append(
@@ -323,9 +390,11 @@ def _prepare_simulation(
     entry_signals_by_tv = _precompute_entry_signals(bars_by_tv, entry_ast, warnings)
     filter_signals_by_tv = _precompute_filter_signals(bars_by_tv, cfg)
 
-    # Fetched once (with warmup history so SMA200-based regimes are defined)
-    # and reused for the regime gate, the aligned curve, and regime metrics.
-    benchmark = fetch_benchmark(cfg.benchmark, fetch_start, fetch_end, fetcher)
+    # Reuse the benchmark already fetched into ``price_panel`` (it is included in
+    # ``yf_symbols`` above and split-adjusted alongside the portfolio symbols in
+    # ``splits_only`` mode). Fetching it raw here would reintroduce the phantom
+    # split jump into the regime gate, the aligned curve, and regime metrics.
+    benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
     regime_allowed: pd.Series | None = None
     if cfg.regime_filter:
         regime_allowed = classify_regimes(benchmark).isin(set(cfg.regime_filter))
@@ -383,6 +452,7 @@ def _prepare_simulation(
         lookback,
         membership_added=dict(cfg.membership_added) or None,
         regime_allowed=regime_allowed,
+        warnings=warnings,
     )
     portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
     slot_states: dict[int, _SlotState | None] = {

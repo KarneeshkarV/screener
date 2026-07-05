@@ -645,6 +645,30 @@ def _prepare_strategy_bars(
     return spec.prepare_bars(ctx), lookback_floor
 
 
+def _benchmark_series_from_panel(
+    price_panel: dict[str, pd.DataFrame], symbol: str
+) -> pd.Series:
+    """Return the benchmark close series from the already-fetched panel.
+
+    The benchmark (``cfg.benchmark``) is fetched into ``price_panel`` alongside
+    the portfolio symbols and, in the ``splits_only`` regime, split-adjusted by
+    ``apply_splits_only_adjustment``. Reusing it here keeps the benchmark a single
+    source of truth, consistent with the portfolio bars, instead of re-fetching it
+    raw (which would inject a phantom split jump into alpha/beta/regime metrics).
+
+    Shared by both the single-pass (``historical``) and rolling backtest flows so
+    the fix applies identically on whichever path a strategy runs.
+    """
+    frame = price_panel.get(symbol)
+    if frame is None or frame.empty:
+        return pd.Series(
+            index=pd.DatetimeIndex([], name="date"), dtype=float, name=symbol
+        )
+    series = frame["close"].astype(float).copy()
+    series.name = symbol
+    return series
+
+
 def _eligible_reserve_signal_idx(
     bars: pd.DataFrame,
     exit_day: pd.Timestamp,

@@ -625,6 +625,37 @@ def test_benchmark_split_unchanged_in_full_mode(stub_fetcher_factory):
     assert returns.min() < -0.4
 
 
+def test_rolling_benchmark_split_adjusted_in_splits_only(stub_fetcher_factory):
+    # Same phantom-split guard as the historical path, but on the ROLLING flow —
+    # the path the factor strategies actually run on. The rolling backtester must
+    # reuse the split-adjusted panel benchmark (not re-fetch it raw), so the
+    # benchmark curve used for regime metrics has no phantom -50% step.
+    from screener.backtester.rolling import run_rolling_backtest
+
+    aaa = make_bars(n=20, seed=5, open_base=100.0)
+    spy = _spy_with_2for1_split(split_bar=6, n=20)
+    fetcher = stub_fetcher_factory({"AAA": aaa, "SPY": spy})
+    cfg = _cfg(
+        as_of=aaa.index[-1].date(),
+        hold=5,
+        top=1,
+        entry_expr="close > 0",
+        tickers=("AAA",),
+        price_adjustment="splits_only",
+    )
+    result = run_rolling_backtest(
+        cfg,
+        fetcher,
+        start_date=aaa.index[0].date(),
+        end_date=aaa.index[-1].date(),
+    )
+    bench = result.benchmark_curve
+    assert not bench.empty
+    returns = bench.pct_change().dropna()
+    assert returns.min() > -0.4, f"phantom split jump in benchmark: {returns.min()}"
+    assert bench.max() / bench.min() < 1.5  # no ~2x step anywhere
+
+
 def test_price_adjustment_splits_only_credits_dividend(stub_fetcher_factory):
     bars = make_bars(n=20, seed=5, open_base=100.0)
     bars["dividend"] = 0.0
