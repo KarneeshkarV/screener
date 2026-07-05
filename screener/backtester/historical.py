@@ -381,27 +381,6 @@ def _run_event_driven_sim(
     return master_dates
 
 
-def _benchmark_series_from_panel(
-    price_panel: dict[str, pd.DataFrame], symbol: str
-) -> pd.Series:
-    """Return the benchmark close series from the already-fetched panel.
-
-    The benchmark (``cfg.benchmark``) is fetched into ``price_panel`` alongside
-    the portfolio symbols and, in the ``splits_only`` regime, split-adjusted by
-    ``apply_splits_only_adjustment``. Reusing it here keeps the benchmark a single
-    source of truth, consistent with the portfolio bars, instead of re-fetching it
-    raw (which would inject a phantom split jump into alpha/beta/regime metrics).
-    """
-    frame = price_panel.get(symbol)
-    if frame is None or frame.empty:
-        return pd.Series(
-            index=pd.DatetimeIndex([], name="date"), dtype=float, name=symbol
-        )
-    series = frame["close"].astype(float).copy()
-    series.name = symbol
-    return series
-
-
 def _warmup_days_for_interval(lookback: int, interval: str) -> int:
     warmup_bars = lookback * 2 + 30
     if interval == "1d":
