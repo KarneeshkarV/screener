@@ -21,7 +21,19 @@ from screener.backtester.slippage import (
     HalfSpreadSlippage,
     VolumeImpactSlippage,
 )
-from screener.criteria import CRITERIA, combine, is_pipeline, registry
+from screener.criteria import (
+    CRITERIA,
+    CriteriaSelectionError,
+    FilterCriteriaSelection,
+    PipelineCriteriaSelection,
+    combine,
+    definitions,
+    filter_criteria,
+    is_pipeline,
+    pipeline_criteria,
+    registry,
+    resolve_criteria,
+)
 from screener.criteria.plugins import garp, obv_trend, promoter_buys, rs_breakout
 from screener.criteria.plugins import unusual_volume, vol_breakout
 from screener.strategies.expressions import NamedStrategy
@@ -126,6 +138,31 @@ def test_criteria_registry_pipeline_flags_and_combine():
         return [3]
 
     assert combine(first, second)() == [1, 2, 3]
+
+
+def test_criteria_interface_distinguishes_filters_and_pipelines():
+    defs = definitions()
+    assert defs["ema"].is_filter is True
+    assert defs["garp"].is_pipeline is True
+    assert "ema" in filter_criteria()
+    assert "garp" not in filter_criteria()
+    assert "garp" in pipeline_criteria()
+    assert "ema" not in pipeline_criteria()
+
+    filters = resolve_criteria(("ema", "value"))
+    assert isinstance(filters, FilterCriteriaSelection)
+    assert filters.names == ("ema", "value")
+    assert filters.label == "ema+value"
+    assert filters.filters
+
+    pipeline = resolve_criteria(("garp",))
+    assert isinstance(pipeline, PipelineCriteriaSelection)
+    assert pipeline.name == "garp"
+
+
+def test_criteria_interface_rejects_pipeline_filter_combinations():
+    with pytest.raises(CriteriaSelectionError, match="cannot be combined"):
+        resolve_criteria(("garp", "ema"))
 
 
 def test_all_filter_only_criteria_build_filter_lists():
