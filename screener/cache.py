@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, TypeVar, cast
 
@@ -16,7 +17,109 @@ import pandas as pd
 
 
 CACHE_ROOT = Path.home() / ".screener" / "cache"
+_DEFAULT_CACHE_ROOT = CACHE_ROOT
+PANEL_ROOT = Path.home() / ".screener" / "panels"
+_DEFAULT_PANEL_ROOT = PANEL_ROOT
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class CacheArea:
+    name: str
+    description: str
+
+
+_CACHE_AREA_OVERRIDES: dict[str, Path] = {}
+
+
+def _prices_cache_dir() -> Path:
+    from screener.backtester import data
+
+    return data.CACHE_DIR
+
+
+def _fmp_prices_cache_dir() -> Path:
+    from screener.backtester import data
+
+    return data.FMP_CACHE_DIR
+
+
+def _universes_cache_dir() -> Path:
+    from screener import universes
+
+    return universes.CACHE_DIR
+
+
+def _delivery_bhavcopy_cache_dir() -> Path:
+    from screener.unusual_volume import delivery
+
+    return delivery.CACHE_DIR
+
+
+def _operator_bhavcopy_cache_dir() -> Path:
+    from screener.operator import fetch
+
+    return fetch.CACHE_ROOT
+
+
+_CACHE_AREA_GETTERS: dict[str, Callable[[], Path]] = {
+    "prices": _prices_cache_dir,
+    "fmp_prices": _fmp_prices_cache_dir,
+    "universes": _universes_cache_dir,
+    "scanner": lambda: CACHE_ROOT,
+    "panels": lambda: PANEL_ROOT,
+    "bhavcopy": _delivery_bhavcopy_cache_dir,
+    "nse_bhavcopy": _operator_bhavcopy_cache_dir,
+}
+
+
+_CACHE_AREAS: dict[str, CacheArea] = {
+    "prices": CacheArea("prices", "yfinance OHLCV parquet cache"),
+    "fmp_prices": CacheArea("fmp_prices", "FMP OHLCV parquet cache"),
+    "universes": CacheArea("universes", "index universe membership cache"),
+    "scanner": CacheArea("scanner", "TradingView scanner and provider cache"),
+    "panels": CacheArea("panels", "accumulating microstructure panels"),
+    "bhavcopy": CacheArea("bhavcopy", "delivery bhavcopy cache"),
+    "nse_bhavcopy": CacheArea("nse_bhavcopy", "operator NSE bhavcopy cache"),
+}
+
+
+def cache_area_path(name: str) -> Path:
+    """Return the owned path for a named cache area."""
+    if name in _CACHE_AREA_OVERRIDES:
+        return _CACHE_AREA_OVERRIDES[name]
+    try:
+        return _CACHE_AREA_GETTERS[name]()
+    except KeyError:
+        known = ", ".join(sorted(_CACHE_AREAS))
+        raise KeyError(f"unknown cache area {name!r}; known areas: {known}") from None
+
+
+def set_cache_area_path(name: str, path: Path) -> None:
+    """Override a cache area path, primarily for tests."""
+    if name not in _CACHE_AREAS:
+        known = ", ".join(sorted(_CACHE_AREAS))
+        raise KeyError(f"unknown cache area {name!r}; known areas: {known}")
+    _CACHE_AREA_OVERRIDES[name] = Path(path)
+    if name == "scanner":
+        global CACHE_ROOT
+        CACHE_ROOT = Path(path)
+    elif name == "panels":
+        global PANEL_ROOT
+        PANEL_ROOT = Path(path)
+
+
+def reset_cache_area_paths() -> None:
+    """Clear test overrides for all cache areas."""
+    global CACHE_ROOT, PANEL_ROOT
+    _CACHE_AREA_OVERRIDES.clear()
+    CACHE_ROOT = _DEFAULT_CACHE_ROOT
+    PANEL_ROOT = _DEFAULT_PANEL_ROOT
+
+
+def known_cache_dirs() -> dict[str, Path]:
+    """Name -> directory for every on-disk cache area with cleanup policy."""
+    return {name: cache_area_path(name) for name in _CACHE_AREAS}
 
 
 def stable_key(*parts: Any) -> str:
@@ -66,7 +169,7 @@ def all_fresh(paths: Iterable[Path], ttl_seconds: float | None) -> bool:
 
 
 def cache_path(namespace: str, key: str, suffix: str) -> Path:
-    return CACHE_ROOT / namespace / f"{key}.{suffix.lstrip('.')}"
+    return cache_area_path("scanner") / namespace / f"{key}.{suffix.lstrip('.')}"
 
 
 def read_json(path: Path, default: T | None = None) -> Any | T | None:
@@ -97,12 +200,9 @@ def write_frame(path: Path, frame: pd.DataFrame) -> None:
     tmp.replace(path)
 
 
-PANEL_ROOT = Path.home() / ".screener" / "panels"
-
-
 def panel_path(name: str) -> Path:
     """Path to an accumulating snapshot panel parquet (``~/.screener/panels``)."""
-    return PANEL_ROOT / f"{name}.parquet"
+    return cache_area_path("panels") / f"{name}.parquet"
 
 
 def _normalize_dedupe_key_dates(
