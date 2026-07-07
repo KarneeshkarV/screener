@@ -53,6 +53,47 @@ def test_garp_score_prefers_lower_peg_and_stronger_growth() -> None:
     assert "garp_score" in scored.columns
 
 
+def test_openscreener_adapter_preserves_cache_contract(monkeypatch) -> None:
+    captured: dict = {}
+
+    def fake_cached_json_call(namespace, key_parts, *, ttl_seconds, refresh, fetch):
+        captured["namespace"] = namespace
+        captured["key_parts"] = key_parts
+        captured["ttl_seconds"] = ttl_seconds
+        captured["refresh"] = refresh
+        captured["fetch_result"] = fetch()
+        return {
+            "ratios": {
+                "market_capitalization": 1500.0,
+                "sales": 1600.0,
+                "peg_ratio": 1.2,
+            },
+            "profit_loss": {},
+            "quarterly_results": {},
+        }
+
+    monkeypatch.setattr(garp_module, "cached_json_call", fake_cached_json_call)
+    monkeypatch.setattr(
+        garp_module, "_fetch_india_sections", lambda symbol: {"raw": symbol}
+    )
+
+    row = garp_module.OpenScreenerGarpAdapter().load_row(
+        "AAA", "Alpha", cache_ttl=123.0, refresh=True
+    )
+
+    assert captured == {
+        "namespace": "garp_india",
+        "key_parts": ("india", "AAA"),
+        "ttl_seconds": 123.0,
+        "refresh": True,
+        "fetch_result": {"raw": "AAA"},
+    }
+    assert row is not None
+    assert row["name"] == "AAA"
+    assert row["description"] == "Alpha"
+    assert row["peg"] == pytest.approx(1.2)
+
+
 def test_garp_cli_emits_csv(monkeypatch) -> None:
     universe = pd.DataFrame({"name": ["AAA"], "description": ["Alpha"]})
     results = add_garp_score(pd.DataFrame([_passing_row(description="Alpha")]))
@@ -172,6 +213,70 @@ def test_fmp_us_row_returns_none_without_statements() -> None:
     payload = {"profile": [{"mktCap": 2.0e9}], "income_annual": []}
 
     assert _fmp_us_row("AAA", "Alpha", payload) is None
+
+
+def test_us_fundamentals_adapter_prefers_fmp_and_preserves_cache_args(
+    monkeypatch,
+) -> None:
+    captured: dict = {}
+
+    def fake_fetch(symbol, api_key, *, cache_ttl, refresh):
+        captured["symbol"] = symbol
+        captured["api_key"] = api_key
+        captured["cache_ttl"] = cache_ttl
+        captured["refresh"] = refresh
+        return _fmp_payload()
+
+    def _no_yfinance(symbol, description):
+        raise AssertionError("yfinance path must not run when FMP has data")
+
+    monkeypatch.setattr(garp_module, "_fetch_fmp_us_cached", fake_fetch)
+    monkeypatch.setattr(garp_module, "_us_row", _no_yfinance)
+
+    adapter = garp_module.UsGarpFundamentalsAdapter(
+        garp_module.FmpGarpAdapter("test-key")
+    )
+    row = adapter.load_row("AAA", "Alpha", cache_ttl=456.0, refresh=True)
+
+    assert captured == {
+        "symbol": "AAA",
+        "api_key": "test-key",
+        "cache_ttl": 456.0,
+        "refresh": True,
+    }
+    assert row is not None
+    assert row["name"] == "AAA"
+    assert row["peg"] == pytest.approx(1.2)
+
+
+def test_us_fundamentals_adapter_falls_back_when_fmp_has_no_row(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        garp_module,
+        "_fetch_fmp_us_cached",
+        lambda symbol, api_key, *, cache_ttl, refresh: {
+            "profile": [],
+            "income_annual": [],
+        },
+    )
+
+    def _yf_row(symbol, description):
+        calls.append(symbol)
+        return _passing_row(name=symbol, market_cap=2.0e9, sales=5.0e9)
+
+    monkeypatch.setattr(garp_module, "_us_row", _yf_row)
+
+    adapter = garp_module.UsGarpFundamentalsAdapter(
+        garp_module.FmpGarpAdapter("test-key")
+    )
+    row = adapter.load_row("AAA", "Alpha", cache_ttl=None, refresh=False)
+
+    assert calls == ["AAA"]
+    assert row is not None
+    assert row["name"] == "AAA"
 
 
 def test_fmp_row_matches_yfinance_row_on_equivalent_data(monkeypatch) -> None:
