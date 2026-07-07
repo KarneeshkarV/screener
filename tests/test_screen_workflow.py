@@ -49,9 +49,9 @@ def test_screen_workflow_csv_short_circuits_history_and_report(tmp_path):
         previous_run=lambda *args: calls.append("previous") or None,
         diff=lambda current, previous: ([], []),
         temp_report_path=lambda prefix: tmp_path / f"{prefix}.html",
-        render_report=lambda *args, **kwargs: calls.append("report")
-        or tmp_path
-        / "unused.html",
+        render_report=lambda *args, **kwargs: (
+            calls.append("report") or tmp_path / "unused.html"
+        ),
     )
 
     outcome = run_screen_workflow(_request(output_csv=True), deps)
@@ -111,10 +111,9 @@ def test_screen_workflow_previous_run_diff_uses_explicit_report_path(tmp_path):
         previous_run=lambda *args: prev,
         diff=lambda current, previous: (["AAA"], ["BBB"]),
         temp_report_path=lambda prefix: tmp_path / "unused.html",
-        render_report=lambda *args, **kwargs: Path(args[4]).write_text(
-            "report", encoding="utf-8"
-        )
-        or Path(args[4]),
+        render_report=lambda *args, **kwargs: (
+            Path(args[4]).write_text("report", encoding="utf-8") or Path(args[4])
+        ),
     )
 
     outcome = run_screen_workflow(_request(report_path=explicit), deps)
@@ -141,9 +140,9 @@ def test_screen_workflow_pipeline_bypasses_filter_scan_history_and_report(tmp_pa
         previous_run=lambda *args: None,
         diff=lambda current, previous: ([], []),
         temp_report_path=lambda prefix: tmp_path / f"{prefix}.html",
-        render_report=lambda *args, **kwargs: calls.append(("report", args))
-        or tmp_path
-        / "unused.html",
+        render_report=lambda *args, **kwargs: (
+            calls.append(("report", args)) or tmp_path / "unused.html"
+        ),
     )
 
     outcome = run_screen_workflow(
