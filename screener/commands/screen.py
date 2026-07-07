@@ -8,14 +8,37 @@ import click
 
 from screener.cache import parse_ttl
 from screener import history
-from screener.criteria import (
-    CRITERIA,
-    combine,
-    is_pipeline,
-    registry as criteria_registry,
-)
+from screener.criteria import CRITERIA, registry as criteria_registry, resolve_criteria
 from screener.display import print_csv, print_results
 from screener.scanner import MARKETS, scan
+from screener.screen_workflow import (
+    ScreenMode,
+    ScreenRequest,
+    ScreenWorkflowDeps,
+    ScreenWorkflowError,
+    run_screen_workflow,
+)
+
+
+def _criteria_registry_patch_point() -> object:
+    """Return the criteria registry kept here as a CLI Adapter patch point."""
+    return criteria_registry
+
+
+def _screen_workflow_deps() -> ScreenWorkflowDeps:
+    from screener import reporting
+    from screener.commands.screen_report import render_screen_report
+
+    return ScreenWorkflowDeps(
+        resolve_criteria=resolve_criteria,
+        parse_cache_ttl=lambda value: parse_ttl(value, default=900),
+        scan=scan,
+        save_run=history.save_run,
+        previous_run=history.previous_run,
+        diff=history.diff,
+        temp_report_path=lambda prefix: reporting.temp_report_path(prefix),
+        render_report=render_screen_report,
+    )
 
 
 @click.command()
@@ -79,83 +102,55 @@ def screen(
     open_report: bool,
 ) -> None:
     """Screen stocks based on technical criteria."""
-    pipeline_names = [n for n in criteria_names if is_pipeline(n)]
-    if pipeline_names:
-        if len(criteria_names) > 1:
-            raise click.UsageError(
-                f"Pipeline criterion {pipeline_names[0]!r} cannot be combined "
-                f"with other -c values; got {list(criteria_names)!r}."
-            )
-        runner = criteria_registry.get(pipeline_names[0])
-        runner(
-            market=market,
-            limit=limit,
-            output_csv=output_csv,
-            refresh=refresh,
-            cache_ttl=cache_ttl,
-        )
-        return
-
-    criteria_fns = [CRITERIA[name] for name in criteria_names]
-    filters = combine(*criteria_fns)()
-    label = "+".join(criteria_names)
-
-    total, df = scan(
+    _criteria_registry_patch_point()
+    request = ScreenRequest(
         market=market,
-        filters=filters,
-        limit=limit,
+        criteria_names=criteria_names,
+        limit=int(limit),
         order_by=order_by,
-        detail=detail,
-        cache_ttl=parse_ttl(cache_ttl, default=900),
-        refresh=refresh,
-    )
-
-    if output_csv:
-        print_csv(df)
-        return
-
-    run_id = history.save_run(market, label, total, df)
-    prev = history.previous_run(market, label, before_id=run_id)
-    if prev is None:
-        added: list[str] = []
-        removed: list[str] = []
-        first_run = True
-    else:
-        added, removed = history.diff(df, prev)
-        first_run = False
-
-    print_results(
-        df,
-        total,
-        market,
-        label,
-        added=added,
-        removed=removed,
-        first_run=first_run,
-    )
-    generated_report = report_path
-    if generated_report is None:
-        from screener.reporting import temp_report_path
-
-        generated_report = temp_report_path("screen")
-    from screener.commands.screen_report import render_screen_report
-
-    render_screen_report(
-        df,
-        total,
-        market,
-        label,
-        generated_report,
-        added=added,
-        removed=removed,
-        first_run=first_run,
+        output_csv=output_csv,
         detail=detail,
         refresh=refresh,
         cache_ttl=cache_ttl,
-        order_by=order_by,
+        report_path=report_path,
+        open_report=open_report,
     )
-    click.echo(f"Report: {generated_report}")
-    if open_report:
+    try:
+        outcome = run_screen_workflow(request, _screen_workflow_deps())
+    except ScreenWorkflowError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    if outcome.mode is ScreenMode.PIPELINE:
+        return
+
+    if outcome.df is None:  # pragma: no cover - defensive contract guard
+        return
+
+    if outcome.mode is ScreenMode.CSV:
+        print_csv(outcome.df)
+        return
+
+    print_results(
+        outcome.df,
+        outcome.total,
+        outcome.market,
+        outcome.label,
+        added=list(outcome.added),
+        removed=list(outcome.removed),
+        first_run=outcome.first_run,
+    )
+    click.echo(f"Report: {outcome.report_path}")
+    if open_report and outcome.report_path is not None:
         from screener.reporting import open_report as open_report_file
 
-        open_report_file(generated_report)
+        open_report_file(outcome.report_path)
+
+
+__all__ = [
+    "criteria_registry",
+    "history",
+    "print_csv",
+    "print_results",
+    "scan",
+    "screen",
+]
