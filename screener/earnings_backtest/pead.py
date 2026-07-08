@@ -100,7 +100,7 @@ def run_pead_backtest(
     # Price window: a few days before the first event through the drift window
     event_tickers = events_df["ticker"].unique().tolist()
     earliest = (events_df["earnings_date"].min() - pd.Timedelta(days=5)).date()
-    # hold_days trading days ≈ hold_days * 7/5 calendar days, plus buffer
+    # hold_days trading days ~= hold_days * 7/5 calendar days, plus buffer
     latest = (
         events_df["earnings_date"].max() + pd.Timedelta(days=int(hold_days * 1.6) + 10)
     ).date()
@@ -118,7 +118,7 @@ def run_pead_backtest(
     price_data = {k: v for k, v in price_data.items() if not v.empty}
     logger.info("price_data_fetched", extra={"tickers": len(price_data)})
 
-    # 4. Simulate next-open entry → N-session hold → close exit
+    # 4. Simulate next-open entry -> N-session hold -> close exit
     trades: list[PeadTrade] = []
     for _, event in events_df.iterrows():
         ticker = event["ticker"]
@@ -135,7 +135,7 @@ def run_pead_backtest(
         entry_idx = bars.index.get_indexer(pd.Index([post_bars.index[0]]))[0]
         exit_idx = entry_idx + hold_days - 1
         if exit_idx >= len(bars):
-            # Incomplete drift window (e.g. recent earnings): skip
+            # Incomplete drift window (e.g. recent earnings): skip.
             continue
 
         entry_price = float(bars.iloc[entry_idx]["open"])
