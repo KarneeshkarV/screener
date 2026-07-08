@@ -251,10 +251,11 @@ def test_past_as_of_skips_latest_only_fundamentals_and_pledge(monkeypatch):
         {"date": "Dec 2023", "promoters": 51.0},
     ]
 
-    def _fake_shareholding(namespace, key_parts, *, ttl_seconds, refresh, fetch):
-        return full_history
-
-    monkeypatch.setattr(conviction_mod, "cached_json_call", _fake_shareholding)
+    monkeypatch.setattr(
+        conviction_mod._OPENSCREENER_SHAREHOLDING_PROVIDER,
+        "fetch",
+        lambda *args, **kwargs: full_history,
+    )
     # If these latest-only loaders were ever called for a past as_of they would
     # leak future data; assert they are not invoked instead.
     monkeypatch.setattr(

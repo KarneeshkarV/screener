@@ -41,14 +41,14 @@ from rich.console import Console
 from rich.table import Table
 
 from screener.backtester.data import PriceFetcher, tv_to_yf
-from screener.cache import cached_json_call as _cached_json_call
+
 from screener.garp import (
     GarpThresholds,
     INDIA_THRESHOLDS,
     US_THRESHOLDS,
     load_garp_row,
-    to_number,
 )
+from screener.provider_utils import _num as to_number
 from screener.indicators.plugins.ema import ema
 from screener.indicators.plugins.rsi import rsi
 from screener.insiders import (
@@ -104,9 +104,7 @@ PROMOTER_FILING_LAG_DAYS = 45
 # scoring stale-but-future data into a historical card.
 PIT_STALE_TOLERANCE_DAYS = 7
 
-# Compatibility hook for older tests/importers; shareholding fetches now use the
-# provider seam below so cache + resilience stay consistent.
-cached_json_call = _cached_json_call
+
 
 _OPENSCREENER_SHAREHOLDING_PROVIDER = CachedProvider(
     ProviderSpec(

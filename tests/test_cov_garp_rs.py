@@ -264,8 +264,9 @@ def test_fmp_get_parses_json(monkeypatch) -> None:
         def read(self):
             return json.dumps([{"x": 1}]).encode("utf-8")
 
+    import screener.fmp
     monkeypatch.setattr(
-        garp_module.urllib.request, "urlopen", lambda req, timeout=20: FakeResp()
+        screener.fmp.urllib.request, "urlopen", lambda req, timeout=20: FakeResp()
     )
     out = garp_module._fmp_get("profile/AAA", {"limit": 1}, "key")
     assert out == [{"x": 1}]

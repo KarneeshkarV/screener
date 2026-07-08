@@ -16,12 +16,9 @@ from typing import Any, Protocol, cast
 import pandas as pd
 import requests
 
-from screener import fmp
 from screener.backtester.data import load_env_file
 from screener.financials import as_percent as _as_percent
-from screener.financials import first_number as _first_num
-from screener.financials import pct_change as _pct_change
-from screener.financials import to_number as _to_number
+from screener.provider_utils import _first_num, _pct_change, fmp_get
 from screener.providers import CachedProvider, ProviderSpec
 
 
@@ -37,7 +34,7 @@ DEFAULT_FUNDAMENTAL_FIELDS: tuple[str, ...] = (
     "market_cap",
 )
 
-_FMP_BASE_URL = fmp.FMP_V3_BASE_URL
+
 _FMP_PROVIDER = CachedProvider(
     ProviderSpec(
         provider="fmp", namespace="backtester_fmp_fundamentals", ttl_seconds=86400
@@ -58,7 +55,6 @@ _YFINANCE_FUNDAMENTALS_PROVIDER = CachedProvider(
     )
 )
 
-_num = _to_number
 
 
 class FundamentalFetcher(Protocol):
@@ -146,19 +142,7 @@ def _fmp_get(
     params: Mapping[str, Any],
     api_key: str,
 ) -> object:
-    # Route through the shared FMP client, injecting this call site's pooled
-    # ``requests`` session as the transport. ``headers={}`` keeps the legacy
-    # requests-default User-Agent (this site never sent the Mozilla UA); the
-    # session path preserves ``timeout=30``, ``raise_for_status`` (so non-2xx
-    # still raises ``requests.HTTPError``) and ``.json()`` decoding verbatim.
-    client = fmp.FmpClient(
-        api_key,
-        base_url=_FMP_BASE_URL,
-        headers={},
-        timeout=_FMP_TIMEOUT,
-        session=session,
-    )
-    return client.get(path, params)
+    return fmp_get(path, params, api_key, session=session, headers={}, timeout=_FMP_TIMEOUT)
 
 
 def _fetch_fmp_sections(

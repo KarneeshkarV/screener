@@ -8,7 +8,7 @@ The command is registered on the main ``cli`` group in ``main.py`` via:
 
 from __future__ import annotations
 
-import sys
+
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -219,7 +219,7 @@ def unusual_volume(
         if isinstance(as_of_arg, datetime)
         else (as_of_arg or date.today())
     )
-    run_unusual_volume(
+    success = run_unusual_volume(
         market=market,
         as_of=as_of,
         tickers=tickers,
@@ -243,6 +243,9 @@ def unusual_volume(
         buildup_window=buildup_window,
         buildup_min_score=buildup_min_score,
     )
+    if success is False:
+        import sys
+        sys.exit(1)
 
 
 def run_unusual_volume(
@@ -269,7 +272,7 @@ def run_unusual_volume(
     buildup_enabled: bool = False,
     buildup_window: int = DEFAULT_BUILDUP_WINDOW,
     buildup_min_score: float = DEFAULT_BUILDUP_MIN,
-) -> None:
+) -> bool:
     """Run the unusual-volume scan and render it (no Click context required)."""
     console = Console()
     universe = _resolve_universe(market, tickers, universe_file)
@@ -297,15 +300,15 @@ def run_unusual_volume(
     result = run_unusual_volume_scan(request, console)
     if not result.events and result.fetched_count == 0:
         console.print("[red]No OHLCV data fetched. Aborting.[/red]")
-        sys.exit(1)
+        return False
     if not result.events and result.liquid_count == 0:
         console.print("[yellow]No tickers passed the volume floor.[/yellow]")
-        return
+        return True
     if not result.events:
         console.print(
             f"[yellow]No unusual-volume events on {as_of} for {market.upper()}.[/yellow]"
         )
-        return
+        return True
 
     events = result.events
     sorted_events = sort_events(events)
@@ -319,3 +322,4 @@ def run_unusual_volume(
         console.print(
             f"\n[dim]Wrote {json_path or json_default} + {md_path or md_default}[/dim]"
         )
+    return True

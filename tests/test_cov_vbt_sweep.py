@@ -230,7 +230,8 @@ def _make_fake_vbt() -> types.SimpleNamespace:
 def fake_vbt(monkeypatch):
     """Install a fake vbt + fake ``vectorbt.generic.nb`` and a ``.vbt`` accessor."""
     fake = _make_fake_vbt()
-    monkeypatch.setattr(vs, "_require_vectorbt", lambda: fake)
+    monkeypatch.setattr("screener.backtester.vbt.sweep._require_vectorbt", lambda: fake)
+    monkeypatch.setattr("screener.backtester.vbt.cli._require_vectorbt", lambda: fake)
 
     # Fake ``from vectorbt.generic.nb import crossed_above_nb``.
     nb_mod = types.ModuleType("vectorbt.generic.nb")
@@ -672,7 +673,8 @@ def test_run_parameter_sweep_scalar_chunk_metrics(fake_vbt, monkeypatch):
     ):  # noqa: ANN001
         return (0.5, 0.1, 0.4, -0.1, 0.5, 3)
 
-    monkeypatch.setattr(vs, "_portfolio_chunk_metrics", fake_chunk)
+    monkeypatch.setattr("screener.backtester.vbt.sweep._portfolio_chunk_metrics", fake_chunk)
+    monkeypatch.setattr("screener.backtester.vbt.cli._portfolio_chunk_metrics", fake_chunk)
     p = _panels(80)
     df = vs.run_parameter_sweep(
         p["close"],
@@ -1114,7 +1116,7 @@ def test_cli_universe_load(monkeypatch):
         source = "test"
         cached_path = "/tmp/x"
 
-    monkeypatch.setattr(vs, "load_current_universe", lambda *a, **k: _Loaded())
+    monkeypatch.setattr("screener.backtester.vbt.cli.load_current_universe", lambda *a, **k: _Loaded())
     monkeypatch.setattr(
         vs,
         "run_parameter_sweep",
@@ -1183,7 +1185,7 @@ def test_cli_walk_forward_with_universe(monkeypatch):
         source = "test"
         cached_path = "/tmp/x"
 
-    monkeypatch.setattr(vs, "load_current_universe", lambda *a, **k: _Loaded())
+    monkeypatch.setattr("screener.backtester.vbt.cli.load_current_universe", lambda *a, **k: _Loaded())
     monkeypatch.setattr(vs, "run_parameter_sweep", _stub_sweep_fn())
     res = CliRunner().invoke(
         cli,
@@ -1279,16 +1281,16 @@ def test_cli_panel_value_errors(monkeypatch):
     # Force the open / high / low / volume panel builders to raise ValueError so
     # the CLI's fallback (set panel to None) branches are exercised.
     monkeypatch.setattr(
-        vs, "build_open_panel", lambda *a, **k: (_ for _ in ()).throw(ValueError())
+        "screener.backtester.vbt.cli.build_open_panel", lambda *a, **k: (_ for _ in ()).throw(ValueError())
     )
     monkeypatch.setattr(
-        vs, "build_high_panel", lambda *a, **k: (_ for _ in ()).throw(ValueError())
+        "screener.backtester.vbt.cli.build_high_panel", lambda *a, **k: (_ for _ in ()).throw(ValueError())
     )
     monkeypatch.setattr(
-        vs, "build_low_panel", lambda *a, **k: (_ for _ in ()).throw(ValueError())
+        "screener.backtester.vbt.cli.build_low_panel", lambda *a, **k: (_ for _ in ()).throw(ValueError())
     )
     monkeypatch.setattr(
-        vs, "build_volume_panel", lambda *a, **k: (_ for _ in ()).throw(ValueError())
+        "screener.backtester.vbt.cli.build_volume_panel", lambda *a, **k: (_ for _ in ()).throw(ValueError())
     )
 
     captured = {}

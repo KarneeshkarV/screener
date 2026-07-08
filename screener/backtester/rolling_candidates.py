@@ -1,4 +1,4 @@
-"""Candidate matrix construction and per-day ranking for rolling backtests."""
+"""Rolling backtest candidate selection."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
-
 
 @dataclass(frozen=True)
 class _RollingCandidateMatrices:
@@ -29,7 +28,7 @@ class _RollingCandidateMatrices:
     # Optional cross-sectional factor score. When a strategy's ``prepare_bars``
     # hook writes a ``rank_score`` column into its bars, candidates on each day
     # are ranked by this score (descending) instead of by signal-day dollar
-    # volume - turning the backtester into a real factor-portfolio selector.
+    # volume — turning the backtester into a real factor-portfolio selector.
     # ``None`` when no ticker carries the column, which preserves the legacy
     # dollar-volume ranking byte-for-byte.
     rank_score_mat: pd.DataFrame | None
@@ -195,8 +194,8 @@ def _candidate_rows_for_day(
         if eligible_cols.size == 0:
             return [], warnings
         # Rank by cross-sectional factor score (descending), breaking ties by
-        # signal-day dollar volume so equal-score names resolve by liquidity -
-        # a principled deterministic fallback - rather than by arbitrary
+        # signal-day dollar volume so equal-score names resolve by liquidity —
+        # a principled deterministic fallback — rather than by arbitrary
         # universe/column insertion order. The DataFrame rows are in ascending
         # column order (``eligible_cols``), so a stable mergesort reproduces the
         # legacy pandas ranking byte-for-byte.
@@ -216,9 +215,9 @@ def _candidate_rows_for_day(
         eligible_cols = np.nonzero(eligible)[0]
         if eligible_cols.size == 0:
             return [], warnings
-        # Match ``sort_values(ascending=False, kind="mergesort")`` exactly:
-        # pandas reverses the stable ascending order, so ties land in reversed
-        # column order (see pandas ``nargsort``).
+        # Match ``sort_values(ascending=False, kind="mergesort")`` exactly: pandas
+        # reverses the stable ascending order, so ties land in reversed column
+        # order (see pandas ``nargsort``).
         order = dollar_vol[eligible_cols].argsort(kind="mergesort")[::-1]
     rows: list[dict] = []
     for rank, col in enumerate(eligible_cols[order], start=1):
@@ -234,3 +233,5 @@ def _candidate_rows_for_day(
             }
         )
     return rows, warnings
+
+

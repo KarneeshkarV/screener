@@ -1,4 +1,4 @@
-"""Simulation setup, execution, and result assembly for rolling backtests."""
+"""Rolling backtest simulation and execution."""
 
 from __future__ import annotations
 
@@ -22,28 +22,27 @@ from screener.backtester.core import (
     _prepare_strategy_bars,
     _resolve_universe,
 )
-from screener.backtester.data import PriceFetcher
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.fills import FillModel
-from screener.backtester.fundamentals import (
-    build_fundamental_fetcher,
-    merge_fundamentals_into_bars,
-)
+from screener.backtester.data import PriceFetcher
+from screener.backtester.fundamentals import build_fundamental_fetcher, merge_fundamentals_into_bars
 from screener.backtester.metrics import (
     compute_metrics,
     compute_regime_metrics,
     periods_per_year_for_interval,
 )
-from screener.backtester.models import BacktestConfig, BacktestResult
+from screener.backtester.models import (
+    BacktestConfig,
+    BacktestResult,
+)
 from screener.backtester.pine import parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.regime import classify_regimes
 from screener.backtester.rolling_candidates import (
     _RollingCandidateMatrices,
     _build_rolling_candidate_matrices,
     _candidate_rows_for_day,
 )
-from screener.regime import classify_regimes
-
 
 @dataclass(frozen=True)
 class _RollingSimulationSetup:
@@ -94,7 +93,7 @@ def _prepare_simulation(
     # For daily bars one bar ~ one calendar day, so the legacy day-based padding
     # stands. For intraday, convert the required warmup bars into calendar days
     # via bars-per-session (with slack for weekends/holidays) so we don't request
-    # ~365 days of minute data - which both blows past yfinance's intraday cap
+    # ~365 days of minute data — which both blows past yfinance's intraday cap
     # and is unnecessary. Chunking longer intraday windows is Phase 2.
     warmup_bars = lookback * 3 + 30
     if cfg.interval == "1d":
@@ -451,7 +450,7 @@ def run_rolling_backtest(
     start_ts = pd.Timestamp(start_date).normalize()
     # For daily bars the window upper bound is midnight of end_date (bar
     # timestamps are midnight-normalized). Intraday bars carry a time-of-day, so
-    # midnight would exclude every bar on the final session - extend the bound to
+    # midnight would exclude every bar on the final session — extend the bound to
     # the last instant of end_date so the closing session is included.
     if cfg.interval == "1d":
         end_ts = pd.Timestamp(end_date).normalize()
@@ -512,3 +511,4 @@ def run_rolling_backtest(
         selection_rows=setup.selection_rows,
         warnings=warnings,
     )
+
