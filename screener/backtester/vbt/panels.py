@@ -77,7 +77,9 @@ def build_low_panel(
     start: pd.Timestamp,
     end: pd.Timestamp,
 ) -> pd.DataFrame:
-    return _build_column_panel(price_panel, yf_symbols, column="low", start=start, end=end)
+    return _build_column_panel(
+        price_panel, yf_symbols, column="low", start=start, end=end
+    )
 
 
 def build_volume_panel(

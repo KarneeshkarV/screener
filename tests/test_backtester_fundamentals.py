@@ -410,6 +410,7 @@ class _FakeSession:
 
 def test_num_handles_unparseable_and_nan():
     from screener.provider_utils import _num
+
     assert _num("not-a-number") is None
     assert _num(float("nan")) is None
     assert _num("N/A") is None

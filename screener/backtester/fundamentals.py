@@ -56,7 +56,6 @@ _YFINANCE_FUNDAMENTALS_PROVIDER = CachedProvider(
 )
 
 
-
 class FundamentalFetcher(Protocol):
     def fetch(
         self,
@@ -142,7 +141,9 @@ def _fmp_get(
     params: Mapping[str, Any],
     api_key: str,
 ) -> object:
-    return fmp_get(path, params, api_key, session=session, headers={}, timeout=_FMP_TIMEOUT)
+    return fmp_get(
+        path, params, api_key, session=session, headers={}, timeout=_FMP_TIMEOUT
+    )
 
 
 def _fetch_fmp_sections(

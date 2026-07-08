@@ -787,7 +787,9 @@ def test_load_smart_money_india_import_error(monkeypatch):
 def test_load_smart_money_india_non_list(monkeypatch):
     _install_openscreener(monkeypatch, [])
     monkeypatch.setattr(
-        conviction_mod._OPENSCREENER_SHAREHOLDING_PROVIDER, "fetch", lambda *a, **k: "not-a-list"
+        conviction_mod._OPENSCREENER_SHAREHOLDING_PROVIDER,
+        "fetch",
+        lambda *a, **k: "not-a-list",
     )
     out = conviction_mod._load_smart_money_india(
         "RELIANCE", date(2026, 1, 1), cache_ttl=None, refresh=False

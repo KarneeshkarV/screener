@@ -105,7 +105,6 @@ PROMOTER_FILING_LAG_DAYS = 45
 PIT_STALE_TOLERANCE_DAYS = 7
 
 
-
 _OPENSCREENER_SHAREHOLDING_PROVIDER = CachedProvider(
     ProviderSpec(
         provider="screener-in",

@@ -25,7 +25,10 @@ from screener.backtester.core import (
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.fills import FillModel
 from screener.backtester.data import PriceFetcher
-from screener.backtester.fundamentals import build_fundamental_fetcher, merge_fundamentals_into_bars
+from screener.backtester.fundamentals import (
+    build_fundamental_fetcher,
+    merge_fundamentals_into_bars,
+)
 from screener.backtester.metrics import (
     compute_metrics,
     compute_regime_metrics,
@@ -43,6 +46,7 @@ from screener.backtester.rolling_candidates import (
     _build_rolling_candidate_matrices,
     _candidate_rows_for_day,
 )
+
 
 @dataclass(frozen=True)
 class _RollingSimulationSetup:
@@ -511,4 +515,3 @@ def run_rolling_backtest(
         selection_rows=setup.selection_rows,
         warnings=warnings,
     )
-

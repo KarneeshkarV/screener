@@ -8,6 +8,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+
 @dataclass(frozen=True)
 class _RollingCandidateMatrices:
     """Precomputed per-day matrices for vectorized candidate selection.
@@ -233,5 +234,3 @@ def _candidate_rows_for_day(
             }
         )
     return rows, warnings
-
-

@@ -39,9 +39,20 @@ from screener.backtester.vbt.panels import (
     build_open_panel,
     build_volume_panel,
 )
-from screener.backtester.vbt.render import print_results_table, print_walk_forward_sweep_table
-from screener.backtester.vbt.sweep import rank_results, run_parameter_sweep as _run_parameter_sweep, _require_vectorbt, _portfolio_chunk_metrics
-from screener.backtester.vbt.walk_forward import parse_walk_forward, run_walk_forward_sweep as _run_walk_forward_sweep
+from screener.backtester.vbt.render import (
+    print_results_table,
+    print_walk_forward_sweep_table,
+)
+from screener.backtester.vbt.sweep import (
+    rank_results,
+    run_parameter_sweep as _run_parameter_sweep,
+    _require_vectorbt,
+    _portfolio_chunk_metrics,
+)
+from screener.backtester.vbt.walk_forward import (
+    parse_walk_forward,
+    run_walk_forward_sweep as _run_walk_forward_sweep,
+)
 from screener.universes import UniverseName, load_current_universe
 
 
@@ -135,6 +146,7 @@ def run_walk_forward_sweep(
 ):
     """Compatibility wrapper that honors monkeypatches on this module."""
     import screener.backtester.vbt_sweep as vs
+
     return _run_walk_forward_sweep(
         close,
         windows=windows,
@@ -226,6 +238,7 @@ def _run_cli_walk_forward(
             "smaller TRAIN/TEST months or a wider --start/--end."
         )
     import screener.backtester.vbt_sweep as vs
+
     summary = vs.run_walk_forward_sweep(
         close,
         windows=wf_windows,
@@ -286,7 +299,9 @@ def _run_cli_walk_forward(
     help="Force live constituent refresh instead of today's cache.",
 )
 @click.option("--tickers", default=None, help="Comma-separated ticker list.")
-@click.option("--universe-file", default=None, help="Path to newline-separated ticker file.")
+@click.option(
+    "--universe-file", default=None, help="Path to newline-separated ticker file."
+)
 @click.option(
     "--indicator",
     "indicator_arg",
@@ -358,8 +373,12 @@ def _run_cli_walk_forward(
     show_default=True,
     help="OBV smoothing EMA windows for obv_trend.",
 )
-@click.option("--top", type=int, default=10, show_default=True, help="Print top N rows.")
-@click.option("--csv", "output_csv", is_flag=True, help="Emit full results as CSV on stdout.")
+@click.option(
+    "--top", type=int, default=10, show_default=True, help="Print top N rows."
+)
+@click.option(
+    "--csv", "output_csv", is_flag=True, help="Emit full results as CSV on stdout."
+)
 @click.option(
     "--metric",
     type=click.Choice(["sharpe", "total_return", "calmar"]),
@@ -404,7 +423,7 @@ def vbt_sweep(
     walk_forward_arg: str | None,
 ) -> None:
     """Fast vectorbt grid search for exploration (not validation).
-    
+
     Always validate promising parameter combinations with backtest-rolling
     before drawing conclusions.
 
@@ -552,6 +571,7 @@ def vbt_sweep(
         return
 
     import screener.backtester.vbt_sweep as vs
+
     results = vs.run_parameter_sweep(
         close,
         high=high_panel,
@@ -576,4 +596,3 @@ def vbt_sweep(
     if universe_note:
         console.print(f"[dim]Universe: {universe_note}[/dim]")
     print_results_table(ranked, top_n=int(top), metric=cast(MetricName, metric))
-

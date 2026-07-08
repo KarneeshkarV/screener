@@ -265,6 +265,7 @@ def test_fmp_get_parses_json(monkeypatch) -> None:
             return json.dumps([{"x": 1}]).encode("utf-8")
 
     import screener.fmp
+
     monkeypatch.setattr(
         screener.fmp.urllib.request, "urlopen", lambda req, timeout=20: FakeResp()
     )

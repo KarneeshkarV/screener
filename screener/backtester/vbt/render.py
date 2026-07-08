@@ -9,7 +9,11 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
-from screener.backtester.vbt.config import DISCLAIMER, MetricName, WALK_FORWARD_OOS_COLUMNS
+from screener.backtester.vbt.config import (
+    DISCLAIMER,
+    MetricName,
+    WALK_FORWARD_OOS_COLUMNS,
+)
 from screener.backtester.vbt.walk_forward import WalkForwardSweepSummary
 
 

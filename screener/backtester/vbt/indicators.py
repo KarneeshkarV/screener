@@ -335,9 +335,13 @@ class SignalCache:
         needs_high_low = any(c.indicator in HL_INDICATORS for c in combos)
         needs_volume = any(c.indicator in VOLUME_INDICATORS for c in combos)
         if needs_high_low and (high is None or low is None):
-            raise ValueError("supertrend / keltner indicators require high & low panels.")
+            raise ValueError(
+                "supertrend / keltner indicators require high & low panels."
+            )
         if needs_volume and volume is None:
-            raise ValueError("vol_breakout / obv_trend indicators require a volume panel.")
+            raise ValueError(
+                "vol_breakout / obv_trend indicators require a volume panel."
+            )
 
         # ---- SMA intermediates (preserves frozen regression bit-for-bit) ----
         sma_fast_set = sorted(
