@@ -568,65 +568,6 @@ def test_resolve_universe_loader(monkeypatch):
     assert uv_cli._resolve_universe("us", None, None) == ["X:Y"]
 
 
-def test_cli_fetch_bars_threaded(monkeypatch):
-    bars = _bars()
-
-    class F:
-        def fetch(self, syms, start, end):
-            sym = syms[0]
-            if sym == "BAD.NS":
-                raise ValueError("net")
-            if sym == "EMPTY.NS":
-                return {sym: pd.DataFrame()}
-            return {sym: bars}
-
-    monkeypatch.setattr(uv_cli, "build_price_fetcher", lambda: F())
-    monkeypatch.setattr(uv_cli, "tv_to_yf", lambda t, m: t + ".NS")
-    out = uv_cli._fetch_bars(
-        ["AAA", "BAD", "EMPTY"], "us", date(2026, 5, 15), _console()
-    )
-    assert set(out) == {"AAA"}
-
-
-def test_cli_fetch_bars_progress_print(monkeypatch):
-    bars = _bars()
-
-    class F:
-        def fetch(self, syms, start, end):
-            return {syms[0]: bars}
-
-    monkeypatch.setattr(uv_cli, "build_price_fetcher", lambda: F())
-    monkeypatch.setattr(uv_cli, "tv_to_yf", lambda t, m: t)
-    tickers = [f"T{i}" for i in range(100)]
-    console = _console()
-    out = uv_cli._fetch_bars(tickers, "us", date(2026, 5, 15), console)
-    assert len(out) == 100
-    assert "fetched 100/100" in console.file.getvalue()
-
-
-def test_cli_india_symbol_and_bars_helpers():
-    assert uv_cli._india_symbol("NSE:abc") == "ABC"
-    assert uv_cli._india_symbol("xyz") == "XYZ"
-    assert uv_cli._bars_on_or_before_as_of(None, date(2026, 5, 15)).empty
-    df = pd.DataFrame({"close": [1.0]})  # no DatetimeIndex, no date col
-    assert uv_cli._bars_on_or_before_as_of(df, date(2026, 5, 15)).empty
-    df2 = pd.DataFrame({"date": ["2026-05-15"], "close": [1.0], "volume": [1.0]})
-    assert len(uv_cli._bars_on_or_before_as_of(df2, date(2026, 5, 15))) == 1
-
-
-def test_cli_standalone_buildup_event_none():
-    assert (
-        uv_cli._standalone_buildup_event(_score(), pd.DataFrame(), date(2026, 5, 15))
-        is None
-    )
-
-
-def test_cli_human_mcap():
-    assert uv_cli._human_mcap(2e9) == "$2.0B"
-    assert uv_cli._human_mcap(5e6) == "$5M"
-    assert uv_cli._human_mcap(99.0) == "$99"
-
-
 def _patch_run(monkeypatch, result):
     monkeypatch.setattr(uv_cli, "_resolve_universe", lambda m, t, f: ["AAA"])
     monkeypatch.setattr(uv_cli, "run_unusual_volume_scan", lambda req, console: result)

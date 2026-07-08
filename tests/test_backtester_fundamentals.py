@@ -9,7 +9,7 @@ from click.testing import CliRunner
 
 from main import cli
 
-from screener.backtester import fundamentals, rolling
+from screener.backtester import fundamentals, rolling, rolling_simulation
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling import run_rolling_backtest
 
@@ -199,7 +199,7 @@ def test_rolling_backtest_uses_fundamental_columns_in_entry(monkeypatch):
     )
 
     monkeypatch.setattr(
-        rolling,
+        rolling_simulation,
         "build_fundamental_fetcher",
         lambda *args, **kwargs: _StubFundamentalFetcher(fundamental_frame),
     )
@@ -225,7 +225,7 @@ def test_rolling_backtest_missing_fundamentals_does_not_break_price_only_entry(
         }
     )
     monkeypatch.setattr(
-        rolling,
+        rolling_simulation,
         "build_fundamental_fetcher",
         lambda *args, **kwargs: _StubFundamentalFetcher(),
     )
@@ -409,10 +409,13 @@ class _FakeSession:
 
 
 def test_num_handles_unparseable_and_nan():
-    assert fundamentals._num("not-a-number") is None
-    assert fundamentals._num(float("nan")) is None
-    assert fundamentals._num(None) is None
-    assert fundamentals._num("1,234.5%") == 1234.5
+    from screener.provider_utils import _num
+
+    assert _num("not-a-number") is None
+    assert _num(float("nan")) is None
+    assert _num("N/A") is None
+    assert _num(None) is None
+    assert _num("1,234.5%") == 1234.5
 
 
 def test_increased_last_n_quarters_none_when_value_missing():

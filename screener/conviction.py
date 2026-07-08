@@ -41,14 +41,14 @@ from rich.console import Console
 from rich.table import Table
 
 from screener.backtester.data import PriceFetcher, tv_to_yf
-from screener.cache import cached_json_call
+
 from screener.garp import (
     GarpThresholds,
     INDIA_THRESHOLDS,
     US_THRESHOLDS,
     load_garp_row,
-    to_number,
 )
+from screener.provider_utils import _num as to_number
 from screener.indicators.plugins.ema import ema
 from screener.indicators.plugins.rsi import rsi
 from screener.insiders import (
@@ -56,6 +56,7 @@ from screener.insiders import (
     resolve_fmp_api_key,
 )
 from screener.pledge import resolve_pledge_pct
+from screener.providers import CachedProvider, ProviderSpec
 from screener.rs_breakout import (
     DEFAULT_BENCHMARKS,
     delivery_lookup,
@@ -102,6 +103,15 @@ PROMOTER_FILING_LAG_DAYS = 45
 # this many days before today we skip those pillars rather than silently
 # scoring stale-but-future data into a historical card.
 PIT_STALE_TOLERANCE_DAYS = 7
+
+
+_OPENSCREENER_SHAREHOLDING_PROVIDER = CachedProvider(
+    ProviderSpec(
+        provider="screener-in",
+        namespace="conviction_shareholding",
+        ttl_seconds=86400,
+    )
+)
 
 
 class PillarResult(BaseModel):
@@ -433,12 +443,13 @@ def _load_smart_money_india(
     except ImportError:
         return None
     sym = india_symbol(symbol)
-    rows = cached_json_call(
-        "conviction_shareholding",
+    rows = _OPENSCREENER_SHAREHOLDING_PROVIDER.fetch(
         ("shareholding_quarterly", sym),
-        ttl_seconds=cache_ttl,
+        lambda: Stock(sym, scraper=_HttpScraper()).shareholding_quarterly(),
         refresh=refresh,
-        fetch=lambda: Stock(sym, scraper=_HttpScraper()).shareholding_quarterly(),
+        fallback=None,
+        ttl_seconds=cache_ttl,
+        operation=f"conviction shareholding {sym}",
     )
     if not isinstance(rows, list):
         return None

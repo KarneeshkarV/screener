@@ -17,12 +17,11 @@ from screener.unusual_volume import (
     detect_market,
     detect_ticker,
 )
+from screener.unusual_volume import service as uv_service
 from screener.unusual_volume import buildup as uv_buildup
 from screener.unusual_volume import enrich as uv_enrich
 from screener.unusual_volume.buildup import BuildupScore
 from screener.unusual_volume.classify import classify_direction, classify_strength
-from screener.unusual_volume.cli import _standalone_buildup_event
-from screener.unusual_volume import service as uv_service
 from screener.unusual_volume.delivery import (
     compute_delivery_metrics,
     overlay_events,
@@ -387,7 +386,7 @@ def test_standalone_buildup_event_uses_as_of_bar():
         composite=0.65,
         flags=["compression"],
     )
-    ev = _standalone_buildup_event(score, bars, as_of)
+    ev = uv_service.standalone_buildup_event(score, bars, as_of)
     assert ev is not None
     assert ev.close == 100.0
     assert ev.volume == 1_000.0

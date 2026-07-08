@@ -16,8 +16,9 @@ from typing import Any, Protocol, cast
 import pandas as pd
 import requests
 
-from screener import fmp
 from screener.backtester.data import load_env_file
+from screener.financials import as_percent as _as_percent
+from screener.provider_utils import _first_num, _pct_change, fmp_get
 from screener.providers import CachedProvider, ProviderSpec
 
 
@@ -33,7 +34,7 @@ DEFAULT_FUNDAMENTAL_FIELDS: tuple[str, ...] = (
     "market_cap",
 )
 
-_FMP_BASE_URL = fmp.FMP_V3_BASE_URL
+
 _FMP_PROVIDER = CachedProvider(
     ProviderSpec(
         provider="fmp", namespace="backtester_fmp_fundamentals", ttl_seconds=86400
@@ -64,40 +65,6 @@ class FundamentalFetcher(Protocol):
         market: str,
     ) -> dict[str, pd.DataFrame]:
         """Return yf-style ticker -> dated fundamental frame indexed by date."""
-
-
-def _num(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        out = float(str(value).replace(",", "").replace("%", "").strip())
-    except (TypeError, ValueError):
-        return None
-    if pd.isna(out):
-        return None
-    return out
-
-
-def _first_num(mapping: Mapping[str, Any], *keys: str) -> float | None:
-    for key in keys:
-        parsed = _num(mapping.get(key))
-        if parsed is not None:
-            return parsed
-    return None
-
-
-def _as_percent(value: float | None) -> float | None:
-    if value is None:
-        return None
-    # FMP ratio endpoints usually return decimals (0.18); keep already-percent
-    # values unchanged for tests or future provider variants.
-    return value * 100.0 if abs(value) <= 2.0 else value
-
-
-def _pct_change(new: float | None, old: float | None) -> float | None:
-    if new is None or old is None or old == 0:
-        return None
-    return ((new - old) / abs(old)) * 100.0
 
 
 def _increased_last_n_quarters(
@@ -174,19 +141,9 @@ def _fmp_get(
     params: Mapping[str, Any],
     api_key: str,
 ) -> object:
-    # Route through the shared FMP client, injecting this call site's pooled
-    # ``requests`` session as the transport. ``headers={}`` keeps the legacy
-    # requests-default User-Agent (this site never sent the Mozilla UA); the
-    # session path preserves ``timeout=30``, ``raise_for_status`` (so non-2xx
-    # still raises ``requests.HTTPError``) and ``.json()`` decoding verbatim.
-    client = fmp.FmpClient(
-        api_key,
-        base_url=_FMP_BASE_URL,
-        headers={},
-        timeout=_FMP_TIMEOUT,
-        session=session,
+    return fmp_get(
+        path, params, api_key, session=session, headers={}, timeout=_FMP_TIMEOUT
     )
-    return client.get(path, params)
 
 
 def _fetch_fmp_sections(

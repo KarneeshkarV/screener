@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import urllib.parse
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -11,8 +10,8 @@ from typing import Any, Protocol, cast
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
-from screener import fmp
 from screener.cache import cached_json_call
+from screener.provider_utils import _first_num, _num, _pct_change, fmp_get
 from screener.providers import CachedProvider, ProviderSpec
 from screener.scanner import scan
 from screener.symbols import tv_to_nse, tv_to_yf
@@ -20,9 +19,6 @@ from screener.symbols import tv_to_nse, tv_to_yf
 
 INDIA_MIN_CRORE = 1000.0
 US_MIN_USD = 1_000_000_000.0
-
-_FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
-_FMP_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; screener-cli/1.0)"}
 
 # FMP US fundamentals: 24h cache, "fmp" circuit breaker. ``cache_ttl`` is
 # overridden per-call below to honour the screen's --cache-ttl flag.
@@ -69,39 +65,11 @@ class GarpFundamentalsAdapter(Protocol):
     ) -> NormalizedGarpRow | None: ...
 
 
-def _num(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        out = float(str(value).replace(",", "").replace("%", "").strip())
-    except (TypeError, ValueError):
-        return None
-    if pd.isna(out):
-        return None
-    return out
-
-
 #: Public alias for the shared numeric coercion used to turn possibly-string,
 #: percent- or comma-formatted values into ``float | None``. Exposed so callers
 #: (e.g. the conviction card) can parse provider rows without reaching into a
 #: private helper.
 to_number = _num
-
-
-def _first_num(mapping: dict[str, Any], *keys: str) -> float | None:
-    lowered = {str(k).lower(): v for k, v in mapping.items()}
-    for key in keys:
-        value = lowered.get(key.lower())
-        parsed = _num(value)
-        if parsed is not None:
-            return parsed
-    return None
-
-
-def _pct_change(new: float | None, old: float | None) -> float | None:
-    if new is None or old is None or old == 0:
-        return None
-    return ((new - old) / abs(old)) * 100.0
 
 
 def _cagr(latest: float | None, oldest: float | None, years: float) -> float | None:
@@ -464,10 +432,7 @@ def _fmp_api_key() -> str | None:
 
 
 def _fmp_get(path: str, params: dict[str, Any], api_key: str) -> Any:
-    query = urllib.parse.urlencode({**params, "apikey": api_key})
-    return fmp.request_json(
-        f"{_FMP_BASE_URL}/{path}?{query}", headers=_FMP_HEADERS, timeout=20
-    )
+    return fmp_get(path, params, api_key)
 
 
 def _fetch_fmp_us_sections(symbol: str, api_key: str) -> dict[str, Any] | None:

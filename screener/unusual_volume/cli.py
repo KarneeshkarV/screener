@@ -8,28 +8,21 @@ The command is registered on the main ``cli`` group in ``main.py`` via:
 
 from __future__ import annotations
 
-import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta
+
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
 import click
-import pandas as pd
-import requests
 from rich.console import Console
 
-from screener.backtester.data import build_price_fetcher, tv_to_yf
-from screener.symbols import tv_to_nse
 from .buildup import (
-    BuildupScore,
     DEFAULT_MIN_SCORE as DEFAULT_BUILDUP_MIN,
     DEFAULT_WINDOW as DEFAULT_BUILDUP_WINDOW,
 )
 from .detector import (
     DEFAULT_MIN_RVOL,
     DEFAULT_MIN_Z,
-    Event,
 )
 from .output import render_rich, sort_events, write_json, write_markdown
 from .service import (
@@ -39,8 +32,6 @@ from .service import (
 
 
 _DEFAULT_MIN_AVG_VOLUME = 100_000.0
-_DEFAULT_MIN_MCAP = {"us": 300_000_000.0, "india": 5_000_000_000.0}
-_STRENGTH_RANK = {"MODERATE": 1, "HIGH": 2, "EXTREME": 3}
 
 
 def _resolve_universe(
@@ -59,101 +50,6 @@ def _resolve_universe(
     from screener.backtester.pine_runner import load_universe  # lazy import; pulls TV
 
     return load_universe(market)
-
-
-def _fetch_bars(
-    tickers: list[str], market: str, as_of: date, console: Console
-) -> dict[str, pd.DataFrame]:
-    fetcher = build_price_fetcher()
-    start = as_of - timedelta(days=400)
-    end = as_of + timedelta(days=1)
-
-    yf_map = {t: tv_to_yf(t, market) for t in tickers}
-    out: dict[str, pd.DataFrame] = {}
-
-    def _fetch_one(tv_sym: str) -> tuple[str, Optional[pd.DataFrame]]:
-        yf_sym = yf_map[tv_sym]
-        try:
-            frames = fetcher.fetch([yf_sym], start, end)
-        except (
-            requests.RequestException,
-            ConnectionError,
-            TimeoutError,
-            KeyError,
-            ValueError,
-        ):
-            return tv_sym, None
-        df = frames.get(yf_sym)
-        if df is None or df.empty:
-            return tv_sym, None
-        return tv_sym, df
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futs = {pool.submit(_fetch_one, t): t for t in tickers}
-        for i, fut in enumerate(as_completed(futs), 1):
-            tv_sym, df = fut.result()
-            if df is not None and not df.empty:
-                out[tv_sym] = df
-            if i % 100 == 0:
-                console.print(
-                    f"  [{market}] fetched {i}/{len(tickers)} ({len(out)} usable)",
-                    style="dim",
-                )
-    return out
-
-
-def _india_symbol(tv_sym: str) -> str:
-    """`NSE:RELIANCE` or `RELIANCE` → `RELIANCE` (matches NSE bhavcopy SYMBOL)."""
-    return tv_to_nse(tv_sym)
-
-
-def _bars_on_or_before_as_of(bars: pd.DataFrame, as_of: date) -> pd.DataFrame:
-    if bars is None or bars.empty:
-        return pd.DataFrame()
-    df = bars.copy()
-    if not isinstance(df.index, pd.DatetimeIndex):
-        if "date" not in df.columns:
-            return pd.DataFrame()
-        df = df.set_index(pd.DatetimeIndex(pd.to_datetime(df["date"]).values))
-    df = df.sort_index()
-    return df[df.index <= pd.Timestamp(as_of).normalize()]
-
-
-def _standalone_buildup_event(
-    score: BuildupScore, bars: pd.DataFrame, as_of: date
-) -> Optional[Event]:
-    df_s = _bars_on_or_before_as_of(bars, as_of)
-    if df_s.empty:
-        return None
-    last = df_s.iloc[-1]
-    prev_close = (
-        float(df_s["close"].iloc[-2]) if len(df_s) >= 2 else float(last["close"])
-    )
-    close_v = float(last["close"])
-    pct_change = (close_v - prev_close) / prev_close * 100.0 if prev_close > 0 else 0.0
-    return Event(
-        symbol=score.symbol,
-        date=as_of,
-        close=close_v,
-        pct_change=round(pct_change, 4),
-        volume=float(last["volume"]),
-        avg_volume_20d=0.0,
-        rvol=float("nan"),
-        rvol_5d=float("nan"),
-        rvol_50d=float("nan"),
-        rvol_90d=float("nan"),
-        z_score=float("nan"),
-        pct_rank_252d=float("nan"),
-        direction="BUILDUP",
-        strength="MODERATE",
-        buildup_score=score.composite,
-        buildup_flags=list(score.flags),
-        notes=(
-            "multi-week build-up: " + ", ".join(score.flags)
-            if score.flags
-            else "multi-week build-up"
-        ),
-    )
 
 
 @click.command(name="unusual-volume")
@@ -323,7 +219,7 @@ def unusual_volume(
         if isinstance(as_of_arg, datetime)
         else (as_of_arg or date.today())
     )
-    run_unusual_volume(
+    success = run_unusual_volume(
         market=market,
         as_of=as_of,
         tickers=tickers,
@@ -347,6 +243,10 @@ def unusual_volume(
         buildup_window=buildup_window,
         buildup_min_score=buildup_min_score,
     )
+    if success is False:
+        import sys
+
+        sys.exit(1)
 
 
 def run_unusual_volume(
@@ -373,7 +273,7 @@ def run_unusual_volume(
     buildup_enabled: bool = False,
     buildup_window: int = DEFAULT_BUILDUP_WINDOW,
     buildup_min_score: float = DEFAULT_BUILDUP_MIN,
-) -> None:
+) -> bool:
     """Run the unusual-volume scan and render it (no Click context required)."""
     console = Console()
     universe = _resolve_universe(market, tickers, universe_file)
@@ -401,15 +301,15 @@ def run_unusual_volume(
     result = run_unusual_volume_scan(request, console)
     if not result.events and result.fetched_count == 0:
         console.print("[red]No OHLCV data fetched. Aborting.[/red]")
-        sys.exit(1)
+        return False
     if not result.events and result.liquid_count == 0:
         console.print("[yellow]No tickers passed the volume floor.[/yellow]")
-        return
+        return True
     if not result.events:
         console.print(
             f"[yellow]No unusual-volume events on {as_of} for {market.upper()}.[/yellow]"
         )
-        return
+        return True
 
     events = result.events
     sorted_events = sort_events(events)
@@ -423,11 +323,4 @@ def run_unusual_volume(
         console.print(
             f"\n[dim]Wrote {json_path or json_default} + {md_path or md_default}[/dim]"
         )
-
-
-def _human_mcap(v: float) -> str:
-    if v >= 1e9:
-        return f"${v / 1e9:.1f}B"
-    if v >= 1e6:
-        return f"${v / 1e6:.0f}M"
-    return f"${v:,.0f}"
+    return True
