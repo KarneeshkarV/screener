@@ -245,3 +245,86 @@ def test_scan_cache_key_ignores_filter_order(tmp_path, monkeypatch):
     scanner_module.scan("us", ["filter_b", "filter_a"], cache_ttl=60)
 
     assert FakeScanQuery.calls == 1
+
+
+def _shape_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "name": "LOWDUP",
+                "description": "Acme Ltd",
+                "close": 20.0,
+                "change": -4.0,
+                "volume": 1_000.0,
+                "market_cap_basic": 1_000_000.0,
+                "EMA5": 19.0,
+                "EMA20": 20.0,
+                "EMA100": 21.0,
+                "EMA200": 22.0,
+                "RSI": 20.0,
+            },
+            {
+                "name": "KEEPDUP",
+                "description": "Acme Ltd",
+                "close": 100.0,
+                "change": 8.0,
+                "volume": 10_000_000.0,
+                "market_cap_basic": 10_000_000_000.0,
+                "EMA5": 110.0,
+                "EMA20": 100.0,
+                "EMA100": 90.0,
+                "EMA200": 80.0,
+                "RSI": 60.0,
+            },
+            {
+                "name": "BETA",
+                "description": "Beta Ltd",
+                "close": 80.0,
+                "change": 5.0,
+                "volume": 5_000_000.0,
+                "market_cap_basic": 5_000_000_000.0,
+                "EMA5": 85.0,
+                "EMA20": 80.0,
+                "EMA100": 70.0,
+                "EMA200": 65.0,
+                "RSI": 58.0,
+            },
+        ]
+    )
+
+
+def test_shape_scan_results_setup_score_sorts_then_dedupes():
+    out = scanner_module.shape_scan_results(
+        _shape_frame(), limit=5, order_by="setup_score", detail=False
+    )
+
+    assert "setup_score" in out.columns
+    assert out["setup_score"].is_monotonic_decreasing
+    assert "KEEPDUP" in out["name"].tolist()
+    assert "LOWDUP" not in out["name"].tolist()
+    assert out["description"].tolist().count("Acme Ltd") == 1
+
+
+def test_shape_scan_results_hides_helper_score_columns_by_detail_mode():
+    hidden = scanner_module.shape_scan_results(
+        _shape_frame(), limit=5, order_by="setup_score", detail=False
+    )
+    detailed = scanner_module.shape_scan_results(
+        _shape_frame(), limit=5, order_by="setup_score", detail=True
+    )
+
+    for col in scanner_module.SETUP_SCORE_COLUMNS:
+        assert col not in hidden.columns
+    assert "RSI" in detailed.columns
+    assert "EMA5" not in detailed.columns
+    assert "EMA20" not in detailed.columns
+
+
+def test_shape_scan_results_non_setup_order_dedupes_and_limits_without_score():
+    out = scanner_module.shape_scan_results(
+        _shape_frame(), limit=1, order_by="volume", detail=False
+    )
+
+    assert len(out) == 1
+    assert "setup_score" not in out.columns
+    assert out.iloc[0]["name"] == "LOWDUP"

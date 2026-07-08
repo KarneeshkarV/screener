@@ -23,8 +23,6 @@ cache at ``./.autoresearch/ohlcv/india/<SYMBOL>__*.parquet`` already holds
 
 from __future__ import annotations
 
-import io
-import zipfile
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
@@ -33,7 +31,13 @@ import pandas as pd
 
 from screener.logging_config import get_logger
 from screener.resilience import call_with_resilience
-from screener.unusual_volume.nse_client import is_trading_day
+from screener.unusual_volume.nse_client import (
+    cash_bhavcopy_cache_path,
+    fo_bhavcopy_cache_path,
+    is_trading_day,
+    read_cash_bhavcopy_raw,
+    read_fo_bhavcopy_raw,
+)
 
 log = get_logger(__name__)
 
@@ -101,33 +105,16 @@ def _cash_cache_path(d: date) -> Path:
     two URL dates can map to identical bytes — we cache by the URL date and
     let ``latest_trading_day`` resolve the actual trading day from DATE1.
     """
-    day_dir = CACHE_ROOT / d.isoformat()
-    day_dir.mkdir(parents=True, exist_ok=True)
-    # Match jugaad's filename convention so the helper finds it on second run
-    return day_dir / f"sec_bhavdata_full_{d.strftime('%d%b%Y')}bhav.csv"
+    return cash_bhavcopy_cache_path(d, CACHE_ROOT)
 
 
 def _read_cash_bhavcopy_raw(d: date) -> pd.DataFrame:
     """Download (or load) the raw cash bhavcopy CSV with no filtering."""
-    from jugaad_data.nse import NSEArchives  # lazy import for tests
-
-    path = _cash_cache_path(d)
-    if not path.exists():
-        n = NSEArchives()
-        call_with_resilience(
-            "nse",
-            f"cash bhavcopy {d}",
-            lambda: n.full_bhavcopy_save(d, str(path.parent)),
-            fallback=None,
-        )
-    if not path.exists():
-        raise FileNotFoundError(path)
-    df = pd.read_csv(path)
-    df.columns = [c.strip() for c in df.columns]
-    for c in df.columns:
-        if df[c].dtype == object:
-            df[c] = df[c].astype(str).str.strip()
-    return df
+    return read_cash_bhavcopy_raw(
+        d,
+        cache_root=CACHE_ROOT,
+        resilience_call=call_with_resilience,
+    )
 
 
 def fetch_cash_bhavcopy(d: date) -> pd.DataFrame:
@@ -156,9 +143,7 @@ def fetch_cash_bhavcopy(d: date) -> pd.DataFrame:
 
 
 def _fo_cache_path(d: date) -> Path:
-    day_dir = CACHE_ROOT / d.isoformat()
-    day_dir.mkdir(parents=True, exist_ok=True)
-    return day_dir / f"BhavCopy_NSE_FO_{d.strftime('%Y%m%d')}.csv"
+    return fo_bhavcopy_cache_path(d, CACHE_ROOT)
 
 
 FO_ARCHIVE_URL = (
@@ -179,31 +164,12 @@ def fetch_fo_bhavcopy(d: date) -> pd.DataFrame:
     ``daily_reports`` API is only fronted CurrentDay+PreviousDay, so it
     fails for older dates — we skip it entirely.
     """
-    from jugaad_data.nse import NSEArchives
-
-    path = _fo_cache_path(d)
-    if not path.exists():
-        n = NSEArchives()
-        url = FO_ARCHIVE_URL.format(yyyymmdd=d.strftime("%Y%m%d"))
-        r = call_with_resilience(
-            "nse",
-            f"fo bhavcopy {d}",
-            lambda: n.s.get(url, timeout=10),
-            fallback=None,
-        )
-        if r is None:
-            raise RuntimeError(f"FO bhavcopy fetch failed for {d}: NSE unavailable")
-        if r.status_code != 200 or r.content[:2] != b"PK":
-            raise RuntimeError(
-                f"FO bhavcopy fetch failed for {d}: HTTP {r.status_code}, "
-                f"content-type={r.headers.get('content-type')!r}"
-            )
-        with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
-            inner = zf.namelist()[0]
-            with zf.open(inner) as fp:
-                path.write_bytes(fp.read())
-    df = pd.read_csv(path)
-    df.columns = [c.strip() for c in df.columns]
+    df = read_fo_bhavcopy_raw(
+        d,
+        cache_root=CACHE_ROOT,
+        archive_url_template=FO_ARCHIVE_URL,
+        resilience_call=call_with_resilience,
+    )
     df = df[df["FinInstrmTp"] == "STF"].copy()  # stock futures only
     df["XpryDt"] = pd.to_datetime(df["XpryDt"], errors="coerce")
     df["OpnIntrst"] = pd.to_numeric(df["OpnIntrst"], errors="coerce")

@@ -1,6 +1,7 @@
 import logging
 import math
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from tradingview_screener import Query
@@ -50,6 +51,87 @@ DETAIL_COLUMNS = [
     "debt_to_equity",
     "RSI",
 ]
+
+
+@dataclass(frozen=True)
+class ScannerPlan:
+    market: str
+    filters: list[Any]
+    columns: list[str]
+    order_by: str
+    query_order_by: str
+    fetch_limit: int
+
+
+def build_scanner_plan(
+    *,
+    market: str,
+    filters: list[Any],
+    limit: int = 50,
+    order_by: str = "volume",
+    detail: bool = False,
+) -> ScannerPlan:
+    columns = list(DEFAULT_COLUMNS)
+    if detail:
+        columns.extend(DETAIL_COLUMNS)
+
+    if order_by == "setup_score":
+        columns.extend(c for c in SETUP_SCORE_COLUMNS if c not in columns)
+        fetch_limit = max(limit * 10, 500)
+        query_order_by = "volume"
+    else:
+        fetch_limit = max(limit * 3, 100)
+        query_order_by = order_by
+
+    return ScannerPlan(
+        market=market,
+        filters=filters,
+        columns=columns,
+        order_by=order_by,
+        query_order_by=query_order_by,
+        fetch_limit=fetch_limit,
+    )
+
+
+class TradingViewScannerAdapter:
+    """Adapter for TradingView query construction, cache keys, and resilience."""
+
+    def fetch(
+        self,
+        plan: ScannerPlan,
+        *,
+        cache_ttl: float | None = 900,
+        refresh: bool = False,
+    ) -> tuple[int, pd.DataFrame]:
+        query = (
+            Query()
+            .set_markets(MARKETS[plan.market])
+            .select(*plan.columns)
+            .where(*plan.filters)
+            .order_by(plan.query_order_by, ascending=False)
+            .limit(plan.fetch_limit)
+        )
+
+        return get_scanner_data_cached(
+            query,
+            key_parts=(
+                "scanner",
+                plan.market,
+                # Query.where() joins filters with AND, so their order does not
+                # change TradingView semantics — sort so semantically identical
+                # filter lists hash to the same cache key.
+                sorted(repr(f) for f in plan.filters),
+                plan.columns,
+                plan.order_by,
+                plan.fetch_limit,
+            ),
+            columns=plan.columns,
+            cache_ttl=cache_ttl,
+            refresh=refresh,
+        )
+
+
+TRADINGVIEW_SCANNER = TradingViewScannerAdapter()
 
 
 def get_scanner_data_cached(
@@ -160,6 +242,29 @@ def _dedupe_listings(df: pd.DataFrame) -> pd.DataFrame:
     return deduped.drop(columns=["_listing_key"])
 
 
+def shape_scan_results(
+    df: pd.DataFrame,
+    *,
+    limit: int = 50,
+    order_by: str = "volume",
+    detail: bool = False,
+) -> pd.DataFrame:
+    """Shape raw scanner rows after Adapter fetch without provider access."""
+    shaped = df
+    if order_by == "setup_score" and not shaped.empty:
+        shaped = _add_setup_score(shaped)
+        shaped = shaped.sort_values("setup_score", ascending=False)
+        hidden_score_columns = [
+            col
+            for col in SETUP_SCORE_COLUMNS
+            if not detail or col not in DETAIL_COLUMNS
+        ]
+        shaped = shaped.drop(columns=hidden_score_columns)
+    if not shaped.empty:
+        shaped = _dedupe_listings(shaped).head(limit)
+    return shaped
+
+
 def scan(
     market: str,
     filters: list,
@@ -169,52 +274,16 @@ def scan(
     cache_ttl: float | None = 900,
     refresh: bool = False,
 ) -> tuple[int, pd.DataFrame]:
-    columns = list(DEFAULT_COLUMNS)
-    if detail:
-        columns.extend(DETAIL_COLUMNS)
-
-    if order_by == "setup_score":
-        columns.extend(c for c in SETUP_SCORE_COLUMNS if c not in columns)
-        fetch_limit = max(limit * 10, 500)
-    else:
-        fetch_limit = max(limit * 3, 100)
-
-    query = (
-        Query()
-        .set_markets(MARKETS[market])
-        .select(*columns)
-        .where(*filters)
-        .order_by("volume" if order_by == "setup_score" else order_by, ascending=False)
-        .limit(fetch_limit)
+    plan = build_scanner_plan(
+        market=market,
+        filters=filters,
+        limit=limit,
+        order_by=order_by,
+        detail=detail,
     )
-
-    count, df = get_scanner_data_cached(
-        query,
-        key_parts=(
-            "scanner",
-            market,
-            # Query.where() joins filters with AND, so their order does not
-            # change TradingView semantics — sort so semantically identical
-            # filter lists hash to the same cache key.
-            sorted(repr(f) for f in filters),
-            columns,
-            order_by,
-            fetch_limit,
-        ),
-        columns=columns,
+    count, df = TRADINGVIEW_SCANNER.fetch(
+        plan,
         cache_ttl=cache_ttl,
         refresh=refresh,
     )
-    if order_by == "setup_score" and not df.empty:
-        df = _add_setup_score(df)
-        df = df.sort_values("setup_score", ascending=False)
-        hidden_score_columns = [
-            col
-            for col in SETUP_SCORE_COLUMNS
-            if not detail or col not in DETAIL_COLUMNS
-        ]
-        df = df.drop(columns=hidden_score_columns)
-    if not df.empty:
-        df = _dedupe_listings(df).head(limit)
-
-    return count, df
+    return count, shape_scan_results(df, limit=limit, order_by=order_by, detail=detail)

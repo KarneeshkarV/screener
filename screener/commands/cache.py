@@ -22,24 +22,12 @@ from rich.table import Table
 def known_cache_dirs() -> dict[str, Path]:
     """Name -> directory for every on-disk cache the codebase uses.
 
-    Resolved lazily from the owning modules so test monkeypatching of the
-    module-level constants is respected.
+    Resolved through the cache ownership Module so tests and feature Modules
+    use one Interface for cache path Locality.
     """
-    from screener import cache as _cache
-    from screener import universes as _universes
-    from screener.backtester import data as _data
-    from screener.operator import fetch as _operator_fetch
-    from screener.unusual_volume import delivery as _delivery
+    from screener.cache import known_cache_dirs as cache_known_cache_dirs
 
-    return {
-        "prices": _data.CACHE_DIR,
-        "fmp_prices": _data.FMP_CACHE_DIR,
-        "universes": _universes.CACHE_DIR,
-        "scanner": _cache.CACHE_ROOT,
-        "panels": _cache.PANEL_ROOT,
-        "bhavcopy": _delivery.CACHE_DIR,
-        "nse_bhavcopy": _operator_fetch.CACHE_ROOT,
-    }
+    return cache_known_cache_dirs()
 
 
 def _iter_files(root: Path) -> Iterator[Path]:

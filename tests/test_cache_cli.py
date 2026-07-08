@@ -9,17 +9,14 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-import screener.backtester.data as backtester_data
 import screener.cache as screener_cache
-import screener.operator.fetch as operator_fetch
-import screener.universes as universes
-import screener.unusual_volume.delivery as delivery
 from screener.cli import cli
 from screener.commands.cache import known_cache_dirs
 
 
 @pytest.fixture
-def cache_dirs(tmp_path, monkeypatch) -> dict[str, Path]:
+def cache_dirs(tmp_path) -> dict[str, Path]:
+    screener_cache.reset_cache_area_paths()
     dirs = {
         "prices": tmp_path / "prices",
         "fmp_prices": tmp_path / "fmp_prices",
@@ -29,14 +26,12 @@ def cache_dirs(tmp_path, monkeypatch) -> dict[str, Path]:
         "bhavcopy": tmp_path / "bhavcopy",
         "nse_bhavcopy": tmp_path / "nse_bhavcopy",
     }
-    monkeypatch.setattr(backtester_data, "CACHE_DIR", dirs["prices"])
-    monkeypatch.setattr(backtester_data, "FMP_CACHE_DIR", dirs["fmp_prices"])
-    monkeypatch.setattr(universes, "CACHE_DIR", dirs["universes"])
-    monkeypatch.setattr(screener_cache, "CACHE_ROOT", dirs["scanner"])
-    monkeypatch.setattr(screener_cache, "PANEL_ROOT", dirs["panels"])
-    monkeypatch.setattr(delivery, "CACHE_DIR", dirs["bhavcopy"])
-    monkeypatch.setattr(operator_fetch, "CACHE_ROOT", dirs["nse_bhavcopy"])
-    return dirs
+    for name, path in dirs.items():
+        screener_cache.set_cache_area_path(name, path)
+    try:
+        yield dirs
+    finally:
+        screener_cache.reset_cache_area_paths()
 
 
 def _write(path: Path, content: bytes = b"x" * 10, age_days: float = 0.0) -> None:

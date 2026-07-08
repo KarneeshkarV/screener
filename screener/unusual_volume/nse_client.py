@@ -23,10 +23,15 @@ rebuilds only the calling thread's session.
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import zipfile
 from datetime import date, timedelta
+from io import BytesIO
+from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import requests
 
 from screener.cache import cached_json_call
@@ -193,6 +198,136 @@ def fetch_nse_text(url: str, operation: str, *, timeout: float = 8.0) -> str | N
     if result is _SOFT_BLOCK:
         result = _do(_reprime())
     return None if (result is _SOFT_BLOCK or not isinstance(result, str)) else result
+
+
+# ── archive files ──────────────────────────────────────────────────────────
+
+
+def save_delivery_bhavcopy(
+    dt: date,
+    cache_dir: Path,
+    *,
+    resilience_call=call_with_resilience,
+) -> Path | None:
+    """Save NSE delivery bhavcopy through the NSE Adapter Seam."""
+    from jugaad_data.nse import full_bhavcopy_save
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = resilience_call(
+        "nse",
+        f"delivery bhavcopy {dt}",
+        lambda: full_bhavcopy_save(dt, str(cache_dir)),
+        fallback=None,
+    )
+    if path is None or not path or not os.path.isfile(path):
+        return None
+    return Path(path)
+
+
+def load_delivery_bhavcopy_csv(
+    dt: date,
+    cache_dir: Path,
+    *,
+    resilience_call=call_with_resilience,
+) -> pd.DataFrame | None:
+    """Load one raw delivery bhavcopy CSV, returning ``None`` on failures."""
+    path = save_delivery_bhavcopy(
+        dt,
+        cache_dir,
+        resilience_call=resilience_call,
+    )
+    if path is None:
+        return None
+    try:
+        df = pd.read_csv(path)
+    except (OSError, pd.errors.ParserError, pd.errors.EmptyDataError):
+        return None
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def cash_bhavcopy_cache_path(d: date, cache_root: Path) -> Path:
+    """Cache path for NSE cash bhavcopy keyed by requested URL date."""
+    day_dir = cache_root / d.isoformat()
+    day_dir.mkdir(parents=True, exist_ok=True)
+    return day_dir / f"sec_bhavdata_full_{d.strftime('%d%b%Y')}bhav.csv"
+
+
+def read_cash_bhavcopy_raw(
+    d: date,
+    *,
+    cache_root: Path,
+    resilience_call=call_with_resilience,
+) -> pd.DataFrame:
+    """Download or load raw cash bhavcopy CSV with no domain filtering."""
+    from jugaad_data.nse import NSEArchives
+
+    path = cash_bhavcopy_cache_path(d, cache_root)
+    if not path.exists():
+        n = NSEArchives()
+        resilience_call(
+            "nse",
+            f"cash bhavcopy {d}",
+            lambda: n.full_bhavcopy_save(d, str(path.parent)),
+            fallback=None,
+        )
+    if not path.exists():
+        raise FileNotFoundError(path)
+    df = pd.read_csv(path)
+    df.columns = [str(c).strip() for c in df.columns]
+    for c in df.columns:
+        if df[c].dtype == object:
+            df[c] = df[c].astype(str).str.strip()
+    return df
+
+
+def fo_bhavcopy_cache_path(d: date, cache_root: Path) -> Path:
+    """Cache path for decoded NSE F&O UDiff bhavcopy CSV."""
+    day_dir = cache_root / d.isoformat()
+    day_dir.mkdir(parents=True, exist_ok=True)
+    return day_dir / f"BhavCopy_NSE_FO_{d.strftime('%Y%m%d')}.csv"
+
+
+def read_fo_bhavcopy_raw(
+    d: date,
+    *,
+    cache_root: Path,
+    archive_url_template: str,
+    resilience_call=call_with_resilience,
+) -> pd.DataFrame:
+    """Download or load decoded raw F&O UDiff bhavcopy CSV."""
+    from jugaad_data.nse import NSEArchives
+
+    path = fo_bhavcopy_cache_path(d, cache_root)
+    if not path.exists():
+        n = NSEArchives()
+        url = archive_url_template.format(yyyymmdd=d.strftime("%Y%m%d"))
+        response = resilience_call(
+            "nse",
+            f"fo bhavcopy {d}",
+            lambda: n.s.get(url, timeout=10),
+            fallback=None,
+        )
+        if response is None:
+            raise RuntimeError(f"FO bhavcopy fetch failed for {d}: NSE unavailable")
+        status_code = int(getattr(response, "status_code", 0))
+        content = bytes(getattr(response, "content", b""))
+        if status_code != 200 or content[:2] != b"PK":
+            headers = getattr(response, "headers", {})
+            content_type = (
+                headers.get("content-type") if isinstance(headers, dict) else None
+            )
+            raise RuntimeError(
+                f"FO bhavcopy fetch failed for {d}: HTTP {status_code}, "
+                f"content-type={content_type!r}"
+            )
+        with zipfile.ZipFile(BytesIO(content)) as zf:
+            inner = zf.namelist()[0]
+            with zf.open(inner) as fp:
+                path.write_bytes(fp.read())
+    df = pd.read_csv(path)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
 
 
 # ── trading calendar ───────────────────────────────────────────────────────

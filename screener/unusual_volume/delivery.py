@@ -13,7 +13,6 @@ the SMA window.
 
 from __future__ import annotations
 
-import os
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
@@ -23,7 +22,7 @@ import pandas as pd
 from screener.resilience import call_with_resilience
 
 from .detector import Event
-from .nse_client import is_trading_day
+from .nse_client import is_trading_day, load_delivery_bhavcopy_csv
 
 
 CACHE_DIR = Path.home() / ".screener" / "bhavcopy"
@@ -41,24 +40,13 @@ def _load_one_day(dt: date) -> Optional[pd.DataFrame]:
     Returns ``None`` on any failure (404 = market holiday, network glitch,
     parse error). Caller is expected to skip silently and move on.
     """
-    from jugaad_data.nse import full_bhavcopy_save  # lazy import
-
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = call_with_resilience(
-        "nse",
-        f"delivery bhavcopy {dt}",
-        lambda: full_bhavcopy_save(dt, str(CACHE_DIR)),
-        fallback=None,
+    df = load_delivery_bhavcopy_csv(
+        dt,
+        CACHE_DIR,
+        resilience_call=call_with_resilience,
     )
-    if path is None:
+    if df is None:
         return None
-    if not path or not os.path.isfile(path):
-        return None
-    try:
-        df = pd.read_csv(path)
-    except (OSError, pd.errors.ParserError, pd.errors.EmptyDataError):
-        return None
-    df.columns = [str(c).strip() for c in df.columns]
     needed = {"SYMBOL", "SERIES", "DATE1", "TTL_TRD_QNTY", "DELIV_QTY", "DELIV_PER"}
     if not needed.issubset(df.columns):
         return None

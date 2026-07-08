@@ -5,7 +5,8 @@ from __future__ import annotations
 import urllib.parse
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, cast
+from dataclasses import dataclass, field
+from typing import Any, Protocol, cast
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,6 +49,24 @@ INDIA_THRESHOLDS = GarpThresholds(
     sales_min=INDIA_MIN_CRORE,
 )
 US_THRESHOLDS = GarpThresholds(market_cap_min=US_MIN_USD, sales_min=US_MIN_USD)
+
+NormalizedGarpRow = dict[str, Any]
+
+
+class GarpFundamentalsAdapter(Protocol):
+    """Load one symbol and return the normalized row shape used by GARP."""
+
+    @property
+    def thresholds(self) -> GarpThresholds: ...
+
+    def load_row(
+        self,
+        symbol: str,
+        description: str | None,
+        *,
+        cache_ttl: float | None,
+        refresh: bool,
+    ) -> NormalizedGarpRow | None: ...
 
 
 def _num(value: Any) -> float | None:
@@ -217,7 +236,7 @@ def _fetch_india_sections(symbol: str) -> dict[str, Any]:
 
 def _india_row(
     symbol: str, description: str | None, payload: dict[str, Any]
-) -> dict[str, Any]:
+) -> NormalizedGarpRow:
     ratios = cast(
         dict[str, Any],
         payload.get("ratios") if isinstance(payload.get("ratios"), dict) else {},
@@ -275,6 +294,72 @@ def _india_row(
     }
 
 
+class OpenScreenerGarpAdapter:
+    """India fundamentals adapter backed by the OpenScreener section payloads."""
+
+    @property
+    def thresholds(self) -> GarpThresholds:
+        return INDIA_THRESHOLDS
+
+    def load_row(
+        self,
+        symbol: str,
+        description: str | None,
+        *,
+        cache_ttl: float | None,
+        refresh: bool,
+    ) -> NormalizedGarpRow | None:
+        payload = cached_json_call(
+            "garp_india",
+            ("india", symbol),
+            ttl_seconds=cache_ttl,
+            refresh=refresh,
+            fetch=lambda: _fetch_india_sections(symbol),
+        )
+        if not isinstance(payload, dict):
+            return None
+        return _india_row(symbol, description, payload)
+
+
+def _universe_items(universe: pd.DataFrame) -> list[tuple[str, str]]:
+    return [
+        (str(row["name"]), str(row.get("description") or ""))
+        for _, row in universe.iterrows()
+        if row.get("name")
+    ]
+
+
+def _screen_garp_with_adapter(
+    universe: pd.DataFrame,
+    *,
+    adapter: GarpFundamentalsAdapter,
+    limit: int,
+    workers: int,
+    cache_ttl: float | None,
+    refresh: bool,
+) -> pd.DataFrame:
+    rows: list[NormalizedGarpRow] = []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+        futures = [
+            executor.submit(
+                adapter.load_row,
+                symbol,
+                description,
+                cache_ttl=cache_ttl,
+                refresh=refresh,
+            )
+            for symbol, description in _universe_items(universe)
+        ]
+        for future in as_completed(futures):
+            try:
+                row = future.result()
+            except Exception:
+                continue
+            if row is not None and _passes_garp(row, adapter.thresholds):
+                rows.append(row)
+    return add_garp_score(pd.DataFrame(rows)).head(limit)
+
+
 def screen_india_garp(
     universe: pd.DataFrame,
     *,
@@ -283,36 +368,17 @@ def screen_india_garp(
     cache_ttl: float | None,
     refresh: bool,
 ) -> pd.DataFrame:
-    rows: list[dict[str, Any]] = []
-    items = [
-        (str(row["name"]), str(row.get("description") or ""))
-        for _, row in universe.iterrows()
-        if row.get("name")
-    ]
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        futures = {
-            executor.submit(
-                cached_json_call,
-                "garp_india",
-                ("india", symbol),
-                ttl_seconds=cache_ttl,
-                refresh=refresh,
-                fetch=lambda symbol=symbol: _fetch_india_sections(symbol),
-            ): (symbol, description)
-            for symbol, description in items
-        }
-        for future in as_completed(futures):
-            symbol, description = futures[future]
-            try:
-                row = _india_row(symbol, description, future.result())
-            except Exception:
-                continue
-            if _passes_garp(row, INDIA_THRESHOLDS):
-                rows.append(row)
-    return add_garp_score(pd.DataFrame(rows)).head(limit)
+    return _screen_garp_with_adapter(
+        universe,
+        adapter=OpenScreenerGarpAdapter(),
+        limit=limit,
+        workers=workers,
+        cache_ttl=cache_ttl,
+        refresh=refresh,
+    )
 
 
-def _us_row(symbol: str, description: str | None) -> dict[str, Any]:
+def _us_row(symbol: str, description: str | None) -> NormalizedGarpRow:
     import yfinance as yf
 
     ticker = yf.Ticker(symbol)
@@ -515,7 +581,7 @@ def _fmp_quarterly_eps(
 
 def _fmp_us_row(
     symbol: str, description: str | None, payload: dict[str, Any]
-) -> dict[str, Any] | None:
+) -> NormalizedGarpRow | None:
     """Map an FMP payload to the same row shape ``_us_row`` produces.
 
     Returns ``None`` when FMP has no annual statements for the symbol so the
@@ -582,6 +648,86 @@ def _fmp_us_row(
     }
 
 
+class YFinanceGarpAdapter:
+    """US fundamentals fallback adapter backed by yfinance."""
+
+    @property
+    def thresholds(self) -> GarpThresholds:
+        return US_THRESHOLDS
+
+    def load_row(
+        self,
+        symbol: str,
+        description: str | None,
+        *,
+        cache_ttl: float | None,
+        refresh: bool,
+    ) -> NormalizedGarpRow | None:
+        del cache_ttl, refresh
+        return _us_row(symbol, description)
+
+
+@dataclass(frozen=True)
+class FmpGarpAdapter:
+    """US fundamentals adapter backed by cached FMP payloads."""
+
+    api_key: str
+
+    @property
+    def thresholds(self) -> GarpThresholds:
+        return US_THRESHOLDS
+
+    def load_row(
+        self,
+        symbol: str,
+        description: str | None,
+        *,
+        cache_ttl: float | None,
+        refresh: bool,
+    ) -> NormalizedGarpRow | None:
+        payload = _fetch_fmp_us_cached(
+            symbol, self.api_key, cache_ttl=cache_ttl, refresh=refresh
+        )
+        if not isinstance(payload, dict):
+            return None
+        return _fmp_us_row(symbol, description, payload)
+
+
+@dataclass(frozen=True)
+class UsGarpFundamentalsAdapter:
+    """US source-selection adapter: FMP first, yfinance fallback."""
+
+    fmp: FmpGarpAdapter | None = None
+    yfinance: YFinanceGarpAdapter = field(default_factory=YFinanceGarpAdapter)
+
+    @property
+    def thresholds(self) -> GarpThresholds:
+        return US_THRESHOLDS
+
+    def load_row(
+        self,
+        symbol: str,
+        description: str | None,
+        *,
+        cache_ttl: float | None,
+        refresh: bool,
+    ) -> NormalizedGarpRow | None:
+        if self.fmp is not None:
+            row = self.fmp.load_row(
+                symbol, description, cache_ttl=cache_ttl, refresh=refresh
+            )
+            if row is not None:
+                return row
+        return self.yfinance.load_row(
+            symbol, description, cache_ttl=cache_ttl, refresh=refresh
+        )
+
+
+def _us_fundamentals_adapter() -> UsGarpFundamentalsAdapter:
+    api_key = _fmp_api_key()
+    return UsGarpFundamentalsAdapter(FmpGarpAdapter(api_key) if api_key else None)
+
+
 def screen_us_garp(
     universe: pd.DataFrame,
     *,
@@ -590,38 +736,14 @@ def screen_us_garp(
     cache_ttl: float | None = 86400,
     refresh: bool = False,
 ) -> pd.DataFrame:
-    rows: list[dict[str, Any]] = []
-    items = [
-        (str(row["name"]), str(row.get("description") or ""))
-        for _, row in universe.iterrows()
-        if row.get("name")
-    ]
-    api_key = _fmp_api_key()
-
-    def _resolve(symbol: str, description: str) -> dict[str, Any]:
-        if api_key:
-            payload = _fetch_fmp_us_cached(
-                symbol, api_key, cache_ttl=cache_ttl, refresh=refresh
-            )
-            if isinstance(payload, dict):
-                row = _fmp_us_row(symbol, description, payload)
-                if row is not None:
-                    return row
-        return _us_row(symbol, description)
-
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        futures = {
-            executor.submit(_resolve, symbol, description): (symbol, description)
-            for symbol, description in items
-        }
-        for future in as_completed(futures):
-            try:
-                row = future.result()
-            except Exception:
-                continue
-            if _passes_garp(row, US_THRESHOLDS):
-                rows.append(row)
-    return add_garp_score(pd.DataFrame(rows)).head(limit)
+    return _screen_garp_with_adapter(
+        universe,
+        adapter=_us_fundamentals_adapter(),
+        limit=limit,
+        workers=workers,
+        cache_ttl=cache_ttl,
+        refresh=refresh,
+    )
 
 
 def load_garp_row(
@@ -646,27 +768,13 @@ def load_garp_row(
     """
     if market == "india":
         sym = tv_to_nse(symbol, strip_suffix=True)
-        payload = cached_json_call(
-            "garp_india",
-            ("india", sym),
-            ttl_seconds=cache_ttl,
-            refresh=refresh,
-            fetch=lambda: _fetch_india_sections(sym),
+        return OpenScreenerGarpAdapter().load_row(
+            sym, "", cache_ttl=cache_ttl, refresh=refresh
         )
-        if not isinstance(payload, dict):
-            return None
-        return _india_row(sym, "", payload)
     yf_sym = tv_to_yf(symbol, market)
-    api_key = _fmp_api_key()
-    if api_key:
-        fmp_payload = _fetch_fmp_us_cached(
-            yf_sym, api_key, cache_ttl=cache_ttl, refresh=refresh
-        )
-        if isinstance(fmp_payload, dict):
-            row = _fmp_us_row(yf_sym, "", fmp_payload)
-            if row is not None:
-                return row
-    return _us_row(yf_sym, "")
+    return _us_fundamentals_adapter().load_row(
+        yf_sym, "", cache_ttl=cache_ttl, refresh=refresh
+    )
 
 
 def run_garp_screen(
