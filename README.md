@@ -104,6 +104,22 @@ just operator-scan --only-actions
 
 Action labels include Long Build-up, Short Covering, Short Build-up, Long Unwinding, and High_Momentum_Watch.
 
+### `options`
+
+Build and accumulate free US/India option-chain data, inspect PCR/IV/max-pain
+signals, screen panel-backed criteria, and use point-in-time options fields in
+backtests.
+
+```bash
+uv run screener options build-panel -m india --start 2026-07-01
+uv run screener options snapshot -m us --tickers AAPL,NVDA,SPY
+uv run screener options show -m us --symbol AAPL
+uv run screener screen -m us -c high_iv_rank -n 20
+```
+
+See [docs/options.md](docs/options.md) for sources, freshness/coverage limits,
+panel schemas, criteria, and no-lookahead behavior.
+
 ## Backtesting
 
 ### `backtest-historical`
