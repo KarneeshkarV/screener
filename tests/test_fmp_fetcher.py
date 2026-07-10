@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date
+import os
+import time
 
 import pandas as pd
 import pytest
@@ -102,6 +104,108 @@ def test_fmp_fetcher_uses_cache_on_second_call(tmp_path):
 
     assert len(session.calls) == 1
     assert first["AAA"].equals(second["AAA"])
+
+
+def test_fmp_parallel_fetch_matches_serial_and_requests_each_ticker(tmp_path):
+    tickers = ["AAA", "BBB", "CCC"]
+    serial_session = DummySession(_payload())
+    parallel_session = DummySession(_payload())
+    serial = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path / "serial",
+        session=serial_session,  # type: ignore[arg-type]
+        max_workers=1,
+    ).fetch(tickers, date(2024, 1, 1), date(2024, 1, 5))
+    parallel = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path / "parallel",
+        session=parallel_session,  # type: ignore[arg-type]
+        max_workers=3,
+    ).fetch(tickers, date(2024, 1, 1), date(2024, 1, 5))
+
+    assert list(parallel) == tickers
+    assert len(serial_session.calls) == len(tickers)
+    assert len(parallel_session.calls) == len(tickers)
+    assert {call[0].rsplit("/", 1)[-1] for call in parallel_session.calls} == set(
+        tickers
+    )
+    for ticker in tickers:
+        pd.testing.assert_frame_equal(parallel[ticker], serial[ticker])
+
+
+def test_fmp_parallel_fetch_deduplicates_tickers_preserving_order(tmp_path):
+    session = DummySession(_payload())
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+        max_workers=3,
+    )
+
+    out = fetcher.fetch(
+        ["BBB", "AAA", "BBB", "", "CCC", "AAA"],
+        date(2024, 1, 1),
+        date(2024, 1, 5),
+    )
+
+    assert list(out) == ["BBB", "AAA", "CCC"]
+    assert len(session.calls) == 3
+    assert {call[0].rsplit("/", 1)[-1] for call in session.calls} == {
+        "AAA",
+        "BBB",
+        "CCC",
+    }
+
+
+def test_fmp_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch):
+    today = date.today()
+    initial_payload = {
+        "historical": [
+            {
+                "date": day.date().isoformat(),
+                "open": 100,
+                "high": 102,
+                "low": 99,
+                "close": 101,
+                "adjClose": 101,
+                "volume": 1000,
+            }
+            for day in pd.date_range(today - pd.Timedelta(days=5), today)
+        ]
+    }
+    session = DummySession(initial_payload)
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+    )
+    fetcher.fetch(["AAA"], today - pd.Timedelta(days=5), today)
+    cache_path = tmp_path / "fmp_AAA.parquet"
+    old_mtime = time.time() - 7200
+    os.utime(cache_path, (old_mtime, old_mtime))
+    session.payload = {
+        "historical": [
+            {
+                "date": today.isoformat(),
+                "open": 200,
+                "high": 202,
+                "low": 199,
+                "close": 201,
+                "adjClose": 201,
+                "volume": 2000,
+            }
+        ]
+    }
+    monkeypatch.setenv("SCREENER_PRICE_TAIL_TTL_SECONDS", "3600")
+
+    out = fetcher.fetch(["AAA"], today - pd.Timedelta(days=5), today)["AAA"]
+
+    assert len(session.calls) == 2
+    assert (
+        session.calls[-1][1]["params"]["from"]
+        == (pd.Timestamp(today) - pd.Timedelta(days=7)).date().isoformat()
+    )
+    assert out.loc[pd.Timestamp(today), "close"] == 201
 
 
 def _intraday_payload() -> list[dict]:

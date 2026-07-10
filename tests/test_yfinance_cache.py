@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import date
+import os
 import threading
 import time
 
 import pandas as pd
 
-from screener.backtester.data import YFinancePriceFetcher
+from screener.backtester import data as data_module
+from screener.backtester.data import YFinancePriceFetcher, _save_cache
 
 
 def _plain_bars(start, end, base: float = 100.0) -> pd.DataFrame:
@@ -116,6 +118,11 @@ def test_yfinance_fetcher_downloads_batches_in_parallel(tmp_path, monkeypatch):
         return _download_frame(batch, kwargs["start"], kwargs["end"])
 
     monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setattr(
+        data_module,
+        "call_with_resilience",
+        lambda provider, operation, func, *, fallback: func(),
+    )
 
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path, batch_size=1, max_workers=4)
     out = fetcher.fetch(["AAA", "BBB", "CCC"], date(2024, 1, 1), date(2024, 1, 10))
@@ -123,6 +130,67 @@ def test_yfinance_fetcher_downloads_batches_in_parallel(tmp_path, monkeypatch):
     assert set(out) == {"AAA", "BBB", "CCC"}
     assert all(not out[ticker].empty for ticker in out)
     assert active["peak"] >= 2, "batches should overlap when more than one job exists"
+
+
+def test_yfinance_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch):
+    import yfinance as yf
+
+    today = date.today()
+    start = today - pd.Timedelta(days=5)
+    cached = _plain_bars(start, today + pd.Timedelta(days=1))
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    _save_cache("AAA", cached.rename(columns=str.lower), tmp_path)
+    cache_path = tmp_path / "AAA.parquet"
+    old_mtime = time.time() - 7200
+    os.utime(cache_path, (old_mtime, old_mtime))
+    calls = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame(
+            {
+                "Open": [999.0],
+                "High": [1000.0],
+                "Low": [998.0],
+                "Close": [999.5],
+                "Volume": [5000],
+            },
+            index=pd.DatetimeIndex([today]),
+        )
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setenv("SCREENER_PRICE_TAIL_TTL_SECONDS", "3600")
+
+    out = fetcher.fetch(["AAA"], start, today)["AAA"]
+
+    assert len(calls) == 1
+    assert calls[0]["start"] == cached.index.max() - pd.Timedelta(days=7)
+    assert out.loc[pd.Timestamp(today), "close"] == 999.5
+
+
+def test_yfinance_tail_refresh_skips_fresh_and_historical_caches(tmp_path, monkeypatch):
+    import yfinance as yf
+
+    calls = []
+    monkeypatch.setattr(yf, "download", lambda *args, **kwargs: calls.append(kwargs))
+    monkeypatch.setenv("SCREENER_PRICE_TAIL_TTL_SECONDS", "3600")
+
+    today = date.today()
+    recent_start = today - pd.Timedelta(days=5)
+    recent = _plain_bars(recent_start, today + pd.Timedelta(days=1))
+    _save_cache("RECENT", recent.rename(columns=str.lower), tmp_path)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    fetcher.fetch(["RECENT"], recent_start, today)
+
+    historical_start = date(2024, 1, 1)
+    historical_end = date(2024, 1, 5)
+    historical = _plain_bars(historical_start, date(2024, 1, 6))
+    _save_cache("OLD", historical.rename(columns=str.lower), tmp_path)
+    old_mtime = time.time() - 7200
+    os.utime(tmp_path / "OLD.parquet", (old_mtime, old_mtime))
+    fetcher.fetch(["OLD"], historical_start, historical_end)
+
+    assert calls == []
 
 
 def test_yfinance_fetcher_frame_equal_fixture(tmp_path, monkeypatch):
