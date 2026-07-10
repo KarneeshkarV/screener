@@ -11,7 +11,15 @@ from typing import cast as type_cast
 
 import click
 
-from screener.backtester.models import BacktestConfig, ExitReason, Trade
+from screener.backtester.models import (
+    BacktestConfig,
+    ExecutionPolicy,
+    ExitReason,
+    PortfolioPolicy,
+    SignalPolicy,
+    Trade,
+    UniversePolicy,
+)
 from screener.backtester.optimization.grid import grid_search
 from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
 from screener.backtester.optimization.reporting import (
@@ -116,25 +124,33 @@ def _base_config(
     return BacktestConfig(
         market=market,
         as_of=end_date,
-        hold=int(hold),
-        top=int(top),
-        strategy_name=strategy_name,
-        entry_expr=entry_expr,
-        exit_expr=exit_expr,
-        stop_loss=stop_loss,
-        take_profit=take_profit,
-        trailing_stop=trailing_stop,
-        slippage_bps=float(slippage_bps),
-        commission_bps=float(commission_bps),
-        initial_capital=float(initial_capital),
         benchmark=benchmark or get_market(market).benchmark,
-        tickers=ticker_tuple,
-        universe_file=universe_file,
-        max_universe=int(max_universe),
-        min_price=resolved_min_price,
-        min_avg_dollar_volume=resolved_min_adv,
-        avg_dollar_volume_window=int(adv_window),
-        reinvest=True,
+        universe=UniversePolicy(
+            tickers=ticker_tuple,
+            universe_file=universe_file,
+            max_universe=int(max_universe),
+        ),
+        signals=SignalPolicy(
+            strategy_name=strategy_name,
+            entry_expr=entry_expr,
+            exit_expr=exit_expr,
+        ),
+        execution=ExecutionPolicy(
+            hold=int(hold),
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            trailing_stop=trailing_stop,
+            slippage_bps=float(slippage_bps),
+            commission_bps=float(commission_bps),
+        ),
+        portfolio=PortfolioPolicy(
+            top=int(top),
+            initial_capital=float(initial_capital),
+            min_price=resolved_min_price,
+            min_avg_dollar_volume=resolved_min_adv,
+            avg_dollar_volume_window=int(adv_window),
+            reinvest=True,
+        ),
     )
 
 

@@ -18,7 +18,14 @@ from rich.console import Console
 from screener.backtester.cli_common import resolve_min_filters
 from screener.backtester.data import build_price_fetcher
 from screener.backtester.display import trades_dataframe
-from screener.backtester.models import BacktestConfig, BacktestResult
+from screener.backtester.models import (
+    BacktestConfig,
+    BacktestResult,
+    ExecutionPolicy,
+    PortfolioPolicy,
+    SignalPolicy,
+    UniversePolicy,
+)
 from screener.backtester.rolling import run_rolling_backtest
 from screener.backtester.strategies import STRATEGIES, resolve_strategy
 from screener.html_report import html_page
@@ -143,21 +150,27 @@ def compare_payload(
             cfg = BacktestConfig(
                 market=market,
                 as_of=end_date,
-                hold=int(hold),
-                top=int(top),
-                entry_expr=strategy.entry,
-                exit_expr=strategy.exit,
-                stop_loss=None,
-                take_profit=None,
-                trailing_stop=None,
-                slippage_bps=0.0,
-                commission_bps=0.0,
-                initial_capital=float(initial_capital),
                 benchmark=bench,
-                strategy_name=name,
-                tickers=run_tickers,
-                min_price=resolved_min_price,
-                min_avg_dollar_volume=resolved_min_adv,
+                universe=UniversePolicy(tickers=run_tickers),
+                signals=SignalPolicy(
+                    strategy_name=name,
+                    entry_expr=strategy.entry,
+                    exit_expr=strategy.exit,
+                ),
+                execution=ExecutionPolicy(
+                    hold=int(hold),
+                    stop_loss=None,
+                    take_profit=None,
+                    trailing_stop=None,
+                    slippage_bps=0.0,
+                    commission_bps=0.0,
+                ),
+                portfolio=PortfolioPolicy(
+                    top=int(top),
+                    initial_capital=float(initial_capital),
+                    min_price=resolved_min_price,
+                    min_avg_dollar_volume=resolved_min_adv,
+                ),
             )
             result = run_rolling_backtest(
                 cfg,
