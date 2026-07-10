@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -10,6 +13,7 @@ from screener.backtester.rolling_candidates import (
     _build_rolling_candidate_matrices,
     _sector_neutralize_scores,
 )
+import screener.sectors as sectors
 from screener.sectors import UNKNOWN_SECTOR, sector_by_ticker
 
 
@@ -91,6 +95,10 @@ def test_sector_neutralize_zscores_within_sector() -> None:
     assert out.loc[idx[0], "C"] == pytest.approx(0.0)
 
 
+def test_sector_neutralize_empty_matrix() -> None:
+    assert _sector_neutralize_scores(pd.DataFrame(), {}).empty
+
+
 def test_build_matrices_sector_neutral_warns_unknown() -> None:
     idx = pd.bdate_range("2024-01-02", periods=5)
     close = pd.Series(np.linspace(100, 104, 5), index=idx)
@@ -151,3 +159,33 @@ def test_sector_neutral_noop_without_rank_score() -> None:
         sector_by_tv={"AAA": "Tech"},
     )
     assert mats.rank_score_mat is None
+
+
+def test_default_fetcher_and_invalid_cache(monkeypatch) -> None:
+    class Ticker:
+        def __init__(self, symbol: str) -> None:
+            self.info = {"sector": "Technology"} if symbol == "GOOD" else []
+
+    monkeypatch.setitem(sys.modules, "yfinance", SimpleNamespace(Ticker=Ticker))
+    assert sectors._default_info_fetcher("GOOD") == {"sector": "Technology"}
+    assert sectors._default_info_fetcher("BAD") == {}
+
+    monkeypatch.setattr(sectors, "is_fresh", lambda *args: True)
+    monkeypatch.setattr(sectors, "read_json", lambda *args, **kwargs: [])
+    assert sectors._load_cached_sector("BAD") is None
+    monkeypatch.setattr(sectors, "read_json", lambda *args, **kwargs: {"sector": " "})
+    assert sectors._load_cached_sector("BAD") is None
+
+
+def test_sector_fetch_failure_blank_and_empty_input(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(sectors, "CACHE_DIR", tmp_path)
+
+    def fail(symbol: str) -> dict:
+        raise RuntimeError(symbol)
+
+    assert sector_by_ticker(["", "FAIL"], "us", use_cache=False, info_fetcher=fail) == {
+        "FAIL": UNKNOWN_SECTOR
+    }
+    assert sector_by_ticker(
+        ["BLANK"], "us", use_cache=False, info_fetcher=lambda symbol: {"sector": " "}
+    ) == {"BLANK": UNKNOWN_SECTOR}

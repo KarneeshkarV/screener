@@ -61,7 +61,7 @@ def _cfg() -> BacktestConfig:
     )
 
 
-def test_rank_score_overrides_dollar_volume() -> None:
+def test_rank_score_overrides_dollar_volume(monkeypatch) -> None:
     # HIVOL_LOSCORE has the larger dollar volume but the LOWER factor score, so
     # the legacy ranker would pick it; the factor ranker must pick the other.
     data = {
@@ -79,6 +79,36 @@ def test_rank_score_overrides_dollar_volume() -> None:
     assert traded == {"LOWVOL_HISCORE"}, traded
     # Every recorded selection ranked the high-score name first.
     assert all(t.ticker == "LOWVOL_HISCORE" for t in result.trades)
+
+    seen: list[tuple[tuple[str, ...], str]] = []
+
+    def sectors(tickers, market):
+        seen.append((tuple(tickers), market))
+        return {ticker: "Technology" for ticker in tickers}
+
+    monkeypatch.setattr("screener.sectors.sector_by_ticker", sectors)
+    neutral_result = run_rolling_backtest(
+        _cfg().model_copy(update={"sector_neutral": True}),
+        StubPriceFetcher(data),
+        start_date=_INDEX[0].date(),
+        end_date=_INDEX[-1].date(),
+    )
+    assert neutral_result.trades and seen
+
+
+def test_all_nan_rank_scores_select_nothing() -> None:
+    data = {
+        "LOWVOL_HISCORE": _frame(100.0, volume=10_000.0, score=float("nan")),
+        "HIVOL_LOSCORE": _frame(100.0, volume=999_000.0, score=float("nan")),
+        "SPY": _frame(400.0, volume=1_000_000.0, score=None),
+    }
+    result = run_rolling_backtest(
+        _cfg(),
+        StubPriceFetcher(data),
+        start_date=_INDEX[0].date(),
+        end_date=_INDEX[-1].date(),
+    )
+    assert result.trades == []
 
 
 def test_no_rank_score_keeps_dollar_volume_ranking() -> None:

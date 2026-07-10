@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import screener.strategies.combo as combo
 from screener.backtester.models import BacktestConfig
+from screener.backtester.core import _prepare_strategy_bars
 from screener.strategies.combo import (
     combine_rank_scores,
     cross_sectional_zscore,
@@ -50,6 +53,8 @@ def test_resolve_strategy_accepts_combo_prefix() -> None:
     assert "mom_12_1" in named.entry
     assert "vol_252" in named.entry
     assert named.exit is None
+    with pytest.raises(KeyError, match="at least one component"):
+        resolve_strategy("combo:")
 
 
 def test_is_combo_strategy() -> None:
@@ -146,3 +151,154 @@ def test_combo_prepare_writes_weighted_rank_score() -> None:
     }
     assert scores
     assert max(scores, key=scores.get) == "HIMOM"  # type: ignore[arg-type]
+
+
+def test_combo_parser_and_validation_edge_cases(monkeypatch) -> None:
+    with pytest.raises(ValueError, match="not a combo"):
+        parse_combo_spec("momentum_12_1=1")
+    with pytest.raises(ValueError, match="at least one"):
+        parse_combo_spec("combo:,,")
+    with pytest.raises(ValueError, match="finite"):
+        validate_combo_components([("factor", float("nan"))])
+    with pytest.raises(ValueError, match="nested"):
+        validate_combo_components([("combo:nested", 1.0)])
+    with pytest.raises(ValueError, match="at least one"):
+        validate_combo_components([])
+
+    fake_registry = SimpleNamespace(
+        get_optional=lambda name: SimpleNamespace(
+            prepare_bars=lambda ctx: {}, entry=None
+        ),
+        names=lambda: ["factor"],
+    )
+    monkeypatch.setattr(combo, "registry", fake_registry)
+    monkeypatch.setattr(combo, "discover_plugins", lambda: None)
+    with pytest.raises(ValueError, match="no entry expression"):
+        validate_combo_components([("factor", 1.0)])
+
+
+def test_combo_empty_matrices_and_component_extraction() -> None:
+    empty = pd.DataFrame()
+    assert cross_sectional_zscore(empty).empty
+    with pytest.raises(ValueError, match="at least one component"):
+        combine_rank_scores([])
+    extracted = combo._component_score_matrix(
+        {
+            "NONE": None,  # type: ignore[dict-item]
+            "EMPTY": empty,
+            "NO_SCORE": pd.DataFrame({"close": [1.0]}),
+            "SCORED": pd.DataFrame({"rank_score": [2.0]}),
+        }
+    )
+    assert list(extracted.columns) == ["SCORED"]
+
+
+def test_prepare_strategy_bars_reports_invalid_combo() -> None:
+    idx = pd.bdate_range("2024-01-02", periods=2)
+    cfg = BacktestConfig(
+        market="us",
+        as_of=idx[-1].date(),
+        hold=1,
+        top=1,
+        strategy_name="combo:",
+        entry_expr="close > 0",
+        exit_expr=None,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        initial_capital=1_000.0,
+        benchmark="SPY",
+        tickers=("A",),
+        min_price=None,
+        min_avg_dollar_volume=None,
+    )
+    bars = {"A": pd.DataFrame({"close": [1.0, 2.0]}, index=idx)}
+    warnings: list[str] = []
+    prepared, lookback = _prepare_strategy_bars(
+        cfg,
+        bars,
+        bars,
+        ["A"],
+        idx[0].date(),
+        idx[-1].date(),
+        object(),  # type: ignore[arg-type]
+        warnings,
+    )
+    assert prepared is bars and lookback == 0
+    assert warnings and "combo strategy error" in warnings[0]
+
+
+def test_combo_prepare_handles_missing_component_outputs(monkeypatch) -> None:
+    idx = pd.bdate_range("2024-01-02", periods=2)
+    base = pd.DataFrame({"close": [1.0, 2.0]}, index=idx)
+
+    def empty_prepare(ctx):
+        return {"A": pd.DataFrame(index=idx)}
+
+    def scored_prepare(ctx):
+        return {
+            "A": pd.DataFrame({"rank_score": [1.0, 2.0], "aux": [3.0, 4.0]}, index=idx),
+            "EXTRA": pd.DataFrame({"rank_score": [2.0, 1.0]}, index=idx),
+        }
+
+    specs = {
+        "empty": SimpleNamespace(
+            prepare_bars=empty_prepare, entry="close > 0", required_lookback=None
+        ),
+        "scored": SimpleNamespace(
+            prepare_bars=scored_prepare, entry="close > 0", required_lookback=None
+        ),
+    }
+
+    class Registry:
+        def get_optional(self, name):
+            return specs.get(name)
+
+        def get(self, name):
+            return specs[name]
+
+        def names(self):
+            return specs.keys()
+
+    monkeypatch.setattr(combo, "registry", Registry())
+    monkeypatch.setattr(combo, "discover_plugins", lambda: None)
+    prepare = combo.make_combo_prepare([("empty", 0.0), ("scored", 1.0)])
+    warnings: list[str] = []
+    cfg = BacktestConfig(
+        market="us",
+        as_of=idx[-1].date(),
+        hold=1,
+        top=1,
+        strategy_name=None,
+        entry_expr="close > 0",
+        exit_expr=None,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        initial_capital=1_000.0,
+        benchmark="SPY",
+        tickers=("A", "MISSING"),
+        min_price=None,
+        min_avg_dollar_volume=None,
+    )
+    ctx = PrepareCtx(
+        cfg=cfg,
+        bars_by_tv={"A": base, "MISSING": base.copy(), "EMPTY": pd.DataFrame()},
+        price_panel={},
+        tv_symbols=["A", "MISSING"],
+        start=idx[0].date(),
+        end=idx[-1].date(),
+        fetcher=object(),
+        warnings=warnings,
+    )
+    ctx.bars_by_tv["NONE"] = None  # type: ignore[assignment]
+    monkeypatch.setattr(combo, "PrepareCtx", lambda **kwargs: SimpleNamespace(**kwargs))
+    out = prepare(ctx)
+    assert any("produced no rank_score" in warning for warning in ctx.warnings)
+    assert "aux" in out["A"].columns
+    assert out["MISSING"]["rank_score"].isna().all()
+    assert out["NONE"] is None and out["EMPTY"].empty
