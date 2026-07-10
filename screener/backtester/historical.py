@@ -18,6 +18,7 @@ from screener.backtester.core import (
     _prepare_strategy_bars,
     _resolve_universe,
 )
+from screener.backtester.costs import cost_model_from_config
 from screener.backtester.data import PriceFetcher
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.fills import FillModel
@@ -208,6 +209,7 @@ class _ReserveRotationSource:
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
                     commission_bps=cfg.commission_bps,
+                    cost_model=cost_model_from_config(cfg),
                 )
                 self.slot_states[slot_id] = state
                 del self.pending_reentry[slot_id]
@@ -268,6 +270,7 @@ class _ReserveRotationSource:
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
                     commission_bps=cfg.commission_bps,
+                    cost_model=cost_model_from_config(cfg),
                 )
                 self.slot_states[slot_id] = state
                 self.slot_bars[slot_id] = reserve_bars
@@ -338,6 +341,7 @@ def _run_event_driven_sim(
             entry_date=state.entry_date,
             entry_price=state.entry_fill,
             commission_bps=cfg.commission_bps,
+            cost_model=cost_model_from_config(cfg),
         )
         slot_states[slot_id] = state
         slot_bars[slot_id] = bars
@@ -395,6 +399,7 @@ def _run_event_driven_sim(
             close=float(last_bar["close"]),
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
+            half_spread=state.half_spread,
         )
         portfolio.close(
             ticker=state.ticker,
@@ -402,6 +407,7 @@ def _run_event_driven_sim(
             exit_price=fill,
             reason="eod",
             commission_bps=cfg.commission_bps,
+            cost_model=cost_model_from_config(cfg),
         )
         slot_states[slot_id] = None
 

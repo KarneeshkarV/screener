@@ -67,6 +67,12 @@ class BacktestConfig(BaseModel):
     # ``slippage_bps`` for backwards compatibility. Richer models
     # (HalfSpread, VolumeImpact, Composite) live in ``screener.backtester.slippage``.
     slippage_model: Optional[SlippageModel] = None
+    # Statutory fee model name (cash impact, not fill-price). ``flat`` uses
+    # ``commission_bps`` exactly as before; ``india`` applies NSE delivery fees.
+    cost_model: Literal["flat", "india"] = "flat"
+    # When True, compute Corwin-Schultz half-spread from bar high/low and feed
+    # it into the fill-layer slippage stack as ``half_spread``.
+    spread_proxy: bool = False
     # Gap-aware stop / target fills. When True (default going forward) a bar
     # that *opens* through the stop fills at the open (worse than stop_ref);
     # symmetric for gap-ups through a target. False reproduces legacy behaviour.

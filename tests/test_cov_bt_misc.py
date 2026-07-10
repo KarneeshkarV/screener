@@ -171,7 +171,7 @@ def test_resolve_min_filters_defaults_and_zero_disables():
 
 
 class _NegativeSlippage:
-    def adverse_fraction(self, side, shares, adv, sigma_daily):
+    def adverse_fraction(self, side, shares, adv, sigma_daily, half_spread=0.0):
         return -0.5
 
 

@@ -111,10 +111,8 @@ def earnings_backtest(
     if tickers:
         ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
 
-    with console.status(
-        f"[bold green]Running earnings-backtest ({market}, {strategy}, {years}y)…"
-    ):
-        trades = run_earnings_backtest(
+    def _run():
+        return run_earnings_backtest(
             market=market,
             years=years,
             strategy=strategy,
@@ -125,6 +123,16 @@ def earnings_backtest(
             batch_size=batch_size,
             tickers=ticker_list,
         )
+
+    # Skip the status spinner in --csv mode so stdout is pure CSV (CliRunner
+    # otherwise captures spinner control sequences that break pd.read_csv).
+    if output_csv:
+        trades = _run()
+    else:
+        with console.status(
+            f"[bold green]Running earnings-backtest ({market}, {strategy}, {years}y)…"
+        ):
+            trades = _run()
 
     if not trades:
         console.print(
