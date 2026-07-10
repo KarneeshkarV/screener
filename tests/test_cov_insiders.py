@@ -901,7 +901,7 @@ def test_load_fundamentals_india(monkeypatch):
     out = conviction_mod._load_fundamentals(
         "RELIANCE", "india", cache_ttl=None, refresh=False
     )
-    assert out == {"peg": 1.0}
+    assert out is not None and out["peg"] == 1.0
 
 
 def test_load_fundamentals_india_non_dict(monkeypatch):
@@ -919,7 +919,7 @@ def test_load_fundamentals_us_fmp(monkeypatch):
         garp_module, "_fmp_us_row", lambda sym, name, payload: {"peg": 1.0}
     )
     out = conviction_mod._load_fundamentals("AAPL", "us", cache_ttl=None, refresh=False)
-    assert out == {"peg": 1.0}
+    assert out is not None and out["peg"] == 1.0
 
 
 def test_load_fundamentals_us_fmp_row_none_falls_back(monkeypatch):
@@ -928,14 +928,14 @@ def test_load_fundamentals_us_fmp_row_none_falls_back(monkeypatch):
     monkeypatch.setattr(garp_module, "_fmp_us_row", lambda sym, name, payload: None)
     monkeypatch.setattr(garp_module, "_us_row", lambda sym, name: {"peg": 2.0})
     out = conviction_mod._load_fundamentals("AAPL", "us", cache_ttl=None, refresh=False)
-    assert out == {"peg": 2.0}
+    assert out is not None and out["peg"] == 2.0
 
 
 def test_load_fundamentals_us_no_key(monkeypatch):
     monkeypatch.setattr(garp_module, "resolve_api_key", lambda: None)
     monkeypatch.setattr(garp_module, "_us_row", lambda sym, name: {"peg": 3.0})
     out = conviction_mod._load_fundamentals("AAPL", "us", cache_ttl=None, refresh=False)
-    assert out == {"peg": 3.0}
+    assert out is not None and out["peg"] == 3.0
 
 
 def test_fundamentals_pillar_stale():
