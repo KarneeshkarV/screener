@@ -8,7 +8,7 @@ import click
 import pandas as pd
 
 from screener.markets import market_option
-from screener.options.panels import build_india_panel, show_symbol
+from screener.options.panels import build_india_panel, show_symbol, snapshot_us
 
 
 def _as_date(value: datetime | date | None, default: date) -> date:
@@ -156,4 +156,63 @@ def show(market: str, symbol: str, days: int, output_csv: bool) -> None:
     )
 
 
-__all__ = ["build_panel", "options", "show"]
+@options.command(name="snapshot")
+@market_option(
+    default="us",
+    choices=("us",),
+    help="Market to snapshot.",
+    show_default=True,
+)
+@click.option("--tickers", default=None, help="Comma-separated US symbols.")
+@click.option(
+    "--universe-size",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Snapshot the first N current S&P 500 symbols instead of --tickers.",
+)
+@click.option(
+    "--workers", type=click.IntRange(min=1, max=8), default=4, show_default=True
+)
+@click.option("--refresh", is_flag=True, help="Bypass intraday provider caches.")
+def snapshot(
+    market: str,
+    tickers: str | None,
+    universe_size: int | None,
+    workers: int,
+    refresh: bool,
+) -> None:
+    """Accumulate delayed CBOE chains with yfinance fallback."""
+    del market
+    if bool(tickers) == bool(universe_size):
+        raise click.UsageError("Pass exactly one of --tickers or --universe-size.")
+    if tickers:
+        symbols = sorted(_ticker_set(tickers) or set())
+    else:
+        from screener.universes import load_current_universe
+
+        symbols = list(
+            load_current_universe("sp500").symbols[: int(universe_size or 0)]
+        )
+    result = snapshot_us(
+        symbols,
+        refresh=refresh,
+        max_workers=workers,
+    )
+    for chain in result.chains:
+        click.echo(
+            f"{chain.underlying}: as_of={chain.as_of.isoformat()} "
+            f"source={chain.source} contracts={len(chain.contracts)} "
+            f"expiries={len(chain.expiries)}"
+        )
+    click.echo(
+        f"US options snapshot: {len(result.chains)}/{result.requested} symbols "
+        "appended to options_metrics_us."
+    )
+    if result.missing:
+        click.echo(
+            f"Unavailable: {', '.join(result.missing)} (providers degraded cleanly).",
+            err=True,
+        )
+
+
+__all__ = ["build_panel", "options", "show", "snapshot"]

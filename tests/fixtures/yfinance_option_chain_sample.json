@@ -1,0 +1,31 @@
+{
+  "symbol": "AAPL",
+  "spot": 200.0,
+  "expiry": "2026-08-21",
+  "calls": [
+    {
+      "contractSymbol": "AAPL260821C00200000",
+      "strike": 200.0,
+      "lastPrice": 8.1,
+      "bid": 8.0,
+      "ask": 8.2,
+      "change": 0.5,
+      "volume": 1200,
+      "openInterest": 5000,
+      "impliedVolatility": 0.28
+    }
+  ],
+  "puts": [
+    {
+      "contractSymbol": "AAPL260821P00200000",
+      "strike": 200.0,
+      "lastPrice": 7.7,
+      "bid": 7.6,
+      "ask": 7.8,
+      "change": -0.2,
+      "volume": 900,
+      "openInterest": 6000,
+      "impliedVolatility": 0.3
+    }
+  ]
+}

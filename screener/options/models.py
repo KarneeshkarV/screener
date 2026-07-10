@@ -16,7 +16,13 @@ OptionRight = Literal["call", "put"]
 OptionsMarket = Literal["us", "india"]
 
 
-def _as_utc_datetime(value: datetime | date) -> datetime:
+def _as_utc_datetime(value: datetime | date | str) -> datetime:
+    if isinstance(value, str):
+        normalized = value.strip().replace("Z", "+00:00")
+        try:
+            value = datetime.fromisoformat(normalized)
+        except ValueError:
+            value = date.fromisoformat(normalized)
     if isinstance(value, datetime):
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
@@ -66,7 +72,7 @@ class OptionContract(BaseModel):
 
     @field_validator("as_of", mode="before")
     @classmethod
-    def _normalize_as_of(cls, value: datetime | date) -> datetime:
+    def _normalize_as_of(cls, value: datetime | date | str) -> datetime:
         return _as_utc_datetime(value)
 
     @model_validator(mode="after")
@@ -103,7 +109,7 @@ class OptionChain(BaseModel):
 
     @field_validator("as_of", mode="before")
     @classmethod
-    def _normalize_as_of(cls, value: datetime | date) -> datetime:
+    def _normalize_as_of(cls, value: datetime | date | str) -> datetime:
         return _as_utc_datetime(value)
 
     @model_validator(mode="after")

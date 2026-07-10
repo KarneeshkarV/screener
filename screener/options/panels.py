@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import date, timedelta
 import json
 import logging
@@ -14,6 +15,8 @@ from screener.cache import append_panel_snapshot, panel_path, read_frame
 from screener.options.metrics import compute_chain_metrics
 from screener.options.models import OptionChain
 from screener.options.nse_bhavcopy import BhavcopyFetcher, load_bhavcopy_chains
+from screener.options.provider import OptionsProvider, default_us_provider
+from screener.parallel import parallel_map
 from screener.symbols import tv_to_nse
 from screener.unusual_volume.nse_client import is_trading_day
 
@@ -26,6 +29,14 @@ OPTIONS_PANEL_NAMES = {
 PANEL_DEDUPE_KEYS = ["as_of", "SYMBOL"]
 ProgressCallback = Callable[[date, int], None]
 ErrorCallback = Callable[[date, Exception], None]
+
+
+@dataclass(frozen=True)
+class SnapshotResult:
+    panel: pd.DataFrame
+    chains: tuple[OptionChain, ...]
+    requested: int
+    missing: tuple[str, ...]
 
 
 def metrics_row(chain: OptionChain) -> dict[str, object]:
@@ -228,9 +239,47 @@ def build_india_panel(
     return append_metrics_rows(OPTIONS_PANEL_NAMES["india"], pd.DataFrame(rows))
 
 
+def snapshot_us(
+    tickers: Iterable[str],
+    *,
+    provider: OptionsProvider | None = None,
+    refresh: bool = False,
+    max_workers: int = 4,
+) -> SnapshotResult:
+    """Fetch bounded US live snapshots and append successful normalized rows."""
+    symbols = tuple(
+        dict.fromkeys(ticker.strip().upper() for ticker in tickers if ticker.strip())
+    )
+    source = provider or default_us_provider()
+
+    def load(symbol: str) -> OptionChain | None:
+        try:
+            return source.fetch_chain(symbol, "us", refresh=refresh)
+        except Exception as exc:  # noqa: BLE001 - one symbol must not abort a batch
+            LOG.warning("US options snapshot failed for %s: %s", symbol, exc)
+            return None
+
+    fetched = parallel_map(
+        load,
+        symbols,
+        max_workers=min(max(int(max_workers), 1), 8),
+        drop_none=False,
+    )
+    chains = tuple(chain for chain in fetched if chain is not None)
+    found = {chain.underlying for chain in chains}
+    panel = append_chains(chains, market="us") if chains else read_options_panel("us")
+    return SnapshotResult(
+        panel=panel,
+        chains=chains,
+        requested=len(symbols),
+        missing=tuple(symbol for symbol in symbols if symbol not in found),
+    )
+
+
 __all__ = [
     "OPTIONS_PANEL_NAMES",
     "PANEL_DEDUPE_KEYS",
+    "SnapshotResult",
     "append_chains",
     "append_metrics_rows",
     "build_india_panel",
@@ -238,4 +287,5 @@ __all__ = [
     "metrics_row",
     "read_options_panel",
     "show_symbol",
+    "snapshot_us",
 ]
