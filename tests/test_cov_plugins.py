@@ -309,7 +309,7 @@ def test_ema_empty_input_returns_empty() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Criteria core: combine / is_pipeline
+# Criteria core and screen aliases
 # --------------------------------------------------------------------------- #
 
 
@@ -320,11 +320,14 @@ def test_combine_merges_filters() -> None:
     assert combined() == [1, 2, 3]
 
 
-def test_is_pipeline_true_and_false() -> None:
-    from screener.criteria import is_pipeline
+def test_filter_criteria_and_screen_aliases_are_separate() -> None:
+    from screener.criteria import CRITERIA
+    from screener.screen_aliases import SCREEN_ALIASES
 
-    assert is_pipeline("garp") is True
-    assert is_pipeline("ema") is False
+    assert "garp" in SCREEN_ALIASES
+    assert "garp" not in CRITERIA
+    assert "ema" in CRITERIA
+    assert "ema" not in SCREEN_ALIASES
 
 
 # --------------------------------------------------------------------------- #
@@ -363,7 +366,7 @@ def test_filter_criterion_builds_nonempty_list(name: str) -> None:
 
 
 def test_garp_pipeline_runs(monkeypatch) -> None:
-    import screener.criteria.plugins.garp as g
+    import screener.screen_alias_plugins.garp as g
 
     captured = {}
 
@@ -390,7 +393,7 @@ def test_garp_pipeline_runs(monkeypatch) -> None:
 
 
 def test_garp_pipeline_no_results(monkeypatch) -> None:
-    import screener.criteria.plugins.garp as g
+    import screener.screen_alias_plugins.garp as g
 
     monkeypatch.setattr(
         g,
@@ -407,28 +410,28 @@ def test_garp_pipeline_no_results(monkeypatch) -> None:
 
 def test_obv_trend_pipeline_runs(monkeypatch) -> None:
     import screener.commands.live_strategies as live
-    from screener.criteria import CRITERIA
+    from screener.screen_aliases import SCREEN_ALIASES
 
     called = {}
     monkeypatch.setattr(live, "run_obv_trend_live", lambda **kw: called.update(kw))
-    CRITERIA["obv-trend"](market="india", limit=5)
+    SCREEN_ALIASES["obv-trend"](market="india", limit=5)
     assert called["market"] == "india"
     assert called["limit"] == 5
 
 
 def test_vol_breakout_pipeline_runs(monkeypatch) -> None:
     import screener.commands.live_strategies as live
-    from screener.criteria import CRITERIA
+    from screener.screen_aliases import SCREEN_ALIASES
 
     called = {}
     monkeypatch.setattr(live, "run_vol_breakout_live", lambda **kw: called.update(kw))
-    CRITERIA["vol-breakout"](market="us", limit=7)
+    SCREEN_ALIASES["vol-breakout"](market="us", limit=7)
     assert called["limit"] == 7
 
 
 def test_unusual_volume_pipeline_runs(monkeypatch) -> None:
     import screener.unusual_volume.cli as uv
-    from screener.criteria import CRITERIA
+    from screener.screen_aliases import SCREEN_ALIASES
 
     captured = {}
 
@@ -438,7 +441,7 @@ def test_unusual_volume_pipeline_runs(monkeypatch) -> None:
 
     monkeypatch.setattr(uv, "_resolve_universe", lambda m, t, f: ["AAA"])
     monkeypatch.setattr(uv, "run_unusual_volume", fake_run)
-    CRITERIA["unusual-volume"](market="us", limit=3, refresh=True)
+    SCREEN_ALIASES["unusual-volume"](market="us", limit=3, refresh=True)
     assert captured["request"].refresh is True
     assert captured["request"].market == "us"
     assert captured["limit"] == 3
@@ -446,11 +449,11 @@ def test_unusual_volume_pipeline_runs(monkeypatch) -> None:
 
 def test_promoter_buys_pipeline_runs(monkeypatch) -> None:
     import screener.commands.insiders as insiders
-    from screener.criteria import CRITERIA
+    from screener.screen_aliases import SCREEN_ALIASES
 
     called = {}
     monkeypatch.setattr(insiders, "run_promoter_buys", lambda **kw: called.update(kw))
-    CRITERIA["promoter-buys"](
+    SCREEN_ALIASES["promoter-buys"](
         market="india",
         limit=4,
         output_csv=False,
@@ -463,8 +466,8 @@ def test_promoter_buys_pipeline_runs(monkeypatch) -> None:
 
 def test_rs_breakout_pipeline_runs(monkeypatch) -> None:
     import screener.commands.rs_breakout as rs
-    import screener.criteria.plugins.rs_breakout as plugin
-    from screener.criteria import CRITERIA
+    import screener.screen_alias_plugins.rs_breakout as plugin
+    from screener.screen_aliases import SCREEN_ALIASES
 
     sentinel = object()
     monkeypatch.setattr(rs, "run_rs_breakout_screen", lambda *a, **k: sentinel)
@@ -476,6 +479,8 @@ def test_rs_breakout_pipeline_runs(monkeypatch) -> None:
         plugin, "render_result", lambda result, console, **kw: rendered.update(kw)
     )
 
-    CRITERIA["rs-breakout"](market="india", limit=9, refresh=False, cache_ttl="15m")
+    SCREEN_ALIASES["rs-breakout"](
+        market="india", limit=9, refresh=False, cache_ttl="15m"
+    )
     assert rendered["limit"] == 9
     assert rendered["market"] == "india"

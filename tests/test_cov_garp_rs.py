@@ -1140,8 +1140,8 @@ def test_screen_command_pipeline_dispatch(monkeypatch) -> None:
         captured["market"] = market
 
     monkeypatch.setattr(
-        "screener.commands.screen.criteria_registry.get",
-        lambda name: fake_runner,
+        "screener.screen_aliases.SCREEN_ALIASES",
+        {"rs-breakout": fake_runner},
     )
 
     res = CliRunner().invoke(cli, ["screen", "-c", "rs-breakout", "-m", "india"])

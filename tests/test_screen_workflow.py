@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from screener.criteria import FilterCriteriaSelection, PipelineCriteriaSelection
+from screener.criteria import FilterCriteriaSelection
 from screener.screen_workflow import (
     ScreenMode,
     ScreenRequest,
@@ -124,54 +124,3 @@ def test_screen_workflow_previous_run_diff_uses_explicit_report_path(tmp_path):
     assert outcome.removed == ("BBB",)
     assert outcome.report_path == explicit
     assert explicit.exists()
-
-
-def test_screen_workflow_pipeline_bypasses_filter_scan_history_and_report(tmp_path):
-    calls: list[tuple[str, object]] = []
-
-    def runner(**kwargs):
-        calls.append(("runner", kwargs))
-
-    deps = ScreenWorkflowDeps(
-        resolve_criteria=lambda names: PipelineCriteriaSelection("garp", runner),
-        parse_cache_ttl=lambda raw: 900.0,
-        scan=lambda **kwargs: calls.append(("scan", kwargs)) or (0, pd.DataFrame()),
-        save_run=lambda *args: calls.append(("save", args)) or 1,
-        previous_run=lambda *args: None,
-        diff=lambda current, previous: ([], []),
-        temp_report_path=lambda prefix: tmp_path / f"{prefix}.html",
-        render_report=lambda *args, **kwargs: (
-            calls.append(("report", args)) or tmp_path / "unused.html"
-        ),
-    )
-
-    outcome = run_screen_workflow(
-        ScreenRequest(
-            market="india",
-            criteria_names=("garp",),
-            limit=3,
-            order_by="setup_score",
-            output_csv=True,
-            detail=True,
-            refresh=True,
-            cache_ttl="1d",
-            report_path=tmp_path / "ignored.html",
-            open_report=True,
-        ),
-        deps,
-    )
-
-    assert outcome.mode is ScreenMode.PIPELINE
-    assert outcome.label == "garp"
-    assert calls == [
-        (
-            "runner",
-            {
-                "market": "india",
-                "limit": 3,
-                "output_csv": True,
-                "refresh": True,
-                "cache_ttl": "1d",
-            },
-        )
-    ]

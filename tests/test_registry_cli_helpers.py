@@ -23,19 +23,18 @@ from screener.backtester.slippage import (
 )
 from screener.criteria import (
     CRITERIA,
-    CriteriaSelectionError,
     FilterCriteriaSelection,
-    PipelineCriteriaSelection,
     combine,
-    definitions,
-    filter_criteria,
-    is_pipeline,
-    pipeline_criteria,
     registry,
     resolve_criteria,
 )
-from screener.criteria.plugins import garp, obv_trend, promoter_buys, rs_breakout
-from screener.criteria.plugins import unusual_volume, vol_breakout
+from screener.screen_alias_plugins import garp, obv_trend, promoter_buys, rs_breakout
+from screener.screen_alias_plugins import unusual_volume, vol_breakout
+from screener.screen_aliases import (
+    SCREEN_ALIASES,
+    ScreenAliasSelectionError,
+    resolve_screen_alias,
+)
 from screener.strategies.expressions import NamedStrategy
 
 
@@ -125,11 +124,11 @@ def test_parse_partial_exits_and_min_filter_defaults():
     assert resolve_min_filters("us", 5.0, 2_500.0) == (5.0, 2_500.0)
 
 
-def test_criteria_registry_pipeline_flags_and_combine():
+def test_criteria_registry_and_combine():
     assert registry.get("ema") is CRITERIA["ema"]
     assert registry.get_optional("does-not-exist") is None
-    assert is_pipeline("garp") is True
-    assert is_pipeline("ema") is False
+    assert "garp" not in CRITERIA
+    assert "garp" in SCREEN_ALIASES
 
     def first() -> list[int]:
         return [1, 2]
@@ -140,36 +139,26 @@ def test_criteria_registry_pipeline_flags_and_combine():
     assert combine(first, second)() == [1, 2, 3]
 
 
-def test_criteria_interface_distinguishes_filters_and_pipelines():
-    defs = definitions()
-    assert defs["ema"].is_filter is True
-    assert defs["garp"].is_pipeline is True
-    assert "ema" in filter_criteria()
-    assert "garp" not in filter_criteria()
-    assert "garp" in pipeline_criteria()
-    assert "ema" not in pipeline_criteria()
-
+def test_criteria_and_screen_alias_interfaces_are_separate():
     filters = resolve_criteria(("ema", "value"))
     assert isinstance(filters, FilterCriteriaSelection)
     assert filters.names == ("ema", "value")
     assert filters.label == "ema+value"
     assert filters.filters
 
-    pipeline = resolve_criteria(("garp",))
-    assert isinstance(pipeline, PipelineCriteriaSelection)
-    assert pipeline.name == "garp"
+    alias = resolve_screen_alias(("garp",))
+    assert alias is not None
+    assert alias.name == "garp"
+    assert resolve_screen_alias(("ema",)) is None
 
 
-def test_criteria_interface_rejects_pipeline_filter_combinations():
-    with pytest.raises(CriteriaSelectionError, match="cannot be combined"):
-        resolve_criteria(("garp", "ema"))
+def test_screen_alias_interface_rejects_filter_combinations():
+    with pytest.raises(ScreenAliasSelectionError, match="cannot be combined"):
+        resolve_screen_alias(("garp", "ema"))
 
 
 def test_all_filter_only_criteria_build_filter_lists():
     for name, fn in CRITERIA.items():
-        if is_pipeline(name):
-            continue
-
         filters = fn()
 
         assert isinstance(filters, list), name

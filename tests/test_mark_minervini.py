@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from main import cli
 from screener import minervini
-from screener.criteria.plugins import mark_minervini as mark_minervini_plugin
+from screener.screen_alias_plugins import mark_minervini as mark_minervini_plugin
 from screener.backtester.pine import evaluate, parse
 from screener.minervini import (
     MINERVINI_ENTRY_EXPR,
