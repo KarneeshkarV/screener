@@ -21,6 +21,7 @@ _SECRET_PARAM_RE = re.compile(r"(?i)\b(apikey|api_key|token|auth)=([^&\s\"']+)")
 
 DEFAULT_PROVIDER_RATES: dict[str, float] = {
     "cboe": 2.0,
+    "fred": 2.0,
     "fmp": 8.0,
     "screener-in": 2.0,
     "yfinance": 4.0,

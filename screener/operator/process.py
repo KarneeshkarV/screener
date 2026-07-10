@@ -17,6 +17,9 @@ from typing import cast
 
 import pandas as pd
 
+from screener.options.metrics import compute_chain_metrics
+from screener.options.nse_bhavcopy import normalize_bhavcopy_options
+
 from .fetch import (
     fetch_cash_bhavcopy,
     fetch_fo_bhavcopy,
@@ -29,6 +32,44 @@ from .universe import combined_universe
 LOG = logging.getLogger(__name__)
 
 DELIVERY_LOOKBACK = 5  # 5-day avg per spec
+
+
+def _options_oi_confirmation(raw_options: object, as_of: date) -> pd.DataFrame:
+    """Collapse exact option OI/premium changes into an ATM confirmation row."""
+    columns = [
+        "SYMBOL",
+        "ATM_Call_Writing_OI",
+        "ATM_Put_Writing_OI",
+        "Options_OI_Confirmation",
+    ]
+    if not isinstance(raw_options, pd.DataFrame) or raw_options.empty:
+        return pd.DataFrame(columns=columns)
+    try:
+        chains = normalize_bhavcopy_options(raw_options, as_of=as_of)
+    except (ValueError, TypeError, KeyError):
+        return pd.DataFrame(columns=columns)
+    rows: list[dict[str, object]] = []
+    for symbol, chain in chains.items():
+        metrics = compute_chain_metrics(chain)
+        call_writing = metrics.call_writing_near_spot
+        put_writing = metrics.put_writing_near_spot
+        if call_writing is None or put_writing is None:
+            confirmation = None
+        elif put_writing > call_writing and put_writing > 0:
+            confirmation = "Bullish: put writing"
+        elif call_writing > put_writing and call_writing > 0:
+            confirmation = "Bearish: call writing"
+        else:
+            confirmation = "Neutral"
+        rows.append(
+            {
+                "SYMBOL": symbol,
+                "ATM_Call_Writing_OI": call_writing,
+                "ATM_Put_Writing_OI": put_writing,
+                "Options_OI_Confirmation": confirmation,
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _trailing_trading_days(d: date, n: int) -> list[date]:
@@ -83,7 +124,11 @@ def build_dataset(
     cash_today = fetch_cash_bhavcopy(today)
     avg_deliv = _five_day_avg_delivery(today)
 
-    fo_today = near_month_oi(fetch_fo_bhavcopy(today))
+    fo_today_raw = fetch_fo_bhavcopy(today)
+    options_confirmation = _options_oi_confirmation(
+        fo_today_raw.attrs.get("options_rows"), today
+    )
+    fo_today = near_month_oi(fo_today_raw)
     prev_day = _trailing_trading_days(today, 1)[0]
     fo_prev = near_month_oi(fetch_fo_bhavcopy(prev_day))[["SYMBOL", "Cumulative_OI"]]
     fo_prev = fo_prev.rename(columns={"Cumulative_OI": "Prev_Cumulative_OI"})
@@ -98,6 +143,7 @@ def build_dataset(
     df = df.merge(fo_today, on="SYMBOL", how="left")
     df = df.merge(fo_prev, on="SYMBOL", how="left")
     df = df.merge(hl, on="SYMBOL", how="left")
+    df = df.merge(options_confirmation, on="SYMBOL", how="left")
 
     # ── derived columns (spec Step 2) ──────────────────────────────────
     # %_Change_Price = (close − prev_close) / prev_close × 100

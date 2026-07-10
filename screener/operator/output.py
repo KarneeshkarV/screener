@@ -2,7 +2,8 @@
 
 Output columns (per spec Step 4 emphasis on Operator_Action / Close / VWAP):
 
-  SYMBOL, Operator_Action, High_Momentum_Watch,
+  SYMBOL, Operator_Action, High_Momentum_Watch, Options_OI_Confirmation,
+  Options_Confirms_Futures, ATM_Call_Writing_OI, ATM_Put_Writing_OI,
   Close, VWAP, %_Change_Price, %_Change_OI, %_Change_Delivery,
   Dist_From_52W_High, 52W_High, 52W_Low,
   Deliv_Qty, Deliv_Pct, 5_Day_Avg_Delivery,
@@ -31,6 +32,10 @@ OUTPUT_COLUMNS = [
     "SYMBOL",
     "Operator_Action",
     "High_Momentum_Watch",
+    "Options_OI_Confirmation",
+    "Options_Confirms_Futures",
+    "ATM_Call_Writing_OI",
+    "ATM_Put_Writing_OI",
     "Close",
     "VWAP",
     "%_Change_Price",
@@ -60,7 +65,17 @@ def _format(df: pd.DataFrame) -> pd.DataFrame:
         "DELIV_PER": "Deliv_Pct",
         "PREV_CLOSE": "Prev_Close",
     }
-    return df.rename(columns=rename)
+    formatted = df.rename(columns=rename)
+    defaults: dict[str, object] = {
+        "Options_OI_Confirmation": None,
+        "Options_Confirms_Futures": False,
+        "ATM_Call_Writing_OI": float("nan"),
+        "ATM_Put_Writing_OI": float("nan"),
+    }
+    for column, default in defaults.items():
+        if column not in formatted.columns:
+            formatted[column] = default
+    return formatted
 
 
 def _sort(df: pd.DataFrame) -> pd.DataFrame:

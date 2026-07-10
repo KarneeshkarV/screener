@@ -7,8 +7,15 @@ from datetime import date, datetime
 import click
 import pandas as pd
 
+from screener.cache import append_panel_snapshot
 from screener.markets import market_option
 from screener.options.panels import build_india_panel, show_symbol, snapshot_us
+from screener.options.participant import build_participant_panel
+from screener.options.regime import (
+    build_india_vix_panel,
+    build_us_regime_panel,
+    fetch_india_vix_live,
+)
 
 
 def _as_date(value: datetime | date | None, default: date) -> date:
@@ -215,4 +222,137 @@ def snapshot(
         )
 
 
-__all__ = ["build_panel", "options", "show", "snapshot"]
+@options.command(name="participants")
+@click.option(
+    "--start",
+    default=None,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="First participant archive date (default: --end/today).",
+)
+@click.option(
+    "--end",
+    default=None,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Last participant archive date (default: today).",
+)
+@click.option("--refresh", is_flag=True, help="Bypass participant archive cache.")
+@click.option("--csv", "output_csv", is_flag=True, help="Emit raw CSV.")
+def participants(
+    start: datetime | None,
+    end: datetime | None,
+    refresh: bool,
+    output_csv: bool,
+) -> None:
+    """Backfill/show NSE Client, DII, FII, and Pro derivatives positioning."""
+    end_date = _as_date(end, date.today())
+    start_date = _as_date(start, end_date)
+    try:
+        panel = build_participant_panel(start_date, end_date, refresh=refresh)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    if panel.empty:
+        click.echo(f"No participant OI rows for {start_date} through {end_date}.")
+        return
+    dates = pd.to_datetime(panel["as_of"], errors="coerce")
+    rows = panel[(dates.dt.date >= start_date) & (dates.dt.date <= end_date)].copy()
+    if rows.empty:
+        click.echo(f"No participant OI rows for {start_date} through {end_date}.")
+        return
+    if output_csv:
+        click.echo(rows.to_csv(index=False), nl=False)
+        return
+    latest_day = pd.to_datetime(rows["as_of"]).max()
+    latest = rows[pd.to_datetime(rows["as_of"]) == latest_day]
+    columns = [
+        "as_of",
+        "participant",
+        "index_futures_net",
+        "stock_futures_net",
+        "index_call_net",
+        "index_put_net",
+        "total_net",
+        "source",
+    ]
+    click.echo(
+        latest[[column for column in columns if column in latest]].to_string(
+            index=False
+        )
+    )
+    click.echo(
+        f"Participant OI as of {latest_day.date()} · source=nse_participant_oi · "
+        f"coverage={len(latest)} participant classes."
+    )
+
+
+@options.command(name="regime")
+@market_option(
+    default="india",
+    choices=("us", "india"),
+    help="Market-level options/volatility regime panel.",
+    show_default=True,
+)
+@click.option(
+    "--start",
+    default=None,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="First date (default: --end/today).",
+)
+@click.option(
+    "--end",
+    default=None,
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    help="Last date (default: today).",
+)
+@click.option("--refresh", is_flag=True, help="Bypass provider caches.")
+@click.option("--csv", "output_csv", is_flag=True, help="Emit raw CSV.")
+def regime(
+    market: str,
+    start: datetime | None,
+    end: datetime | None,
+    refresh: bool,
+    output_csv: bool,
+) -> None:
+    """Build India VIX or US CBOE PCR + VIX/VIX3M regime history."""
+    end_date = _as_date(end, date.today())
+    start_date = _as_date(start, end_date)
+    try:
+        if market == "india":
+            panel = build_india_vix_panel(start_date, end_date, refresh=refresh)
+            if end_date >= date.today():
+                live = fetch_india_vix_live(as_of=date.today(), refresh=refresh)
+                if not live.empty:
+                    panel = append_panel_snapshot(
+                        "india_vix", live, dedupe_keys=["as_of"]
+                    )
+        else:
+            panel = build_us_regime_panel(start_date, end_date, refresh=refresh)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    if panel.empty:
+        click.echo(
+            f"No {market.upper()} options regime rows for {start_date} through {end_date}."
+        )
+        return
+    dates = pd.to_datetime(panel["as_of"], errors="coerce")
+    rows = panel[(dates.dt.date >= start_date) & (dates.dt.date <= end_date)].copy()
+    if output_csv:
+        click.echo(rows.to_csv(index=False), nl=False)
+        return
+    click.echo(rows.tail(20).to_string(index=False))
+    sources = ", ".join(
+        sorted(rows.get("source", pd.Series(dtype=str)).dropna().astype(str).unique())
+    )
+    click.echo(
+        f"{market.upper()} regime coverage: {len(rows)} day(s), "
+        f"{start_date} through {end_date}; source={sources or 'unknown'}."
+    )
+
+
+__all__ = [
+    "build_panel",
+    "options",
+    "participants",
+    "regime",
+    "show",
+    "snapshot",
+]
