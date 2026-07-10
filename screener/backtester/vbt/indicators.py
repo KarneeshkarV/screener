@@ -249,14 +249,20 @@ def _supertrend_signals_np(
     entries = np.zeros((n, m), dtype=bool)
     exits = np.zeros((n, m), dtype=bool)
 
-    index = pd.RangeIndex(n)
-    columns = pd.RangeIndex(m)
-    atr = _atr_wilder(
-        pd.DataFrame(high, index=index, columns=columns),
-        pd.DataFrame(low, index=index, columns=columns),
-        pd.DataFrame(close, index=index, columns=columns),
-        period,
-    )
+    # Seed ATR with the first-period mean before applying Wilder recursion.
+    tr = np.zeros((n, m), dtype=float)
+    tr[0] = high[0] - low[0]
+    for i in range(1, n):
+        high_low = high[i] - low[i]
+        high_close = np.abs(high[i] - close[i - 1])
+        low_close = np.abs(low[i] - close[i - 1])
+        tr[i] = np.maximum(high_low, np.maximum(high_close, low_close))
+
+    atr = np.zeros((n, m), dtype=float)
+    if period <= n:
+        atr[period - 1] = tr[:period].mean(axis=0)
+        for i in range(period, n):
+            atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
 
     hl2 = (high + low) / 2.0
     upper = hl2 + multiplier * atr

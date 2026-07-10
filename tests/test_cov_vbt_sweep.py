@@ -538,6 +538,19 @@ def test_indicator_helpers_numeric():
     assert e2.shape == p["close"].shape
 
 
+def test_supertrend_preserves_seeded_wilder_atr_signals():
+    rng = np.random.default_rng(42)
+    close = 100.0 + np.cumsum(rng.normal(0.0, 2.0, size=(80, 1)), axis=0)
+    spread = rng.uniform(0.5, 3.0, size=(80, 1))
+    high = close + spread
+    low = close - spread
+
+    entries, exits = vs._supertrend_signals_np(close, high, low, 7, 2.0)
+
+    assert np.flatnonzero(entries[:, 0]).tolist() == [29]
+    assert np.flatnonzero(exits[:, 0]).tolist() == [61]
+
+
 def test_iter_indicator_combos_all_and_unknown():
     combos = vs.iter_indicator_combos(
         list(vs.VALID_INDICATORS),

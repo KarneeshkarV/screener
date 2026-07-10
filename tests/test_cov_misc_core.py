@@ -600,6 +600,25 @@ def test_cached_json_call_roundtrip(monkeypatch, tmp_path):
     assert calls["n"] == 2
 
 
+def test_cached_json_call_reuses_cached_none(monkeypatch, tmp_path):
+    monkeypatch.setattr(cache_mod, "CACHE_ROOT", tmp_path)
+    calls = {"n": 0}
+
+    def fetch():
+        calls["n"] += 1
+        return None
+
+    first = cache_mod.cached_json_call(
+        "ns", ("missing",), ttl_seconds=60, refresh=False, fetch=fetch
+    )
+    second = cache_mod.cached_json_call(
+        "ns", ("missing",), ttl_seconds=60, refresh=False, fetch=fetch
+    )
+
+    assert first is None and second is None
+    assert calls["n"] == 1
+
+
 # ───────────────────────── scanner.py ─────────────────────────
 
 
