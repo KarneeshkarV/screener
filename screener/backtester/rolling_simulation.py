@@ -41,6 +41,7 @@ from screener.backtester.models import (
 from screener.backtester.pine import parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.regime import classify_regimes
+from screener.options.backtest import merge_referenced_options
 from screener.backtester.rolling_candidates import (
     _RollingCandidateMatrices,
     _build_rolling_candidate_matrices,
@@ -146,6 +147,14 @@ def _prepare_simulation(
             bars_by_tv = merge_fundamentals_into_bars(
                 bars_by_tv, fundamentals, yf_by_tv
             )
+
+    bars_by_tv = merge_referenced_options(
+        bars_by_tv,
+        market=cfg.market,
+        entry_ast=entry_ast,
+        exit_ast=exit_ast,
+        warnings=warnings,
+    )
 
     entry_signals_by_tv = _precompute_entry_signals(bars_by_tv, entry_ast, warnings)
     filter_signals_by_tv = _precompute_filter_signals(bars_by_tv, cfg)
