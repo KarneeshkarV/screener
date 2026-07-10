@@ -39,6 +39,16 @@ Features:
 - TradingView cache controls with `--cache-ttl` and `--refresh`.
 - Saves non-CSV runs to `~/.screener/history.db` and prints added/removed tickers versus the previous run.
 
+### `history`
+
+Lists the screen runs persisted to `~/.screener/history.db`, newest first, with the run id used by `backtest-historical --from-run`.
+
+```bash
+uv run screener history
+uv run screener history -m india -c ema --limit 10
+uv run screener history --csv
+```
+
 ### `garp`
 
 Finds GARP stocks using market-specific fundamental data.
@@ -104,6 +114,31 @@ Runs a historical point-in-time backtest. This is wrapped by `just backtest`.
 uv run screener backtest-historical -m us --as-of 2026-03-20 --entry "close > 0" --tickers AAPL,MSFT --hold 5 --top 2
 just backtest -m india --as-of 2026-03-20 --entry "close > 0" --tickers RELIANCE,TCS --hold 5 --top 2
 ```
+
+### Screen → backtest replay (`--from-run`)
+
+Every non-CSV `screen` run is persisted to `~/.screener/history.db`. `backtest-historical --from-run` replays one of those runs as a point-in-time backtest: the universe is the stored tickers, `--as-of` is the run date, `--entry` defaults to `close > 0` (buy what the screen picked), and `--top` defaults to the snapshot size.
+
+```bash
+uv run screener history                                            # find run ids
+uv run screener backtest-historical --from-run 42 --hold 5         # replay run #42
+uv run screener backtest-historical --from-run india:ema --run-age-days 7 --hold 5
+```
+
+The `MARKET:CRITERIA` form picks the most recent run at least `--run-age-days` calendar days old — useful in cron, where "replay last week's screen" needs no id lookup. All the usual backtest knobs (`--hold`, `--stop-loss`, `--slippage-bps`, `--report`, `--csv`, custom `--entry`/`--strategy`, …) still apply.
+
+Caveats: only the top-N rows shown at screen time were persisted, so the replay covers what the screen displayed, not its full match set, and candidate ranking inside the backtest is by as-of dollar volume, not the screen's original rank.
+
+#### Daily replay cron
+
+`scripts/daily_screen_replay.sh` runs every registered screen criterion on every market (persisting each run), then replays each `market:criteria` pair's most recent run that is at least `REPLAY_AGE_DAYS` (default 7) old, writing logs and HTML tear-sheets to `~/.screener/replay-logs/`. Pairs without an old-enough run are skipped, so the first week after install only accumulates history.
+
+```cron
+# m h dom mon dow  command
+30 11 * * 1-5  /root/screneer_main/screener/scripts/daily_screen_replay.sh >> "$HOME/.screener/replay-logs/cron.log" 2>&1
+```
+
+Tunables via environment: `MARKETS` (default `us india`), `CRITERIA` (default: every registered criterion), `REPLAY_AGE_DAYS`, `HOLD` (default 5), `TOP_N` (default 50), `LOG_DIR`, `KEEP_DAYS` (log retention, default 30).
 
 ### `backtest-rolling`
 
