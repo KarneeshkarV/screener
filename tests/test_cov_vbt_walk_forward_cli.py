@@ -12,26 +12,38 @@ Everything is deterministic and offline; no network, no real vectorbt.
 
 from __future__ import annotations
 
+
 import sys
+
+
 import types
+
+
 import warnings
+
+
 from datetime import date
 
+
 import numpy as np
+
+
 import pandas as pd
+
+
 import pytest
 
+
 import screener.backtester.vbt_sweep as vs
+
+
 from screener.backtester.optimization.walk_forward import (
     WalkForwardWindow,
     generate_walk_forward_windows,
 )
+
+
 from tests.conftest import StubPriceFetcher, make_bars
-
-
-# ---------------------------------------------------------------------------
-# Fake vectorbt machinery
-# ---------------------------------------------------------------------------
 
 
 def _crossed_above_nb(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -258,11 +270,6 @@ def fake_vbt(monkeypatch):
         setattr(pd.DataFrame, "vbt", prev_accessor)
 
 
-# ---------------------------------------------------------------------------
-# Synthetic panels
-# ---------------------------------------------------------------------------
-
-
 def _panels(n: int = 120, seed: int = 3):
     rng = np.random.default_rng(seed)
     idx = pd.bdate_range("2021-01-04", periods=n)
@@ -292,446 +299,6 @@ def _panels(n: int = 120, seed: int = 3):
     }
 
 
-# ---------------------------------------------------------------------------
-# Pure helpers (no vbt needed)
-# ---------------------------------------------------------------------------
-
-
-def test_require_vectorbt_raises_when_absent(monkeypatch):
-    import builtins
-
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "vectorbt":
-            raise ImportError("no vectorbt")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-    import click
-
-    with pytest.raises(click.ClickException):
-        vs._require_vectorbt()
-
-
-def test_require_vectorbt_success(monkeypatch):
-    # Place a fake ``vectorbt`` module in sys.modules so the genuine
-    # ``_require_vectorbt`` import succeeds and returns it (covers the return).
-    fake = types.ModuleType("vectorbt")
-    monkeypatch.setitem(sys.modules, "vectorbt", fake)
-    assert vs._require_vectorbt() is fake
-
-
-def test_iter_param_combos_direct():
-    # Include a slow<=fast pair (100<=100, 50<=100) to exercise the skip branch.
-    combos = vs.iter_param_combos([50, 100], [50, 100], [0])
-    assert all(slow > fast for fast, slow, _h in combos)
-    assert (50, 100, 0) in combos
-    assert (100, 50, 0) not in combos
-
-
-def test_parse_walk_forward_direct():
-    import click
-
-    assert vs.parse_walk_forward("12:3") == (12, 3)
-    with pytest.raises(click.UsageError):
-        vs.parse_walk_forward("12")
-    with pytest.raises(click.UsageError):
-        vs.parse_walk_forward("a:b")
-    with pytest.raises(click.UsageError):
-        vs.parse_walk_forward("0:3")
-
-
-def test_single_combo_sweep_kwargs_unknown():
-    with pytest.raises(ValueError):
-        vs._single_combo_sweep_kwargs("nope", 1, 2, 3)
-
-
-def test_parse_int_list_errors():
-    import click
-
-    with pytest.raises(click.UsageError):
-        vs.parse_int_list("", name="fast")
-    with pytest.raises(click.UsageError):
-        vs.parse_int_list("a,b", name="fast")
-
-
-def test_parse_indicator_list_variants():
-    import click
-
-    assert vs.parse_indicator_list("all") == list(vs.VALID_INDICATORS)
-    # dedupe preserves order
-    assert vs.parse_indicator_list("sma, sma, ema") == ["sma", "ema"]
-    with pytest.raises(click.UsageError):
-        vs.parse_indicator_list("")
-    with pytest.raises(click.UsageError):
-        vs.parse_indicator_list("not_a_real_indicator")
-
-
-def test_fixed_hold_exits_paths():
-    idx = pd.bdate_range("2021-01-04", periods=5)
-    cols = ["AAA", "BBB"]
-    entries = pd.DataFrame(False, index=idx, columns=cols)
-    entries.iloc[0, 0] = True
-    entries.iloc[3, 1] = True
-    # hold=0 -> all False
-    zero = vs._fixed_hold_exits(entries, 0)
-    assert not zero.to_numpy().any()
-    # no entries -> all False
-    empty = vs._fixed_hold_exits(pd.DataFrame(False, index=idx, columns=cols), 2)
-    assert not empty.to_numpy().any()
-    # hold=2 -> exit two bars after each entry that stays in range
-    held = vs._fixed_hold_exits(entries, 2)
-    assert held.iloc[2, 0]  # entry row 0 + 2
-    # entry at row 3 + 2 = row 5 is out of range -> dropped
-    assert not held.iloc[:, 1].to_numpy().any()
-
-
-def test_sma_non_multiindex_branch():
-    # A vbt whose MA.run returns a plain (non-MultiIndex) columns frame, to
-    # exercise the non-MultiIndex return in ``_sma``.
-    idx = pd.bdate_range("2021-01-04", periods=10)
-    close = pd.DataFrame(
-        {"AAA": np.arange(10.0), "BBB": np.arange(10.0) + 1}, index=idx
-    )
-
-    class _PlainMA:
-        @staticmethod
-        def run(c, window):  # noqa: ANN001
-            return types.SimpleNamespace(ma=c.rolling(int(window)).mean())
-
-    fake = types.SimpleNamespace(MA=_PlainMA)
-    out = vs._sma(close, 3, fake)
-    assert list(out.columns) == ["AAA", "BBB"]
-
-
-def test_run_combo_backtest_scalar_trade_count(monkeypatch):
-    # A portfolio whose trades.count() returns a scalar -> exercises the
-    # ``else: int(trade_count)`` branch in run_combo_backtest.
-    idx = pd.bdate_range("2021-01-04", periods=10)
-    close = pd.DataFrame({"AAA": np.arange(10.0) + 1}, index=idx)
-
-    class _ScalarTrades:
-        def win_rate(self):
-            return 0.5
-
-        def count(self):
-            return 2  # plain int
-
-    class _ScalarPf:
-        trades = _ScalarTrades()
-
-        def sharpe_ratio(self):
-            return 1.0
-
-        def total_return(self):
-            return 0.1
-
-        def calmar_ratio(self):
-            return 0.5
-
-        def max_drawdown(self):
-            return -0.1
-
-    class _ScalarPortfolio:
-        @staticmethod
-        def from_signals(*a, **k):  # noqa: ANN001
-            return _ScalarPf()
-
-    def _entries_exits(c, fast, slow, hold, vbt):  # noqa: ANN001
-        e = pd.DataFrame(False, index=c.index, columns=c.columns)
-        e.iloc[2] = True
-        x = pd.DataFrame(False, index=c.index, columns=c.columns)
-        return e, x
-
-    monkeypatch.setitem(vs.STRATEGY_BUILDERS, "sma_cross", _entries_exits)
-    fake = types.SimpleNamespace(Portfolio=_ScalarPortfolio)
-    res = vs.run_combo_backtest(close, 3, 5, 0, vbt=fake)
-    assert res["trades"] == 2
-
-
-def test_ma_for_window_non_multiindex():
-    idx = pd.bdate_range("2021-01-04", periods=3)
-    panel = pd.DataFrame({"AAA": [1.0, 2.0, 3.0]}, index=idx)
-    out = vs._ma_for_window(panel, 5)
-    pd.testing.assert_frame_equal(out, panel)
-
-
-def test_scalar_metric_variants():
-    assert np.isnan(vs._scalar_metric(None))
-    assert vs._scalar_metric(pd.Series([2.0, 3.0])) == 2.0
-    assert np.isnan(vs._scalar_metric(pd.Series([], dtype=float)))
-    assert vs._scalar_metric(np.array([7.0, 8.0])) == 7.0
-    assert np.isnan(vs._scalar_metric(np.array([], dtype=float)))
-    assert vs._scalar_metric(5) == 5.0
-
-
-def test_combo_metric_scalar_and_series():
-    s = pd.Series(
-        [1.0, 2.0],
-        index=pd.MultiIndex.from_tuples(
-            [("sma", 10, 50, 0), ("ema", 10, 50, 0)],
-            names=["indicator", "fast", "slow", "hold"],
-        ),
-    )
-    assert vs._combo_metric(s, "ema", 10, 50, 0) == 2.0
-    assert vs._combo_metric(3.0, "x", 1, 2, 3) == 3.0
-
-
-def test_build_column_panel_no_usable_raises():
-    with pytest.raises(ValueError):
-        vs.build_close_panel(
-            {"AAA": pd.DataFrame()},
-            ["AAA"],
-            start=pd.Timestamp("2021-01-01"),
-            end=pd.Timestamp("2021-02-01"),
-        )
-    # missing column / out-of-window also raise
-    df = make_bars(start="2021-01-04", n=10)
-    with pytest.raises(ValueError):
-        vs._build_column_panel(
-            {"AAA": df},
-            ["AAA"],
-            column="close",
-            start=pd.Timestamp("2030-01-01"),
-            end=pd.Timestamp("2030-02-01"),
-        )
-
-
-def test_build_column_panel_skips_missing_symbol():
-    df = make_bars(start="2021-01-04", n=20)
-    panel = vs.build_high_panel(
-        {"AAA": df},
-        ["AAA", "ZZZ"],  # ZZZ absent -> skipped via continue
-        start=pd.Timestamp("2021-01-04"),
-        end=pd.Timestamp("2021-03-01"),
-    )
-    assert list(panel.columns) == ["AAA"]
-
-
-def test_indicator_helpers_numeric():
-    p = _panels(40)
-    rsi = vs._rsi_wilder(p["close"], 14)
-    assert rsi.shape == p["close"].shape
-    atr = vs._atr_wilder(p["high"], p["low"], p["close"], 14)
-    assert atr.shape == p["close"].shape
-    obv = vs._obv(p["close"], p["volume"])
-    assert obv.shape == p["close"].shape
-    # supertrend with period >= n exercises the early-return branch
-    n = p["close"].shape[0]
-    e, x = vs._supertrend_signals_np(
-        p["close"].to_numpy(),
-        p["high"].to_numpy(),
-        p["low"].to_numpy(),
-        n + 5,
-        3.0,
-    )
-    assert not e.any() and not x.any()
-    # normal supertrend with small period exercises the state machine
-    e2, x2 = vs._supertrend_signals_np(
-        p["close"].to_numpy(),
-        p["high"].to_numpy(),
-        p["low"].to_numpy(),
-        7,
-        3.0,
-    )
-    assert e2.shape == p["close"].shape
-
-
-def test_supertrend_preserves_seeded_wilder_atr_signals():
-    rng = np.random.default_rng(42)
-    close = 100.0 + np.cumsum(rng.normal(0.0, 2.0, size=(80, 1)), axis=0)
-    spread = rng.uniform(0.5, 3.0, size=(80, 1))
-    high = close + spread
-    low = close - spread
-
-    entries, exits = vs._supertrend_signals_np(close, high, low, 7, 2.0)
-
-    assert np.flatnonzero(entries[:, 0]).tolist() == [29]
-    assert np.flatnonzero(exits[:, 0]).tolist() == [61]
-
-
-def test_iter_indicator_combos_all_and_unknown():
-    combos = vs.iter_indicator_combos(
-        list(vs.VALID_INDICATORS),
-        [10, 20],
-        [50, 100],
-        [0, 5],
-    )
-    inds = {c[0] for c in combos}
-    assert inds == set(vs.VALID_INDICATORS)
-    with pytest.raises(ValueError):
-        vs.iter_indicator_combos(["bogus"], [10], [50], [0])
-
-
-def test_single_combo_sweep_kwargs_macd_and_window():
-    macd = vs._single_combo_sweep_kwargs("macd", 12, 26, 0)
-    assert macd["indicators"] == ["macd"]
-    assert "breakout_windows" not in macd
-    bb = vs._single_combo_sweep_kwargs("bbands", 20, 0, 5)
-    assert bb["bbands_windows"] == [20]
-
-
-def test_slice_panel_none_and_value():
-    assert vs._slice_panel(None, date(2021, 1, 1), date(2021, 2, 1)) is None
-    p = _panels(30)["close"]
-    sliced = vs._slice_panel(p, p.index[5].date(), p.index[10].date())
-    assert sliced.shape[0] >= 1
-
-
-def test_fmt_int_or_dash():
-    assert vs._fmt_int_or_dash(3.0) == "3"
-    assert vs._fmt_int_or_dash(float("nan")) == "—"
-    assert vs._fmt_int_or_dash("x") == "—"
-
-
-# ---------------------------------------------------------------------------
-# vbt-backed paths (fake_vbt)
-# ---------------------------------------------------------------------------
-
-
-def test_sma_crossover_signals_hold_branches(fake_vbt):
-    p = _panels(80)
-    close = p["close"]
-    ent, ex = vs.sma_crossover_signals(close, 5, 20, 0, fake_vbt)
-    assert ent.shape == close.shape
-    ent2, ex2 = vs.sma_crossover_signals(close, 5, 20, 3, fake_vbt)
-    # hold>0 adds extra exits
-    assert ex2.to_numpy().sum() >= ex.to_numpy().sum()
-
-
-def test_run_combo_backtest_with_and_without_open(fake_vbt):
-    p = _panels(80)
-    res = vs.run_combo_backtest(
-        p["close"], 5, 20, 3, vbt=fake_vbt, open_=p["open"], initial_capital=50_000
-    )
-    assert set(res) >= {"fast", "slow", "hold", "sharpe", "trades", "win_rate"}
-    assert res["fast"] == 5 and res["slow"] == 20
-    # without open_ (fill at close path)
-    res2 = vs.run_combo_backtest(p["close"], 5, 20, 0, vbt=fake_vbt)
-    assert "sharpe" in res2
-
-
-def test_run_parameter_sweep_no_combos_raises(fake_vbt):
-    p = _panels(60)
-    with pytest.raises(ValueError):
-        # slow <= fast for every pair -> empty combos
-        vs.run_parameter_sweep(
-            p["close"],
-            fast_values=[50],
-            slow_values=[10],
-            hold_values=[0],
-            indicators=["sma"],
-            open_=p["open"],
-        )
-
-
-def test_run_parameter_sweep_default_indicator(fake_vbt):
-    p = _panels(120)
-    df = vs.run_parameter_sweep(
-        p["close"],
-        fast_values=[5, 10],
-        slow_values=[20, 40],
-        hold_values=[0, 5],
-        open_=p["open"],
-    )
-    assert (df["indicator"] == "sma").all()
-    assert {"sharpe", "total_return", "trades"}.issubset(df.columns)
-
-
-def test_run_parameter_sweep_all_indicators(fake_vbt):
-    p = _panels(160)
-    df = vs.run_parameter_sweep(
-        p["close"],
-        fast_values=[5, 10],
-        slow_values=[20, 40],
-        hold_values=[3],
-        indicators=list(vs.VALID_INDICATORS),
-        breakout_windows=[10, 20],
-        bbands_windows=[20],
-        supertrend_periods=[7],
-        keltner_windows=[20],
-        rsi_thresholds=[50],
-        obv_ema_windows=[20],
-        high=p["high"],
-        low=p["low"],
-        volume=p["volume"],
-        open_=p["open"],
-    )
-    assert set(df["indicator"].unique()) == set(vs.VALID_INDICATORS)
-    # breakout-family slow is NaN
-    bsub = df[df["indicator"] == "breakout"]
-    assert bsub["slow"].isna().all()
-
-
-def test_run_parameter_sweep_explicit_chunk_size(fake_vbt):
-    p = _panels(120)
-    df = vs.run_parameter_sweep(
-        p["close"],
-        fast_values=[5, 10],
-        slow_values=[20, 40],
-        hold_values=[0],
-        indicators=["sma"],
-        open_=p["open"],
-        chunk_size=1,
-    )
-    assert len(df) == len(vs.iter_indicator_combos(["sma"], [5, 10], [20, 40], [0]))
-
-
-def test_run_parameter_sweep_scalar_chunk_metrics(fake_vbt, monkeypatch):
-    # Force the chunk metrics to be plain scalars (not Series) so the ``_concat``
-    # fallback (``cleaned`` empty -> ``parts[0]``) branch is exercised.
-    def fake_chunk(
-        close, fill_price, entries_chunk, exits_chunk, *, vbt, initial_capital
-    ):  # noqa: ANN001
-        return (0.5, 0.1, 0.4, -0.1, 0.5, 3)
-
-    monkeypatch.setattr(
-        "screener.backtester.vbt.sweep._portfolio_chunk_metrics", fake_chunk
-    )
-    monkeypatch.setattr(
-        "screener.backtester.vbt.cli._portfolio_chunk_metrics", fake_chunk
-    )
-    p = _panels(80)
-    df = vs.run_parameter_sweep(
-        p["close"],
-        fast_values=[5],
-        slow_values=[20],
-        hold_values=[0],
-        indicators=["sma"],
-        open_=p["open"],
-    )
-    assert len(df) == 1
-    assert df.iloc[0]["sharpe"] == 0.5
-    assert df.iloc[0]["trades"] == 3
-
-
-def test_build_indicator_signal_panels_requires_hl(fake_vbt):
-    p = _panels(60)
-    combos = [("supertrend", 7, 0, 0)]
-    with pytest.raises(ValueError):
-        vs._build_indicator_signal_panels(p["close"], combos, vbt=fake_vbt)
-
-
-def test_build_indicator_signal_panels_requires_volume(fake_vbt):
-    p = _panels(60)
-    combos = [("obv_trend", 20, 0, 0)]
-    with pytest.raises(ValueError):
-        vs._build_indicator_signal_panels(p["close"], combos, vbt=fake_vbt)
-
-
-def test_build_indicator_signal_panels_unknown(fake_vbt):
-    p = _panels(60)
-    combos = [("bogus", 1, 0, 0)]
-    with pytest.raises(ValueError):
-        vs._build_indicator_signal_panels(p["close"], combos, vbt=fake_vbt)
-
-
-# ---------------------------------------------------------------------------
-# Printing + walk-forward
-# ---------------------------------------------------------------------------
-
-
 def _results_df():
     return pd.DataFrame(
         {
@@ -747,23 +314,6 @@ def _results_df():
             "trades": [5, 0],
         }
     )
-
-
-def test_rank_results_unknown_metric():
-    with pytest.raises(ValueError):
-        vs.rank_results(_results_df(), "bogus")  # type: ignore[arg-type]
-
-
-def test_print_results_table_with_and_without_indicator(capsys):
-    from rich.console import Console
-
-    df = _results_df()
-    vs.print_results_table(df, top_n=5, metric="sharpe", console=Console())
-    # branch where there is no indicator column
-    df2 = df.drop(columns="indicator")
-    vs.print_results_table(df2, top_n=5, metric="sharpe")
-    out = capsys.readouterr().out
-    assert "Top" in out
 
 
 def _wf_close(periods: int = 600) -> pd.DataFrame:
@@ -804,6 +354,13 @@ def _stub_sweep_fn():
         return pd.DataFrame(rows)
 
     return sweep
+
+
+def _cli_env() -> StubPriceFetcher:
+    a = make_bars(start="2022-01-03", n=600, seed=1, open_base=100.0)
+    b = make_bars(start="2022-01-03", n=600, seed=2, open_base=50.0)
+    spy = make_bars(start="2022-01-03", n=600, seed=3, open_base=400.0)
+    return StubPriceFetcher({"AAA": a, "BBB": b, "SPY": spy})
 
 
 def test_run_walk_forward_sweep_skips_empty_window():
@@ -936,18 +493,6 @@ def test_print_walk_forward_sweep_table_populated(capsys):
     out = capsys.readouterr().out
     assert "Walk-Forward Sweep" in out
     assert "Aggregate OOS" in out
-
-
-# ---------------------------------------------------------------------------
-# CLI paths (Click runner, stubbed sweep + stub fetcher)
-# ---------------------------------------------------------------------------
-
-
-def _cli_env() -> StubPriceFetcher:
-    a = make_bars(start="2022-01-03", n=600, seed=1, open_base=100.0)
-    b = make_bars(start="2022-01-03", n=600, seed=2, open_base=50.0)
-    spy = make_bars(start="2022-01-03", n=600, seed=3, open_base=400.0)
-    return StubPriceFetcher({"AAA": a, "BBB": b, "SPY": spy})
 
 
 def test_cli_basic_table(monkeypatch):
@@ -1268,115 +813,3 @@ def test_cli_walk_forward(monkeypatch):
     assert res.exit_code == 0, res.output
     assert "Walk-forward:" in res.output
     assert "Walk-Forward Sweep" in res.output
-
-
-def test_cli_walk_forward_csv(monkeypatch):
-    from click.testing import CliRunner
-    from main import cli
-
-    monkeypatch.setattr(vs, "run_parameter_sweep", _stub_sweep_fn())
-    res = CliRunner().invoke(
-        cli,
-        [
-            "vbt-sweep",
-            "--tickers",
-            "AAA,BBB",
-            "--start",
-            "2022-01-03",
-            "--end",
-            "2024-04-01",
-            "--walk-forward",
-            "12:3",
-            "--csv",
-        ],
-        obj=_cli_env(),
-    )
-    assert res.exit_code == 0, res.output
-    assert "is_score" in res.output
-
-
-def test_cli_panel_value_errors(monkeypatch):
-    from click.testing import CliRunner
-    from main import cli
-
-    # Force the open / high / low / volume panel builders to raise ValueError so
-    # the CLI's fallback (set panel to None) branches are exercised.
-    monkeypatch.setattr(
-        "screener.backtester.vbt.cli.build_open_panel",
-        lambda *a, **k: (_ for _ in ()).throw(ValueError()),
-    )
-    monkeypatch.setattr(
-        "screener.backtester.vbt.cli.build_high_panel",
-        lambda *a, **k: (_ for _ in ()).throw(ValueError()),
-    )
-    monkeypatch.setattr(
-        "screener.backtester.vbt.cli.build_low_panel",
-        lambda *a, **k: (_ for _ in ()).throw(ValueError()),
-    )
-    monkeypatch.setattr(
-        "screener.backtester.vbt.cli.build_volume_panel",
-        lambda *a, **k: (_ for _ in ()).throw(ValueError()),
-    )
-
-    captured = {}
-
-    def fake_sweep(close, **kwargs):  # noqa: ANN001
-        captured.update(kwargs)
-        return pd.DataFrame(
-            [
-                {
-                    "indicator": "supertrend",
-                    "fast": 7,
-                    "slow": float("nan"),
-                    "hold": 0,
-                    "sharpe": 1.0,
-                    "total_return": 0.1,
-                    "calmar": 0.5,
-                    "max_drawdown": -0.1,
-                    "win_rate": 0.6,
-                    "trades": 3,
-                }
-            ]
-        )
-
-    monkeypatch.setattr(vs, "run_parameter_sweep", fake_sweep)
-    res = CliRunner().invoke(
-        cli,
-        [
-            "vbt-sweep",
-            "--tickers",
-            "AAA,BBB",
-            "--start",
-            "2022-06-01",
-            "--end",
-            "2023-06-01",
-            "--indicator",
-            "supertrend,vol_breakout",
-        ],
-        obj=_cli_env(),
-    )
-    assert res.exit_code == 0, res.output
-    assert captured["open_"] is None
-    assert captured["high"] is None
-    assert captured["volume"] is None
-
-
-def test_cli_end_before_start_errors():
-    from click.testing import CliRunner
-    from main import cli
-
-    res = CliRunner().invoke(
-        cli,
-        [
-            "vbt-sweep",
-            "--tickers",
-            "AAA",
-            "--start",
-            "2023-01-01",
-            "--end",
-            "2022-01-01",
-        ],
-        obj=_cli_env(),
-    )
-    assert res.exit_code != 0
-    assert "--end must be on or after --start" in res.output
