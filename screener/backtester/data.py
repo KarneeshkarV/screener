@@ -781,7 +781,7 @@ class FMPPriceFetcher:
         self, tickers: Iterable[str], start: date, end: date
     ) -> dict[str, pd.DataFrame]:
         start_ts, end_ts = _inclusive_fetch_bounds(start, end, self.interval)
-        ticker_list = [t for t in tickers if t]
+        ticker_list = [t for t in dict.fromkeys(tickers) if t]
         if not ticker_list:
             return {}
 

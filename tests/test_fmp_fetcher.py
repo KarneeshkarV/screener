@@ -133,6 +133,30 @@ def test_fmp_parallel_fetch_matches_serial_and_requests_each_ticker(tmp_path):
         pd.testing.assert_frame_equal(parallel[ticker], serial[ticker])
 
 
+def test_fmp_parallel_fetch_deduplicates_tickers_preserving_order(tmp_path):
+    session = DummySession(_payload())
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+        max_workers=3,
+    )
+
+    out = fetcher.fetch(
+        ["BBB", "AAA", "BBB", "", "CCC", "AAA"],
+        date(2024, 1, 1),
+        date(2024, 1, 5),
+    )
+
+    assert list(out) == ["BBB", "AAA", "CCC"]
+    assert len(session.calls) == 3
+    assert {call[0].rsplit("/", 1)[-1] for call in session.calls} == {
+        "AAA",
+        "BBB",
+        "CCC",
+    }
+
+
 def test_fmp_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch):
     today = date.today()
     initial_payload = {
