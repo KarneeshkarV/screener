@@ -28,6 +28,7 @@ from typing import Any, Iterable, Optional, Union, cast
 import numpy as np
 import pandas as pd
 
+from screener.backtester.execution import bps_fraction
 from screener.backtester.models import ExitReason, Position, Trade
 
 # Trade/position stamps are date-only for daily runs and full datetimes for
@@ -83,7 +84,7 @@ class Portfolio:
         # spend up to min(slot_capital, current cash); commission reduces shares
         # acquired. Cap by current cash so reserve promotion after losing trades
         # cannot overdraw the portfolio.
-        c = commission_bps / 10_000.0
+        c = bps_fraction(commission_bps)
         gross_per_share = entry_price * (1.0 + c)
         budget = min(self.slot_capital, max(self._cash, 0.0))
         shares = budget / gross_per_share if gross_per_share > 0 else 0.0
@@ -149,7 +150,7 @@ class Portfolio:
         if key is None:
             raise KeyError(f"No open position for {ticker}")
         position = self._open.pop(key)
-        c = commission_bps / 10_000.0
+        c = bps_fraction(commission_bps)
         proceeds = position.shares * exit_price
         commission = proceeds * c
         exit_value = proceeds - commission
@@ -211,7 +212,7 @@ class Portfolio:
         remaining_cost = position.slot_capital - pro_rata_cost
         pro_rata_div = position.dividend_income * fraction
         remaining_div = position.dividend_income - pro_rata_div
-        c = commission_bps / 10_000.0
+        c = bps_fraction(commission_bps)
         proceeds = close_shares * exit_price
         commission = proceeds * c
         exit_value = proceeds - commission
