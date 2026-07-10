@@ -16,7 +16,11 @@ import pytest
 from tests.conftest import make_bars
 
 from screener.strategies.registry import STRATEGIES, get_strategy
-from screener.strategies.spec import StrategySpec, registry as strategy_registry
+from screener.strategies.spec import (
+    CallableStrategySpec,
+    ExpressionStrategySpec,
+    registry as strategy_registry,
+)
 from screener.strategies.expressions import NamedStrategy
 from screener.strategies.trades import Trade, _walk
 
@@ -82,12 +86,12 @@ def test_get_strategy_unknown_raises_keyerror() -> None:
 
 def test_strategy_spec_empty_name_rejected() -> None:
     with pytest.raises(ValueError, match="must not be empty"):
-        StrategySpec(name="   ", callable_fn=lambda df: [])
+        CallableStrategySpec(name="   ", callable_fn=lambda df: [])
 
 
-def test_strategy_spec_requires_callable_or_entry() -> None:
-    with pytest.raises(ValueError, match="callable_fn or entry"):
-        StrategySpec(name="x")
+def test_expression_strategy_requires_nonempty_entry() -> None:
+    with pytest.raises(ValueError, match="entry must not be empty"):
+        ExpressionStrategySpec(name="x", entry=" ")
 
 
 def test_named_strategy_empty_entry_rejected() -> None:

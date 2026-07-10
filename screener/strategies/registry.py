@@ -18,6 +18,7 @@ from typing import Optional
 
 from screener.strategies.base import StrategyFn
 from screener.strategies.spec import (
+    CallableStrategySpec,
     DerivedView,
     StrategySpec,
     discover_plugins,
@@ -27,6 +28,8 @@ discover_plugins()
 
 
 def _callable_of(spec: StrategySpec) -> Optional[StrategyFn]:
+    if not isinstance(spec, CallableStrategySpec):
+        return None
     return spec.callable_fn
 
 

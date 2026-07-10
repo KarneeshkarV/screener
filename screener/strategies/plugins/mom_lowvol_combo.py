@@ -45,7 +45,7 @@ import pandas as pd
 
 from screener.strategies.plugins.low_volatility import realized_volatility
 from screener.strategies.plugins.momentum_12_1 import momentum_12_1_score
-from screener.strategies.spec import PrepareCtx, strategy
+from screener.strategies.spec import PrepareCtx, register_expression_strategy
 
 _MOM_WEIGHT = 0.5
 _VOL_WEIGHT = 0.5
@@ -88,12 +88,10 @@ def _combo_lookback() -> int:
     return 253  # max(momentum 252, low-vol pct_change+252)
 
 
-@strategy(
+register_expression_strategy(
     "mom_lowvol_combo",
     entry="mom_12_1 > 0 and vol_252 > 0",
     exit=None,
     prepare_bars=_prepare_combo,
     required_lookback=_combo_lookback,
 )
-def _mom_lowvol_combo() -> None:
-    """Expression-only strategy; ranking is driven by the blended rank_score."""

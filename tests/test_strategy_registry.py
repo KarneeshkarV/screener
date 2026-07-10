@@ -7,16 +7,12 @@ from pydantic import ValidationError
 
 from screener.backtester import pine_runner
 from screener.backtester.models import BacktestConfig
-from screener.strategies.plugins.breakout import _breakout
-from screener.strategies.plugins.ema_trend import _ema_trend
 from screener.strategies.plugins.rs_breakout import (
     _prepare_rs_breakout,
-    _rs_breakout,
     _rs_breakout_lookback,
 )
 from screener.strategies.plugins.vivek_equity_tool import (
     _prepare_vivek,
-    _vivek_equity_tool,
     _vivek_lookback,
 )
 from screener.strategies import spec as strategy_spec_module
@@ -26,9 +22,11 @@ from screener.strategies.pine_ports import (
 from screener.strategies.expressions import NAMED_STRATEGIES, resolve_strategy
 from screener.strategies.registry import STRATEGIES, get_strategy, iter_strategies
 from screener.strategies.spec import (
+    CallableStrategySpec,
     DerivedView,
+    ExpressionStrategySpec,
     PrepareCtx,
-    StrategySpec,
+    register_expression_strategy,
     strategy,
 )
 
@@ -66,9 +64,7 @@ def test_strategy_views_are_live_derived_over_single_registry():
 
     name = "unit_live_view_probe"
 
-    @strategy(name, entry="close > 0")
-    def placeholder() -> None:
-        return None
+    register_expression_strategy(name, entry="close > 0")
 
     # Visible immediately in the expression view (and its resolver)...
     assert name in NAMED_STRATEGIES
@@ -130,27 +126,31 @@ def test_all_callable_strategy_plugins_smoke():
         assert all(trade.entry_idx <= trade.exit_idx for trade in trades), name
 
 
-def test_expression_only_strategy_placeholders_are_noops():
-    assert _breakout() is None
-    assert _ema_trend() is None
-    assert _rs_breakout() is None
-    assert _vivek_equity_tool() is None
-
-
 def test_strategy_spec_validation_and_decorator_metadata():
     with pytest.raises(ValidationError, match="strategy name must not be empty"):
-        StrategySpec(name=" ", entry="close > 0")
-    with pytest.raises(ValidationError, match="either callable_fn or entry"):
-        StrategySpec(name="empty")
+        ExpressionStrategySpec(name=" ", entry="close > 0")
+    with pytest.raises(ValidationError, match="strategy entry must not be empty"):
+        ExpressionStrategySpec(name="empty", entry=" ")
 
     reg_size = len(strategy_spec_module.registry)
 
-    @strategy("unit_test_strategy", entry=" close > 0 ")
-    def placeholder() -> None:
-        return None
+    expression = register_expression_strategy("unit_test_strategy", entry=" close > 0 ")
 
-    assert placeholder() is None
+    assert expression.entry == "close > 0"
+    assert isinstance(expression, ExpressionStrategySpec)
     assert len(strategy_spec_module.registry) == reg_size + 1
+
+
+def test_callable_strategy_decorator_builds_explicit_callable_spec():
+    name = "unit_test_callable_spec"
+
+    @strategy(name)
+    def callable_strategy(frame: pd.DataFrame) -> list:
+        return []
+
+    spec = strategy_spec_module.registry.get(name)
+    assert isinstance(spec, CallableStrategySpec)
+    assert spec.callable_fn is callable_strategy
 
 
 def test_rs_breakout_prepare_handles_missing_benchmark():
