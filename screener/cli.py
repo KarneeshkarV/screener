@@ -29,6 +29,7 @@ from screener.config import load_config
 from screener.earnings_backtest.cli import earnings_backtest, earnings_pead
 from screener.logging_config import configure_logging
 from screener.operator.cli import register as _register_operator_cli
+from screener.options.cli import options
 from screener import usage
 from screener.unusual_volume.cli import unusual_volume
 
@@ -160,6 +161,7 @@ cli.add_command(backtest_lab)
 _register_operator_cli(cli)
 cli.add_command(optimize)
 cli.add_command(cache_group)
+cli.add_command(options)
 
 
 @click.command(name="usage-report")
