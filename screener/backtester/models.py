@@ -89,6 +89,10 @@ class BacktestConfig(BaseModel):
     #   ``splits_only`` — split-adjusted OHLC, dividends as explicit cash.
     #   ``none``        — raw OHLC, no adjustment.
     price_adjustment: Literal["full", "splits_only", "none"] = "full"
+    # Cross-sectional sector neutralization of ``rank_score`` inside the rolling
+    # candidate builder. When True and a factor score matrix exists, scores are
+    # z-scored within each sector group per day before ranking.
+    sector_neutral: bool = False
 
     @model_validator(mode="before")
     @classmethod

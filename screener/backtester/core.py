@@ -603,9 +603,22 @@ def _prepare_strategy_bars(
     warnings: list[str],
 ) -> tuple[dict[str, pd.DataFrame], int]:
     """Dispatch to the strategy's ``prepare_bars`` / ``required_lookback`` hooks."""
-    from screener.strategies.spec import PrepareCtx, registry as strategy_registry
+    from screener.strategies.combo import is_combo_strategy, resolve_combo_spec
+    from screener.strategies.spec import (
+        PrepareCtx,
+        StrategySpec,
+        registry as strategy_registry,
+    )
 
-    spec = strategy_registry.get_optional(cfg.strategy_name)
+    spec: StrategySpec | None
+    if is_combo_strategy(cfg.strategy_name):
+        try:
+            spec = resolve_combo_spec(cfg.strategy_name)  # type: ignore[arg-type]
+        except ValueError as exc:
+            warnings.append(f"combo strategy error: {exc}")
+            return bars_by_tv, 0
+    else:
+        spec = strategy_registry.get_optional(cfg.strategy_name)
     if spec is None:
         return bars_by_tv, 0
     lookback_floor = spec.required_lookback() if spec.required_lookback else 0

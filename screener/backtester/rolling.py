@@ -193,6 +193,15 @@ __all__ = [
     ),
 )
 @click.option(
+    "--sector-neutral",
+    is_flag=True,
+    default=False,
+    help=(
+        "Z-score rank_score within each sector group per day before ranking "
+        "(factor strategies only; no-op when no rank_score column exists)."
+    ),
+)
+@click.option(
     "--fundamentals-provider",
     type=click.Choice(["fmp", "openscreener", "yfinance"]),
     default=None,
@@ -284,6 +293,7 @@ def backtest_rolling(
     price_adjustment,
     interval,
     regime_filter_args,
+    sector_neutral,
     fundamentals_provider,
     fundamental_field_args,
     fundamental_lag_days,
@@ -428,6 +438,7 @@ def backtest_rolling(
         fundamentals_provider=fundamentals_provider,
         fundamental_fields=resolved_fundamental_fields,
         fundamental_lag_days=max(resolved_fundamental_lag_days, 0),
+        sector_neutral=bool(sector_neutral),
     )
 
     fetcher = get_price_fetcher(

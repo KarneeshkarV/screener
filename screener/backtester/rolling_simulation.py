@@ -204,6 +204,11 @@ def _prepare_simulation(
         )
 
     master_dates = list(pd.DatetimeIndex(np.unique(np.concatenate(day_arrays))))
+    sector_by_tv: dict[str, str] | None = None
+    if cfg.sector_neutral:
+        from screener.sectors import sector_by_ticker
+
+        sector_by_tv = sector_by_ticker(tv_symbols, cfg.market)
     candidate_matrices = _build_rolling_candidate_matrices(
         bars_by_tv,
         entry_signals_by_tv,
@@ -213,6 +218,8 @@ def _prepare_simulation(
         membership_added=dict(cfg.membership_added) or None,
         regime_allowed=regime_allowed,
         warnings=warnings,
+        sector_neutral=cfg.sector_neutral,
+        sector_by_tv=sector_by_tv,
     )
     portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
     slot_states: dict[int, _SlotState | None] = {

@@ -48,6 +48,49 @@ class _RollingCandidateMatrices:
     rank_score_np: np.ndarray | None
 
 
+def _sector_neutralize_scores(
+    rank_score_mat: pd.DataFrame,
+    sector_by_tv: dict[str, str],
+) -> pd.DataFrame:
+    """Z-score ``rank_score`` within each (day, sector) group.
+
+    Vectorized: stack → groupby transform → unstack. Population std (ddof=0);
+    sectors with std 0 or a single non-NaN name get neutralized score 0.
+    NaN input scores stay NaN (still ineligible at selection time).
+    """
+    if rank_score_mat.empty:
+        return rank_score_mat
+    # Map each column to its sector; missing tickers fall into UNKNOWN.
+    sectors = {col: sector_by_tv.get(col, "UNKNOWN") for col in rank_score_mat.columns}
+    long = pd.Series(
+        rank_score_mat.stack(future_stack=True),
+        dtype=float,
+    )
+    long.index = long.index.set_names(["date", "ticker"])
+    sector = pd.Series(
+        long.index.get_level_values("ticker").map(sectors),
+        index=long.index,
+    )
+    date = pd.Series(long.index.get_level_values("date"), index=long.index)
+    group_keys = [date, sector]
+    mu = long.groupby(group_keys, sort=False).transform("mean")
+    # Population variance via mean of squared deviations (handles n=1 as 0).
+    centered = long - mu
+    var = centered.pow(2).groupby(group_keys, sort=False).transform("mean")
+    sigma = var.pow(0.5)
+    zscore = centered / sigma
+    # std 0 / single-name / all-equal → 0; preserve NaN inputs.
+    zscore = zscore.mask(~(sigma > 0), 0.0)
+    zscore = zscore.mask(long.isna(), np.nan)
+    neutralized = zscore.unstack(level="ticker")
+    # Preserve original column order (unstack may reorder alphabetically).
+    if isinstance(neutralized, pd.Series):
+        neutralized = neutralized.to_frame().T
+    return neutralized.reindex(
+        index=rank_score_mat.index, columns=rank_score_mat.columns
+    )
+
+
 def _build_rolling_candidate_matrices(
     bars_by_tv: dict[str, pd.DataFrame],
     entry_signals_by_tv: dict[str, pd.Series],
@@ -57,6 +100,9 @@ def _build_rolling_candidate_matrices(
     membership_added: dict[str, date] | None = None,
     regime_allowed: pd.Series | None = None,
     warnings: list[str] | None = None,
+    *,
+    sector_neutral: bool = False,
+    sector_by_tv: dict[str, str] | None = None,
 ) -> _RollingCandidateMatrices:
     """Build once-per-run matrices for daily candidate scans."""
     master_ix = pd.DatetimeIndex(master_dates)
@@ -143,6 +189,23 @@ def _build_rolling_candidate_matrices(
     volume_mat = pd.DataFrame(volume_cols, index=master_ix)
     dollar_vol_mat = close_mat * volume_mat
     rank_score_mat = pd.DataFrame(score_cols, index=master_ix) if any_score else None
+    # Sector neutralization is a no-op when ranking is inactive (no rank_score)
+    # or the flag is off. When active, z-score within each sector per day.
+    if sector_neutral and rank_score_mat is not None:
+        sector_map = sector_by_tv or {}
+        unknown = [
+            tv
+            for tv in rank_score_mat.columns
+            if sector_map.get(tv, "UNKNOWN") == "UNKNOWN"
+        ]
+        if unknown and warnings is not None:
+            preview = ", ".join(sorted(unknown)[:5])
+            more = "" if len(unknown) <= 5 else f" (+{len(unknown) - 5} more)"
+            warnings.append(
+                f"sector neutralization: {len(unknown)} ticker(s) mapped to "
+                f"UNKNOWN sector: {preview}{more}"
+            )
+        rank_score_mat = _sector_neutralize_scores(rank_score_mat, sector_map)
     return _RollingCandidateMatrices(
         signal_mat=signal_mat,
         lookback_ok_mat=lookback_ok_mat,

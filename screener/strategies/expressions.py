@@ -50,6 +50,18 @@ NAMED_STRATEGIES: DerivedView[NamedStrategy] = DerivedView(_named_of)
 
 
 def resolve_strategy(name: str) -> NamedStrategy:
+    # Dynamic multi-factor combiner: ``combo:momentum_12_1=0.6,low_volatility=0.4``.
+    # Parsed at resolution time rather than pre-registered so arbitrary weight
+    # mixes work without a combinatorial registry explosion.
+    from screener.strategies.combo import is_combo_strategy, resolve_combo_spec
+
+    if is_combo_strategy(name):
+        try:
+            spec = resolve_combo_spec(name)
+        except ValueError as exc:
+            raise KeyError(str(exc)) from exc
+        assert spec.entry is not None
+        return NamedStrategy(entry=spec.entry, exit=spec.exit)
     try:
         return NAMED_STRATEGIES[name]
     except KeyError:
