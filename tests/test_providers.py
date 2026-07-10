@@ -56,21 +56,60 @@ def test_refresh_bypasses_cache(tmp_path, monkeypatch):
     assert calls["n"] == 2
 
 
-def test_resilience_fallback_is_returned_and_cached(tmp_path, monkeypatch):
+def test_resilience_failure_is_not_cached_and_second_call_refetches(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
     # One attempt, no sleep: a raising fetch trips straight to the fallback.
     provider = _json_provider()
     retry = resilience.RetryConfig(attempts=1, base_delay=0.0, jitter=0.0)
 
+    calls = {"n": 0}
+
+    def fetch() -> dict:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("provider down")
+        return {"live": True}
+
+    out = provider.fetch(("k",), fetch, fallback={"fallback": True}, retry=retry)
+    assert out == {"fallback": True}
+
+    again = provider.fetch(("k",), fetch, fallback={"fallback": "ignored"}, retry=retry)
+    assert again == {"live": True}
+    assert calls["n"] == 2
+
+
+def test_stale_json_cache_is_served_on_failure(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    provider = _json_provider(ttl=None)
+    retry = resilience.RetryConfig(attempts=1, base_delay=0.0, jitter=0.0)
+
+    assert provider.fetch(("k",), lambda: {"old": True}) == {"old": True}
+
     def boom() -> dict:
         raise RuntimeError("provider down")
 
-    out = provider.fetch(("k",), boom, fallback={"fallback": True}, retry=retry)
-    assert out == {"fallback": True}
+    with caplog.at_level("WARNING", logger="screener.providers"):
+        result = provider.fetch(("k",), boom, fallback={"fallback": True}, retry=retry)
 
-    # The fallback was cached, so a follow-up does not re-invoke the breaker.
-    again = provider.fetch(("k",), boom, fallback={"fallback": "ignored"}, retry=retry)
-    assert again == {"fallback": True}
+    assert result == {"old": True}
+    assert "Serving stale provider_json cache data" in caplog.text
+
+
+def test_stale_json_null_is_distinguished_from_missing_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    provider = _json_provider(ttl=None)
+    retry = resilience.RetryConfig(attempts=1, base_delay=0.0, jitter=0.0)
+
+    assert provider.fetch(("k",), lambda: None) is None
+
+    def boom():
+        raise RuntimeError("provider down")
+
+    assert (
+        provider.fetch(("k",), boom, fallback={"fallback": True}, retry=retry) is None
+    )
 
 
 def test_ttl_none_disables_cache(tmp_path, monkeypatch):

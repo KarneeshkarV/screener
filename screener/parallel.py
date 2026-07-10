@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, TypeVar, overload
 
 T = TypeVar("T")
@@ -41,11 +41,11 @@ def parallel_map(
     drop_none: bool = True,
     on_error: OnError = "raise",
 ) -> list[R] | list[R | None]:
-    """Apply ``fn`` to ``items`` concurrently and collect completion-order results."""
+    """Apply ``fn`` to ``items`` concurrently and collect results in input order."""
     results: list[R | None] = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(fn, item) for item in items]
-        for future in as_completed(futures):
+        for future in futures:
             try:
                 result = future.result()
             except Exception:

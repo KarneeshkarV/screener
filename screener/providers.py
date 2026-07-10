@@ -18,10 +18,18 @@ module attribute. See ``tests/conftest.py`` for the fake adapter.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal, TypeVar, cast
 
-from screener.cache import cached_frame_call, cached_json_call
+from screener.cache import (
+    cache_path,
+    cached_frame_call,
+    cached_json_call,
+    read_frame,
+    read_json,
+    stable_key,
+)
 from screener.resilience import RetryConfig, call_with_resilience
 
 if TYPE_CHECKING:
@@ -29,6 +37,7 @@ if TYPE_CHECKING:
 
 
 T = TypeVar("T")
+LOG = logging.getLogger(__name__)
 
 Kind = Literal["json", "frame"]
 
@@ -38,6 +47,11 @@ class _Unset:
 
 
 _UNSET = _Unset()
+_FETCH_FAILED = object()
+
+
+class _ProviderFetchFailed(RuntimeError):
+    """Prevent a resilience fallback from being persisted by cache helpers."""
 
 
 @dataclass(frozen=True)
@@ -60,9 +74,8 @@ class CachedProvider:
     """fetch(key_parts, fetch_fn, *, refresh, fallback) -> data | fallback.
 
     One call = TTL cache lookup -> on miss, resilience-wrapped fetch -> cache
-    store. The resilience wrapper retries ``fetch_fn`` and trips the provider's
-    circuit breaker; on exhausted retries / open circuit it returns
-    ``fallback`` (which is then cached, mirroring the legacy hand-wired sites).
+    store. Provider failures are never cached; a stale entry is preferred over
+    the caller's fallback when retries are exhausted or the circuit is open.
     """
 
     def __init__(self, spec: ProviderSpec) -> None:
@@ -83,35 +96,61 @@ class CachedProvider:
         op = operation or self.spec.namespace
 
         def resilient() -> T:
-            return call_with_resilience(
+            result = call_with_resilience(
                 self.spec.provider,
                 op,
                 fetch_fn,
-                fallback=fallback,
+                fallback=_FETCH_FAILED,
                 retry=retry,
             )
+            if result is _FETCH_FAILED:
+                raise _ProviderFetchFailed
+            return cast(T, result)
 
-        if self.spec.kind == "frame":
-            # kind == "frame" callers bind T to pd.DataFrame; cached_frame_call
-            # works in DataFrames, so cast resilient's Callable[[], T] to the
-            # frame fetch type and the result back to T.
-            return cast(
-                T,
-                cached_frame_call(
-                    self.spec.namespace,
-                    key_parts,
-                    ttl_seconds=ttl,
-                    refresh=refresh,
-                    fetch=cast("Callable[[], pd.DataFrame]", resilient),
-                ),
+        try:
+            if self.spec.kind == "frame":
+                # kind == "frame" callers bind T to pd.DataFrame;
+                # cached_frame_call works in DataFrames, so cast its types.
+                return cast(
+                    T,
+                    cached_frame_call(
+                        self.spec.namespace,
+                        key_parts,
+                        ttl_seconds=ttl,
+                        refresh=refresh,
+                        fetch=cast("Callable[[], pd.DataFrame]", resilient),
+                    ),
+                )
+            return cached_json_call(
+                self.spec.namespace,
+                key_parts,
+                ttl_seconds=ttl,
+                refresh=refresh,
+                fetch=resilient,
             )
-        return cached_json_call(
-            self.spec.namespace,
-            key_parts,
-            ttl_seconds=ttl,
-            refresh=refresh,
-            fetch=resilient,
-        )
+        except _ProviderFetchFailed:
+            path = cache_path(
+                self.spec.namespace,
+                stable_key(key_parts),
+                "parquet" if self.spec.kind == "frame" else "json",
+            )
+            missing = object()
+            stale = (
+                read_frame(path)
+                if self.spec.kind == "frame"
+                else read_json(path, default=missing)
+            )
+            stale_exists = (
+                stale is not None if self.spec.kind == "frame" else stale is not missing
+            )
+            if stale_exists:
+                LOG.warning(
+                    "Serving stale %s cache data due to %s provider failure",
+                    self.spec.namespace,
+                    self.spec.provider,
+                )
+                return cast(T, stale)
+            return fallback
 
 
 class FakeProvider:

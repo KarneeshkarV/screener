@@ -179,19 +179,17 @@ def _log_percentile(series: pd.Series) -> pd.Series:
 
 
 def _add_setup_score(df: pd.DataFrame) -> pd.DataFrame:
-    scored = df.copy()
+    close = pd.to_numeric(df["close"], errors="coerce")
+    ema5 = pd.to_numeric(df["EMA5"], errors="coerce")
+    ema20 = pd.to_numeric(df["EMA20"], errors="coerce")
+    ema100 = pd.to_numeric(df["EMA100"], errors="coerce")
+    ema200 = pd.to_numeric(df["EMA200"], errors="coerce")
+    change = pd.to_numeric(df["change"], errors="coerce")
+    rsi = pd.to_numeric(df["RSI"], errors="coerce")
 
-    close = pd.to_numeric(scored["close"], errors="coerce")
-    ema5 = pd.to_numeric(scored["EMA5"], errors="coerce")
-    ema20 = pd.to_numeric(scored["EMA20"], errors="coerce")
-    ema100 = pd.to_numeric(scored["EMA100"], errors="coerce")
-    ema200 = pd.to_numeric(scored["EMA200"], errors="coerce")
-    change = pd.to_numeric(scored["change"], errors="coerce")
-    rsi = pd.to_numeric(scored["RSI"], errors="coerce")
-
-    dollar_volume = pd.to_numeric(scored["volume"], errors="coerce") * close
+    dollar_volume = pd.to_numeric(df["volume"], errors="coerce") * close
     liquidity = _log_percentile(dollar_volume)
-    market_cap = _log_percentile(scored["market_cap_basic"])
+    market_cap = _log_percentile(df["market_cap_basic"])
 
     trend_spread = (
         ((ema5 - ema20) / close)
@@ -207,7 +205,7 @@ def _add_setup_score(df: pd.DataFrame) -> pd.DataFrame:
     extension = ((close - ema20) / ema20).fillna(0)
     overextension_penalty = ((extension - 0.12).clip(lower=0) / 0.25).clip(upper=1)
 
-    scored["setup_score"] = (
+    setup_score = (
         25 * liquidity
         + 30 * trend_strength
         + 15 * momentum
@@ -216,7 +214,7 @@ def _add_setup_score(df: pd.DataFrame) -> pd.DataFrame:
         + 5 * price_quality
         - 15 * overextension_penalty
     ).round(2)
-    return scored
+    return df.assign(setup_score=setup_score)
 
 
 def _dedupe_listings(df: pd.DataFrame) -> pd.DataFrame:

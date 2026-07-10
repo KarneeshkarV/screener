@@ -16,10 +16,12 @@ from datetime import date, datetime
 import io
 import os
 from pathlib import Path
+import time
 from typing import Any, Iterable, Optional, Protocol, cast
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
 
 from screener.resilience import call_with_resilience
 
@@ -37,6 +39,7 @@ _YFINANCE_CONFIGURED = False
 # Cap yfinance's internal scrape/API request timeout so a stuck provider
 # request can't hang a whole download batch.
 YFINANCE_TIMEOUT_SECONDS = 5
+PRICE_TAIL_TTL_SECONDS = 60 * 60
 
 
 def _cap_yfinance_request_timeout(
@@ -380,6 +383,23 @@ def _has_range(
     )
 
 
+def _needs_tail_refresh(cache_path: Path, end_ts: pd.Timestamp) -> bool:
+    """Return whether a near-present cache is old enough for a tail refresh."""
+    today = date.today()
+    if abs((end_ts.date() - today).days) > 2:
+        return False
+    try:
+        ttl_seconds = float(
+            os.environ.get("SCREENER_PRICE_TAIL_TTL_SECONDS", PRICE_TAIL_TTL_SECONDS)
+        )
+    except ValueError:
+        ttl_seconds = PRICE_TAIL_TTL_SECONDS
+    try:
+        return time.time() - cache_path.stat().st_mtime > max(0.0, ttl_seconds)
+    except OSError:
+        return False
+
+
 def _split_download(
     raw: pd.DataFrame, tickers: list[str], interval: str = "1d"
 ) -> dict[str, pd.DataFrame]:
@@ -457,13 +477,49 @@ class YFinancePriceFetcher:
         "1h": 730,
     }
 
-    def _beyond_intraday_cap(self, fetch_start: pd.Timestamp) -> bool:
+    _INTRADAY_REQUEST_SPAN_DAYS = {
+        "1m": 7,
+        "5m": 60,
+        "15m": 60,
+        "30m": 60,
+        "1h": 730,
+    }
+
+    def _intraday_chunks(
+        self, fetch_start: pd.Timestamp, fetch_end: pd.Timestamp
+    ) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+        """Clamp an intraday window to availability and split request spans."""
         cap = self._INTRADAY_CAP_DAYS.get(self.interval)
-        if cap is None:
-            return False
-        return pd.Timestamp(
-            fetch_start
-        ) < pd.Timestamp.now().normalize() - pd.Timedelta(days=cap)
+        span_days = self._INTRADAY_REQUEST_SPAN_DAYS.get(self.interval)
+        if cap is None or span_days is None:
+            return [(fetch_start, fetch_end)]
+        cap_start = pd.Timestamp.now().normalize() - pd.Timedelta(days=cap)
+        if fetch_start < cap_start:
+            from screener.logging_config import get_logger
+
+            get_logger(__name__).warning(
+                "yfinance_intraday_history_cap",
+                interval=self.interval,
+                requested_start=str(fetch_start.date()),
+                clamped_start=str(cap_start.date()),
+                reason="requested start predates yfinance intraday availability",
+            )
+            fetch_start = cap_start
+        if fetch_start > fetch_end:
+            return []
+
+        chunks: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+        chunk_start = fetch_start
+        while chunk_start <= fetch_end:
+            chunk_end = min(
+                fetch_end,
+                chunk_start.normalize()
+                + pd.Timedelta(days=span_days)
+                - pd.Timedelta(1, "ns"),
+            )
+            chunks.append((chunk_start, chunk_end))
+            chunk_start = chunk_end.normalize() + pd.Timedelta(days=1)
+        return chunks
 
     def fetch(
         self, tickers: Iterable[str], start: date, end: date
@@ -473,6 +529,7 @@ class YFinancePriceFetcher:
         start_ts, end_ts = _inclusive_fetch_bounds(start, end, self.interval)
         cached_by_ticker: dict[str, pd.DataFrame] = {}
         missing: dict[tuple[pd.Timestamp, pd.Timestamp], list[str]] = {}
+        tail_refresh_tickers: set[str] = set()
 
         for ticker in tickers:
             cache_key = self._cache_key(ticker)
@@ -488,9 +545,14 @@ class YFinancePriceFetcher:
                 and cached is not None
                 and _has_range(cached, start_ts, end_ts, self.interval)
             ):
-                results[ticker] = cached.loc[
-                    (cached.index >= start_ts) & (cached.index <= end_ts)
-                ]
+                if _needs_tail_refresh(_cache_path(cache_key, self.cache_dir), end_ts):
+                    tail_start = max(cached.index) - pd.Timedelta(days=7)
+                    missing.setdefault((tail_start, end_ts), []).append(ticker)
+                    tail_refresh_tickers.add(ticker)
+                else:
+                    results[ticker] = cached.loc[
+                        (cached.index >= start_ts) & (cached.index <= end_ts)
+                    ]
                 continue
 
             fetch_start, fetch_end = start_ts, end_ts
@@ -515,8 +577,14 @@ class YFinancePriceFetcher:
 
         jobs: list[tuple[pd.Timestamp, pd.Timestamp, list[str]]] = []
         for (fetch_start, fetch_end), group in missing.items():
-            for i in range(0, len(group), self.batch_size):
-                jobs.append((fetch_start, fetch_end, group[i : i + self.batch_size]))
+            windows = [(fetch_start, fetch_end)]
+            if self.interval != "1d":
+                windows = self._intraday_chunks(fetch_start, fetch_end)
+            for window_start, window_end in windows:
+                for i in range(0, len(group), self.batch_size):
+                    jobs.append(
+                        (window_start, window_end, group[i : i + self.batch_size])
+                    )
 
         def download_job(
             job: tuple[pd.Timestamp, pd.Timestamp, list[str]],
@@ -545,24 +613,6 @@ class YFinancePriceFetcher:
                 lambda: yf.download(target, **download_kwargs),
                 fallback=pd.DataFrame(),
             )
-            if (
-                (raw is None or raw.empty)
-                and self.interval != "1d"
-                and self._beyond_intraday_cap(fetch_start)
-            ):
-                from screener.logging_config import get_logger
-
-                get_logger(__name__).warning(
-                    "yfinance_intraday_history_cap",
-                    interval=self.interval,
-                    requested_start=str(pd.Timestamp(fetch_start).date()),
-                    reason=(
-                        "yfinance caps intraday history (1m ~30d, 15m/30m ~60d, "
-                        "1h ~730d); the requested start predates the cap so the "
-                        "download came back empty. Use a more recent window "
-                        "(Phase 2 will add chunking)."
-                    ),
-                )
             return batch, raw
 
         # yfinance prints expected "possibly delisted" messages directly to
@@ -572,7 +622,9 @@ class YFinancePriceFetcher:
         # worker threads too; per-batch redirects would race when batches
         # download concurrently.
         with contextlib.redirect_stderr(io.StringIO()):
-            if len(jobs) == 1:
+            if not jobs:
+                downloads = []
+            elif len(jobs) == 1:
                 downloads = [download_job(jobs[0])]
             else:
                 with ThreadPoolExecutor(
@@ -580,21 +632,26 @@ class YFinancePriceFetcher:
                 ) as pool:
                     downloads = list(pool.map(download_job, jobs))
 
-        # Each ticker belongs to exactly one job, so merge + cache writes can
-        # stay on the main thread without coordination.
+        downloaded_by_ticker: dict[str, pd.DataFrame] = {}
         for batch, raw in downloads:
             downloaded = _split_download(raw, batch, self.interval)
             for ticker in batch:
-                cache_key = self._cache_key(ticker)
                 norm = downloaded.get(ticker, _empty_ohlcv_frame())
-                merged = _merge_cached(
-                    cached_by_ticker.get(ticker), norm, self.interval
+                downloaded_by_ticker[ticker] = _merge_cached(
+                    downloaded_by_ticker.get(ticker), norm, self.interval
                 )
-                if not merged.empty:
-                    _save_cache(cache_key, merged, self.cache_dir)
-                results[ticker] = merged.loc[
-                    (merged.index >= start_ts) & (merged.index <= end_ts)
-                ]
+
+        for ticker in dict.fromkeys(t for group in missing.values() for t in group):
+            cache_key = self._cache_key(ticker)
+            norm = downloaded_by_ticker.get(ticker, _empty_ohlcv_frame())
+            merged = _merge_cached(cached_by_ticker.get(ticker), norm, self.interval)
+            if not merged.empty and (
+                not norm.empty or ticker not in tail_refresh_tickers
+            ):
+                _save_cache(cache_key, merged, self.cache_dir)
+            results[ticker] = merged.loc[
+                (merged.index >= start_ts) & (merged.index <= end_ts)
+            ]
         return results
 
 
@@ -697,6 +754,7 @@ class FMPPriceFetcher:
         refresh: bool = False,
         session: requests.Session | None = None,
         interval: str = "1d",
+        max_workers: int = 8,
     ) -> None:
         if interval != "1d" and interval not in _FMP_INTRADAY_INTERVALS:
             raise ValueError(
@@ -710,15 +768,24 @@ class FMPPriceFetcher:
         self.cache_dir = cache_dir or FMP_CACHE_DIR
         self.auto_adjust = bool(auto_adjust)
         self.refresh = bool(refresh)
+        self.max_workers = max(1, int(max_workers))
         self.session = session or requests.Session()
+        if hasattr(self.session, "mount"):
+            adapter = HTTPAdapter(
+                pool_connections=self.max_workers, pool_maxsize=self.max_workers
+            )
+            self.session.mount("http://", adapter)
+            self.session.mount("https://", adapter)
 
     def fetch(
         self, tickers: Iterable[str], start: date, end: date
     ) -> dict[str, pd.DataFrame]:
         start_ts, end_ts = _inclusive_fetch_bounds(start, end, self.interval)
-        results: dict[str, pd.DataFrame] = {}
+        ticker_list = [t for t in tickers if t]
+        if not ticker_list:
+            return {}
 
-        for ticker in [t for t in tickers if t]:
+        def fetch_ticker(ticker: str) -> tuple[str, pd.DataFrame]:
             cache_key = _fmp_cache_key(ticker, self.auto_adjust, self.interval)
             cached = (
                 None
@@ -730,10 +797,17 @@ class FMPPriceFetcher:
                 and cached is not None
                 and _has_range(cached, start_ts, end_ts, self.interval)
             ):
-                results[ticker] = cached.loc[
-                    (cached.index >= start_ts) & (cached.index <= end_ts)
-                ]
-                continue
+                if not _needs_tail_refresh(
+                    _cache_path(cache_key, self.cache_dir), end_ts
+                ):
+                    return ticker, cached.loc[
+                        (cached.index >= start_ts) & (cached.index <= end_ts)
+                    ]
+                fetch_start = max(cached.index) - pd.Timedelta(days=7)
+                is_tail_refresh = True
+            else:
+                fetch_start = start_ts
+                is_tail_refresh = False
 
             if self.interval == "1d":
                 url = f"{self.base_url}/{ticker}"
@@ -745,7 +819,7 @@ class FMPPriceFetcher:
                 response = self.session.get(
                     url,
                     params={
-                        "from": start_ts.date().isoformat(),
+                        "from": fetch_start.date().isoformat(),
                         "to": end_ts.date().isoformat(),
                         "apikey": self.api_key,
                     },
@@ -764,13 +838,21 @@ class FMPPriceFetcher:
             norm = _normalize_fmp_historical(payload, self.auto_adjust, self.interval)
             merged = _merge_cached(cached, norm, self.interval)
             if not merged.empty:
-                _save_cache(cache_key, merged, self.cache_dir)
-                results[ticker] = merged.loc[
+                if not norm.empty or not is_tail_refresh:
+                    _save_cache(cache_key, merged, self.cache_dir)
+                return ticker, merged.loc[
                     (merged.index >= start_ts) & (merged.index <= end_ts)
                 ]
-            else:
-                results[ticker] = pd.DataFrame(columns=OHLCV_COLUMNS)
-        return results
+            return ticker, pd.DataFrame(columns=OHLCV_COLUMNS)
+
+        if len(ticker_list) == 1:
+            fetched = [fetch_ticker(ticker_list[0])]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=min(self.max_workers, len(ticker_list))
+            ) as pool:
+                fetched = list(pool.map(fetch_ticker, ticker_list))
+        return dict(fetched)
 
 
 class FallbackPriceFetcher:

@@ -125,6 +125,72 @@ def test_yfinance_intraday_fetch_includes_whole_end_date_from_cache(tmp_path):
     assert out.index.tolist() == index.tolist()
 
 
+def test_yfinance_one_minute_downloads_are_chunked_and_stitched(tmp_path, monkeypatch):
+    import yfinance as yf
+
+    end = date.today() - pd.Timedelta(days=1)
+    start = end - pd.Timedelta(days=20)
+    calls = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append(kwargs)
+        idx = pd.date_range(
+            pd.Timestamp(kwargs["start"]),
+            pd.Timestamp(kwargs["end"]) - pd.Timedelta(days=1),
+            freq="D",
+        )
+        return pd.DataFrame(
+            {
+                "Open": range(len(idx)),
+                "High": range(1, len(idx) + 1),
+                "Low": range(len(idx)),
+                "Close": range(1, len(idx) + 1),
+                "Volume": [1000] * len(idx),
+            },
+            index=idx,
+        )
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1m", max_workers=1)
+
+    out = fetcher.fetch(["AAA"], start, end)["AAA"]
+
+    assert len(calls) == 3
+    assert all(
+        pd.Timestamp(call["end"]) - pd.Timestamp(call["start"]) <= pd.Timedelta(days=7)
+        for call in calls
+    )
+    assert out.index.min() == pd.Timestamp(start)
+    assert out.index.max() == pd.Timestamp(end)
+
+
+def test_yfinance_daily_window_remains_one_download(tmp_path, monkeypatch):
+    import yfinance as yf
+
+    calls = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame(
+            {
+                "Open": [1.0],
+                "High": [2.0],
+                "Low": [0.5],
+                "Close": [1.5],
+                "Volume": [1000],
+            },
+            index=pd.DatetimeIndex(["2024-01-02"]),
+        )
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1d")
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 20))
+
+    assert len(calls) == 1
+    assert calls[0]["start"] == pd.Timestamp("2024-01-01")
+    assert calls[0]["end"] == pd.Timestamp("2024-01-21")
+
+
 # --------------------------------------------------------------------------- #
 # metrics.py: annualization factor
 # --------------------------------------------------------------------------- #

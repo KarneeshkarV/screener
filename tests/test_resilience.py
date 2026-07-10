@@ -9,10 +9,12 @@ from screener.resilience import (
     CircuitBreaker,
     CircuitBreakerConfig,
     CircuitOpenError,
+    ProviderRateLimiter,
     RetryConfig,
     call_with_resilience,
     get_breaker,
     redact_secrets,
+    set_provider_rates,
 )
 
 
@@ -164,3 +166,69 @@ def test_call_with_resilience_redacts_secret_from_log(
     assert result == "fallback"
     assert "SECRET123" not in caplog.text
     assert "apikey=***" in caplog.text
+
+
+def test_429_retry_after_waits_and_does_not_trip_breaker() -> None:
+    provider = "test-429"
+    breaker = get_breaker(provider)
+    breaker.config = CircuitBreakerConfig(failure_threshold=1, cooldown_seconds=60.0)
+    sleeps: list[float] = []
+
+    response = requests.Response()
+    response.status_code = 429
+    response.headers["Retry-After"] = "3"
+
+    def throttled() -> str:
+        raise requests.HTTPError("rate limited", response=response)
+
+    result = call_with_resilience(
+        provider,
+        "op",
+        throttled,
+        fallback="fallback",
+        retry=RetryConfig(attempts=2, base_delay=0.1, jitter=0.0),
+        sleep=sleeps.append,
+    )
+
+    assert result == "fallback"
+    assert sleeps == [3.0]
+    breaker.before_call()
+    resilience._BREAKERS.pop(provider, None)
+
+
+def test_rate_limiter_spaces_attempts_with_injected_clock() -> None:
+    now = 0.0
+    sleeps: list[float] = []
+    attempts = 0
+
+    def clock() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now += seconds
+
+    def failing() -> str:
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("down")
+
+    set_provider_rates({"limited": 2.0})
+    try:
+        result = call_with_resilience(
+            "limited",
+            "op",
+            failing,
+            fallback="fallback",
+            retry=RetryConfig(attempts=3, base_delay=0.0, jitter=0.0),
+            sleep=sleep,
+            clock=clock,
+            rate_limiter=ProviderRateLimiter(),
+        )
+    finally:
+        set_provider_rates()
+
+    assert result == "fallback"
+    assert attempts == 3
+    assert sleeps == [0.0, 0.5, 0.0, 0.5]
