@@ -3,10 +3,8 @@
 Analyst upgrades/downgrades (yfinance, US) and options-implied sentiment —
 put/call ratio + median IV — from yfinance (US) or the NSE option chain (India).
 
-Split out of :mod:`screener.earnings_backtest.data`, which re-exports every
-public name here for backwards compatibility. Cross-function and seam
-dependencies are looked up through the ``data`` module (``data.<name>``) so the
-test suite's ``monkeypatch.setattr(data, ...)`` patches keep taking effect.
+The compatibility facade re-exports the public names from this canonical
+module; this module never imports the facade back.
 """
 
 from __future__ import annotations
@@ -19,10 +17,13 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from screener.earnings_backtest import data
+from screener.backtester.data import _configure_yfinance
+from screener.cache import cached_json_call
+from screener.earnings_backtest.common import SENTIMENT_CACHE_DAYS, jsonable
 from screener.unusual_volume.option_chain import (
     compute_oc_iv_volume,
     compute_oc_metrics,
+    fetch_option_chain,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
         return None
 
     def _fetch() -> Optional[dict]:
-        data._configure_yfinance()
+        _configure_yfinance()
         try:
             t = yf.Ticker(ticker)
             ud = t.upgrades_downgrades
@@ -70,17 +71,17 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
                 "net": upgrades - downgrades,
                 "grade_counts": counts if "Action" in ud.columns else {},
             }
-            return cast("dict[Any, Any] | None", data._jsonable(result))
+            return cast("dict[Any, Any] | None", jsonable(result))
         except Exception as exc:
             logger.debug(
                 "analyst_sentiment_error", extra={"ticker": ticker, "error": str(exc)}
             )
             return None
 
-    return data.cached_json_call(
+    return cached_json_call(
         "analyst",
         (market, ticker),
-        ttl_seconds=data.SENTIMENT_CACHE_DAYS * 86_400,
+        ttl_seconds=SENTIMENT_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
     )
@@ -93,7 +94,7 @@ def fetch_iv_sentiment_yf(ticker: str) -> Optional[dict]:
     """Compute put/call ratio and IV percentile from yfinance (US only)."""
 
     def _fetch() -> Optional[dict]:
-        data._configure_yfinance()
+        _configure_yfinance()
         try:
             t = yf.Ticker(ticker)
             dates = t.options
@@ -163,10 +164,10 @@ def fetch_iv_sentiment_yf(ticker: str) -> Optional[dict]:
             )
             return None
 
-    return data.cached_json_call(
+    return cached_json_call(
         "iv_yf",
         ticker,
-        ttl_seconds=data.SENTIMENT_CACHE_DAYS * 86_400,
+        ttl_seconds=SENTIMENT_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
     )
@@ -187,7 +188,7 @@ def fetch_iv_sentiment_nse(symbol: str) -> Optional[dict]:
 
     def _fetch() -> Optional[dict]:
         try:
-            raw = data.fetch_option_chain(symbol)
+            raw = fetch_option_chain(symbol)
             if not raw or "records" not in raw:
                 return None
             if not (raw.get("records") or {}).get("data"):
@@ -218,10 +219,10 @@ def fetch_iv_sentiment_nse(symbol: str) -> Optional[dict]:
             )
             return None
 
-    return data.cached_json_call(
+    return cached_json_call(
         "iv_nse",
         symbol,
-        ttl_seconds=data.SENTIMENT_CACHE_DAYS * 86_400,
+        ttl_seconds=SENTIMENT_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
     )
@@ -232,5 +233,5 @@ def fetch_iv_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
     if market == "india":
         # Strip .NS suffix for the NSE symbol.
         symbol = ticker.replace(".NS", "").replace(".BO", "")
-        return data.fetch_iv_sentiment_nse(symbol)
-    return data.fetch_iv_sentiment_yf(ticker)
+        return fetch_iv_sentiment_nse(symbol)
+    return fetch_iv_sentiment_yf(ticker)

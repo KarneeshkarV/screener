@@ -5,10 +5,8 @@ yfinance (US), NSE corporate announcements (India, via ``jugaad_data``), and
 screener.in quarterly results (India, via ``openscreener``), plus the batch
 collector that unifies them.
 
-Split out of :mod:`screener.earnings_backtest.data`, which re-exports every
-public name here for backwards compatibility. Cross-function and seam
-dependencies are looked up through the ``data`` module (``data.<name>``) so the
-test suite's ``monkeypatch.setattr(data, ...)`` patches keep taking effect.
+The compatibility facade re-exports the public names from this canonical
+module; this module never imports the facade back.
 """
 
 from __future__ import annotations
@@ -22,7 +20,14 @@ from typing import Any, Optional, cast
 import pandas as pd
 import yfinance as yf
 
-from screener.earnings_backtest import data
+from screener.backtester.data import _configure_yfinance
+from screener.cache import cached_json_call
+from screener.earnings_backtest.common import (
+    EARNINGS_CACHE_DAYS,
+    MAX_WORKERS,
+    SENTIMENT_CACHE_DAYS,
+    jsonable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +54,9 @@ def _earnings_to_records(ed: pd.DataFrame) -> list[dict[str, Any]]:
         records.append(
             {
                 "earnings_date": ts.date().isoformat(),
-                "eps_estimate": data._jsonable(row.get("EPS Estimate", float("nan"))),
-                "reported_eps": data._jsonable(row.get("Reported EPS", float("nan"))),
-                "surprise_pct": data._jsonable(row.get("Surprise(%)", float("nan"))),
+                "eps_estimate": jsonable(row.get("EPS Estimate", float("nan"))),
+                "reported_eps": jsonable(row.get("Reported EPS", float("nan"))),
+                "surprise_pct": jsonable(row.get("Surprise(%)", float("nan"))),
             }
         )
     return records
@@ -83,7 +88,7 @@ def fetch_earnings_dates_yf(
     """Return yfinance earnings_dates for *ticker*."""
 
     def _fetch() -> list[dict[str, Any]]:
-        data._configure_yfinance()
+        _configure_yfinance()
         try:
             t = yf.Ticker(ticker)
             ed = t.earnings_dates
@@ -100,10 +105,10 @@ def fetch_earnings_dates_yf(
             )
             return []
 
-    records = data.cached_json_call(
+    records = cached_json_call(
         "earnings_yf",
         (ticker, years),
-        ttl_seconds=data.EARNINGS_CACHE_DAYS * 86_400,
+        ttl_seconds=EARNINGS_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
     )
@@ -164,10 +169,10 @@ def fetch_earnings_dates_nse() -> Optional[pd.DataFrame]:
             logger.warning("nse_earnings_fetch_failed", extra={"error": str(exc)})
             return []
 
-    cached = data.cached_json_call(
+    cached = cached_json_call(
         "earnings_nse",
         "corporate_announcements",
-        ttl_seconds=data.SENTIMENT_CACHE_DAYS * 86_400,
+        ttl_seconds=SENTIMENT_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
     )
@@ -179,7 +184,7 @@ def fetch_earnings_dates_nse() -> Optional[pd.DataFrame]:
 
 
 def _earnings_rows_for_ticker(ticker: str, years: int) -> list[dict[str, Any]]:
-    ed = data.fetch_earnings_dates_yf(ticker, years=years)
+    ed = fetch_earnings_dates_yf(ticker, years=years)
     if ed is None:
         return []
     rows: list[dict[str, Any]] = []
@@ -200,10 +205,10 @@ def _fetch_yf_earnings_rows(
     tickers: list[str], years: int, batch_size: int
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    max_workers = min(data.MAX_WORKERS, max(1, batch_size), max(1, len(tickers)))
+    max_workers = min(MAX_WORKERS, max(1, batch_size), max(1, len(tickers)))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_ticker = {
-            executor.submit(data._earnings_rows_for_ticker, ticker, years): ticker
+            executor.submit(_earnings_rows_for_ticker, ticker, years): ticker
             for ticker in tickers
         }
         for future in as_completed(future_to_ticker):
@@ -272,17 +277,17 @@ def fetch_earnings_dates_openscreener(
                     "earnings_date": announce_date.date().isoformat(),
                     "period_end": period_end.date().isoformat(),
                     "eps_estimate": None,
-                    "reported_eps": data._jsonable(item.get("eps")),
+                    "reported_eps": jsonable(item.get("eps")),
                     "surprise_pct": None,
                 }
             )
         return records
 
     try:
-        records = data.cached_json_call(
+        records = cached_json_call(
             "earnings_openscreener",
             (symbol, years, filing_lag_days),
-            ttl_seconds=data.EARNINGS_CACHE_DAYS * 86_400,
+            ttl_seconds=EARNINGS_CACHE_DAYS * 86_400,
             refresh=False,
             fetch=_fetch,
         )
@@ -298,7 +303,7 @@ def fetch_earnings_dates_openscreener(
 def _openscreener_earnings_rows_for_ticker(
     ticker: str, years: int
 ) -> list[dict[str, Any]]:
-    ed = data.fetch_earnings_dates_openscreener(ticker, years=years)
+    ed = fetch_earnings_dates_openscreener(ticker, years=years)
     if ed is None:
         return []
     rows: list[dict[str, Any]] = []
@@ -324,7 +329,7 @@ def _fetch_openscreener_earnings_rows(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_ticker = {
             executor.submit(
-                data._openscreener_earnings_rows_for_ticker, ticker, years
+                _openscreener_earnings_rows_for_ticker, ticker, years
             ): ticker
             for ticker in tickers
         }
@@ -365,7 +370,7 @@ def collect_earnings_events(
 
         # Try NSE corporate announcements first (broader coverage). These carry
         # the real announcement (``sort_date``) — already point-in-time.
-        nse_events = data.fetch_earnings_dates_nse()
+        nse_events = fetch_earnings_dates_nse()
         if nse_events is not None and not nse_events.empty:
             # Only keep tickers in our universe
             ticker_set = set(tickers)
@@ -402,9 +407,7 @@ def collect_earnings_events(
                 "openscreener_earnings_batch",
                 extra={"batch": f"{i}-{i + len(batch)}", "size": len(batch)},
             )
-            for osc_row in data._fetch_openscreener_earnings_rows(
-                batch, years, batch_size
-            ):
+            for osc_row in _fetch_openscreener_earnings_rows(batch, years, batch_size):
                 # Drop openscreener rows whose fiscal quarter is already covered
                 # by a real NSE announcement for the same ticker (dedup).
                 pe = osc_row.get("period_end")
@@ -421,7 +424,7 @@ def collect_earnings_events(
                 "earnings_batch",
                 extra={"batch": f"{i}-{i + len(batch)}", "size": len(batch)},
             )
-            rows.extend(data._fetch_yf_earnings_rows(batch, years, batch_size))
+            rows.extend(_fetch_yf_earnings_rows(batch, years, batch_size))
 
     if not rows:
         return pd.DataFrame(

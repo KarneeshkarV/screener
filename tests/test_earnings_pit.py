@@ -19,7 +19,7 @@ import types
 import pandas as pd
 import pytest
 
-from screener.earnings_backtest import data as ebd
+from screener.earnings_backtest import earnings_dates
 from screener.earnings_backtest.data import (
     INDIA_EARNINGS_FILING_LAG_DAYS,
     collect_earnings_events,
@@ -30,7 +30,9 @@ from screener.earnings_backtest.data import (
 @pytest.fixture(autouse=True)
 def _no_disk_cache(monkeypatch):
     """Bypass the JSON disk cache so each test exercises the live parse path."""
-    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: kw["fetch"]())
+    monkeypatch.setattr(
+        earnings_dates, "cached_json_call", lambda *a, **kw: kw["fetch"]()
+    )
 
 
 class _FakeStock:
@@ -123,7 +125,7 @@ def test_collect_prefers_nse_announcement_and_dedups(monkeypatch):
             "desc": ["Financial Results"],
         }
     )
-    monkeypatch.setattr(ebd, "fetch_earnings_dates_nse", lambda: nse_df)
+    monkeypatch.setattr(earnings_dates, "fetch_earnings_dates_nse", lambda: nse_df)
 
     events = collect_earnings_events(["RELIANCE.NS"], years=5, market="india")
     rel = events[events["ticker"] == "RELIANCE.NS"].copy()
