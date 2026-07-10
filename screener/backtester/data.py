@@ -16,13 +16,34 @@ from datetime import date, datetime
 import io
 import os
 from pathlib import Path
-import time
-from typing import Any, Iterable, Optional, Protocol, cast
+from typing import Iterable, Optional, Protocol, cast
 
 import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 
+from screener.backtester.price_cache import (
+    CACHE_DIR,
+    FMP_CACHE_DIR,
+    PRICE_TAIL_TTL_SECONDS as PRICE_TAIL_TTL_SECONDS,
+    cache_path as _cache_path,
+    load_cached_frame as _load_cached,
+    needs_tail_refresh as _needs_tail_refresh,
+    save_cached_frame as _save_cache,
+)
+from screener.backtester.price_frames import (
+    CORPORATE_ACTION_COLUMNS as CORPORATE_ACTION_COLUMNS,
+    OHLCV_COLUMNS,
+    apply_splits_only_adjustment as apply_splits_only_adjustment,
+    empty_ohlcv_frame as _empty_ohlcv_frame,
+    frame_has_range as _has_range,
+    inclusive_fetch_bounds as _inclusive_fetch_bounds,
+    merge_price_frames as _merge_cached,
+    naive_normalized_index,
+    normalize_price_frame,
+    split_yfinance_download as _split_download,
+    warn_unadjustable_fmp_frames as warn_unadjustable_fmp_frames,
+)
 from screener.resilience import call_with_resilience
 
 # Re-exported for backward compatibility: several modules and the docs import
@@ -31,78 +52,25 @@ from screener.resilience import call_with_resilience
 from screener.symbols import tv_to_yf as tv_to_yf
 
 
-CACHE_DIR = Path.home() / ".screener" / "prices"
-FMP_CACHE_DIR = Path.home() / ".screener" / "fmp_prices"
+_naive_normalized_index = naive_normalized_index
+_normalize_frame = normalize_price_frame
 _DOTENV_LOADED = False
 _YFINANCE_CONFIGURED = False
 
-# Cap yfinance's internal scrape/API request timeout so a stuck provider
-# request can't hang a whole download batch.
+# Cap each supported ``yf.download`` call so a stuck request cannot hang a batch.
 YFINANCE_TIMEOUT_SECONDS = 5
-PRICE_TAIL_TTL_SECONDS = 60 * 60
-
-
-def _cap_yfinance_request_timeout(
-    yf_data: Any, *, seconds: float = YFINANCE_TIMEOUT_SECONDS
-) -> None:
-    """Wrap ``YfData.get``/``cache_get`` to cap the per-request timeout."""
-    original_get = yf_data.YfData.get
-    original_cache_get = yf_data.YfData.cache_get
-
-    def capped_get(self, url, params=None, timeout=30):
-        timeout = min(float(timeout or seconds), seconds)
-        return original_get(self, url, params=params, timeout=timeout)
-
-    def capped_cache_get(self, url, params=None, timeout=30):
-        timeout = min(float(timeout or seconds), seconds)
-        return original_cache_get(self, url, params=params, timeout=timeout)
-
-    yf_data.YfData.get = capped_get
-    yf_data.YfData.cache_get = capped_cache_get
 
 
 def _configure_yfinance() -> None:
-    """Point yfinance tz cache at tmpfs and avoid peewee SQLite lookups.
-
-    The tz-cache dummy swap relies on yfinance private symbols
-    (``_TzCacheManager`` / ``_TzCacheDummy``); upstream renames have happened
-    in the past. We attempt the swap defensively and degrade to a warning if
-    the symbols disappear — the bulk download still works without it, just a
-    bit slower on first call. The internal scrape/API request timeout is also
-    capped (see :func:`_cap_yfinance_request_timeout`) so a stuck provider
-    request can't hang the batch. ``_YFINANCE_CONFIGURED`` is set regardless so
-    we don't keep retrying the same monkey-patches on every fetch.
-    """
+    """Configure yfinance through its supported timezone-cache API."""
     global _YFINANCE_CONFIGURED
     if _YFINANCE_CONFIGURED:
         return
     try:
         import yfinance as yf
-        import yfinance.cache as yf_cache
 
         if os.path.isdir("/dev/shm"):
             yf.set_tz_cache_location("/dev/shm/screener-yftz")
-        try:
-            tz_cache_manager = yf_cache._TzCacheManager
-            tz_cache_dummy = yf_cache._TzCacheDummy
-        except AttributeError:
-            from screener.logging_config import get_logger
-
-            get_logger(__name__).warning(
-                "yfinance_tz_cache_patch_unavailable",
-                reason="missing private _TzCacheManager/_TzCacheDummy",
-            )
-        else:
-            tz_cache_manager.get_tz_cache = classmethod(lambda cls: tz_cache_dummy())
-        # Cap yfinance's internal scrape/API request timeout.
-        try:
-            import yfinance.data as yf_data
-
-            _cap_yfinance_request_timeout(yf_data)
-        except Exception as exc:  # noqa: BLE001 - degrade gracefully on any swap failure
-            from screener.logging_config import get_logger
-
-            get_logger(__name__).debug("yfinance_timeout_patch_failed", error=str(exc))
     except Exception as exc:  # noqa: BLE001 - degrade gracefully on any swap failure
         from screener.logging_config import get_logger
 
@@ -112,13 +80,6 @@ def _configure_yfinance() -> None:
         )
     finally:
         _YFINANCE_CONFIGURED = True
-
-
-OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
-# Supplementary columns emitted only by the split-only / raw regimes. They
-# are always optional on a bars DataFrame — callers should treat a missing
-# column the same as a column of zeros.
-CORPORATE_ACTION_COLUMNS = ["dividend", "split_factor", "stock_splits"]
 
 
 def _load_env_file() -> None:
@@ -156,274 +117,6 @@ class PriceFetcher(Protocol):
         Frames must have lowercase columns: open, high, low, close, volume.
         ``adj_close`` is optional; absent means ``close`` is already adjusted.
         """
-
-
-def _cache_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
-    safe = ticker.replace("/", "_").replace(":", "_")
-    return cache_dir / f"{safe}.parquet"
-
-
-def _naive_normalized_index(idx: pd.Index, interval: str = "1d") -> pd.DatetimeIndex:
-    """Normalize to tz-naive index without re-parsing an already-datetime index.
-
-    ``pd.to_datetime()`` on a ``DatetimeIndex`` is a no-op conversion, but its
-    ``should_cache`` heuristic iterates the whole index in Python — the single
-    largest leaf in the sp500 profiles. Skip it when the index is already
-    datetime, and only ``tz_localize`` when actually tz-aware.
-
-    For daily bars (``interval == "1d"``) the index is truncated to midnight via
-    ``.normalize()`` — the historical behaviour, one bar per calendar day. For
-    intraday intervals normalization is skipped so each bar keeps its
-    time-of-day; only the tz is dropped (yfinance returns exchange-local time),
-    leaving distinct tz-naive timestamps that the dedup pass no longer collapses.
-    """
-    if not isinstance(idx, pd.DatetimeIndex):
-        idx = pd.to_datetime(idx)
-    if idx.tz is not None:
-        if interval == "1d":
-            idx = idx.tz_localize(None)
-        else:
-            # Canonical intraday wall-clock is naive UTC. yfinance batches
-            # already arrive UTC-aware, but pin it explicitly so single-ticker
-            # downloads (exchange-local tz) and other providers line up on the
-            # same simulation calendar.
-            idx = idx.tz_convert("UTC").tz_localize(None)
-    if interval == "1d":
-        return idx.normalize()
-    return idx
-
-
-def _load_cached(
-    ticker: str, cache_dir: Path = CACHE_DIR, interval: str = "1d"
-) -> Optional[pd.DataFrame]:
-    p = _cache_path(ticker, cache_dir)
-    if not p.exists():
-        return None
-    try:
-        df = pd.read_parquet(p)
-        df.index = _naive_normalized_index(df.index, interval)
-        # Clean NaN-OHLCV rows that older cache writes may have persisted, so a
-        # cache hit can't reintroduce the NaN bars that _normalize_frame drops.
-        price_cols = [c for c in OHLCV_COLUMNS if c in df.columns]
-        if price_cols:
-            df = df.dropna(subset=price_cols)
-        return df
-    except (OSError, pd.errors.ParserError, ValueError):
-        return None
-
-
-def _save_cache(ticker: str, df: pd.DataFrame, cache_dir: Path = CACHE_DIR) -> None:
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        df.to_parquet(_cache_path(ticker, cache_dir))
-    except (OSError, ValueError):
-        # parquet failure is non-fatal; just skip caching
-        pass
-
-
-def _empty_ohlcv_frame() -> pd.DataFrame:
-    return pd.DataFrame(
-        columns=OHLCV_COLUMNS,
-        index=pd.DatetimeIndex([], dtype="datetime64[ns]"),
-    )
-
-
-def _normalize_frame(df: pd.DataFrame, interval: str = "1d") -> pd.DataFrame:
-    if df is None or df.empty:
-        return _empty_ohlcv_frame()
-    # yfinance returns MultiIndex columns when multiple tickers; callers should
-    # split first. For single-ticker frames, columns are plain strings.
-    if isinstance(df.columns, pd.MultiIndex):
-        df = df.droplevel(-1, axis=1)
-    rename = {c: c.lower().replace(" ", "_") for c in df.columns}
-    df = df.rename(columns=rename)
-    keep = [c for c in OHLCV_COLUMNS if c in df.columns]
-    out = df[keep].copy()
-    if "adj_close" in df.columns:
-        out["adj_close"] = df["adj_close"]
-    # Preserve explicit corporate-action columns if present (auto_adjust=False
-    # path). Split-factor is derived from stock_splits when available.
-    if "dividends" in df.columns:
-        out["dividend"] = df["dividends"].fillna(0.0).astype(float)
-    elif "dividend" in df.columns:
-        out["dividend"] = df["dividend"].fillna(0.0).astype(float)
-    if "stock_splits" in df.columns:
-        splits = df["stock_splits"].fillna(0.0).astype(float)
-        # yfinance emits the split ratio (e.g. 2.0 for 2:1). Reverse-cumulative
-        # product gives the factor that back-adjusts historical prices so they
-        # are comparable to the present.
-        factor = splits.replace(0.0, 1.0)[::-1].cumprod()[::-1].shift(-1).fillna(1.0)
-        out["split_factor"] = factor.astype(float)
-        out["stock_splits"] = splits
-    out.index = _naive_normalized_index(out.index, interval)
-    out = out[~out.index.duplicated(keep="last")].sort_index()
-    # Drop bars with no valid OHLCV (yfinance emits NaN rows for halts,
-    # illiquid/delisting tails, and multi-ticker index-union gaps). These are
-    # not tradeable bars: an entry/exit fill or mark-to-market landing on one
-    # propagates NaN into trade PnL and the equity endpoint. Mirrors the FMP
-    # normalize path, which already drops these.
-    price_cols = [c for c in OHLCV_COLUMNS if c in out.columns]
-    if price_cols:
-        out = out.dropna(subset=price_cols)
-    return out
-
-
-def apply_splits_only_adjustment(
-    bars_dict: dict[str, pd.DataFrame],
-) -> dict[str, pd.DataFrame]:
-    """Back-adjust OHLC + per-share dividends for splits in the splits_only regime.
-
-    For each frame carrying a ``split_factor`` column (emitted by
-    ``_normalize_frame`` from yfinance ``Stock Splits``), historical bars are
-    divided by the factor for open/high/low/close and the per-share
-    ``dividend`` column, and volume is multiplied by the factor — so a flat
-    series across a real 2:1 split stays flat instead of showing a phantom
-    -50% step. Frames whose factors are all ``1.0`` are returned untouched
-    (fast path).
-
-    Frames lacking a ``split_factor`` are passed through unchanged here; the
-    FMP-reconstruction / warning for those lives at the fetch sites.
-    """
-    out: dict[str, pd.DataFrame] = {}
-    for ticker, frame in bars_dict.items():
-        if frame is None or frame.empty or "split_factor" not in frame.columns:
-            out[ticker] = frame
-            continue
-        factor = frame["split_factor"].astype(float)
-        # Fast-path: nothing to do when no split is present.
-        if bool((factor == 1.0).all()):
-            out[ticker] = frame
-            continue
-        adjusted = frame.copy()
-        for col in ("open", "high", "low", "close", "dividend"):
-            if col in adjusted.columns:
-                adjusted[col] = adjusted[col].astype(float) / factor
-        if "volume" in adjusted.columns:
-            adjusted["volume"] = adjusted["volume"].astype(float) * factor
-        out[ticker] = adjusted
-    return out
-
-
-def warn_unadjustable_fmp_frames(
-    bars_dict: dict[str, pd.DataFrame],
-) -> dict[str, pd.DataFrame]:
-    """Warn (once per call) about FMP-served frames that cannot be split-adjusted.
-
-    FMP frames carry ``adj_close`` but no ``Stock Splits`` column, so they have
-    no ``split_factor``. We deliberately do **not** reconstruct one from the
-    ``adj_close``/``close`` ratio: ``adj_close`` is back-adjusted for *both*
-    splits and dividends, so the ratio cannot separate the two — a pure dividend
-    would be mis-read as a split and bake dividend return into the price series
-    (corrupting the splits_only regime and partially double-counting dividends).
-
-    Instead these frames pass through unadjusted and we emit a clear warning so
-    the limitation is visible rather than silently producing inconsistent
-    results. yfinance-served tickers (the default path) carry ``split_factor``
-    and are still adjusted normally.
-    """
-    unadjusted = [
-        ticker
-        for ticker, frame in bars_dict.items()
-        if frame is not None and not frame.empty and "split_factor" not in frame.columns
-    ]
-    if unadjusted:
-        from screener.logging_config import get_logger
-
-        get_logger(__name__).warning(
-            "fmp_unadjusted_in_splits_only",
-            reason=(
-                "FMP frames lack a Stock Splits column; splits cannot be "
-                "reliably recovered from adj_close (splits+dividends are "
-                "conflated), so these tickers are left split-unadjusted"
-            ),
-            tickers=unadjusted[:20],
-            count=len(unadjusted),
-        )
-    return bars_dict
-
-
-def _merge_cached(
-    existing: Optional[pd.DataFrame], new: pd.DataFrame, interval: str = "1d"
-) -> pd.DataFrame:
-    if existing is None or existing.empty:
-        merged = new.copy()
-    elif new.empty:
-        merged = existing.copy()
-    else:
-        merged = pd.concat([existing, new], axis=0)
-    if merged.empty:
-        return merged
-    merged.index = _naive_normalized_index(merged.index, interval)
-    return merged[~merged.index.duplicated(keep="last")].sort_index()
-
-
-def _inclusive_fetch_bounds(
-    start: date, end: date, interval: str = "1d"
-) -> tuple[pd.Timestamp, pd.Timestamp]:
-    start_ts = pd.Timestamp(start)
-    end_ts = pd.Timestamp(end)
-    if interval != "1d" and end_ts == end_ts.normalize():
-        end_ts = end_ts + pd.Timedelta(days=1) - pd.Timedelta(1, "ns")
-    return start_ts, end_ts
-
-
-def _has_range(
-    df: pd.DataFrame,
-    start_ts: pd.Timestamp,
-    end_ts: pd.Timestamp,
-    interval: str = "1d",
-) -> bool:
-    if df is None or df.empty:
-        return False
-    in_range = df.loc[(df.index >= start_ts) & (df.index <= end_ts)]
-    return (
-        not in_range.empty
-        and in_range.index.min() <= start_ts + pd.Timedelta(days=3)
-        and in_range.index.max() >= end_ts - pd.Timedelta(days=3)
-    )
-
-
-def _needs_tail_refresh(cache_path: Path, end_ts: pd.Timestamp) -> bool:
-    """Return whether a near-present cache is old enough for a tail refresh."""
-    today = date.today()
-    if abs((end_ts.date() - today).days) > 2:
-        return False
-    try:
-        ttl_seconds = float(
-            os.environ.get("SCREENER_PRICE_TAIL_TTL_SECONDS", PRICE_TAIL_TTL_SECONDS)
-        )
-    except ValueError:
-        ttl_seconds = PRICE_TAIL_TTL_SECONDS
-    try:
-        return time.time() - cache_path.stat().st_mtime > max(0.0, ttl_seconds)
-    except OSError:
-        return False
-
-
-def _split_download(
-    raw: pd.DataFrame, tickers: list[str], interval: str = "1d"
-) -> dict[str, pd.DataFrame]:
-    if raw is None or raw.empty:
-        return {ticker: _empty_ohlcv_frame() for ticker in tickers}
-    if not isinstance(raw.columns, pd.MultiIndex):
-        ticker = tickers[0] if tickers else ""
-        return {ticker: _normalize_frame(raw, interval)}
-
-    frames: dict[str, pd.DataFrame] = {}
-    level_values = [
-        set(raw.columns.get_level_values(i)) for i in range(raw.columns.nlevels)
-    ]
-    for ticker in tickers:
-        frame = pd.DataFrame()
-        for level, values in enumerate(level_values):
-            if ticker in values:
-                selected = raw.xs(ticker, level=level, axis=1, drop_level=True)
-                frame = (
-                    selected.to_frame() if isinstance(selected, pd.Series) else selected
-                )
-                break
-        frames[ticker] = _normalize_frame(frame, interval)
-    return frames
 
 
 class YFinancePriceFetcher:
@@ -603,6 +296,7 @@ class YFinancePriceFetcher:
                 progress=False,
                 threads=True,
                 group_by="ticker",
+                timeout=YFINANCE_TIMEOUT_SECONDS,
             )
             if not self.auto_adjust:
                 download_kwargs["actions"] = True

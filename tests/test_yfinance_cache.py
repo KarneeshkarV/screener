@@ -8,7 +8,7 @@ import time
 import pandas as pd
 
 from screener.backtester import data as data_module
-from screener.backtester.data import YFinancePriceFetcher, _save_cache
+from screener.backtester.data import YFinancePriceFetcher, _load_cached, _save_cache
 
 
 def _plain_bars(start, end, base: float = 100.0) -> pd.DataFrame:
@@ -53,6 +53,7 @@ def test_yfinance_fetcher_batches_uncached_tickers(tmp_path, monkeypatch):
 
     assert len(calls) == 1
     assert calls[0][0] == "AAA BBB"
+    assert calls[0][1]["timeout"] == data_module.YFINANCE_TIMEOUT_SECONDS
     assert set(out) == {"AAA", "BBB"}
     assert not out["AAA"].empty
     assert not out["BBB"].empty
@@ -76,6 +77,24 @@ def test_yfinance_fetcher_uses_full_cache_hit(tmp_path, monkeypatch):
 
     assert calls["count"] == 1
     assert first["AAA"].equals(second["AAA"])
+
+
+def test_atomic_cache_failure_preserves_previous_frame(tmp_path, monkeypatch):
+    original = _plain_bars(date(2024, 1, 1), date(2024, 1, 5)).rename(columns=str.lower)
+    _save_cache("AAA", original, tmp_path)
+
+    def fail_write(self, path, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", fail_write)
+    replacement = original.assign(close=999.0)
+
+    _save_cache("AAA", replacement, tmp_path)
+
+    pd.testing.assert_frame_equal(
+        _load_cached("AAA", tmp_path), original, check_freq=False
+    )
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 def test_yfinance_fetcher_fetches_only_missing_tail(tmp_path, monkeypatch):
