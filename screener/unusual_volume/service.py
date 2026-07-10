@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date, timedelta
-from typing import Optional
+from typing import Any, ClassVar, Optional, Self
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import requests
 from rich.console import Console
 
@@ -29,7 +30,13 @@ from .detector import (
     detect_market,
 )
 from .enrich import attach_sector, deep_enrich_india, fetch_sector_map
+from .enrichment import (
+    MICROSTRUCTURE_ENRICHMENTS,
+    Enrichment,
+    EnrichmentDiagnostic,
+)
 from .filters import fetch_fno_ban_list, passes_market_cap, passes_volume_floor
+from .microstructure import run_microstructure_enrichments
 
 
 _DEFAULT_MIN_MCAP = {"us": 300_000_000.0, "india": 5_000_000_000.0}
@@ -57,16 +64,33 @@ class UnusualVolumeRequest(BaseModel):
     min_avg_volume: float = Field(default=DEFAULT_MIN_AVG_VOLUME, ge=0.0)
     min_market_cap: Optional[float] = Field(default=None, ge=0.0)
     include_fno_ban: bool = False
-    deep_india: bool = False
-    buildup_enabled: bool = False
+    enrichments: frozenset[Enrichment] = frozenset()
     buildup_window: int = Field(default=DEFAULT_BUILDUP_WINDOW, ge=1)
     buildup_min_score: float = Field(default=DEFAULT_BUILDUP_MIN, ge=0.0)
-    option_chain: bool = False
-    fii_dii: bool = False
-    pledge: bool = False
     refresh: bool = False
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    _LEGACY_ENRICHMENT_FLAGS: ClassVar[dict[str, Enrichment]] = {
+        "buildup_enabled": Enrichment.BUILDUP,
+        "deep_india": Enrichment.DEEP_INDIA,
+        "option_chain": Enrichment.OPTION_CHAIN,
+        "fii_dii": Enrichment.FII_DII,
+        "pledge": Enrichment.PLEDGE,
+    }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _collect_enrichment_flags(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        selected = set(data.get("enrichments", ()))
+        for flag, enrichment in cls._LEGACY_ENRICHMENT_FLAGS.items():
+            if data.pop(flag, False):
+                selected.add(enrichment)
+        data["enrichments"] = selected
+        return data
 
     @field_validator("market", "strength_floor")
     @classmethod
@@ -84,11 +108,47 @@ class UnusualVolumeRequest(BaseModel):
             raise ValueError("universe must include at least one ticker")
         return normalized
 
+    def includes(self, enrichment: Enrichment) -> bool:
+        return enrichment in self.enrichments
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        if update and self._LEGACY_ENRICHMENT_FLAGS.keys() & update.keys():
+            data = self.model_dump()
+            data.update(update)
+            return self.__class__.model_validate(data)
+        return super().model_copy(update=dict(update) if update else None, deep=deep)
+
+    @property
+    def buildup_enabled(self) -> bool:
+        return self.includes(Enrichment.BUILDUP)
+
+    @property
+    def deep_india(self) -> bool:
+        return self.includes(Enrichment.DEEP_INDIA)
+
+    @property
+    def option_chain(self) -> bool:
+        return self.includes(Enrichment.OPTION_CHAIN)
+
+    @property
+    def fii_dii(self) -> bool:
+        return self.includes(Enrichment.FII_DII)
+
+    @property
+    def pledge(self) -> bool:
+        return self.includes(Enrichment.PLEDGE)
+
 
 class UnusualVolumeResult(BaseModel):
     events: list[Event] = Field(default_factory=list)
     fetched_count: int = Field(ge=0)
     liquid_count: int = Field(ge=0)
+    diagnostics: list[EnrichmentDiagnostic] = Field(default_factory=list)
 
     model_config = ConfigDict(frozen=True)
 
@@ -234,8 +294,9 @@ def run_unusual_volume_scan(
     if request.buildup_enabled:
         _apply_buildup_overlay(request, liquid, panel, events, console)
 
+    diagnostics: list[EnrichmentDiagnostic] = []
     if request.market == "india":
-        _overlay_india_microstructure(request, events, console)
+        diagnostics = _overlay_india_microstructure(request, events, console) or []
 
     if events:
         sector_map = fetch_sector_map(
@@ -271,6 +332,7 @@ def run_unusual_volume_scan(
         events=events,
         fetched_count=len(bars_by_tv),
         liquid_count=len(liquid),
+        diagnostics=diagnostics,
     )
 
 
@@ -322,104 +384,28 @@ def _overlay_india_microstructure(
     request: UnusualVolumeRequest,
     events: list[Event],
     console: Console,
-) -> None:
-    """Attach option-chain / FII-DII / pledge overlays (India, post-filter).
-
-    Each overlay is independently guarded so a flaky NSE never aborts the
-    scan. Live-only sources also persist a daily snapshot panel so a
-    backtestable history accumulates over time.
-    """
-    if not events or not (request.option_chain or request.fii_dii or request.pledge):
-        return
+) -> list[EnrichmentDiagnostic]:
+    """Run selected India overlay stages and render their diagnostics."""
+    selected = frozenset(request.enrichments & MICROSTRUCTURE_ENRICHMENTS)
+    if not events or not selected:
+        return []
     snap_date = _live_nse_snapshot_date()
-    attach_to_events = request.as_of == snap_date
-    overlay_events_target = (
-        events if attach_to_events else [ev.model_copy(deep=True) for ev in events]
-    )
-    if not attach_to_events:
+    if request.as_of != snap_date:
         console.print(
             "[dim]Live NSE overlays use "
             f"{snap_date}; preserving historical scan date {request.as_of}.[/dim]"
         )
-
-    if request.option_chain:
-        try:
-            from screener.cache import append_panel_snapshot
-            from .option_chain import overlay_option_chain
-
-            metrics = overlay_option_chain(
-                overlay_events_target, refresh=request.refresh
-            )
-            if metrics:
-                rows = pd.DataFrame(
-                    [
-                        {
-                            "as_of": snap_date,
-                            "SYMBOL": sym,
-                            "ce_oi": m.get("ce_oi"),
-                            "pe_oi": m.get("pe_oi"),
-                            "call_put_oi_ratio": m.get("call_put_oi_ratio"),
-                            "pcr": m.get("pcr"),
-                        }
-                        for sym, m in metrics.items()
-                    ]
-                )
-                append_panel_snapshot(
-                    "option_chain", rows, dedupe_keys=["as_of", "SYMBOL"]
-                )
-            console.print(f"[dim]Option-chain overlay: {len(metrics)} symbol(s).[/dim]")
-        except (
-            requests.RequestException,
-            OSError,
-            RuntimeError,
-            ValueError,
-            KeyError,
-            TypeError,
-        ) as exc:
-            console.print(
-                f"[yellow]Option-chain overlay failed: {exc}. Skipping.[/yellow]"
-            )
-
-    if request.fii_dii:
-        try:
-            from .fii_dii import overlay_fii_dii
-
-            m = overlay_fii_dii(
-                overlay_events_target, snap_date, refresh=request.refresh
-            )
-            if m is not None:
-                console.print(
-                    f"[dim]FII/DII (market-wide): 5d FII={m['fii_5d_net']} "
-                    f"5d DII={m['dii_5d_net']} trend={m['fii_trend']}.[/dim]"
-                )
-        except (
-            requests.RequestException,
-            OSError,
-            RuntimeError,
-            ValueError,
-            KeyError,
-            TypeError,
-        ) as exc:
-            console.print(f"[yellow]FII/DII overlay failed: {exc}. Skipping.[/yellow]")
-
-    if request.pledge:
-        if not attach_to_events:
-            console.print("[dim]Pledge overlay skipped for historical scan.[/dim]")
-            return
-        try:
-            from screener.pledge import overlay_pledge
-
-            overlay_pledge(events, refresh=request.refresh)
-            console.print("[dim]Pledge overlay applied.[/dim]")
-        except (
-            requests.RequestException,
-            OSError,
-            RuntimeError,
-            ValueError,
-            KeyError,
-            TypeError,
-        ) as exc:
-            console.print(f"[yellow]Pledge overlay failed: {exc}. Skipping.[/yellow]")
+    diagnostics = run_microstructure_enrichments(
+        events,
+        selected,
+        scan_date=request.as_of,
+        snapshot_date=snap_date,
+        refresh=request.refresh,
+    )
+    for diagnostic in diagnostics:
+        style = "yellow" if diagnostic.status == "failed" else "dim"
+        console.print(f"[{style}]{diagnostic.message}[/{style}]")
+    return diagnostics
 
 
 def _apply_buildup_overlay(
