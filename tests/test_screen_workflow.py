@@ -35,7 +35,19 @@ def _df(*names: str) -> pd.DataFrame:
     return pd.DataFrame({"name": list(names), "description": list(names)})
 
 
-def test_screen_workflow_csv_short_circuits_history_and_report(tmp_path):
+def _stub_days_to_earnings(monkeypatch):
+    """Avoid network in workflow tests; still attach the enrichment column."""
+
+    def _fake(df, market, **kwargs):
+        out = df.copy()
+        out["days_to_earnings"] = None
+        return out
+
+    monkeypatch.setattr("screener.enrich.enrich_days_to_earnings", _fake)
+
+
+def test_screen_workflow_csv_short_circuits_history_and_report(tmp_path, monkeypatch):
+    _stub_days_to_earnings(monkeypatch)
     calls: list[str] = []
     frame = _df("AAA", "BBB")
 
@@ -57,11 +69,14 @@ def test_screen_workflow_csv_short_circuits_history_and_report(tmp_path):
     outcome = run_screen_workflow(_request(output_csv=True), deps)
 
     assert outcome.mode is ScreenMode.CSV
-    assert outcome.df is frame
+    assert outcome.df is not None
+    assert outcome.df["name"].tolist() == ["AAA", "BBB"]
+    assert "days_to_earnings" in outcome.df.columns
     assert calls == ["scan"]
 
 
-def test_screen_workflow_first_run_uses_default_report_path(tmp_path):
+def test_screen_workflow_first_run_uses_default_report_path(tmp_path, monkeypatch):
+    _stub_days_to_earnings(monkeypatch)
     frame = _df("AAA")
     report = tmp_path / "screen.html"
     rendered: dict[str, object] = {}
@@ -96,7 +111,10 @@ def test_screen_workflow_first_run_uses_default_report_path(tmp_path):
     assert rendered == {"path": report, "first_run": True}
 
 
-def test_screen_workflow_previous_run_diff_uses_explicit_report_path(tmp_path):
+def test_screen_workflow_previous_run_diff_uses_explicit_report_path(
+    tmp_path, monkeypatch
+):
+    _stub_days_to_earnings(monkeypatch)
     frame = _df("AAA")
     prev = pd.DataFrame({"ticker": ["BBB"]})
     explicit = tmp_path / "explicit.html"

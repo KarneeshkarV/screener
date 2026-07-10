@@ -75,6 +75,9 @@ class ScreenRequest:
     cache_ttl: str
     report_path: Path | None
     open_report: bool = False
+    # Drop final result rows whose next earnings date is within N calendar days.
+    # ``None`` disables the filter. Unknown earnings dates are always kept.
+    earnings_buffer: int | None = None
 
 
 @dataclass(frozen=True)
@@ -159,6 +162,14 @@ def run_screen_workflow(
         cache_ttl=deps.parse_cache_ttl(request.cache_ttl),
         refresh=request.refresh,
     )
+
+    # Earnings enrichment runs only on the final result rows (post-screen),
+    # never the whole universe. Provider failures leave the column empty.
+    from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
+
+    df = enrich_days_to_earnings(df, request.market)
+    if request.earnings_buffer is not None:
+        df = filter_earnings_buffer(df, request.earnings_buffer)
 
     if request.output_csv:
         return ScreenOutcome(

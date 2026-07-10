@@ -56,6 +56,8 @@ def _build_rolling_candidate_matrices(
     lookback_required: int,
     membership_added: dict[str, date] | None = None,
     regime_allowed: pd.Series | None = None,
+    earnings_blackout: dict[str, list[date]] | None = None,
+    earnings_blackout_days: int | None = None,
     warnings: list[str] | None = None,
 ) -> _RollingCandidateMatrices:
     """Build once-per-run matrices for daily candidate scans."""
@@ -84,6 +86,43 @@ def _build_rolling_candidate_matrices(
             regime_allowed.reindex(master_ix, method="ffill").fillna(False).astype(bool)
         )
         signal_mat.loc[~allowed.to_numpy(), :] = False
+    # Earnings blackout gate: suppress entries on calendar days within N days
+    # before (and including) a known earnings date for that ticker. Tickers with
+    # no known earnings dates are left untouched (and warned about below).
+    if (
+        earnings_blackout is not None
+        and earnings_blackout_days is not None
+        and earnings_blackout_days >= 0
+        and not signal_mat.empty
+    ):
+        day_ord = master_ix.map(pd.Timestamp.toordinal).to_numpy(dtype=np.int64)
+        missing_earnings: list[str] = []
+        for tv in valid_tickers:
+            edates = earnings_blackout.get(tv) or []
+            if not edates:
+                missing_earnings.append(tv)
+                continue
+            ed_ord = np.fromiter(
+                (pd.Timestamp(d).toordinal() for d in edates),
+                dtype=np.int64,
+                count=len(edates),
+            )
+            # In blackout when some earnings date E satisfies 0 <= E - day <= N.
+            diffs = ed_ord[None, :] - day_ord[:, None]
+            in_blackout = ((diffs >= 0) & (diffs <= earnings_blackout_days)).any(axis=1)
+            if in_blackout.any():
+                signal_mat.loc[in_blackout, tv] = False
+        if missing_earnings and warnings is not None:
+            preview = ", ".join(sorted(missing_earnings)[:5])
+            more = (
+                ""
+                if len(missing_earnings) <= 5
+                else f" (+{len(missing_earnings) - 5} more)"
+            )
+            warnings.append(
+                f"earnings blackout active but {len(missing_earnings)} ticker(s) "
+                f"lack earnings dates; not gated: {preview}{more}"
+            )
     # Empty dict sentinel: no min-price / ADV filters configured.
     filter_mat: pd.DataFrame | None
     if filter_signals_by_tv:

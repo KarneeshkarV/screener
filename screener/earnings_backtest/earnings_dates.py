@@ -434,3 +434,136 @@ def collect_earnings_events(
             ]
         )
     return pd.DataFrame(rows)
+
+
+def events_to_dates_map(events: pd.DataFrame) -> dict[str, list[date]]:
+    """Group an events frame into ``ticker -> sorted unique earnings dates``."""
+    if events is None or events.empty:
+        return {}
+    if "ticker" not in events.columns or "earnings_date" not in events.columns:
+        return {}
+    out: dict[str, list[date]] = {}
+    for ticker, group in events.groupby("ticker", sort=False):
+        dates: list[date] = []
+        for raw in group["earnings_date"]:
+            ts = pd.Timestamp(raw)
+            if pd.isna(ts):
+                continue
+            dates.append(ts.normalize().date())
+        if dates:
+            out[str(ticker)] = sorted(set(dates))
+    return out
+
+
+def load_earnings_dates_map(
+    tickers: list[str],
+    market: str,
+    *,
+    years: int = 5,
+    collect_fn: Any | None = None,
+) -> dict[str, list[date]]:
+    """Collect historical earnings dates for *tickers* as a blackout map.
+
+    Uses :func:`collect_earnings_events` (or an injectable *collect_fn*) which
+    already caches per-source results on disk. Returns ``ticker -> list[date]``
+    for tickers that have at least one known event; missing tickers are omitted.
+    """
+    if not tickers:
+        return {}
+    fn = collect_fn if collect_fn is not None else data.collect_earnings_events
+    try:
+        events = fn(list(tickers), years=years, market=market)
+    except Exception as exc:
+        logger.warning(
+            "earnings_dates_map_failed",
+            extra={"market": market, "n_tickers": len(tickers), "error": str(exc)},
+        )
+        return {}
+    return events_to_dates_map(events)
+
+
+def next_earnings_date(
+    earnings_dates: list[date] | pd.DatetimeIndex | pd.Series | None,
+    as_of: date,
+) -> date | None:
+    """Return the earliest earnings date on or after *as_of*, else ``None``."""
+    if earnings_dates is None:
+        return None
+    as_of_ts = pd.Timestamp(as_of).normalize()
+    upcoming: list[date] = []
+    for raw in earnings_dates:
+        ts = pd.Timestamp(raw)
+        if pd.isna(ts):
+            continue
+        ts = ts.normalize()
+        if ts >= as_of_ts:
+            upcoming.append(ts.date())
+    return min(upcoming) if upcoming else None
+
+
+def fetch_next_earnings_dates(
+    symbols: list[str],
+    market: str,
+    *,
+    as_of: date | None = None,
+    yf_fetcher: Any | None = None,
+    nse_fetcher: Any | None = None,
+) -> dict[str, date | None]:
+    """Map screen symbols to their next known earnings date (or ``None``).
+
+    Market-aware: yfinance for US, NSE corporate announcements for India.
+    Provider failures are logged and yield ``None`` for affected symbols so a
+    live screen never aborts on earnings data.
+    """
+    as_of_d = as_of or date.today()
+    result: dict[str, date | None] = {sym: None for sym in symbols}
+    if not symbols:
+        return result
+
+    if market == "india":
+        fetch_nse = (
+            nse_fetcher if nse_fetcher is not None else data.fetch_earnings_dates_nse
+        )
+        try:
+            nse_df = fetch_nse()
+        except Exception as exc:
+            logger.warning("nse_next_earnings_failed", extra={"error": str(exc)})
+            return result
+        if nse_df is None or nse_df.empty:
+            return result
+        # Build yf-style ticker -> next date, then map back to input symbols.
+        by_yf: dict[str, date | None] = {}
+        for ticker, group in nse_df.groupby("ticker", sort=False):
+            by_yf[str(ticker)] = next_earnings_date(group["earnings_date"], as_of_d)
+        from screener.symbols import tv_to_yf
+
+        for sym in symbols:
+            yf_sym = tv_to_yf(str(sym), "india")
+            result[sym] = by_yf.get(yf_sym)
+            if result[sym] is None:
+                # Also try bare / .NS variants for name-only screen rows.
+                bare = str(sym).replace(".NS", "").replace(".BO", "")
+                result[sym] = by_yf.get(f"{bare}.NS") or by_yf.get(bare)
+        return result
+
+    # US (and other non-india): per-ticker yfinance earnings_dates (cached).
+    fetch_yf = yf_fetcher if yf_fetcher is not None else data.fetch_earnings_dates_yf
+    from screener.symbols import tv_to_yf
+
+    for sym in symbols:
+        yf_sym = tv_to_yf(str(sym), market)
+        try:
+            ed = fetch_yf(yf_sym)
+        except Exception as exc:
+            logger.warning(
+                "yf_next_earnings_failed",
+                extra={"ticker": yf_sym, "error": str(exc)},
+            )
+            continue
+        if ed is None or (isinstance(ed, pd.DataFrame) and ed.empty):
+            continue
+        if isinstance(ed, pd.DataFrame):
+            result[sym] = next_earnings_date(list(ed.index), as_of_d)
+        else:
+            result[sym] = next_earnings_date(ed, as_of_d)
+    return result

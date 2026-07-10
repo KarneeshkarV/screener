@@ -87,6 +87,16 @@ def _screen_workflow_deps() -> ScreenWorkflowDeps:
     default=False,
     help="Open the generated HTML report in the default browser.",
 )
+@click.option(
+    "--earnings-buffer",
+    type=int,
+    default=None,
+    help=(
+        "Drop result rows whose next earnings date is within N calendar days. "
+        "Rows with unknown earnings dates are kept. The days_to_earnings column "
+        "is always attached for final result rows."
+    ),
+)
 def screen(
     market: str,
     criteria_names: tuple[str, ...],
@@ -98,8 +108,11 @@ def screen(
     cache_ttl: str,
     report_path: Path | None,
     open_report: bool,
+    earnings_buffer: int | None,
 ) -> None:
     """Screen stocks based on technical criteria."""
+    if earnings_buffer is not None and earnings_buffer < 0:
+        raise click.UsageError("--earnings-buffer must be >= 0.")
     _criteria_registry_patch_point()
     request = ScreenRequest(
         market=market,
@@ -112,6 +125,7 @@ def screen(
         cache_ttl=cache_ttl,
         report_path=report_path,
         open_report=open_report,
+        earnings_buffer=earnings_buffer,
     )
     try:
         outcome = run_screen_workflow(request, _screen_workflow_deps())

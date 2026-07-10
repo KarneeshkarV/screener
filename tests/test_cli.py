@@ -127,11 +127,21 @@ def _screen_df() -> pd.DataFrame:
     )
 
 
+def _stub_screen_earnings(monkeypatch) -> None:
+    def _fake(df, market, **kwargs):
+        out = df.copy()
+        out["days_to_earnings"] = None
+        return out
+
+    monkeypatch.setattr("screener.enrich.enrich_days_to_earnings", _fake)
+
+
 def test_screen_auto_temp_report(tmp_path, monkeypatch):
     report = tmp_path / "screen.html"
     monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
     monkeypatch.setattr("screener.reporting.temp_report_path", lambda prefix: report)
     monkeypatch.setattr(screen_mod, "scan", lambda **kwargs: (2, _screen_df()))
+    _stub_screen_earnings(monkeypatch)
 
     res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2"])
 
@@ -150,6 +160,7 @@ def test_screen_csv_skips_auto_temp_report(tmp_path, monkeypatch):
     monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
     monkeypatch.setattr("screener.reporting.temp_report_path", lambda prefix: report)
     monkeypatch.setattr(screen_mod, "scan", lambda **kwargs: (2, _screen_df()))
+    _stub_screen_earnings(monkeypatch)
 
     res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2", "--csv"])
 
