@@ -191,7 +191,13 @@ def load_garp_universe(
 def _fetch_india_sections(symbol: str) -> dict[str, Any]:
     from openscreener import Stock
 
-    stock = Stock(symbol)
+    from screener.insiders import _HttpScraper
+
+    # Never use openscreener's default PlaywrightScraper here: it launches a
+    # headless Chromium per symbol, which with parallel workers peaks at
+    # multiple GB of RSS. The section tables are server-rendered, so the
+    # plain-HTTP scraper (shared with insiders/conviction) is sufficient.
+    stock = Stock(symbol, scraper=_HttpScraper())
     return {
         "ratios": stock.fetch("ratios") or {},
         "profit_loss": stock.fetch("profit_loss") or {},
