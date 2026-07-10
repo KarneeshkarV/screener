@@ -52,6 +52,7 @@ from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import (
     PineError,
     PineSyntaxError,
+    collect_names,
     evaluate,
     parse,
     required_lookback,
@@ -502,6 +503,10 @@ def test_pine_required_lookback():
     assert required_lookback(parse("not (close > sma(close, 7))")) == 7
     assert required_lookback(parse("-close + sma(close, 4)")) == 4
     assert required_lookback(parse("close > 0")) == 0
+
+
+def test_pine_collect_names_under_unary_operator():
+    assert collect_names(parse("-close > 0")) == {"close"}
 
 
 def test_trailing_liquidity_edges():

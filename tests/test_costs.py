@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from screener.backtester.cli_common import build_slippage_model
+from screener.backtester import core as backtester_core
 from screener.backtester.costs import (
     FlatCommission,
     IndiaDeliveryCosts,
@@ -134,6 +136,16 @@ def test_portfolio_india_costs_reduce_cash_vs_flat_zero():
     assert t_india.pnl < t_flat.pnl
 
 
+def test_portfolio_clamps_negative_cost_fraction():
+    class NegativeCost:
+        def side_cost_fraction(self, side, notional):
+            return -0.01
+
+    portfolio = Portfolio(1_000.0, 1)
+    position = portfolio.open("AAA", date(2024, 1, 2), 100.0, cost_model=NegativeCost())
+    assert position.shares == pytest.approx(10.0)
+
+
 # ── Corwin-Schultz ───────────────────────────────────────────────────
 
 
@@ -219,6 +231,31 @@ def test_corwin_schultz_rejects_nonpositive_window():
         corwin_schultz_half_spread(s, s, window=0)
 
 
+def test_half_spread_lookup_edge_cases(monkeypatch):
+    bars = _constant_spread_ohlc(n=5)
+    cfg = _cfg(spread_proxy=True)
+
+    assert backtester_core._half_spread_at_signal(bars, -1, cfg) == 0.0
+    assert (
+        backtester_core._half_spread_at_signal(bars.drop(columns="high"), 0, cfg) == 0.0
+    )
+
+    cache = backtester_core._build_frame_cache(bars)
+    cache.half_spread_s = pd.Series([0.25] * len(bars), index=bars.index)
+    assert backtester_core._half_spread_at_signal(bars, 2, cfg, cache) == 0.25
+
+    cache.half_spread_s = pd.Series(["invalid"] * len(bars), index=bars.index)
+    assert backtester_core._half_spread_at_signal(bars, 2, cfg, cache) == 0.0
+    cache.half_spread_s = pd.Series([np.nan] * len(bars), index=bars.index)
+    assert backtester_core._half_spread_at_signal(bars, 2, cfg, cache) == 0.0
+
+    def fail_estimator(high, low):
+        raise ValueError("bad bars")
+
+    monkeypatch.setattr(backtester_core, "corwin_schultz_half_spread", fail_estimator)
+    assert backtester_core._half_spread_at_signal(bars, 2, cfg) == 0.0
+
+
 # ── EstimatedHalfSpreadSlippage ──────────────────────────────────────
 
 
@@ -242,6 +279,19 @@ def test_composite_with_estimated_half_spread():
     # 10 bps + 50 bps half-spread = 60 bps adverse.
     frac = model.adverse_fraction("buy", 0, 0, 0, half_spread=0.005)
     assert frac == pytest.approx(0.001 + 0.005)
+
+
+def test_cli_spread_proxy_wraps_selected_slippage_model():
+    model = build_slippage_model("fixed", 10.0, 0.0, 0.0, spread_proxy=True)
+    assert isinstance(model, CompositeSlippage)
+    assert model.adverse_fraction("buy", 0, 0, 0, half_spread=0.005) == pytest.approx(
+        0.006
+    )
+
+
+def test_backtest_config_rejects_unsupported_interval():
+    with pytest.raises(ValueError, match="unsupported interval"):
+        _cfg(interval="2h")
 
 
 # ── Flat cost_model regression (byte-identical legacy path) ──────────
