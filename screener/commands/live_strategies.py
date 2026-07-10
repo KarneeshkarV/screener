@@ -34,10 +34,10 @@ from screener.backtester.data import (
 from screener.backtester.vbt_sweep import (
     DEFAULT_VOL_MA_WINDOW,
     DEFAULT_VOL_MULTIPLIER,
-    _obv,
     build_close_panel,
     build_volume_panel,
 )
+from screener.indicators.frames import on_balance_volume
 from screener.markets import (
     as_of_option,
     get_market,
@@ -333,7 +333,7 @@ def run_obv_trend_live(
         market, as_of, lookback_days=lookback, fetcher=fetcher
     )
 
-    obv_arr = _obv(close, volume)
+    obv_arr = on_balance_volume(close, volume).to_numpy(dtype=float)
     obv_df = pd.DataFrame(obv_arr, index=close.index, columns=close.columns)
     obv_ema_arr = obv_df.ewm(span=ema_window, adjust=False).mean().to_numpy(dtype=float)
     entries = _crossed_above_np(

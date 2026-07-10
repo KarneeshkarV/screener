@@ -21,9 +21,10 @@ from __future__ import annotations
 
 from typing import Literal, Union, cast
 
-import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
+
+from screener.indicators.frames import wilder_atr, wilder_rsi
 
 
 class PineError(Exception):
@@ -332,32 +333,17 @@ def _require_int_literal(node: Node, func: str, arg: str) -> int:
 
 
 def _rsi(source: pd.Series, length: int) -> pd.Series:
-    delta = source.diff()
-    gains = delta.clip(lower=0.0)
-    losses = -delta.clip(upper=0.0)
-    # Wilder smoothing: EMA with alpha = 1/length
-    avg_gain = gains.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
-    avg_loss = losses.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-    # if avg_loss is 0 and avg_gain > 0, RSI = 100
-    rsi = rsi.where(~((avg_loss == 0) & (avg_gain > 0)), 100.0)
-    return rsi
+    return wilder_rsi(source, length, min_periods=length)
 
 
 def _atr(bars: pd.DataFrame, length: int) -> pd.Series:
-    high = bars["high"]
-    low = bars["low"]
-    prev_close = bars["close"].shift(1)
-    tr = pd.concat(
-        [
-            (high - low).abs(),
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
+    return wilder_atr(
+        bars["high"],
+        bars["low"],
+        bars["close"],
+        length,
+        min_periods=length,
+    )
 
 
 def _crossover(a: pd.Series, b: pd.Series) -> pd.Series:
