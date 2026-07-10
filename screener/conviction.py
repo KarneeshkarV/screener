@@ -40,7 +40,7 @@ from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 from rich.table import Table
 
-from screener.backtester.data import PriceFetcher, tv_to_yf
+from screener.backtester.data import PriceFetcher
 
 from screener.garp import (
     GarpThresholds,
@@ -48,17 +48,15 @@ from screener.garp import (
     US_THRESHOLDS,
     load_garp_row,
 )
-from screener.provider_utils import _num as to_number
+from screener.financials import to_number
 from screener.indicators.plugins.ema import ema
 from screener.indicators.plugins.rsi import rsi
-from screener.insiders import (
-    load_insider_aggregate,
-    resolve_fmp_api_key,
-)
+from screener.insiders import load_insider_aggregate
+from screener.fmp import resolve_api_key
+from screener.markets import get_market
 from screener.pledge import resolve_pledge_pct
 from screener.providers import CachedProvider, ProviderSpec
 from screener.rs_breakout import (
-    DEFAULT_BENCHMARKS,
     delivery_lookup,
     india_symbol,
     normalize_bars,
@@ -67,6 +65,7 @@ from screener.rs_breakout import (
     required_history_bars,
     supertrend,
 )
+from screener.symbols import tv_to_yf
 from screener.unusual_volume.delivery import load_delivery_panel
 from screener.unusual_volume.detector import EXTREME_RVOL, EXTREME_Z, detect_ticker
 
@@ -466,7 +465,7 @@ def _smart_money_pillar(
         # filings. Skip rather than fabricate a back-dated signal.
         if _is_pit_stale(as_of):
             return _skipped(name, f"no point-in-time Form 4 data for {as_of}")
-        api_key = resolve_fmp_api_key()
+        api_key = resolve_api_key()
         if not api_key:
             return _skipped(name, "FMP_API_KEY not configured")
         try:
@@ -630,7 +629,7 @@ def build_conviction_card(
     refresh: bool = False,
 ) -> ConvictionCard:
     yf_sym = tv_to_yf(symbol, market)
-    benchmark = DEFAULT_BENCHMARKS[market]
+    benchmark = get_market(market).benchmark
     start = as_of - timedelta(days=HISTORY_DAYS)
     end = as_of + timedelta(days=1)
     data = fetcher.fetch([yf_sym, benchmark], start, end)

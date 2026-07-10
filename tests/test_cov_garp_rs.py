@@ -28,21 +28,21 @@ from screener.commands import screen as screen_cli  # noqa: F401  (import for co
 
 
 def test_num_handles_none_garbage_and_nan() -> None:
-    assert garp_module._num(None) is None
-    assert garp_module._num("1,234.5%") == pytest.approx(1234.5)
-    assert garp_module._num("not-a-number") is None
-    assert garp_module._num(float("nan")) is None
+    assert garp_module.to_number(None) is None
+    assert garp_module.to_number("1,234.5%") == pytest.approx(1234.5)
+    assert garp_module.to_number("not-a-number") is None
+    assert garp_module.to_number(float("nan")) is None
 
 
 def test_first_num_returns_none_when_no_key_matches() -> None:
-    assert garp_module._first_num({"a": "x"}, "missing", "alsomissing") is None
-    assert garp_module._first_num({"PEG": "1.5"}, "peg") == pytest.approx(1.5)
+    assert garp_module.first_number({"a": "x"}, "missing", "alsomissing") is None
+    assert garp_module.first_number({"PEG": "1.5"}, "peg") == pytest.approx(1.5)
 
 
 def test_pct_change_guards_and_cagr_guards() -> None:
-    assert garp_module._pct_change(None, 1.0) is None
-    assert garp_module._pct_change(1.0, 0.0) is None
-    assert garp_module._pct_change(120.0, 100.0) == pytest.approx(20.0)
+    assert garp_module.pct_change(None, 1.0) is None
+    assert garp_module.pct_change(1.0, 0.0) is None
+    assert garp_module.pct_change(120.0, 100.0) == pytest.approx(20.0)
     # cagr guards: non-positive / zero years
     assert garp_module._cagr(None, 1.0, 4) is None
     assert garp_module._cagr(1.0, -1.0, 4) is None
@@ -244,11 +244,10 @@ def test_us_row_yfinance_with_balance_failure(monkeypatch) -> None:
 # ── garp.py FMP helpers ─────────────────────────────────────────────────────
 
 
-def test_fmp_api_key_delegates(monkeypatch) -> None:
-    import screener.insiders as insiders
+def test_fmp_api_key_resolves_via_fmp() -> None:
+    import screener.fmp as fmp_mod
 
-    monkeypatch.setattr(insiders, "_fmp_api_key", lambda: "abc")
-    assert garp_module._fmp_api_key() == "abc"
+    assert garp_module.resolve_api_key is fmp_mod.resolve_api_key
 
 
 def test_fmp_get_parses_json(monkeypatch) -> None:
@@ -382,7 +381,7 @@ def _us_passing_row(name="AAA"):
 
 
 def test_screen_us_garp_swallows_resolve_errors(monkeypatch) -> None:
-    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(garp_module, "resolve_api_key", lambda: None)
 
     def boom(symbol, description):
         raise RuntimeError("boom")
@@ -398,7 +397,7 @@ def test_screen_us_garp_swallows_resolve_errors(monkeypatch) -> None:
 def test_run_garp_screen_us_branch(monkeypatch) -> None:
     universe = pd.DataFrame({"name": ["AAA"], "description": ["Alpha"]})
     monkeypatch.setattr(garp_module, "load_garp_universe", lambda *a, **k: universe)
-    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(garp_module, "resolve_api_key", lambda: None)
     monkeypatch.setattr(
         garp_module, "_us_row", lambda symbol, description: _us_passing_row(symbol)
     )

@@ -8,7 +8,6 @@ import click
 import pandas as pd
 from rich.console import Console
 
-from screener.backtester.cli_common import DEFAULT_BENCHMARK
 from screener.backtester.data import PriceFetcher, build_price_fetcher, tv_to_yf
 from screener.backtester.optimization.walk_forward import generate_walk_forward_windows
 from screener.backtester.vbt.config import (
@@ -53,6 +52,7 @@ from screener.backtester.vbt.walk_forward import (
     parse_walk_forward,
     run_walk_forward_sweep as _run_walk_forward_sweep,
 )
+from screener.markets import get_market, get_price_fetcher, market_option
 from screener.universes import UniverseName, load_current_universe
 
 
@@ -266,10 +266,7 @@ def _run_cli_walk_forward(
 
 
 @click.command(name="vbt-sweep")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["us", "india"]),
+@market_option(
     default="us",
     help="Market to backtest.",
 )
@@ -457,7 +454,8 @@ def vbt_sweep(
     if end_date < start_date:
         raise click.UsageError("--end must be on or after --start.")
 
-    bench = DEFAULT_BENCHMARK.get(market, "SPY")
+    market_meta = get_market(market)
+    bench = market_meta.benchmark
     console = Console()
 
     tv_symbols: list[str]
@@ -476,7 +474,7 @@ def vbt_sweep(
     else:
         resolved_universe = cast(
             UniverseName,
-            universe or ("nifty50" if market == "india" else "sp500"),
+            universe or market_meta.default_universe,
         )
         loaded = load_current_universe(
             resolved_universe,
@@ -507,7 +505,9 @@ def vbt_sweep(
     fetch_start = (pd.Timestamp(start_date) - pd.Timedelta(days=warmup_days)).date()
     fetch_end = end_date
 
-    fetcher: PriceFetcher = click.get_current_context().obj or build_price_fetcher()
+    fetcher: PriceFetcher = get_price_fetcher(
+        click.get_current_context().obj, builder=build_price_fetcher
+    )
     price_panel = fetcher.fetch(yf_symbols, fetch_start, fetch_end)
     equity_symbols = [yf_by_tv[tv] for tv in tv_symbols if yf_by_tv[tv] in price_panel]
     start_ts = pd.Timestamp(start_date).normalize()

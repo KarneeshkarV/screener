@@ -7,20 +7,15 @@ touched unless the test explicitly drives the cache helpers in a tmp dir.
 
 from __future__ import annotations
 
-import json
 import sys
 import types
 from datetime import date, timedelta
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from screener.earnings_backtest import data as ebd
-
-# Captured before the autouse fixture stubs the module attribute.
-_REAL_INSTALL_PATCH = ebd._install_yfinance_timeout_patch
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -85,125 +80,12 @@ class _Chain:
 @pytest.fixture(autouse=True)
 def _no_yf_patch(monkeypatch):
     """Neutralise side-effecting yfinance global helpers for every test."""
-    monkeypatch.setattr(ebd, "_install_yfinance_timeout_patch", lambda: None)
     monkeypatch.setattr(ebd, "_configure_yfinance", lambda: None)
 
 
 @pytest.fixture
 def no_disk_cache(monkeypatch):
-    monkeypatch.setattr(ebd, "_read_json_cache", lambda path, max_age: (False, None))
-    monkeypatch.setattr(ebd, "_write_json_cache", lambda path, value: None)
-
-
-# ── _install_yfinance_timeout_patch ──────────────────────────────────────
-
-
-def test_install_yfinance_timeout_patch_already_patched(monkeypatch):
-    monkeypatch.setattr(ebd, "_YFINANCE_TIMEOUT_PATCHED", True)
-    # Returns early without touching yfinance internals.
-    _REAL_INSTALL_PATCH()
-
-
-def test_install_yfinance_timeout_patch_wraps_get(monkeypatch):
-    # Restore the real function (the autouse fixture stubs it to a no-op).
-    import yfinance.data as yf_data
-
-    calls = {}
-
-    def orig_get(self, url, params=None, timeout=30):
-        calls["get"] = timeout
-        return "got"
-
-    def orig_cache_get(self, url, params=None, timeout=30):
-        calls["cache_get"] = timeout
-        return "cached"
-
-    monkeypatch.setattr(yf_data.YfData, "get", orig_get, raising=False)
-    monkeypatch.setattr(yf_data.YfData, "cache_get", orig_cache_get, raising=False)
-    monkeypatch.setattr(ebd, "_YFINANCE_TIMEOUT_PATCHED", False)
-
-    _REAL_INSTALL_PATCH()
-
-    # The wrappers cap the timeout to YFINANCE_TIMEOUT_SECONDS.
-    dummy = types.SimpleNamespace()
-    assert yf_data.YfData.get(dummy, "http://x", timeout=30) == "got"
-    assert calls["get"] == ebd.YFINANCE_TIMEOUT_SECONDS
-    assert yf_data.YfData.cache_get(dummy, "http://x", timeout=None) == "cached"
-    assert calls["cache_get"] == ebd.YFINANCE_TIMEOUT_SECONDS
-
-
-def test_install_yfinance_timeout_patch_handles_exception(monkeypatch):
-    monkeypatch.setattr(ebd, "_YFINANCE_TIMEOUT_PATCHED", False)
-    import yfinance.data as yf_data
-
-    monkeypatch.setattr(ebd, "_YFINANCE_TIMEOUT_PATCHED", False)
-
-    # Force the body to raise by removing ``YfData`` -> AttributeError on
-    # ``yf_data.YfData.get``, exercising the broad ``except`` handler.
-    monkeypatch.delattr(yf_data, "YfData", raising=False)
-    _REAL_INSTALL_PATCH()  # swallowed, logged at debug
-    # The except branch leaves the flag untouched (still False).
-    assert ebd._YFINANCE_TIMEOUT_PATCHED is False
-
-
-# ── _safe_key / cache path ───────────────────────────────────────────────
-
-
-def test_safe_key_sanitises():
-    assert ebd._safe_key("AAPL.NS_3") == "AAPL.NS_3"
-    assert ebd._safe_key("a b/c") == "a_b_c"
-
-
-def test_json_cache_path():
-    p = ebd._json_cache_path("earnings_yf", "AAPL_3")
-    assert p.name == "AAPL_3.json"
-    assert p.parent.name == "earnings_yf"
-
-
-# ── _read_json_cache / _write_json_cache ─────────────────────────────────
-
-
-def test_read_json_cache_missing(tmp_path):
-    hit, val = ebd._read_json_cache(tmp_path / "nope.json", 30)
-    assert hit is False and val is None
-
-
-def test_read_json_cache_stale(tmp_path, monkeypatch):
-    p = tmp_path / "c.json"
-    p.write_text(json.dumps({"value": 1}))
-    old = date.today() - timedelta(days=100)
-    import os
-
-    ts = pd.Timestamp(old).timestamp()
-    os.utime(p, (ts, ts))
-    hit, val = ebd._read_json_cache(p, 30)
-    assert hit is False and val is None
-
-
-def test_read_json_cache_fresh(tmp_path):
-    p = tmp_path / "c.json"
-    p.write_text(json.dumps({"value": [1, 2, 3]}))
-    hit, val = ebd._read_json_cache(p, 30)
-    assert hit is True and val == [1, 2, 3]
-
-
-def test_read_json_cache_bad_json(tmp_path):
-    p = tmp_path / "c.json"
-    p.write_text("not json{{{")
-    hit, val = ebd._read_json_cache(p, 30)
-    assert hit is False and val is None
-
-
-def test_write_json_cache_roundtrip(tmp_path):
-    p = tmp_path / "sub" / "c.json"
-    ebd._write_json_cache(p, {"a": 1})
-    assert json.loads(p.read_text())["value"] == {"a": 1}
-
-
-def test_write_json_cache_error(monkeypatch):
-    # Unwritable path (parent is a file) -> exception swallowed.
-    bad = Path("/proc/cannot/write/c.json")
-    ebd._write_json_cache(bad, {"a": 1})  # no raise
+    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: kw["fetch"]())
 
 
 # ── _jsonable ────────────────────────────────────────────────────────────
@@ -267,70 +149,12 @@ def test_load_universe_dispatch(monkeypatch):
         ebd.load_universe("mars")
 
 
-def test_load_nifty500_from_cache(monkeypatch, tmp_path):
-    cache_dir = tmp_path / "cache"
-    cache_dir.mkdir()
-    monkeypatch.setattr(ebd, "CACHE_DIR", cache_dir)
-    (cache_dir / "nifty500_symbols.txt").write_text("AAA.NS\nBBB.NS")
+def test_load_nifty500_delegates_to_universes(monkeypatch):
+    fake_univ = types.SimpleNamespace(symbols=("AAA.NS", "BBB.NS"))
+    universes = types.ModuleType("screener.universes")
+    universes.load_current_universe = lambda name: fake_univ
+    monkeypatch.setitem(sys.modules, "screener.universes", universes)
     assert ebd.load_nifty500() == ["AAA.NS", "BBB.NS"]
-
-
-def test_load_nifty500_fetch(monkeypatch, tmp_path):
-    cache_dir = tmp_path / "cache"
-    monkeypatch.setattr(ebd, "CACHE_DIR", cache_dir)
-
-    csv = "Symbol\nreliance\ntcs\n"
-    fake_requests = types.ModuleType("requests")
-    fake_requests.get = lambda url, headers=None, timeout=None: types.SimpleNamespace(
-        text=csv, raise_for_status=lambda: None
-    )
-    monkeypatch.setitem(sys.modules, "requests", fake_requests)
-
-    resilience = types.ModuleType("screener.resilience")
-    resilience.call_with_resilience = lambda *a, **kw: a[2]()  # call the fetch fn
-    monkeypatch.setitem(sys.modules, "screener.resilience", resilience)
-
-    syms = ebd.load_nifty500()
-    assert syms == ["RELIANCE.NS", "TCS.NS"]
-    # Cache file was written.
-    assert (cache_dir / "nifty500_symbols.txt").exists()
-
-
-def test_load_nifty500_unavailable(monkeypatch, tmp_path):
-    cache_dir = tmp_path / "cache2"
-    monkeypatch.setattr(ebd, "CACHE_DIR", cache_dir)
-    fake_requests = types.ModuleType("requests")
-    fake_requests.get = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError())
-    monkeypatch.setitem(sys.modules, "requests", fake_requests)
-    resilience = types.ModuleType("screener.resilience")
-    resilience.call_with_resilience = lambda *a, **kw: None  # fallback
-    monkeypatch.setitem(sys.modules, "screener.resilience", resilience)
-    with pytest.raises(RuntimeError):
-        ebd.load_nifty500()
-
-
-def test_load_nifty500_stale_cache_refetch(monkeypatch, tmp_path):
-    cache_dir = tmp_path / "cache3"
-    cache_dir.mkdir()
-    monkeypatch.setattr(ebd, "CACHE_DIR", cache_dir)
-    cache_file = cache_dir / "nifty500_symbols.txt"
-    cache_file.write_text("OLD.NS")
-    import os
-
-    old_ts = pd.Timestamp(date.today() - timedelta(days=30)).timestamp()
-    os.utime(cache_file, (old_ts, old_ts))
-
-    csv = "SYMBOL\nnew\n"
-    fake_requests = types.ModuleType("requests")
-    fake_requests.get = lambda url, headers=None, timeout=None: types.SimpleNamespace(
-        text=csv, raise_for_status=lambda: None
-    )
-    monkeypatch.setitem(sys.modules, "requests", fake_requests)
-    resilience = types.ModuleType("screener.resilience")
-    resilience.call_with_resilience = lambda *a, **kw: a[2]()
-    monkeypatch.setitem(sys.modules, "screener.resilience", resilience)
-
-    assert ebd.load_nifty500() == ["NEW.NS"]
 
 
 # ── fetch_earnings_dates_yf ──────────────────────────────────────────────
@@ -338,7 +162,7 @@ def test_load_nifty500_stale_cache_refetch(monkeypatch, tmp_path):
 
 def test_fetch_earnings_dates_yf_cache_hit(monkeypatch):
     recs = ebd._earnings_to_records(_earnings_df(["2024-01-15"]))
-    monkeypatch.setattr(ebd, "_read_json_cache", lambda p, m: (True, recs))
+    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: recs)
     out = ebd.fetch_earnings_dates_yf("AAPL")
     assert out is not None
     assert pd.Timestamp("2024-01-15") in out.index
@@ -397,14 +221,14 @@ def _inject_nselive(monkeypatch, instance):
 
 def test_fetch_earnings_dates_nse_cache_hit_data(monkeypatch):
     cached = [{"ticker": "AAA.NS", "earnings_date": "2024-01-15", "desc": "x"}]
-    monkeypatch.setattr(ebd, "_read_json_cache", lambda p, m: (True, cached))
+    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: cached)
     out = ebd.fetch_earnings_dates_nse()
     assert out is not None
     assert out["ticker"].iloc[0] == "AAA.NS"
 
 
 def test_fetch_earnings_dates_nse_cache_hit_empty(monkeypatch):
-    monkeypatch.setattr(ebd, "_read_json_cache", lambda p, m: (True, []))
+    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: [])
     assert ebd.fetch_earnings_dates_nse() is None
 
 
@@ -535,7 +359,7 @@ def test_openscreener_cache_hit(monkeypatch):
             "surprise_pct": None,
         }
     ]
-    monkeypatch.setattr(ebd, "_read_json_cache", lambda p, m: (True, recs))
+    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: recs)
     out = ebd.fetch_earnings_dates_openscreener("RELIANCE.NS")
     assert out is not None
     assert pd.Timestamp("2024-05-30") in out.index
@@ -756,7 +580,7 @@ def test_analyst_sentiment_india_none():
 
 
 def test_analyst_sentiment_cache_hit(monkeypatch):
-    monkeypatch.setattr(ebd, "_read_json_cache", lambda p, m: (True, {"net": 3}))
+    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: {"net": 3})
     assert ebd.fetch_analyst_sentiment("AAPL") == {"net": 3}
 
 
@@ -819,7 +643,7 @@ def _opt_df(volume=None, oi=None, iv=None, n=2):
 
 
 def test_iv_yf_cache_hit(monkeypatch):
-    monkeypatch.setattr(ebd, "_read_json_cache", lambda p, m: (True, {"pc_ratio": 1.0}))
+    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: {"pc_ratio": 1.0})
     assert ebd.fetch_iv_sentiment_yf("AAPL") == {"pc_ratio": 1.0}
 
 
@@ -904,7 +728,7 @@ def test_iv_yf_exception(monkeypatch, no_disk_cache):
 
 
 def test_iv_nse_cache_hit(monkeypatch):
-    monkeypatch.setattr(ebd, "_read_json_cache", lambda p, m: (True, {"pc_ratio": 2.0}))
+    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: {"pc_ratio": 2.0})
     assert ebd.fetch_iv_sentiment_nse("RELIANCE") == {"pc_ratio": 2.0}
 
 
@@ -935,8 +759,7 @@ def test_iv_nse_success(monkeypatch, no_disk_cache):
             ]
         }
     }
-    nse = types.SimpleNamespace(equities_option_chain=lambda s: oc)
-    _inject_nselive(monkeypatch, nse)
+    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: oc)
     out = ebd.fetch_iv_sentiment_nse("RELIANCE")
     assert out["pc_ratio"] == round(50 / 100, 4)
     assert out["median_iv"] is not None
@@ -955,8 +778,7 @@ def test_iv_nse_zero_ce_oi(monkeypatch, no_disk_cache):
             ]
         }
     }
-    nse = types.SimpleNamespace(equities_option_chain=lambda s: oc)
-    _inject_nselive(monkeypatch, nse)
+    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: oc)
     out = ebd.fetch_iv_sentiment_nse("RELIANCE")
     assert out["pc_ratio"] == 1.0  # ce oi == 0 -> default 1.0
     assert out["median_iv"] is None  # no iv vals -> nan -> None
@@ -981,37 +803,31 @@ def test_iv_nse_iv_outlier_filtered(monkeypatch, no_disk_cache):
             ]
         }
     }
-    nse = types.SimpleNamespace(equities_option_chain=lambda s: oc)
-    _inject_nselive(monkeypatch, nse)
+    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: oc)
     out = ebd.fetch_iv_sentiment_nse("RELIANCE")
     assert out["median_iv"] is None  # 600 filtered out (>=500)
 
 
 def test_iv_nse_no_oc(monkeypatch, no_disk_cache):
-    nse = types.SimpleNamespace(equities_option_chain=lambda s: None)
-    _inject_nselive(monkeypatch, nse)
+    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: None)
     assert ebd.fetch_iv_sentiment_nse("RELIANCE") is None
 
 
 def test_iv_nse_no_records_key(monkeypatch, no_disk_cache):
-    nse = types.SimpleNamespace(equities_option_chain=lambda s: {"foo": 1})
-    _inject_nselive(monkeypatch, nse)
+    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: {"foo": 1})
     assert ebd.fetch_iv_sentiment_nse("RELIANCE") is None
 
 
 def test_iv_nse_empty_data(monkeypatch, no_disk_cache):
-    nse = types.SimpleNamespace(
-        equities_option_chain=lambda s: {"records": {"data": []}}
-    )
-    _inject_nselive(monkeypatch, nse)
+    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: {"records": {"data": []}})
     assert ebd.fetch_iv_sentiment_nse("RELIANCE") is None
 
 
 def test_iv_nse_exception(monkeypatch, no_disk_cache):
-    module = types.ModuleType("jugaad_data.nse")
-    module.NSELive = lambda: (_ for _ in ()).throw(RuntimeError("nse boom"))
-    monkeypatch.setitem(sys.modules, "jugaad_data.nse", module)
-    monkeypatch.setitem(sys.modules, "jugaad_data", types.ModuleType("jugaad_data"))
+    def boom(_symbol):
+        raise RuntimeError("nse boom")
+
+    monkeypatch.setattr(ebd, "fetch_option_chain", boom)
     assert ebd.fetch_iv_sentiment_nse("RELIANCE") is None
 
 

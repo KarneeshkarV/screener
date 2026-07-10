@@ -16,12 +16,10 @@ from screener.backtester.fills import (  # noqa: F401  (re-export compat shims)
     _resolve_entry_fill,
     _resolve_stop_fill,
     _resolve_target_fill,
-    _slippage_factor,
 )
 from screener.backtester.models import BacktestConfig, ExitReason, Trade
 from screener.backtester.pine import PineError, evaluate
 from screener.backtester.portfolio import Portfolio
-from screener.backtester.slippage import Side
 
 
 @dataclass(frozen=True)
@@ -42,25 +40,6 @@ def _bar_label(ts, cfg: BacktestConfig) -> Union[date, datetime]:
     if cfg.interval == "1d":
         return cast(date, ts.date())
     return cast(datetime, ts.to_pydatetime())
-
-
-def _apply_slip(
-    ref_price: float,
-    side: Side,
-    cfg: BacktestConfig,
-    *,
-    shares: float = 0.0,
-    adv_shares: float = 0.0,
-    sigma_daily: float = 0.0,
-) -> float:
-    """Backward-compatible shim routing through :class:`FillModel`.
-
-    Retained because :mod:`screener.backtester.historical` imports it; new code
-    should call :meth:`FillModel.exit_price` / :meth:`FillModel.entry_price`.
-    """
-    return FillModel(cfg)._apply_slip(
-        ref_price, side, shares=shares, adv_shares=adv_shares, sigma_daily=sigma_daily
-    )
 
 
 def _trailing_liquidity(

@@ -16,6 +16,7 @@ from typing import Any, Optional, cast
 import pandas as pd
 
 from screener.backtester.data import PriceFetcher
+from screener.earnings_backtest._execution import apply_slippage
 from screener.earnings_backtest.data import (
     collect_earnings_events,
     fetch_price_data,
@@ -143,8 +144,7 @@ def run_pead_backtest(
         if entry_price <= 0:
             continue
 
-        entry_price *= 1 + slippage_bps / 10_000
-        exit_price *= 1 - slippage_bps / 10_000
+        entry_price, exit_price = apply_slippage(entry_price, exit_price, slippage_bps)
 
         ret_raw = (exit_price / entry_price) - 1.0
         ret_net = ret_raw - commission_bps / 10_000

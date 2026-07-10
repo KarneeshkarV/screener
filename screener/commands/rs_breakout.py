@@ -13,8 +13,14 @@ from rich.console import Console
 
 from screener.backtester.data import PriceFetcher, build_price_fetcher
 from screener.cache import parse_ttl
+from screener.markets import (
+    as_of_option,
+    get_market,
+    get_price_fetcher,
+    market_option,
+    resolve_as_of,
+)
 from screener.rs_breakout import (
-    DEFAULT_BENCHMARKS,
     RsBreakoutResult,
     fetch_price_data,
     load_india_delivery_for_scan,
@@ -83,7 +89,7 @@ def load_universe(
 ) -> list[str]:
     from tradingview_screener import col
 
-    price_floor = {"india": 50.0, "us": 5.0}[market]
+    price_floor = get_market(market).rs_breakout_min_close
     requested_limit = 5000 if universe_limit == 0 else universe_limit
     filters = [col("type") == "stock", col("close") >= price_floor]
     _total, df = scan(
@@ -162,7 +168,7 @@ def run_rs_breakout_screen(
     Raises ``click.UsageError`` when the resolved universe is empty (matching
     the standalone command's behaviour).
     """
-    resolved_benchmark = benchmark or DEFAULT_BENCHMARKS[market]
+    resolved_benchmark = benchmark or get_market(market).benchmark
     universe = resolve_universe(
         market,
         tickers,
@@ -200,21 +206,12 @@ def write_default_outputs(
 
 
 @click.command(name="rs-breakout")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["india", "us"]),
+@market_option(
     default="india",
     show_default=True,
     help="Market to scan. India includes delivery-percent filter; US skips delivery.",
 )
-@click.option(
-    "--as-of",
-    "as_of_arg",
-    type=click.DateTime(formats=["%Y-%m-%d"]),
-    default=None,
-    help="Trading date to evaluate (default: today).",
-)
+@as_of_option()
 @click.option(
     "--tickers",
     default=None,
@@ -277,10 +274,12 @@ def rs_breakout(
 ) -> None:
     """Screen stocks for RS + SuperTrend + breakout/volume setups."""
     console = Console()
-    as_of_date = as_of_arg.date() if isinstance(as_of_arg, datetime) else date.today()
+    as_of_date = resolve_as_of(as_of_arg)
     parsed_ttl = parse_ttl(cache_ttl, default=900)
 
-    fetcher = click.get_current_context().obj
+    fetcher = get_price_fetcher(
+        click.get_current_context().obj, builder=build_price_fetcher, refresh=refresh
+    )
     result = run_rs_breakout_screen(
         market,
         as_of=as_of_date,

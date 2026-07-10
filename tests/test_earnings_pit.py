@@ -30,8 +30,7 @@ from screener.earnings_backtest.data import (
 @pytest.fixture(autouse=True)
 def _no_disk_cache(monkeypatch):
     """Bypass the JSON disk cache so each test exercises the live parse path."""
-    monkeypatch.setattr(ebd, "_read_json_cache", lambda path, max_age: (False, None))
-    monkeypatch.setattr(ebd, "_write_json_cache", lambda path, value: None)
+    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: kw["fetch"]())
 
 
 class _FakeStock:

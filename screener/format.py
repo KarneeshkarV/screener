@@ -11,27 +11,27 @@ from __future__ import annotations
 import math
 
 
-def _is_missing(v) -> bool:
+def is_missing(v) -> bool:
     return v is None or (isinstance(v, float) and math.isnan(v))
 
 
 def fmt_float(v, ndp: int = 2) -> str:
     """Fixed-decimal float, ``-`` for missing values."""
-    if _is_missing(v):
+    if is_missing(v):
         return "-"
     return f"{v:.{ndp}f}"
 
 
 def fmt_pct(v) -> str:
     """Signed percent with two decimals (e.g. ``+1.23%``)."""
-    if _is_missing(v):
+    if is_missing(v):
         return "-"
     return f"{v:+.2f}%"
 
 
 def fmt_volume(v) -> str:
     """Compact volume: B / M / K tiers, ``-`` for missing values."""
-    if _is_missing(v):
+    if is_missing(v):
         return "-"
     if v >= 1e9:
         return f"{v / 1e9:.2f}B"
@@ -44,7 +44,7 @@ def fmt_volume(v) -> str:
 
 def fmt_mcap(v) -> str:
     """Compact market cap: T / B / M tiers, ``-`` for missing values."""
-    if _is_missing(v):
+    if is_missing(v):
         return "-"
     if v >= 1e12:
         return f"{v / 1e12:.2f}T"

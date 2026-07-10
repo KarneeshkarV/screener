@@ -1,112 +1,79 @@
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
 import pandas as pd
 from rich.console import Console, JustifyMethod
 from rich.table import Table
 
-from screener.format import fmt_mcap, fmt_pct
+from screener.format import fmt_float, fmt_mcap, fmt_pct, fmt_volume, is_missing
 
 console = Console()
 
-COLUMN_LABELS = {
-    "ticker": "Ticker",
-    "name": "Symbol",
-    "description": "Name",
-    "close": "Close",
-    "change": "Chg%",
-    "volume": "Volume",
-    "market_cap_basic": "Mkt Cap",
-    "setup_score": "Score",
-    "EMA5": "EMA5",
-    "EMA20": "EMA20",
-    "EMA100": "EMA100",
-    "EMA200": "EMA200",
-    "price_earnings_ttm": "P/E",
-    "return_on_equity": "ROE%",
-    "dividend_yield_recent": "Div%",
-    "debt_to_equity": "D/E",
-    "RSI": "RSI",
-    "P/E": "P/E",
-    "ROCE%": "ROCE%",
-    "ROE%": "ROE%",
-    "garp_score": "GARP",
-    "peg": "PEG",
-    "sales": "Sales",
-    "sales_growth_5y": "Sales 5Y%",
-    "operating_profit_growth": "OP Growth%",
-    "eps_growth_5y": "EPS 5Y%",
-    "roe_5y": "ROE 5Y%",
-    "roce_or_roic": "ROCE/ROIC",
-    "quarterly_profit_growth": "Q Profit%",
+
+@dataclass(frozen=True)
+class ColumnSpec:
+    """Per-column display spec: header label, alignment, and value formatter."""
+
+    label: str
+    align: JustifyMethod
+    formatter: Callable[[Any], str]
+
+
+def _default(val: Any) -> str:
+    return str(val)
+
+
+# Single source of truth fusing the former COLUMN_LABELS / RIGHT_ALIGN /
+# _format_value per-column tables. ``change`` uses fmt_pct, ``volume`` routes
+# through the shared compact volume formatter (B/M/K tiers, ``-`` for missing),
+# ``market_cap_basic`` / ``sales`` use fmt_mcap, and every other numeric column
+# is a fixed two-decimal float.
+COLUMNS: dict[str, ColumnSpec] = {
+    "ticker": ColumnSpec("Ticker", "left", _default),
+    "name": ColumnSpec("Symbol", "left", _default),
+    "description": ColumnSpec("Name", "left", _default),
+    "close": ColumnSpec("Close", "right", fmt_float),
+    "change": ColumnSpec("Chg%", "right", fmt_pct),
+    "volume": ColumnSpec("Volume", "right", fmt_volume),
+    "market_cap_basic": ColumnSpec("Mkt Cap", "right", fmt_mcap),
+    "setup_score": ColumnSpec("Score", "right", fmt_float),
+    "EMA5": ColumnSpec("EMA5", "right", fmt_float),
+    "EMA20": ColumnSpec("EMA20", "right", fmt_float),
+    "EMA100": ColumnSpec("EMA100", "right", fmt_float),
+    "EMA200": ColumnSpec("EMA200", "right", fmt_float),
+    "price_earnings_ttm": ColumnSpec("P/E", "right", fmt_float),
+    "return_on_equity": ColumnSpec("ROE%", "right", fmt_float),
+    "dividend_yield_recent": ColumnSpec("Div%", "right", fmt_float),
+    "debt_to_equity": ColumnSpec("D/E", "right", fmt_float),
+    "RSI": ColumnSpec("RSI", "right", fmt_float),
+    "P/E": ColumnSpec("P/E", "right", fmt_float),
+    "ROCE%": ColumnSpec("ROCE%", "right", fmt_float),
+    "ROE%": ColumnSpec("ROE%", "right", fmt_float),
+    "garp_score": ColumnSpec("GARP", "right", fmt_float),
+    "peg": ColumnSpec("PEG", "right", fmt_float),
+    "sales": ColumnSpec("Sales", "right", fmt_mcap),
+    "sales_growth_5y": ColumnSpec("Sales 5Y%", "right", fmt_float),
+    "operating_profit_growth": ColumnSpec("OP Growth%", "right", fmt_float),
+    "eps_growth_5y": ColumnSpec("EPS 5Y%", "right", fmt_float),
+    "roe_5y": ColumnSpec("ROE 5Y%", "right", fmt_float),
+    "roce_or_roic": ColumnSpec("ROCE/ROIC", "right", fmt_float),
+    "quarterly_profit_growth": ColumnSpec("Q Profit%", "right", fmt_float),
 }
 
-RIGHT_ALIGN = {
-    "close",
-    "change",
-    "volume",
-    "market_cap_basic",
-    "setup_score",
-    "EMA5",
-    "EMA20",
-    "EMA100",
-    "EMA200",
-    "price_earnings_ttm",
-    "return_on_equity",
-    "dividend_yield_recent",
-    "debt_to_equity",
-    "RSI",
-    "P/E",
-    "ROCE%",
-    "ROE%",
-    "garp_score",
-    "peg",
-    "sales",
-    "sales_growth_5y",
-    "operating_profit_growth",
-    "eps_growth_5y",
-    "roe_5y",
-    "roce_or_roic",
-    "quarterly_profit_growth",
-}
+#: Backward-compatible label map (e.g. ``commands.screen_report`` lookups).
+COLUMN_LABELS = {col: spec.label for col, spec in COLUMNS.items()}
+
+#: Backward-compatible right-align set for the screen tables.
+RIGHT_ALIGN = {col for col, spec in COLUMNS.items() if spec.align == "right"}
 
 
 def _format_value(col: str, val) -> str:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
+    spec = COLUMNS.get(col)
+    if spec is not None:
+        return spec.formatter(val)
+    if is_missing(val):
         return "-"
-
-    if col == "change":
-        return fmt_pct(val)
-    if col == "volume":
-        if val >= 1_000_000:
-            return f"{val / 1_000_000:.1f}M"
-        if val >= 1_000:
-            return f"{val / 1_000:.1f}K"
-        return f"{val:,.0f}"
-    if col == "market_cap_basic":
-        return fmt_mcap(val)
-    if col in ("close", "EMA5", "EMA20", "EMA100", "EMA200"):
-        return f"{val:.2f}"
-    if col in (
-        "setup_score",
-        "price_earnings_ttm",
-        "return_on_equity",
-        "dividend_yield_recent",
-        "debt_to_equity",
-        "RSI",
-        "P/E",
-        "ROCE%",
-        "ROE%",
-        "garp_score",
-        "peg",
-        "sales_growth_5y",
-        "operating_profit_growth",
-        "eps_growth_5y",
-        "roe_5y",
-        "roce_or_roic",
-        "quarterly_profit_growth",
-    ):
-        return f"{val:.2f}"
-    if col == "sales":
-        return fmt_mcap(val)
-
     return str(val)
 
 
@@ -260,7 +227,7 @@ _INSIDER_LABELS = {
 
 
 def _format_insider(col: str, val) -> str:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
+    if is_missing(val):
         return "-"
     if col in {
         "promoter_pct_latest",
@@ -347,7 +314,7 @@ _INSTITUTIONAL_LABELS = {
 
 
 def _format_institutional(col: str, val) -> str:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
+    if is_missing(val):
         return "-"
     if col == "holders":
         return f"{int(val):,}"

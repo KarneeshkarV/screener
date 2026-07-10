@@ -21,16 +21,17 @@ from __future__ import annotations
 
 import logging
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, cast
 
 import pandas as pd
 import yfinance as yf
 
 from screener import fmp
-from screener.backtester.data import tv_to_yf
+from screener.fmp import resolve_api_key
+from screener.parallel import parallel_map
 from screener.providers import CachedProvider, ProviderSpec
 from screener.resilience import call_with_resilience
+from screener.symbols import tv_to_yf
 
 
 logger = logging.getLogger(__name__)
@@ -138,34 +139,15 @@ def fetch_yfinance_insiders(
         (str(row["name"]), tv_to_yf(str(row["ticker"]), market))
         for _, row in universe.iterrows()
     ]
-    rows: list[dict] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [
-            pool.submit(_fetch_yf_one, n, s, cache_ttl=cache_ttl, refresh=refresh)
-            for n, s in jobs
-        ]
-        for fut in as_completed(futures):
-            r = fut.result()
-            if r is not None:
-                rows.append(r)
+    rows = parallel_map(
+        lambda job: _fetch_yf_one(job[0], job[1], cache_ttl=cache_ttl, refresh=refresh),
+        jobs,
+        max_workers=max_workers,
+    )
     return pd.DataFrame(rows)
 
 
 # ── FMP insider trading (SEC Form 4) ───────────────────────────────────────
-
-
-def _fmp_api_key() -> Optional[str]:
-    """Resolve FMP_API_KEY, loading the project .env once like the backtester."""
-    return fmp.resolve_api_key()
-
-
-def resolve_fmp_api_key() -> Optional[str]:
-    """Public resolver for the configured FMP API key (or ``None``).
-
-    Thin public seam over :func:`_fmp_api_key` so callers such as the
-    conviction card can check for a key without importing a private helper.
-    """
-    return _fmp_api_key()
 
 
 def _aggregate_fmp_transactions(
@@ -328,7 +310,7 @@ def fetch_fmp_insiders(
     """
     if universe.empty:
         return pd.DataFrame()
-    api_key = _fmp_api_key()
+    api_key = resolve_api_key()
     if not api_key:
         return pd.DataFrame()
 
@@ -336,23 +318,17 @@ def fetch_fmp_insiders(
         (str(row["name"]), tv_to_yf(str(row["ticker"]), market))
         for _, row in universe.iterrows()
     ]
-    rows: list[dict] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [
-            pool.submit(
-                _fetch_fmp_insider_one,
-                n,
-                s,
-                api_key=api_key,
-                cache_ttl=cache_ttl,
-                refresh=refresh,
-            )
-            for n, s in jobs
-        ]
-        for fut in as_completed(futures):
-            r = fut.result()
-            if r is not None:
-                rows.append(r)
+    rows = parallel_map(
+        lambda job: _fetch_fmp_insider_one(
+            job[0],
+            job[1],
+            api_key=api_key,
+            cache_ttl=cache_ttl,
+            refresh=refresh,
+        ),
+        jobs,
+        max_workers=max_workers,
+    )
     return pd.DataFrame(rows)
 
 
@@ -449,18 +425,11 @@ def fetch_openscreener_promoters(
         return pd.DataFrame()
 
     names = universe["name"].astype(str).tolist()
-    rows: list[dict] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [
-            pool.submit(
-                _fetch_openscreener_one, n, cache_ttl=cache_ttl, refresh=refresh
-            )
-            for n in names
-        ]
-        for fut in as_completed(futures):
-            r = fut.result()
-            if r is not None:
-                rows.append(r)
+    rows = parallel_map(
+        lambda n: _fetch_openscreener_one(n, cache_ttl=cache_ttl, refresh=refresh),
+        names,
+        max_workers=max_workers,
+    )
     return pd.DataFrame(rows)
 
 

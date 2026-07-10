@@ -16,16 +16,14 @@ from screener.cache import (
     write_frame,
     write_json,
 )
+from screener.markets import TV_MARKETS
 from screener.resilience import call_with_resilience
 
 
 LOG = logging.getLogger(__name__)
 
 
-MARKETS = {
-    "us": "america",
-    "india": "india",
-}
+MARKETS = TV_MARKETS
 
 DEFAULT_COLUMNS = [
     "name",

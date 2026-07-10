@@ -1,3 +1,6 @@
 """Constants for the research Pine runner."""
 
-BENCHMARKS = {"us": "SPY", "india": "^NSEI"}
+from screener.markets import MARKETS
+
+
+BENCHMARKS = {name: market.benchmark for name, market in MARKETS.items()}

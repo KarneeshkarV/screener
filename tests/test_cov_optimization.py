@@ -34,11 +34,8 @@ from screener.backtester.optimization.grid import (
     grid_search,
 )
 from screener.backtester.optimization.metrics import (
-    calmar_ratio,
     optimization_metrics,
-    profit_factor,
     score_result,
-    win_rate,
 )
 from screener.backtester.optimization.monte_carlo import (
     MonteCarloResult,
@@ -119,27 +116,6 @@ def _result(cfg, trades=None, equity=None):
 # --------------------------------------------------------------------------- #
 # metrics.py                                                                   #
 # --------------------------------------------------------------------------- #
-def test_profit_factor_all_profit_returns_inf():
-    # gross_loss == 0 and gross_profit > 0  -> inf  (line 37/43 branch)
-    assert profit_factor([_trade(5.0, 0.05)]) == float("inf")
-
-
-def test_win_rate_empty_returns_zero():
-    assert win_rate([]) == 0.0
-
-
-def test_calmar_ratio_short_series_returns_zero():
-    assert calmar_ratio(pd.Series([100.0])) == 0.0  # len < 2
-    assert calmar_ratio(pd.Series(dtype=float)) == 0.0  # empty
-
-
-def test_calmar_ratio_no_drawdown_inf_and_zero():
-    rising = pd.Series([100.0, 110.0, 121.0, 133.0])
-    assert calmar_ratio(rising) == float("inf")  # cagr > 0, dd == 0
-    flat = pd.Series([100.0, 100.0, 100.0])
-    assert calmar_ratio(flat) == 0.0  # cagr <= 0, dd == 0
-
-
 def test_score_result_nan_metric_returns_neg_inf():
     cfg = _config()
     eq = pd.Series([100.0, 110.0])
@@ -153,15 +129,23 @@ def test_score_result_nan_metric_returns_neg_inf():
     assert score_result(res, "weird") == float("-inf")
 
 
-def test_maximum_drawdown_empty_series_returns_zero():
-    from screener.backtester.optimization.metrics import maximum_drawdown
-
-    assert maximum_drawdown(pd.Series(dtype=float)) == 0.0
-
-
 def test_optimization_metrics_includes_expected_keys():
     cfg = _config()
-    res = _result(cfg)
+    res = BacktestResult(
+        config=cfg,
+        trades=[_trade(10.0, 0.10)],
+        equity_curve=pd.Series([100_000.0, 101_000.0]),
+        benchmark_curve=pd.Series([100_000.0, 101_000.0]),
+        metrics={
+            "total_return": 0.01,
+            "sharpe": 1.2,
+            "profit_factor": float("inf"),
+            "max_drawdown": 0.0,
+            "hit_rate": 1.0,
+            "expectancy": 0.10,
+            "calmar": 0.0,
+        },
+    )
     metrics = optimization_metrics(res)
     for key in [
         "sharpe",
@@ -174,6 +158,7 @@ def test_optimization_metrics_includes_expected_keys():
         "trade_count",
     ]:
         assert key in metrics
+    assert metrics["win_rate"] == pytest.approx(1.0)
 
 
 # --------------------------------------------------------------------------- #

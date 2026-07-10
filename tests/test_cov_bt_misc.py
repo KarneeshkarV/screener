@@ -211,9 +211,8 @@ def test_fillmodel_unknown_entry_order_type_returns_warning():
     assert "unknown entry_order_type" in warn
 
 
-def test_fillmodel_legacy_slippage_factor_path():
-    # slippage_model=None forces the legacy fixed-bps factor branch in _apply_slip.
-    cfg = _cfg(slippage_bps=100.0).model_copy(update={"slippage_model": None})
+def test_fillmodel_default_slippage_model_path():
+    cfg = _cfg(slippage_bps=100.0)
     model = FillModel(cfg)
     idx, price, warn = model.entry_price(_bars(), 0)
     assert warn is None

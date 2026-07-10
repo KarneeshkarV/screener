@@ -21,11 +21,13 @@ def unusual_volume_pipeline(
     refresh: bool,
     **_: Any,
 ) -> None:
-    from screener.unusual_volume.cli import run_unusual_volume
+    from screener.unusual_volume.cli import _resolve_universe, run_unusual_volume
+    from screener.unusual_volume.service import UnusualVolumeRequest
 
-    run_unusual_volume(
+    request = UnusualVolumeRequest(
         market=market,
         as_of=date.today(),
-        limit=limit,
+        universe=_resolve_universe(market, None, None),
         refresh=refresh,
     )
+    run_unusual_volume(request, limit=limit)

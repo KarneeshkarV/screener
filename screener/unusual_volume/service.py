@@ -12,15 +12,28 @@ from rich.console import Console
 
 from screener.backtester.data import build_price_fetcher, tv_to_yf
 from screener.symbols import tv_to_nse
-from .buildup import BuildupScore, compute_buildup_score, scan_buildups
+from .buildup import (
+    DEFAULT_MIN_SCORE as DEFAULT_BUILDUP_MIN,
+    DEFAULT_WINDOW as DEFAULT_BUILDUP_WINDOW,
+    BuildupScore,
+    compute_buildup_score,
+    scan_buildups,
+)
+from .classify import STRENGTH_RANK
 from .delivery import load_delivery_panel, overlay_events, quiet_accumulation_events
-from .detector import Event, detect_market
+from .detector import (
+    DEFAULT_MIN_RVOL,
+    DEFAULT_MIN_Z,
+    Event,
+    bars_on_or_before_as_of,
+    detect_market,
+)
 from .enrich import attach_sector, deep_enrich_india, fetch_sector_map
 from .filters import fetch_fno_ban_list, passes_market_cap, passes_volume_floor
 
 
 _DEFAULT_MIN_MCAP = {"us": 300_000_000.0, "india": 5_000_000_000.0}
-_STRENGTH_RANK = {"MODERATE": 1, "HIGH": 2, "EXTREME": 3}
+DEFAULT_MIN_AVG_VOLUME = 100_000.0
 
 
 def _live_nse_snapshot_date() -> date:
@@ -38,16 +51,16 @@ class UnusualVolumeRequest(BaseModel):
     market: str
     as_of: date
     universe: list[str]
-    min_rvol: float = Field(ge=0.0)
-    min_z: float = Field(ge=0.0)
-    strength_floor: str
-    min_avg_volume: float = Field(ge=0.0)
+    min_rvol: float = Field(default=DEFAULT_MIN_RVOL, ge=0.0)
+    min_z: float = Field(default=DEFAULT_MIN_Z, ge=0.0)
+    strength_floor: str = "moderate"
+    min_avg_volume: float = Field(default=DEFAULT_MIN_AVG_VOLUME, ge=0.0)
     min_market_cap: Optional[float] = Field(default=None, ge=0.0)
-    include_fno_ban: bool
-    deep_india: bool
-    buildup_enabled: bool
-    buildup_window: int = Field(ge=1)
-    buildup_min_score: float = Field(ge=0.0)
+    include_fno_ban: bool = False
+    deep_india: bool = False
+    buildup_enabled: bool = False
+    buildup_window: int = Field(default=DEFAULT_BUILDUP_WINDOW, ge=1)
+    buildup_min_score: float = Field(default=DEFAULT_BUILDUP_MIN, ge=0.0)
     option_chain: bool = False
     fii_dii: bool = False
     pledge: bool = False
@@ -119,18 +132,6 @@ def fetch_bars(
 def india_symbol(tv_sym: str) -> str:
     """Return the NSE bhavcopy symbol for a TradingView-style symbol."""
     return tv_to_nse(tv_sym)
-
-
-def bars_on_or_before_as_of(bars: pd.DataFrame, as_of: date) -> pd.DataFrame:
-    if bars is None or bars.empty:
-        return pd.DataFrame()
-    df = bars.copy()
-    if not isinstance(df.index, pd.DatetimeIndex):
-        if "date" not in df.columns:
-            return pd.DataFrame()
-        df = df.set_index(pd.DatetimeIndex(pd.to_datetime(df["date"]).values))
-    df = df.sort_index()
-    return df[df.index <= pd.Timestamp(as_of).normalize()]
 
 
 def standalone_buildup_event(
@@ -227,8 +228,8 @@ def run_unusual_volume_scan(
     console.print(f"[dim]Detector emitted {len(events)} candidate events.[/dim]")
 
     panel = _overlay_india_delivery(request, liquid, events, console)
-    floor_rank = _STRENGTH_RANK[request.strength_floor.upper()]
-    events = [e for e in events if _STRENGTH_RANK[e.strength] >= floor_rank]
+    floor_rank = STRENGTH_RANK[request.strength_floor.upper()]
+    events = [e for e in events if STRENGTH_RANK[e.strength] >= floor_rank]
 
     if request.buildup_enabled:
         _apply_buildup_overlay(request, liquid, panel, events, console)

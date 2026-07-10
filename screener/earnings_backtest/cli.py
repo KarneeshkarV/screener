@@ -9,6 +9,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from screener.markets import market_option
 from screener.earnings_backtest.engine import (
     EarningsTrade,
     compute_backtest_summary,
@@ -32,13 +33,7 @@ console = Console()
 
 
 @click.command(name="earnings-backtest")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["us", "india"]),
-    default="us",
-    help="Market: US (S&P 500) or India (Nifty 500).",
-)
+@market_option(default="us", help="Market: US (S&P 500) or India (Nifty 500).")
 @click.option(
     "--years",
     type=int,
@@ -262,13 +257,7 @@ def _print_csv(trades: list[EarningsTrade]) -> None:
 
 
 @click.command(name="earnings-pead")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["us", "india"]),
-    default="us",
-    help="Market: US (S&P 500) or India (Nifty 500).",
-)
+@market_option(default="us", help="Market: US (S&P 500) or India (Nifty 500).")
 @click.option(
     "--years",
     type=int,

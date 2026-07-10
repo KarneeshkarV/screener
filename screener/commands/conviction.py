@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import datetime
 
 import click
 from rich.console import Console
@@ -11,25 +11,22 @@ from rich.console import Console
 from screener.backtester.data import build_price_fetcher
 from screener.cache import parse_ttl
 from screener.conviction import build_conviction_card, render_card
+from screener.markets import (
+    as_of_option,
+    get_price_fetcher,
+    market_option,
+    resolve_as_of,
+)
 
 
 @click.command(name="conviction")
 @click.argument("ticker")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["us", "india"]),
+@market_option(
     default="us",
     show_default=True,
     help="Market the ticker trades in.",
 )
-@click.option(
-    "--as-of",
-    "as_of_arg",
-    type=click.DateTime(formats=["%Y-%m-%d"]),
-    default=None,
-    help="Trading date to evaluate (default: today).",
-)
+@as_of_option()
 @click.option(
     "--json",
     "as_json",
@@ -53,9 +50,11 @@ def conviction(
     cache_ttl: str,
 ) -> None:
     """One composite conviction card for TICKER, fusing the screen pillars."""
-    as_of = as_of_arg.date() if isinstance(as_of_arg, datetime) else date.today()
+    as_of = resolve_as_of(as_of_arg)
     ttl = parse_ttl(cache_ttl, default=86400)
-    fetcher = click.get_current_context().obj or build_price_fetcher(refresh=refresh)
+    fetcher = get_price_fetcher(
+        click.get_current_context().obj, builder=build_price_fetcher, refresh=refresh
+    )
     card = build_conviction_card(
         ticker, market, as_of, fetcher, cache_ttl=ttl, refresh=refresh
     )

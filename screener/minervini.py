@@ -9,9 +9,10 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
-from screener.backtester.data import PriceFetcher, build_price_fetcher, tv_to_yf
+from screener.backtester.data import PriceFetcher, build_price_fetcher
 from screener.cache import parse_ttl
 from screener.commands.rs_breakout import load_universe
+from screener.symbols import tv_to_yf
 
 
 MINERVINI_ENTRY_EXPR = (

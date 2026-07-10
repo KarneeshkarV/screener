@@ -67,6 +67,19 @@ def _event(ticker: str, ed: date, surprise: float = 10.0) -> dict:
     }
 
 
+# ── _execution.py ────────────────────────────────────────────────────────
+
+
+def test_apply_slippage_is_symmetric_and_bit_identical():
+    from screener.earnings_backtest._execution import apply_slippage
+
+    entry, exit_ = apply_slippage(100.0, 110.0, 5.0)
+    assert entry == 100.0 * (1 + 5 / 10_000)
+    assert exit_ == 110.0 * (1 - 5 / 10_000)
+    # bps=0 is a pure passthrough.
+    assert apply_slippage(100.0, 110.0, 0.0) == (100.0, 110.0)
+
+
 # ── strategies.py ────────────────────────────────────────────────────────
 
 

@@ -3,8 +3,7 @@
 The whole point of the fill seam is that pricing can be exercised *without*
 running a full simulation. These tests poke the model directly: order-type
 dispatch (MOO / MOC / limit), gap-through-stop/target reference resolution,
-slippage routing (legacy bps factor vs. a pluggable ``SlippageModel``), and the
-partial-exit / close pricing path.
+slippage routing, and the partial-exit / close pricing path.
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from screener.backtester.fills import (
     FillModel,
     _resolve_stop_fill,
     _resolve_target_fill,
-    _slippage_factor,
 )
 from screener.backtester.models import BacktestConfig
 from screener.backtester.slippage import HalfSpreadSlippage
@@ -157,11 +155,9 @@ def test_exit_close_reasons_use_close():
 # ── slippage routing ─────────────────────────────────────────────────
 
 
-def test_exit_legacy_bps_factor_when_no_model():
-    fm = FillModel(_cfg(slippage_bps=25.0, slippage_model=None))
+def test_exit_uses_default_fixed_bps_slippage_model():
+    fm = FillModel(_cfg(slippage_bps=25.0))
     px = fm.exit_price(reason="eod", close=100.0)
-    # sell side widened *down* by the legacy factor.
-    assert px == pytest.approx(100.0 * _slippage_factor(25.0, buy=False))
     assert px == pytest.approx(99.75)
 
 

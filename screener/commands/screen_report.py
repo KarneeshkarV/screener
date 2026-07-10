@@ -13,6 +13,7 @@ from plotly.offline import get_plotlyjs
 
 from screener.backtester.dashboard import _figure_html, _table_html
 from screener.display import COLUMN_LABELS
+from screener.html_report import html_page
 
 
 def _fmt(value: object) -> str:
@@ -146,15 +147,8 @@ def render_screen_report(
     note_items = "".join(f"<li>{html.escape(note)}</li>" for note in notes)
     plotly_js = get_plotlyjs()
     title = f"{criteria_name.upper()} Screen"
-    page_html = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{html.escape(title)}</title>
-  <script>{plotly_js}</script>
-  <style>
-    :root {{
+    _css = """\
+    :root {
       --ink: #e5e7eb;
       --muted: #9ca3af;
       --paper: #07090d;
@@ -162,87 +156,88 @@ def render_screen_report(
       --panel-strong: #111827;
       --line: #242b36;
       --accent: #22c55e;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
+    }
+    * { box-sizing: border-box; }
+    body {
       margin: 0;
       background: var(--paper);
       color: var(--ink);
       font-family: "IBM Plex Sans", Aptos, sans-serif;
       letter-spacing: 0;
-    }}
-    header {{
+    }
+    header {
       border-bottom: 1px solid var(--line);
       padding: 24px 32px 18px;
       background: #0b0f16;
-    }}
-    h1, h2 {{ margin: 0; font-weight: 700; }}
-    h1 {{ font-size: 28px; }}
-    h2 {{ font-size: 17px; margin-bottom: 14px; }}
-    main {{
+    }
+    h1, h2 { margin: 0; font-weight: 700; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 17px; margin-bottom: 14px; }
+    main {
       padding: 22px 32px 36px;
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 16px;
-    }}
-    .metrics {{
+    }
+    .metrics {
       grid-column: 1 / -1;
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 10px;
-    }}
-    .metric, .panel {{
+    }
+    .metric, .panel {
       border: 1px solid var(--line);
       background: var(--panel);
       border-radius: 6px;
-    }}
-    .metric {{ padding: 13px 14px; }}
-    .metric span {{
+    }
+    .metric { padding: 13px 14px; }
+    .metric span {
       color: var(--muted);
       display: block;
       font-size: 12px;
       text-transform: uppercase;
-    }}
-    .metric strong {{ display: block; margin-top: 5px; font-size: 22px; }}
-    .panel {{ padding: 16px; min-width: 0; }}
-    .wide {{ grid-column: 1 / -1; }}
-    .table-wrap {{ overflow: auto; max-height: 560px; }}
-    .data-table {{
+    }
+    .metric strong { display: block; margin-top: 5px; font-size: 22px; }
+    .panel { padding: 16px; min-width: 0; }
+    .wide { grid-column: 1 / -1; }
+    .table-wrap { overflow: auto; max-height: 560px; }
+    .data-table {
       width: 100%;
       border-collapse: collapse;
       font-size: 12px;
       white-space: nowrap;
-    }}
-    .data-table th {{
+    }
+    .data-table th {
       position: sticky;
       top: 0;
       background: var(--panel-strong);
       color: var(--ink);
       text-align: left;
       z-index: 1;
-    }}
-    .data-table th, .data-table td {{
+    }
+    .data-table th, .data-table td {
       border-bottom: 1px solid var(--line);
       padding: 7px 9px;
-    }}
-    .chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
-    .chips span {{
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chips span {
       border: 1px solid var(--line);
       border-radius: 999px;
       padding: 5px 9px;
       background: var(--panel-strong);
       font-size: 12px;
-    }}
-    .empty, .notes {{ color: var(--muted); font-size: 13px; }}
-    .notes {{ margin: 0; padding-left: 18px; }}
-    @media (max-width: 900px) {{
-      header, main {{ padding-left: 16px; padding-right: 16px; }}
-      main {{ grid-template-columns: 1fr; }}
-      .wide, .metrics {{ grid-column: auto; }}
-    }}
-  </style>
-</head>
-<body>
+    }
+    .empty, .notes { color: var(--muted); font-size: 13px; }
+    .notes { margin: 0; padding-left: 18px; }
+    @media (max-width: 900px) {
+      header, main { padding-left: 16px; padding-right: 16px; }
+      main { grid-template-columns: 1fr; }
+      .wide, .metrics { grid-column: auto; }
+    }"""
+    page_html = html_page(
+        html.escape(title),
+        _css,
+        f"""\
   <header>
     <h1>{html.escape(title)}</h1>
   </header>
@@ -254,9 +249,8 @@ def render_screen_report(
     {_ticker_list("Removed Since Previous Run", removed, "removed-tickers")}
     <section class="panel wide" id="screen-results"><h2>Results</h2><div class="table-wrap">{_table_html(df, "screen-results-table", limit=500)}</div></section>
     <section class="panel wide" id="report-notes"><h2>Notes</h2><ul class="notes">{note_items}</ul></section>
-  </main>
-</body>
-</html>
-"""
+  </main>""",
+        head_extra=f"<script>{plotly_js}</script>",
+    )
     output_path.write_text(page_html, encoding="utf-8")
     return output_path

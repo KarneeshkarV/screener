@@ -246,8 +246,22 @@ def test_pipeline_criteria_delegate_to_command_runners(monkeypatch):
         lambda **kwargs: calls.append(("promoter", kwargs)),
     )
     monkeypatch.setattr(
+        "screener.unusual_volume.cli._resolve_universe",
+        lambda m, t, f: ["AAA"],
+    )
+    monkeypatch.setattr(
         "screener.unusual_volume.cli.run_unusual_volume",
-        lambda **kwargs: calls.append(("unusual", kwargs)),
+        lambda request, **kwargs: calls.append(
+            (
+                "unusual",
+                {
+                    "market": request.market,
+                    "as_of": request.as_of,
+                    "limit": kwargs.get("limit"),
+                    "refresh": request.refresh,
+                },
+            )
+        ),
     )
 
     obv_trend.obv_trend_pipeline(market="us", limit=4)

@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import logging
 import math
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Mapping
 from datetime import date, timedelta
 from pathlib import Path
-from collections.abc import Mapping
 from typing import Any, Iterable, Optional, cast
 
 import numpy as np
@@ -23,14 +22,15 @@ from rich.console import Console, JustifyMethod
 from rich.table import Table
 
 from screener.backtester.data import PriceFetcher, tv_to_yf
+from screener.format import fmt_float as _fmt_float
+from screener.markets import get_market
+from screener.parallel import parallel_map
 from screener.reporting import dump_json_file, markdown_row
 from screener.symbols import normalize_symbol, tv_to_nse
 from screener.unusual_volume.delivery import load_delivery_panel
 
 
 logger = logging.getLogger(__name__)
-DEFAULT_BENCHMARK = "^NSEI"
-DEFAULT_BENCHMARKS = {"india": "^NSEI", "us": "SPY"}
 RS_WINDOW = 55
 SUPERTREND_PERIOD = 10
 SUPERTREND_MULTIPLIER = 3.0
@@ -295,9 +295,10 @@ def scan_rs_breakouts(
     benchmark_bars: pd.DataFrame,
     as_of: date,
     delivery_panel: Optional[pd.DataFrame] = None,
-    benchmark_symbol: str = DEFAULT_BENCHMARK,
+    benchmark_symbol: str | None = None,
     require_delivery: bool = True,
 ) -> RsBreakoutResult:
+    resolved_benchmark = benchmark_symbol or get_market("india").benchmark
     benchmark = normalize_bars(benchmark_bars, as_of)
     if benchmark.empty:
         raise ValueError("Benchmark OHLCV data is empty.")
@@ -323,7 +324,7 @@ def scan_rs_breakouts(
             full.append(row)
     return RsBreakoutResult(
         as_of=as_of,
-        benchmark=benchmark_symbol,
+        benchmark=resolved_benchmark,
         full=sort_rows(full),
         relaxed=sort_rows(relaxed),
     )
@@ -334,16 +335,17 @@ def fetch_price_data(
     market: str,
     as_of: date,
     fetcher: PriceFetcher,
-    benchmark: str = DEFAULT_BENCHMARK,
+    benchmark: str | None = None,
     history_days: int = 220,
     max_workers: int = 8,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    resolved_benchmark = benchmark or get_market("india").benchmark
     start = as_of - timedelta(days=history_days)
     end = as_of + timedelta(days=1)
     ticker_list = list(tickers)
     yf_map = {t: tv_to_yf(t, market) for t in ticker_list}
-    benchmark_bars = fetcher.fetch([benchmark], start, end).get(
-        benchmark, pd.DataFrame()
+    benchmark_bars = fetcher.fetch([resolved_benchmark], start, end).get(
+        resolved_benchmark, pd.DataFrame()
     )
     bars_by_symbol: dict[str, pd.DataFrame] = {}
 
@@ -360,13 +362,12 @@ def fetch_price_data(
             return tv_sym, pd.DataFrame()
         return tv_sym, data.get(yf_sym, pd.DataFrame())
 
-    with ThreadPoolExecutor(max_workers=max(1, int(max_workers))) as pool:
-        futures = [
-            pool.submit(_fetch_one, tv_sym, yf_sym) for tv_sym, yf_sym in yf_map.items()
-        ]
-        for fut in as_completed(futures):
-            tv_sym, frame = fut.result()
-            bars_by_symbol[tv_sym] = frame
+    for tv_sym, frame in parallel_map(
+        lambda item: _fetch_one(item[0], item[1]),
+        yf_map.items(),
+        max_workers=max(1, int(max_workers)),
+    ):
+        bars_by_symbol[tv_sym] = frame
     return bars_by_symbol, benchmark_bars
 
 
@@ -679,9 +680,3 @@ def write_markdown(result: RsBreakoutResult, path: Path, market: str = "india") 
             )
         lines.append("")
     path.write_text("\n".join(lines))
-
-
-def _fmt_float(value: Optional[float], ndp: int = 2) -> str:
-    if value is None or (isinstance(value, float) and math.isnan(value)):
-        return "-"
-    return f"{value:.{ndp}f}"

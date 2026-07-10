@@ -23,9 +23,13 @@ def to_number(value: Any) -> float | None:
 def first_number(
     mapping: Mapping[Any, Any],
     *keys: str,
-    case_insensitive: bool = False,
+    case_insensitive: bool = True,
 ) -> float | None:
-    """Return the first parseable numeric value found for ``keys``."""
+    """Return the first parseable numeric value found for ``keys``.
+
+    Keys are matched case-insensitively by default (provider payloads use
+    inconsistent casing); pass ``case_insensitive=False`` for an exact lookup.
+    """
     if case_insensitive:
         lowered = {str(k).lower(): v for k, v in mapping.items()}
         for key in keys:

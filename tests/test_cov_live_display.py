@@ -324,7 +324,7 @@ def test_format_value_all_branches():
     # change -> fmt_pct
     assert "%" in display._format_value("change", 1.23)
     # volume tiers
-    assert display._format_value("volume", 2_500_000) == "2.5M"
+    assert display._format_value("volume", 2_500_000) == "2.50M"
     assert display._format_value("volume", 2_500) == "2.5K"
     assert display._format_value("volume", 500) == "500"
     # market cap

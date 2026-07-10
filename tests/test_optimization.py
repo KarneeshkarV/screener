@@ -14,13 +14,7 @@ from screener.backtester.optimization.grid import (
     grid_search,
     parameter_combinations,
 )
-from screener.backtester.optimization.metrics import (
-    expectancy,
-    maximum_drawdown,
-    profit_factor,
-    sharpe_ratio,
-    win_rate,
-)
+from screener.backtester.optimization.metrics import optimization_metrics
 from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
 from screener.backtester.optimization.walk_forward import generate_walk_forward_windows
 from screener.backtester.slippage import FixedBpsSlippage, HalfSpreadSlippage
@@ -180,23 +174,33 @@ def test_grid_cache_key_includes_slippage_model():
     assert base_key != half_spread_key
 
 
-def test_metrics_calculations_and_edge_cases():
+def test_optimization_metrics_preserve_canonical_values():
     equity = pd.Series([100.0, 110.0, 105.0, 120.0])
     trades = [_trade(10.0, 0.10), _trade(-5.0, -0.05)]
+    res = BacktestResult(
+        config=_config(),
+        trades=trades,
+        equity_curve=equity,
+        benchmark_curve=equity,
+        metrics={
+            "total_return": 0.20,
+            "sharpe": 9.99,
+            "profit_factor": 2.0,
+            "max_drawdown": -5 / 110,
+            "hit_rate": 0.5,
+            "expectancy": 0.025,
+            "calmar": 123.45,
+        },
+    )
 
-    assert maximum_drawdown(equity) == pytest.approx(-5 / 110)
-    assert profit_factor(trades) == pytest.approx(2.0)
-    assert win_rate(trades) == pytest.approx(0.5)
-    assert expectancy(trades) == pytest.approx(0.025)
-    assert sharpe_ratio(pd.Series([100.0])) == 0.0
-    assert profit_factor([]) == 0.0
-    assert win_rate([]) == 0.0
+    metrics = optimization_metrics(res)
 
-
-def test_all_losses_and_single_trade_metrics():
-    losses = [_trade(-10.0, -0.10), _trade(-5.0, -0.05)]
-    assert profit_factor(losses) == 0.0
-    assert expectancy([_trade(3.0, 0.03)]) == pytest.approx(0.03)
+    assert metrics["sharpe"] == pytest.approx(9.99)
+    assert metrics["calmar"] == pytest.approx(123.45)
+    assert metrics["max_drawdown"] == pytest.approx(-5 / 110)
+    assert metrics["win_rate"] == pytest.approx(0.5)
+    assert metrics["risk_adjusted_return"] == pytest.approx(4.4)
+    assert metrics["trade_count"] == pytest.approx(2.0)
 
 
 def test_cli_help_includes_optimize_commands():

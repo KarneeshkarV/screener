@@ -10,6 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from screener.backtester.pine import _atr, _crossover, _crossunder
+
 
 EMA_FAST_1 = 10
 EMA_FAST_2 = 20
@@ -19,30 +21,6 @@ RANGE_MULTIPLIER = 0.618
 
 def required_history_bars() -> int:
     return TREND_LEN
-
-
-def _atr_rma(bars: pd.DataFrame, length: int) -> pd.Series:
-    high = bars["high"].astype(float)
-    low = bars["low"].astype(float)
-    close = bars["close"].astype(float)
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    return tr.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
-
-
-def _crossover(a: pd.Series, b: pd.Series) -> pd.Series:
-    return ((a > b) & (a.shift(1) <= b.shift(1))).fillna(False)
-
-
-def _crossunder(a: pd.Series, b: pd.Series) -> pd.Series:
-    return ((a < b) & (a.shift(1) >= b.shift(1))).fillna(False)
 
 
 def prepare_vivek_equity_tool_frame(bars: pd.DataFrame) -> pd.DataFrame:
@@ -59,7 +37,7 @@ def prepare_vivek_equity_tool_frame(bars: pd.DataFrame) -> pd.DataFrame:
     ema_fast_1 = source.ewm(span=EMA_FAST_1, adjust=False, min_periods=1).mean()
     ema_fast_2 = source.ewm(span=EMA_FAST_2, adjust=False, min_periods=1).mean()
     trend = source.rolling(TREND_LEN, min_periods=TREND_LEN).mean()
-    channel_basis = _atr_rma(out, TREND_LEN) * RANGE_MULTIPLIER
+    channel_basis = _atr(out, TREND_LEN) * RANGE_MULTIPLIER
     channel_top = trend + channel_basis
     channel_bottom = trend - channel_basis
 

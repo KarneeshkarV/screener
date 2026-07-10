@@ -48,6 +48,10 @@ def apply_slippage(
     return reference_price * (1.0 - frac)
 
 
+def _bps_fraction(bps: float) -> float:
+    return bps / 10_000.0
+
+
 class FixedBpsSlippage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -56,10 +60,10 @@ class FixedBpsSlippage(BaseModel):
     def adverse_fraction(
         self, side: Side, shares: float, adv: float, sigma_daily: float
     ) -> float:
-        return self.bps / 10_000.0
+        return _bps_fraction(self.bps)
 
 
-class HalfSpreadSlippage(BaseModel):
+class HalfSpreadSlippage(FixedBpsSlippage):
     model_config = ConfigDict(frozen=True)
 
     half_spread_bps: float = 0.0
@@ -67,7 +71,7 @@ class HalfSpreadSlippage(BaseModel):
     def adverse_fraction(
         self, side: Side, shares: float, adv: float, sigma_daily: float
     ) -> float:
-        return self.half_spread_bps / 10_000.0
+        return _bps_fraction(self.half_spread_bps)
 
 
 class VolumeImpactSlippage(BaseModel):

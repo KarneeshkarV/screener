@@ -10,14 +10,13 @@ from rich.table import Table
 from screener.backtester.data import build_price_fetcher
 from screener.display import print_csv
 from screener.index_inclusion import LIMITATION_NOTE, run_inclusion_study
+from screener.markets import market_option
 from screener.universes import load_sp500_membership
 
 
 @click.command(name="index-inclusion")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["us"]),
+@market_option(
+    choices=("us",),
     default="us",
     help="Market to study. Only 'us' (S&P 500) is supported.",
 )

@@ -19,10 +19,8 @@ from screener.format import fmt_volume as _fmt_volume
 from screener.reporting import dump_json_file, json_safe, markdown_row
 from screener.reporting import json_safe as _json_safe  # noqa: F401  back-compat
 
+from .classify import STRENGTH_RANK
 from .detector import Event
-
-
-_STRENGTH_RANK = {"EXTREME": 3, "HIGH": 2, "MODERATE": 1}
 
 
 def sort_events(events: Iterable[Event]) -> list[Event]:
@@ -30,7 +28,7 @@ def sort_events(events: Iterable[Event]) -> list[Event]:
     return sorted(
         events,
         key=lambda e: (
-            _STRENGTH_RANK.get(e.strength, 0),
+            STRENGTH_RANK.get(e.strength, 0),
             e.rvol if not (isinstance(e.rvol, float) and math.isnan(e.rvol)) else 0.0,
         ),
         reverse=True,

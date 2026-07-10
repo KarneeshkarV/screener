@@ -21,7 +21,7 @@ import pandas as pd
 
 from screener.resilience import call_with_resilience
 
-from .detector import Event
+from .detector import Event, bars_on_or_before_as_of
 from .nse_client import is_trading_day, load_delivery_bhavcopy_csv
 
 
@@ -205,7 +205,6 @@ def quiet_accumulation_events(
         return []
     existing_symbols = {ev.symbol.upper() for ev in existing_events or []}
     panel = compute_delivery_metrics(panel)
-    as_of_ts = pd.Timestamp(as_of).normalize()
     out: list[Event] = []
     today = panel[
         (panel["date"] == as_of) & (panel["delivery_rvol"] >= QUIET_DELIVERY_RVOL)
@@ -214,16 +213,7 @@ def quiet_accumulation_events(
         sym = str(row["SYMBOL"]).upper()
         if sym in existing_symbols:
             continue
-        bars = bars_by_symbol.get(sym)
-        if bars is None or bars.empty:
-            continue
-        df = bars.copy()
-        if not isinstance(df.index, pd.DatetimeIndex):
-            if "date" in df.columns:
-                df = df.set_index(pd.DatetimeIndex(pd.to_datetime(df["date"]).values))
-            else:
-                continue
-        df = df[df.index <= as_of_ts]
+        df = bars_on_or_before_as_of(bars_by_symbol.get(sym), as_of)
         if df.empty:
             continue
         last = df.iloc[-1]

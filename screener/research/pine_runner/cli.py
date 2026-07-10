@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import click
 
+from screener.markets import market_option
 from screener.research.pine_runner.output import print_market_table, write_trades_json
 from screener.research.pine_runner.run import run_market
 
 
 @click.command()
-@click.option("--market", type=click.Choice(["us", "india"]), default="us")
+@market_option(default="us")
 @click.option("--years", type=int, default=3, help="Backtest window length (years).")
 @click.option("--limit", type=int, default=0, help="Cap universe size (0 = all).")
 @click.option("--refresh", is_flag=True, help="Force re-fetch OHLCV.")

@@ -11,11 +11,12 @@ from typing import Any
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.offline import get_plotlyjs
 from plotly.io import to_html
+from plotly.offline import get_plotlyjs
 
 from screener.backtester.display import trades_dataframe
 from screener.backtester.models import BacktestResult
+from screener.html_report import html_page
 
 
 class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
@@ -350,15 +351,8 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
     )
     cfg = result.config
     plotly_js = get_plotlyjs()
-    page_html = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Rolling Backtest Dashboard</title>
-  <script>{plotly_js}</script>
-  <style>
-    :root {{
+    _css = """\
+    :root {
       --ink: #e5e7eb;
       --muted: #9ca3af;
       --paper: #07090d;
@@ -367,99 +361,100 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
       --line: #242b36;
       --accent: #22c55e;
       --warn: #ef4444;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
+    }
+    * { box-sizing: border-box; }
+    body {
       margin: 0;
       background: var(--paper);
       color: var(--ink);
       font-family: "IBM Plex Sans", Aptos, sans-serif;
       letter-spacing: 0;
-    }}
-    header {{
+    }
+    header {
       border-bottom: 1px solid var(--line);
       padding: 24px 32px 18px;
       background: #0b0f16;
-    }}
-    h1, h2 {{ margin: 0; font-weight: 700; }}
-    h1 {{ font-size: 28px; }}
-    h2 {{ font-size: 17px; margin-bottom: 14px; }}
-    .subhead {{
+    }
+    h1, h2 { margin: 0; font-weight: 700; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 17px; margin-bottom: 14px; }
+    .subhead {
       color: var(--muted);
       display: flex;
       flex-wrap: wrap;
       gap: 10px 18px;
       margin-top: 8px;
       font-size: 13px;
-    }}
-    main {{
+    }
+    main {
       padding: 22px 32px 36px;
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 16px;
-    }}
-    .metrics {{
+    }
+    .metrics {
       grid-column: 1 / -1;
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 10px;
-    }}
-    .metric, .panel {{
+    }
+    .metric, .panel {
       border: 1px solid var(--line);
       background: var(--panel);
       border-radius: 6px;
-    }}
-    .metric {{ padding: 13px 14px; }}
-    .metric span {{
+    }
+    .metric { padding: 13px 14px; }
+    .metric span {
       color: var(--muted);
       display: block;
       font-size: 12px;
       text-transform: uppercase;
-    }}
-    .metric strong {{ display: block; margin-top: 5px; font-size: 22px; }}
-    .panel {{ padding: 16px; min-width: 0; }}
-    .wide {{ grid-column: 1 / -1; }}
-    .chart-grid {{
+    }
+    .metric strong { display: block; margin-top: 5px; font-size: 22px; }
+    .panel { padding: 16px; min-width: 0; }
+    .wide { grid-column: 1 / -1; }
+    .chart-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
-    }}
-    .chart-grid.two {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-    .tables {{
+    }
+    .chart-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tables {
       grid-column: 1 / -1;
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 16px;
-    }}
-    .table-wrap {{ overflow: auto; max-height: 520px; }}
-    .data-table {{
+    }
+    .table-wrap { overflow: auto; max-height: 520px; }
+    .data-table {
       width: 100%;
       border-collapse: collapse;
       font-size: 12px;
       white-space: nowrap;
-    }}
-    .data-table th {{
+    }
+    .data-table th {
       position: sticky;
       top: 0;
       background: var(--panel-strong);
       color: var(--ink);
       text-align: left;
       z-index: 1;
-    }}
-    .data-table th, .data-table td {{
+    }
+    .data-table th, .data-table td {
       border-bottom: 1px solid var(--line);
       padding: 7px 9px;
-    }}
-    .empty, .warnings {{ color: var(--muted); font-size: 13px; }}
-    .warnings {{ margin: 0; padding-left: 18px; }}
-    @media (max-width: 900px) {{
-      header, main {{ padding-left: 16px; padding-right: 16px; }}
-      main, .tables, .chart-grid, .chart-grid.two {{ grid-template-columns: 1fr; }}
-      .wide, .metrics {{ grid-column: auto; }}
-    }}
-  </style>
-</head>
-<body>
+    }
+    .empty, .warnings { color: var(--muted); font-size: 13px; }
+    .warnings { margin: 0; padding-left: 18px; }
+    @media (max-width: 900px) {
+      header, main { padding-left: 16px; padding-right: 16px; }
+      main, .tables, .chart-grid, .chart-grid.two { grid-template-columns: 1fr; }
+      .wide, .metrics { grid-column: auto; }
+    }"""
+    page_html = html_page(
+        "Rolling Backtest Dashboard",
+        _css,
+        f"""\
   <header>
     <h1>Rolling Backtest Dashboard</h1>
     <div class="subhead">
@@ -479,10 +474,9 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
       <article class="panel" id="trade-ledger"><h2>Trade Ledger</h2><div class="table-wrap">{_table_html(trades, "trade-ledger-table")}</div></article>
       <article class="panel" id="selection-table"><h2>Selections</h2><div class="table-wrap">{_table_html(selection, "selection-table-data")}</div></article>
     </section>
-  </main>
-</body>
-</html>
-"""
+  </main>""",
+        head_extra=f"<script>{plotly_js}</script>",
+    )
     html_path.write_text(page_html, encoding="utf-8")
     return html_path
 

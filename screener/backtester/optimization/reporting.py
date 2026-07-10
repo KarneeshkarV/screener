@@ -13,7 +13,7 @@ from rich.table import Table
 
 from screener.backtester.optimization.grid import GridSearchResult
 from screener.backtester.optimization.walk_forward import WalkForwardSummary
-
+from screener.html_report import html_page
 
 GRID_IN_SAMPLE_DISCLAIMER = (
     "IN-SAMPLE / SELECTION BIAS WARNING: These metrics are computed on the SAME "
@@ -115,22 +115,13 @@ def write_html_report(
         if disclaimer
         else ""
     )
-    html = f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>{title}</title>
-  <style>
-    body {{ font-family: system-ui, sans-serif; margin: 32px; }}
-    pre {{ background: #f5f5f5; border: 1px solid #ddd; padding: 16px; overflow: auto; }}
-  </style>
-</head>
-<body>
-  <h1>{title}</h1>
-{banner}  <pre>{payload}</pre>
-</body>
-</html>
-"""
+    css = (
+        "    body { font-family: system-ui, sans-serif; margin: 32px; }\n"
+        "    pre { background: #f5f5f5; border: 1px solid #ddd; padding: 16px; "
+        "overflow: auto; }"
+    )
+    body = f"  <h1>{title}</h1>\n{banner}  <pre>{payload}</pre>"
+    html = html_page(title, css, body, viewport=False)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(html)

@@ -1159,6 +1159,64 @@ def test_fetch_nifty50_missing_symbol_col(monkeypatch):
         universes_mod._fetch_nifty50()
 
 
+def test_fetch_nifty500(monkeypatch):
+    csv = "Symbol\nRELIANCE\nTCS\n"
+    monkeypatch.setattr(
+        universes_mod, "call_with_resilience", lambda *a, **k: _Resp(text=csv)
+    )
+    symbols, source = universes_mod._fetch_nifty500()
+    assert symbols == ["RELIANCE.NS", "TCS.NS"]
+    assert "nifty500" in source
+
+
+def test_fetch_nifty500_lowercase_col(monkeypatch):
+    csv = "SYMBOL\nreliance\n"
+    monkeypatch.setattr(
+        universes_mod, "call_with_resilience", lambda *a, **k: _Resp(text=csv)
+    )
+    symbols, _ = universes_mod._fetch_nifty500()
+    assert symbols == ["RELIANCE.NS"]
+
+
+def test_fetch_nifty500_resilience_none(monkeypatch):
+    monkeypatch.setattr(universes_mod, "call_with_resilience", lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match="unavailable"):
+        universes_mod._fetch_nifty500()
+
+
+def test_fetch_nifty500_missing_symbol_col(monkeypatch):
+    csv = "Foo\nbar\n"
+    monkeypatch.setattr(
+        universes_mod, "call_with_resilience", lambda *a, **k: _Resp(text=csv)
+    )
+    with pytest.raises(RuntimeError, match="missing Symbol"):
+        universes_mod._fetch_nifty500()
+
+
+def test_load_current_universe_nifty500_fetch(universes_dir, monkeypatch):
+    monkeypatch.setattr(
+        universes_mod,
+        "_fetch_nifty500",
+        lambda: (["RELIANCE.NS", "TCS.NS"], "nse"),
+    )
+    u = universes_mod.load_current_universe(
+        "nifty500", as_of=date.today(), use_cache=False
+    )
+    assert u.symbols == ("RELIANCE.NS", "TCS.NS")
+    assert u.source == "nse"
+
+
+def test_load_current_universe_nifty500_past_warns(universes_dir, monkeypatch):
+    monkeypatch.setattr(
+        universes_mod, "_fetch_nifty500", lambda: (["RELIANCE.NS"], "nse")
+    )
+    with pytest.warns(UserWarning, match="NOT point-in-time"):
+        u = universes_mod.load_current_universe(
+            "nifty500", as_of=date(2000, 1, 1), use_cache=False
+        )
+    assert u.symbols == ("RELIANCE.NS",)
+
+
 def test_load_sp500_membership_cache_read(universes_dir):
     path = universes_mod._membership_cache_path("sp500", date.today())
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1359,19 +1417,19 @@ def test_institutional_no_symbols():
 
 
 def test_institutional_no_api_key(monkeypatch):
-    import screener.insiders as insiders_mod
+    import screener.commands.institutional as cmd
 
-    monkeypatch.setattr(insiders_mod, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(cmd, "resolve_api_key", lambda: None)
     res = CliRunner().invoke(cli, ["institutional", "--tickers", "AAPL"])
     assert res.exit_code != 0
     assert "FMP_API_KEY is not set" in res.output
 
 
 def test_institutional_renders_results(monkeypatch):
-    import screener.insiders as insiders_mod
     import screener.institutional as inst_mod
+    import screener.commands.institutional as cmd
 
-    monkeypatch.setattr(insiders_mod, "_fmp_api_key", lambda: "key")
+    monkeypatch.setattr(cmd, "resolve_api_key", lambda: "key")
     df = pd.DataFrame(
         {
             "symbol": ["AAPL"],

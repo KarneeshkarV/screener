@@ -9,12 +9,13 @@ The command is registered on the main ``cli`` group in ``main.py`` via:
 from __future__ import annotations
 
 
-from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
 import click
 from rich.console import Console
+
+from screener.markets import as_of_option, market_option, resolve_as_of
 
 from .buildup import (
     DEFAULT_MIN_SCORE as DEFAULT_BUILDUP_MIN,
@@ -26,12 +27,10 @@ from .detector import (
 )
 from .output import render_rich, sort_events, write_json, write_markdown
 from .service import (
+    DEFAULT_MIN_AVG_VOLUME,
     UnusualVolumeRequest,
     run_unusual_volume_scan,
 )
-
-
-_DEFAULT_MIN_AVG_VOLUME = 100_000.0
 
 
 def _resolve_universe(
@@ -53,20 +52,8 @@ def _resolve_universe(
 
 
 @click.command(name="unusual-volume")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["us", "india"]),
-    default="us",
-    help="Market to scan.",
-)
-@click.option(
-    "--as-of",
-    "as_of_arg",
-    type=click.DateTime(formats=["%Y-%m-%d"]),
-    default=None,
-    help="Trading date to evaluate (default: today).",
-)
+@market_option(default="us", help="Market to scan.")
+@as_of_option()
 @click.option(
     "--tickers",
     default=None,
@@ -99,7 +86,7 @@ def _resolve_universe(
 @click.option(
     "--min-avg-volume",
     type=float,
-    default=_DEFAULT_MIN_AVG_VOLUME,
+    default=DEFAULT_MIN_AVG_VOLUME,
     help="Minimum 20-day average daily volume (shares).",
 )
 @click.option(
@@ -214,74 +201,12 @@ def unusual_volume(
     buildup_min_score: float,
 ) -> None:
     """Detect abnormal trading volume across a market on a given day."""
-    as_of: date = (
-        as_of_arg.date()
-        if isinstance(as_of_arg, datetime)
-        else (as_of_arg or date.today())
-    )
-    success = run_unusual_volume(
-        market=market,
-        as_of=as_of,
-        tickers=tickers,
-        universe_file=universe_file,
-        min_rvol=min_rvol,
-        min_z=min_z,
-        strength_floor=strength_floor,
-        min_avg_volume=min_avg_volume,
-        min_market_cap=min_market_cap,
-        include_fno_ban=include_fno_ban,
-        deep_india=deep_india,
-        option_chain=option_chain,
-        fii_dii=fii_dii,
-        pledge=pledge,
-        json_path=json_path,
-        md_path=md_path,
-        no_output_files=no_output_files,
-        refresh=refresh,
-        limit=limit,
-        buildup_enabled=buildup_enabled,
-        buildup_window=buildup_window,
-        buildup_min_score=buildup_min_score,
-    )
-    if success is False:
-        import sys
-
-        sys.exit(1)
-
-
-def run_unusual_volume(
-    *,
-    market: str,
-    as_of: date,
-    tickers: Optional[str] = None,
-    universe_file: Optional[str] = None,
-    min_rvol: float = DEFAULT_MIN_RVOL,
-    min_z: float = DEFAULT_MIN_Z,
-    strength_floor: str = "moderate",
-    min_avg_volume: float = _DEFAULT_MIN_AVG_VOLUME,
-    min_market_cap: Optional[float] = None,
-    include_fno_ban: bool = False,
-    deep_india: bool = False,
-    option_chain: bool = False,
-    fii_dii: bool = False,
-    pledge: bool = False,
-    json_path: Optional[str] = None,
-    md_path: Optional[str] = None,
-    no_output_files: bool = False,
-    refresh: bool = False,
-    limit: int = 50,
-    buildup_enabled: bool = False,
-    buildup_window: int = DEFAULT_BUILDUP_WINDOW,
-    buildup_min_score: float = DEFAULT_BUILDUP_MIN,
-) -> bool:
-    """Run the unusual-volume scan and render it (no Click context required)."""
-    console = Console()
     universe = _resolve_universe(market, tickers, universe_file)
     if not universe:
         raise click.UsageError("Empty universe — pass --tickers or --universe-file.")
     request = UnusualVolumeRequest(
         market=market,
-        as_of=as_of,
+        as_of=resolve_as_of(as_of_arg),
         universe=universe,
         min_rvol=min_rvol,
         min_z=min_z,
@@ -298,6 +223,32 @@ def run_unusual_volume(
         pledge=pledge,
         refresh=refresh,
     )
+    ok = run_unusual_volume(
+        request,
+        limit=limit,
+        json_path=json_path,
+        md_path=md_path,
+        no_output_files=no_output_files,
+    )
+    if not ok:
+        import sys
+
+        sys.exit(1)
+
+
+def run_unusual_volume(
+    request: UnusualVolumeRequest,
+    *,
+    limit: int = 50,
+    json_path: Optional[str] = None,
+    md_path: Optional[str] = None,
+    no_output_files: bool = False,
+    console: Optional[Console] = None,
+) -> bool:
+    """Run a prepared scan request and render it (no Click context required)."""
+    console = console or Console()
+    market = request.market
+    as_of = request.as_of
     result = run_unusual_volume_scan(request, console)
     if not result.events and result.fetched_count == 0:
         console.print("[red]No OHLCV data fetched. Aborting.[/red]")

@@ -8,14 +8,11 @@ import pandas as pd
 from screener.cache import parse_ttl
 from screener.display import print_csv, print_garp_results
 from screener.garp import run_garp_screen
-from screener.scanner import MARKETS
+from screener.markets import market_option
 
 
 @click.command(name="garp")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(list(MARKETS.keys())),
+@market_option(
     default="india",
     help="Market to screen.",
 )

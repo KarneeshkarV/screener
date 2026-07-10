@@ -10,6 +10,9 @@ Direction = Literal[
 ]
 Strength = Literal["MODERATE", "HIGH", "EXTREME"]
 
+# Canonical ordering of strength tiers (weakest -> strongest).
+STRENGTH_RANK: dict[str, int] = {"MODERATE": 1, "HIGH": 2, "EXTREME": 3}
+
 
 def classify_direction(
     open_px: float,

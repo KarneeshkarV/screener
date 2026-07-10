@@ -8,9 +8,9 @@ import pandas as pd
 from click.testing import CliRunner
 
 from screener import cache
-from screener import insiders as insiders_module
 from screener import institutional as institutional_module
 from screener.cli import cli
+import screener.commands.institutional as institutional_cmd
 from screener.institutional import (
     _aggregate_institutional_holders,
     _fetch_fmp_institutional_one,
@@ -211,7 +211,7 @@ def test_fetch_many_empty_symbol_list_returns_empty_frame():
 
 
 def test_cli_errors_gracefully_without_api_key(monkeypatch):
-    monkeypatch.setattr(insiders_module, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(institutional_cmd, "resolve_api_key", lambda: None)
     runner = CliRunner()
     res = runner.invoke(cli, ["institutional", "-m", "us", "--tickers", "AAPL"])
     assert res.exit_code != 0
@@ -219,7 +219,7 @@ def test_cli_errors_gracefully_without_api_key(monkeypatch):
 
 
 def test_cli_ranks_by_qoq_change_and_reports_missing(monkeypatch):
-    monkeypatch.setattr(insiders_module, "_fmp_api_key", lambda: "key")
+    monkeypatch.setattr(institutional_cmd, "resolve_api_key", lambda: "key")
 
     def fake_fetch(symbols, *, api_key, max_workers=8, cache_ttl=86400, refresh=False):
         assert api_key == "key"
@@ -269,7 +269,7 @@ def test_cli_ranks_by_qoq_change_and_reports_missing(monkeypatch):
 
 
 def test_cli_table_output_and_all_missing(monkeypatch):
-    monkeypatch.setattr(insiders_module, "_fmp_api_key", lambda: "key")
+    monkeypatch.setattr(institutional_cmd, "resolve_api_key", lambda: "key")
     monkeypatch.setattr(
         institutional_module,
         "fetch_fmp_institutional",

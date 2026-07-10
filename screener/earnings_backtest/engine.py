@@ -14,6 +14,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from screener.earnings_backtest._execution import apply_slippage
 from screener.earnings_backtest.data import (
     collect_earnings_events,
     fetch_analyst_sentiment,
@@ -151,8 +152,7 @@ def run_earnings_backtest(
         exit_price = float(exit_bar.iloc[-1]["close"])
 
         # Apply slippage and commission
-        entry_price *= 1 + slippage_bps / 10_000
-        exit_price *= 1 - slippage_bps / 10_000
+        entry_price, exit_price = apply_slippage(entry_price, exit_price, slippage_bps)
         round_trip_commission = (
             commission_bps / 10_000
         )  # already in bps terms, applied round-trip

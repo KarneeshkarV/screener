@@ -6,20 +6,6 @@ from collections.abc import Mapping
 from typing import Any
 
 from screener import fmp
-from screener.financials import first_number
-from screener.financials import pct_change as pct_change
-from screener.financials import to_number as to_number
-
-# Numeric aliases commonly used across provider adapters
-_num = to_number
-_pct_change = pct_change
-
-
-def _first_num(
-    mapping: Mapping[Any, Any], *keys: str, case_insensitive: bool = True
-) -> float | None:
-    """Extract the first parseable numeric value from mapping."""
-    return first_number(mapping, *keys, case_insensitive=case_insensitive)
 
 
 def fmp_get(

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import click
 
+from screener.markets import MARKETS
 
-DEFAULT_BENCHMARK = {"us": "SPY", "india": "^NSEI"}
-DEFAULT_MIN_PRICE = {"us": 1.0, "india": 10.0}
-DEFAULT_MIN_ADV = {"us": 1_000.0, "india": 100_000.0}
+DEFAULT_BENCHMARK = {name: market.benchmark for name, market in MARKETS.items()}
+DEFAULT_MIN_PRICE = {name: market.min_price for name, market in MARKETS.items()}
+DEFAULT_MIN_ADV = {name: market.min_adv for name, market in MARKETS.items()}
 
 
 def resolve_strategy_exprs(strategy_name, entry_expr, exit_expr):

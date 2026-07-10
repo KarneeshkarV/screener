@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from screener.logging_config import get_logger
+from screener.parallel import parallel_map
 from screener.research.pine_runner.constants import BENCHMARKS
 from screener.research.pine_runner.data import fetch_ohlcv, load_universe
 from screener.strategies.registry import STRATEGIES
@@ -98,19 +98,16 @@ def run_market(
         df = fetch_ohlcv(t, fetch_start, fetch_end, market, refresh=refresh)
         return t, df
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        futs = {pool.submit(_fetch, t): t for t in tickers}
-        for i, fut in enumerate(as_completed(futs), 1):
-            t, df = fut.result()
-            if df is not None and not df.empty:
-                ohlcv[t] = df
-            if i % 50 == 0 or i == len(tickers):
-                log.info(
-                    "backtest.fetch_progress",
-                    fetched=i,
-                    total=len(tickers),
-                    with_data=len(ohlcv),
-                )
+    for i, (t, df) in enumerate(parallel_map(_fetch, tickers, max_workers=6), 1):
+        if df is not None and not df.empty:
+            ohlcv[t] = df
+        if i % 50 == 0 or i == len(tickers):
+            log.info(
+                "backtest.fetch_progress",
+                fetched=i,
+                total=len(tickers),
+                with_data=len(ohlcv),
+            )
 
     bench_sym = BENCHMARKS[market]
     bench_df = fetch_ohlcv(bench_sym, fetch_start, fetch_end, market, refresh=refresh)
