@@ -307,8 +307,9 @@ def cached_json_call(
 ) -> T:
     path = cache_path(namespace, stable_key(key_parts), "json")
     if not refresh and is_fresh(path, ttl_seconds):
-        cached = read_json(path)
-        if cached is not None:
+        cache_miss = object()
+        cached = read_json(path, default=cache_miss)
+        if cached is not cache_miss:
             return cast(T, cached)
     value = fetch()
     write_json(path, value)

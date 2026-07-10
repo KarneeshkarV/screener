@@ -15,12 +15,14 @@ import pandas as pd
 from plotly.offline import get_plotlyjs
 from rich.console import Console
 
-from screener.backtester.cli_common import DEFAULT_BENCHMARK, resolve_min_filters
+from screener.backtester.cli_common import resolve_min_filters
 from screener.backtester.data import build_price_fetcher
 from screener.backtester.display import trades_dataframe
 from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.rolling import run_rolling_backtest
 from screener.backtester.strategies import STRATEGIES, resolve_strategy
+from screener.html_report import html_page
+from screener.markets import get_market
 from screener.universes import UniverseName, load_current_universe
 
 
@@ -129,7 +131,7 @@ def compare_payload(
         )
         ticker_runs.append((loaded.name, loaded.symbols))
 
-    bench = benchmark or DEFAULT_BENCHMARK.get(market, "SPY")
+    bench = benchmark or get_market(market).benchmark
     resolved_min_price, resolved_min_adv = resolve_min_filters(
         market, min_price, min_avg_dollar_volume
     )
@@ -193,15 +195,8 @@ def _lab_html() -> str:
     today = date.today()
     start = today - timedelta(days=365)
     plotly_js = get_plotlyjs()
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Backtest Strategy Lab</title>
-  <script>{plotly_js}</script>
-  <style>
-    :root {{
+    _css = """\
+    :root {
       --ink: #20231f;
       --muted: #687068;
       --paper: #f4f1e8;
@@ -209,97 +204,98 @@ def _lab_html() -> str:
       --line: #d9d1c1;
       --accent: #0f766e;
       --bad: #b91c1c;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
+    }
+    * { box-sizing: border-box; }
+    body {
       margin: 0;
       background: var(--paper);
       color: var(--ink);
       font-family: "IBM Plex Sans", Aptos, sans-serif;
       letter-spacing: 0;
-    }}
-    header {{
+    }
+    header {
       padding: 20px 28px;
       border-bottom: 1px solid var(--line);
       background: #e8e2d4;
-    }}
-    h1 {{ margin: 0; font-size: 26px; }}
-    main {{
+    }
+    h1 { margin: 0; font-size: 26px; }
+    main {
       display: grid;
       grid-template-columns: 360px 1fr;
       gap: 16px;
       padding: 18px 28px 32px;
-    }}
-    aside, section {{
+    }
+    aside, section {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 6px;
       padding: 16px;
       min-width: 0;
-    }}
-    .controls {{ display: grid; gap: 12px; align-content: start; }}
-    label {{ display: grid; gap: 5px; font-size: 13px; color: var(--muted); }}
-    input, select, button {{
+    }
+    .controls { display: grid; gap: 12px; align-content: start; }
+    label { display: grid; gap: 5px; font-size: 13px; color: var(--muted); }
+    input, select, button {
       font: inherit;
       border: 1px solid var(--line);
       border-radius: 5px;
       padding: 9px 10px;
       background: #fff;
       color: var(--ink);
-    }}
-    .strategy-list {{
+    }
+    .strategy-list {
       display: grid;
       gap: 7px;
       padding: 8px;
       border: 1px solid var(--line);
       border-radius: 5px;
       background: #fbfaf6;
-    }}
-    .strategy-list label {{
+    }
+    .strategy-list label {
       display: flex;
       align-items: center;
       gap: 8px;
       color: var(--ink);
-    }}
-    button {{
+    }
+    button {
       background: var(--accent);
       color: white;
       border-color: var(--accent);
       cursor: pointer;
       font-weight: 700;
-    }}
-    button:disabled {{ opacity: .55; cursor: wait; }}
-    .workspace {{ display: grid; gap: 16px; }}
-    .metrics {{
+    }
+    button:disabled { opacity: .55; cursor: wait; }
+    .workspace { display: grid; gap: 16px; }
+    .metrics {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 10px;
-    }}
-    .metric {{
+    }
+    .metric {
       border: 1px solid var(--line);
       border-radius: 5px;
       padding: 11px;
       background: #fbfaf6;
-    }}
-    .metric span {{ color: var(--muted); font-size: 12px; display: block; }}
-    .metric strong {{ display: block; margin-top: 5px; font-size: 18px; }}
-    .status {{ color: var(--muted); font-size: 13px; }}
-    .error {{ color: var(--bad); }}
-    table {{
+    }
+    .metric span { color: var(--muted); font-size: 12px; display: block; }
+    .metric strong { display: block; margin-top: 5px; font-size: 18px; }
+    .status { color: var(--muted); font-size: 13px; }
+    .error { color: var(--bad); }
+    table {
       width: 100%;
       border-collapse: collapse;
       font-size: 12px;
       white-space: nowrap;
-    }}
-    th, td {{ border-bottom: 1px solid var(--line); padding: 7px 8px; text-align: left; }}
-    th {{ background: #e8e2d4; position: sticky; top: 0; }}
-    .table-wrap {{ max-height: 360px; overflow: auto; }}
-    @media (max-width: 980px) {{
-      main {{ grid-template-columns: 1fr; padding-left: 14px; padding-right: 14px; }}
-    }}
-  </style>
-</head>
-<body>
+    }
+    th, td { border-bottom: 1px solid var(--line); padding: 7px 8px; text-align: left; }
+    th { background: #e8e2d4; position: sticky; top: 0; }
+    .table-wrap { max-height: 360px; overflow: auto; }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; padding-left: 14px; padding-right: 14px; }
+    }"""
+    return html_page(
+        "Backtest Strategy Lab",
+        _css,
+        f"""\
   <header>
     <h1>Backtest Strategy Lab</h1>
   </header>
@@ -467,10 +463,9 @@ def _lab_html() -> str:
         runBtn.disabled = false;
       }}
     }});
-  </script>
-</body>
-</html>
-"""
+  </script>""",
+        head_extra=f"<script>{plotly_js}</script>",
+    )
 
 
 class LabHandler(BaseHTTPRequestHandler):

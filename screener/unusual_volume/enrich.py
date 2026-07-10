@@ -14,12 +14,10 @@ from typing import Iterable, Optional
 import pandas as pd
 from tradingview_screener import Query, col
 
+from screener.markets import TV_MARKETS
 from screener.providers import CachedProvider, ProviderSpec
 
 from .detector import Event
-
-
-_TV_MARKETS = {"us": "america", "india": "india"}
 
 # TradingView sector/market-cap enrichment: 24h parquet cache, "tradingview"
 # circuit breaker.
@@ -43,11 +41,11 @@ def fetch_sector_map(
     """Return ``{symbol: {"sector": str, "market_cap": float}}`` for every
     symbol the TradingView screener can resolve."""
     syms = sorted({s.upper() for s in symbols if s})
-    if not syms or market not in _TV_MARKETS:
+    if not syms or market not in TV_MARKETS:
         return {}
     query = (
         Query()
-        .set_markets(_TV_MARKETS[market])
+        .set_markets(TV_MARKETS[market])
         .select("name", "sector", "market_cap_basic")
         .where(col("name").isin(syms))
         .limit(len(syms) + 50)

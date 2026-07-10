@@ -22,11 +22,10 @@ from screener.backtester.optimization.reporting import (
     write_json_report,
 )
 from screener.backtester.optimization.walk_forward import walk_forward_optimize
+from screener.backtester.cli_common import resolve_min_filters
+from screener.markets import get_market, get_price_fetcher, market_option
 
 
-DEFAULT_BENCHMARK = {"us": "SPY", "india": "^NSEI"}
-DEFAULT_MIN_PRICE = {"us": 1.0, "india": 10.0}
-DEFAULT_MIN_ADV = {"us": 1_000.0, "india": 100_000.0}
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -107,18 +106,9 @@ def _base_config(
     ticker_tuple = (
         tuple(t.strip() for t in tickers.split(",") if t.strip()) if tickers else None
     )
-    resolved_min_price = (
-        DEFAULT_MIN_PRICE.get(market) if min_price is None else min_price
+    resolved_min_price, resolved_min_adv = resolve_min_filters(
+        market, min_price, min_avg_dollar_volume
     )
-    resolved_min_adv = (
-        DEFAULT_MIN_ADV.get(market)
-        if min_avg_dollar_volume is None
-        else min_avg_dollar_volume
-    )
-    if resolved_min_price == 0:
-        resolved_min_price = None
-    if resolved_min_adv == 0:
-        resolved_min_adv = None
     if not ticker_tuple and not universe_file:
         raise click.UsageError(
             "Pass --tickers or --universe-file for optimization runs."
@@ -137,7 +127,7 @@ def _base_config(
         slippage_bps=float(slippage_bps),
         commission_bps=float(commission_bps),
         initial_capital=float(initial_capital),
-        benchmark=benchmark or DEFAULT_BENCHMARK.get(market, "SPY"),
+        benchmark=benchmark or get_market(market).benchmark,
         tickers=ticker_tuple,
         universe_file=universe_file,
         max_universe=int(max_universe),
@@ -163,7 +153,9 @@ def _resolve_dates(start_arg, end_arg, years) -> tuple[date, date]:
 def _fetcher():
     from screener.backtester.data import build_price_fetcher
 
-    return click.get_current_context().obj or build_price_fetcher()
+    return get_price_fetcher(
+        click.get_current_context().obj, builder=build_price_fetcher
+    )
 
 
 @click.group(name="optimize")
@@ -173,9 +165,7 @@ def optimize() -> None:
 
 def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
     options = [
-        click.option(
-            "-m", "--market", type=click.Choice(["us", "india"]), default="us"
-        ),
+        market_option(default="us"),
         click.option(
             "--start",
             "start_arg",

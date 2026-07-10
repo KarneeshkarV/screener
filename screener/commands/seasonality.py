@@ -8,6 +8,7 @@ import click
 from rich.console import Console
 
 from screener.backtester.data import build_price_fetcher, tv_to_yf
+from screener.markets import get_price_fetcher, market_option
 from screener.seasonality import compute_seasonality, render_report, report_to_csv
 
 # Tolerance before warning that the available history is shorter than
@@ -17,10 +18,7 @@ _SPAN_TOLERANCE_DAYS = 45
 
 @click.command(name="seasonality")
 @click.argument("ticker")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["us", "india"]),
+@market_option(
     default="us",
     show_default=True,
     help="Market the ticker trades in (controls symbol mapping).",
@@ -45,7 +43,9 @@ def seasonality(ticker: str, market: str, years: int, csv_output: bool) -> None:
         raise click.UsageError("--years must be >= 1")
     end = date.today()
     start = end - timedelta(days=int(years * 365.25) + 7)
-    fetcher = click.get_current_context().obj or build_price_fetcher()
+    fetcher = get_price_fetcher(
+        click.get_current_context().obj, builder=build_price_fetcher
+    )
     yf_symbol = tv_to_yf(ticker, market)
     bars = fetcher.fetch([yf_symbol], start, end).get(yf_symbol)
     if bars is None or bars.empty:

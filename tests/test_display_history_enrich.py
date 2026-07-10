@@ -12,7 +12,7 @@ from screener import display, enrich, history
 
 def test_display_value_formatters_cover_numeric_tiers():
     assert display._format_value("change", 1.25) == "+1.25%"
-    assert display._format_value("volume", 2_500_000) == "2.5M"
+    assert display._format_value("volume", 2_500_000) == "2.50M"
     assert display._format_value("volume", 2_500) == "2.5K"
     assert display._format_value("volume", 25) == "25"
     assert display._format_value("market_cap_basic", 2_500_000_000) == "2.50B"

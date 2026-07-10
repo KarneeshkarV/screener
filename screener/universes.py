@@ -21,7 +21,7 @@ LOG = logging.getLogger(__name__)
 
 CACHE_DIR = Path.home() / ".screener" / "universes"
 _SP500_CHANGES_CACHE_TTL_SECONDS = 24 * 60 * 60
-UniverseName = Literal["sp500", "nifty50"]
+UniverseName = Literal["sp500", "nifty50", "nifty500"]
 
 
 class Universe(BaseModel):
@@ -168,6 +168,9 @@ def load_current_universe(
         symbols, source, point_in_time = _fetch_sp500_pit(as_of, use_cache=use_cache)
     elif name == "nifty50":
         symbols, source = _fetch_nifty50()
+        point_in_time = not is_past
+    elif name == "nifty500":
+        symbols, source = _fetch_nifty500()
         point_in_time = not is_past
     else:
         raise ValueError(f"unknown universe: {name}")
@@ -419,6 +422,36 @@ def _fetch_nifty50() -> tuple[list[str], str]:
         raise RuntimeError("Nifty 50 constituents CSV missing Symbol column")
     symbols = df[symbol_col].dropna().astype(str).str.strip().str.upper().tolist()
     return _dedupe(symbols), source
+
+
+_NIFTY500_SOURCE = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+
+
+def _fetch_nifty500() -> tuple[list[str], str]:
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+        )
+    }
+    resp = call_with_resilience(
+        "nse",
+        "nifty500 constituents",
+        lambda: requests.get(_NIFTY500_SOURCE, headers=headers, timeout=30),
+        fallback=None,
+    )
+    if resp is None:
+        raise RuntimeError("Nifty 500 constituents unavailable")
+    resp.raise_for_status()
+    from io import StringIO
+
+    df = pd.read_csv(StringIO(resp.text))
+    symbol_col = "Symbol" if "Symbol" in df.columns else "SYMBOL"
+    if symbol_col not in df.columns:
+        raise RuntimeError("Nifty 500 constituents CSV missing Symbol column")
+    symbols = df[symbol_col].dropna().astype(str).str.strip().str.upper().tolist()
+    # The earnings backtest consumes NSE tickers in yfinance form (``.NS``).
+    return _dedupe([f"{s}.NS" for s in symbols]), _NIFTY500_SOURCE
 
 
 def _dedupe(symbols: list[str]) -> list[str]:

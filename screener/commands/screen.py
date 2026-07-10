@@ -10,7 +10,8 @@ from screener.cache import parse_ttl
 from screener import history
 from screener.criteria import CRITERIA, registry as criteria_registry, resolve_criteria
 from screener.display import print_csv, print_results
-from screener.scanner import MARKETS, scan
+from screener.markets import market_option
+from screener.scanner import scan
 from screener.screen_workflow import (
     ScreenMode,
     ScreenRequest,
@@ -42,10 +43,7 @@ def _screen_workflow_deps() -> ScreenWorkflowDeps:
 
 
 @click.command()
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(list(MARKETS.keys())),
+@market_option(
     default="us",
     help="Market to screen.",
 )

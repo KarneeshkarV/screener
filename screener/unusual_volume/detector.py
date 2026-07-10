@@ -81,6 +81,23 @@ class Event(BaseModel):
         return self.model_dump(mode="json")
 
 
+def bars_on_or_before_as_of(bars: Optional[pd.DataFrame], as_of: date) -> pd.DataFrame:
+    """Return a date-sorted copy of ``bars`` clipped to rows on/before ``as_of``.
+
+    Handles a missing/None frame and normalizes a ``date`` column into a
+    ``DatetimeIndex``; returns an empty frame when there is no usable index.
+    """
+    if bars is None or bars.empty:
+        return pd.DataFrame()
+    df = bars.copy()
+    if not isinstance(df.index, pd.DatetimeIndex):
+        if "date" not in df.columns:
+            return pd.DataFrame()
+        df = df.set_index(pd.DatetimeIndex(pd.to_datetime(df["date"]).values))
+    df = df.sort_index()
+    return df[df.index <= pd.Timestamp(as_of).normalize()]
+
+
 def _rolling_pct_rank(series: pd.Series, window: int) -> pd.Series:
     """For each row, return the percentile rank of the row's value within
     its trailing ``window`` of observations (last value inclusive)."""
@@ -110,20 +127,10 @@ def detect_ticker(
     ``as_of`` (or the last bar on/before it if ``as_of`` is a non-trading
     day).
     """
-    if bars is None or bars.empty:
-        return None
-
-    df = bars.copy()
-    if not isinstance(df.index, pd.DatetimeIndex):
-        if "date" in df.columns:
-            df = df.set_index(pd.DatetimeIndex(pd.to_datetime(df["date"]).values))
-        else:
-            return None
-    df = df.sort_index()
-    as_of_ts = pd.Timestamp(as_of).normalize()
-    df = df[df.index <= as_of_ts]
+    df = bars_on_or_before_as_of(bars, as_of)
     if df.empty:
         return None
+    as_of_ts = pd.Timestamp(as_of).normalize()
 
     vol = df["volume"].astype(float)
     sma_5 = vol.rolling(5, min_periods=5).mean()

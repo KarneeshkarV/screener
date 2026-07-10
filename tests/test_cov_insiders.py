@@ -124,7 +124,7 @@ def test_fetch_yfinance_insiders_collects_rows(monkeypatch):
 
 def test_fmp_api_key_from_env(monkeypatch):
     monkeypatch.setenv("FMP_API_KEY", "envkey")
-    assert insiders_mod._fmp_api_key() == "envkey"
+    assert insiders_mod.resolve_api_key() == "envkey"
 
 
 def test_fmp_api_key_loads_env_file(monkeypatch):
@@ -140,7 +140,7 @@ def test_fmp_api_key_loads_env_file(monkeypatch):
     import screener.backtester.data as bt_data
 
     monkeypatch.setattr(bt_data, "load_env_file", fake_load_env)
-    assert insiders_mod._fmp_api_key() == "fromfile"
+    assert insiders_mod.resolve_api_key() == "fromfile"
     assert called["n"] == 1
 
 
@@ -156,7 +156,7 @@ def test_fmp_api_key_import_failure(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    assert insiders_mod._fmp_api_key() is None
+    assert insiders_mod.resolve_api_key() is None
 
 
 class _Resp:
@@ -219,13 +219,13 @@ def test_fetch_fmp_insiders_empty_universe():
 
 
 def test_fetch_fmp_insiders_no_api_key(monkeypatch):
-    monkeypatch.setattr(insiders_mod, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(insiders_mod, "resolve_api_key", lambda: None)
     universe = pd.DataFrame([{"name": "Acme", "ticker": "NASDAQ:ACME"}])
     assert insiders_mod.fetch_fmp_insiders(universe, "us").empty
 
 
 def test_fetch_fmp_insiders_collects(monkeypatch):
-    monkeypatch.setattr(insiders_mod, "_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(insiders_mod, "resolve_api_key", lambda: "k")
     monkeypatch.setattr(
         insiders_mod,
         "_fetch_fmp_insider_one",
@@ -806,7 +806,7 @@ def test_smart_money_pillar_us_pit_stale():
 
 
 def test_smart_money_pillar_us_error(monkeypatch):
-    monkeypatch.setattr(conviction_mod, "resolve_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(conviction_mod, "resolve_api_key", lambda: "k")
 
     def boom(*a, **k):
         raise RuntimeError("provider down")
@@ -820,7 +820,7 @@ def test_smart_money_pillar_us_error(monkeypatch):
 
 
 def test_smart_money_pillar_us_no_payload(monkeypatch):
-    monkeypatch.setattr(conviction_mod, "resolve_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(conviction_mod, "resolve_api_key", lambda: "k")
     monkeypatch.setattr(conviction_mod, "_load_smart_money_us", lambda *a, **k: None)
     res = conviction_mod._smart_money_pillar(
         "AAPL", "us", date.today(), cache_ttl=None, refresh=False
@@ -830,7 +830,7 @@ def test_smart_money_pillar_us_no_payload(monkeypatch):
 
 
 def test_smart_money_pillar_us_ok(monkeypatch):
-    monkeypatch.setattr(conviction_mod, "resolve_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(conviction_mod, "resolve_api_key", lambda: "k")
     monkeypatch.setattr(
         conviction_mod,
         "_load_smart_money_us",
@@ -913,7 +913,7 @@ def test_load_fundamentals_india_non_dict(monkeypatch):
 
 
 def test_load_fundamentals_us_fmp(monkeypatch):
-    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(garp_module, "resolve_api_key", lambda: "k")
     monkeypatch.setattr(garp_module, "_fetch_fmp_us_cached", lambda *a, **k: {"raw": 1})
     monkeypatch.setattr(
         garp_module, "_fmp_us_row", lambda sym, name, payload: {"peg": 1.0}
@@ -923,7 +923,7 @@ def test_load_fundamentals_us_fmp(monkeypatch):
 
 
 def test_load_fundamentals_us_fmp_row_none_falls_back(monkeypatch):
-    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(garp_module, "resolve_api_key", lambda: "k")
     monkeypatch.setattr(garp_module, "_fetch_fmp_us_cached", lambda *a, **k: {"raw": 1})
     monkeypatch.setattr(garp_module, "_fmp_us_row", lambda sym, name, payload: None)
     monkeypatch.setattr(garp_module, "_us_row", lambda sym, name: {"peg": 2.0})
@@ -932,7 +932,7 @@ def test_load_fundamentals_us_fmp_row_none_falls_back(monkeypatch):
 
 
 def test_load_fundamentals_us_no_key(monkeypatch):
-    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(garp_module, "resolve_api_key", lambda: None)
     monkeypatch.setattr(garp_module, "_us_row", lambda sym, name: {"peg": 3.0})
     out = conviction_mod._load_fundamentals("AAPL", "us", cache_ttl=None, refresh=False)
     assert out == {"peg": 3.0}
@@ -1244,9 +1244,10 @@ def test_run_promoter_buys_us_outer_merge(monkeypatch):
 # ── public insiders seams (used by the conviction card) ──────────────────────
 
 
-def test_resolve_fmp_api_key_delegates(monkeypatch):
-    monkeypatch.setattr(insiders_mod, "_fmp_api_key", lambda: "pub-key")
-    assert insiders_mod.resolve_fmp_api_key() == "pub-key"
+def test_resolve_api_key_is_fmp_resolver():
+    import screener.fmp as fmp_mod
+
+    assert insiders_mod.resolve_api_key is fmp_mod.resolve_api_key
 
 
 def test_load_insider_aggregate_keys_name_on_symbol(monkeypatch):

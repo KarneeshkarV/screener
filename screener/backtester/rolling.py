@@ -10,7 +10,6 @@ import click
 from rich.console import Console
 
 from screener.backtester.cli_common import (
-    DEFAULT_BENCHMARK,
     build_slippage_model,
     parse_partial_exits,
     referenced_fundamental_fields,
@@ -35,6 +34,7 @@ from screener.backtester.rolling_simulation import (
     _prepare_simulation,
     run_rolling_backtest,
 )
+from screener.markets import get_market, get_price_fetcher, market_option
 from screener.regime import TREND_LABELS
 from screener.universes import (
     UniverseName,
@@ -56,10 +56,7 @@ __all__ = [
 
 
 @click.command(name="backtest-rolling")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["us", "india"]),
+@market_option(
     default="us",
     help="Market to backtest.",
 )
@@ -336,7 +333,8 @@ def backtest_rolling(
         if isinstance(start_arg, datetime)
         else (start_arg or (end_date - timedelta(days=365 * int(years))))
     )
-    bench = benchmark or DEFAULT_BENCHMARK.get(market, "SPY")
+    market_meta = get_market(market)
+    bench = benchmark or market_meta.benchmark
     resolved_fundamental_lag_days = (
         int(fundamental_lag_days)
         if fundamental_lag_days is not None
@@ -359,7 +357,7 @@ def backtest_rolling(
     elif not universe_file:
         resolved_universe = cast(
             UniverseName,
-            universe or ("nifty50" if market == "india" else "sp500"),
+            universe or market_meta.default_universe,
         )
         loaded = load_current_universe(
             resolved_universe,
@@ -432,8 +430,11 @@ def backtest_rolling(
         fundamental_lag_days=max(resolved_fundamental_lag_days, 0),
     )
 
-    fetcher = click.get_current_context().obj or build_price_fetcher(
-        auto_adjust=price_adjustment == "full", interval=interval
+    fetcher = get_price_fetcher(
+        click.get_current_context().obj,
+        builder=build_price_fetcher,
+        auto_adjust=price_adjustment == "full",
+        interval=interval,
     )
     result = run_rolling_backtest(
         cfg, fetcher, start_date=start_date, end_date=end_date

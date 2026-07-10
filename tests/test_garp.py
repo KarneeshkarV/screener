@@ -326,7 +326,7 @@ def test_fmp_row_matches_yfinance_row_on_equivalent_data(monkeypatch) -> None:
 
 def test_screen_us_garp_uses_fmp_when_key_present(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
-    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: "test-key")
+    monkeypatch.setattr(garp_module, "resolve_api_key", lambda: "test-key")
     monkeypatch.setattr(
         garp_module, "_fetch_fmp_us_sections", lambda symbol, api_key: _fmp_payload()
     )
@@ -348,7 +348,7 @@ def test_screen_us_garp_falls_back_to_yfinance_without_key(
     monkeypatch, tmp_path
 ) -> None:
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
-    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(garp_module, "resolve_api_key", lambda: None)
 
     def _no_fmp(symbol, api_key):
         raise AssertionError("FMP must not be queried without an API key")
@@ -372,7 +372,7 @@ def test_screen_us_garp_falls_back_when_fmp_has_no_statements(
     monkeypatch, tmp_path
 ) -> None:
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
-    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: "test-key")
+    monkeypatch.setattr(garp_module, "resolve_api_key", lambda: "test-key")
     monkeypatch.setattr(
         garp_module,
         "_fetch_fmp_us_sections",
@@ -445,7 +445,7 @@ def test_load_garp_row_india_non_dict_payload(monkeypatch) -> None:
 
 
 def test_load_garp_row_us_uses_fmp(monkeypatch) -> None:
-    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: "k")
+    monkeypatch.setattr(garp_module, "resolve_api_key", lambda: "k")
     monkeypatch.setattr(
         garp_module, "_fetch_fmp_us_cached", lambda *a, **k: _fmp_payload()
     )
@@ -464,7 +464,7 @@ def test_load_garp_row_us_uses_fmp(monkeypatch) -> None:
 
 
 def test_load_garp_row_us_falls_back_to_yfinance(monkeypatch) -> None:
-    monkeypatch.setattr(garp_module, "_fmp_api_key", lambda: None)
+    monkeypatch.setattr(garp_module, "resolve_api_key", lambda: None)
     monkeypatch.setattr(
         garp_module, "_us_row", lambda symbol, description: {"name": symbol, "peg": 2.0}
     )
@@ -472,8 +472,10 @@ def test_load_garp_row_us_falls_back_to_yfinance(monkeypatch) -> None:
     assert row == {"name": "AAPL", "peg": 2.0}
 
 
-def test_to_number_is_public_num_alias() -> None:
-    assert garp_module.to_number is garp_module._num
+def test_to_number_is_financials_to_number() -> None:
+    from screener import financials
+
+    assert garp_module.to_number is financials.to_number
     assert garp_module.to_number("1,234.5") == pytest.approx(1234.5)
     assert garp_module.to_number("12%") == pytest.approx(12.0)
     assert garp_module.to_number(None) is None

@@ -6,14 +6,12 @@ import click
 
 from screener.cache import parse_ttl
 from screener.display import print_csv, print_insider_results
+from screener.markets import get_market, market_option
 from screener.scanner import MARKETS, _dedupe_listings, get_scanner_data_cached
 
 
 @click.command(name="promoter-buys")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(list(MARKETS.keys())),
+@market_option(
     default="india",
     help="Market to screen. india => promoter % from screener.in (+ yfinance "
     "cross-check). us => FMP Form 4 insider buys when FMP_API_KEY is set "
@@ -131,7 +129,7 @@ def run_promoter_buys(
     )
 
     exchanges = ("NSE", "BSE") if market == "india" else ("NASDAQ", "NYSE", "AMEX")
-    min_close = 10.0 if market == "india" else 1.0
+    min_close = get_market(market).screen_min_close
     base = [
         col("type") == "stock",
         col("close") >= min_close,

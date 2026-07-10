@@ -638,25 +638,26 @@ def test_cli_command_no_output_files(monkeypatch):
     assert "Wrote" not in res.output
 
 
-def test_cli_run_unusual_volume_empty_universe(monkeypatch):
-    import click
-
+def test_cli_command_empty_universe(monkeypatch):
     monkeypatch.setattr(uv_cli, "_resolve_universe", lambda m, t, f: [])
-    with pytest.raises(click.UsageError):
-        uv_cli.run_unusual_volume(market="us", as_of=date(2026, 5, 15))
+    res = CliRunner().invoke(uv_cli.unusual_volume, ["--tickers", "AAA"])
+    assert res.exit_code != 0
+    assert "Empty universe" in res.output
 
 
 def test_cli_command_default_today(monkeypatch):
-    # exercises the `as_of or date.today()` branch (no --as-of)
+    # exercises the resolve_as_of(None) -> date.today() branch (no --as-of)
     captured = {}
 
-    def fake_run(**kwargs):
-        captured.update(kwargs)
+    def fake_run(request, **kwargs):
+        captured["request"] = request
+        return True
 
+    monkeypatch.setattr(uv_cli, "_resolve_universe", lambda m, t, f: ["AAA"])
     monkeypatch.setattr(uv_cli, "run_unusual_volume", fake_run)
     res = CliRunner().invoke(uv_cli.unusual_volume, ["--tickers", "AAA"])
     assert res.exit_code == 0
-    assert captured["as_of"] == date.today()
+    assert captured["request"].as_of == date.today()
 
 
 # ───────────────────────────── nse_client.py ─────────────────────────────

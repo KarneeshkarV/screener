@@ -6,13 +6,13 @@ import click
 import pandas as pd
 
 from screener.display import print_csv, print_institutional_results
+from screener.fmp import resolve_api_key
+from screener.markets import market_option
 
 
 @click.command(name="institutional")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["us"]),
+@market_option(
+    choices=("us",),
     default="us",
     help="Market to query. Only 'us' is supported (FMP 13F filings).",
 )
@@ -37,14 +37,13 @@ def institutional(
     workers: int,
 ) -> None:
     """Show FMP institutional ownership per ticker, ranked by QoQ change."""
-    from screener.insiders import _fmp_api_key
     from screener.institutional import fetch_fmp_institutional
 
     symbols = [t.strip().upper() for t in tickers.split(",") if t.strip()]
     if not symbols:
         raise click.ClickException("--tickers must list at least one symbol.")
 
-    api_key = _fmp_api_key()
+    api_key = resolve_api_key()
     if not api_key:
         raise click.ClickException(
             "FMP_API_KEY is not set. Export it or add it to the project .env "

@@ -18,8 +18,9 @@ import requests
 
 from screener.backtester.data import load_env_file
 from screener.financials import as_percent as _as_percent
-from screener.provider_utils import _first_num, _pct_change, fmp_get
+from screener.financials import first_number, pct_change
 from screener.providers import CachedProvider, ProviderSpec
+from screener.provider_utils import fmp_get
 
 
 INDIA_FUNDAMENTAL_FILING_LAG_DAYS = 60
@@ -73,7 +74,7 @@ def _increased_last_n_quarters(
     end = current_pos + quarters
     if end > len(rows):
         return None
-    values = [_first_num(row, field) for row in rows[current_pos:end]]
+    values = [first_number(row, field) for row in rows[current_pos:end]]
     if any(value is None for value in values):
         return None
     numeric = cast(list[float], values)
@@ -81,7 +82,7 @@ def _increased_last_n_quarters(
 
 
 def _first_revenue(row: Mapping[str, Any]) -> float | None:
-    return _first_num(
+    return first_number(
         row,
         "revenue",
         "sales",
@@ -210,40 +211,40 @@ def _normalize_fmp_payload(
         ts = pd.Timestamp(row_date)
         prior_target = (ts - pd.DateOffset(years=1)).date().isoformat()
         prior_income = income_by_date.get(prior_target, {})
-        revenue_growth = _pct_change(
-            _first_num(row, "revenue"),
-            _first_num(prior_income, "revenue"),
+        revenue_growth = pct_change(
+            first_number(row, "revenue"),
+            first_number(prior_income, "revenue"),
         )
-        eps_growth = _pct_change(
-            _first_num(row, "eps", "epsdiluted"),
-            _first_num(prior_income, "eps", "epsdiluted"),
+        eps_growth = pct_change(
+            first_number(row, "eps", "epsdiluted"),
+            first_number(prior_income, "eps", "epsdiluted"),
         )
 
         record = {
             "effective_date": effective,
-            "pe_ttm": _first_num(
+            "pe_ttm": first_number(
                 metrics,
                 "peRatioTTM",
                 "peRatio",
                 "priceEarningsRatioTTM",
                 "priceEarningsRatio",
             )
-            or _first_num(ratio, "priceEarningsRatio", "priceEarningsRatioTTM"),
-            "pb_ttm": _first_num(metrics, "pbRatioTTM", "pbRatio", "priceToBookRatio")
-            or _first_num(ratio, "priceToBookRatio", "priceBookValueRatio"),
+            or first_number(ratio, "priceEarningsRatio", "priceEarningsRatioTTM"),
+            "pb_ttm": first_number(metrics, "pbRatioTTM", "pbRatio", "priceToBookRatio")
+            or first_number(ratio, "priceToBookRatio", "priceBookValueRatio"),
             "roe_ttm": _as_percent(
-                _first_num(ratio, "returnOnEquity", "returnOnEquityTTM")
+                first_number(ratio, "returnOnEquity", "returnOnEquityTTM")
             ),
-            "debt_to_equity": _first_num(
+            "debt_to_equity": first_number(
                 ratio, "debtEquityRatio", "debtToEquity", "debtToEquityRatio"
             )
-            or _first_num(balance, "totalDebtToEquity"),
+            or first_number(balance, "totalDebtToEquity"),
             "revenue_growth_yoy": revenue_growth,
             "eps_growth_yoy": eps_growth,
             "revenue_up_3q": _increased_last_n_quarters(
                 income_rows, current_pos, "revenue", 3
             ),
-            "market_cap": _first_num(enterprise, "marketCapitalization", "marketCap"),
+            "market_cap": first_number(enterprise, "marketCapitalization", "marketCap"),
         }
         records.append({key: record.get(key) for key in ("effective_date", *fields)})
 

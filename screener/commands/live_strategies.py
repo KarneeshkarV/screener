@@ -38,11 +38,18 @@ from screener.backtester.vbt_sweep import (
     build_close_panel,
     build_volume_panel,
 )
+from screener.markets import (
+    as_of_option,
+    get_market,
+    get_price_fetcher,
+    market_option,
+    resolve_as_of,
+)
 from screener.universes import UniverseName, load_current_universe
 
 
 def _market_to_universe(market: str) -> UniverseName:
-    return "sp500" if market == "us" else "nifty50"
+    return cast(UniverseName, get_market(market).default_universe)
 
 
 def _crossed_above_np(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -134,21 +141,12 @@ def _render_active_table(
 
 
 @click.command(name="vol-breakout-live")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["us", "india"]),
+@market_option(
     default="us",
     show_default=True,
     help="Market to scan. Sweep winner is on US SP500.",
 )
-@click.option(
-    "--as-of",
-    "as_of_arg",
-    type=click.DateTime(formats=["%Y-%m-%d"]),
-    default=None,
-    help="Trading date to evaluate (default: today).",
-)
+@as_of_option()
 @click.option(
     "--window",
     type=int,
@@ -191,7 +189,7 @@ def vol_breakout_live(
 
     Sweep winner: ``--market us --window 100 --hold 15``.
     """
-    as_of = as_of_arg.date() if isinstance(as_of_arg, datetime) else date.today()
+    as_of = resolve_as_of(as_of_arg)
     run_vol_breakout_live(
         market=market,
         as_of=as_of,
@@ -200,7 +198,9 @@ def vol_breakout_live(
         vol_ma=vol_ma,
         vol_mult=vol_mult,
         limit=limit,
-        fetcher=click.get_current_context().obj,
+        fetcher=get_price_fetcher(
+            click.get_current_context().obj, builder=build_price_fetcher
+        ),
     )
 
 
@@ -218,7 +218,7 @@ def run_vol_breakout_live(
     """Run the vol-breakout live screen (no Click context required)."""
     console = Console()
     lookback = max(window, vol_ma) * 3 + 30
-    fetcher = fetcher or build_price_fetcher()
+    fetcher = get_price_fetcher(fetcher, builder=build_price_fetcher)
     close, volume, yf_to_tv = _load_panels(
         market, as_of, lookback_days=lookback, fetcher=fetcher
     )
@@ -281,21 +281,12 @@ def run_vol_breakout_live(
 
 
 @click.command(name="obv-trend-live")
-@click.option(
-    "-m",
-    "--market",
-    type=click.Choice(["us", "india"]),
+@market_option(
     default="india",
     show_default=True,
     help="Market to scan. Sweep winner is on India Nifty50.",
 )
-@click.option(
-    "--as-of",
-    "as_of_arg",
-    type=click.DateTime(formats=["%Y-%m-%d"]),
-    default=None,
-    help="Trading date to evaluate (default: today).",
-)
+@as_of_option()
 @click.option(
     "--ema-window",
     type=int,
@@ -314,13 +305,15 @@ def obv_trend_live(
 
     Sweep winner: ``--market india --ema-window 20``.
     """
-    as_of = as_of_arg.date() if isinstance(as_of_arg, datetime) else date.today()
+    as_of = resolve_as_of(as_of_arg)
     run_obv_trend_live(
         market=market,
         as_of=as_of,
         ema_window=ema_window,
         limit=limit,
-        fetcher=click.get_current_context().obj,
+        fetcher=get_price_fetcher(
+            click.get_current_context().obj, builder=build_price_fetcher
+        ),
     )
 
 
@@ -335,7 +328,7 @@ def run_obv_trend_live(
     """Run the obv-trend live screen (no Click context required)."""
     console = Console()
     lookback = ema_window * 5 + 30
-    fetcher = fetcher or build_price_fetcher()
+    fetcher = get_price_fetcher(fetcher, builder=build_price_fetcher)
     close, volume, yf_to_tv = _load_panels(
         market, as_of, lookback_days=lookback, fetcher=fetcher
     )

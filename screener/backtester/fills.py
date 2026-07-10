@@ -18,10 +18,10 @@ The numerical behaviour is identical to the original inline code; the module is
 purely a seam. The pluggable slippage layer in
 :mod:`screener.backtester.slippage` is kept underneath unchanged.
 
-The free functions ``_slippage_factor``, ``_resolve_entry_fill``,
-``_resolve_stop_fill`` and ``_resolve_target_fill`` remain importable (some are
-re-exported by ``engine`` and exercised directly by tests); :class:`FillModel`
-delegates to them so there is a single implementation of each primitive.
+The free functions ``_resolve_entry_fill``, ``_resolve_stop_fill`` and
+``_resolve_target_fill`` remain importable (some are re-exported by ``engine``
+and exercised directly by tests); :class:`FillModel` delegates to them so there
+is a single implementation of each primitive.
 """
 
 from __future__ import annotations
@@ -32,12 +32,6 @@ import pandas as pd
 
 from screener.backtester.models import BacktestConfig
 from screener.backtester.slippage import Side, apply_slippage
-
-
-def _slippage_factor(bps: float, buy: bool) -> float:
-    """Legacy helper kept for backwards compatibility."""
-    delta = bps / 10_000.0
-    return 1.0 + delta if buy else 1.0 - delta
 
 
 def _resolve_entry_fill(
@@ -106,16 +100,11 @@ class FillModel:
         adv_shares: float = 0.0,
         sigma_daily: float = 0.0,
     ) -> float:
-        """Run ``cfg.slippage_model`` over a reference price.
-
-        Falls back to the legacy fixed-bps factor when no model is configured.
-        """
+        """Run ``cfg.slippage_model`` over a reference price."""
         cfg = self.cfg
-        model = cfg.slippage_model
-        if model is None:
-            return ref_price * _slippage_factor(cfg.slippage_bps, buy=(side == "buy"))
+        assert cfg.slippage_model is not None
         return apply_slippage(
-            model,
+            cfg.slippage_model,
             ref_price,
             side,
             shares=shares,

@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import re
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import pandas as pd
 
+from screener.financials import to_number as _as_float
 from screener.insiders import _HttpScraper
+from screener.parallel import parallel_map
 from screener.providers import CachedProvider, ProviderSpec
 from screener.unusual_volume.detector import Event
 from screener.unusual_volume.nse_client import nse_cached_json
@@ -37,15 +38,6 @@ _OSC_PLEDGE_PROVIDER = CachedProvider(
         provider="screener-in", namespace="openscreener_pledge", ttl_seconds=7 * 86400
     )
 )
-
-
-def _as_float(value: object) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        return float(str(value).replace(",", "").replace("%", "").strip())
-    except (TypeError, ValueError):
-        return None
 
 
 def _as_pct(value: object) -> Optional[float]:
@@ -132,10 +124,8 @@ def overlay_pledge(
         return sym, resolve_pledge_pct(sym, sym, refresh=refresh)
 
     by_symbol: dict[str, Optional[float]] = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        for fut in as_completed([pool.submit(_one, s) for s in symbols]):
-            sym, val = fut.result()
-            by_symbol[sym] = val
+    for sym, val in parallel_map(_one, symbols, max_workers=max_workers):
+        by_symbol[sym] = val
     for ev in events:
         val = by_symbol.get(ev.symbol.upper())
         if val is not None and not pd.isna(val):

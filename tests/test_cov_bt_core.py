@@ -32,7 +32,6 @@ from screener.backtester.cli_common import (
     resolve_strategy_exprs,
 )
 from screener.backtester.core import (
-    _apply_slip,
     _bar_index_on_or_before,
     _eligible_reserve_signal_idx,
     _make_slot_state,
@@ -503,15 +502,6 @@ def test_pine_required_lookback():
     assert required_lookback(parse("not (close > sma(close, 7))")) == 7
     assert required_lookback(parse("-close + sma(close, 4)")) == 4
     assert required_lookback(parse("close > 0")) == 0
-
-
-# ───────────────────────── core.py ─────────────────────────
-
-
-def test_apply_slip_shim():
-    cfg = _cfg(slippage_bps=100.0)
-    out = _apply_slip(100.0, "buy", cfg)
-    assert out == pytest.approx(101.0)
 
 
 def test_trailing_liquidity_edges():
@@ -1871,8 +1861,10 @@ def test_configure_yfinance_missing_private_symbols(monkeypatch):
     fake_yf.set_tz_cache_location = lambda loc: None
     fake_cache = types.ModuleType("yfinance.cache")
     # deliberately omit _TzCacheManager/_TzCacheDummy -> AttributeError path.
+    fake_data = types.ModuleType("yfinance.data")
     monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
     monkeypatch.setitem(sys.modules, "yfinance.cache", fake_cache)
+    monkeypatch.setitem(sys.modules, "yfinance.data", fake_data)
     data._configure_yfinance()
     assert data._YFINANCE_CONFIGURED is True
 
@@ -1897,6 +1889,49 @@ def test_configure_yfinance_swap_failure(monkeypatch):
 def test_configure_yfinance_already_configured():
     data._YFINANCE_CONFIGURED = True
     data._configure_yfinance()  # short-circuit
+
+
+def test_configure_yfinance_caps_request_timeout(monkeypatch):
+    import sys
+    import types
+
+    data._YFINANCE_CONFIGURED = False
+    fake_yf = types.ModuleType("yfinance")
+    fake_yf.set_tz_cache_location = lambda loc: None
+    fake_cache = types.ModuleType("yfinance.cache")
+
+    class _TzCacheManager:
+        get_tz_cache = classmethod(lambda cls: None)
+
+    fake_cache._TzCacheManager = _TzCacheManager
+    fake_cache._TzCacheDummy = lambda: None
+    fake_data = types.ModuleType("yfinance.data")
+    calls = {}
+
+    class YfData:
+        def get(self, url, params=None, timeout=30):
+            calls["get"] = timeout
+            return "got"
+
+        def cache_get(self, url, params=None, timeout=30):
+            calls["cache_get"] = timeout
+            return "cached"
+
+    fake_data.YfData = YfData
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+    monkeypatch.setitem(sys.modules, "yfinance.cache", fake_cache)
+    monkeypatch.setitem(sys.modules, "yfinance.data", fake_data)
+    monkeypatch.setattr("os.path.isdir", lambda p: False)
+
+    data._configure_yfinance()
+    assert data._YFINANCE_CONFIGURED is True
+
+    # The wrappers cap the timeout to YFINANCE_TIMEOUT_SECONDS.
+    dummy = types.SimpleNamespace()
+    assert fake_data.YfData.get(dummy, "http://x", timeout=30) == "got"
+    assert calls["get"] == data.YFINANCE_TIMEOUT_SECONDS
+    assert fake_data.YfData.cache_get(dummy, "http://x", timeout=None) == "cached"
+    assert calls["cache_get"] == data.YFINANCE_TIMEOUT_SECONDS
 
 
 # ───────────── historical _run_event_driven_sim (direct) ─────────────

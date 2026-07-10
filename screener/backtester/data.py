@@ -16,7 +16,7 @@ from datetime import date, datetime
 import io
 import os
 from pathlib import Path
-from typing import Iterable, Optional, Protocol, cast
+from typing import Any, Iterable, Optional, Protocol, cast
 
 import pandas as pd
 import requests
@@ -34,6 +34,29 @@ FMP_CACHE_DIR = Path.home() / ".screener" / "fmp_prices"
 _DOTENV_LOADED = False
 _YFINANCE_CONFIGURED = False
 
+# Cap yfinance's internal scrape/API request timeout so a stuck provider
+# request can't hang a whole download batch.
+YFINANCE_TIMEOUT_SECONDS = 5
+
+
+def _cap_yfinance_request_timeout(
+    yf_data: Any, *, seconds: float = YFINANCE_TIMEOUT_SECONDS
+) -> None:
+    """Wrap ``YfData.get``/``cache_get`` to cap the per-request timeout."""
+    original_get = yf_data.YfData.get
+    original_cache_get = yf_data.YfData.cache_get
+
+    def capped_get(self, url, params=None, timeout=30):
+        timeout = min(float(timeout or seconds), seconds)
+        return original_get(self, url, params=params, timeout=timeout)
+
+    def capped_cache_get(self, url, params=None, timeout=30):
+        timeout = min(float(timeout or seconds), seconds)
+        return original_cache_get(self, url, params=params, timeout=timeout)
+
+    yf_data.YfData.get = capped_get
+    yf_data.YfData.cache_get = capped_cache_get
+
 
 def _configure_yfinance() -> None:
     """Point yfinance tz cache at tmpfs and avoid peewee SQLite lookups.
@@ -42,8 +65,10 @@ def _configure_yfinance() -> None:
     (``_TzCacheManager`` / ``_TzCacheDummy``); upstream renames have happened
     in the past. We attempt the swap defensively and degrade to a warning if
     the symbols disappear — the bulk download still works without it, just a
-    bit slower on first call. ``_YFINANCE_CONFIGURED`` is set regardless so we
-    don't keep retrying the same monkey-patch on every fetch.
+    bit slower on first call. The internal scrape/API request timeout is also
+    capped (see :func:`_cap_yfinance_request_timeout`) so a stuck provider
+    request can't hang the batch. ``_YFINANCE_CONFIGURED`` is set regardless so
+    we don't keep retrying the same monkey-patches on every fetch.
     """
     global _YFINANCE_CONFIGURED
     if _YFINANCE_CONFIGURED:
@@ -66,6 +91,15 @@ def _configure_yfinance() -> None:
             )
         else:
             tz_cache_manager.get_tz_cache = classmethod(lambda cls: tz_cache_dummy())
+        # Cap yfinance's internal scrape/API request timeout.
+        try:
+            import yfinance.data as yf_data
+
+            _cap_yfinance_request_timeout(yf_data)
+        except Exception as exc:  # noqa: BLE001 - degrade gracefully on any swap failure
+            from screener.logging_config import get_logger
+
+            get_logger(__name__).debug("yfinance_timeout_patch_failed", error=str(exc))
     except Exception as exc:  # noqa: BLE001 - degrade gracefully on any swap failure
         from screener.logging_config import get_logger
 

@@ -5,12 +5,12 @@ Wired into the existing ``main.py:cli`` group at import time.
 
 from __future__ import annotations
 
-from datetime import date, datetime
 from pathlib import Path
 
 import click
 
 from screener.logging_config import configure_logging
+from screener.markets import resolve_as_of
 
 from .output import write_csv
 from .process import build_dataset
@@ -67,10 +67,7 @@ def operator_scan(as_of, universe, out_path, only_actions, verbose):
     """
     configure_logging(level="INFO" if verbose else "WARNING")
 
-    if isinstance(as_of, datetime):
-        as_of = as_of.date()
-    if as_of is None:
-        as_of = date.today()
+    as_of = resolve_as_of(as_of)
 
     df, actual = build_dataset(as_of, universe_mode=universe)
     df = label(df)

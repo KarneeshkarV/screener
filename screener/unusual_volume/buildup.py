@@ -36,6 +36,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from screener.symbols import normalize_symbol
 
+from .detector import bars_on_or_before_as_of
+
 
 DEFAULT_WINDOW = 20
 DEFAULT_MIN_SCORE = 0.6
@@ -271,17 +273,7 @@ def compute_buildup_score(
     window: int = DEFAULT_WINDOW,
 ) -> Optional[BuildupScore]:
     """Score one ticker. Returns None when the bar history is too short."""
-    if bars is None or bars.empty:
-        return None
-    df = bars.copy()
-    if not isinstance(df.index, pd.DatetimeIndex):
-        if "date" in df.columns:
-            df = df.set_index(pd.DatetimeIndex(pd.to_datetime(df["date"]).values))
-        else:
-            return None
-    df = df.sort_index()
-    as_of_ts = pd.Timestamp(as_of).normalize()
-    df = df[df.index <= as_of_ts]
+    df = bars_on_or_before_as_of(bars, as_of)
     if len(df) < max(BB_LEN, ATR_LEN) + window:
         return None
 

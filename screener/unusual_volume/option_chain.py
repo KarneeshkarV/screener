@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Any, Optional, cast
 
+import numpy as np
+
 from .detector import Event
 from .nse_client import nse_cached_json
 
@@ -71,6 +73,36 @@ def compute_oc_metrics(raw: dict) -> dict:
         "pe_oi": pe_oi,
         "call_put_oi_ratio": _safe_ratio(ce_oi, pe_oi),
         "pcr": _safe_ratio(pe_oi, ce_oi),
+    }
+
+
+def compute_oc_iv_volume(raw: dict) -> dict:
+    """Median strike IV (%) and total CE/PE traded volume from an NSE chain.
+
+    Sums per-strike ``records.data[*].CE/PE.totalTradedVolume`` and gathers the
+    per-strike ``impliedVolatility`` (kept only within a plausible 0-500% band,
+    dropping NSE's zero/garbage rows). Complements :func:`compute_oc_metrics`
+    (OI / PCR) for callers that also need IV and volume — e.g. the earnings
+    IV-sentiment signal. ``median_iv`` is ``None`` when no usable IV survives.
+    """
+    records = (raw.get("records") or {}).get("data") or []
+    total_ce_vol = 0.0
+    total_pe_vol = 0.0
+    iv_vals: list[float] = []
+    for row in records:
+        ce = row.get("CE") or {}
+        pe = row.get("PE") or {}
+        total_ce_vol += _as_float(ce.get("totalTradedVolume")) or 0.0
+        total_pe_vol += _as_float(pe.get("totalTradedVolume")) or 0.0
+        for leg in (ce, pe):
+            iv = _as_float(leg.get("impliedVolatility"))
+            if iv is not None and 0 < iv < 500:
+                iv_vals.append(iv)
+    median_iv = float(np.percentile(iv_vals, 50)) if iv_vals else None
+    return {
+        "median_iv": median_iv,
+        "total_call_volume": total_ce_vol,
+        "total_put_volume": total_pe_vol,
     }
 
 

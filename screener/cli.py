@@ -32,7 +32,74 @@ from screener import usage
 from screener.unusual_volume.cli import unusual_volume
 
 
-@click.group()
+def _instrument_usage_tracking(
+    command: click.Command, feature_path: tuple[str, ...]
+) -> None:
+    """Wrap ``command``'s leaf callbacks with usage tracking.
+
+    Groups recurse (their own callback is left untouched); each leaf records a
+    successful feature usage plus an invocation row under its space-joined
+    feature path. The ``_usage_tracked`` marker keeps re-wrapping idempotent.
+    """
+    if isinstance(command, click.Group):
+        for name, child in command.commands.items():
+            _instrument_usage_tracking(child, (*feature_path, name))
+        return
+    if command.callback is None or getattr(command.callback, "_usage_tracked", False):
+        return
+
+    feature = " ".join(feature_path)
+    original = command.callback
+
+    @functools.wraps(original)
+    def tracked_callback(*args: Any, **kwargs: Any) -> Any:
+        started_at = time.perf_counter()
+        status = "success"
+        try:
+            return original(*args, **kwargs)
+        except BaseException as exc:
+            status = type(exc).__name__
+            raise
+        finally:
+            duration = usage.elapsed_ms(started_at)
+            if status == "success":
+                usage.record_feature_usage(
+                    feature,
+                    command_path=f"screener {feature}",
+                    duration_ms=duration,
+                )
+            usage.record_feature_invocation(
+                feature,
+                command_path=f"screener {feature}",
+                duration_ms=duration,
+                status=status,
+                params=kwargs,
+            )
+
+    # Marker attribute so re-wrapping is idempotent (read via getattr above);
+    # mypy can't model dynamic attributes on a function object.
+    tracked_callback._usage_tracked = True  # type: ignore[attr-defined]
+    command.callback = tracked_callback
+
+
+class UsageTrackedGroup(click.Group):
+    """Click group that instruments each command it gains with usage tracking.
+
+    Commands are wrapped as they are added (subgroups recurse), so every leaf
+    records its own feature usage and invocation rows under the full
+    space-joined command path. Mark a command's callback with
+    ``_usage_tracked = True`` to opt it out (used for ``usage-report``, which
+    reads the usage tables and should not record itself).
+    """
+
+    def add_command(self, cmd: click.Command, name: str | None = None) -> None:
+        super().add_command(cmd, name)
+        resolved = name or cmd.name
+        if resolved is not None:
+            _instrument_usage_tracking(cmd, (resolved,))
+
+
+@click.group(cls=UsageTrackedGroup)
 @click.option(
     "--config",
     "config_path",
@@ -93,48 +160,6 @@ cli.add_command(optimize)
 cli.add_command(cache_group)
 
 
-def _wrap_usage_tracking(command: click.Command, feature_path: tuple[str, ...]) -> None:
-    if isinstance(command, click.Group):
-        for name, child in command.commands.items():
-            _wrap_usage_tracking(child, (*feature_path, name))
-        return
-    if command.callback is None or getattr(command.callback, "_usage_tracked", False):
-        return
-
-    feature = " ".join(feature_path)
-    original = command.callback
-
-    @functools.wraps(original)
-    def tracked_callback(*args: Any, **kwargs: Any) -> Any:
-        started_at = time.perf_counter()
-        status = "success"
-        try:
-            return original(*args, **kwargs)
-        except BaseException as exc:
-            status = type(exc).__name__
-            raise
-        finally:
-            duration = usage.elapsed_ms(started_at)
-            if status == "success":
-                usage.record_feature_usage(
-                    feature,
-                    command_path=f"screener {feature}",
-                    duration_ms=duration,
-                )
-            usage.record_feature_invocation(
-                feature,
-                command_path=f"screener {feature}",
-                duration_ms=duration,
-                status=status,
-                params=kwargs,
-            )
-
-    # Marker attribute so re-wrapping is idempotent (read via getattr above);
-    # mypy can't model dynamic attributes on a function object.
-    tracked_callback._usage_tracked = True  # type: ignore[attr-defined]
-    command.callback = tracked_callback
-
-
 @click.command(name="usage-report")
 def usage_report() -> None:
     """Show successful feature usage counts from Turso."""
@@ -177,12 +202,10 @@ def usage_report() -> None:
     console.print(inv_table)
 
 
+# usage-report reads the usage tables; exempt it from tracking itself by
+# pre-marking its callback so UsageTrackedGroup.add_command skips it.
+setattr(usage_report.callback, "_usage_tracked", True)
 cli.add_command(usage_report)
-
-
-for _name, _command in cli.commands.items():
-    if _name != "usage-report":
-        _wrap_usage_tracking(_command, (_name,))
 
 
 __all__ = ["cli"]

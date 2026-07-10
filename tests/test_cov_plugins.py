@@ -430,10 +430,18 @@ def test_unusual_volume_pipeline_runs(monkeypatch) -> None:
     import screener.unusual_volume.cli as uv
     from screener.criteria import CRITERIA
 
-    called = {}
-    monkeypatch.setattr(uv, "run_unusual_volume", lambda **kw: called.update(kw))
+    captured = {}
+
+    def fake_run(request, **kw):
+        captured["request"] = request
+        captured.update(kw)
+
+    monkeypatch.setattr(uv, "_resolve_universe", lambda m, t, f: ["AAA"])
+    monkeypatch.setattr(uv, "run_unusual_volume", fake_run)
     CRITERIA["unusual-volume"](market="us", limit=3, refresh=True)
-    assert called["refresh"] is True
+    assert captured["request"].refresh is True
+    assert captured["request"].market == "us"
+    assert captured["limit"] == 3
 
 
 def test_promoter_buys_pipeline_runs(monkeypatch) -> None:

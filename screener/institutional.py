@@ -14,12 +14,12 @@ from __future__ import annotations
 
 import logging
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import pandas as pd
 
 from screener import fmp
+from screener.parallel import parallel_map
 from screener.providers import CachedProvider, ProviderSpec
 
 
@@ -120,20 +120,14 @@ def fetch_fmp_institutional(
     """
     if not symbols:
         return pd.DataFrame()
-    rows: list[dict] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [
-            pool.submit(
-                _fetch_fmp_institutional_one,
-                s,
-                api_key=api_key,
-                cache_ttl=cache_ttl,
-                refresh=refresh,
-            )
-            for s in symbols
-        ]
-        for fut in as_completed(futures):
-            r = fut.result()
-            if r is not None:
-                rows.append(r)
+    rows = parallel_map(
+        lambda s: _fetch_fmp_institutional_one(
+            s,
+            api_key=api_key,
+            cache_ttl=cache_ttl,
+            refresh=refresh,
+        ),
+        symbols,
+        max_workers=max_workers,
+    )
     return pd.DataFrame(rows)

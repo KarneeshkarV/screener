@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
@@ -11,7 +10,11 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
 from screener.cache import cached_json_call
-from screener.provider_utils import _first_num, _num, _pct_change, fmp_get
+from screener.financials import first_number, pct_change, to_number
+from screener.fmp import resolve_api_key
+from screener.markets import get_market
+from screener.parallel import parallel_map
+from screener.provider_utils import fmp_get
 from screener.providers import CachedProvider, ProviderSpec
 from screener.scanner import scan
 from screener.symbols import tv_to_nse, tv_to_yf
@@ -65,13 +68,6 @@ class GarpFundamentalsAdapter(Protocol):
     ) -> NormalizedGarpRow | None: ...
 
 
-#: Public alias for the shared numeric coercion used to turn possibly-string,
-#: percent- or comma-formatted values into ``float | None``. Exposed so callers
-#: (e.g. the conviction card) can parse provider rows without reaching into a
-#: private helper.
-to_number = _num
-
-
 def _cagr(latest: float | None, oldest: float | None, years: float) -> float | None:
     if latest is None or oldest is None or latest <= 0 or oldest <= 0 or years <= 0:
         return None
@@ -96,8 +92,8 @@ def _average_ratio(
         return None
     values = []
     for col in list(numerator.index)[:periods]:
-        den = _num(denominator.get(col))
-        num = _num(numerator.get(col))
+        den = to_number(denominator.get(col))
+        num = to_number(numerator.get(col))
         if num is not None and den not in (None, 0):
             values.append((num / den) * 100.0)
     if not values:
@@ -117,7 +113,7 @@ def _passes_garp(row: dict[str, Any], thresholds: GarpThresholds) -> bool:
         row.get("roce_or_roic"),
         row.get("quarterly_profit_growth"),
     ]
-    if any(_num(value) is None for value in required):
+    if any(to_number(value) is None for value in required):
         return False
     return (
         float(row["market_cap"]) > thresholds.market_cap_min
@@ -168,16 +164,17 @@ def load_garp_universe(
 ) -> pd.DataFrame:
     from tradingview_screener import col
 
+    market_meta = get_market(market)
     if market == "india":
         filters = [
             col("type") == "stock",
-            col("close") >= 10,
+            col("close") >= market_meta.screen_min_close,
             col("market_cap_basic") >= INDIA_MIN_CRORE,
         ]
     else:
         filters = [
             col("type") == "stock",
-            col("close") >= 1,
+            col("close") >= market_meta.screen_min_close,
             col("market_cap_basic") >= US_MIN_USD,
         ]
     _total, df = scan(
@@ -222,13 +219,13 @@ def _india_row(
         if isinstance(payload.get("quarterly_results"), dict)
         else {},
     )
-    expected_q_np = _first_num(
+    expected_q_np = first_number(
         ratios,
         "expected_quarterly_net_profit",
         "expected_quarterly_profit",
         "expected_net_profit",
     )
-    np_3q_back = _first_num(
+    np_3q_back = first_number(
         quarterly,
         "net_profit_3quarters_back",
         "net profit 3quarters back",
@@ -237,20 +234,20 @@ def _india_row(
     return {
         "name": symbol,
         "description": description or "",
-        "market_cap": _first_num(metrics, "market_capitalization", "market_cap"),
-        "sales": _first_num(metrics, "sales", "sales_ttm", "revenue"),
-        "peg": _first_num(metrics, "peg_ratio", "peg"),
-        "sales_growth_5y": _first_num(
+        "market_cap": first_number(metrics, "market_capitalization", "market_cap"),
+        "sales": first_number(metrics, "sales", "sales_ttm", "revenue"),
+        "peg": first_number(metrics, "peg_ratio", "peg"),
+        "sales_growth_5y": first_number(
             metrics, "sales_growth_5years", "sales_growth_5y"
         ),
-        "operating_profit_growth": _first_num(
+        "operating_profit_growth": first_number(
             metrics, "operating_profit_growth", "opm_growth"
         ),
-        "eps_growth_5y": _first_num(metrics, "eps_growth_5years", "eps_growth_5y"),
-        "roe_5y": _first_num(
+        "eps_growth_5y": first_number(metrics, "eps_growth_5years", "eps_growth_5y"),
+        "roe_5y": first_number(
             metrics, "average_return_on_equity_5years", "average_roe_5y"
         ),
-        "roce_or_roic": _first_num(
+        "roce_or_roic": first_number(
             metrics,
             "average_return_on_capital_employed_3years",
             "average_roce_3y",
@@ -258,7 +255,7 @@ def _india_row(
         ),
         "expected_quarterly_profit": expected_q_np,
         "profit_3q_back": np_3q_back,
-        "quarterly_profit_growth": _pct_change(expected_q_np, np_3q_back),
+        "quarterly_profit_growth": pct_change(expected_q_np, np_3q_back),
     }
 
 
@@ -306,25 +303,21 @@ def _screen_garp_with_adapter(
     cache_ttl: float | None,
     refresh: bool,
 ) -> pd.DataFrame:
-    rows: list[NormalizedGarpRow] = []
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-        futures = [
-            executor.submit(
-                adapter.load_row,
-                symbol,
-                description,
+    rows = [
+        row
+        for row in parallel_map(
+            lambda item: adapter.load_row(
+                item[0],
+                item[1],
                 cache_ttl=cache_ttl,
                 refresh=refresh,
-            )
-            for symbol, description in _universe_items(universe)
-        ]
-        for future in as_completed(futures):
-            try:
-                row = future.result()
-            except Exception:
-                continue
-            if row is not None and _passes_garp(row, adapter.thresholds):
-                rows.append(row)
+            ),
+            _universe_items(universe),
+            max_workers=max(1, workers),
+            on_error="skip",
+        )
+        if _passes_garp(row, adapter.thresholds)
+    ]
     return add_garp_score(pd.DataFrame(rows)).head(limit)
 
 
@@ -378,24 +371,28 @@ def _us_row(symbol: str, description: str | None) -> NormalizedGarpRow:
     expected_eps = None
     year_ago_eps = None
     if estimates is not None and not estimates.empty and "0q" in estimates.index:
-        expected_eps = _num(estimates.loc["0q"].get("avg"))
-        year_ago_eps = _num(estimates.loc["0q"].get("yearAgoEps"))
-        quarterly_eps_growth = _pct_change(expected_eps, year_ago_eps)
+        expected_eps = to_number(estimates.loc["0q"].get("avg"))
+        year_ago_eps = to_number(estimates.loc["0q"].get("yearAgoEps"))
+        quarterly_eps_growth = pct_change(expected_eps, year_ago_eps)
 
-    latest_revenue = _num(revenue.iloc[0]) if not revenue.empty else None
+    latest_revenue = to_number(revenue.iloc[0]) if not revenue.empty else None
     oldest_revenue = (
-        _num(revenue.iloc[min(len(revenue) - 1, 4)]) if len(revenue) else None
+        to_number(revenue.iloc[min(len(revenue) - 1, 4)]) if len(revenue) else None
     )
-    latest_op = _num(operating.iloc[0]) if not operating.empty else None
+    latest_op = to_number(operating.iloc[0]) if not operating.empty else None
     old_op = (
-        _num(operating.iloc[min(len(operating) - 1, 1)]) if len(operating) else None
+        to_number(operating.iloc[min(len(operating) - 1, 1)])
+        if len(operating)
+        else None
     )
-    latest_ni = _num(net_income.iloc[0]) if not net_income.empty else None
+    latest_ni = to_number(net_income.iloc[0]) if not net_income.empty else None
     old_ni = (
-        _num(net_income.iloc[min(len(net_income) - 1, 4)]) if len(net_income) else None
+        to_number(net_income.iloc[min(len(net_income) - 1, 4)])
+        if len(net_income)
+        else None
     )
 
-    tax = _num(tax_rate.iloc[0]) if not tax_rate.empty else 0.21
+    tax = to_number(tax_rate.iloc[0]) if not tax_rate.empty else 0.21
     nopat = ebit * (1.0 - float(tax or 0.21))
     invested_capital = debt.add(equity, fill_value=0)
     roic = _average_ratio(nopat, invested_capital, 3)
@@ -403,11 +400,11 @@ def _us_row(symbol: str, description: str | None) -> NormalizedGarpRow:
     return {
         "name": symbol,
         "description": description or info.get("shortName") or "",
-        "market_cap": _num(info.get("marketCap")),
+        "market_cap": to_number(info.get("marketCap")),
         "sales": latest_revenue,
-        "peg": _num(info.get("trailingPegRatio") or info.get("pegRatio")),
+        "peg": to_number(info.get("trailingPegRatio") or info.get("pegRatio")),
         "sales_growth_5y": _cagr(latest_revenue, oldest_revenue, 4),
-        "operating_profit_growth": _pct_change(latest_op, old_op),
+        "operating_profit_growth": pct_change(latest_op, old_op),
         "eps_growth_5y": _cagr(latest_ni, old_ni, 4),
         "roe_5y": _average_ratio(net_income, equity, 5),
         "roce_or_roic": roic,
@@ -423,12 +420,6 @@ def _us_row(symbol: str, description: str | None) -> NormalizedGarpRow:
 # FMP_API_KEY is configured we source the same inputs from FMP instead and
 # cache the per-symbol payload on disk; yfinance remains the fallback when no
 # key is set or FMP has no statement data for a symbol.
-
-
-def _fmp_api_key() -> str | None:
-    from screener.insiders import _fmp_api_key as resolve
-
-    return resolve()
 
 
 def _fmp_get(path: str, params: dict[str, Any], api_key: str) -> Any:
@@ -493,7 +484,7 @@ def _fmp_series(statements: list[dict[str, Any]], field: str) -> pd.Series:
     data: dict[str, float] = {}
     for entry in statements:
         date = entry.get("date")
-        value = _num(entry.get(field))
+        value = to_number(entry.get(field))
         if date and value is not None and str(date) not in data:
             data[str(date)] = value
     return pd.Series(data, dtype=float)
@@ -519,7 +510,7 @@ def _fmp_quarterly_eps(
         upcoming: list[tuple[pd.Timestamp, float]] = []
         for entry in estimates:
             ts = pd.to_datetime(entry.get("date"), errors="coerce")
-            eps = _first_num(entry, "estimatedEpsAvg", "epsAvg")
+            eps = first_number(entry, "estimatedEpsAvg", "epsAvg")
             if not pd.isna(ts) and ts > latest_reported and eps is not None:
                 upcoming.append((ts, eps))
         if upcoming:
@@ -533,7 +524,7 @@ def _fmp_quarterly_eps(
         best: tuple[float, float] | None = None
         for entry in quarterly_income:
             ts = pd.to_datetime(entry.get("date"), errors="coerce")
-            eps = _num(entry.get("eps"))
+            eps = to_number(entry.get("eps"))
             if pd.isna(ts) or eps is None:
                 continue
             delta = abs(float((ts - target).days))
@@ -573,25 +564,29 @@ def _fmp_us_row(
     ebit = operating
 
     tax: float | None = None
-    tax_expense = _num(income[0].get("incomeTaxExpense"))
-    pretax = _num(income[0].get("incomeBeforeTax"))
+    tax_expense = to_number(income[0].get("incomeTaxExpense"))
+    pretax = to_number(income[0].get("incomeBeforeTax"))
     if tax_expense is not None and pretax not in (None, 0):
         tax = tax_expense / float(pretax or 1.0)
     nopat = ebit * (1.0 - float(tax or 0.21))
     invested_capital = debt.add(equity, fill_value=0)
     roic = _average_ratio(nopat, invested_capital, 3)
 
-    latest_revenue = _num(revenue.iloc[0]) if not revenue.empty else None
+    latest_revenue = to_number(revenue.iloc[0]) if not revenue.empty else None
     oldest_revenue = (
-        _num(revenue.iloc[min(len(revenue) - 1, 4)]) if len(revenue) else None
+        to_number(revenue.iloc[min(len(revenue) - 1, 4)]) if len(revenue) else None
     )
-    latest_op = _num(operating.iloc[0]) if not operating.empty else None
+    latest_op = to_number(operating.iloc[0]) if not operating.empty else None
     old_op = (
-        _num(operating.iloc[min(len(operating) - 1, 1)]) if len(operating) else None
+        to_number(operating.iloc[min(len(operating) - 1, 1)])
+        if len(operating)
+        else None
     )
-    latest_ni = _num(net_income.iloc[0]) if not net_income.empty else None
+    latest_ni = to_number(net_income.iloc[0]) if not net_income.empty else None
     old_ni = (
-        _num(net_income.iloc[min(len(net_income) - 1, 4)]) if len(net_income) else None
+        to_number(net_income.iloc[min(len(net_income) - 1, 4)])
+        if len(net_income)
+        else None
     )
 
     expected_eps, year_ago_eps = _fmp_quarterly_eps(estimates, quarterly)
@@ -599,17 +594,17 @@ def _fmp_us_row(
     return {
         "name": symbol,
         "description": description or str(profile.get("companyName") or ""),
-        "market_cap": _first_num(profile, "mktCap", "marketCap"),
+        "market_cap": first_number(profile, "mktCap", "marketCap"),
         "sales": latest_revenue,
-        "peg": _first_num(ratios, "priceEarningsToGrowthRatioTTM", "pegRatioTTM"),
+        "peg": first_number(ratios, "priceEarningsToGrowthRatioTTM", "pegRatioTTM"),
         "sales_growth_5y": _cagr(latest_revenue, oldest_revenue, 4),
-        "operating_profit_growth": _pct_change(latest_op, old_op),
+        "operating_profit_growth": pct_change(latest_op, old_op),
         "eps_growth_5y": _cagr(latest_ni, old_ni, 4),
         "roe_5y": _average_ratio(net_income, equity, 5),
         "roce_or_roic": roic,
         "expected_quarterly_profit": expected_eps,
         "profit_3q_back": year_ago_eps,
-        "quarterly_profit_growth": _pct_change(expected_eps, year_ago_eps),
+        "quarterly_profit_growth": pct_change(expected_eps, year_ago_eps),
     }
 
 
@@ -689,7 +684,7 @@ class UsGarpFundamentalsAdapter:
 
 
 def _us_fundamentals_adapter() -> UsGarpFundamentalsAdapter:
-    api_key = _fmp_api_key()
+    api_key = resolve_api_key()
     return UsGarpFundamentalsAdapter(FmpGarpAdapter(api_key) if api_key else None)
 
 
