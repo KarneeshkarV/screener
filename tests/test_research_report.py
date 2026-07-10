@@ -6,7 +6,9 @@ import json
 import re
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -17,6 +19,8 @@ from screener.backtester.optimization.research_report import (
     compute_parameter_stability,
     run_research_report,
 )
+from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
+from screener.backtester.optimization.walk_forward import WalkForwardSummary
 from tests.conftest import StubPriceFetcher, make_bars
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -308,3 +312,154 @@ def test_cli_help_lists_research_report():
     res = CliRunner().invoke(cli, ["optimize", "--help"])
     assert res.exit_code == 0
     assert "research-report" in res.output
+
+
+def test_research_report_helper_edge_cases():
+    import screener.backtester.optimization.research_report as rr
+    from screener.backtester.optimization.reporting import _fmt
+
+    assert not rr._param_equal(None, 1)
+    assert not rr._param_equal("not-a-number", 1.0)
+    assert rr._value_key(1.25) == "1.25"
+    assert rr._parse_value_key("1.25") == 1.25
+    assert rr._parse_value_key("2") == 2
+    assert rr._parse_value_key("value") == "value"
+    assert rr._degradation_ratio(0.0, 0.0) == 0.0
+    assert rr._degradation_ratio(0.0, -1.0) == 1.0
+    assert rr._verdict(
+        overfit_flag=True,
+        degradation=0.0,
+        mc_return_p05=1.0,
+        oos_metric=1.0,
+    ).startswith("FAIL: severe")
+    assert rr._verdict(
+        overfit_flag=False,
+        degradation=0.0,
+        mc_return_p05=-1.0,
+        oos_metric=0.0,
+    ).startswith("FAIL: weak")
+    assert rr._verdict(
+        overfit_flag=False,
+        degradation=0.5,
+        mc_return_p05=1.0,
+        oos_metric=1.0,
+    ).startswith("CAUTION")
+    assert rr._verdict(
+        overfit_flag=False,
+        degradation=0.0,
+        mc_return_p05=1.0,
+        oos_metric=1.0,
+    ).startswith("PASS")
+    assert _fmt(float("nan")) == "nan"
+
+
+def test_run_research_report_fallback_ledger_and_empty_grid(tmp_path, monkeypatch):
+    import screener.backtester.optimization.research_report as rr
+
+    cfg = _config()
+    best = GridSearchResult(
+        params={"hold": 8},
+        score=1.5,
+        metrics={"sharpe": 1.5},
+        trade_count=1,
+    )
+    empty_wf = WalkForwardSummary(
+        windows=[],
+        stability_score=1.0,
+        aggregate_metrics={"sharpe": 0.5},
+        overfit_flag=False,
+        train_test_score_ratio=3.0,
+    )
+    wf_calls = []
+
+    monkeypatch.setattr(rr, "grid_search", lambda *args, **kwargs: [best])
+
+    def fake_wf(*args, **kwargs):
+        wf_calls.append(kwargs)
+        return empty_wf
+
+    monkeypatch.setattr(rr, "walk_forward_optimize", fake_wf)
+    monkeypatch.setattr(
+        rr,
+        "run_rolling_backtest",
+        lambda *args, **kwargs: SimpleNamespace(trades=[_trade(10.0, 0.1)]),
+    )
+    monkeypatch.setattr(rr, "simulate_monte_carlo", simulate_monte_carlo)
+    progress = []
+    payload = run_research_report(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [8]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 3, 1),
+        cache_path=tmp_path / "grid.json",
+        mc_iterations=2,
+        out_path=tmp_path / "fallback.json",
+        progress=progress.append,
+    )
+
+    assert progress == ["grid", "walk_forward", "monte_carlo"]
+    assert wf_calls[0]["cache_path"].name == "grid_research_wf.json"
+    assert payload["summary"]["is_metric"] == 1.5
+    assert payload["monte_carlo"]["trade_source"] == "full_period"
+
+    monkeypatch.setattr(rr, "grid_search", lambda *args, **kwargs: [])
+    empty = run_research_report(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [8]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 3, 1),
+        mc_iterations=2,
+        out_path=tmp_path / "empty.html",
+    )
+    assert empty["grid"]["best_params"] == {}
+    assert empty["monte_carlo"]["trade_source"] == "none"
+
+
+def test_resolve_universe_tickers_branches(monkeypatch):
+    import screener.backtester.optimization.cli as optimization_cli
+    import screener.universes as universes
+
+    assert optimization_cli._resolve_universe_tickers(
+        market="us",
+        tickers=None,
+        universe_file=None,
+        universe=None,
+        end_date=date(2024, 1, 1),
+        max_universe=0,
+    ) == (None, None)
+
+    monkeypatch.setattr(
+        universes,
+        "load_current_universe",
+        lambda *args, **kwargs: SimpleNamespace(symbols=("AAA", "BBB")),
+    )
+    assert optimization_cli._resolve_universe_tickers(
+        market="us",
+        tickers=None,
+        universe_file=None,
+        universe="sp500",
+        end_date=date(2024, 1, 1),
+        max_universe=1,
+    ) == ("AAA", None)
+
+    monkeypatch.setattr(
+        universes,
+        "load_current_universe",
+        lambda *args, **kwargs: SimpleNamespace(symbols=()),
+    )
+    with pytest.raises(click.UsageError, match="zero symbols"):
+        optimization_cli._resolve_universe_tickers(
+            market="us",
+            tickers=None,
+            universe_file=None,
+            universe="sp500",
+            end_date=date(2024, 1, 1),
+            max_universe=0,
+        )
+
+
+def test_backtest_config_rejects_unknown_interval():
+    with pytest.raises(ValueError, match="unsupported interval"):
+        _config(interval="2h")
