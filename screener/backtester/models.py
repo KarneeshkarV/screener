@@ -21,7 +21,7 @@ SUPPORTED_INTERVALS = ("1d", "1h", "30m", "15m", "5m", "1m")
 
 
 class UniversePolicy(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     tickers: Optional[tuple[str, ...]] = None
     universe_file: Optional[str] = None
@@ -30,7 +30,7 @@ class UniversePolicy(BaseModel):
 
 
 class SignalPolicy(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     entry_expr: str
     exit_expr: Optional[str]
@@ -42,7 +42,7 @@ class SignalPolicy(BaseModel):
 
 
 class DataPolicy(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     interval: str = "1d"
     price_adjustment: Literal["full", "splits_only", "none"] = "full"
@@ -59,7 +59,7 @@ class DataPolicy(BaseModel):
 
 
 class ExecutionPolicy(BaseModel):
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
     hold: int
     stop_loss: Optional[float]
@@ -83,7 +83,7 @@ class ExecutionPolicy(BaseModel):
 
 
 class PortfolioPolicy(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     top: int
     initial_capital: float
@@ -105,7 +105,7 @@ class BacktestConfig(BaseModel):
     ``universe``, ``signals``, ``data``, ``execution``, and ``portfolio``.
     """
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
 
     market: str
     as_of: date | datetime
@@ -117,47 +117,11 @@ class BacktestConfig(BaseModel):
     portfolio: PortfolioPolicy
 
     _GROUP_FIELDS: ClassVar[dict[str, tuple[str, ...]]] = {
-        "universe": (
-            "tickers",
-            "universe_file",
-            "membership_added",
-            "max_universe",
-        ),
-        "signals": (
-            "entry_expr",
-            "exit_expr",
-            "strategy_name",
-            "regime_filter",
-            "fundamentals_provider",
-            "fundamental_fields",
-            "fundamental_lag_days",
-        ),
-        "data": ("interval", "price_adjustment"),
-        "execution": (
-            "hold",
-            "stop_loss",
-            "take_profit",
-            "trailing_stop",
-            "slippage_bps",
-            "commission_bps",
-            "slippage_model",
-            "gap_fills",
-            "entry_order_type",
-            "entry_limit_bps",
-            "partial_exits",
-        ),
-        "portfolio": (
-            "top",
-            "initial_capital",
-            "min_price",
-            "min_avg_dollar_volume",
-            "avg_dollar_volume_window",
-            "reserve_multiple",
-            "reinvest",
-            "allow_reentry",
-            "max_reentries",
-            "max_concurrent_per_ticker",
-        ),
+        "universe": tuple(UniversePolicy.model_fields),
+        "signals": tuple(SignalPolicy.model_fields),
+        "data": tuple(DataPolicy.model_fields),
+        "execution": tuple(ExecutionPolicy.model_fields),
+        "portfolio": tuple(PortfolioPolicy.model_fields),
     }
     _LEGACY_FIELDS: ClassVar[frozenset[str]] = frozenset(
         field for fields in _GROUP_FIELDS.values() for field in fields

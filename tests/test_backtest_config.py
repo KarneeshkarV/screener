@@ -78,3 +78,10 @@ def test_flat_model_copy_updates_the_owning_policy() -> None:
 def test_interval_validation_lives_with_data_policy() -> None:
     with pytest.raises(ValidationError, match="unsupported interval"):
         DataPolicy(interval="2h")
+
+
+def test_unknown_flat_field_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="bogus_flat_field"):
+        BacktestConfig.model_validate(
+            {**_nested_config().to_flat_dict(), "bogus_flat_field": True}
+        )
