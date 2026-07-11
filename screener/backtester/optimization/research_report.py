@@ -328,21 +328,11 @@ def run_research_report(
     trades: list[Trade] = []
     trade_source = "none"
     if best_params:
-        # Prefer concatenated OOS window trades when walk-forward produced
-        # windows; otherwise fall back to a full-period run (mirrors validate
-        # on a full ledger).
+        # Prefer the OOS trades collected by walk-forward; otherwise fall back
+        # to a full-period run (mirrors validate on a full ledger).
         if walk_forward.windows:
             trade_source = "walk_forward_oos"
-            for window_result in walk_forward.windows:
-                w = window_result.window
-                oos_cfg = cfg.model_copy(update=best_params)
-                oos_result = run_rolling_backtest(
-                    oos_cfg,
-                    fetcher,
-                    start_date=w.test_start,
-                    end_date=w.test_end,
-                )
-                trades.extend(oos_result.trades)
+            trades = list(walk_forward.oos_trades)
         else:
             trade_source = "full_period"
             full_cfg = cfg.model_copy(update=best_params)

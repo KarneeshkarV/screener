@@ -417,6 +417,70 @@ def test_run_research_report_fallback_ledger_and_empty_grid(tmp_path, monkeypatc
     assert empty["monte_carlo"]["trade_source"] == "none"
 
 
+def test_research_report_reuses_walk_forward_oos_trades(tmp_path, monkeypatch):
+    import screener.backtester.optimization.research_report as rr
+
+    cfg = _config()
+    best = GridSearchResult(
+        params={"hold": 8},
+        score=1.5,
+        metrics={"sharpe": 1.5},
+        trade_count=1,
+    )
+    oos_trade = _trade(10.0, 0.1)
+    walk_forward = WalkForwardSummary(
+        windows=[
+            {
+                "window": {
+                    "train_start": date(2024, 1, 1),
+                    "train_end": date(2024, 1, 31),
+                    "test_start": date(2024, 2, 1),
+                    "test_end": date(2024, 2, 15),
+                },
+                "best_train": best,
+                "test_metrics": {"sharpe": 0.5},
+                "test_trade_count": 1,
+            }
+        ],
+        stability_score=1.0,
+        aggregate_metrics={"sharpe": 0.5},
+        overfit_flag=False,
+        train_test_score_ratio=3.0,
+        oos_trades=(oos_trade,),
+    )
+    captured_trades = []
+
+    monkeypatch.setattr(rr, "grid_search", lambda *args, **kwargs: [best])
+    monkeypatch.setattr(
+        rr, "walk_forward_optimize", lambda *args, **kwargs: walk_forward
+    )
+    monkeypatch.setattr(
+        rr,
+        "run_rolling_backtest",
+        lambda *args, **kwargs: pytest.fail("OOS backtest must not be re-run"),
+    )
+
+    def fake_monte_carlo(trades, **kwargs):
+        captured_trades.extend(trades)
+        return simulate_monte_carlo(trades, **kwargs)
+
+    monkeypatch.setattr(rr, "simulate_monte_carlo", fake_monte_carlo)
+    payload = run_research_report(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [8]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 3, 1),
+        mc_iterations=2,
+        out_path=tmp_path / "reuse",
+    )
+
+    assert captured_trades == [oos_trade]
+    assert payload["monte_carlo"]["trade_count"] == 1
+    assert payload["monte_carlo"]["trade_source"] == "walk_forward_oos"
+    assert "oos_trades" not in payload["walk_forward"]
+
+
 def test_resolve_universe_tickers_branches(monkeypatch):
     import screener.backtester.optimization.cli as optimization_cli
     import screener.universes as universes
