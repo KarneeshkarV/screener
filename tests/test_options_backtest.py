@@ -13,10 +13,13 @@ from screener.backtester.pine import parse
 from screener.backtester.rolling import run_rolling_backtest
 from screener.options import backtest as options_backtest
 from screener.options.backtest import (
+    OPTION_EXPRESSION_FIELDS,
     merge_options_into_bars,
     merge_referenced_options,
     referenced_options_fields,
 )
+from screener.options.panels import enrich_panel_history, metrics_row
+from tests.test_options_panels import _chain, _contract
 from tests.conftest import StubPriceFetcher, make_bars
 
 
@@ -61,6 +64,12 @@ def test_referenced_options_fields_only_selects_known_panel_identifiers():
         "oi_chg_ratio",
     }
     assert referenced_options_fields(parse("close > 0")) == set()
+
+
+def test_panel_schema_covers_all_expression_fields():
+    row = metrics_row(_chain(_contract()))
+    panel = enrich_panel_history(pd.DataFrame([row, {**row, "as_of": "2026-07-11"}]))
+    assert OPTION_EXPRESSION_FIELDS <= set(panel.columns)
 
 
 def test_point_in_time_join_never_backfills_future_rows():

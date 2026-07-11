@@ -3,40 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import NoneType
+from typing import get_args
 
 import pandas as pd
 
 from screener.backtester.pine import Node, collect_names
+from screener.options.models import ChainMetrics
 from screener.options.panels import read_options_panel
 from screener.symbols import tv_to_nse, tv_to_yf
 
-OPTION_EXPRESSION_FIELDS = frozenset(
+
+def _numeric_metrics_fields() -> frozenset[str]:
+    numeric_types = {int, float}
+    return frozenset(
+        name
+        for name, field in ChainMetrics.model_fields.items()
+        if (set(get_args(field.annotation) or (field.annotation,)) - {NoneType})
+        and (set(get_args(field.annotation) or (field.annotation,)) - {NoneType})
+        <= numeric_types
+    )
+
+
+PANEL_DERIVED_EXPRESSION_FIELDS = frozenset(
     {
-        "spot",
-        "contract_count",
-        "expiry_count",
-        "call_oi",
-        "put_oi",
-        "call_volume",
-        "put_volume",
         "options_volume",
-        "pcr",
-        "pcr_volume",
-        "call_put_oi_ratio",
-        "max_pain_strike",
-        "max_pain_distance_pct",
-        "atm_iv",
-        "median_iv",
-        "put_call_iv_skew",
-        "term_structure_slope",
-        "implied_move_pct",
-        "call_oi_change",
-        "put_oi_change",
-        "oi_chg_ratio",
-        "call_writing_near_spot",
-        "put_writing_near_spot",
-        "notional_oi",
-        "notional_volume",
         "iv_rank",
         "iv_percentile",
         "iv_history_days",
@@ -45,6 +36,7 @@ OPTION_EXPRESSION_FIELDS = frozenset(
         "history_days",
     }
 )
+OPTION_EXPRESSION_FIELDS = _numeric_metrics_fields() | PANEL_DERIVED_EXPRESSION_FIELDS
 
 
 @dataclass(frozen=True)
