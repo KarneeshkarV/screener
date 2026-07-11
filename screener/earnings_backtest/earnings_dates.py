@@ -20,7 +20,7 @@ from typing import Any, Optional, cast
 import pandas as pd
 import yfinance as yf
 
-from screener.backtester.data import _configure_yfinance
+from screener.backtester.data import _configure_yfinance, call_yfinance_with_timeout
 from screener.cache import cached_json_call
 from screener.earnings_backtest.common import (
     EARNINGS_CACHE_DAYS,
@@ -89,7 +89,8 @@ def fetch_earnings_dates_yf(
 
     def _fetch() -> list[dict[str, Any]]:
         _configure_yfinance()
-        try:
+
+        def _request() -> list[dict[str, Any]]:
             t = yf.Ticker(ticker)
             ed = t.earnings_dates
             if ed is None or ed.empty:
@@ -99,6 +100,9 @@ def fetch_earnings_dates_yf(
             cutoff = pd.Timestamp(date.today() - timedelta(days=years * 365))
             ed = ed[ed.index >= cutoff]
             return _earnings_to_records(ed) if not ed.empty else []
+
+        try:
+            return call_yfinance_with_timeout(_request)
         except Exception as exc:
             logger.debug(
                 "earnings_dates_failed", extra={"ticker": ticker, "error": str(exc)}

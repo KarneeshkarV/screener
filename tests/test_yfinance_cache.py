@@ -6,6 +6,7 @@ import threading
 import time
 
 import pandas as pd
+import pytest
 
 from screener.backtester import data as data_module
 from screener.backtester.data import YFinancePriceFetcher, _load_cached, _save_cache
@@ -233,3 +234,13 @@ def test_yfinance_fetcher_frame_equal_fixture(tmp_path, monkeypatch):
     for ticker in tickers:
         single = fetcher.fetch([ticker], start, end)
         pd.testing.assert_frame_equal(batched[ticker], single[ticker])
+
+
+def test_ticker_fetch_timeout_bounds_caller(monkeypatch) -> None:
+    blocker = __import__("threading").Event()
+    monkeypatch.setattr(data_module, "YFINANCE_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(TimeoutError, match="exceeded"):
+        data_module.call_yfinance_with_timeout(lambda: blocker.wait())
+
+    blocker.set()

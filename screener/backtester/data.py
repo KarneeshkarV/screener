@@ -15,8 +15,10 @@ import contextlib
 from datetime import date, datetime
 import io
 import os
+import queue
 from pathlib import Path
-from typing import Iterable, Optional, Protocol, cast
+import threading
+from typing import Callable, Iterable, Optional, Protocol, TypeVar, cast
 
 import pandas as pd
 import requests
@@ -56,9 +58,34 @@ _naive_normalized_index = naive_normalized_index
 _normalize_frame = normalize_price_frame
 _DOTENV_LOADED = False
 _YFINANCE_CONFIGURED = False
+T = TypeVar("T")
 
-# Cap each supported ``yf.download`` call so a stuck request cannot hang a batch.
+# Passed directly to ``yf.download`` and enforced around Ticker-based fetch
+# closures with ``call_yfinance_with_timeout``. The daemon worker deliberately
+# is not joined after expiry, so a stuck provider cannot hold up the caller.
 YFINANCE_TIMEOUT_SECONDS = 5
+
+
+def call_yfinance_with_timeout(func: Callable[[], T]) -> T:
+    """Run a Ticker-based yfinance fetch with the same five-second deadline."""
+    results: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+    def run() -> None:
+        try:
+            results.put((True, func()))
+        except BaseException as exc:
+            results.put((False, exc))
+
+    threading.Thread(target=run, daemon=True, name="yfinance-fetch").start()
+    try:
+        succeeded, value = results.get(timeout=YFINANCE_TIMEOUT_SECONDS)
+    except queue.Empty as exc:
+        raise TimeoutError(
+            f"yfinance request exceeded {YFINANCE_TIMEOUT_SECONDS}s"
+        ) from exc
+    if succeeded:
+        return cast(T, value)
+    raise cast(BaseException, value)
 
 
 def _configure_yfinance() -> None:

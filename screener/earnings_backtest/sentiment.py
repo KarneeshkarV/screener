@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from screener.backtester.data import _configure_yfinance
+from screener.backtester.data import _configure_yfinance, call_yfinance_with_timeout
 from screener.cache import cached_json_call
 from screener.earnings_backtest.common import SENTIMENT_CACHE_DAYS, jsonable
 from screener.unusual_volume.option_chain import (
@@ -44,7 +44,8 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
 
     def _fetch() -> Optional[dict]:
         _configure_yfinance()
-        try:
+
+        def _request() -> Optional[dict]:
             t = yf.Ticker(ticker)
             ud = t.upgrades_downgrades
             if ud is None or ud.empty:
@@ -52,7 +53,6 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
 
             if "Action" in ud.columns:
                 counts = ud["Action"].value_counts().to_dict()
-                # up = upgrade, reit = reiterate (half weight), down = downgrade
                 upgrades = counts.get("up", 0) + 0.5 * counts.get("reit", 0)
                 downgrades = counts.get("down", 0)
             elif "ToGrade" in ud.columns:
@@ -64,7 +64,6 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
                 counts = {str(k): int(v) for k, v in grades.items()}
             else:
                 return None
-
             result = {
                 "upgrades": upgrades,
                 "downgrades": downgrades,
@@ -72,6 +71,9 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
                 "grade_counts": counts if "Action" in ud.columns else {},
             }
             return cast("dict[Any, Any] | None", jsonable(result))
+
+        try:
+            return call_yfinance_with_timeout(_request)
         except Exception as exc:
             logger.debug(
                 "analyst_sentiment_error", extra={"ticker": ticker, "error": str(exc)}
@@ -95,28 +97,20 @@ def fetch_iv_sentiment_yf(ticker: str) -> Optional[dict]:
 
     def _fetch() -> Optional[dict]:
         _configure_yfinance()
-        try:
+
+        def _request() -> Optional[dict]:
             t = yf.Ticker(ticker)
             dates = t.options
             if not dates:
                 return None
-
             today = pd.Timestamp(date.today())
-            target_expiry = None
-            for d in dates:
-                exp = pd.Timestamp(d)
-                if (exp - today).days >= 5:
-                    target_expiry = d
-                    break
-            if target_expiry is None:
-                target_expiry = dates[0]
-
+            target_expiry = next(
+                (d for d in dates if (pd.Timestamp(d) - today).days >= 5), dates[0]
+            )
             chain = t.option_chain(target_expiry)
-            calls = chain.calls
-            puts = chain.puts
+            calls, puts = chain.calls, chain.puts
             if calls.empty and puts.empty:
                 return None
-
             total_calls = (
                 int(calls["volume"].sum()) if "volume" in calls.columns else len(calls)
             )
@@ -131,33 +125,30 @@ def fetch_iv_sentiment_yf(ticker: str) -> Optional[dict]:
             total_oi_puts = (
                 int(puts["openInterest"].sum()) if "openInterest" in puts.columns else 0
             )
-
-            denom = total_calls or 1
             pc_ratio = (
-                total_puts / denom
+                total_puts / total_calls
                 if total_calls > 0
-                else (total_oi_puts / (total_oi_calls or 1))
+                else total_oi_puts / (total_oi_calls or 1)
             )
-
             iv_vals = []
             if "impliedVolatility" in calls.columns:
                 iv_vals.extend(calls["impliedVolatility"].dropna().tolist())
             if "impliedVolatility" in puts.columns:
                 iv_vals.extend(puts["impliedVolatility"].dropna().tolist())
-            # Median IV across all strikes (expressed as %, e.g. 40.11 for 40.11%)
-            # yfinance returns IV as decimals (0.4011 = 40.11%), so multiply by 100
-            iv_vals_pct = [v * 100 for v in iv_vals]
             median_iv = (
-                float(np.percentile(iv_vals_pct, 50)) if iv_vals_pct else float("nan")
+                float(np.percentile([v * 100 for v in iv_vals], 50))
+                if iv_vals
+                else float("nan")
             )
-
-            result = {
+            return {
                 "pc_ratio": round(pc_ratio, 4),
                 "median_iv": round(median_iv, 2),
                 "total_calls": total_calls,
                 "total_puts": total_puts,
             }
-            return result
+
+        try:
+            return call_yfinance_with_timeout(_request)
         except Exception as exc:
             logger.debug(
                 "iv_sentiment_error", extra={"ticker": ticker, "error": str(exc)}

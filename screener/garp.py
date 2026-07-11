@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from screener.cache import cached_json_call
 from screener.financials import first_number, pct_change, to_number
 from screener.fmp import resolve_api_key
+from screener.logging_config import get_logger
 from screener.markets import get_market
 from screener.parallel import parallel_map
 from screener.provider_utils import fmp_get
@@ -22,6 +23,7 @@ from screener.symbols import tv_to_nse, tv_to_yf
 
 INDIA_MIN_CRORE = 1000.0
 US_MIN_USD = 1_000_000_000.0
+logger = get_logger(__name__)
 
 # FMP US fundamentals: 24h cache, "fmp" circuit breaker. ``cache_ttl`` is
 # overridden per-call below to honour the screen's --cache-ttl flag.
@@ -127,12 +129,20 @@ def _average_ratio(
 
 def _coerce_garp_fundamentals(
     row: GarpFundamentals | Mapping[str, object],
+    *,
+    symbol: str = "unknown",
 ) -> GarpFundamentals | None:
     if isinstance(row, GarpFundamentals):
         return row
     try:
         return GarpFundamentals.model_validate(row)
-    except ValidationError:
+    except ValidationError as exc:
+        first_error = exc.errors(include_url=False)[0]
+        logger.warning(
+            "garp_fundamentals_validation_failed",
+            symbol=symbol,
+            error=first_error,
+        )
         return None
 
 
@@ -164,7 +174,6 @@ def _passes_garp(
     )
     if any(value is None for value in required):
         return False
-    assert all(value is not None for value in required)
     return (
         market_cap > thresholds.market_cap_min
         and sales > thresholds.sales_min
@@ -671,7 +680,12 @@ class YFinanceGarpAdapter:
         refresh: bool,
     ) -> NormalizedGarpRow | None:
         del cache_ttl, refresh
-        return _coerce_garp_fundamentals(_us_row(symbol, description))
+        from screener.backtester.data import call_yfinance_with_timeout
+
+        return _coerce_garp_fundamentals(
+            call_yfinance_with_timeout(lambda: _us_row(symbol, description)),
+            symbol=symbol,
+        )
 
 
 @dataclass(frozen=True)
@@ -799,10 +813,7 @@ def load_garp_row(
         cache_ttl=cache_ttl,
         refresh=refresh,
     )
-    normalized = (
-        _coerce_garp_fundamentals(fundamentals) if fundamentals is not None else None
-    )
-    return normalized.model_dump() if normalized is not None else None
+    return fundamentals.model_dump() if fundamentals is not None else None
 
 
 def run_garp_screen(

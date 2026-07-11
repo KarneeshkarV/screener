@@ -131,6 +131,23 @@ def test_run_garp_screen_returns_scored_results(monkeypatch) -> None:
     assert announced == [1]
 
 
+def test_invalid_provider_row_logs_symbol_and_first_error(monkeypatch) -> None:
+    warnings = []
+    monkeypatch.setattr(
+        garp_module.logger,
+        "warning",
+        lambda event, **kwargs: warnings.append((event, kwargs)),
+    )
+
+    assert (
+        garp_module._coerce_garp_fundamentals({"unexpected": True}, symbol="BROKEN")
+        is None
+    )
+    assert warnings[0][0] == "garp_fundamentals_validation_failed"
+    assert warnings[0][1]["symbol"] == "BROKEN"
+    assert warnings[0][1]["error"]["loc"] == ("unexpected",)
+
+
 def test_run_garp_screen_returns_none_on_empty_universe(monkeypatch) -> None:
     monkeypatch.setattr(
         garp_module, "load_garp_universe", lambda *a, **k: pd.DataFrame()
