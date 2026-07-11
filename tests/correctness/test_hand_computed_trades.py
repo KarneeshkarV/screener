@@ -37,6 +37,7 @@ from datetime import date
 import pytest
 
 from screener.backtester.core import simulate_ticker
+from screener.backtester.costs import FlatCommission
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
 from screener.backtester.portfolio import Portfolio
@@ -101,20 +102,22 @@ def _drive_portfolio(
 ) -> Portfolio:
     """Open and immediately close a single position using the trade outcome dates."""
     t = trade_outcome.trade
-    port = Portfolio(initial_capital, slot_count=1)
+    port = Portfolio(
+        initial_capital,
+        slot_count=1,
+        cost_model=FlatCommission(bps=commission_bps),
+    )
     port.assign(t.ticker if t.ticker else "TEST", 1, t.signal_date)
     port.open(
         ticker="TEST",
         entry_date=t.entry_date,
         entry_price=entry_price,
-        commission_bps=commission_bps,
     )
     port.close(
         ticker="TEST",
         exit_date=t.exit_date,
         exit_price=exit_price,
         reason=t.exit_reason,
-        commission_bps=commission_bps,
     )
     return port
 
@@ -148,7 +151,7 @@ def _drive_portfolio(
 class TestS1BuyAndHold:
     def setup_method(self):
         self.bars = bars_s1_buy_and_hold()
-        self.cfg = _cfg(hold=100, slippage_bps=0.0, commission_bps=0.0)
+        self.cfg = _cfg(hold=100, slippage_bps=0.0)
 
     def test_layer_a_entry_exit_dates(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
@@ -167,12 +170,8 @@ class TestS1BuyAndHold:
     def test_layer_b_portfolio_mechanics(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         port = Portfolio(100_000.0, slot_count=1)
-        port.open(
-            "TEST", out.trade.entry_date, out.trade.entry_price, commission_bps=0.0
-        )
-        tr = port.close(
-            "TEST", out.trade.exit_date, out.trade.exit_price, "eod", commission_bps=0.0
-        )
+        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
+        tr = port.close("TEST", out.trade.exit_date, out.trade.exit_price, "eod")
         assert tr.shares == pytest.approx(1000.0, abs=TOL)
         assert tr.entry_cost == pytest.approx(100_000.0, abs=TOL)
         assert tr.exit_value == pytest.approx(115_000.0, abs=TOL)
@@ -197,7 +196,7 @@ class TestS1BuyAndHold:
 class TestS2StopIntrabar:
     def setup_method(self):
         self.bars = bars_s2_stop_intrabar()
-        self.cfg = _cfg(hold=100, stop_loss=0.05, slippage_bps=0.0, commission_bps=0.0)
+        self.cfg = _cfg(hold=100, stop_loss=0.05, slippage_bps=0.0)
 
     def test_layer_a_exit_reason_and_date(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
@@ -215,15 +214,12 @@ class TestS2StopIntrabar:
     def test_layer_b_portfolio_mechanics(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         port = Portfolio(100_000.0, slot_count=1)
-        port.open(
-            "TEST", out.trade.entry_date, out.trade.entry_price, commission_bps=0.0
-        )
+        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
         tr = port.close(
             "TEST",
             out.trade.exit_date,
             out.trade.exit_price,
             "stop",
-            commission_bps=0.0,
         )
         assert tr.shares == pytest.approx(1000.0, abs=TOL)
         assert tr.entry_cost == pytest.approx(100_000.0, abs=TOL)
@@ -247,9 +243,7 @@ class TestS2StopIntrabar:
 class TestS3TargetIntrabar:
     def setup_method(self):
         self.bars = bars_s3_target_intrabar()
-        self.cfg = _cfg(
-            hold=100, take_profit=0.10, slippage_bps=0.0, commission_bps=0.0
-        )
+        self.cfg = _cfg(hold=100, take_profit=0.10, slippage_bps=0.0)
 
     def test_layer_a_exit_reason_and_date(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
@@ -267,15 +261,12 @@ class TestS3TargetIntrabar:
     def test_layer_b_portfolio_mechanics(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         port = Portfolio(100_000.0, slot_count=1)
-        port.open(
-            "TEST", out.trade.entry_date, out.trade.entry_price, commission_bps=0.0
-        )
+        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
         tr = port.close(
             "TEST",
             out.trade.exit_date,
             out.trade.exit_price,
             "target",
-            commission_bps=0.0,
         )
         assert tr.shares == pytest.approx(1000.0, abs=TOL)
         assert tr.pnl == pytest.approx(10_000.0, abs=TOL)
@@ -322,15 +313,12 @@ class TestS4GapDown:
         cfg = _cfg(hold=100, stop_loss=0.05, gap_fills=True, slippage_bps=0.0)
         out = simulate_ticker(self.bars, signal_idx=3, cfg=cfg)
         port = Portfolio(100_000.0, slot_count=1)
-        port.open(
-            "TEST", out.trade.entry_date, out.trade.entry_price, commission_bps=0.0
-        )
+        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
         tr = port.close(
             "TEST",
             out.trade.exit_date,
             out.trade.exit_price,
             "stop",
-            commission_bps=0.0,
         )
         assert tr.pnl == pytest.approx(-10_000.0, abs=TOL)
         assert tr.return_pct == pytest.approx(-0.10, abs=TOL)
@@ -339,15 +327,12 @@ class TestS4GapDown:
         cfg = _cfg(hold=100, stop_loss=0.05, gap_fills=False, slippage_bps=0.0)
         out = simulate_ticker(self.bars, signal_idx=3, cfg=cfg)
         port = Portfolio(100_000.0, slot_count=1)
-        port.open(
-            "TEST", out.trade.entry_date, out.trade.entry_price, commission_bps=0.0
-        )
+        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
         tr = port.close(
             "TEST",
             out.trade.exit_date,
             out.trade.exit_price,
             "stop",
-            commission_bps=0.0,
         )
         assert tr.pnl == pytest.approx(-5_000.0, abs=TOL)
         assert tr.return_pct == pytest.approx(-0.05, abs=TOL)
@@ -380,15 +365,12 @@ class TestS5GapUp:
     def test_layer_b_portfolio_mechanics(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         port = Portfolio(100_000.0, slot_count=1)
-        port.open(
-            "TEST", out.trade.entry_date, out.trade.entry_price, commission_bps=0.0
-        )
+        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
         tr = port.close(
             "TEST",
             out.trade.exit_date,
             out.trade.exit_price,
             "target",
-            commission_bps=0.0,
         )
         assert tr.pnl == pytest.approx(15_000.0, abs=TOL)
         assert tr.return_pct == pytest.approx(0.15, abs=TOL)
@@ -418,9 +400,7 @@ class TestS5GapUp:
 class TestS6TrailingStop:
     def setup_method(self):
         self.bars = bars_s6_trailing_stop()
-        self.cfg = _cfg(
-            hold=100, trailing_stop=0.10, slippage_bps=0.0, commission_bps=0.0
-        )
+        self.cfg = _cfg(hold=100, trailing_stop=0.10, slippage_bps=0.0)
 
     def test_layer_a_peak_and_exit(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
@@ -439,15 +419,12 @@ class TestS6TrailingStop:
     def test_layer_b_portfolio_mechanics(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         port = Portfolio(100_000.0, slot_count=1)
-        port.open(
-            "TEST", out.trade.entry_date, out.trade.entry_price, commission_bps=0.0
-        )
+        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
         tr = port.close(
             "TEST",
             out.trade.exit_date,
             out.trade.exit_price,
             "trail",
-            commission_bps=0.0,
         )
         assert tr.shares == pytest.approx(1000.0, abs=TOL)
         assert tr.pnl == pytest.approx(8_000.0, abs=TOL)
@@ -492,7 +469,6 @@ class TestS7PartialThenTime:
             hold=5,
             partial_exits=((0.10, 0.5),),
             slippage_bps=0.0,
-            commission_bps=0.0,
             gap_fills=True,
         )
 
@@ -555,7 +531,7 @@ class TestS7PartialThenTime:
 class TestS8TimeExit:
     def setup_method(self):
         self.bars = bars_s8_time_exit()
-        self.cfg = _cfg(hold=3, slippage_bps=0.0, commission_bps=0.0)
+        self.cfg = _cfg(hold=3, slippage_bps=0.0)
 
     def test_layer_a_exit_reason_and_date(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
@@ -571,15 +547,12 @@ class TestS8TimeExit:
     def test_layer_b_portfolio_mechanics(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         port = Portfolio(100_000.0, slot_count=1)
-        port.open(
-            "TEST", out.trade.entry_date, out.trade.entry_price, commission_bps=0.0
-        )
+        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
         tr = port.close(
             "TEST",
             out.trade.exit_date,
             out.trade.exit_price,
             "time",
-            commission_bps=0.0,
         )
         assert tr.shares == pytest.approx(1000.0, abs=TOL)
         assert tr.entry_cost == pytest.approx(100_000.0, abs=TOL)
@@ -642,7 +615,6 @@ class TestS9CommissionSlippage:
             hold=100,
             take_profit=self.TAKE_PROFIT,
             slippage_bps=self.SLIPPAGE_BPS,
-            commission_bps=0.0,
             gap_fills=True,
         )
 
@@ -665,9 +637,7 @@ class TestS9CommissionSlippage:
         """Verify shares = 100_000 / (100.5 * 1.001) ≈ 994.0308 as plan states."""
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         port = Portfolio(100_000.0, slot_count=1)
-        port.open(
-            "TEST", out.trade.entry_date, out.trade.entry_price, commission_bps=0.0
-        )
+        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
         pos = port.get_position("TEST")
         assert pos is not None
         # Plan's claimed value is 994.0308; our exact value is 994.030844...
@@ -679,15 +649,12 @@ class TestS9CommissionSlippage:
         """Verify pnl ≈ 18568.5956 as stated in the plan."""
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         port = Portfolio(100_000.0, slot_count=1)
-        port.open(
-            "TEST", out.trade.entry_date, out.trade.entry_price, commission_bps=0.0
-        )
+        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
         tr = port.close(
             "TEST",
             out.trade.exit_date,
             out.trade.exit_price,
             "target",
-            commission_bps=0.0,
         )
         # Exact derived value
         assert tr.pnl == pytest.approx(self.PNL, abs=TOL)
@@ -697,15 +664,12 @@ class TestS9CommissionSlippage:
     def test_layer_b_entry_cost_exact(self):
         out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         port = Portfolio(100_000.0, slot_count=1)
-        port.open(
-            "TEST", out.trade.entry_date, out.trade.entry_price, commission_bps=0.0
-        )
+        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
         tr = port.close(
             "TEST",
             out.trade.exit_date,
             out.trade.exit_price,
             "target",
-            commission_bps=0.0,
         )
         # entry_cost = budget = 100_000 (no commission)
         assert tr.entry_cost == pytest.approx(100_000.0, abs=TOL)

@@ -124,15 +124,15 @@ def test_portfolio_india_costs_reduce_cash_vs_flat_zero():
     india = IndiaDeliveryCosts()
     flat = FlatCommission(bps=0.0)
 
-    pf_india = Portfolio(100_000.0, 1)
-    pf_flat = Portfolio(100_000.0, 1)
-    pf_india.open("AAA", date(2024, 1, 2), 100.0, cost_model=india)
-    pf_flat.open("AAA", date(2024, 1, 2), 100.0, cost_model=flat)
+    pf_india = Portfolio(100_000.0, 1, cost_model=india)
+    pf_flat = Portfolio(100_000.0, 1, cost_model=flat)
+    pf_india.open("AAA", date(2024, 1, 2), 100.0)
+    pf_flat.open("AAA", date(2024, 1, 2), 100.0)
     # Same slot budget, higher fees → fewer shares.
     assert pf_india.get_position("AAA").shares < pf_flat.get_position("AAA").shares
 
-    t_india = pf_india.close("AAA", date(2024, 1, 10), 110.0, "time", cost_model=india)
-    t_flat = pf_flat.close("AAA", date(2024, 1, 10), 110.0, "time", cost_model=flat)
+    t_india = pf_india.close("AAA", date(2024, 1, 10), 110.0, "time")
+    t_flat = pf_flat.close("AAA", date(2024, 1, 10), 110.0, "time")
     assert t_india.pnl < t_flat.pnl
 
 
@@ -141,8 +141,8 @@ def test_portfolio_clamps_negative_cost_fraction():
         def side_cost_fraction(self, side, notional):
             return -0.01
 
-    portfolio = Portfolio(1_000.0, 1)
-    position = portfolio.open("AAA", date(2024, 1, 2), 100.0, cost_model=NegativeCost())
+    portfolio = Portfolio(1_000.0, 1, cost_model=NegativeCost())
+    position = portfolio.open("AAA", date(2024, 1, 2), 100.0)
     assert position.shares == pytest.approx(10.0)
 
 
@@ -233,7 +233,10 @@ def test_corwin_schultz_rejects_nonpositive_window():
 
 def test_half_spread_lookup_edge_cases(monkeypatch):
     bars = _constant_spread_ohlc(n=5)
-    cfg = _cfg(spread_proxy=True)
+    cfg = _cfg(
+        spread_proxy=True,
+        slippage_model=EstimatedHalfSpreadSlippage(),
+    )
 
     assert backtester_core._half_spread_at_signal(bars, -1, cfg) == 0.0
     assert (
@@ -287,6 +290,21 @@ def test_cli_spread_proxy_wraps_selected_slippage_model():
     assert model.adverse_fraction("buy", 0, 0, 0, half_spread=0.005) == pytest.approx(
         0.006
     )
+
+
+@pytest.mark.parametrize(
+    ("spread_proxy", "slippage_model"),
+    [
+        (True, FixedBpsSlippage()),
+        (False, EstimatedHalfSpreadSlippage()),
+    ],
+)
+def test_spread_proxy_and_consumer_must_agree(spread_proxy, slippage_model):
+    with pytest.raises(
+        ValueError,
+        match="spread_proxy and EstimatedHalfSpreadSlippage must be enabled together",
+    ):
+        _cfg(spread_proxy=spread_proxy, slippage_model=slippage_model)
 
 
 def test_backtest_config_rejects_unsupported_interval():

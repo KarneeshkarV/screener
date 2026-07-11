@@ -10,7 +10,7 @@ from typing import Optional, Union, cast
 import numpy as np
 import pandas as pd
 
-from screener.backtester.costs import corwin_schultz_half_spread, cost_model_from_config
+from screener.backtester.costs import corwin_schultz_half_spread
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fills import FillModel
 from screener.backtester.fills import (  # noqa: F401  (re-export compat shims)
@@ -450,8 +450,6 @@ def _fire_partial_exits_at_bar(
             exit_price=fill,
             reason="target",
             fraction=state.partial_fractions[tier_idx],
-            commission_bps=cfg.commission_bps,
-            cost_model=cost_model_from_config(cfg),
         )
         state.partial_fired[tier_idx] = True
         if state.stop_ref is None or state.stop_ref < state.entry_fill:
@@ -848,8 +846,6 @@ def _close_slot_at_day(
         exit_date=_bar_label(day, cfg),
         exit_price=fill,
         reason=reason,
-        commission_bps=cfg.commission_bps,
-        cost_model=cost_model_from_config(cfg),
     )
     slot_states[slot_id] = None
     return True
@@ -886,7 +882,5 @@ def _force_close_open_slots(
             exit_date=_bar_label(tail.index[-1], cfg),
             exit_price=fill,
             reason="eod",
-            commission_bps=cfg.commission_bps,
-            cost_model=cost_model_from_config(cfg),
         )
         slot_states[slot_id] = None

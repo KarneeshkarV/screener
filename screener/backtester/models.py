@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, cast
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from screener.backtester.slippage import FixedBpsSlippage, SlippageModel
+from screener.backtester.slippage import (
+    CompositeSlippage,
+    EstimatedHalfSpreadSlippage,
+    FixedBpsSlippage,
+    SlippageModel,
+)
 
 
 ExitReason = Literal["stop", "target", "trail", "time", "exit_expr", "eod"]
@@ -103,6 +108,22 @@ class BacktestConfig(BaseModel):
             bps = data.get("slippage_bps", 0.0)
             data["slippage_model"] = FixedBpsSlippage(bps=bps)
         return data
+
+    @model_validator(mode="after")
+    def _validate_spread_proxy_consumer(self) -> BacktestConfig:
+        def consumes_estimated_spread(model: SlippageModel) -> bool:
+            if isinstance(model, EstimatedHalfSpreadSlippage):
+                return True
+            if isinstance(model, CompositeSlippage):
+                return any(consumes_estimated_spread(item) for item in model.models)
+            return False
+
+        consumes = consumes_estimated_spread(cast(SlippageModel, self.slippage_model))
+        if self.spread_proxy != consumes:
+            raise ValueError(
+                "spread_proxy and EstimatedHalfSpreadSlippage must be enabled together"
+            )
+        return self
 
     @field_validator("interval")
     @classmethod
