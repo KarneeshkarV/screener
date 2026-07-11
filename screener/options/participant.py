@@ -151,7 +151,7 @@ def parse_market_lots(text: str) -> dict[str, float]:
             continue
         lot: float | None = None
         for column in expiry_columns:
-            value = pd.to_numeric(row.get(column), errors="coerce")
+            value = pd.to_numeric(cast(Any, row.get(column)), errors="coerce")
             if pd.notna(value) and float(value) > 0:
                 lot = float(value)
                 break

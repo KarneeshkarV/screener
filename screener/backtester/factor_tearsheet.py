@@ -52,7 +52,7 @@ def daily_spearman_ic(scores: pd.DataFrame, fwd_returns: pd.DataFrame) -> pd.Ser
     def _day_ic(row_score: pd.Series) -> float:
         day = row_score.name
         s = row_score
-        r = aligned_fwd.loc[day]
+        r = cast("pd.Series[Any]", aligned_fwd.loc[cast(Any, day)])
         mask = s.notna() & r.notna()
         if int(mask.sum()) < 3:
             return float("nan")

@@ -11,7 +11,7 @@ optional fill-price spread proxy.
 from __future__ import annotations
 
 import math
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, cast, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -165,7 +165,10 @@ def corwin_schultz_half_spread(
         gamma_safe / denom
     )
 
-    exp_a = np.exp(alpha)
+    # np.exp on a Series returns a Series at runtime, but numpy stubs widen it
+    # to an ndarray; cast keeps `spread` typed as a pandas Series so `.clip` and
+    # `.where` resolve to the pandas overloads below.
+    exp_a = cast("pd.Series[float]", np.exp(alpha))
     spread = 2.0 * (exp_a - 1.0) / (1.0 + exp_a)
     # Floor negative spreads at 0 (CS paper recommendation).
     spread = spread.clip(lower=0.0)
