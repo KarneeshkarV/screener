@@ -31,6 +31,7 @@ from screener.backtester.optimization.reporting import (
 )
 from screener.backtester.optimization.walk_forward import walk_forward_optimize
 from screener.backtester.cli_common import resolve_min_filters
+from screener.backtester.data import PriceFetcher
 from screener.markets import get_market, get_price_fetcher, market_option
 
 
@@ -82,27 +83,27 @@ def _parameter_grid(
 
 def _base_config(
     *,
-    market,
-    end_date,
-    hold,
-    top,
-    entry_expr,
-    exit_expr,
-    strategy_name,
-    tickers,
-    universe_file,
-    max_universe,
-    stop_loss,
-    take_profit,
-    trailing_stop,
-    slippage_bps,
-    commission_bps,
-    initial_capital,
-    benchmark,
-    min_price,
-    min_avg_dollar_volume,
-    adv_window,
-):
+    market: str,
+    end_date: date,
+    hold: int,
+    top: int,
+    entry_expr: str | None,
+    exit_expr: str | None,
+    strategy_name: str | None,
+    tickers: str | None,
+    universe_file: str | None,
+    max_universe: int,
+    stop_loss: float | None,
+    take_profit: float | None,
+    trailing_stop: float | None,
+    slippage_bps: float,
+    commission_bps: float,
+    initial_capital: float,
+    benchmark: str | None,
+    min_price: float | None,
+    min_avg_dollar_volume: float | None,
+    adv_window: int,
+) -> BacktestConfig:
     from screener.backtester.strategies import resolve_strategy
 
     if strategy_name:
@@ -166,7 +167,7 @@ def _resolve_dates(start_arg, end_arg, years) -> tuple[date, date]:
     return start_date, end_date
 
 
-def _fetcher():
+def _fetcher() -> PriceFetcher:
     from screener.backtester.data import build_price_fetcher
 
     return get_price_fetcher(

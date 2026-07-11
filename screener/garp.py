@@ -104,9 +104,8 @@ def _series_from_statement(statement: pd.DataFrame, row_names: list[str]) -> pd.
         return pd.Series(dtype=float)
     for name in row_names:
         if name in statement.index:
-            return cast(
-                pd.Series, pd.to_numeric(statement.loc[name], errors="coerce").dropna()
-            )
+            statement_row = cast(pd.Series, statement.loc[name])
+            return pd.to_numeric(statement_row, errors="coerce").dropna()
     return pd.Series(dtype=float)
 
 
@@ -550,14 +549,14 @@ def _fmp_quarterly_eps(
     expected_eps: float | None = None
     expected_ts: pd.Timestamp | None = None
     latest_reported = (
-        pd.to_datetime(quarterly_income[0].get("date"), errors="coerce")
+        pd.to_datetime(cast(str, quarterly_income[0].get("date")), errors="coerce")
         if quarterly_income
         else pd.NaT
     )
     if not pd.isna(latest_reported):
         upcoming: list[tuple[pd.Timestamp, float]] = []
         for entry in estimates:
-            ts = pd.to_datetime(entry.get("date"), errors="coerce")
+            ts = pd.to_datetime(cast(str, entry.get("date")), errors="coerce")
             eps = first_number(entry, "estimatedEpsAvg", "epsAvg")
             if not pd.isna(ts) and ts > latest_reported and eps is not None:
                 upcoming.append((ts, eps))
@@ -571,7 +570,7 @@ def _fmp_quarterly_eps(
         target = expected_ts - pd.Timedelta(days=365)
         best: tuple[float, float] | None = None
         for entry in quarterly_income:
-            ts = pd.to_datetime(entry.get("date"), errors="coerce")
+            ts = pd.to_datetime(cast(str, entry.get("date")), errors="coerce")
             eps = to_number(entry.get("eps"))
             if pd.isna(ts) or eps is None:
                 continue

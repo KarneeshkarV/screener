@@ -58,7 +58,7 @@ def _trailing_liquidity(
     if close.size < 2:
         sigma = 0.0
     else:
-        rets = close.pct_change().dropna()
+        rets = close.pct_change(fill_method=None).dropna()
         sigma = float(rets.std()) if rets.size else 0.0
     if not np.isfinite(adv):
         adv = 0.0
@@ -603,10 +603,14 @@ def _prepare_strategy_bars(
     warnings: list[str],
 ) -> tuple[dict[str, pd.DataFrame], int]:
     """Dispatch to the strategy's ``prepare_bars`` / ``required_lookback`` hooks."""
-    from screener.strategies.spec import PrepareCtx, registry as strategy_registry
+    from screener.strategies.spec import (
+        ExpressionStrategySpec,
+        PrepareCtx,
+        registry as strategy_registry,
+    )
 
     spec = strategy_registry.get_optional(cfg.strategy_name)
-    if spec is None:
+    if not isinstance(spec, ExpressionStrategySpec):
         return bars_by_tv, 0
     lookback_floor = spec.required_lookback() if spec.required_lookback else 0
     if spec.prepare_bars is None:

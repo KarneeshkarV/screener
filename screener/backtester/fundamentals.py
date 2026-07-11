@@ -124,6 +124,8 @@ def _row_by_date(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | None:
     raw = row.get("acceptedDate") or row.get("fillingDate") or row.get("date")
+    if raw is None:
+        return None
     ts = pd.to_datetime(raw, errors="coerce")
     if pd.isna(ts):
         return None

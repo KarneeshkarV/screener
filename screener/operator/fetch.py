@@ -90,7 +90,7 @@ def _parse_bhavcopy_date(df: pd.DataFrame) -> Optional[date]:
         return None
     raw = str(df["DATE1"].iloc[0]).strip()
     try:
-        return pd.to_datetime(raw, dayfirst=True).date()
+        return pd.to_datetime(raw, format="mixed", dayfirst=True).date()
     except (ValueError, TypeError):
         return None
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -304,7 +305,7 @@ def _run_event_driven_sim(
     pending_reentry: dict[int, str] = {}
 
     for raw_slot_id, row in actives_df.iterrows():
-        slot_id = int(raw_slot_id)
+        slot_id = int(cast(int, raw_slot_id))
         ticker = row["ticker"]
         bars = bars_by_tv.get(ticker, pd.DataFrame())
         if bars is None or bars.empty:
