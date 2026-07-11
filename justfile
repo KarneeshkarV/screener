@@ -46,6 +46,54 @@ help-operator-scan:
 help-optimize:
     @{{python}} main.py optimize --help
 
+# Show cache command help.
+help-cache:
+    @{{python}} main.py cache --help
+
+# Show conviction command help.
+help-conviction:
+    @{{python}} main.py conviction --help
+
+# Show earnings backtest command help.
+help-earnings-backtest:
+    @{{python}} main.py earnings-backtest --help
+
+# Show earnings PEAD command help.
+help-earnings-pead:
+    @{{python}} main.py earnings-pead --help
+
+# Show factor tearsheet command help.
+help-factor-tearsheet:
+    @{{python}} main.py factor-tearsheet --help
+
+# Show history command help.
+help-history:
+    @{{python}} main.py history --help
+
+# Show index inclusion command help.
+help-index-inclusion:
+    @{{python}} main.py index-inclusion --help
+
+# Show institutional ownership command help.
+help-institutional:
+    @{{python}} main.py institutional --help
+
+# Show options data command help.
+help-options:
+    @{{python}} main.py options --help
+
+# Show research report command help.
+help-research-report:
+    @{{python}} main.py research-report --help
+
+# Show seasonality command help.
+help-seasonality:
+    @{{python}} main.py seasonality --help
+
+# Show vectorbt sweep command help.
+help-vbt-sweep:
+    @{{python}} main.py vbt-sweep --help
+
 # Show standalone Pine strategy runner help.
 help-pine:
     @{{python}} run_pinescript_strategies.py --help
@@ -122,6 +170,54 @@ optimize *args:
 usage-report:
     @{{python}} main.py usage-report
 
+# Inspect and prune the screener's on-disk caches. Example: just cache status
+cache *args:
+    @{{python}} main.py cache "$@"
+
+# One composite conviction card for TICKER, fusing the screen pillars.
+conviction *args:
+    @{{python}} main.py conviction "$@"
+
+# Backtest earnings-drift entry (E-1/E-2 -> E) with sentiment filters.
+earnings-backtest *args:
+    @{{python}} main.py earnings-backtest "$@"
+
+# Backtest post-earnings-announcement drift (next open -> hold N days).
+earnings-pead *args:
+    @{{python}} main.py earnings-pead "$@"
+
+# Compute factor IC and quantile tearsheet for a named strategy.
+factor-tearsheet *args:
+    @{{python}} main.py factor-tearsheet "$@"
+
+# List persisted screen runs (replay with `backtest-historical --from-run`).
+history *args:
+    @{{python}} main.py history "$@"
+
+# Event study of post-addition excess drift for S&P 500 additions vs SPY.
+index-inclusion *args:
+    @{{python}} main.py index-inclusion "$@"
+
+# Show FMP institutional ownership per ticker, ranked by QoQ change.
+institutional *args:
+    @{{python}} main.py institutional "$@"
+
+# Build, snapshot, and inspect normalized options data. Example: just options snapshot --help
+options *args:
+    @{{python}} main.py options "$@"
+
+# One-command research report: grid -> walk-forward -> Monte Carlo.
+research-report *args:
+    @{{python}} main.py research-report "$@"
+
+# Show monthly, turn-of-month and day-of-week seasonality for TICKER.
+seasonality *args:
+    @{{python}} main.py seasonality "$@"
+
+# Fast vectorbt grid search for exploration (not validation).
+vbt-sweep *args:
+    @{{python}} main.py vbt-sweep "$@"
+
 # Show unusual-volume command help.
 help-unusual-volume:
     @{{python}} main.py unusual-volume --help
@@ -129,3 +225,22 @@ help-unusual-volume:
 # Compile Python files without running tests.
 compile:
     @{{python}} -m compileall main.py run_pinescript_strategies.py screener
+
+# Run the test suite with coverage, matching CI.
+test *args:
+    uv run pytest --cov --cov-report=term-missing:skip-covered "$@"
+
+# Run ruff lint over tracked Python files, matching CI.
+lint:
+    uv run ruff check $(git ls-files '*.py')
+
+# Check formatting over tracked Python files, matching CI.
+format-check:
+    uv run ruff format --check $(git ls-files '*.py')
+
+# Run strict mypy type checking, matching CI.
+typecheck:
+    uv run mypy
+
+# Run every CI gate locally: tests, lint, format check, types.
+ci: test lint format-check typecheck
