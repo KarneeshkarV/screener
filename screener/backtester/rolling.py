@@ -125,6 +125,26 @@ __all__ = [
 @click.option(
     "--commission-bps", type=float, default=0.0, help="Commission per fill (bps)."
 )
+@click.option(
+    "--cost-model",
+    type=click.Choice(["flat", "india"]),
+    default="flat",
+    show_default=True,
+    help=(
+        "Statutory fee model. 'flat' applies --commission-bps on every fill "
+        "(legacy). 'india' applies NSE equity delivery fees (STT, stamp duty, "
+        "exchange, SEBI, GST, IPFT)."
+    ),
+)
+@click.option(
+    "--spread-proxy",
+    is_flag=True,
+    default=False,
+    help=(
+        "Estimate per-fill half-spread via Corwin-Schultz (2012) high-low "
+        "estimator and charge it as slippage (on top of --slippage-model)."
+    ),
+)
 @click.option("--initial-capital", type=float, default=100_000.0)
 @click.option(
     "--benchmark",
@@ -280,6 +300,8 @@ def backtest_rolling(
     trailing_stop,
     slippage_bps,
     commission_bps,
+    cost_model,
+    spread_proxy,
     initial_capital,
     benchmark,
     min_price,
@@ -332,7 +354,11 @@ def backtest_rolling(
         fundamentals_provider = "fmp" if market == "us" else "openscreener"
 
     slip_model = build_slippage_model(
-        slippage_model, slippage_bps, half_spread_bps, vol_impact_k
+        slippage_model,
+        slippage_bps,
+        half_spread_bps,
+        vol_impact_k,
+        spread_proxy=bool(spread_proxy),
     )
     partial_exits = parse_partial_exits(partial_exit_args)
     resolved_min_price, resolved_min_adv = resolve_min_filters(
@@ -432,6 +458,8 @@ def backtest_rolling(
         avg_dollar_volume_window=int(adv_window),
         reinvest=True,
         slippage_model=slip_model,
+        cost_model=cost_model,
+        spread_proxy=bool(spread_proxy),
         gap_fills=not no_gap_fills,
         entry_order_type=entry_order,
         entry_limit_bps=entry_limit_bps,
