@@ -13,6 +13,11 @@ def obv_trend_pipeline(
     refresh: bool = False,
     cache_ttl: str = "15m",
 ) -> None:
+    """Run the alias; ignores --csv/--cache-ttl."""
+    import click
+
+    if output_csv or cache_ttl != "15m":
+        click.echo("obv-trend ignores --csv/--cache-ttl", err=True)
     from screener.commands.live_strategies import run_obv_trend_live
 
     run_obv_trend_live(market=market, as_of=date.today(), limit=limit)

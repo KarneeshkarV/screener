@@ -219,7 +219,7 @@ def test_garp_pipeline_outputs_csv_or_rich_results(monkeypatch):
     assert ("rich", (rows, "india")) in calls
 
 
-def test_pipeline_criteria_delegate_to_command_runners(monkeypatch):
+def test_pipeline_criteria_delegate_to_command_runners(monkeypatch, capsys):
     calls: list[tuple[str, dict]] = []
 
     monkeypatch.setattr(
@@ -253,8 +253,8 @@ def test_pipeline_criteria_delegate_to_command_runners(monkeypatch):
         ),
     )
 
-    obv_trend.obv_trend_pipeline(market="us", limit=4)
-    vol_breakout.vol_breakout_pipeline(market="india", limit=5)
+    obv_trend.obv_trend_pipeline(market="us", limit=4, output_csv=True)
+    vol_breakout.vol_breakout_pipeline(market="india", limit=5, cache_ttl="1h")
     promoter_buys.promoter_buys_pipeline(
         market="india",
         limit=6,
@@ -262,7 +262,9 @@ def test_pipeline_criteria_delegate_to_command_runners(monkeypatch):
         refresh=True,
         cache_ttl="1h",
     )
-    unusual_volume.unusual_volume_pipeline(market="us", limit=7, refresh=False)
+    unusual_volume.unusual_volume_pipeline(
+        market="us", limit=7, refresh=False, output_csv=True
+    )
 
     assert calls[0] == ("obv", {"market": "us", "as_of": date.today(), "limit": 4})
     assert calls[1] == (
@@ -277,9 +279,13 @@ def test_pipeline_criteria_delegate_to_command_runners(monkeypatch):
         "unusual",
         {"market": "us", "as_of": date.today(), "limit": 7, "refresh": False},
     )
+    warnings = capsys.readouterr().err
+    assert "obv-trend ignores --csv/--cache-ttl" in warnings
+    assert "vol-breakout ignores --csv/--cache-ttl" in warnings
+    assert "unusual-volume ignores --csv/--cache-ttl" in warnings
 
 
-def test_rs_breakout_pipeline_renders_and_writes(monkeypatch):
+def test_rs_breakout_pipeline_renders_and_writes(monkeypatch, capsys):
     calls: list[tuple[str, object]] = []
     result = SimpleNamespace(rows=[])
 
@@ -302,6 +308,7 @@ def test_rs_breakout_pipeline_renders_and_writes(monkeypatch):
         market="india",
         limit=8,
         refresh=True,
+        output_csv=True,
         cache_ttl="15m",
     )
 
@@ -314,3 +321,4 @@ def test_rs_breakout_pipeline_renders_and_writes(monkeypatch):
             ),
         )
     ]
+    assert "rs-breakout ignores --csv" in capsys.readouterr().err

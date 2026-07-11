@@ -22,6 +22,9 @@ plays before they break out.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any, cast
+
 import pandas as pd
 
 ACTIONS = (
@@ -60,7 +63,10 @@ def label(df: pd.DataFrame) -> pd.DataFrame:
     and return the frame.
     """
     df = df.copy()
-    df["Operator_Action"] = [_classify(row) for _, row in df.iterrows()]
+    df["Operator_Action"] = cast(
+        pd.Series,
+        df.apply(cast(Callable[..., Any], _classify), axis="columns"),
+    )
     # High Momentum Watch: Long Build-up + within 15% of 52-week high.
     # NaN dist (cache miss) is treated as not-near-high.
     near_high = df["Dist_From_52W_High"].le(15.0).fillna(False)

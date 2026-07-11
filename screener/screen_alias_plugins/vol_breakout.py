@@ -13,6 +13,11 @@ def vol_breakout_pipeline(
     refresh: bool = False,
     cache_ttl: str = "15m",
 ) -> None:
+    """Run the alias; ignores --csv/--cache-ttl."""
+    import click
+
+    if output_csv or cache_ttl != "15m":
+        click.echo("vol-breakout ignores --csv/--cache-ttl", err=True)
     from screener.commands.live_strategies import run_vol_breakout_live
 
     run_vol_breakout_live(market=market, as_of=date.today(), limit=limit)

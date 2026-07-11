@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import urllib.request
-from typing import Optional, cast
+from typing import Optional
 
 import pandas as pd
 import yfinance as yf
@@ -457,33 +457,23 @@ def filter_promoter_increased(
         return insiders
 
     if market == "india":
-        change = pd.to_numeric(
-            cast(pd.Series, insiders.get("promoter_change")), errors="coerce"
-        )
+        change = pd.to_numeric(insiders["promoter_change"], errors="coerce")
         mask = change > min_promoter_change_pct
         if require_both:
-            yf_net = pd.to_numeric(
-                cast(pd.Series, insiders.get("yf_net_shares_6m")), errors="coerce"
-            )
+            yf_net = pd.to_numeric(insiders["yf_net_shares_6m"], errors="coerce")
             mask = mask & (yf_net > 0)
     else:
         # US: FMP (SEC Form 4) is the primary signal when available; fall back
         # to the yfinance feed per-row when FMP has no data for a ticker.
-        yf_net = pd.to_numeric(
-            cast(pd.Series, insiders.get("yf_net_shares_6m")), errors="coerce"
-        )
+        yf_net = pd.to_numeric(insiders["yf_net_shares_6m"], errors="coerce")
         if "fmp_net_shares_6m" in insiders.columns:
-            fmp_net = pd.to_numeric(
-                cast(pd.Series, insiders.get("fmp_net_shares_6m")), errors="coerce"
-            )
+            fmp_net = pd.to_numeric(insiders["fmp_net_shares_6m"], errors="coerce")
             net = fmp_net.where(fmp_net.notna() & (fmp_net != 0.0), yf_net)
         else:
             net = yf_net
         mask = net > 0
         if min_yf_net_pct is not None:
-            pct = pd.to_numeric(
-                cast(pd.Series, insiders.get("yf_net_pct_6m")), errors="coerce"
-            )
+            pct = pd.to_numeric(insiders["yf_net_pct_6m"], errors="coerce")
             mask = mask & (pct >= min_yf_net_pct)
 
     return insiders[mask.fillna(False)].copy()

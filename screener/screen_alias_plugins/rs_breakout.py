@@ -18,6 +18,11 @@ def rs_breakout_pipeline(
     refresh: bool = False,
     cache_ttl: str = "15m",
 ) -> None:
+    """Run the alias; ignores --csv (cache TTL is honored)."""
+    import click
+
+    if output_csv:
+        click.echo("rs-breakout ignores --csv", err=True)
     from screener.commands.rs_breakout import (
         run_rs_breakout_screen,
         write_default_outputs,

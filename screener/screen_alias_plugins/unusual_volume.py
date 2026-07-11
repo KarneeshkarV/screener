@@ -13,6 +13,11 @@ def unusual_volume_pipeline(
     refresh: bool = False,
     cache_ttl: str = "15m",
 ) -> None:
+    """Run the alias; ignores --csv/--cache-ttl."""
+    import click
+
+    if output_csv or cache_ttl != "15m":
+        click.echo("unusual-volume ignores --csv/--cache-ttl", err=True)
     from screener.unusual_volume.cli import _resolve_universe, run_unusual_volume
     from screener.unusual_volume.service import UnusualVolumeRequest
 
