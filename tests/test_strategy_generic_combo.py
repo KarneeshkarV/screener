@@ -11,7 +11,7 @@ import pytest
 
 import screener.strategies.combo as combo
 from screener.backtester.models import BacktestConfig
-from screener.backtester.core import _prepare_strategy_bars
+from screener.backtester.core import prepare_strategy_bars
 from screener.strategies.combo import (
     combine_rank_scores,
     cross_sectional_zscore,
@@ -55,6 +55,25 @@ def test_resolve_strategy_accepts_combo_prefix() -> None:
     assert named.exit is None
     with pytest.raises(KeyError, match="at least one component"):
         resolve_strategy("combo:")
+
+
+def test_combo_resolution_parses_and_validates_once(monkeypatch) -> None:
+    parse = combo.parse_combo_spec
+    validate = combo.validate_combo_components
+    calls = {"parse": 0, "validate": 0}
+
+    def counted_parse(name: str):
+        calls["parse"] += 1
+        return parse(name)
+
+    def counted_validate(components):
+        calls["validate"] += 1
+        return validate(components)
+
+    monkeypatch.setattr(combo, "parse_combo_spec", counted_parse)
+    monkeypatch.setattr(combo, "validate_combo_components", counted_validate)
+    resolve_strategy("combo:momentum_12_1=0.5,low_volatility=0.5")
+    assert calls == {"parse": 1, "validate": 1}
 
 
 def test_is_combo_strategy() -> None:
@@ -114,25 +133,8 @@ def test_combo_prepare_writes_weighted_rank_score() -> None:
     assert spec.required_lookback() >= 252
 
     ctx = PrepareCtx(
-        cfg=BacktestConfig(
-            market="us",
-            as_of=idx[-1].date(),
-            hold=5,
-            top=1,
-            strategy_name=name,
-            entry_expr=spec.entry or "close > 0",
-            exit_expr=None,
-            stop_loss=None,
-            take_profit=None,
-            trailing_stop=None,
-            slippage_bps=0.0,
-            commission_bps=0.0,
-            initial_capital=100_000.0,
-            benchmark="SPY",
-            tickers=tuple(bars_by_tv),
-            min_price=None,
-            min_avg_dollar_volume=None,
-        ),
+        market="us",
+        benchmark="SPY",
         bars_by_tv=bars_by_tv,
         price_panel={},
         tv_symbols=list(bars_by_tv),
@@ -216,8 +218,8 @@ def test_prepare_strategy_bars_reports_invalid_combo() -> None:
     )
     bars = {"A": pd.DataFrame({"close": [1.0, 2.0]}, index=idx)}
     warnings: list[str] = []
-    prepared, lookback = _prepare_strategy_bars(
-        cfg,
+    prepared, lookback = prepare_strategy_bars(
+        cfg.strategy_name,
         bars,
         bars,
         ["A"],
@@ -225,9 +227,11 @@ def test_prepare_strategy_bars_reports_invalid_combo() -> None:
         idx[-1].date(),
         object(),  # type: ignore[arg-type]
         warnings,
+        market=cfg.market,
+        benchmark=cfg.benchmark,
     )
     assert prepared is bars and lookback == 0
-    assert warnings and "combo strategy error" in warnings[0]
+    assert warnings and "strategy error" in warnings[0]
 
 
 def test_combo_prepare_handles_missing_component_outputs(monkeypatch) -> None:
@@ -286,7 +290,8 @@ def test_combo_prepare_handles_missing_component_outputs(monkeypatch) -> None:
         min_avg_dollar_volume=None,
     )
     ctx = PrepareCtx(
-        cfg=cfg,
+        market=cfg.market,
+        benchmark=cfg.benchmark,
         bars_by_tv={"A": base, "MISSING": base.copy(), "EMPTY": pd.DataFrame()},
         price_panel={},
         tv_symbols=["A", "MISSING"],

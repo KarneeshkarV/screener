@@ -19,7 +19,7 @@ from screener.backtester.core import (
     _make_slot_state,
     _precompute_entry_signals,
     _precompute_filter_signals,
-    _prepare_strategy_bars,
+    prepare_strategy_bars,
     _resolve_universe,
 )
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
@@ -121,8 +121,8 @@ def _prepare_simulation(
     bars_by_tv = {
         tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
     }
-    bars_by_tv, strategy_lookback = _prepare_strategy_bars(
-        cfg,
+    bars_by_tv, strategy_lookback = prepare_strategy_bars(
+        cfg.strategy_name,
         bars_by_tv,
         price_panel,
         tv_symbols,
@@ -130,6 +130,8 @@ def _prepare_simulation(
         fetch_end,
         fetcher,
         warnings,
+        market=cfg.market,
+        benchmark=cfg.benchmark,
     )
     lookback = max(lookback, strategy_lookback)
 

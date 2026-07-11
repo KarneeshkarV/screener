@@ -290,21 +290,25 @@ def test_load_factor_panels_prepares_and_trims(monkeypatch: pytest.MonkeyPatch) 
     idx = pd.bdate_range("2023-12-20", "2024-01-10")
     bars = pd.DataFrame({"close": 100.0, "rank_score": 1.0}, index=idx)
     fetcher = _PanelFetcher({"AAA": bars})
-    monkeypatch.setattr(ft, "resolve_strategy_exprs", lambda *args: ("entry", "exit"))
     monkeypatch.setattr(ft, "tv_to_yf", lambda tv, market: tv)
     monkeypatch.setattr(
         ft, "get_market", lambda market: SimpleNamespace(benchmark="SPY")
     )
-    import screener.backtester.core as core
-    import screener.strategies.combo as combo
     import screener.strategies.spec as spec
 
-    monkeypatch.setattr(combo, "is_combo_strategy", lambda name: False)
     monkeypatch.setattr(spec, "discover_plugins", lambda: None)
-    monkeypatch.setattr(spec.registry, "get_optional", lambda name: None)
-    monkeypatch.setattr(
-        core, "_prepare_strategy_bars", lambda cfg, data, *args: (data, {})
+    resolved = SimpleNamespace(
+        entry="entry",
+        required_lookback=None,
+        prepare_bars=None,
     )
+    resolve_calls: list[str] = []
+
+    def resolve(name: str):
+        resolve_calls.append(name)
+        return resolved
+
+    monkeypatch.setattr(spec, "resolve_strategy_spec", resolve)
     scores, closes = ft.load_factor_panels(
         market="us",
         strategy_name="factor",
@@ -317,13 +321,9 @@ def test_load_factor_panels_prepares_and_trims(monkeypatch: pytest.MonkeyPatch) 
     assert scores.index.min() == pd.Timestamp("2024-01-02")
     assert closes.index.max() == pd.Timestamp("2024-01-08")
     assert fetcher.calls[0][1] < date(2023, 1, 2)
+    assert resolve_calls == ["factor"]
 
-    monkeypatch.setattr(combo, "is_combo_strategy", lambda name: True)
-    monkeypatch.setattr(
-        combo,
-        "resolve_combo_spec",
-        lambda name: SimpleNamespace(required_lookback=lambda: 10),
-    )
+    resolved.required_lookback = lambda: 10
     ft.load_factor_panels(
         market="us",
         strategy_name="combo:x=1",
@@ -333,6 +333,7 @@ def test_load_factor_panels_prepares_and_trims(monkeypatch: pytest.MonkeyPatch) 
         fetcher=fetcher,
         warnings=[],
     )
+    assert resolve_calls == ["factor", "combo:x=1"]
 
 
 def _sample_results() -> tuple[list[ICSummary], list[QuantileResult]]:

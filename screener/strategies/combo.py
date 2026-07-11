@@ -162,7 +162,7 @@ def _component_score_matrix(
 
 
 def make_combo_prepare(components: Sequence[tuple[str, float]]) -> PrepareBarsFn:
-    validated = validate_combo_components(components)
+    validated = list(components)
 
     def _prepare(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         component_mats: list[tuple[pd.DataFrame, float]] = []
@@ -171,7 +171,8 @@ def make_combo_prepare(components: Sequence[tuple[str, float]]) -> PrepareBarsFn
             spec = registry.get(factor_name)
             assert spec.prepare_bars is not None
             child_ctx = PrepareCtx(
-                cfg=ctx.cfg,
+                market=ctx.market,
+                benchmark=ctx.benchmark,
                 bars_by_tv={tv: bars for tv, bars in ctx.bars_by_tv.items()},
                 price_panel=ctx.price_panel,
                 tv_symbols=ctx.tv_symbols,
@@ -218,7 +219,7 @@ def make_combo_prepare(components: Sequence[tuple[str, float]]) -> PrepareBarsFn
 
 
 def make_combo_lookback(components: Sequence[tuple[str, float]]) -> LookbackFn:
-    validated = validate_combo_components(components)
+    validated = list(components)
 
     def _lookback() -> int:
         floor = 0
@@ -232,7 +233,7 @@ def make_combo_lookback(components: Sequence[tuple[str, float]]) -> LookbackFn:
 
 
 def make_combo_entry(components: Sequence[tuple[str, float]]) -> str:
-    validated = validate_combo_components(components)
+    validated = list(components)
     parts: list[str] = []
     for factor_name, _weight in validated:
         spec = registry.get(factor_name)

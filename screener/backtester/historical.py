@@ -15,7 +15,7 @@ from screener.backtester.core import (
     _eligible_reserve_signal_idx,
     _make_slot_state,
     _passes_entry_filters,
-    _prepare_strategy_bars,
+    prepare_strategy_bars,
     _resolve_universe,
 )
 from screener.backtester.data import PriceFetcher
@@ -452,8 +452,17 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     bars_by_tv = {
         tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
     }
-    bars_by_tv, strategy_lookback = _prepare_strategy_bars(
-        cfg, bars_by_tv, price_panel, tv_symbols, start, end, fetcher, warnings
+    bars_by_tv, strategy_lookback = prepare_strategy_bars(
+        cfg.strategy_name,
+        bars_by_tv,
+        price_panel,
+        tv_symbols,
+        start,
+        end,
+        fetcher,
+        warnings,
+        market=cfg.market,
+        benchmark=cfg.benchmark,
     )
     lookback = max(lookback, strategy_lookback)
 

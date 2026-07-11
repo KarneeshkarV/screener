@@ -1,5 +1,9 @@
 """IC / quantile factor tearsheet: pure math + CLI.
 
+The pure metric routines are intentionally kept isolated at the top of this
+module so they can move to ``factor_metrics.py`` when the factor-reporting API
+next changes; splitting them now would add import churn without changing behavior.
+
 Score at day ``t`` predicts the forward return from ``t`` to ``t+h``
 (close[t+h] / close[t] - 1). The score itself is causal (no lookahead);
 only the *evaluation* labels use future closes.
@@ -20,9 +24,7 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
-from screener.backtester.cli_common import resolve_strategy_exprs
 from screener.backtester.data import build_price_fetcher, tv_to_yf
-from screener.backtester.models import BacktestConfig
 from screener.markets import get_market, get_price_fetcher, market_option
 from screener.universes import UniverseName, load_current_universe
 
@@ -311,18 +313,14 @@ def load_factor_panels(
     warnings: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Fetch prices, run strategy ``prepare_bars``, return score + close matrices."""
-    from screener.backtester.core import _prepare_strategy_bars
-    from screener.strategies.combo import is_combo_strategy, resolve_combo_spec
-    from screener.strategies.spec import StrategySpec, discover_plugins, registry
+    from screener.backtester.core import prepare_strategy_bars
+    from screener.strategies.spec import discover_plugins, resolve_strategy_spec
 
     discover_plugins()
-    entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, None, None)
+    spec = resolve_strategy_spec(strategy_name)
+    if spec is None or spec.entry is None:
+        raise ValueError(f"unknown factor strategy {strategy_name!r}")
     # Warmup: use the strategy lookback when available, else a conservative floor.
-    spec: StrategySpec | None
-    if is_combo_strategy(strategy_name):
-        spec = resolve_combo_spec(strategy_name)
-    else:
-        spec = registry.get_optional(strategy_name)
     lookback = spec.required_lookback() if spec and spec.required_lookback else 252
     warmup_days = max(lookback * 3 + 30, 365)
     fetch_start = start - timedelta(days=warmup_days)
@@ -331,28 +329,9 @@ def load_factor_panels(
     yf_symbols = list(dict.fromkeys(yf_by_tv.values()))
     price_panel = fetcher.fetch(yf_symbols, fetch_start, end)
     bars_by_tv = {tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tickers}
-    market_meta = get_market(market)
-    cfg = BacktestConfig(
-        market=market,
-        as_of=end,
-        hold=1,
-        top=1,
-        strategy_name=strategy_name,
-        entry_expr=entry_expr,
-        exit_expr=exit_expr,
-        stop_loss=None,
-        take_profit=None,
-        trailing_stop=None,
-        slippage_bps=0.0,
-        commission_bps=0.0,
-        initial_capital=100_000.0,
-        benchmark=market_meta.benchmark,
-        tickers=tuple(tickers),
-        min_price=None,
-        min_avg_dollar_volume=None,
-    )
-    bars_by_tv, _ = _prepare_strategy_bars(
-        cfg,
+    benchmark = get_market(market).benchmark
+    bars_by_tv, _ = prepare_strategy_bars(
+        spec,
         bars_by_tv,
         price_panel,
         list(tickers),
@@ -360,6 +339,8 @@ def load_factor_panels(
         end,
         fetcher,
         warnings,
+        market=market,
+        benchmark=benchmark,
     )
     scores, closes = build_score_and_close_matrices(bars_by_tv)
     # Restrict analysis window to the requested [start, end] (warmup kept only

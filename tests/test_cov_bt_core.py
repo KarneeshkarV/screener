@@ -38,7 +38,7 @@ from screener.backtester.core import (
     _passes_entry_filters,
     _precompute_entry_signals,
     _precompute_filter_signals,
-    _prepare_strategy_bars,
+    prepare_strategy_bars,
     _resolve_universe,
     _trailing_liquidity,
 )
@@ -619,8 +619,8 @@ def test_resolve_universe_none_raises():
 def test_prepare_strategy_bars_no_spec():
     cfg = _cfg(strategy_name=None)
     bars_by = {"AAA": make_bars(n=5)}
-    out, lb = _prepare_strategy_bars(
-        cfg,
+    out, lb = prepare_strategy_bars(
+        cfg.strategy_name,
         bars_by,
         {},
         ["AAA"],
@@ -628,6 +628,8 @@ def test_prepare_strategy_bars_no_spec():
         date(2024, 4, 1),
         StubPriceFetcher({}),
         [],
+        market=cfg.market,
+        benchmark=cfg.benchmark,
     )
     assert out is bars_by and lb == 0
 
