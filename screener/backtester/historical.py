@@ -18,6 +18,7 @@ from screener.backtester.core import (
     prepare_strategy_bars,
     _resolve_universe,
 )
+from screener.backtester.costs import cost_model_from_config
 from screener.backtester.data import PriceFetcher
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.fills import FillModel
@@ -207,7 +208,6 @@ class _ReserveRotationSource:
                     ticker=ticker,
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
-                    commission_bps=cfg.commission_bps,
                 )
                 self.slot_states[slot_id] = state
                 del self.pending_reentry[slot_id]
@@ -267,7 +267,6 @@ class _ReserveRotationSource:
                     ticker=ticker,
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
-                    commission_bps=cfg.commission_bps,
                 )
                 self.slot_states[slot_id] = state
                 self.slot_bars[slot_id] = reserve_bars
@@ -337,7 +336,6 @@ def _run_event_driven_sim(
             ticker=ticker,
             entry_date=state.entry_date,
             entry_price=state.entry_fill,
-            commission_bps=cfg.commission_bps,
         )
         slot_states[slot_id] = state
         slot_bars[slot_id] = bars
@@ -395,13 +393,13 @@ def _run_event_driven_sim(
             close=float(last_bar["close"]),
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
+            half_spread=state.half_spread,
         )
         portfolio.close(
             ticker=state.ticker,
             exit_date=_bar_label(tail.index[-1], cfg),
             exit_price=fill,
             reason="eod",
-            commission_bps=cfg.commission_bps,
         )
         slot_states[slot_id] = None
 
@@ -499,7 +497,9 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     actives_df = selection[selection["role"] == "active"].reset_index(drop=True)
     reserves_df = selection[selection["role"] == "reserve"].reset_index(drop=True)
     slot_count = max(cfg.top, len(actives_df))
-    portfolio = Portfolio(cfg.initial_capital, slot_count)
+    portfolio = Portfolio(
+        cfg.initial_capital, slot_count, cost_model=cost_model_from_config(cfg)
+    )
 
     master_dates = _run_event_driven_sim(
         portfolio=portfolio,

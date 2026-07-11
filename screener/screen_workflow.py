@@ -20,6 +20,7 @@ from screener.criteria import (
     PipelineCriteriaSelection,
     resolve_criteria,
 )
+from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from screener.reporting import temp_report_path
 from screener.scanner import scan
 
@@ -57,6 +58,10 @@ class RenderReportFn(Protocol):
     ) -> Path: ...
 
 
+class EnrichDaysToEarningsFn(Protocol):
+    def __call__(self, df: pd.DataFrame, market: str) -> pd.DataFrame: ...
+
+
 class ScreenMode(str, Enum):
     CSV = "csv"
     RESULTS = "results"
@@ -75,6 +80,10 @@ class ScreenRequest:
     cache_ttl: str
     report_path: Path | None
     open_report: bool = False
+    earnings: bool = False
+    # Drop final result rows whose next earnings date is within N calendar days.
+    # ``None`` disables the filter. Unknown earnings dates are always kept.
+    earnings_buffer: int | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +109,7 @@ class ScreenWorkflowDeps:
     diff: Callable[[pd.DataFrame, pd.DataFrame], tuple[list[str], list[str]]]
     temp_report_path: Callable[[str], Path]
     render_report: RenderReportFn
+    enrich_days_to_earnings: EnrichDaysToEarningsFn
 
 
 class ScreenWorkflowError(ValueError):
@@ -117,6 +127,7 @@ def default_screen_workflow_deps() -> ScreenWorkflowDeps:
         diff=history.diff,
         temp_report_path=temp_report_path,
         render_report=render_screen_report,
+        enrich_days_to_earnings=enrich_days_to_earnings,
     )
 
 
@@ -159,6 +170,12 @@ def run_screen_workflow(
         cache_ttl=deps.parse_cache_ttl(request.cache_ttl),
         refresh=request.refresh,
     )
+
+    # Earnings enrichment is opt-in and runs only on final result rows.
+    if request.earnings or request.earnings_buffer is not None:
+        df = deps.enrich_days_to_earnings(df, request.market)
+    if request.earnings_buffer is not None:
+        df = filter_earnings_buffer(df, request.earnings_buffer)
 
     if request.output_csv:
         return ScreenOutcome(

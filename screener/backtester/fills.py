@@ -99,6 +99,7 @@ class FillModel:
         shares: float = 0.0,
         adv_shares: float = 0.0,
         sigma_daily: float = 0.0,
+        half_spread: float = 0.0,
     ) -> float:
         """Run ``cfg.slippage_model`` over a reference price."""
         cfg = self.cfg
@@ -110,6 +111,7 @@ class FillModel:
             shares=shares,
             adv=adv_shares,
             sigma_daily=sigma_daily,
+            half_spread=half_spread,
         )
 
     # ── entry side ───────────────────────────────────────────────────
@@ -120,6 +122,7 @@ class FillModel:
         *,
         adv_shares: float = 0.0,
         sigma_daily: float = 0.0,
+        half_spread: float = 0.0,
     ) -> tuple[Optional[int], Optional[float], Optional[str]]:
         """Resolve the entry bar index and the slipped (buy-side) fill price.
 
@@ -132,7 +135,11 @@ class FillModel:
         if entry_idx is None or entry_ref is None:
             return None, None, warn
         fill = self._apply_slip(
-            entry_ref, "buy", adv_shares=adv_shares, sigma_daily=sigma_daily
+            entry_ref,
+            "buy",
+            adv_shares=adv_shares,
+            sigma_daily=sigma_daily,
+            half_spread=half_spread,
         )
         return entry_idx, fill, None
 
@@ -147,6 +154,7 @@ class FillModel:
         side: Side = "sell",
         adv_shares: float = 0.0,
         sigma_daily: float = 0.0,
+        half_spread: float = 0.0,
     ) -> float:
         """Slipped exit price for a given exit ``reason``.
 
@@ -169,5 +177,9 @@ class FillModel:
         else:
             ref = close
         return self._apply_slip(
-            ref, side, adv_shares=adv_shares, sigma_daily=sigma_daily
+            ref,
+            side,
+            adv_shares=adv_shares,
+            sigma_daily=sigma_daily,
+            half_spread=half_spread,
         )

@@ -125,6 +125,26 @@ __all__ = [
 @click.option(
     "--commission-bps", type=float, default=0.0, help="Commission per fill (bps)."
 )
+@click.option(
+    "--cost-model",
+    type=click.Choice(["flat", "india"]),
+    default="flat",
+    show_default=True,
+    help=(
+        "Statutory fee model. 'flat' applies --commission-bps on every fill "
+        "(legacy). 'india' applies NSE equity delivery fees (STT, stamp duty, "
+        "exchange, SEBI, GST, IPFT)."
+    ),
+)
+@click.option(
+    "--spread-proxy",
+    is_flag=True,
+    default=False,
+    help=(
+        "Estimate per-fill half-spread via Corwin-Schultz (2012) high-low "
+        "estimator and charge it as slippage (on top of --slippage-model)."
+    ),
+)
 @click.option("--initial-capital", type=float, default=100_000.0)
 @click.option(
     "--benchmark",
@@ -199,6 +219,17 @@ __all__ = [
     help=(
         "Z-score rank_score within each sector group per day before ranking "
         "(factor strategies only; no-op when no rank_score column exists)."
+    ),
+)
+@click.option(
+    "--earnings-blackout",
+    "earnings_blackout_days",
+    type=int,
+    default=None,
+    help=(
+        "Suppress entry signals within N calendar days before (and including) "
+        "a known earnings date for each ticker. Tickers with no known earnings "
+        "dates remain eligible (a warning is recorded)."
     ),
 )
 @click.option(
@@ -278,6 +309,8 @@ def backtest_rolling(
     trailing_stop,
     slippage_bps,
     commission_bps,
+    cost_model,
+    spread_proxy,
     initial_capital,
     benchmark,
     min_price,
@@ -294,6 +327,7 @@ def backtest_rolling(
     interval,
     regime_filter_args,
     sector_neutral,
+    earnings_blackout_days,
     fundamentals_provider,
     fundamental_field_args,
     fundamental_lag_days,
@@ -307,6 +341,8 @@ def backtest_rolling(
     """Run a true daily rolling backtest over a date window."""
     if output_csv and dashboard:
         raise click.UsageError("--csv and --dashboard cannot be used together.")
+    if earnings_blackout_days is not None and earnings_blackout_days < 0:
+        raise click.UsageError("--earnings-blackout must be >= 0.")
     if fundamentals_provider == "fmp" and market != "us":
         raise click.UsageError(
             "--fundamentals-provider fmp currently supports only -m us."
@@ -328,7 +364,11 @@ def backtest_rolling(
         fundamentals_provider = "fmp" if market == "us" else "openscreener"
 
     slip_model = build_slippage_model(
-        slippage_model, slippage_bps, half_spread_bps, vol_impact_k
+        slippage_model,
+        slippage_bps,
+        half_spread_bps,
+        vol_impact_k,
+        spread_proxy=bool(spread_proxy),
     )
     partial_exits = parse_partial_exits(partial_exit_args)
     resolved_min_price, resolved_min_adv = resolve_min_filters(
@@ -428,6 +468,8 @@ def backtest_rolling(
         avg_dollar_volume_window=int(adv_window),
         reinvest=True,
         slippage_model=slip_model,
+        cost_model=cost_model,
+        spread_proxy=bool(spread_proxy),
         gap_fills=not no_gap_fills,
         entry_order_type=entry_order,
         entry_limit_bps=entry_limit_bps,
@@ -435,6 +477,7 @@ def backtest_rolling(
         price_adjustment=price_adjustment,
         interval=interval,
         regime_filter=tuple(dict.fromkeys(regime_filter_args)),
+        earnings_blackout_days=earnings_blackout_days,
         fundamentals_provider=fundamentals_provider,
         fundamental_fields=resolved_fundamental_fields,
         fundamental_lag_days=max(resolved_fundamental_lag_days, 0),

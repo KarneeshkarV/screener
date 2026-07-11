@@ -310,6 +310,7 @@ def test_run_screen_workflow_unknown_selection_mode():
         diff=lambda *a: ([], []),
         temp_report_path=lambda prefix: None,
         render_report=lambda *a, **kw: None,
+        enrich_days_to_earnings=lambda df, market, **kw: df,
     )
     request = ScreenRequest(
         market="us",

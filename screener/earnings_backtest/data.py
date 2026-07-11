@@ -150,9 +150,13 @@ _EARNINGS_DATES_EXPORTS = frozenset(
         "_fetch_yf_earnings_rows",
         "_openscreener_earnings_rows_for_ticker",
         "collect_earnings_events",
+        "events_to_dates_map",
         "fetch_earnings_dates_nse",
         "fetch_earnings_dates_openscreener",
         "fetch_earnings_dates_yf",
+        "fetch_next_earnings_dates",
+        "load_earnings_dates_map",
+        "next_earnings_date",
     }
 )
 _SENTIMENT_EXPORTS = frozenset(
