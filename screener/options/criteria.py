@@ -259,6 +259,31 @@ def _cheap_earnings_vol(
     )
 
 
+def _evaluate_unusual(latest: pd.DataFrame, **_: object) -> OptionsCriterionResult:
+    return _unusual_options(latest)
+
+
+def _evaluate_bullish(latest: pd.DataFrame, **_: object) -> OptionsCriterionResult:
+    return _bullish_oi_buildup(latest)
+
+
+def _high_iv_rank(latest: pd.DataFrame, **_: object) -> OptionsCriterionResult:
+    return _iv_rank(latest, high=True)
+
+
+def _low_iv_rank(latest: pd.DataFrame, **_: object) -> OptionsCriterionResult:
+    return _iv_rank(latest, high=False)
+
+
+OPTIONS_CRITERIA: dict[str, Callable[..., OptionsCriterionResult]] = {
+    "unusual_options": _evaluate_unusual,
+    "bullish_oi_buildup": _evaluate_bullish,
+    "high_iv_rank": _high_iv_rank,
+    "low_iv_rank": _low_iv_rank,
+    "cheap_earnings_vol": _cheap_earnings_vol,
+}
+
+
 def screen_options_criterion(
     name: str,
     *,
@@ -279,24 +304,17 @@ def screen_options_criterion(
             f"No {market.upper()} options panel rows exist on or before "
             f"{effective_date}; run `screener options snapshot` or `build-panel` first.",
         )
-    if name == "unusual_options":
-        result = _unusual_options(latest)
-    elif name == "bullish_oi_buildup":
-        result = _bullish_oi_buildup(latest)
-    elif name == "high_iv_rank":
-        result = _iv_rank(latest, high=True)
-    elif name == "low_iv_rank":
-        result = _iv_rank(latest, high=False)
-    elif name == "cheap_earnings_vol":
-        result = _cheap_earnings_vol(
-            latest,
-            market=market,
-            as_of=effective_date,
-            earnings_fetcher=earnings_fetcher,
-            price_fetcher=price_fetcher,
-        )
-    else:
+    try:
+        evaluator = OPTIONS_CRITERIA[name]
+    except KeyError:
         raise ValueError(f"unknown options criterion: {name}")
+    result = evaluator(
+        latest,
+        market=market,
+        as_of=effective_date,
+        earnings_fetcher=earnings_fetcher,
+        price_fetcher=price_fetcher,
+    )
     if limit > 0:
         return OptionsCriterionResult(result.frame.head(limit), result.message)
     return result
@@ -339,6 +357,7 @@ def run_options_criterion(
 
 
 __all__ = [
+    "OPTIONS_CRITERIA",
     "OptionsCriterionResult",
     "latest_panel_rows",
     "realized_earnings_moves",
