@@ -55,6 +55,10 @@ class Portfolio:
         self._ranks[ticker] = rank
         self._signal_dates[ticker] = signal_date
 
+    def entry_budget(self) -> float:
+        """Cash available to the next slot, before entry price/commission."""
+        return min(self.slot_capital, max(self._cash, 0.0))
+
     def _active_keys(self, ticker: str) -> list[tuple[str, int]]:
         return [k for k in self._open if k[0] == ticker]
 
@@ -85,7 +89,7 @@ class Portfolio:
         # cannot overdraw the portfolio.
         c = commission_bps / 10_000.0
         gross_per_share = entry_price * (1.0 + c)
-        budget = min(self.slot_capital, max(self._cash, 0.0))
+        budget = self.entry_budget()
         shares = budget / gross_per_share if gross_per_share > 0 else 0.0
         notional = shares * entry_price
         commission = notional * c

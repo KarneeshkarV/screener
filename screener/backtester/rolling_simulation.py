@@ -343,6 +343,7 @@ class _DailyRankingSource:
                     int(row["rank"]),
                     self.fill_model,
                     caches=self.caches,
+                    entry_budget=portfolio.entry_budget(),
                 )
                 if (
                     state is None

@@ -131,6 +131,46 @@ def test_custom_slippage_model_overrides_bps_via_engine(monkeypatch):
     assert o_half.trade.exit_price > o_legacy.trade.exit_price
 
 
+def test_volume_impact_changes_engine_entry_and_exit_fills():
+    bars = make_bars(n=20, seed=11)
+    bars["volume"] = 1_000.0
+    zero = simulate_ticker(
+        bars,
+        signal_idx=5,
+        cfg=_cfg(hold=5, top=1, slippage_model=VolumeImpactSlippage(k=0.0)),
+    )
+    impacted = simulate_ticker(
+        bars,
+        signal_idx=5,
+        cfg=_cfg(hold=5, top=1, slippage_model=VolumeImpactSlippage(k=5.0)),
+    )
+    assert zero.trade is not None and impacted.trade is not None
+    assert impacted.trade.entry_price > zero.trade.entry_price
+    assert impacted.trade.exit_price < zero.trade.exit_price
+
+
+def test_zero_volume_impact_preserves_zero_slippage_numbers_exactly():
+    bars = make_bars(n=20, seed=11)
+    fixed = simulate_ticker(bars, signal_idx=5, cfg=_cfg(hold=5, slippage_bps=0.0))
+    impact = simulate_ticker(
+        bars,
+        signal_idx=5,
+        cfg=_cfg(hold=5, slippage_model=VolumeImpactSlippage(k=0.0)),
+    )
+    assert fixed == impact
+
+
+def test_fixed_slippage_skips_unused_liquidity_work(monkeypatch):
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("fixed slippage must not prepare ADV/sigma")
+
+    monkeypatch.setattr("screener.backtester.core._trailing_liquidity", fail_if_called)
+    outcome = simulate_ticker(
+        make_bars(n=20, seed=11), signal_idx=5, cfg=_cfg(hold=5, slippage_bps=10.0)
+    )
+    assert outcome.trade is not None
+
+
 # ── Limitation 2: gap fills + limit/MOC entry ────────────────────────
 
 

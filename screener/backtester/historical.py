@@ -196,6 +196,7 @@ class _ReserveRotationSource:
                     new_rank,
                     self.fill_model,
                     caches=self.caches,
+                    entry_budget=portfolio.entry_budget(),
                 )
                 if state is None:
                     if warn:
@@ -257,6 +258,7 @@ class _ReserveRotationSource:
                     int(reserve["rank"]),
                     self.fill_model,
                     caches=self.caches,
+                    entry_budget=portfolio.entry_budget(),
                 )
                 if state is None:
                     if warn:
@@ -326,6 +328,7 @@ def _run_event_driven_sim(
             int(row["rank"]),
             fill_model,
             caches=caches,
+            entry_budget=portfolio.entry_budget(),
         )
         if state is None:
             if warn:
@@ -393,6 +396,11 @@ def _run_event_driven_sim(
         fill = fill_model.exit_price(
             reason="eod",
             close=float(last_bar["close"]),
+            shares=(
+                position.shares
+                if (position := portfolio.get_position(state.ticker)) is not None
+                else 0.0
+            ),
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
         )

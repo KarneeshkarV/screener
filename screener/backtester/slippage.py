@@ -32,6 +32,22 @@ class SlippageModel(Protocol):
         """Return the adverse price adjustment as a non-negative fraction."""
 
 
+def needs_liquidity_inputs(model: SlippageModel) -> bool:
+    """Return whether ``model`` may depend on shares, ADV, or volatility.
+
+    Built-in constant-cost models declare that liquidity preparation can be
+    skipped. Unknown third-party implementations conservatively return true so
+    their existing access to the full slippage protocol is preserved.
+    """
+    if isinstance(model, (FixedBpsSlippage, HalfSpreadSlippage)):
+        return False
+    if isinstance(model, VolumeImpactSlippage):
+        return True
+    if isinstance(model, CompositeSlippage):
+        return any(needs_liquidity_inputs(component) for component in model.models)
+    return True
+
+
 def apply_slippage(
     model: SlippageModel,
     reference_price: float,
