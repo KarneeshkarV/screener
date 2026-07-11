@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import sys
+from contextlib import nullcontext
 
 import click
 from rich.console import Console
@@ -111,8 +112,15 @@ def earnings_backtest(
     if tickers:
         ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
 
-    def _run() -> list:
-        return run_earnings_backtest(
+    status = (
+        nullcontext()
+        if output_csv
+        else console.status(
+            f"[bold green]Running earnings-backtest ({market}, {strategy}, {years}y)…"
+        )
+    )
+    with status:
+        trades = run_earnings_backtest(
             market=market,
             years=years,
             strategy=strategy,
@@ -123,16 +131,6 @@ def earnings_backtest(
             batch_size=batch_size,
             tickers=ticker_list,
         )
-
-    # Keep the spinner off the CSV path: status text includes commas and would
-    # pollute stdout so ``pd.read_csv`` cannot parse the ledger.
-    if output_csv:
-        trades = _run()
-    else:
-        with console.status(
-            f"[bold green]Running earnings-backtest ({market}, {strategy}, {years}y)…"
-        ):
-            trades = _run()
 
     if not trades:
         console.print(
