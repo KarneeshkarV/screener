@@ -17,6 +17,7 @@ from screener.earnings_backtest.engine import (
     run_earnings_backtest,
 )
 from screener.earnings_backtest.pead import (
+    EXIT_MODES,
     PeadTrade,
     compute_pead_summary,
     run_pead_backtest,
@@ -282,7 +283,17 @@ def _print_csv(trades: list[EarningsTrade]) -> None:
     type=int,
     default=40,
     show_default=True,
-    help="Trading days to hold after the next-open entry.",
+    help="Trading days to hold after the next-open entry (fixed exit mode).",
+)
+@click.option(
+    "--exit-mode",
+    type=click.Choice(list(EXIT_MODES)),
+    default="fixed",
+    show_default=True,
+    help=(
+        "fixed: hold --hold-days sessions. dynamic: hold until a later report "
+        "fails the surprise criterion (or the price history ends)."
+    ),
 )
 @click.option(
     "--commission-bps",
@@ -321,6 +332,7 @@ def earnings_pead(
     years: int,
     min_surprise: float,
     hold_days: int,
+    exit_mode: str,
     commission_bps: float,
     slippage_bps: float,
     batch_size: int,
@@ -332,9 +344,10 @@ def earnings_pead(
     if tickers:
         ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
 
+    hold_label = "dynamic hold" if exit_mode == "dynamic" else f"{hold_days}d hold"
     with console.status(
         f"[bold green]Running PEAD backtest ({market}, surprise≥{min_surprise}%, "
-        f"{hold_days}d hold, {years}y)…"
+        f"{hold_label}, {years}y)…"
     ):
         trades = run_pead_backtest(
             market=market,
@@ -345,6 +358,7 @@ def earnings_pead(
             slippage_bps=slippage_bps,
             batch_size=batch_size,
             tickers=ticker_list,
+            exit_mode=exit_mode,
         )
 
     if not trades:
@@ -458,30 +472,35 @@ def _print_pead_trade_table(trades: list[PeadTrade]) -> None:
 
 def _print_pead_csv(trades: list[PeadTrade]) -> None:
     writer = csv.writer(sys.stdout)
-    writer.writerow(
-        [
-            "ticker",
-            "earnings_date",
-            "entry_date",
-            "exit_date",
-            "entry_price",
-            "exit_price",
-            "return_pct",
-            "surprise_pct",
-            "holding_days",
-        ]
-    )
+    # The dynamic exit mode records an exit_reason per trade; surface it as a
+    # trailing column only when present so the fixed-mode ledger is unchanged.
+    has_exit_reason = any("exit_reason" in t.details for t in trades)
+    header = [
+        "ticker",
+        "earnings_date",
+        "entry_date",
+        "exit_date",
+        "entry_price",
+        "exit_price",
+        "return_pct",
+        "surprise_pct",
+        "holding_days",
+    ]
+    if has_exit_reason:
+        header.append("exit_reason")
+    writer.writerow(header)
     for t in trades:
-        writer.writerow(
-            [
-                t.ticker,
-                t.earnings_date,
-                t.entry_date,
-                t.exit_date,
-                t.entry_price,
-                t.exit_price,
-                t.return_pct,
-                t.surprise_pct,
-                t.holding_days,
-            ]
-        )
+        row = [
+            t.ticker,
+            t.earnings_date,
+            t.entry_date,
+            t.exit_date,
+            t.entry_price,
+            t.exit_price,
+            t.return_pct,
+            t.surprise_pct,
+            t.holding_days,
+        ]
+        if has_exit_reason:
+            row.append(t.details.get("exit_reason", ""))
+        writer.writerow(row)
