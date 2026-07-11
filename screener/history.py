@@ -1,5 +1,6 @@
 import sqlite3
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -104,6 +105,155 @@ def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
         return run_id
     finally:
         conn.close()
+
+
+@dataclass(frozen=True)
+class RunSnapshot:
+    """A persisted screen run: its metadata plus the ranked rows that were shown."""
+
+    run_id: int
+    run_ts: str
+    market: str
+    criteria: str
+    total_matches: int
+    rows: pd.DataFrame
+
+    @property
+    def run_date(self) -> date:
+        return datetime.fromisoformat(self.run_ts).date()
+
+    @property
+    def tickers(self) -> list[str]:
+        return [str(t) for t in self.rows["ticker"].dropna().tolist()]
+
+
+def load_run(run_id: int) -> Optional[RunSnapshot]:
+    """Load one persisted run with its ranked rows, or ``None`` if absent."""
+    conn = _connect()
+    try:
+        meta = conn.execute(
+            "SELECT id, run_ts, market, criteria, total_matches FROM runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if meta is None:
+            return None
+        rows = pd.read_sql_query(
+            "SELECT ticker, name, close, change, volume, market_cap, setup_score, rank "
+            "FROM run_rows WHERE run_id = ? ORDER BY rank",
+            conn,
+            params=(run_id,),
+        )
+        return RunSnapshot(
+            run_id=int(meta[0]),
+            run_ts=str(meta[1]),
+            market=str(meta[2]),
+            criteria=str(meta[3]),
+            total_matches=int(meta[4]),
+            rows=rows,
+        )
+    finally:
+        conn.close()
+
+
+def find_run(
+    market: str, criteria: str, on_or_before: Optional[date] = None
+) -> Optional[int]:
+    """Return the id of the most recent run for ``market``/``criteria``.
+
+    With ``on_or_before``, only runs whose date is on or before it qualify —
+    the lookup used to replay "the screen as of N days ago".
+    """
+    conn = _connect()
+    try:
+        if on_or_before is None:
+            row = conn.execute(
+                "SELECT id FROM runs WHERE market = ? AND criteria = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (market, criteria),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id FROM runs WHERE market = ? AND criteria = ? "
+                "AND substr(run_ts, 1, 10) <= ? ORDER BY id DESC LIMIT 1",
+                (market, criteria, on_or_before.isoformat()),
+            ).fetchone()
+        return int(row[0]) if row is not None else None
+    finally:
+        conn.close()
+
+
+def list_runs(
+    market: Optional[str] = None,
+    criteria: Optional[str] = None,
+    limit: int = 20,
+) -> pd.DataFrame:
+    """List persisted runs (newest first) with the count of saved rows."""
+    where = []
+    params: list[str | int] = []
+    if market:
+        where.append("r.market = ?")
+        params.append(market)
+    if criteria:
+        where.append("r.criteria = ?")
+        params.append(criteria)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    params.append(int(limit))
+    conn = _connect()
+    try:
+        return pd.read_sql_query(
+            f"""
+            SELECT r.id, r.run_ts, r.market, r.criteria, r.total_matches,
+                   COUNT(rr.ticker) AS saved_rows
+            FROM runs r
+            LEFT JOIN run_rows rr ON rr.run_id = r.id
+            {where_sql}
+            GROUP BY r.id
+            ORDER BY r.id DESC
+            LIMIT ?
+            """,
+            conn,
+            params=tuple(params),
+        )
+    finally:
+        conn.close()
+
+
+def resolve_replay_run(spec: str, min_age_days: int = 0) -> RunSnapshot:
+    """Resolve a ``--from-run`` spec to a :class:`RunSnapshot`.
+
+    ``spec`` is either a numeric run id or ``MARKET:CRITERIA``, which picks the
+    most recent run at least ``min_age_days`` calendar days old. Raises
+    ``ValueError`` with a user-facing message when nothing matches.
+    """
+    spec = spec.strip()
+    if spec.isdigit():
+        snap = load_run(int(spec))
+        if snap is None:
+            raise ValueError(f"no screen run with id {spec} in {DB_PATH}")
+    else:
+        market, sep, criteria = spec.partition(":")
+        if not sep or not market or not criteria:
+            raise ValueError(
+                f"invalid --from-run {spec!r}: expected a run id or MARKET:CRITERIA "
+                "(e.g. 42 or india:ema)"
+            )
+        cutoff = (
+            date.today() - timedelta(days=int(min_age_days))
+            if min_age_days > 0
+            else None
+        )
+        run_id = find_run(market, criteria, on_or_before=cutoff)
+        if run_id is None:
+            aged = f" at least {min_age_days} days old" if min_age_days > 0 else ""
+            raise ValueError(
+                f"no persisted {market}/{criteria} screen run{aged} in {DB_PATH}; "
+                "run `screener screen` first or check `screener history`"
+            )
+        snap = load_run(run_id)
+        assert snap is not None  # find_run just returned this id
+    if snap.rows.empty:
+        raise ValueError(f"screen run #{snap.run_id} has no saved rows to replay")
+    return snap
 
 
 def previous_run(market: str, criteria: str, before_id: int) -> Optional[pd.DataFrame]:
