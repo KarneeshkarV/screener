@@ -38,7 +38,7 @@ from screener.backtester.core import (
     _passes_entry_filters,
     _precompute_entry_signals,
     _precompute_filter_signals,
-    _prepare_strategy_bars,
+    prepare_strategy_bars,
     _resolve_universe,
     _trailing_liquidity,
 )
@@ -52,6 +52,7 @@ from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import (
     PineError,
     PineSyntaxError,
+    collect_names,
     evaluate,
     parse,
     required_lookback,
@@ -504,6 +505,10 @@ def test_pine_required_lookback():
     assert required_lookback(parse("close > 0")) == 0
 
 
+def test_pine_collect_names_under_unary_operator():
+    assert collect_names(parse("-close > 0")) == {"close"}
+
+
 def test_trailing_liquidity_edges():
     bars = make_bars(n=30)
     assert _trailing_liquidity(bars, -1) == (0.0, 0.0)
@@ -619,8 +624,8 @@ def test_resolve_universe_none_raises():
 def test_prepare_strategy_bars_no_spec():
     cfg = _cfg(strategy_name=None)
     bars_by = {"AAA": make_bars(n=5)}
-    out, lb = _prepare_strategy_bars(
-        cfg,
+    out, lb = prepare_strategy_bars(
+        cfg.strategy_name,
         bars_by,
         {},
         ["AAA"],
@@ -628,6 +633,8 @@ def test_prepare_strategy_bars_no_spec():
         date(2024, 4, 1),
         StubPriceFetcher({}),
         [],
+        market=cfg.market,
+        benchmark=cfg.benchmark,
     )
     assert out is bars_by and lb == 0
 
@@ -1286,7 +1293,6 @@ def _open_slot(bars, *, entry_idx=1, ticker="AAA", **state_kw):
         ticker=ticker,
         entry_date=bars.index[entry_idx].date(),
         entry_price=entry_fill,
-        commission_bps=0.0,
     )
     defaults = dict(
         ticker=ticker,

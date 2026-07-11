@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, cast
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from screener.backtester.slippage import FixedBpsSlippage, SlippageModel
+from screener.backtester.slippage import (
+    CompositeSlippage,
+    EstimatedHalfSpreadSlippage,
+    FixedBpsSlippage,
+    SlippageModel,
+)
 
 
 ExitReason = Literal["stop", "target", "trail", "time", "exit_expr", "eod"]
@@ -51,6 +56,11 @@ class BacktestConfig(BaseModel):
     # ``screener.regime.classify_regimes``) is not in this set. Days with an
     # 'unknown' (warmup) regime are also suppressed.
     regime_filter: tuple[str, ...] = ()
+    # Earnings blackout entry gate (rolling backtest): when set to N, suppress
+    # entry signals on any calendar day within N days BEFORE (and including) a
+    # known earnings date for that ticker. ``None`` disables the gate. Tickers
+    # with no known earnings dates remain eligible (a warning is recorded).
+    earnings_blackout_days: int | None = None
     # Optional rolling-backtest fundamental enrichment. When configured, dated
     # fundamental columns are merged into each ticker's bars before entry/exit
     # expressions are evaluated.
@@ -67,6 +77,12 @@ class BacktestConfig(BaseModel):
     # ``slippage_bps`` for backwards compatibility. Richer models
     # (HalfSpread, VolumeImpact, Composite) live in ``screener.backtester.slippage``.
     slippage_model: Optional[SlippageModel] = None
+    # Statutory fee model name (cash impact, not fill-price). ``flat`` uses
+    # ``commission_bps`` exactly as before; ``india`` applies NSE delivery fees.
+    cost_model: Literal["flat", "india"] = "flat"
+    # When True, compute Corwin-Schultz half-spread from bar high/low and feed
+    # it into the fill-layer slippage stack as ``half_spread``.
+    spread_proxy: bool = False
     # Gap-aware stop / target fills. When True (default going forward) a bar
     # that *opens* through the stop fills at the open (worse than stop_ref);
     # symmetric for gap-ups through a target. False reproduces legacy behaviour.
@@ -89,6 +105,10 @@ class BacktestConfig(BaseModel):
     #   ``splits_only`` — split-adjusted OHLC, dividends as explicit cash.
     #   ``none``        — raw OHLC, no adjustment.
     price_adjustment: Literal["full", "splits_only", "none"] = "full"
+    # Cross-sectional sector neutralization of ``rank_score`` inside the rolling
+    # candidate builder. When True and a factor score matrix exists, scores are
+    # z-scored within each sector group per day before ranking.
+    sector_neutral: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -97,6 +117,22 @@ class BacktestConfig(BaseModel):
             bps = data.get("slippage_bps", 0.0)
             data["slippage_model"] = FixedBpsSlippage(bps=bps)
         return data
+
+    @model_validator(mode="after")
+    def _validate_spread_proxy_consumer(self) -> BacktestConfig:
+        def consumes_estimated_spread(model: SlippageModel) -> bool:
+            if isinstance(model, EstimatedHalfSpreadSlippage):
+                return True
+            if isinstance(model, CompositeSlippage):
+                return any(consumes_estimated_spread(item) for item in model.models)
+            return False
+
+        consumes = consumes_estimated_spread(cast(SlippageModel, self.slippage_model))
+        if self.spread_proxy != consumes:
+            raise ValueError(
+                "spread_proxy and EstimatedHalfSpreadSlippage must be enabled together"
+            )
+        return self
 
     @field_validator("interval")
     @classmethod

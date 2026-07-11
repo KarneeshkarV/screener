@@ -140,7 +140,8 @@ def _prepare_ctx(market: str, price_panel: dict, bars_by_tv: dict, end="2024-03-
         benchmark="^NSEI",
     )
     return PrepareCtx(
-        cfg=cfg,
+        market=cfg.market,
+        benchmark=cfg.benchmark,
         bars_by_tv=bars_by_tv,
         price_panel=price_panel,
         tv_symbols=list(bars_by_tv),

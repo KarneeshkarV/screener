@@ -43,27 +43,41 @@ def referenced_fundamental_fields(entry_expr, exit_expr):
     return names & set(DEFAULT_FUNDAMENTAL_FIELDS)
 
 
-def build_slippage_model(slippage_model, slippage_bps, half_spread_bps, vol_impact_k):
+def build_slippage_model(
+    slippage_model,
+    slippage_bps,
+    half_spread_bps,
+    vol_impact_k,
+    *,
+    spread_proxy: bool = False,
+):
     from screener.backtester.slippage import (
         CompositeSlippage,
+        EstimatedHalfSpreadSlippage,
         FixedBpsSlippage,
         HalfSpreadSlippage,
+        SlippageModel,
         VolumeImpactSlippage,
     )
 
+    model: SlippageModel
     if slippage_model == "fixed":
-        return FixedBpsSlippage(bps=float(slippage_bps))
-    if slippage_model == "half-spread":
-        return HalfSpreadSlippage(half_spread_bps=float(half_spread_bps))
-    if slippage_model == "vol-impact":
-        return VolumeImpactSlippage(k=float(vol_impact_k))
-    return CompositeSlippage(
-        models=(
-            FixedBpsSlippage(bps=float(slippage_bps)),
-            HalfSpreadSlippage(half_spread_bps=float(half_spread_bps)),
-            VolumeImpactSlippage(k=float(vol_impact_k)),
+        model = FixedBpsSlippage(bps=float(slippage_bps))
+    elif slippage_model == "half-spread":
+        model = HalfSpreadSlippage(half_spread_bps=float(half_spread_bps))
+    elif slippage_model == "vol-impact":
+        model = VolumeImpactSlippage(k=float(vol_impact_k))
+    else:
+        model = CompositeSlippage(
+            models=(
+                FixedBpsSlippage(bps=float(slippage_bps)),
+                HalfSpreadSlippage(half_spread_bps=float(half_spread_bps)),
+                VolumeImpactSlippage(k=float(vol_impact_k)),
+            )
         )
-    )
+    if spread_proxy:
+        return CompositeSlippage(models=(model, EstimatedHalfSpreadSlippage()))
+    return model
 
 
 def parse_partial_exits(partial_exit_args) -> tuple[tuple[float, float], ...]:

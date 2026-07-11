@@ -171,7 +171,7 @@ def test_resolve_min_filters_defaults_and_zero_disables():
 
 
 class _NegativeSlippage:
-    def adverse_fraction(self, side, shares, adv, sigma_daily):
+    def adverse_fraction(self, side, shares, adv, sigma_daily, half_spread=0.0):
         return -0.5
 
 
@@ -271,7 +271,7 @@ def test_portfolio_update_peak_and_get_position_no_open():
 
 def test_portfolio_update_peak_raises_peak():
     pf = Portfolio(100_000.0, 2)
-    pf.open("AAA", date(2024, 1, 1), 100.0, commission_bps=0.0)
+    pf.open("AAA", date(2024, 1, 1), 100.0)
     pf.update_peak("AAA", 150.0)
     assert pf.get_position("AAA").peak_price == 150.0
 
@@ -280,7 +280,7 @@ def test_portfolio_credit_dividends_paths():
     pf = Portfolio(100_000.0, 2)
     # non-positive per-share dividend -> early return 0.0
     assert pf.credit_dividends("AAA", 0.0) == 0.0
-    pos = pf.open("AAA", date(2024, 1, 1), 100.0, commission_bps=0.0)
+    pos = pf.open("AAA", date(2024, 1, 1), 100.0)
     cash_before = pf.cash()
     total = pf.credit_dividends("AAA", 1.0)
     assert total == pytest.approx(pos.shares * 1.0)
@@ -292,29 +292,29 @@ def test_portfolio_credit_dividends_paths():
 def test_portfolio_close_unknown_ticker_raises():
     pf = Portfolio(100_000.0, 2)
     with pytest.raises(KeyError):
-        pf.close("AAA", date(2024, 1, 2), 110.0, "time", 0.0)
+        pf.close("AAA", date(2024, 1, 2), 110.0, "time")
 
 
 def test_portfolio_partial_close_validation_and_full_fraction():
     pf = Portfolio(100_000.0, 2)
-    pf.open("AAA", date(2024, 1, 1), 100.0, commission_bps=0.0)
+    pf.open("AAA", date(2024, 1, 1), 100.0)
     with pytest.raises(ValueError):
-        pf.partial_close("AAA", date(2024, 1, 2), 110.0, "target", 0.0, 0.0)
+        pf.partial_close("AAA", date(2024, 1, 2), 110.0, "target", 0.0)
     # fraction >= 1.0 delegates to close()
-    trade = pf.partial_close("AAA", date(2024, 1, 2), 110.0, "target", 1.0, 0.0)
+    trade = pf.partial_close("AAA", date(2024, 1, 2), 110.0, "target", 1.0)
     assert trade.shares == pytest.approx(pf.closed_trades()[0].shares)
 
 
 def test_portfolio_partial_close_no_open_raises():
     pf = Portfolio(100_000.0, 2)
     with pytest.raises(KeyError):
-        pf.partial_close("AAA", date(2024, 1, 2), 110.0, "target", 0.5, 0.0)
+        pf.partial_close("AAA", date(2024, 1, 2), 110.0, "target", 0.5)
 
 
 def test_portfolio_open_tickers_lists_unique():
     pf = Portfolio(100_000.0, 3)
-    pf.open("AAA", date(2024, 1, 1), 100.0, commission_bps=0.0)
-    pf.open("BBB", date(2024, 1, 1), 50.0, commission_bps=0.0)
+    pf.open("AAA", date(2024, 1, 1), 100.0)
+    pf.open("BBB", date(2024, 1, 1), 50.0)
     assert set(pf.open_tickers()) == {"AAA", "BBB"}
 
 

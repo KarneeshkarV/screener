@@ -19,9 +19,10 @@ from screener.backtester.core import (
     _make_slot_state,
     _precompute_entry_signals,
     _precompute_filter_signals,
-    _prepare_strategy_bars,
+    prepare_strategy_bars,
     _resolve_universe,
 )
+from screener.backtester.costs import cost_model_from_config
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.fills import FillModel
 from screener.backtester.data import PriceFetcher
@@ -78,6 +79,7 @@ def _prepare_simulation(
     start_ts: pd.Timestamp,
     end_ts: pd.Timestamp,
     warnings: list[str],
+    earnings_blackout: dict[str, list[date]] | None = None,
 ) -> _RollingSimulationSetup:
     """Fetch data, precompute signals/matrices and build the slot/portfolio state."""
     entry_ast = parse(cfg.entry_expr)
@@ -121,8 +123,8 @@ def _prepare_simulation(
     bars_by_tv = {
         tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
     }
-    bars_by_tv, strategy_lookback = _prepare_strategy_bars(
-        cfg,
+    bars_by_tv, strategy_lookback = prepare_strategy_bars(
+        cfg.strategy_name,
         bars_by_tv,
         price_panel,
         tv_symbols,
@@ -130,6 +132,8 @@ def _prepare_simulation(
         fetch_end,
         fetcher,
         warnings,
+        market=cfg.market,
+        benchmark=cfg.benchmark,
     )
     lookback = max(lookback, strategy_lookback)
 
@@ -204,6 +208,33 @@ def _prepare_simulation(
         )
 
     master_dates = list(pd.DatetimeIndex(np.unique(np.concatenate(day_arrays))))
+    sector_by_tv: dict[str, str] | None = None
+    if cfg.sector_neutral:
+        from screener.sectors import sector_by_ticker
+
+        sector_by_tv = sector_by_ticker(tv_symbols, cfg.market)
+
+    # Resolve earnings blackout map when the gate is configured. Prefer an
+    # injected mapping (tests); otherwise collect via the market-aware earnings
+    # date collectors (already disk-cached). Keys must be TV symbols to match
+    # bars_by_tv / signal_mat columns.
+    resolved_earnings_blackout = earnings_blackout
+    if cfg.earnings_blackout_days is not None and resolved_earnings_blackout is None:
+        from screener.earnings_backtest.earnings_dates import load_earnings_dates_map
+
+        yf_tickers = list(dict.fromkeys(yf_by_tv.values()))
+        span_years = max(
+            3,
+            int((end_ts.normalize() - start_ts.normalize()).days / 365) + 2,
+        )
+        yf_map = load_earnings_dates_map(yf_tickers, cfg.market, years=span_years)
+        # Invert yf -> list[tv] so multi-mapped symbols still gate correctly.
+        resolved_earnings_blackout = {}
+        for tv, yf_sym in yf_by_tv.items():
+            dates = yf_map.get(yf_sym)
+            if dates:
+                resolved_earnings_blackout[tv] = dates
+
     candidate_matrices = _build_rolling_candidate_matrices(
         bars_by_tv,
         entry_signals_by_tv,
@@ -212,9 +243,17 @@ def _prepare_simulation(
         lookback,
         membership_added=dict(cfg.membership_added) or None,
         regime_allowed=regime_allowed,
+        earnings_blackout=resolved_earnings_blackout,
+        earnings_blackout_days=cfg.earnings_blackout_days,
         warnings=warnings,
+        sector_neutral=cfg.sector_neutral,
+        sector_by_tv=sector_by_tv,
     )
-    portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
+    portfolio = Portfolio(
+        cfg.initial_capital,
+        max(cfg.top, 1),
+        cost_model=cost_model_from_config(cfg),
+    )
     slot_states: dict[int, _SlotState | None] = {
         slot_id: None for slot_id in range(max(cfg.top, 1))
     }
@@ -359,7 +398,6 @@ class _DailyRankingSource:
                     ticker=ticker,
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
-                    commission_bps=cfg.commission_bps,
                 )
                 slot_states[slot_id] = state
                 self.slot_bars[slot_id] = bars
@@ -448,8 +486,15 @@ def run_rolling_backtest(
     *,
     start_date: date,
     end_date: date,
+    earnings_blackout: dict[str, list[date]] | None = None,
 ) -> BacktestResult:
-    """Run a daily rolling simulation over ``[start_date, end_date]``."""
+    """Run a daily rolling simulation over ``[start_date, end_date]``.
+
+    ``earnings_blackout`` is an optional pre-built ``TV-symbol -> earnings
+    dates`` map for tests / offline runs. When omitted and
+    ``cfg.earnings_blackout_days`` is set, dates are collected via the
+    market-aware earnings collectors.
+    """
     warnings: list[str] = []
     start_ts = pd.Timestamp(start_date).normalize()
     # For daily bars the window upper bound is midnight of end_date (bar
@@ -473,6 +518,7 @@ def run_rolling_backtest(
         start_ts=start_ts,
         end_ts=end_ts,
         warnings=warnings,
+        earnings_blackout=earnings_blackout,
     )
     if setup.early_result is not None:
         return setup.early_result

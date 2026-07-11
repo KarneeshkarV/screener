@@ -75,6 +75,17 @@ from screener.markets import as_of_option, get_market, get_price_fetcher, market
 @click.option(
     "--commission-bps", type=float, default=0.0, help="Commission per fill (bps)."
 )
+@click.option(
+    "--cost-model",
+    type=click.Choice(["flat", "india"]),
+    default="flat",
+    show_default=True,
+    help=(
+        "Statutory fee model. 'flat' applies --commission-bps on every fill "
+        "(legacy). 'india' applies NSE equity delivery fees (STT, stamp duty, "
+        "exchange, SEBI, GST, IPFT)."
+    ),
+)
 @click.option("--initial-capital", type=float, default=100_000.0)
 @click.option(
     "--benchmark",
@@ -220,6 +231,7 @@ def backtest_historical(
     trailing_stop,
     slippage_bps,
     commission_bps,
+    cost_model,
     initial_capital,
     benchmark,
     tickers,
@@ -331,6 +343,7 @@ def backtest_historical(
         reserve_multiple=int(reserve_multiple),
         reinvest=not no_reinvest,
         slippage_model=slip_model,
+        cost_model=cost_model,
         gap_fills=not no_gap_fills,
         entry_order_type=entry_order,
         entry_limit_bps=entry_limit_bps,

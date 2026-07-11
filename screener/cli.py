@@ -10,6 +10,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from screener.backtester.factor_tearsheet import factor_tearsheet
 from screener.backtester.historical import backtest_historical
 from screener.backtester.lab import backtest_lab
 from screener.backtester.optimization.cli import optimize, research_report
@@ -155,6 +156,7 @@ cli.add_command(earnings_backtest)
 cli.add_command(earnings_pead)
 cli.add_command(backtest_historical)
 cli.add_command(backtest_rolling)
+cli.add_command(factor_tearsheet)
 cli.add_command(vbt_sweep)
 cli.add_command(backtest_lab)
 _register_operator_cli(cli)
