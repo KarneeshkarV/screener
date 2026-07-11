@@ -9,6 +9,13 @@ import numpy as np
 import pandas as pd
 
 
+def _preview_warning(symbols: list[str], template: str) -> str:
+    """Format a count plus a stable five-symbol preview for warning messages."""
+    preview = ", ".join(sorted(symbols)[:5])
+    more = "" if len(symbols) <= 5 else f" (+{len(symbols) - 5} more)"
+    return template.format(count=len(symbols), preview=f"{preview}{more}")
+
+
 @dataclass(frozen=True)
 class _RollingCandidateMatrices:
     """Precomputed per-day matrices for vectorized candidate selection.
@@ -176,11 +183,12 @@ def _build_rolling_candidate_matrices(
     # Those names get an all-NaN score and are silently dropped at selection
     # time, so surface them explicitly rather than excluding them without trace.
     if any_score and missing_score and warnings is not None:
-        preview = ", ".join(sorted(missing_score)[:5])
-        more = "" if len(missing_score) <= 5 else f" (+{len(missing_score) - 5} more)"
         warnings.append(
-            f"factor ranking active but {len(missing_score)} ticker(s) lack a "
-            f"rank_score column; excluded from selection: {preview}{more}"
+            _preview_warning(
+                missing_score,
+                "factor ranking active but {count} ticker(s) lack a rank_score "
+                "column; excluded from selection: {preview}",
+            )
         )
 
     bar_idx_mat = pd.DataFrame(bar_cols, index=master_ix)
@@ -199,11 +207,12 @@ def _build_rolling_candidate_matrices(
             if sector_map.get(tv, "UNKNOWN") == "UNKNOWN"
         ]
         if unknown and warnings is not None:
-            preview = ", ".join(sorted(unknown)[:5])
-            more = "" if len(unknown) <= 5 else f" (+{len(unknown) - 5} more)"
             warnings.append(
-                f"sector neutralization: {len(unknown)} ticker(s) mapped to "
-                f"UNKNOWN sector: {preview}{more}"
+                _preview_warning(
+                    unknown,
+                    "sector neutralization: {count} ticker(s) mapped to UNKNOWN "
+                    "sector: {preview}",
+                )
             )
         rank_score_mat = _sector_neutralize_scores(rank_score_mat, sector_map)
     return _RollingCandidateMatrices(

@@ -133,7 +133,9 @@ def test_build_matrices_sector_neutral_warns_unknown() -> None:
         sector_by_tv={"AAA": "Tech"},  # BBB missing -> UNKNOWN
     )
     assert mats.rank_score_mat is not None
-    assert any("UNKNOWN" in w and "BBB" in w for w in warnings)
+    assert warnings == [
+        "sector neutralization: 1 ticker(s) mapped to UNKNOWN sector: BBB"
+    ]
 
 
 def test_sector_neutral_noop_without_rank_score() -> None:
