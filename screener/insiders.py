@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import urllib.request
-from typing import Optional, cast
+from typing import Optional
 
 import pandas as pd
 import yfinance as yf
@@ -179,6 +179,8 @@ def _aggregate_fmp_transactions(
     buy_trans = sell_trans = 0
     for txn in transactions:
         date_raw = txn.get("transactionDate") or txn.get("filingDate")
+        if date_raw is None:
+            continue
         ts = pd.to_datetime(date_raw, errors="coerce")
         if pd.isna(ts) or ts < cutoff:
             continue
@@ -454,24 +456,29 @@ def filter_promoter_increased(
     if insiders.empty:
         return insiders
 
+    def optional_numeric(column: str) -> pd.Series:
+        if column not in insiders.columns:
+            return pd.Series(float("nan"), index=insiders.index, dtype=float)
+        return pd.to_numeric(insiders[column], errors="coerce")
+
     if market == "india":
-        change = pd.to_numeric(insiders.get("promoter_change"), errors="coerce")
+        change = pd.to_numeric(insiders["promoter_change"], errors="coerce")
         mask = change > min_promoter_change_pct
         if require_both:
-            yf_net = pd.to_numeric(insiders.get("yf_net_shares_6m"), errors="coerce")
+            yf_net = optional_numeric("yf_net_shares_6m")
             mask = mask & (yf_net > 0)
     else:
         # US: FMP (SEC Form 4) is the primary signal when available; fall back
         # to the yfinance feed per-row when FMP has no data for a ticker.
-        yf_net = pd.to_numeric(insiders.get("yf_net_shares_6m"), errors="coerce")
+        yf_net = optional_numeric("yf_net_shares_6m")
         if "fmp_net_shares_6m" in insiders.columns:
-            fmp_net = pd.to_numeric(insiders.get("fmp_net_shares_6m"), errors="coerce")
+            fmp_net = pd.to_numeric(insiders["fmp_net_shares_6m"], errors="coerce")
             net = fmp_net.where(fmp_net.notna() & (fmp_net != 0.0), yf_net)
         else:
             net = yf_net
         mask = net > 0
         if min_yf_net_pct is not None:
-            pct = pd.to_numeric(insiders.get("yf_net_pct_6m"), errors="coerce")
+            pct = optional_numeric("yf_net_pct_6m")
             mask = mask & (pct >= min_yf_net_pct)
 
-    return cast(pd.DataFrame, insiders[mask.fillna(False)].copy())
+    return insiders[mask.fillna(False)].copy()

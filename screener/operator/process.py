@@ -100,7 +100,8 @@ def _five_day_avg_delivery(as_of: date) -> pd.DataFrame:
         frames.append(df)
     stacked = pd.concat(frames, ignore_index=True)
     avg = stacked.groupby("SYMBOL", as_index=False)["DELIV_QTY"].mean()
-    return cast(pd.DataFrame, avg.rename(columns={"DELIV_QTY": "5_Day_Avg_Delivery"}))
+    avg_frame = cast(pd.DataFrame, avg)
+    return avg_frame.rename(columns={"DELIV_QTY": "5_Day_Avg_Delivery"})
 
 
 def build_dataset(

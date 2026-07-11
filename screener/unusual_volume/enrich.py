@@ -9,7 +9,7 @@ events.
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 import pandas as pd
 from tradingview_screener import Query, col
@@ -116,7 +116,7 @@ def deep_enrich_india(events: list[Event]) -> None:
         ev.notes = (ev.notes + "; " + tag).strip("; ") if ev.notes else tag
 
 
-def _fetch_shareholding_quarterly(stock):
+def _fetch_shareholding_quarterly(stock: Any) -> Any:
     """Return quarterly shareholding data across openscreener API versions."""
     fetch = getattr(stock, "fetch", None)
     if callable(fetch):
@@ -133,7 +133,7 @@ def _fetch_shareholding_quarterly(stock):
     return shareholding
 
 
-def _extract_promoter_pct(df) -> Optional[float]:
+def _extract_promoter_pct(df: Any) -> Optional[float]:
     """Best-effort: pull the most recent 'Promoters' row from a shareholding
     DataFrame and return their percent holding."""
     if df is None:

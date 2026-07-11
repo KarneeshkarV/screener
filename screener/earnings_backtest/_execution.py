@@ -1,6 +1,8 @@
-"""Execution-cost helpers shared by the earnings backtest engines."""
+"""Compatibility wrapper for the canonical backtest execution primitives."""
 
 from __future__ import annotations
+
+from screener.backtester.execution import fixed_bps_round_trip
 
 
 def apply_slippage(
@@ -12,6 +14,4 @@ def apply_slippage(
     arithmetic mirrors the previous inline form bit-for-bit so backtest
     numbers are unchanged.
     """
-    entry_price *= 1 + slippage_bps / 10_000
-    exit_price *= 1 - slippage_bps / 10_000
-    return entry_price, exit_price
+    return fixed_bps_round_trip(entry_price, exit_price, slippage_bps)

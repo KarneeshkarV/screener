@@ -18,16 +18,16 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Sequence
+from typing import Sequence, cast
 
 import numpy as np
 import pandas as pd
 
 from screener.strategies.spec import (
+    ExpressionStrategySpec,
     LookbackFn,
     PrepareBarsFn,
     PrepareCtx,
-    StrategySpec,
     discover_plugins,
     registry,
 )
@@ -91,12 +91,12 @@ def validate_combo_components(
                 f"unknown combo component {factor_name!r}. "
                 f"Known: {sorted(registry.names())}"
             )
-        if spec.prepare_bars is None:
+        if getattr(spec, "prepare_bars", None) is None:
             raise ValueError(
                 f"combo component {factor_name!r} has no prepare_bars hook "
                 "(cannot produce rank_score)"
             )
-        if spec.entry is None:
+        if getattr(spec, "entry", None) is None:
             raise ValueError(f"combo component {factor_name!r} has no entry expression")
         validated.append((factor_name, weight))
     if not validated:
@@ -168,7 +168,7 @@ def make_combo_prepare(components: Sequence[tuple[str, float]]) -> PrepareBarsFn
         component_mats: list[tuple[pd.DataFrame, float]] = []
         prepared_by_factor: list[dict[str, pd.DataFrame]] = []
         for factor_name, weight in validated:
-            spec = registry.get(factor_name)
+            spec = cast(ExpressionStrategySpec, registry.get(factor_name))
             assert spec.prepare_bars is not None
             child_ctx = PrepareCtx(
                 market=ctx.market,
@@ -224,7 +224,7 @@ def make_combo_lookback(components: Sequence[tuple[str, float]]) -> LookbackFn:
     def _lookback() -> int:
         floor = 0
         for factor_name, _weight in validated:
-            spec = registry.get(factor_name)
+            spec = cast(ExpressionStrategySpec, registry.get(factor_name))
             if spec.required_lookback is not None:
                 floor = max(floor, int(spec.required_lookback()))
         return floor
@@ -236,16 +236,15 @@ def make_combo_entry(components: Sequence[tuple[str, float]]) -> str:
     validated = list(components)
     parts: list[str] = []
     for factor_name, _weight in validated:
-        spec = registry.get(factor_name)
-        assert spec.entry is not None
+        spec = cast(ExpressionStrategySpec, registry.get(factor_name))
         parts.append(f"({spec.entry})")
     return " and ".join(parts)
 
 
-def resolve_combo_spec(name: str) -> StrategySpec:
-    """Build a :class:`StrategySpec` for a ``combo:...`` strategy name."""
+def resolve_combo_spec(name: str) -> ExpressionStrategySpec:
+    """Build an :class:`ExpressionStrategySpec` for a ``combo:...`` name."""
     components = validate_combo_components(parse_combo_spec(name))
-    return StrategySpec(
+    return ExpressionStrategySpec(
         name=name,
         entry=make_combo_entry(components),
         exit=None,

@@ -23,6 +23,7 @@ from screener.unusual_volume.detector import Event
 from screener.unusual_volume.nse_client import nse_cached_json
 
 _NSE_PLEDGE_URL = "https://www.nseindia.com/api/corporate-pledgedata?symbol={sym}"
+EVENT_FIELDS = ("pledge_pct",)
 # screener.in renders e.g. "Pledged percentage</span> ... 12.34%" in the
 # shareholding section. Match the number that follows the label.
 _OSC_PLEDGE_RE = re.compile(

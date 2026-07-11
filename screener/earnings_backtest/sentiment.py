@@ -3,10 +3,8 @@
 Analyst upgrades/downgrades (yfinance, US) and options-implied sentiment —
 put/call ratio + median IV — from yfinance (US) or the NSE option chain (India).
 
-Split out of :mod:`screener.earnings_backtest.data`, which re-exports every
-public name here for backwards compatibility. Cross-function and seam
-dependencies are looked up through the ``data`` module (``data.<name>``) so the
-test suite's ``monkeypatch.setattr(data, ...)`` patches keep taking effect.
+The compatibility facade re-exports the public names from this canonical
+module; this module never imports the facade back.
 """
 
 from __future__ import annotations
@@ -18,10 +16,13 @@ from typing import Any, Optional, cast
 import pandas as pd
 import yfinance as yf
 
-from screener.earnings_backtest import data
+from screener.backtester.data import _configure_yfinance, call_yfinance_with_timeout
+from screener.cache import cached_json_call
+from screener.earnings_backtest.common import SENTIMENT_CACHE_DAYS, jsonable
 from screener.options.metrics import compute_chain_metrics
 from screener.options.nse_live import parse_nse_chain
 from screener.options.yf_chain import chain_from_yfinance_ticker
+from screener.unusual_volume.option_chain import fetch_option_chain
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +41,9 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
         return None
 
     def _fetch() -> Optional[dict]:
-        data._configure_yfinance()
-        try:
+        _configure_yfinance()
+
+        def _request() -> Optional[dict]:
             t = yf.Ticker(ticker)
             ud = t.upgrades_downgrades
             if ud is None or ud.empty:
@@ -49,7 +51,6 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
 
             if "Action" in ud.columns:
                 counts = ud["Action"].value_counts().to_dict()
-                # up = upgrade, reit = reiterate (half weight), down = downgrade
                 upgrades = counts.get("up", 0) + 0.5 * counts.get("reit", 0)
                 downgrades = counts.get("down", 0)
             elif "ToGrade" in ud.columns:
@@ -61,24 +62,26 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
                 counts = {str(k): int(v) for k, v in grades.items()}
             else:
                 return None
-
             result = {
                 "upgrades": upgrades,
                 "downgrades": downgrades,
                 "net": upgrades - downgrades,
                 "grade_counts": counts if "Action" in ud.columns else {},
             }
-            return cast("dict[Any, Any] | None", data._jsonable(result))
+            return cast("dict[Any, Any] | None", jsonable(result))
+
+        try:
+            return call_yfinance_with_timeout(_request)
         except Exception as exc:
             logger.debug(
                 "analyst_sentiment_error", extra={"ticker": ticker, "error": str(exc)}
             )
             return None
 
-    return data.cached_json_call(
+    return cached_json_call(
         "analyst",
         (market, ticker),
-        ttl_seconds=data.SENTIMENT_CACHE_DAYS * 86_400,
+        ttl_seconds=SENTIMENT_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
     )
@@ -91,23 +94,17 @@ def fetch_iv_sentiment_yf(ticker: str) -> Optional[dict]:
     """Compute put/call ratio and IV percentile from yfinance (US only)."""
 
     def _fetch() -> Optional[dict]:
-        data._configure_yfinance()
-        try:
+        _configure_yfinance()
+
+        def _request() -> Optional[dict]:
             t = yf.Ticker(ticker)
             dates = t.options
             if not dates:
                 return None
-
             today = pd.Timestamp(date.today())
-            target_expiry = None
-            for d in dates:
-                exp = pd.Timestamp(d)
-                if (exp - today).days >= 5:
-                    target_expiry = d
-                    break
-            if target_expiry is None:
-                target_expiry = dates[0]
-
+            target_expiry = next(
+                (d for d in dates if (pd.Timestamp(d) - today).days >= 5), dates[0]
+            )
             normalized = chain_from_yfinance_ticker(
                 t,
                 ticker,
@@ -122,37 +119,35 @@ def fetch_iv_sentiment_yf(ticker: str) -> Optional[dict]:
             total_puts = int(metrics.put_volume)
             total_oi_calls = int(metrics.call_oi)
             total_oi_puts = int(metrics.put_oi)
-
-            denom = total_calls or 1
             pc_ratio = (
-                total_puts / denom
+                total_puts / total_calls
                 if total_calls > 0
-                else (total_oi_puts / (total_oi_calls or 1))
+                else total_oi_puts / (total_oi_calls or 1)
             )
-
             median_iv = (
                 metrics.median_iv * 100.0
                 if metrics.median_iv is not None
                 else float("nan")
             )
-
-            result = {
+            return {
                 "pc_ratio": round(pc_ratio, 4),
                 "median_iv": round(median_iv, 2),
                 "total_calls": total_calls,
                 "total_puts": total_puts,
             }
-            return result
+
+        try:
+            return call_yfinance_with_timeout(_request)
         except Exception as exc:
             logger.debug(
                 "iv_sentiment_error", extra={"ticker": ticker, "error": str(exc)}
             )
             return None
 
-    return data.cached_json_call(
+    return cached_json_call(
         "iv_yf",
         ticker,
-        ttl_seconds=data.SENTIMENT_CACHE_DAYS * 86_400,
+        ttl_seconds=SENTIMENT_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
     )
@@ -173,7 +168,7 @@ def fetch_iv_sentiment_nse(symbol: str) -> Optional[dict]:
 
     def _fetch() -> Optional[dict]:
         try:
-            raw = data.fetch_option_chain(symbol)
+            raw = fetch_option_chain(symbol)
             if not raw or "records" not in raw:
                 return None
             if not (raw.get("records") or {}).get("data"):
@@ -208,10 +203,10 @@ def fetch_iv_sentiment_nse(symbol: str) -> Optional[dict]:
             )
             return None
 
-    return data.cached_json_call(
+    return cached_json_call(
         "iv_nse",
         symbol,
-        ttl_seconds=data.SENTIMENT_CACHE_DAYS * 86_400,
+        ttl_seconds=SENTIMENT_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
     )
@@ -222,5 +217,5 @@ def fetch_iv_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
     if market == "india":
         # Strip .NS suffix for the NSE symbol.
         symbol = ticker.replace(".NS", "").replace(".BO", "")
-        return data.fetch_iv_sentiment_nse(symbol)
-    return data.fetch_iv_sentiment_yf(ticker)
+        return fetch_iv_sentiment_nse(symbol)
+    return fetch_iv_sentiment_yf(ticker)

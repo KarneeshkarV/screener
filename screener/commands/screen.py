@@ -8,7 +8,7 @@ import click
 
 from screener.cache import parse_ttl
 from screener import history
-from screener.criteria import CRITERIA, registry as criteria_registry, resolve_criteria
+from screener.criteria import CRITERIA, resolve_criteria
 from screener.display import print_csv, print_results
 from screener.enrich import enrich_days_to_earnings
 from screener.markets import market_option
@@ -17,14 +17,13 @@ from screener.screen_workflow import (
     ScreenMode,
     ScreenRequest,
     ScreenWorkflowDeps,
-    ScreenWorkflowError,
     run_screen_workflow,
 )
-
-
-def _criteria_registry_patch_point() -> object:
-    """Return the criteria registry kept here as a CLI Adapter patch point."""
-    return criteria_registry
+from screener.screen_aliases import (
+    SCREEN_ALIASES,
+    ScreenAliasSelectionError,
+    resolve_screen_alias,
+)
 
 
 def _screen_workflow_deps() -> ScreenWorkflowDeps:
@@ -53,7 +52,7 @@ def _screen_workflow_deps() -> ScreenWorkflowDeps:
     "-c",
     "--criteria",
     "criteria_names",
-    type=click.Choice(list(CRITERIA.keys())),
+    type=click.Choice([*CRITERIA, *SCREEN_ALIASES]),
     multiple=True,
     default=("ema",),
     help="Screening criteria (repeat to combine, e.g. -c ema -c breakout).",
@@ -121,7 +120,19 @@ def screen(
     """Screen stocks based on technical criteria."""
     if earnings_buffer is not None and earnings_buffer < 0:
         raise click.UsageError("--earnings-buffer must be >= 0.")
-    _criteria_registry_patch_point()
+    try:
+        alias = resolve_screen_alias(criteria_names)
+    except ScreenAliasSelectionError as exc:
+        raise click.UsageError(str(exc)) from exc
+    if alias is not None:
+        alias.runner(
+            market=market,
+            limit=int(limit),
+            output_csv=output_csv,
+            refresh=refresh,
+            cache_ttl=cache_ttl,
+        )
+        return
     request = ScreenRequest(
         market=market,
         criteria_names=criteria_names,
@@ -136,16 +147,7 @@ def screen(
         earnings=earnings,
         earnings_buffer=earnings_buffer,
     )
-    try:
-        outcome = run_screen_workflow(request, _screen_workflow_deps())
-    except ScreenWorkflowError as exc:
-        raise click.UsageError(str(exc)) from exc
-
-    if outcome.mode is ScreenMode.PIPELINE:
-        return
-
-    if outcome.df is None:  # pragma: no cover - defensive contract guard
-        return
+    outcome = run_screen_workflow(request, _screen_workflow_deps())
 
     if outcome.mode is ScreenMode.CSV:
         print_csv(outcome.df)
@@ -168,7 +170,6 @@ def screen(
 
 
 __all__ = [
-    "criteria_registry",
     "history",
     "print_csv",
     "print_results",

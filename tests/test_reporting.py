@@ -2,7 +2,7 @@
 
 These pin the leaf behaviours that ``unusual_volume.output`` and
 ``rs_breakout`` now delegate to. The end-to-end byte-identical proof for the
-JSON/Markdown *files* lives in ``tests/test_unusual_volume.py`` and
+JSON/Markdown *files* lives in ``tests/test_unusual_volume_detection_delivery.py`` and
 ``tests/test_rs_breakout.py`` (e.g. ``test_write_json_sanitizes_nonfinite_metrics``,
 ``test_write_markdown_buckets_and_headers``, ``test_write_json_serializes_result_dates``);
 those still exercise the real writers through the delegating wrappers.

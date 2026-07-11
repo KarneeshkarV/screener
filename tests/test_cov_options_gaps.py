@@ -462,11 +462,9 @@ def test_compute_oc_iv_volume_aggregates():
 
 
 def test_fetch_iv_sentiment_nse_unparseable_chain(monkeypatch):
+    monkeypatch.setattr(sentiment, "cached_json_call", lambda *a, **kw: kw["fetch"]())
     monkeypatch.setattr(
-        sentiment.data, "cached_json_call", lambda *a, **kw: kw["fetch"]()
-    )
-    monkeypatch.setattr(
-        sentiment.data,
+        sentiment,
         "fetch_option_chain",
         lambda symbol: {"records": {"data": [{"CE": {}}]}},
     )

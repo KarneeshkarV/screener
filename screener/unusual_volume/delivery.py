@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, cast
 
 import pandas as pd
 
@@ -159,9 +159,11 @@ def overlay_events(events: list[Event], panel: pd.DataFrame) -> list[Event]:
         key = (ev.symbol.upper(), ev.date)
         if key not in indexed.index:
             continue
-        row = indexed.loc[key]
-        if isinstance(row, pd.DataFrame):  # pragma: no cover - keys deduped above
-            row = row.iloc[0]
+        selected = indexed.loc[key]
+        if isinstance(selected, pd.DataFrame):  # pragma: no cover - keys deduped
+            row = cast(pd.Series, selected.iloc[0])
+        else:
+            row = cast(pd.Series, selected)
         ev.delivery_qty = (
             float(row["DELIV_QTY"]) if not pd.isna(row["DELIV_QTY"]) else None
         )

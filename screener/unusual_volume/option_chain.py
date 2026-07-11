@@ -27,6 +27,7 @@ _OC_INDEX_SYMBOLS = frozenset(
     {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"}
 )
 _OC_PAGE = "https://www.nseindia.com/option-chain"
+EVENT_FIELDS = ("call_put_oi_ratio", "pcr")
 
 
 def fetch_option_chain(symbol: str, *, refresh: bool = False) -> Optional[dict]:

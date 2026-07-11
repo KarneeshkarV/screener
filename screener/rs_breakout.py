@@ -23,6 +23,7 @@ from rich.table import Table
 
 from screener.backtester.data import PriceFetcher, tv_to_yf
 from screener.format import fmt_float as _fmt_float
+from screener.indicators.frames import wilder_atr
 from screener.markets import get_market
 from screener.parallel import parallel_map
 from screener.reporting import dump_json_file, markdown_row
@@ -124,16 +125,7 @@ def supertrend(
     high = bars["high"].astype(float)
     low = bars["low"].astype(float)
     close = bars["close"].astype(float)
-    prev_close = close.shift(1)
-    true_range = pd.concat(
-        [
-            high - low,
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    atr = true_range.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
+    atr = wilder_atr(high, low, close, period, min_periods=period)
     hl2 = (high + low) / 2.0
     basic_upper = hl2 + multiplier * atr
     basic_lower = hl2 - multiplier * atr

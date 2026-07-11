@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener.strategies.spec import PrepareCtx, strategy
+from screener.strategies.spec import PrepareCtx, register_expression_strategy
 
 
 def _prepare_rs_breakout(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
@@ -53,12 +53,10 @@ def _rs_breakout_lookback() -> int:
     return required_history_bars()
 
 
-@strategy(
+register_expression_strategy(
     "rs_breakout",
     entry="rs_breakout_entry > 0",
     exit=None,
     prepare_bars=_prepare_rs_breakout,
     required_lookback=_rs_breakout_lookback,
 )
-def _rs_breakout() -> None:
-    """Expression-only strategy. Body unused."""

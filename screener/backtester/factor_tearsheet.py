@@ -318,10 +318,11 @@ def load_factor_panels(
 
     discover_plugins()
     spec = resolve_strategy_spec(strategy_name)
-    if spec is None or spec.entry is None:
+    if spec is None or getattr(spec, "entry", None) is None:
         raise ValueError(f"unknown factor strategy {strategy_name!r}")
     # Warmup: use the strategy lookback when available, else a conservative floor.
-    lookback = spec.required_lookback() if spec and spec.required_lookback else 252
+    lookback_fn = getattr(spec, "required_lookback", None)
+    lookback = lookback_fn() if lookback_fn else 252
     warmup_days = max(lookback * 3 + 30, 365)
     fetch_start = start - timedelta(days=warmup_days)
 

@@ -11,7 +11,15 @@ from typing import cast as type_cast
 
 import click
 
-from screener.backtester.models import BacktestConfig, ExitReason, Trade
+from screener.backtester.models import (
+    BacktestConfig,
+    ExecutionPolicy,
+    ExitReason,
+    PortfolioPolicy,
+    SignalPolicy,
+    Trade,
+    UniversePolicy,
+)
 from screener.backtester.optimization.grid import grid_search
 from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
 from screener.backtester.optimization.reporting import (
@@ -23,6 +31,7 @@ from screener.backtester.optimization.reporting import (
 )
 from screener.backtester.optimization.walk_forward import walk_forward_optimize
 from screener.backtester.cli_common import resolve_min_filters
+from screener.backtester.data import PriceFetcher
 from screener.markets import get_market, get_price_fetcher, market_option
 
 
@@ -74,27 +83,27 @@ def _parameter_grid(
 
 def _base_config(
     *,
-    market,
-    end_date,
-    hold,
-    top,
-    entry_expr,
-    exit_expr,
-    strategy_name,
-    tickers,
-    universe_file,
-    max_universe,
-    stop_loss,
-    take_profit,
-    trailing_stop,
-    slippage_bps,
-    commission_bps,
-    initial_capital,
-    benchmark,
-    min_price,
-    min_avg_dollar_volume,
-    adv_window,
-):
+    market: str,
+    end_date: date,
+    hold: int,
+    top: int,
+    entry_expr: str | None,
+    exit_expr: str | None,
+    strategy_name: str | None,
+    tickers: str | None,
+    universe_file: str | None,
+    max_universe: int,
+    stop_loss: float | None,
+    take_profit: float | None,
+    trailing_stop: float | None,
+    slippage_bps: float,
+    commission_bps: float,
+    initial_capital: float,
+    benchmark: str | None,
+    min_price: float | None,
+    min_avg_dollar_volume: float | None,
+    adv_window: int,
+) -> BacktestConfig:
     from screener.backtester.strategies import resolve_strategy
 
     if strategy_name:
@@ -116,25 +125,33 @@ def _base_config(
     return BacktestConfig(
         market=market,
         as_of=end_date,
-        hold=int(hold),
-        top=int(top),
-        strategy_name=strategy_name,
-        entry_expr=entry_expr,
-        exit_expr=exit_expr,
-        stop_loss=stop_loss,
-        take_profit=take_profit,
-        trailing_stop=trailing_stop,
-        slippage_bps=float(slippage_bps),
-        commission_bps=float(commission_bps),
-        initial_capital=float(initial_capital),
         benchmark=benchmark or get_market(market).benchmark,
-        tickers=ticker_tuple,
-        universe_file=universe_file,
-        max_universe=int(max_universe),
-        min_price=resolved_min_price,
-        min_avg_dollar_volume=resolved_min_adv,
-        avg_dollar_volume_window=int(adv_window),
-        reinvest=True,
+        universe=UniversePolicy(
+            tickers=ticker_tuple,
+            universe_file=universe_file,
+            max_universe=int(max_universe),
+        ),
+        signals=SignalPolicy(
+            strategy_name=strategy_name,
+            entry_expr=entry_expr,
+            exit_expr=exit_expr,
+        ),
+        execution=ExecutionPolicy(
+            hold=int(hold),
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            trailing_stop=trailing_stop,
+            slippage_bps=float(slippage_bps),
+            commission_bps=float(commission_bps),
+        ),
+        portfolio=PortfolioPolicy(
+            top=int(top),
+            initial_capital=float(initial_capital),
+            min_price=resolved_min_price,
+            min_avg_dollar_volume=resolved_min_adv,
+            avg_dollar_volume_window=int(adv_window),
+            reinvest=True,
+        ),
     )
 
 
@@ -150,7 +167,7 @@ def _resolve_dates(start_arg, end_arg, years) -> tuple[date, date]:
     return start_date, end_date
 
 
-def _fetcher():
+def _fetcher() -> PriceFetcher:
     from screener.backtester.data import build_price_fetcher
 
     return get_price_fetcher(

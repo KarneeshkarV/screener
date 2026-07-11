@@ -16,9 +16,16 @@ import pandas as pd
 import pytest
 
 from screener.earnings_backtest import data as ebd
+from screener.earnings_backtest import earnings_dates, sentiment
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
+
+
+def test_data_facade_is_a_one_way_eager_export() -> None:
+    assert ebd.fetch_earnings_dates_yf is earnings_dates.fetch_earnings_dates_yf
+    assert ebd.fetch_iv_sentiment is sentiment.fetch_iv_sentiment
+    assert "__getattr__" not in vars(ebd)
 
 
 def _earnings_df(dates, eps_est=None, reported=None, surprise=None):
@@ -80,12 +87,17 @@ class _Chain:
 @pytest.fixture(autouse=True)
 def _no_yf_patch(monkeypatch):
     """Neutralise side-effecting yfinance global helpers for every test."""
-    monkeypatch.setattr(ebd, "_configure_yfinance", lambda: None)
+    monkeypatch.setattr(earnings_dates, "_configure_yfinance", lambda: None)
+    monkeypatch.setattr(sentiment, "_configure_yfinance", lambda: None)
 
 
 @pytest.fixture
 def no_disk_cache(monkeypatch):
-    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: kw["fetch"]())
+    def direct(*args, **kwargs):
+        return kwargs["fetch"]()
+
+    monkeypatch.setattr(earnings_dates, "cached_json_call", direct)
+    monkeypatch.setattr(sentiment, "cached_json_call", direct)
 
 
 # ── _jsonable ────────────────────────────────────────────────────────────
@@ -162,7 +174,7 @@ def test_load_nifty500_delegates_to_universes(monkeypatch):
 
 def test_fetch_earnings_dates_yf_cache_hit(monkeypatch):
     recs = ebd._earnings_to_records(_earnings_df(["2024-01-15"]))
-    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: recs)
+    monkeypatch.setattr(earnings_dates, "cached_json_call", lambda *a, **kw: recs)
     out = ebd.fetch_earnings_dates_yf("AAPL")
     assert out is not None
     assert pd.Timestamp("2024-01-15") in out.index
@@ -221,14 +233,14 @@ def _inject_nselive(monkeypatch, instance):
 
 def test_fetch_earnings_dates_nse_cache_hit_data(monkeypatch):
     cached = [{"ticker": "AAA.NS", "earnings_date": "2024-01-15", "desc": "x"}]
-    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: cached)
+    monkeypatch.setattr(earnings_dates, "cached_json_call", lambda *a, **kw: cached)
     out = ebd.fetch_earnings_dates_nse()
     assert out is not None
     assert out["ticker"].iloc[0] == "AAA.NS"
 
 
 def test_fetch_earnings_dates_nse_cache_hit_empty(monkeypatch):
-    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: [])
+    monkeypatch.setattr(earnings_dates, "cached_json_call", lambda *a, **kw: [])
     assert ebd.fetch_earnings_dates_nse() is None
 
 
@@ -295,13 +307,15 @@ def test_fetch_earnings_dates_nse_exception(monkeypatch, no_disk_cache):
 
 
 def test_earnings_rows_for_ticker_none(monkeypatch):
-    monkeypatch.setattr(ebd, "fetch_earnings_dates_yf", lambda t, years: None)
+    monkeypatch.setattr(
+        earnings_dates, "fetch_earnings_dates_yf", lambda t, years: None
+    )
     assert ebd._earnings_rows_for_ticker("AAA", 3) == []
 
 
 def test_earnings_rows_for_ticker_rows(monkeypatch):
     df = _earnings_df(["2024-01-15"], eps_est=[1.0], reported=[1.1], surprise=[10.0])
-    monkeypatch.setattr(ebd, "fetch_earnings_dates_yf", lambda t, years: df)
+    monkeypatch.setattr(earnings_dates, "fetch_earnings_dates_yf", lambda t, years: df)
     rows = ebd._earnings_rows_for_ticker("AAA", 3)
     assert rows[0]["ticker"] == "AAA"
     assert rows[0]["earnings_date"] == date(2024, 1, 15)
@@ -311,7 +325,7 @@ def test_fetch_yf_earnings_rows(monkeypatch):
     def fake(t, years):
         return _earnings_df(["2024-01-15"]) if t == "GOOD" else None
 
-    monkeypatch.setattr(ebd, "fetch_earnings_dates_yf", fake)
+    monkeypatch.setattr(earnings_dates, "fetch_earnings_dates_yf", fake)
     rows = ebd._fetch_yf_earnings_rows(["GOOD", "BAD"], 3, 50)
     assert len(rows) == 1
     assert rows[0]["ticker"] == "GOOD"
@@ -321,7 +335,7 @@ def test_fetch_yf_earnings_rows_handles_future_exception(monkeypatch):
     def boom(t, years):
         raise RuntimeError("worker boom")
 
-    monkeypatch.setattr(ebd, "_earnings_rows_for_ticker", boom)
+    monkeypatch.setattr(earnings_dates, "_earnings_rows_for_ticker", boom)
     rows = ebd._fetch_yf_earnings_rows(["AAA"], 3, 50)
     assert rows == []
 
@@ -359,7 +373,7 @@ def test_openscreener_cache_hit(monkeypatch):
             "surprise_pct": None,
         }
     ]
-    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: recs)
+    monkeypatch.setattr(earnings_dates, "cached_json_call", lambda *a, **kw: recs)
     out = ebd.fetch_earnings_dates_openscreener("RELIANCE.NS")
     assert out is not None
     assert pd.Timestamp("2024-05-30") in out.index
@@ -413,7 +427,9 @@ def test_openscreener_exception(monkeypatch, no_disk_cache):
 
 
 def test_openscreener_rows_for_ticker_none(monkeypatch):
-    monkeypatch.setattr(ebd, "fetch_earnings_dates_openscreener", lambda t, years: None)
+    monkeypatch.setattr(
+        earnings_dates, "fetch_earnings_dates_openscreener", lambda t, years: None
+    )
     assert ebd._openscreener_earnings_rows_for_ticker("R.NS", 3) == []
 
 
@@ -427,7 +443,9 @@ def test_openscreener_rows_for_ticker_rows(monkeypatch):
         },
         index=pd.to_datetime(["2024-05-30"]),
     )
-    monkeypatch.setattr(ebd, "fetch_earnings_dates_openscreener", lambda t, years: df)
+    monkeypatch.setattr(
+        earnings_dates, "fetch_earnings_dates_openscreener", lambda t, years: df
+    )
     rows = ebd._openscreener_earnings_rows_for_ticker("R.NS", 3)
     assert rows[0]["ticker"] == "R.NS"
     assert rows[0]["period_end"] == "2024-03-31"
@@ -445,7 +463,7 @@ def test_fetch_openscreener_rows(monkeypatch):
         index=pd.to_datetime(["2024-05-30"]),
     )
     monkeypatch.setattr(
-        ebd,
+        earnings_dates,
         "fetch_earnings_dates_openscreener",
         lambda t, years: df if t == "GOOD.NS" else None,
     )
@@ -455,7 +473,7 @@ def test_fetch_openscreener_rows(monkeypatch):
 
 def test_fetch_openscreener_rows_exception(monkeypatch):
     monkeypatch.setattr(
-        ebd,
+        earnings_dates,
         "_openscreener_earnings_rows_for_ticker",
         lambda t, years: (_ for _ in ()).throw(RuntimeError()),
     )
@@ -468,7 +486,7 @@ def test_fetch_openscreener_rows_exception(monkeypatch):
 
 def test_collect_us(monkeypatch):
     monkeypatch.setattr(
-        ebd,
+        earnings_dates,
         "_fetch_yf_earnings_rows",
         lambda batch, years, bs: [
             {
@@ -486,7 +504,7 @@ def test_collect_us(monkeypatch):
 
 
 def test_collect_us_empty(monkeypatch):
-    monkeypatch.setattr(ebd, "_fetch_yf_earnings_rows", lambda *a, **kw: [])
+    monkeypatch.setattr(earnings_dates, "_fetch_yf_earnings_rows", lambda *a, **kw: [])
     out = ebd.collect_earnings_events([], market="us")
     assert out.empty
     assert list(out.columns) == [
@@ -507,7 +525,7 @@ def test_collect_india_with_nse_and_dedup(monkeypatch):
             "desc": ["x", "y"],
         }
     )
-    monkeypatch.setattr(ebd, "fetch_earnings_dates_nse", lambda: nse_df)
+    monkeypatch.setattr(earnings_dates, "fetch_earnings_dates_nse", lambda: nse_df)
     # openscreener returns Mar-2024 (deduped) and Dec-2023 (kept) for RELIANCE.
     osc_rows = [
         {
@@ -536,7 +554,9 @@ def test_collect_india_with_nse_and_dedup(monkeypatch):
         },  # pe None branch
     ]
     monkeypatch.setattr(
-        ebd, "_fetch_openscreener_earnings_rows", lambda batch, years, bs: osc_rows
+        earnings_dates,
+        "_fetch_openscreener_earnings_rows",
+        lambda batch, years, bs: osc_rows,
     )
     out = ebd.collect_earnings_events(
         ["RELIANCE.NS"], years=5, batch_size=50, market="india"
@@ -553,9 +573,9 @@ def test_collect_india_with_nse_and_dedup(monkeypatch):
 
 
 def test_collect_india_no_nse(monkeypatch):
-    monkeypatch.setattr(ebd, "fetch_earnings_dates_nse", lambda: None)
+    monkeypatch.setattr(earnings_dates, "fetch_earnings_dates_nse", lambda: None)
     monkeypatch.setattr(
-        ebd,
+        earnings_dates,
         "_fetch_openscreener_earnings_rows",
         lambda batch, years, bs: [
             {
@@ -580,7 +600,7 @@ def test_analyst_sentiment_india_none():
 
 
 def test_analyst_sentiment_cache_hit(monkeypatch):
-    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: {"net": 3})
+    monkeypatch.setattr(sentiment, "cached_json_call", lambda *a, **kw: {"net": 3})
     assert ebd.fetch_analyst_sentiment("AAPL") == {"net": 3}
 
 
@@ -643,7 +663,9 @@ def _opt_df(volume=None, oi=None, iv=None, n=2):
 
 
 def test_iv_yf_cache_hit(monkeypatch):
-    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: {"pc_ratio": 1.0})
+    monkeypatch.setattr(
+        sentiment, "cached_json_call", lambda *a, **kw: {"pc_ratio": 1.0}
+    )
     assert ebd.fetch_iv_sentiment_yf("AAPL") == {"pc_ratio": 1.0}
 
 
@@ -728,7 +750,9 @@ def test_iv_yf_exception(monkeypatch, no_disk_cache):
 
 
 def test_iv_nse_cache_hit(monkeypatch):
-    monkeypatch.setattr(ebd, "cached_json_call", lambda *a, **kw: {"pc_ratio": 2.0})
+    monkeypatch.setattr(
+        sentiment, "cached_json_call", lambda *a, **kw: {"pc_ratio": 2.0}
+    )
     assert ebd.fetch_iv_sentiment_nse("RELIANCE") == {"pc_ratio": 2.0}
 
 
@@ -759,7 +783,7 @@ def test_iv_nse_success(monkeypatch, no_disk_cache):
             ]
         }
     }
-    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: oc)
+    monkeypatch.setattr(sentiment, "fetch_option_chain", lambda s: oc)
     out = ebd.fetch_iv_sentiment_nse("RELIANCE")
     assert out["pc_ratio"] == round(50 / 100, 4)
     assert out["median_iv"] is not None
@@ -778,7 +802,7 @@ def test_iv_nse_zero_ce_oi(monkeypatch, no_disk_cache):
             ]
         }
     }
-    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: oc)
+    monkeypatch.setattr(sentiment, "fetch_option_chain", lambda s: oc)
     out = ebd.fetch_iv_sentiment_nse("RELIANCE")
     assert out["pc_ratio"] == 1.0  # ce oi == 0 -> default 1.0
     assert out["median_iv"] is None  # no iv vals -> nan -> None
@@ -803,23 +827,25 @@ def test_iv_nse_iv_outlier_filtered(monkeypatch, no_disk_cache):
             ]
         }
     }
-    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: oc)
+    monkeypatch.setattr(sentiment, "fetch_option_chain", lambda s: oc)
     out = ebd.fetch_iv_sentiment_nse("RELIANCE")
     assert out["median_iv"] is None  # 600 filtered out (>=500)
 
 
 def test_iv_nse_no_oc(monkeypatch, no_disk_cache):
-    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: None)
+    monkeypatch.setattr(sentiment, "fetch_option_chain", lambda s: None)
     assert ebd.fetch_iv_sentiment_nse("RELIANCE") is None
 
 
 def test_iv_nse_no_records_key(monkeypatch, no_disk_cache):
-    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: {"foo": 1})
+    monkeypatch.setattr(sentiment, "fetch_option_chain", lambda s: {"foo": 1})
     assert ebd.fetch_iv_sentiment_nse("RELIANCE") is None
 
 
 def test_iv_nse_empty_data(monkeypatch, no_disk_cache):
-    monkeypatch.setattr(ebd, "fetch_option_chain", lambda s: {"records": {"data": []}})
+    monkeypatch.setattr(
+        sentiment, "fetch_option_chain", lambda s: {"records": {"data": []}}
+    )
     assert ebd.fetch_iv_sentiment_nse("RELIANCE") is None
 
 
@@ -827,7 +853,7 @@ def test_iv_nse_exception(monkeypatch, no_disk_cache):
     def boom(_symbol):
         raise RuntimeError("nse boom")
 
-    monkeypatch.setattr(ebd, "fetch_option_chain", boom)
+    monkeypatch.setattr(sentiment, "fetch_option_chain", boom)
     assert ebd.fetch_iv_sentiment_nse("RELIANCE") is None
 
 
@@ -835,12 +861,16 @@ def test_iv_nse_exception(monkeypatch, no_disk_cache):
 
 
 def test_iv_dispatch_india(monkeypatch):
-    monkeypatch.setattr(ebd, "fetch_iv_sentiment_nse", lambda symbol: {"sym": symbol})
+    monkeypatch.setattr(
+        sentiment, "fetch_iv_sentiment_nse", lambda symbol: {"sym": symbol}
+    )
     assert ebd.fetch_iv_sentiment("RELIANCE.NS", market="india") == {"sym": "RELIANCE"}
 
 
 def test_iv_dispatch_us(monkeypatch):
-    monkeypatch.setattr(ebd, "fetch_iv_sentiment_yf", lambda ticker: {"t": ticker})
+    monkeypatch.setattr(
+        sentiment, "fetch_iv_sentiment_yf", lambda ticker: {"t": ticker}
+    )
     assert ebd.fetch_iv_sentiment("AAPL") == {"t": "AAPL"}
 
 

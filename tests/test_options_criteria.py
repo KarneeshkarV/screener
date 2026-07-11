@@ -7,8 +7,8 @@ import pandas as pd
 import pytest
 
 from screener.cli import cli
-from screener.criteria import CRITERIA, get_definition
-from screener.criteria.plugins import options_signals
+from screener.screen_aliases import SCREEN_ALIASES
+from screener.screen_alias_plugins import options_signals
 from screener.options import criteria as options_criteria
 from screener.options.criteria import (
     OptionsCriterionResult,
@@ -49,7 +49,7 @@ def _panel() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_options_plugins_are_registered_as_pipeline_criteria():
+def test_options_plugins_are_registered_as_screen_aliases():
     expected = {
         "unusual_options",
         "bullish_oi_buildup",
@@ -57,8 +57,8 @@ def test_options_plugins_are_registered_as_pipeline_criteria():
         "low_iv_rank",
         "cheap_earnings_vol",
     }
-    assert expected <= set(CRITERIA)
-    assert all(get_definition(name).is_pipeline for name in expected)
+    assert expected <= set(SCREEN_ALIASES)
+    assert all(callable(SCREEN_ALIASES[name]) for name in expected)
 
 
 def test_latest_panel_rows_is_point_in_time_and_validates_schema():

@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from screener.cache import cached_json_call
 from screener.financials import first_number, pct_change, to_number
 from screener.fmp import resolve_api_key
+from screener.logging_config import get_logger
 from screener.markets import get_market
 from screener.parallel import parallel_map
 from screener.provider_utils import fmp_get
@@ -22,6 +23,7 @@ from screener.symbols import tv_to_nse, tv_to_yf
 
 INDIA_MIN_CRORE = 1000.0
 US_MIN_USD = 1_000_000_000.0
+logger = get_logger(__name__)
 
 # FMP US fundamentals: 24h cache, "fmp" circuit breaker. ``cache_ttl`` is
 # overridden per-call below to honour the screen's --cache-ttl flag.
@@ -49,7 +51,32 @@ INDIA_THRESHOLDS = GarpThresholds(
 )
 US_THRESHOLDS = GarpThresholds(market_cap_min=US_MIN_USD, sales_min=US_MIN_USD)
 
-NormalizedGarpRow = dict[str, Any]
+
+class GarpFundamentals(BaseModel):
+    """Canonical provider-independent fundamentals used by GARP scoring."""
+
+    name: str = ""
+    description: str = ""
+    market_cap: float | None = None
+    sales: float | None = None
+    peg: float | None = None
+    sales_growth_5y: float | None = None
+    operating_profit_growth: float | None = None
+    eps_growth_5y: float | None = None
+    roe_5y: float | None = None
+    roce_or_roic: float | None = None
+    expected_quarterly_profit: float | None = None
+    profit_3q_back: float | None = None
+    quarterly_profit_growth: float | None = None
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    def __getitem__(self, key: str) -> object:
+        """Keep internal adapter consumers source-compatible with row indexing."""
+        return getattr(self, key)
+
+
+NormalizedGarpRow = GarpFundamentals
 
 
 class GarpFundamentalsAdapter(Protocol):
@@ -79,9 +106,8 @@ def _series_from_statement(statement: pd.DataFrame, row_names: list[str]) -> pd.
         return pd.Series(dtype=float)
     for name in row_names:
         if name in statement.index:
-            return cast(
-                pd.Series, pd.to_numeric(statement.loc[name], errors="coerce").dropna()
-            )
+            statement_row = cast(pd.Series, statement.loc[name])
+            return pd.to_numeric(statement_row, errors="coerce").dropna()
     return pd.Series(dtype=float)
 
 
@@ -101,31 +127,63 @@ def _average_ratio(
     return float(sum(values) / len(values))
 
 
-def _passes_garp(row: dict[str, Any], thresholds: GarpThresholds) -> bool:
-    required = [
-        row.get("market_cap"),
-        row.get("sales"),
-        row.get("peg"),
-        row.get("sales_growth_5y"),
-        row.get("operating_profit_growth"),
-        row.get("eps_growth_5y"),
-        row.get("roe_5y"),
-        row.get("roce_or_roic"),
-        row.get("quarterly_profit_growth"),
-    ]
-    if any(to_number(value) is None for value in required):
+def _coerce_garp_fundamentals(
+    row: GarpFundamentals | Mapping[str, object],
+    *,
+    symbol: str = "unknown",
+) -> GarpFundamentals | None:
+    if isinstance(row, GarpFundamentals):
+        return row
+    try:
+        return GarpFundamentals.model_validate(row)
+    except ValidationError as exc:
+        first_error = exc.errors(include_url=False)[0]
+        logger.warning(
+            "garp_fundamentals_validation_failed",
+            symbol=symbol,
+            error=first_error,
+        )
+        return None
+
+
+def _passes_garp(
+    row: GarpFundamentals | Mapping[str, object], thresholds: GarpThresholds
+) -> bool:
+    fundamentals = _coerce_garp_fundamentals(row)
+    if fundamentals is None:
+        return False
+    market_cap = fundamentals.market_cap
+    sales = fundamentals.sales
+    peg = fundamentals.peg
+    sales_growth = fundamentals.sales_growth_5y
+    operating_growth = fundamentals.operating_profit_growth
+    eps_growth = fundamentals.eps_growth_5y
+    roe = fundamentals.roe_5y
+    capital_return = fundamentals.roce_or_roic
+    quarterly_growth = fundamentals.quarterly_profit_growth
+    required = (
+        market_cap,
+        sales,
+        peg,
+        sales_growth,
+        operating_growth,
+        eps_growth,
+        roe,
+        capital_return,
+        quarterly_growth,
+    )
+    if any(value is None for value in required):
         return False
     return (
-        float(row["market_cap"]) > thresholds.market_cap_min
-        and float(row["sales"]) > thresholds.sales_min
-        and 0 < float(row["peg"]) < thresholds.peg_max
-        and float(row["sales_growth_5y"]) > thresholds.sales_growth_5y_min
-        and float(row["operating_profit_growth"])
-        > thresholds.operating_profit_growth_min
-        and float(row["eps_growth_5y"]) > thresholds.eps_growth_5y_min
-        and float(row["roe_5y"]) > thresholds.roe_5y_min
-        and float(row["roce_or_roic"]) > thresholds.roce_or_roic_min
-        and float(row["quarterly_profit_growth"]) > 0
+        market_cap > thresholds.market_cap_min
+        and sales > thresholds.sales_min
+        and 0 < peg < thresholds.peg_max
+        and sales_growth > thresholds.sales_growth_5y_min
+        and operating_growth > thresholds.operating_profit_growth_min
+        and eps_growth > thresholds.eps_growth_5y_min
+        and roe > thresholds.roe_5y_min
+        and capital_return > thresholds.roce_or_roic_min
+        and quarterly_growth > 0
     )
 
 
@@ -237,32 +295,30 @@ def _india_row(
         "net profit 3quarters back",
         "net_profit_3q_back",
     )
-    return {
-        "name": symbol,
-        "description": description or "",
-        "market_cap": first_number(metrics, "market_capitalization", "market_cap"),
-        "sales": first_number(metrics, "sales", "sales_ttm", "revenue"),
-        "peg": first_number(metrics, "peg_ratio", "peg"),
-        "sales_growth_5y": first_number(
-            metrics, "sales_growth_5years", "sales_growth_5y"
-        ),
-        "operating_profit_growth": first_number(
+    return GarpFundamentals(
+        name=symbol,
+        description=description or "",
+        market_cap=first_number(metrics, "market_capitalization", "market_cap"),
+        sales=first_number(metrics, "sales", "sales_ttm", "revenue"),
+        peg=first_number(metrics, "peg_ratio", "peg"),
+        sales_growth_5y=first_number(metrics, "sales_growth_5years", "sales_growth_5y"),
+        operating_profit_growth=first_number(
             metrics, "operating_profit_growth", "opm_growth"
         ),
-        "eps_growth_5y": first_number(metrics, "eps_growth_5years", "eps_growth_5y"),
-        "roe_5y": first_number(
+        eps_growth_5y=first_number(metrics, "eps_growth_5years", "eps_growth_5y"),
+        roe_5y=first_number(
             metrics, "average_return_on_equity_5years", "average_roe_5y"
         ),
-        "roce_or_roic": first_number(
+        roce_or_roic=first_number(
             metrics,
             "average_return_on_capital_employed_3years",
             "average_roce_3y",
             "roce_percent",
         ),
-        "expected_quarterly_profit": expected_q_np,
-        "profit_3q_back": np_3q_back,
-        "quarterly_profit_growth": pct_change(expected_q_np, np_3q_back),
-    }
+        expected_quarterly_profit=expected_q_np,
+        profit_3q_back=np_3q_back,
+        quarterly_profit_growth=pct_change(expected_q_np, np_3q_back),
+    )
 
 
 class OpenScreenerGarpAdapter:
@@ -289,7 +345,7 @@ class OpenScreenerGarpAdapter:
         )
         if not isinstance(payload, dict):
             return None
-        return _india_row(symbol, description, payload)
+        return _coerce_garp_fundamentals(_india_row(symbol, description, payload))
 
 
 def _universe_items(universe: pd.DataFrame) -> list[tuple[str, str]]:
@@ -322,9 +378,9 @@ def _screen_garp_with_adapter(
             max_workers=max(1, workers),
             on_error="skip",
         )
-        if _passes_garp(row, adapter.thresholds)
+        if row is not None and _passes_garp(row, adapter.thresholds)
     ]
-    return add_garp_score(pd.DataFrame(rows)).head(limit)
+    return add_garp_score(pd.DataFrame(row.model_dump() for row in rows)).head(limit)
 
 
 def screen_india_garp(
@@ -403,21 +459,21 @@ def _us_row(symbol: str, description: str | None) -> NormalizedGarpRow:
     invested_capital = debt.add(equity, fill_value=0)
     roic = _average_ratio(nopat, invested_capital, 3)
 
-    return {
-        "name": symbol,
-        "description": description or info.get("shortName") or "",
-        "market_cap": to_number(info.get("marketCap")),
-        "sales": latest_revenue,
-        "peg": to_number(info.get("trailingPegRatio") or info.get("pegRatio")),
-        "sales_growth_5y": _cagr(latest_revenue, oldest_revenue, 4),
-        "operating_profit_growth": pct_change(latest_op, old_op),
-        "eps_growth_5y": _cagr(latest_ni, old_ni, 4),
-        "roe_5y": _average_ratio(net_income, equity, 5),
-        "roce_or_roic": roic,
-        "expected_quarterly_profit": expected_eps,
-        "profit_3q_back": year_ago_eps,
-        "quarterly_profit_growth": quarterly_eps_growth,
-    }
+    return GarpFundamentals(
+        name=symbol,
+        description=description or info.get("shortName") or "",
+        market_cap=to_number(info.get("marketCap")),
+        sales=latest_revenue,
+        peg=to_number(info.get("trailingPegRatio") or info.get("pegRatio")),
+        sales_growth_5y=_cagr(latest_revenue, oldest_revenue, 4),
+        operating_profit_growth=pct_change(latest_op, old_op),
+        eps_growth_5y=_cagr(latest_ni, old_ni, 4),
+        roe_5y=_average_ratio(net_income, equity, 5),
+        roce_or_roic=roic,
+        expected_quarterly_profit=expected_eps,
+        profit_3q_back=year_ago_eps,
+        quarterly_profit_growth=quarterly_eps_growth,
+    )
 
 
 # ── FMP fundamentals (US) ───────────────────────────────────────────────────
@@ -508,14 +564,14 @@ def _fmp_quarterly_eps(
     expected_eps: float | None = None
     expected_ts: pd.Timestamp | None = None
     latest_reported = (
-        pd.to_datetime(quarterly_income[0].get("date"), errors="coerce")
+        pd.to_datetime(cast(str, quarterly_income[0].get("date")), errors="coerce")
         if quarterly_income
         else pd.NaT
     )
     if not pd.isna(latest_reported):
         upcoming: list[tuple[pd.Timestamp, float]] = []
         for entry in estimates:
-            ts = pd.to_datetime(entry.get("date"), errors="coerce")
+            ts = pd.to_datetime(cast(str, entry.get("date")), errors="coerce")
             eps = first_number(entry, "estimatedEpsAvg", "epsAvg")
             if not pd.isna(ts) and ts > latest_reported and eps is not None:
                 upcoming.append((ts, eps))
@@ -529,7 +585,7 @@ def _fmp_quarterly_eps(
         target = expected_ts - pd.Timedelta(days=365)
         best: tuple[float, float] | None = None
         for entry in quarterly_income:
-            ts = pd.to_datetime(entry.get("date"), errors="coerce")
+            ts = pd.to_datetime(cast(str, entry.get("date")), errors="coerce")
             eps = to_number(entry.get("eps"))
             if pd.isna(ts) or eps is None:
                 continue
@@ -597,21 +653,21 @@ def _fmp_us_row(
 
     expected_eps, year_ago_eps = _fmp_quarterly_eps(estimates, quarterly)
 
-    return {
-        "name": symbol,
-        "description": description or str(profile.get("companyName") or ""),
-        "market_cap": first_number(profile, "mktCap", "marketCap"),
-        "sales": latest_revenue,
-        "peg": first_number(ratios, "priceEarningsToGrowthRatioTTM", "pegRatioTTM"),
-        "sales_growth_5y": _cagr(latest_revenue, oldest_revenue, 4),
-        "operating_profit_growth": pct_change(latest_op, old_op),
-        "eps_growth_5y": _cagr(latest_ni, old_ni, 4),
-        "roe_5y": _average_ratio(net_income, equity, 5),
-        "roce_or_roic": roic,
-        "expected_quarterly_profit": expected_eps,
-        "profit_3q_back": year_ago_eps,
-        "quarterly_profit_growth": pct_change(expected_eps, year_ago_eps),
-    }
+    return GarpFundamentals(
+        name=symbol,
+        description=description or str(profile.get("companyName") or ""),
+        market_cap=first_number(profile, "mktCap", "marketCap"),
+        sales=latest_revenue,
+        peg=first_number(ratios, "priceEarningsToGrowthRatioTTM", "pegRatioTTM"),
+        sales_growth_5y=_cagr(latest_revenue, oldest_revenue, 4),
+        operating_profit_growth=pct_change(latest_op, old_op),
+        eps_growth_5y=_cagr(latest_ni, old_ni, 4),
+        roe_5y=_average_ratio(net_income, equity, 5),
+        roce_or_roic=roic,
+        expected_quarterly_profit=expected_eps,
+        profit_3q_back=year_ago_eps,
+        quarterly_profit_growth=pct_change(expected_eps, year_ago_eps),
+    )
 
 
 class YFinanceGarpAdapter:
@@ -630,7 +686,12 @@ class YFinanceGarpAdapter:
         refresh: bool,
     ) -> NormalizedGarpRow | None:
         del cache_ttl, refresh
-        return _us_row(symbol, description)
+        from screener.backtester.data import call_yfinance_with_timeout
+
+        return _coerce_garp_fundamentals(
+            call_yfinance_with_timeout(lambda: _us_row(symbol, description)),
+            symbol=symbol,
+        )
 
 
 @dataclass(frozen=True)
@@ -656,7 +717,8 @@ class FmpGarpAdapter:
         )
         if not isinstance(payload, dict):
             return None
-        return _fmp_us_row(symbol, description, payload)
+        row = _fmp_us_row(symbol, description, payload)
+        return _coerce_garp_fundamentals(row) if row is not None else None
 
 
 @dataclass(frozen=True)
@@ -712,14 +774,14 @@ def screen_us_garp(
     )
 
 
-def load_garp_row(
+def load_garp_fundamentals(
     symbol: str,
     market: str,
     *,
     cache_ttl: float | None,
     refresh: bool,
-) -> dict[str, Any] | None:
-    """Load the per-symbol GARP fundamentals row used for single-ticker scoring.
+) -> GarpFundamentals | None:
+    """Load validated per-symbol fundamentals through the canonical adapters.
 
     Composes the same fetch + map path the market screens use, for one symbol:
 
@@ -729,8 +791,8 @@ def load_garp_row(
       ``FMP_API_KEY`` is configured, falling back to the yfinance
       :func:`_us_row` when no key is set or FMP has no statement data.
 
-    Returns ``None`` when no fundamentals are available. Cache namespaces, keys,
-    TTLs and network calls are identical to the screen path.
+    Returns ``None`` when no fundamentals are available. Cache namespaces,
+    keys, TTLs and network calls are identical to the screen path.
     """
     if market == "india":
         sym = tv_to_nse(symbol, strip_suffix=True)
@@ -741,6 +803,23 @@ def load_garp_row(
     return _us_fundamentals_adapter().load_row(
         yf_sym, "", cache_ttl=cache_ttl, refresh=refresh
     )
+
+
+def load_garp_row(
+    symbol: str,
+    market: str,
+    *,
+    cache_ttl: float | None,
+    refresh: bool,
+) -> dict[str, Any] | None:
+    """Compatibility dict serialization of :func:`load_garp_fundamentals`."""
+    fundamentals = load_garp_fundamentals(
+        symbol,
+        market,
+        cache_ttl=cache_ttl,
+        refresh=refresh,
+    )
+    return fundamentals.model_dump() if fundamentals is not None else None
 
 
 def run_garp_screen(

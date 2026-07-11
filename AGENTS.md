@@ -9,7 +9,7 @@ the bot code is in /home/karneeshkar/Desktop/personal/screener_main/screener_bot
 - **Run the CLI**: `uv run screener <command>` (see `uv run screener --help` for commands)
 - **Lint & format**: `uv run ruff check $(git ls-files '*.py')` and `uv run ruff format --check $(git ls-files '*.py')`
 - **Type check**: `uv run mypy`
-- **Tests**: `uv run pytest` (177 tests, all offline using stubs)
+- **Tests**: `uv run pytest` (2,000+ tests, all offline using stubs)
 - **Task runner**: `just` (see `justfile` for available recipes; uses `.venv/bin/python`)
 - The `--log-level` and `--config` options are global and must be placed *before* the subcommand (e.g. `uv run screener --log-level ERROR screen ...`)
 - Optional env vars for extended features: `FMP_API_KEY`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`. The core screener and backtester work without these.

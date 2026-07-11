@@ -1,15 +1,14 @@
-"""Panel-backed options signal pipeline criteria."""
+"""Panel-backed options signal ``screen -c`` aliases."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from screener.criteria import criterion
 from screener.options.criteria import OPTIONS_CRITERIA, run_options_criterion
 
 
 def _pipeline_runner(name: str):
-    def run(*, market: str, limit: int, output_csv: bool, **_: Any) -> None:
+    def run(*, market: str, limit: int, output_csv: bool = False, **_: Any) -> None:
         run_options_criterion(
             name,
             market=market,
@@ -21,5 +20,5 @@ def _pipeline_runner(name: str):
     return run
 
 
-for _name in OPTIONS_CRITERIA:
-    globals()[_name] = criterion(_name, pipeline=True)(_pipeline_runner(_name))
+OPTIONS_SIGNAL_ALIASES = {_name: _pipeline_runner(_name) for _name in OPTIONS_CRITERIA}
+globals().update(OPTIONS_SIGNAL_ALIASES)

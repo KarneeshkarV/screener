@@ -14,10 +14,7 @@ from screener import history
 from screener.cache import parse_ttl
 from screener.commands.screen_report import render_screen_report
 from screener.criteria import (
-    CriteriaSelection,
-    CriteriaSelectionError,
     FilterCriteriaSelection,
-    PipelineCriteriaSelection,
     resolve_criteria,
 )
 from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
@@ -65,7 +62,6 @@ class EnrichDaysToEarningsFn(Protocol):
 class ScreenMode(str, Enum):
     CSV = "csv"
     RESULTS = "results"
-    PIPELINE = "pipeline"
 
 
 @dataclass(frozen=True)
@@ -92,7 +88,7 @@ class ScreenOutcome:
     market: str
     label: str
     total: int
-    df: pd.DataFrame | None
+    df: pd.DataFrame
     added: tuple[str, ...] = ()
     removed: tuple[str, ...] = ()
     first_run: bool = False
@@ -101,7 +97,7 @@ class ScreenOutcome:
 
 @dataclass(frozen=True)
 class ScreenWorkflowDeps:
-    resolve_criteria: Callable[[Sequence[str]], CriteriaSelection]
+    resolve_criteria: Callable[[Sequence[str]], FilterCriteriaSelection]
     parse_cache_ttl: Callable[[str], float | None]
     scan: ScanFn
     save_run: Callable[[str, str, int, pd.DataFrame], int]
@@ -110,10 +106,6 @@ class ScreenWorkflowDeps:
     temp_report_path: Callable[[str], Path]
     render_report: RenderReportFn
     enrich_days_to_earnings: EnrichDaysToEarningsFn
-
-
-class ScreenWorkflowError(ValueError):
-    """Raised when the screen workflow Interface rejects a request."""
 
 
 def default_screen_workflow_deps() -> ScreenWorkflowDeps:
@@ -137,29 +129,7 @@ def run_screen_workflow(
 ) -> ScreenOutcome:
     """Run the full non-Click screen lifecycle and return its outcome."""
     deps = deps or default_screen_workflow_deps()
-    try:
-        selection = deps.resolve_criteria(request.criteria_names)
-    except CriteriaSelectionError as exc:
-        raise ScreenWorkflowError(str(exc)) from exc
-
-    if isinstance(selection, PipelineCriteriaSelection):
-        selection.runner(
-            market=request.market,
-            limit=request.limit,
-            output_csv=request.output_csv,
-            refresh=request.refresh,
-            cache_ttl=request.cache_ttl,
-        )
-        return ScreenOutcome(
-            mode=ScreenMode.PIPELINE,
-            market=request.market,
-            label=selection.name,
-            total=0,
-            df=None,
-        )
-
-    if not isinstance(selection, FilterCriteriaSelection):
-        raise ScreenWorkflowError("criteria selection resolved to an unknown mode")
+    selection = deps.resolve_criteria(request.criteria_names)
 
     total, df = deps.scan(
         market=request.market,
@@ -233,7 +203,6 @@ __all__ = [
     "ScreenOutcome",
     "ScreenRequest",
     "ScreenWorkflowDeps",
-    "ScreenWorkflowError",
     "default_screen_workflow_deps",
     "run_screen_workflow",
 ]

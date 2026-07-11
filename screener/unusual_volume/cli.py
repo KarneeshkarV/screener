@@ -25,6 +25,7 @@ from .detector import (
     DEFAULT_MIN_RVOL,
     DEFAULT_MIN_Z,
 )
+from .enrichment import Enrichment
 from .output import render_rich, sort_events, write_json, write_markdown
 from .service import (
     DEFAULT_MIN_AVG_VOLUME,
@@ -204,6 +205,17 @@ def unusual_volume(
     universe = _resolve_universe(market, tickers, universe_file)
     if not universe:
         raise click.UsageError("Empty universe — pass --tickers or --universe-file.")
+    enrichments = frozenset(
+        enrichment
+        for enabled, enrichment in (
+            (deep_india, Enrichment.DEEP_INDIA),
+            (buildup_enabled, Enrichment.BUILDUP),
+            (option_chain, Enrichment.OPTION_CHAIN),
+            (fii_dii, Enrichment.FII_DII),
+            (pledge, Enrichment.PLEDGE),
+        )
+        if enabled
+    )
     request = UnusualVolumeRequest(
         market=market,
         as_of=resolve_as_of(as_of_arg),
@@ -214,13 +226,9 @@ def unusual_volume(
         min_avg_volume=min_avg_volume,
         min_market_cap=min_market_cap,
         include_fno_ban=include_fno_ban,
-        deep_india=deep_india,
-        buildup_enabled=buildup_enabled,
+        enrichments=enrichments,
         buildup_window=buildup_window,
         buildup_min_score=buildup_min_score,
-        option_chain=option_chain,
-        fii_dii=fii_dii,
-        pledge=pledge,
         refresh=refresh,
     )
     ok = run_unusual_volume(

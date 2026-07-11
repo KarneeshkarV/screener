@@ -7,13 +7,12 @@ for the E-1/E-2 → E entry/exit pattern.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
+from screener.backtester.execution import net_round_trip_return
 from screener.earnings_backtest._execution import apply_slippage
 from screener.earnings_backtest.data import (
     collect_earnings_events,
@@ -26,26 +25,10 @@ from screener.earnings_backtest.strategies import (
     STRATEGY_FUNCS,
     combined_score,
 )
+from screener.earnings_backtest.metrics import compute_backtest_summary
+from screener.earnings_backtest.models import EarningsTrade
 
 logger = logging.getLogger(__name__)
-
-# ── Trade result ────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class EarningsTrade:
-    ticker: str
-    earnings_date: date
-    entry_date: date
-    exit_date: date
-    entry_price: float
-    exit_price: float
-    return_pct: float
-    strategy: str
-    score: float
-    passed_filter: bool
-    details: dict = field(default_factory=dict)
-
 
 # ── Core engine ──────────────────────────────────────────────────────────
 
@@ -153,9 +136,6 @@ def run_earnings_backtest(
 
         # Apply slippage and commission
         entry_price, exit_price = apply_slippage(entry_price, exit_price, slippage_bps)
-        round_trip_commission = (
-            commission_bps / 10_000
-        )  # already in bps terms, applied round-trip
 
         # Evaluate strategies
         scores: dict[str, float] = {}
@@ -215,8 +195,9 @@ def run_earnings_backtest(
         passed_filter = final_score >= min_score
 
         # Only record trade if the strategy filter passes
-        ret_raw = (exit_price / entry_price) - 1.0
-        ret_net = ret_raw - round_trip_commission
+        ret_raw, ret_net = net_round_trip_return(
+            entry_price, exit_price, commission_bps
+        )
 
         trade = EarningsTrade(
             ticker=ticker,
@@ -313,79 +294,8 @@ def _find_entry_exit(
     return entry_date, exit_date
 
 
-# ── Summary statistics ──────────────────────────────────────────────────
-
-
-def compute_backtest_summary(trades: list[EarningsTrade], strategy: str = "") -> dict:
-    """Compute aggregate backtest statistics."""
-    if not trades:
-        return {
-            "total_events": 0,
-            "trades_taken": 0,
-            "strategy": strategy,
-            "win_rate": 0.0,
-            "avg_return_pct": 0.0,
-            "median_return_pct": 0.0,
-            "total_return_pct": 0.0,
-            "max_winner_pct": 0.0,
-            "max_loser_pct": 0.0,
-            "profit_factor": 0.0,
-            "avg_holding_days": 0.0,
-            "sharpe_approx": 0.0,
-        }
-
-    taken = [t for t in trades if t.passed_filter]
-    if not taken:
-        return {
-            "total_events": len(trades),
-            "trades_taken": 0,
-            "strategy": strategy,
-            "win_rate": 0.0,
-            "avg_return_pct": 0.0,
-            "median_return_pct": 0.0,
-            "total_return_pct": 0.0,
-            "max_winner_pct": 0.0,
-            "max_loser_pct": 0.0,
-            "profit_factor": 0.0,
-            "avg_holding_days": 0.0,
-            "sharpe_approx": 0.0,
-        }
-
-    returns = np.array([t.return_pct for t in taken])
-    winners = returns[returns > 0]
-    losers = returns[returns < 0]
-
-    holding_days = [(t.exit_date - t.entry_date).days for t in taken]
-    avg_holding = float(np.mean(holding_days)) if holding_days else 0.0
-
-    # Sharpe approximation (annualised assuming avg holding period)
-    sharpe = 0.0
-    if len(returns) > 1 and np.std(returns) > 0:
-        avg_annualized = np.mean(returns) / avg_holding * 252 if avg_holding > 0 else 0
-        std_annualized = (
-            np.std(returns) / np.sqrt(avg_holding) * np.sqrt(252)
-            if avg_holding > 0
-            else 1
-        )
-        sharpe = round(
-            avg_annualized / std_annualized if std_annualized > 0 else 0.0, 4
-        )
-
-    gross_profit = float(winners.sum()) if len(winners) > 0 else 0.0
-    gross_loss = abs(float(losers.sum())) if len(losers) > 0 else 0.0
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
-
-    return {
-        "total_events": len(trades),
-        "trades_taken": len(taken),
-        "strategy": strategy,
-        "win_rate": round(float((returns > 0).mean()) * 100, 2),
-        "avg_return_pct": round(float(returns.mean()), 4),
-        "median_return_pct": round(float(np.median(returns)), 4),
-        "total_return_pct": round(float(returns.sum()), 4),
-        "max_winner_pct": round(float(returns.max()), 4) if len(returns) > 0 else 0.0,
-        "max_loser_pct": round(float(returns.min()), 4) if len(returns) > 0 else 0.0,
-        "profit_factor": round(profit_factor, 4),
-        "avg_holding_days": round(avg_holding, 2),
-        "sharpe_approx": sharpe,
-    }
+__all__ = [
+    "EarningsTrade",
+    "compute_backtest_summary",
+    "run_earnings_backtest",
+]

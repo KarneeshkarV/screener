@@ -1,27 +1,19 @@
-"""Promoter-buys pipeline criterion — ``screen -c promoter-buys``."""
+"""Promoter-buys ``screen -c`` compatibility alias."""
 
 from __future__ import annotations
 
-from typing import Any
-
-from screener.criteria import criterion
-
-# Screen-context defaults for options the generic ``screen`` command does not
-# expose (the standalone ``promoter-buys`` command's own defaults).
 _DEFAULT_UNIVERSE_SIZE = 200
 _DEFAULT_MIN_CHANGE_PCT = 0.0
 _DEFAULT_WORKERS = 10
 
 
-@criterion("promoter-buys", pipeline=True)
 def promoter_buys_pipeline(
     *,
     market: str,
     limit: int,
-    output_csv: bool,
-    refresh: bool,
-    cache_ttl: str,
-    **_: Any,
+    output_csv: bool = False,
+    refresh: bool = False,
+    cache_ttl: str = "15m",
 ) -> None:
     from screener.commands.insiders import run_promoter_buys
 

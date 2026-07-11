@@ -33,15 +33,15 @@ _CACHE_AREA_OVERRIDES: dict[str, Path] = {}
 
 
 def _prices_cache_dir() -> Path:
-    from screener.backtester import data
+    from screener.backtester.price_cache import CACHE_DIR
 
-    return data.CACHE_DIR
+    return CACHE_DIR
 
 
 def _fmp_prices_cache_dir() -> Path:
-    from screener.backtester import data
+    from screener.backtester.price_cache import FMP_CACHE_DIR
 
-    return data.FMP_CACHE_DIR
+    return FMP_CACHE_DIR
 
 
 def _universes_cache_dir() -> Path:

@@ -62,7 +62,7 @@ def _trailing_liquidity(
     if close.size < 2:
         sigma = 0.0
     else:
-        rets = close.pct_change().dropna()
+        rets = close.pct_change(fill_method=None).dropna()
         sigma = float(rets.std()) if rets.size else 0.0
     if not np.isfinite(adv):
         adv = 0.0
@@ -654,7 +654,11 @@ def prepare_strategy_bars(
     benchmark: str,
 ) -> tuple[dict[str, pd.DataFrame], int]:
     """Resolve a strategy and run its preparation/lookback hooks."""
-    from screener.strategies.spec import PrepareCtx, resolve_strategy_spec
+    from screener.strategies.spec import (
+        ExpressionStrategySpec,
+        PrepareCtx,
+        resolve_strategy_spec,
+    )
 
     try:
         spec = (
@@ -663,7 +667,7 @@ def prepare_strategy_bars(
     except ValueError as exc:
         warnings.append(f"strategy error: {exc}")
         return bars_by_tv, 0
-    if spec is None:
+    if not isinstance(spec, ExpressionStrategySpec):
         return bars_by_tv, 0
     lookback_floor = spec.required_lookback() if spec.required_lookback else 0
     if spec.prepare_bars is None:

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener.strategies.spec import PrepareCtx, strategy
+from screener.strategies.spec import PrepareCtx, register_expression_strategy
 
 # Trading-day windows. 252 ~ 12 months, 21 ~ 1 month (the skipped reversal leg).
 _LOOKBACK = 252
@@ -55,12 +55,10 @@ def _momentum_lookback() -> int:
     return _LOOKBACK
 
 
-@strategy(
+register_expression_strategy(
     "momentum_12_1",
     entry="mom_12_1 > 0",
     exit=None,
     prepare_bars=_prepare_momentum,
     required_lookback=_momentum_lookback,
 )
-def _momentum_12_1() -> None:
-    """Expression-only strategy; ranking is driven by the rank_score column."""
