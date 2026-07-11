@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from screener.strategies.spec import strategy
+from screener.strategies.spec import register_expression_strategy
 
 
-@strategy(
+register_expression_strategy(
     "ema150_200_revenue_up_3q",
     entry=(
         "ema(close, 150) > ema(close, 200) "
@@ -15,5 +15,3 @@ from screener.strategies.spec import strategy
     ),
     exit=None,
 )
-def _ema150_200_revenue_up_3q() -> None:
-    """Expression-only strategy. Body unused."""

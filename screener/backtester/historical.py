@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import deque
-
 import numpy as np
 import pandas as pd
 
@@ -15,9 +14,10 @@ from screener.backtester.core import (
     _eligible_reserve_signal_idx,
     _make_slot_state,
     _passes_entry_filters,
-    _prepare_strategy_bars,
+    prepare_strategy_bars,
     _resolve_universe,
 )
+from screener.backtester.costs import cost_model_from_config
 from screener.backtester.data import PriceFetcher
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.fills import FillModel
@@ -33,6 +33,7 @@ from screener.backtester.models import (
 from screener.backtester.historical_cli import backtest_historical
 from screener.backtester.pine import PineError, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.options.backtest import merge_referenced_options
 
 
 def select_candidates(
@@ -208,7 +209,6 @@ class _ReserveRotationSource:
                     ticker=ticker,
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
-                    commission_bps=cfg.commission_bps,
                 )
                 self.slot_states[slot_id] = state
                 del self.pending_reentry[slot_id]
@@ -269,7 +269,6 @@ class _ReserveRotationSource:
                     ticker=ticker,
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
-                    commission_bps=cfg.commission_bps,
                 )
                 self.slot_states[slot_id] = state
                 self.slot_bars[slot_id] = reserve_bars
@@ -306,7 +305,7 @@ def _run_event_driven_sim(
     pending_reentry: dict[int, str] = {}
 
     for raw_slot_id, row in actives_df.iterrows():
-        slot_id = int(raw_slot_id)
+        slot_id = int(str(raw_slot_id))
         ticker = row["ticker"]
         bars = bars_by_tv.get(ticker, pd.DataFrame())
         if bars is None or bars.empty:
@@ -340,7 +339,6 @@ def _run_event_driven_sim(
             ticker=ticker,
             entry_date=state.entry_date,
             entry_price=state.entry_fill,
-            commission_bps=cfg.commission_bps,
         )
         slot_states[slot_id] = state
         slot_bars[slot_id] = bars
@@ -403,13 +401,13 @@ def _run_event_driven_sim(
             ),
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
+            half_spread=state.half_spread,
         )
         portfolio.close(
             ticker=state.ticker,
             exit_date=_bar_label(tail.index[-1], cfg),
             exit_price=fill,
             reason="eod",
-            commission_bps=cfg.commission_bps,
         )
         slot_states[slot_id] = None
 
@@ -460,10 +458,26 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     bars_by_tv = {
         tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
     }
-    bars_by_tv, strategy_lookback = _prepare_strategy_bars(
-        cfg, bars_by_tv, price_panel, tv_symbols, start, end, fetcher, warnings
+    bars_by_tv, strategy_lookback = prepare_strategy_bars(
+        cfg.strategy_name,
+        bars_by_tv,
+        price_panel,
+        tv_symbols,
+        start,
+        end,
+        fetcher,
+        warnings,
+        market=cfg.market,
+        benchmark=cfg.benchmark,
     )
     lookback = max(lookback, strategy_lookback)
+    bars_by_tv = merge_referenced_options(
+        bars_by_tv,
+        market=cfg.market,
+        entry_ast=entry_ast,
+        exit_ast=exit_ast,
+        warnings=warnings,
+    )
 
     caches = _RunCaches()
     selection, sel_warnings = select_candidates(
@@ -498,7 +512,9 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     actives_df = selection[selection["role"] == "active"].reset_index(drop=True)
     reserves_df = selection[selection["role"] == "reserve"].reset_index(drop=True)
     slot_count = max(cfg.top, len(actives_df))
-    portfolio = Portfolio(cfg.initial_capital, slot_count)
+    portfolio = Portfolio(
+        cfg.initial_capital, slot_count, cost_model=cost_model_from_config(cfg)
+    )
 
     master_dates = _run_event_driven_sim(
         portfolio=portfolio,

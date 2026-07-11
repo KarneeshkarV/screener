@@ -31,7 +31,6 @@ from screener.backtester.tearsheet import _trade_ledger_frame, _trade_timeline_h
 from screener.cache import cache_area_path, set_cache_area_path
 from screener.cli import cli
 from screener.commands.screen_report import _describe_numeric, _fmt
-from screener.criteria import CriterionDefinition, CriterionMode
 from screener.financials import first_number
 from screener.garp import US_THRESHOLDS, FmpGarpAdapter, YFinanceGarpAdapter
 from screener.reporting import open_report
@@ -41,13 +40,7 @@ from screener.resilience import (
     _retry_after,
     set_provider_rates,
 )
-from screener.screen_workflow import (
-    ScreenRequest,
-    ScreenWorkflowDeps,
-    ScreenWorkflowError,
-    default_screen_workflow_deps,
-    run_screen_workflow,
-)
+from screener.screen_workflow import default_screen_workflow_deps
 
 from tests.conftest import StubPriceFetcher, make_bars
 
@@ -200,15 +193,6 @@ def test_cache_area_unknown_names():
         set_cache_area_path("bogus", "/tmp/nope")
 
 
-def test_criterion_definition_mode_mismatch():
-    filt = CriterionDefinition("f", CriterionMode.FILTER, lambda df: df)
-    pipe = CriterionDefinition("p", CriterionMode.PIPELINE, lambda **kw: None)
-    with pytest.raises(TypeError, match="pipeline criterion"):
-        pipe.as_filter()
-    with pytest.raises(TypeError, match="filter criterion"):
-        filt.as_pipeline()
-
-
 def test_first_number_case_sensitive():
     mapping = {"Revenue": "5", "eps": None}
     assert first_number(mapping, "Revenue", case_insensitive=False) == 5.0
@@ -298,32 +282,6 @@ def test_default_screen_workflow_deps_builds():
     deps = default_screen_workflow_deps()
     assert callable(deps.scan)
     assert callable(deps.render_report)
-
-
-def test_run_screen_workflow_unknown_selection_mode():
-    deps = ScreenWorkflowDeps(
-        resolve_criteria=lambda names: object(),
-        parse_cache_ttl=lambda value: None,
-        scan=lambda **kw: (0, pd.DataFrame()),
-        save_run=lambda *a: 0,
-        previous_run=lambda *a: None,
-        diff=lambda *a: ([], []),
-        temp_report_path=lambda prefix: None,
-        render_report=lambda *a, **kw: None,
-    )
-    request = ScreenRequest(
-        market="us",
-        criteria_names=("ema",),
-        limit=5,
-        order_by="close",
-        output_csv=False,
-        detail=False,
-        refresh=False,
-        cache_ttl="900",
-        report_path=None,
-    )
-    with pytest.raises(ScreenWorkflowError, match="unknown mode"):
-        run_screen_workflow(request, deps)
 
 
 # ───────────────────────── minervini ─────────────────────────

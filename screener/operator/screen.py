@@ -22,6 +22,9 @@ plays before they break out.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any, cast
+
 import pandas as pd
 
 ACTIONS = (
@@ -32,7 +35,7 @@ ACTIONS = (
 )
 
 
-def _classify(row) -> str | None:
+def _classify(row: pd.Series) -> str | None:
     if not row.get("_is_fno", False):
         return None
     p = row.get("%_Change_Price")
@@ -60,9 +63,20 @@ def label(df: pd.DataFrame) -> pd.DataFrame:
     and return the frame.
     """
     df = df.copy()
-    df["Operator_Action"] = df.apply(_classify, axis=1)
+    df["Operator_Action"] = cast(
+        pd.Series,
+        df.apply(cast(Callable[..., Any], _classify), axis="columns"),
+    )
     # High Momentum Watch: Long Build-up + within 15% of 52-week high.
     # NaN dist (cache miss) is treated as not-near-high.
     near_high = df["Dist_From_52W_High"].le(15.0).fillna(False)
     df["High_Momentum_Watch"] = (df["Operator_Action"] == "Long Build-up") & near_high
+    confirmation = df.get(
+        "Options_OI_Confirmation", pd.Series(None, index=df.index, dtype=object)
+    ).astype(str)
+    bullish_action = df["Operator_Action"].isin(["Long Build-up", "Short Covering"])
+    bearish_action = df["Operator_Action"].isin(["Short Build-up", "Long Unwinding"])
+    df["Options_Confirms_Futures"] = (
+        bullish_action & confirmation.str.startswith("Bullish")
+    ) | (bearish_action & confirmation.str.startswith("Bearish"))
     return df

@@ -9,39 +9,23 @@ close. Reuses the earnings-event and price plumbing of this module.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Optional, cast
 
 import pandas as pd
 
 from screener.backtester.data import PriceFetcher
+from screener.backtester.execution import net_round_trip_return
 from screener.earnings_backtest._execution import apply_slippage
 from screener.earnings_backtest.data import (
     collect_earnings_events,
     fetch_price_data,
     load_universe,
 )
-from screener.earnings_backtest.engine import compute_backtest_summary
+from screener.earnings_backtest.metrics import compute_backtest_summary
+from screener.earnings_backtest.models import PeadTrade
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class PeadTrade:
-    """One executed PEAD trade (next-open entry, close exit after N sessions)."""
-
-    ticker: str
-    earnings_date: date
-    entry_date: date
-    exit_date: date
-    entry_price: float
-    exit_price: float
-    return_pct: float
-    surprise_pct: float
-    holding_days: int
-    passed_filter: bool = True
-    details: dict = field(default_factory=dict)
 
 
 def run_pead_backtest(
@@ -146,8 +130,9 @@ def run_pead_backtest(
 
         entry_price, exit_price = apply_slippage(entry_price, exit_price, slippage_bps)
 
-        ret_raw = (exit_price / entry_price) - 1.0
-        ret_net = ret_raw - commission_bps / 10_000
+        ret_raw, ret_net = net_round_trip_return(
+            entry_price, exit_price, commission_bps
+        )
 
         entry_ts = bars.index[entry_idx]
         exit_ts = bars.index[exit_idx]
@@ -176,10 +161,7 @@ def compute_pead_summary(
     hold_days: int,
 ) -> dict:
     """Aggregate PEAD drift statistics plus a by-surprise-quintile breakdown."""
-    # TODO(plan-005): compute_backtest_summary is typed for list[EarningsTrade]
-    # but only reads fields PeadTrade also has; unifying via a shared Protocol
-    # would change a public signature, so ignore the nominal mismatch.
-    summary = compute_backtest_summary(trades, strategy="pead")  # type: ignore[arg-type]
+    summary: dict[str, object] = dict(compute_backtest_summary(trades, strategy="pead"))
     summary["min_surprise_pct"] = min_surprise
     summary["hold_days"] = hold_days
     summary["surprise_quintiles"] = surprise_quintiles(trades)
@@ -217,3 +199,11 @@ def surprise_quintiles(trades: list[PeadTrade]) -> dict[str, dict[str, float]]:
             "win_rate": round(float((grp["ret"] > 0).mean()) * 100, 2),
         }
     return out
+
+
+__all__ = [
+    "PeadTrade",
+    "compute_pead_summary",
+    "run_pead_backtest",
+    "surprise_quintiles",
+]

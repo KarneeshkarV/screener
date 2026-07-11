@@ -100,7 +100,17 @@ def _alpha_beta(
     slope, intercept = np.polyfit(x, y, 1)
     # annualize alpha geometrically (intercept is per-period): (1+a)^ppy - 1.
     # Matches empyrical/quantstats; arithmetic intercept*ppy ignored compounding.
-    return float((1.0 + intercept) ** periods_per_year - 1.0), float(slope)
+    if intercept == -1.0:
+        annualized_alpha = -1.0
+    elif intercept < -1.0:
+        annualized_alpha = float("nan")
+    else:
+        log_growth = periods_per_year * np.log1p(intercept)
+        max_log = np.log(np.finfo(float).max)
+        annualized_alpha = (
+            float("inf") if log_growth > max_log else float(np.expm1(log_growth))
+        )
+    return annualized_alpha, float(slope)
 
 
 def _exposure(

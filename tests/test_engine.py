@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from screener.backtester.core import simulate_ticker
+from screener.backtester.costs import FlatCommission
 from screener.backtester.historical import run_backtest
 from screener.backtester.rolling import run_rolling_backtest
 from screener.backtester.metrics import _exposure, compute_metrics
@@ -251,16 +252,16 @@ def test_commission_reduces_realized_return():
     portfolio_a.assign("AAA", 1, bars.index[3].date())
     outcome = simulate_ticker(bars, signal_idx=3, cfg=_cfg(hold=5))
     assert outcome.trade is not None
-    portfolio_a.open("AAA", outcome.trade.entry_date, outcome.trade.entry_price, 0.0)
+    portfolio_a.open("AAA", outcome.trade.entry_date, outcome.trade.entry_price)
     trade_a = portfolio_a.close(
-        "AAA", outcome.trade.exit_date, outcome.trade.exit_price, "time", 0.0
+        "AAA", outcome.trade.exit_date, outcome.trade.exit_price, "time"
     )
 
-    portfolio_b = Portfolio(100_000, slot_count=1)
+    portfolio_b = Portfolio(100_000, slot_count=1, cost_model=FlatCommission(bps=50.0))
     portfolio_b.assign("AAA", 1, bars.index[3].date())
-    portfolio_b.open("AAA", outcome.trade.entry_date, outcome.trade.entry_price, 50.0)
+    portfolio_b.open("AAA", outcome.trade.entry_date, outcome.trade.entry_price)
     trade_b = portfolio_b.close(
-        "AAA", outcome.trade.exit_date, outcome.trade.exit_price, "time", 50.0
+        "AAA", outcome.trade.exit_date, outcome.trade.exit_price, "time"
     )
 
     assert trade_b.pnl < trade_a.pnl
@@ -595,13 +596,12 @@ def _simulate_and_record(
     assert outcome.trade is not None
     p = Portfolio(initial, slot_count=slot)
     p.assign(ticker, rank, bars.index[as_of_idx].date())
-    p.open(ticker, outcome.trade.entry_date, outcome.trade.entry_price, 0.0)
+    p.open(ticker, outcome.trade.entry_date, outcome.trade.entry_price)
     return p.close(
         ticker,
         outcome.trade.exit_date,
         outcome.trade.exit_price,
         outcome.trade.exit_reason,
-        0.0,
     )
 
 

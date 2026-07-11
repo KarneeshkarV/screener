@@ -131,6 +131,23 @@ def test_run_garp_screen_returns_scored_results(monkeypatch) -> None:
     assert announced == [1]
 
 
+def test_invalid_provider_row_logs_symbol_and_first_error(monkeypatch) -> None:
+    warnings = []
+    monkeypatch.setattr(
+        garp_module.logger,
+        "warning",
+        lambda event, **kwargs: warnings.append((event, kwargs)),
+    )
+
+    assert (
+        garp_module._coerce_garp_fundamentals({"unexpected": True}, symbol="BROKEN")
+        is None
+    )
+    assert warnings[0][0] == "garp_fundamentals_validation_failed"
+    assert warnings[0][1]["symbol"] == "BROKEN"
+    assert warnings[0][1]["error"]["loc"] == ("unexpected",)
+
+
 def test_run_garp_screen_returns_none_on_empty_universe(monkeypatch) -> None:
     monkeypatch.setattr(
         garp_module, "load_garp_universe", lambda *a, **k: pd.DataFrame()
@@ -316,8 +333,8 @@ def test_fmp_row_matches_yfinance_row_on_equivalent_data(monkeypatch) -> None:
     fmp_row = _fmp_us_row("AAA", "Alpha", _fmp_payload())
 
     assert fmp_row is not None
-    assert set(fmp_row) == set(yf_row)
-    for key, expected in yf_row.items():
+    assert set(type(fmp_row).model_fields) == set(type(yf_row).model_fields)
+    for key, expected in yf_row.model_dump().items():
         if isinstance(expected, float):
             assert fmp_row[key] == pytest.approx(expected), key
         else:
@@ -469,7 +486,10 @@ def test_load_garp_row_us_falls_back_to_yfinance(monkeypatch) -> None:
         garp_module, "_us_row", lambda symbol, description: {"name": symbol, "peg": 2.0}
     )
     row = garp_module.load_garp_row("AAPL", "us", cache_ttl=None, refresh=False)
-    assert row == {"name": "AAPL", "peg": 2.0}
+    assert row is not None
+    assert row["name"] == "AAPL"
+    assert row["peg"] == 2.0
+    assert row["market_cap"] is None
 
 
 def test_to_number_is_financials_to_number() -> None:

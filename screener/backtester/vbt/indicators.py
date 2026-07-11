@@ -9,6 +9,8 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 
+from screener.indicators.frames import on_balance_volume, wilder_atr, wilder_rsi
+
 from screener.backtester.vbt.config import (
     DEFAULT_BBANDS_STD,
     DEFAULT_BBANDS_WINDOWS,
@@ -201,40 +203,21 @@ def iter_indicator_combos(
     return [combo.as_tuple() for combo in combos]
 
 
+def _obv(close: pd.DataFrame, volume: pd.DataFrame) -> np.ndarray:
+    """Compatibility array view over the canonical OBV panel."""
+    return on_balance_volume(close, volume).to_numpy(dtype=float)
+
+
 def _rsi_wilder(close: pd.DataFrame, period: int) -> np.ndarray:
-    """Wilder's RSI on a 2D close panel. Returns ndarray of shape ``close``."""
-    delta = close.diff()
-    gain = delta.clip(lower=0.0)
-    loss = (-delta).clip(lower=0.0)
-    # Wilder smoothing == EWM with alpha = 1/period.
-    avg_gain = gain.ewm(alpha=1.0 / period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1.0 / period, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0.0, np.nan)
-    rsi = 100.0 - (100.0 / (1.0 + rs))
-    return rsi.to_numpy(dtype=float)
+    """Compatibility array view over the canonical RSI panel."""
+    return wilder_rsi(close, period).to_numpy(dtype=float)
 
 
 def _atr_wilder(
     high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame, period: int
 ) -> np.ndarray:
-    """Wilder ATR on 2D panels (close-shifted true range, EWM smoothed)."""
-    prev_close = close.shift(1)
-    tr1 = (high - low).to_numpy(dtype=float)
-    tr2 = (high - prev_close).abs().to_numpy(dtype=float)
-    tr3 = (low - prev_close).abs().to_numpy(dtype=float)
-    tr = np.maximum(tr1, np.maximum(tr2, tr3))
-    tr_df = pd.DataFrame(tr, index=close.index, columns=close.columns)
-    return tr_df.ewm(alpha=1.0 / period, adjust=False).mean().to_numpy(dtype=float)
-
-
-def _obv(close: pd.DataFrame, volume: pd.DataFrame) -> np.ndarray:
-    """On-Balance Volume cumulative sum."""
-    diff = close.diff().to_numpy(dtype=float)
-    vol = volume.to_numpy(dtype=float)
-    sign = np.where(diff > 0, 1.0, np.where(diff < 0, -1.0, 0.0))
-    flow = sign * vol
-    flow[~np.isfinite(flow)] = 0.0
-    return np.cumsum(flow, axis=0)
+    """Compatibility array view over the canonical ATR panel."""
+    return wilder_atr(high, low, close, period, first_bar="nan").to_numpy(dtype=float)
 
 
 def _supertrend_signals_np(
@@ -434,7 +417,9 @@ class SignalCache:
             assert high is not None and low is not None
             for w in keltner_w_set:
                 middle = close.ewm(span=w, adjust=False).mean()
-                atr = _atr_wilder(high, low, close, w)
+                atr = wilder_atr(high, low, close, w, first_bar="nan").to_numpy(
+                    dtype=float
+                )
                 upper = middle.to_numpy(dtype=float) + DEFAULT_KELTNER_MULT * atr
                 lower_band = middle.to_numpy(dtype=float) - DEFAULT_KELTNER_MULT * atr
                 keltner_entries_by_w[w] = crossed_above_nb(
@@ -448,7 +433,9 @@ class SignalCache:
             c.indicator in ("rsi", "sma_rsi", "breakout_rsi") for c in combos
         )
         rsi_arr: np.ndarray | None = (
-            _rsi_wilder(close, DEFAULT_RSI_PERIOD) if rsi_needed else None
+            wilder_rsi(close, DEFAULT_RSI_PERIOD).to_numpy(dtype=float)
+            if rsi_needed
+            else None
         )
         rsi_threshold_signals: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         rsi_filter_above_50: np.ndarray | None = None

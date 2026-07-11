@@ -14,12 +14,10 @@ from screener import history
 from screener.cache import parse_ttl
 from screener.commands.screen_report import render_screen_report
 from screener.criteria import (
-    CriteriaSelection,
-    CriteriaSelectionError,
     FilterCriteriaSelection,
-    PipelineCriteriaSelection,
     resolve_criteria,
 )
+from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from screener.reporting import temp_report_path
 from screener.scanner import scan
 
@@ -57,10 +55,13 @@ class RenderReportFn(Protocol):
     ) -> Path: ...
 
 
+class EnrichDaysToEarningsFn(Protocol):
+    def __call__(self, df: pd.DataFrame, market: str) -> pd.DataFrame: ...
+
+
 class ScreenMode(str, Enum):
     CSV = "csv"
     RESULTS = "results"
-    PIPELINE = "pipeline"
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,10 @@ class ScreenRequest:
     cache_ttl: str
     report_path: Path | None
     open_report: bool = False
+    earnings: bool = False
+    # Drop final result rows whose next earnings date is within N calendar days.
+    # ``None`` disables the filter. Unknown earnings dates are always kept.
+    earnings_buffer: int | None = None
 
 
 @dataclass(frozen=True)
@@ -83,7 +88,7 @@ class ScreenOutcome:
     market: str
     label: str
     total: int
-    df: pd.DataFrame | None
+    df: pd.DataFrame
     added: tuple[str, ...] = ()
     removed: tuple[str, ...] = ()
     first_run: bool = False
@@ -92,7 +97,7 @@ class ScreenOutcome:
 
 @dataclass(frozen=True)
 class ScreenWorkflowDeps:
-    resolve_criteria: Callable[[Sequence[str]], CriteriaSelection]
+    resolve_criteria: Callable[[Sequence[str]], FilterCriteriaSelection]
     parse_cache_ttl: Callable[[str], float | None]
     scan: ScanFn
     save_run: Callable[[str, str, int, pd.DataFrame], int]
@@ -100,10 +105,7 @@ class ScreenWorkflowDeps:
     diff: Callable[[pd.DataFrame, pd.DataFrame], tuple[list[str], list[str]]]
     temp_report_path: Callable[[str], Path]
     render_report: RenderReportFn
-
-
-class ScreenWorkflowError(ValueError):
-    """Raised when the screen workflow Interface rejects a request."""
+    enrich_days_to_earnings: EnrichDaysToEarningsFn
 
 
 def default_screen_workflow_deps() -> ScreenWorkflowDeps:
@@ -117,6 +119,7 @@ def default_screen_workflow_deps() -> ScreenWorkflowDeps:
         diff=history.diff,
         temp_report_path=temp_report_path,
         render_report=render_screen_report,
+        enrich_days_to_earnings=enrich_days_to_earnings,
     )
 
 
@@ -126,29 +129,7 @@ def run_screen_workflow(
 ) -> ScreenOutcome:
     """Run the full non-Click screen lifecycle and return its outcome."""
     deps = deps or default_screen_workflow_deps()
-    try:
-        selection = deps.resolve_criteria(request.criteria_names)
-    except CriteriaSelectionError as exc:
-        raise ScreenWorkflowError(str(exc)) from exc
-
-    if isinstance(selection, PipelineCriteriaSelection):
-        selection.runner(
-            market=request.market,
-            limit=request.limit,
-            output_csv=request.output_csv,
-            refresh=request.refresh,
-            cache_ttl=request.cache_ttl,
-        )
-        return ScreenOutcome(
-            mode=ScreenMode.PIPELINE,
-            market=request.market,
-            label=selection.name,
-            total=0,
-            df=None,
-        )
-
-    if not isinstance(selection, FilterCriteriaSelection):
-        raise ScreenWorkflowError("criteria selection resolved to an unknown mode")
+    selection = deps.resolve_criteria(request.criteria_names)
 
     total, df = deps.scan(
         market=request.market,
@@ -159,6 +140,12 @@ def run_screen_workflow(
         cache_ttl=deps.parse_cache_ttl(request.cache_ttl),
         refresh=request.refresh,
     )
+
+    # Earnings enrichment is opt-in and runs only on final result rows.
+    if request.earnings or request.earnings_buffer is not None:
+        df = deps.enrich_days_to_earnings(df, request.market)
+    if request.earnings_buffer is not None:
+        df = filter_earnings_buffer(df, request.earnings_buffer)
 
     if request.output_csv:
         return ScreenOutcome(
@@ -216,7 +203,6 @@ __all__ = [
     "ScreenOutcome",
     "ScreenRequest",
     "ScreenWorkflowDeps",
-    "ScreenWorkflowError",
     "default_screen_workflow_deps",
     "run_screen_workflow",
 ]

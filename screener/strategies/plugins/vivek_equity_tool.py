@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener.strategies.spec import PrepareCtx, strategy
+from screener.strategies.spec import PrepareCtx, register_expression_strategy
 
 
 def _prepare_vivek(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
@@ -22,12 +22,10 @@ def _vivek_lookback() -> int:
     return required_history_bars()
 
 
-@strategy(
+register_expression_strategy(
     "vivek_equity_tool",
     entry="vivek_equity_entry > 0",
     exit="vivek_equity_exit > 0 or vivek_equity_close > 0",
     prepare_bars=_prepare_vivek,
     required_lookback=_vivek_lookback,
 )
-def _vivek_equity_tool() -> None:
-    """Expression-only strategy. Body unused."""

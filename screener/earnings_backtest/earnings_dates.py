@@ -5,10 +5,8 @@ yfinance (US), NSE corporate announcements (India, via ``jugaad_data``), and
 screener.in quarterly results (India, via ``openscreener``), plus the batch
 collector that unifies them.
 
-Split out of :mod:`screener.earnings_backtest.data`, which re-exports every
-public name here for backwards compatibility. Cross-function and seam
-dependencies are looked up through the ``data`` module (``data.<name>``) so the
-test suite's ``monkeypatch.setattr(data, ...)`` patches keep taking effect.
+The compatibility facade re-exports the public names from this canonical
+module; this module never imports the facade back.
 """
 
 from __future__ import annotations
@@ -22,7 +20,14 @@ from typing import Any, Optional, cast
 import pandas as pd
 import yfinance as yf
 
-from screener.earnings_backtest import data
+from screener.backtester.data import _configure_yfinance, call_yfinance_with_timeout
+from screener.cache import cached_json_call
+from screener.earnings_backtest.common import (
+    EARNINGS_CACHE_DAYS,
+    MAX_WORKERS,
+    SENTIMENT_CACHE_DAYS,
+    jsonable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +54,9 @@ def _earnings_to_records(ed: pd.DataFrame) -> list[dict[str, Any]]:
         records.append(
             {
                 "earnings_date": ts.date().isoformat(),
-                "eps_estimate": data._jsonable(row.get("EPS Estimate", float("nan"))),
-                "reported_eps": data._jsonable(row.get("Reported EPS", float("nan"))),
-                "surprise_pct": data._jsonable(row.get("Surprise(%)", float("nan"))),
+                "eps_estimate": jsonable(row.get("EPS Estimate", float("nan"))),
+                "reported_eps": jsonable(row.get("Reported EPS", float("nan"))),
+                "surprise_pct": jsonable(row.get("Surprise(%)", float("nan"))),
             }
         )
     return records
@@ -83,8 +88,9 @@ def fetch_earnings_dates_yf(
     """Return yfinance earnings_dates for *ticker*."""
 
     def _fetch() -> list[dict[str, Any]]:
-        data._configure_yfinance()
-        try:
+        _configure_yfinance()
+
+        def _request() -> list[dict[str, Any]]:
             t = yf.Ticker(ticker)
             ed = t.earnings_dates
             if ed is None or ed.empty:
@@ -94,16 +100,19 @@ def fetch_earnings_dates_yf(
             cutoff = pd.Timestamp(date.today() - timedelta(days=years * 365))
             ed = ed[ed.index >= cutoff]
             return _earnings_to_records(ed) if not ed.empty else []
+
+        try:
+            return call_yfinance_with_timeout(_request)
         except Exception as exc:
             logger.debug(
                 "earnings_dates_failed", extra={"ticker": ticker, "error": str(exc)}
             )
             return []
 
-    records = data.cached_json_call(
+    records = cached_json_call(
         "earnings_yf",
         (ticker, years),
-        ttl_seconds=data.EARNINGS_CACHE_DAYS * 86_400,
+        ttl_seconds=EARNINGS_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
     )
@@ -164,10 +173,10 @@ def fetch_earnings_dates_nse() -> Optional[pd.DataFrame]:
             logger.warning("nse_earnings_fetch_failed", extra={"error": str(exc)})
             return []
 
-    cached = data.cached_json_call(
+    cached = cached_json_call(
         "earnings_nse",
         "corporate_announcements",
-        ttl_seconds=data.SENTIMENT_CACHE_DAYS * 86_400,
+        ttl_seconds=SENTIMENT_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
     )
@@ -179,7 +188,7 @@ def fetch_earnings_dates_nse() -> Optional[pd.DataFrame]:
 
 
 def _earnings_rows_for_ticker(ticker: str, years: int) -> list[dict[str, Any]]:
-    ed = data.fetch_earnings_dates_yf(ticker, years=years)
+    ed = fetch_earnings_dates_yf(ticker, years=years)
     if ed is None:
         return []
     rows: list[dict[str, Any]] = []
@@ -200,10 +209,10 @@ def _fetch_yf_earnings_rows(
     tickers: list[str], years: int, batch_size: int
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    max_workers = min(data.MAX_WORKERS, max(1, batch_size), max(1, len(tickers)))
+    max_workers = min(MAX_WORKERS, max(1, batch_size), max(1, len(tickers)))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_ticker = {
-            executor.submit(data._earnings_rows_for_ticker, ticker, years): ticker
+            executor.submit(_earnings_rows_for_ticker, ticker, years): ticker
             for ticker in tickers
         }
         for future in as_completed(future_to_ticker):
@@ -272,17 +281,17 @@ def fetch_earnings_dates_openscreener(
                     "earnings_date": announce_date.date().isoformat(),
                     "period_end": period_end.date().isoformat(),
                     "eps_estimate": None,
-                    "reported_eps": data._jsonable(item.get("eps")),
+                    "reported_eps": jsonable(item.get("eps")),
                     "surprise_pct": None,
                 }
             )
         return records
 
     try:
-        records = data.cached_json_call(
+        records = cached_json_call(
             "earnings_openscreener",
             (symbol, years, filing_lag_days),
-            ttl_seconds=data.EARNINGS_CACHE_DAYS * 86_400,
+            ttl_seconds=EARNINGS_CACHE_DAYS * 86_400,
             refresh=False,
             fetch=_fetch,
         )
@@ -298,7 +307,7 @@ def fetch_earnings_dates_openscreener(
 def _openscreener_earnings_rows_for_ticker(
     ticker: str, years: int
 ) -> list[dict[str, Any]]:
-    ed = data.fetch_earnings_dates_openscreener(ticker, years=years)
+    ed = fetch_earnings_dates_openscreener(ticker, years=years)
     if ed is None:
         return []
     rows: list[dict[str, Any]] = []
@@ -324,7 +333,7 @@ def _fetch_openscreener_earnings_rows(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_ticker = {
             executor.submit(
-                data._openscreener_earnings_rows_for_ticker, ticker, years
+                _openscreener_earnings_rows_for_ticker, ticker, years
             ): ticker
             for ticker in tickers
         }
@@ -365,7 +374,7 @@ def collect_earnings_events(
 
         # Try NSE corporate announcements first (broader coverage). These carry
         # the real announcement (``sort_date``) — already point-in-time.
-        nse_events = data.fetch_earnings_dates_nse()
+        nse_events = fetch_earnings_dates_nse()
         if nse_events is not None and not nse_events.empty:
             # Only keep tickers in our universe
             ticker_set = set(tickers)
@@ -402,9 +411,7 @@ def collect_earnings_events(
                 "openscreener_earnings_batch",
                 extra={"batch": f"{i}-{i + len(batch)}", "size": len(batch)},
             )
-            for osc_row in data._fetch_openscreener_earnings_rows(
-                batch, years, batch_size
-            ):
+            for osc_row in _fetch_openscreener_earnings_rows(batch, years, batch_size):
                 # Drop openscreener rows whose fiscal quarter is already covered
                 # by a real NSE announcement for the same ticker (dedup).
                 pe = osc_row.get("period_end")
@@ -421,7 +428,7 @@ def collect_earnings_events(
                 "earnings_batch",
                 extra={"batch": f"{i}-{i + len(batch)}", "size": len(batch)},
             )
-            rows.extend(data._fetch_yf_earnings_rows(batch, years, batch_size))
+            rows.extend(_fetch_yf_earnings_rows(batch, years, batch_size))
 
     if not rows:
         return pd.DataFrame(
@@ -434,3 +441,138 @@ def collect_earnings_events(
             ]
         )
     return pd.DataFrame(rows)
+
+
+def events_to_dates_map(events: pd.DataFrame) -> dict[str, list[date]]:
+    """Group an events frame into ``ticker -> sorted unique earnings dates``."""
+    if events is None or events.empty:
+        return {}
+    if "ticker" not in events.columns or "earnings_date" not in events.columns:
+        return {}
+    out: dict[str, list[date]] = {}
+    for ticker, group in events.groupby("ticker", sort=False):
+        dates: list[date] = []
+        for raw in group["earnings_date"]:
+            ts = pd.Timestamp(raw)
+            if pd.isna(ts):
+                continue
+            dates.append(ts.normalize().date())
+        if dates:
+            out[str(ticker)] = sorted(set(dates))
+    return out
+
+
+def load_earnings_dates_map(
+    tickers: list[str],
+    market: str,
+    *,
+    years: int = 5,
+    collect_fn: Any | None = None,
+) -> dict[str, list[date]]:
+    """Collect historical earnings dates for *tickers* as a blackout map.
+
+    Uses :func:`collect_earnings_events` (or an injectable *collect_fn*) which
+    already caches per-source results on disk. Returns ``ticker -> list[date]``
+    for tickers that have at least one known event; missing tickers are omitted.
+    """
+    if not tickers:
+        return {}
+    fn = collect_fn if collect_fn is not None else collect_earnings_events
+    try:
+        events = fn(list(tickers), years=years, market=market)
+    except Exception as exc:
+        logger.warning(
+            "earnings_dates_map_failed",
+            extra={"market": market, "n_tickers": len(tickers), "error": str(exc)},
+        )
+        return {}
+    return events_to_dates_map(events)
+
+
+def next_earnings_date(
+    earnings_dates: list[date] | pd.DatetimeIndex | pd.Series | None,
+    as_of: date,
+) -> date | None:
+    """Return the earliest earnings date on or after *as_of*, else ``None``."""
+    if earnings_dates is None:
+        return None
+    as_of_ts = pd.Timestamp(as_of).normalize()
+    upcoming: list[date] = []
+    for raw in earnings_dates:
+        ts = pd.Timestamp(raw)
+        if pd.isna(ts):
+            continue
+        ts = ts.normalize()
+        if ts >= as_of_ts:
+            upcoming.append(ts.date())
+    return min(upcoming) if upcoming else None
+
+
+def fetch_next_earnings_dates(
+    symbols: list[str],
+    market: str,
+    *,
+    as_of: date | None = None,
+    yf_fetcher: Any | None = None,
+    nse_fetcher: Any | None = None,
+) -> dict[str, date | None]:
+    """Map screen symbols to their next known earnings date (or ``None``).
+
+    Market-aware: yfinance for US, NSE corporate announcements for India.
+    Provider failures are logged and yield ``None`` for affected symbols so a
+    live screen never aborts on earnings data.
+    """
+    as_of_d = as_of or date.today()
+    result: dict[str, date | None] = {sym: None for sym in symbols}
+    if not symbols:
+        return result
+
+    if market == "india":
+        fetch_nse = nse_fetcher if nse_fetcher is not None else fetch_earnings_dates_nse
+        try:
+            nse_df = fetch_nse()
+        except Exception as exc:
+            logger.warning("nse_next_earnings_failed", extra={"error": str(exc)})
+            return result
+        if nse_df is None or nse_df.empty:
+            return result
+        # Build yf-style ticker -> next date, then map back to input symbols.
+        by_yf: dict[str, date | None] = {}
+        for ticker, group in nse_df.groupby("ticker", sort=False):
+            by_yf[str(ticker)] = next_earnings_date(group["earnings_date"], as_of_d)
+        from screener.symbols import tv_to_yf
+
+        for sym in symbols:
+            yf_sym = tv_to_yf(str(sym), "india")
+            result[sym] = by_yf.get(yf_sym)
+            if result[sym] is None:
+                # Also try bare / .NS variants for name-only screen rows.
+                bare = str(sym).replace(".NS", "").replace(".BO", "")
+                result[sym] = by_yf.get(f"{bare}.NS") or by_yf.get(bare)
+        return result
+
+    # US (and other non-india): per-ticker yfinance earnings_dates (cached).
+    fetch_yf = yf_fetcher if yf_fetcher is not None else fetch_earnings_dates_yf
+    from screener.symbols import tv_to_yf
+
+    def _fetch_one(sym: str) -> tuple[str, date | None]:
+        yf_sym = tv_to_yf(str(sym), market)
+        try:
+            ed = fetch_yf(yf_sym)
+        except Exception as exc:
+            logger.warning(
+                "yf_next_earnings_failed",
+                extra={"ticker": yf_sym, "error": str(exc)},
+            )
+            return sym, None
+        if ed is None or (isinstance(ed, pd.DataFrame) and ed.empty):
+            return sym, None
+        if isinstance(ed, pd.DataFrame):
+            return sym, next_earnings_date(list(ed.index), as_of_d)
+        return sym, next_earnings_date(ed, as_of_d)
+
+    max_workers = min(MAX_WORKERS, len(symbols))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for sym, earnings_date in executor.map(_fetch_one, symbols):
+            result[sym] = earnings_date
+    return result

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener.strategies.spec import PrepareCtx, strategy
+from screener.strategies.spec import PrepareCtx, register_expression_strategy
 
 _WINDOW = 252  # ~12 months of trading days
 
@@ -53,12 +53,10 @@ def _low_vol_lookback() -> int:
     return _WINDOW + 1
 
 
-@strategy(
+register_expression_strategy(
     "low_volatility",
     entry="vol_252 > 0",
     exit=None,
     prepare_bars=_prepare_low_vol,
     required_lookback=_low_vol_lookback,
 )
-def _low_volatility() -> None:
-    """Expression-only strategy; ranking is driven by the rank_score column."""

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from screener.strategies.spec import strategy
+from screener.strategies.spec import register_expression_strategy
 
 
-@strategy(
+register_expression_strategy(
     "breakout",
     entry="close >= highest(close, 252) * 0.9 and volume > sma(volume, 10)",
     exit=None,
 )
-def _breakout() -> None:
-    """Expression-only strategy. Body unused."""

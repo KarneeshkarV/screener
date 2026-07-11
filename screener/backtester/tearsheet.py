@@ -154,7 +154,8 @@ def _trade_timeline_html(trades: pd.DataFrame) -> str:
 
 
 def _config_rows(result: BacktestResult) -> str:
-    dump = result.config.model_dump(exclude={"slippage_model"})
+    dump = result.config.to_flat_dict()
+    dump.pop("slippage_model", None)
     if dump.get("membership_added"):
         dump["membership_added"] = f"{len(dump['membership_added'])} dated symbols"
     tickers = dump.get("tickers")

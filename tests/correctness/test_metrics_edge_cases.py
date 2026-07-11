@@ -300,6 +300,17 @@ def test_alpha_beta_constant_benchmark_returns_zeros():
     assert beta == 0.0
 
 
+def test_alpha_beta_extreme_intercept_handles_overflow_explicitly() -> None:
+    returns = pd.Series([100.0, 100.0], index=pd.date_range("2024-01-01", periods=2))
+    benchmark = pd.Series([-1.0, 1.0], index=returns.index)
+
+    with np.errstate(over="raise", invalid="raise"):
+        alpha, beta = _alpha_beta(returns, benchmark)
+
+    assert alpha == float("inf")
+    assert beta == 0.0
+
+
 def test_alpha_beta_non_overlapping_indices_returns_zeros():
     """Non-overlapping indices → aligned has 0 rows → len(aligned) < 2 → (0.0, 0.0)."""
     returns = pd.Series([0.01, 0.02], index=[0, 1])

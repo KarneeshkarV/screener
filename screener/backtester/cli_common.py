@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import click
 
 from screener.markets import MARKETS
+
+if TYPE_CHECKING:
+    from screener.backtester.slippage import SlippageModel
 
 DEFAULT_BENCHMARK = {name: market.benchmark for name, market in MARKETS.items()}
 DEFAULT_MIN_PRICE = {name: market.min_price for name, market in MARKETS.items()}
 DEFAULT_MIN_ADV = {name: market.min_adv for name, market in MARKETS.items()}
 
 
-def resolve_strategy_exprs(strategy_name, entry_expr, exit_expr):
+def resolve_strategy_exprs(
+    strategy_name: str | None,
+    entry_expr: str | None,
+    exit_expr: str | None,
+) -> tuple[str, str | None]:
     from screener.backtester.strategies import resolve_strategy
 
     if strategy_name:
@@ -26,7 +35,9 @@ def resolve_strategy_exprs(strategy_name, entry_expr, exit_expr):
     return entry_expr, exit_expr
 
 
-def referenced_fundamental_fields(entry_expr, exit_expr):
+def referenced_fundamental_fields(
+    entry_expr: str | None, exit_expr: str | None
+) -> set[str]:
     """Return the known fundamental fields referenced by the entry/exit exprs.
 
     Fundamental identifiers (e.g. ``revenue_up_3q``) only resolve once a
@@ -43,27 +54,40 @@ def referenced_fundamental_fields(entry_expr, exit_expr):
     return names & set(DEFAULT_FUNDAMENTAL_FIELDS)
 
 
-def build_slippage_model(slippage_model, slippage_bps, half_spread_bps, vol_impact_k):
+def build_slippage_model(
+    slippage_model: str,
+    slippage_bps: float,
+    half_spread_bps: float,
+    vol_impact_k: float,
+    *,
+    spread_proxy: bool = False,
+) -> SlippageModel:
     from screener.backtester.slippage import (
         CompositeSlippage,
+        EstimatedHalfSpreadSlippage,
         FixedBpsSlippage,
         HalfSpreadSlippage,
         VolumeImpactSlippage,
     )
 
+    model: SlippageModel
     if slippage_model == "fixed":
-        return FixedBpsSlippage(bps=float(slippage_bps))
-    if slippage_model == "half-spread":
-        return HalfSpreadSlippage(half_spread_bps=float(half_spread_bps))
-    if slippage_model == "vol-impact":
-        return VolumeImpactSlippage(k=float(vol_impact_k))
-    return CompositeSlippage(
-        models=(
-            FixedBpsSlippage(bps=float(slippage_bps)),
-            HalfSpreadSlippage(half_spread_bps=float(half_spread_bps)),
-            VolumeImpactSlippage(k=float(vol_impact_k)),
+        model = FixedBpsSlippage(bps=float(slippage_bps))
+    elif slippage_model == "half-spread":
+        model = HalfSpreadSlippage(half_spread_bps=float(half_spread_bps))
+    elif slippage_model == "vol-impact":
+        model = VolumeImpactSlippage(k=float(vol_impact_k))
+    else:
+        model = CompositeSlippage(
+            models=(
+                FixedBpsSlippage(bps=float(slippage_bps)),
+                HalfSpreadSlippage(half_spread_bps=float(half_spread_bps)),
+                VolumeImpactSlippage(k=float(vol_impact_k)),
+            )
         )
-    )
+    if spread_proxy:
+        return CompositeSlippage(models=(model, EstimatedHalfSpreadSlippage()))
+    return model
 
 
 def parse_partial_exits(partial_exit_args) -> tuple[tuple[float, float], ...]:
@@ -81,7 +105,11 @@ def parse_partial_exits(partial_exit_args) -> tuple[tuple[float, float], ...]:
     return tuple(parsed)
 
 
-def resolve_min_filters(market, min_price, min_avg_dollar_volume):
+def resolve_min_filters(
+    market: str,
+    min_price: float | None,
+    min_avg_dollar_volume: float | None,
+) -> tuple[float | None, float | None]:
     resolved_min_price = (
         DEFAULT_MIN_PRICE.get(market) if min_price is None else min_price
     )

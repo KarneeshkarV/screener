@@ -10,6 +10,10 @@ from screener.backtester.optimization.monte_carlo import (
     MonteCarloResult,
     simulate_monte_carlo,
 )
+from screener.backtester.optimization.research_report import (
+    compute_parameter_stability,
+    run_research_report,
+)
 from screener.backtester.optimization.walk_forward import (
     WalkForwardResult,
     WalkForwardSummary,
@@ -24,10 +28,12 @@ __all__ = [
     "WalkForwardResult",
     "WalkForwardSummary",
     "WalkForwardWindow",
+    "compute_parameter_stability",
     "generate_walk_forward_windows",
     "grid_search",
     "parameter_combinations",
     "risk_adjusted_return",
+    "run_research_report",
     "simulate_monte_carlo",
     "walk_forward_optimize",
 ]

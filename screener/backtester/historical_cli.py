@@ -16,7 +16,15 @@ from screener.backtester.cli_common import (
 )
 from screener.backtester.data import build_price_fetcher
 from screener.backtester.display import print_backtest, print_ledger_csv
-from screener.backtester.models import SUPPORTED_INTERVALS, BacktestConfig
+from screener.backtester.models import (
+    SUPPORTED_INTERVALS,
+    BacktestConfig,
+    DataPolicy,
+    ExecutionPolicy,
+    PortfolioPolicy,
+    SignalPolicy,
+    UniversePolicy,
+)
 from screener.markets import as_of_option, get_market, get_price_fetcher, market_option
 
 
@@ -74,6 +82,17 @@ from screener.markets import as_of_option, get_market, get_price_fetcher, market
 )
 @click.option(
     "--commission-bps", type=float, default=0.0, help="Commission per fill (bps)."
+)
+@click.option(
+    "--cost-model",
+    type=click.Choice(["flat", "india"]),
+    default="flat",
+    show_default=True,
+    help=(
+        "Statutory fee model. 'flat' applies --commission-bps on every fill "
+        "(legacy). 'india' applies NSE equity delivery fees (STT, stamp duty, "
+        "exchange, SEBI, GST, IPFT)."
+    ),
 )
 @click.option("--initial-capital", type=float, default=100_000.0)
 @click.option(
@@ -220,6 +239,7 @@ def backtest_historical(
     trailing_stop,
     slippage_bps,
     commission_bps,
+    cost_model,
     initial_capital,
     benchmark,
     tickers,
@@ -310,35 +330,43 @@ def backtest_historical(
     cfg = BacktestConfig(
         market=market,
         as_of=as_of_date,
-        hold=int(hold),
-        top=int(top),
-        strategy_name=strategy_name,
-        entry_expr=entry_expr,
-        exit_expr=exit_expr,
-        stop_loss=stop_loss,
-        take_profit=take_profit,
-        trailing_stop=trailing_stop,
-        slippage_bps=float(slippage_bps),
-        commission_bps=float(commission_bps),
-        initial_capital=float(initial_capital),
         benchmark=bench,
-        tickers=ticker_tuple,
-        universe_file=universe_file,
-        max_universe=int(max_universe),
-        min_price=resolved_min_price,
-        min_avg_dollar_volume=resolved_min_adv,
-        avg_dollar_volume_window=int(adv_window),
-        reserve_multiple=int(reserve_multiple),
-        reinvest=not no_reinvest,
-        slippage_model=slip_model,
-        gap_fills=not no_gap_fills,
-        entry_order_type=entry_order,
-        entry_limit_bps=entry_limit_bps,
-        allow_reentry=bool(allow_reentry),
-        max_reentries=int(max_reentries),
-        partial_exits=partial_exits,
-        price_adjustment=price_adjustment,
-        interval=interval,
+        universe=UniversePolicy(
+            tickers=ticker_tuple,
+            universe_file=universe_file,
+            max_universe=int(max_universe),
+        ),
+        signals=SignalPolicy(
+            strategy_name=strategy_name,
+            entry_expr=entry_expr,
+            exit_expr=exit_expr,
+        ),
+        data=DataPolicy(interval=interval, price_adjustment=price_adjustment),
+        execution=ExecutionPolicy(
+            hold=int(hold),
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            trailing_stop=trailing_stop,
+            slippage_bps=float(slippage_bps),
+            commission_bps=float(commission_bps),
+            slippage_model=slip_model,
+            cost_model=cost_model,
+            gap_fills=not no_gap_fills,
+            entry_order_type=entry_order,
+            entry_limit_bps=entry_limit_bps,
+            partial_exits=partial_exits,
+        ),
+        portfolio=PortfolioPolicy(
+            top=int(top),
+            initial_capital=float(initial_capital),
+            min_price=resolved_min_price,
+            min_avg_dollar_volume=resolved_min_adv,
+            avg_dollar_volume_window=int(adv_window),
+            reserve_multiple=int(reserve_multiple),
+            reinvest=not no_reinvest,
+            allow_reentry=bool(allow_reentry),
+            max_reentries=int(max_reentries),
+        ),
     )
 
     fetcher = get_price_fetcher(

@@ -7,7 +7,7 @@ no state of its own — every access re-reads the one registry, so it can never
 drift from it.
 
 Add a new entry/exit Pine strategy by dropping a plugin file in
-``screener/strategies/plugins/`` with ``@strategy("name", entry="...", exit="...")``.
+``screener/strategies/plugins/`` with a ``register_expression_strategy(...)`` call.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from screener.strategies.spec import (
     DerivedView,
+    ExpressionStrategySpec,
     StrategySpec,
     discover_plugins,
 )
@@ -41,7 +42,7 @@ class NamedStrategy(BaseModel):
 
 
 def _named_of(spec: StrategySpec) -> Optional[NamedStrategy]:
-    if spec.entry is None:
+    if not isinstance(spec, ExpressionStrategySpec):
         return None
     return NamedStrategy(entry=spec.entry, exit=spec.exit)
 
@@ -50,9 +51,14 @@ NAMED_STRATEGIES: DerivedView[NamedStrategy] = DerivedView(_named_of)
 
 
 def resolve_strategy(name: str) -> NamedStrategy:
+    from screener.strategies.spec import resolve_strategy_spec
+
     try:
-        return NAMED_STRATEGIES[name]
-    except KeyError:
+        spec = resolve_strategy_spec(name)
+    except ValueError as exc:
+        raise KeyError(str(exc)) from exc
+    if not isinstance(spec, ExpressionStrategySpec):
         raise KeyError(
             f"Unknown strategy {name!r}. Known: {sorted(NAMED_STRATEGIES)}"
         ) from None
+    return NamedStrategy(entry=spec.entry, exit=spec.exit)

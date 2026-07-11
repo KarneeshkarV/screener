@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from screener.indicators.frames import wilder_atr
 from screener.symbols import normalize_symbol
 
 from .detector import bars_on_or_before_as_of
@@ -91,20 +92,13 @@ class BuildupScore(BaseModel):
 
 
 def _atr(df: pd.DataFrame, length: int = ATR_LEN) -> pd.Series:
-    high = df["high"].astype(float)
-    low = df["low"].astype(float)
-    close = df["close"].astype(float)
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [
-            (high - low).abs(),
-            (high - prev_close).abs(),
-            (low - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    # Wilder smoothing — the canonical ATR; matches Pine `ta.atr`.
-    return tr.ewm(alpha=1.0 / length, adjust=False, min_periods=length).mean()
+    return wilder_atr(
+        df["high"].astype(float),
+        df["low"].astype(float),
+        df["close"].astype(float),
+        length,
+        min_periods=length,
+    )
 
 
 def _bb_width(

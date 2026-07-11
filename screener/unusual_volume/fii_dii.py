@@ -26,6 +26,7 @@ from .nse_client import nse_cached_json
 
 _FIIDII_URL = "https://www.nseindia.com/api/fiidiiTradeReact"
 _PANEL = "fii_dii"
+EVENT_FIELDS = ("fii_5d_net", "fii_trend", "dii_5d_net")
 
 
 def fetch_fii_dii_today(*, refresh: bool = False) -> Optional[list]:

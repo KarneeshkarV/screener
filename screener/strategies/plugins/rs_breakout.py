@@ -4,22 +4,22 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener.strategies.spec import PrepareCtx, strategy
+from screener.strategies.spec import PrepareCtx, register_expression_strategy
 
 
 def _prepare_rs_breakout(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     from screener.rs_breakout import india_symbol, prepare_backtest_frames
     from screener.unusual_volume.delivery import load_delivery_panel
 
-    benchmark_bars = ctx.price_panel.get(ctx.cfg.benchmark, pd.DataFrame())
+    benchmark_bars = ctx.price_panel.get(ctx.benchmark, pd.DataFrame())
     if benchmark_bars is None or benchmark_bars.empty:
         ctx.warnings.append(
-            f"benchmark data unavailable for rs_breakout: {ctx.cfg.benchmark}"
+            f"benchmark data unavailable for rs_breakout: {ctx.benchmark}"
         )
         return ctx.bars_by_tv
 
     delivery_panel = pd.DataFrame()
-    if ctx.cfg.market == "india":
+    if ctx.market == "india":
         history_days = max(
             (pd.Timestamp(ctx.end) - pd.Timestamp(ctx.start)).days + 14, 40
         )
@@ -42,7 +42,7 @@ def _prepare_rs_breakout(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     return prepare_backtest_frames(
         ctx.bars_by_tv,
         benchmark_bars,
-        market=ctx.cfg.market,
+        market=ctx.market,
         delivery_panel=delivery_panel,
     )
 
@@ -53,12 +53,10 @@ def _rs_breakout_lookback() -> int:
     return required_history_bars()
 
 
-@strategy(
+register_expression_strategy(
     "rs_breakout",
     entry="rs_breakout_entry > 0",
     exit=None,
     prepare_bars=_prepare_rs_breakout,
     required_lookback=_rs_breakout_lookback,
 )
-def _rs_breakout() -> None:
-    """Expression-only strategy. Body unused."""

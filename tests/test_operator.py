@@ -410,6 +410,7 @@ def test_process_build_dataset_computes_derived_columns(monkeypatch):
         )
 
     monkeypatch.setattr(process, "fetch_fo_bhavcopy", fake_fo)
+    monkeypatch.setattr(process, "load_bhavcopy_chains", lambda d: {})
     monkeypatch.setattr(
         process,
         "fifty_two_week_hl",
@@ -517,6 +518,10 @@ def _operator_row(
         "SYMBOL": symbol,
         "Operator_Action": action,
         "High_Momentum_Watch": high_momentum_watch,
+        "Options_OI_Confirmation": None,
+        "Options_Confirms_Futures": False,
+        "ATM_Call_Writing_OI": float("nan"),
+        "ATM_Put_Writing_OI": float("nan"),
         "CLOSE_PRICE": 100.0,
         "AVG_PRICE": 99.0,
         "%_Change_Price": 1.0,

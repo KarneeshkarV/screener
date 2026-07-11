@@ -452,11 +452,11 @@ def test_pyramiding_via_portfolio_tracks_two_concurrent_lots():
         date(2024, 1, 12),
     )
     p.assign("AAA", rank=1, signal_date=d1)
-    p.open("AAA", d1, entry_price=100.0, commission_bps=0.0)
-    p.open("AAA", d2, entry_price=110.0, commission_bps=0.0, raise_if_exists=False)
+    p.open("AAA", d1, entry_price=100.0)
+    p.open("AAA", d2, entry_price=110.0, raise_if_exists=False)
     # Two lots open; FIFO close hits the d1 lot first.
-    trade1 = p.close("AAA", d3, exit_price=120.0, reason="target", commission_bps=0.0)
-    trade2 = p.close("AAA", d4, exit_price=130.0, reason="target", commission_bps=0.0)
+    trade1 = p.close("AAA", d3, exit_price=120.0, reason="target")
+    trade2 = p.close("AAA", d4, exit_price=130.0, reason="target")
     assert trade1.entry_date == d1
     assert trade2.entry_date == d2
     # Both trades profit relative to their own entry price.
@@ -467,9 +467,9 @@ def test_pyramiding_via_portfolio_tracks_two_concurrent_lots():
 def test_legacy_open_raises_on_duplicate_when_raise_if_exists_true():
     p = Portfolio(initial_capital=100_000.0, slot_count=1)
     p.assign("AAA", rank=1, signal_date=date(2024, 1, 2))
-    p.open("AAA", date(2024, 1, 2), 100.0, commission_bps=0.0)
+    p.open("AAA", date(2024, 1, 2), 100.0)
     with pytest.raises(ValueError, match="Position already open"):
-        p.open("AAA", date(2024, 1, 3), 105.0, commission_bps=0.0)
+        p.open("AAA", date(2024, 1, 3), 105.0)
 
 
 # ── Limitation 4: split-only adjustment + cash dividends ─────────────
@@ -523,7 +523,7 @@ def test_dividend_column_preserved_in_normalize():
 def test_dividend_credits_cash_and_updates_position_income():
     p = Portfolio(initial_capital=100_000.0, slot_count=1)
     p.assign("AAA", rank=1, signal_date=date(2024, 1, 2))
-    p.open("AAA", date(2024, 1, 2), entry_price=100.0, commission_bps=0.0)
+    p.open("AAA", date(2024, 1, 2), entry_price=100.0)
     cash_before = p.cash()
     credited = p.credit_dividends("AAA", cash_per_share=0.50)
     pos = p.get_position("AAA")
@@ -537,11 +537,9 @@ def test_dividend_credits_cash_and_updates_position_income():
 def test_trade_carries_dividend_income_on_close():
     p = Portfolio(initial_capital=100_000.0, slot_count=1)
     p.assign("AAA", rank=1, signal_date=date(2024, 1, 2))
-    p.open("AAA", date(2024, 1, 2), entry_price=100.0, commission_bps=0.0)
+    p.open("AAA", date(2024, 1, 2), entry_price=100.0)
     p.credit_dividends("AAA", cash_per_share=0.50)
-    trade = p.close(
-        "AAA", date(2024, 1, 10), exit_price=105.0, reason="time", commission_bps=0.0
-    )
+    trade = p.close("AAA", date(2024, 1, 10), exit_price=105.0, reason="time")
     assert trade.dividend_income > 0
     # Income matches shares * dividend_per_share at credit time.
     assert trade.dividend_income == pytest.approx(trade.shares * 0.50)

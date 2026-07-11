@@ -1,6 +1,7 @@
 """Slippage models for fill-price adjustment.
 
-Each model exposes ``adverse_fraction(side, shares, adv, sigma_daily) -> float``
+Each model exposes
+``adverse_fraction(side, shares, adv, sigma_daily, half_spread=0) -> float``
 returning a non-negative fraction by which the reference price is widened
 against the trader. ``apply_slippage`` multiplies that through a reference
 price, with direction handled for buys vs sells.
@@ -8,6 +9,7 @@ price, with direction handled for buys vs sells.
 Models:
   * ``FixedBpsSlippage`` — constant basis-point adverse fill (legacy behaviour).
   * ``HalfSpreadSlippage`` — quoted half-spread charged on every fill.
+  * ``EstimatedHalfSpreadSlippage`` — per-fill half-spread fraction (e.g. CS).
   * ``VolumeImpactSlippage`` — Almgren-Chriss sqrt-law impact:
     ``k * sigma_daily * sqrt(shares / adv_shares)``.
   * ``CompositeSlippage`` — sums adverse fractions from component models.
@@ -27,7 +29,12 @@ Side = Literal["buy", "sell"]
 @runtime_checkable
 class SlippageModel(Protocol):
     def adverse_fraction(
-        self, side: Side, shares: float, adv: float, sigma_daily: float
+        self,
+        side: Side,
+        shares: float,
+        adv: float,
+        sigma_daily: float,
+        half_spread: float = 0.0,
     ) -> float:
         """Return the adverse price adjustment as a non-negative fraction."""
 
@@ -55,8 +62,11 @@ def apply_slippage(
     shares: float = 0.0,
     adv: float = 0.0,
     sigma_daily: float = 0.0,
+    half_spread: float = 0.0,
 ) -> float:
-    frac = float(model.adverse_fraction(side, shares, adv, sigma_daily))
+    frac = float(
+        model.adverse_fraction(side, shares, adv, sigma_daily, half_spread=half_spread)
+    )
     if frac < 0.0:
         frac = 0.0
     if side == "buy":
@@ -74,7 +84,12 @@ class FixedBpsSlippage(BaseModel):
     bps: float = 0.0
 
     def adverse_fraction(
-        self, side: Side, shares: float, adv: float, sigma_daily: float
+        self,
+        side: Side,
+        shares: float,
+        adv: float,
+        sigma_daily: float,
+        half_spread: float = 0.0,
     ) -> float:
         return _bps_fraction(self.bps)
 
@@ -85,9 +100,36 @@ class HalfSpreadSlippage(FixedBpsSlippage):
     half_spread_bps: float = 0.0
 
     def adverse_fraction(
-        self, side: Side, shares: float, adv: float, sigma_daily: float
+        self,
+        side: Side,
+        shares: float,
+        adv: float,
+        sigma_daily: float,
+        half_spread: float = 0.0,
     ) -> float:
         return _bps_fraction(self.half_spread_bps)
+
+
+class EstimatedHalfSpreadSlippage(BaseModel):
+    """Charge a precomputed per-fill half-spread fraction on every fill.
+
+    The fraction is supplied at fill time via ``half_spread`` (same path as
+    ``sigma_daily`` / ``adv``). Missing estimates should pass 0.0.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    def adverse_fraction(
+        self,
+        side: Side,
+        shares: float,
+        adv: float,
+        sigma_daily: float,
+        half_spread: float = 0.0,
+    ) -> float:
+        if half_spread <= 0.0 or not math.isfinite(half_spread):
+            return 0.0
+        return float(half_spread)
 
 
 class VolumeImpactSlippage(BaseModel):
@@ -103,7 +145,12 @@ class VolumeImpactSlippage(BaseModel):
     k: float = 0.1
 
     def adverse_fraction(
-        self, side: Side, shares: float, adv: float, sigma_daily: float
+        self,
+        side: Side,
+        shares: float,
+        adv: float,
+        sigma_daily: float,
+        half_spread: float = 0.0,
     ) -> float:
         if adv <= 0.0 or shares <= 0.0 or sigma_daily <= 0.0:
             return 0.0
@@ -116,9 +163,18 @@ class CompositeSlippage(BaseModel):
     models: tuple[SlippageModel, ...] = Field(default_factory=tuple)
 
     def adverse_fraction(
-        self, side: Side, shares: float, adv: float, sigma_daily: float
+        self,
+        side: Side,
+        shares: float,
+        adv: float,
+        sigma_daily: float,
+        half_spread: float = 0.0,
     ) -> float:
         total = 0.0
         for m in self.models:
-            total += float(m.adverse_fraction(side, shares, adv, sigma_daily))
+            total += float(
+                m.adverse_fraction(
+                    side, shares, adv, sigma_daily, half_spread=half_spread
+                )
+            )
         return total

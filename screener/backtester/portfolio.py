@@ -28,6 +28,7 @@ from typing import Any, Iterable, Optional, Union, cast
 import numpy as np
 import pandas as pd
 
+from screener.backtester.costs import CostModel, FlatCommission
 from screener.backtester.models import ExitReason, Position, Trade
 
 # Trade/position stamps are date-only for daily runs and full datetimes for
@@ -36,12 +37,18 @@ _Stamp = Union[date, datetime]
 
 
 class Portfolio:
-    def __init__(self, initial_capital: float, slot_count: int) -> None:
+    def __init__(
+        self,
+        initial_capital: float,
+        slot_count: int,
+        cost_model: CostModel | None = None,
+    ) -> None:
         if slot_count <= 0:
             raise ValueError("slot_count must be > 0")
         self.initial_capital = float(initial_capital)
         self.slot_count = slot_count
         self.slot_capital = self.initial_capital / slot_count
+        self.cost_model = cost_model or FlatCommission()
         self._cash = self.initial_capital
         # Keyed by (ticker, open_seq). Legacy callers use ticker only; helper
         # methods resolve to the FIFO-oldest open position for that ticker.
@@ -73,7 +80,6 @@ class Portfolio:
         ticker: str,
         entry_date: _Stamp,
         entry_price: float,
-        commission_bps: float,
         *,
         raise_if_exists: bool = True,
     ) -> Position:
@@ -81,19 +87,27 @@ class Portfolio:
         already active (legacy invariant). Pass ``raise_if_exists=False`` to
         allow pyramiding: a new ``open_seq`` is allocated and the position is
         tracked as a distinct concurrent lot.
+
+        Fees come from the cost model owned by this portfolio.
         """
         if raise_if_exists and self._active_keys(ticker):
             raise ValueError(f"Position already open for {ticker}")
-        # spend up to min(slot_capital, current cash); commission reduces shares
+        # spend up to min(slot_capital, current cash); fees reduce shares
         # acquired. Cap by current cash so reserve promotion after losing trades
         # cannot overdraw the portfolio.
-        c = commission_bps / 10_000.0
-        gross_per_share = entry_price * (1.0 + c)
+        # Proportional fee models do not depend on notional; pass budget as a
+        # stable reference for any future notional-dependent schedules.
         budget = self.entry_budget()
+        c = float(self.cost_model.side_cost_fraction("buy", budget))
+        if c < 0.0:
+            c = 0.0
+        gross_per_share = entry_price * (1.0 + c)
         shares = budget / gross_per_share if gross_per_share > 0 else 0.0
         notional = shares * entry_price
-        commission = notional * c
-        entry_cost = notional + commission  # <= budget by construction
+        commission = notional * float(
+            self.cost_model.side_cost_fraction("buy", notional)
+        )
+        entry_cost = notional + commission  # <= budget by construction for c>=0
         self._cash -= entry_cost
         position = Position(
             ticker=ticker,
@@ -146,16 +160,16 @@ class Portfolio:
         exit_date: _Stamp,
         exit_price: float,
         reason: ExitReason,
-        commission_bps: float,
     ) -> Trade:
         """Fully close the oldest open position for ``ticker``."""
         key = self._oldest_key(ticker)
         if key is None:
             raise KeyError(f"No open position for {ticker}")
         position = self._open.pop(key)
-        c = commission_bps / 10_000.0
         proceeds = position.shares * exit_price
-        commission = proceeds * c
+        commission = proceeds * float(
+            self.cost_model.side_cost_fraction("sell", proceeds)
+        )
         exit_value = proceeds - commission
         self._cash += exit_value
         entry_cost = position.slot_capital
@@ -192,7 +206,6 @@ class Portfolio:
         exit_price: float,
         reason: ExitReason,
         fraction: float,
-        commission_bps: float,
     ) -> Trade:
         """Sell ``fraction`` of the ticker's oldest open position.
 
@@ -204,7 +217,12 @@ class Portfolio:
         if not 0.0 < fraction <= 1.0:
             raise ValueError(f"fraction must be in (0, 1]; got {fraction}")
         if fraction >= 1.0:
-            return self.close(ticker, exit_date, exit_price, reason, commission_bps)
+            return self.close(
+                ticker,
+                exit_date,
+                exit_price,
+                reason,
+            )
         key = self._oldest_key(ticker)
         if key is None:
             raise KeyError(f"No open position for {ticker}")
@@ -215,9 +233,10 @@ class Portfolio:
         remaining_cost = position.slot_capital - pro_rata_cost
         pro_rata_div = position.dividend_income * fraction
         remaining_div = position.dividend_income - pro_rata_div
-        c = commission_bps / 10_000.0
         proceeds = close_shares * exit_price
-        commission = proceeds * c
+        commission = proceeds * float(
+            self.cost_model.side_cost_fraction("sell", proceeds)
+        )
         exit_value = proceeds - commission
         self._cash += exit_value
         # Total PnL includes the pro-rata dividend income for the closed sleeve

@@ -69,9 +69,7 @@ def institutional(
         return
 
     df = df.copy()
-    df["qoq_change_shares"] = pd.to_numeric(
-        df.get("qoq_change_shares"), errors="coerce"
-    )
+    df["qoq_change_shares"] = pd.to_numeric(df["qoq_change_shares"], errors="coerce")
     df = df.sort_values(
         ["qoq_change_shares", "qoq_change_pct"],
         ascending=False,
