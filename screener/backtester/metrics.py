@@ -109,12 +109,18 @@ def _exposure(
     trades = list(trades)
     if not trades or len(equity_index) == 0:
         return 0.0
-    open_count = pd.Series(0, index=equity_index, dtype=int)
-    for t in trades:
-        entry = pd.Timestamp(t.entry_date)
-        exit_ = pd.Timestamp(t.exit_date)
-        mask = (equity_index >= entry) & (equity_index <= exit_)
-        open_count.loc[mask] += 1
+    # Convert inclusive trade intervals into +1/-1 events, then scan once.
+    # ``left`` for entries and ``right`` for exits exactly preserve the prior
+    # ``entry <= session <= exit`` mask semantics, including off-calendar dates.
+    changes = np.zeros(len(equity_index) + 1, dtype=np.int64)
+    entries = pd.DatetimeIndex([pd.Timestamp(t.entry_date) for t in trades])
+    exits = pd.DatetimeIndex([pd.Timestamp(t.exit_date) for t in trades])
+    starts = equity_index.searchsorted(entries, side="left")
+    stops = equity_index.searchsorted(exits, side="right")
+    valid = (starts < len(equity_index)) & (stops > 0)
+    np.add.at(changes, starts[valid], 1)
+    np.add.at(changes, np.minimum(stops[valid], len(equity_index)), -1)
+    open_count = np.cumsum(changes[:-1])
     return float(open_count.mean() / max(slot_count, 1))
 
 
