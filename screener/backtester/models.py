@@ -56,6 +56,11 @@ class BacktestConfig(BaseModel):
     # ``screener.regime.classify_regimes``) is not in this set. Days with an
     # 'unknown' (warmup) regime are also suppressed.
     regime_filter: tuple[str, ...] = ()
+    # Earnings blackout entry gate (rolling backtest): when set to N, suppress
+    # entry signals on any calendar day within N days BEFORE (and including) a
+    # known earnings date for that ticker. ``None`` disables the gate. Tickers
+    # with no known earnings dates remain eligible (a warning is recorded).
+    earnings_blackout_days: int | None = None
     # Optional rolling-backtest fundamental enrichment. When configured, dated
     # fundamental columns are merged into each ticker's bars before entry/exit
     # expressions are evaluated.

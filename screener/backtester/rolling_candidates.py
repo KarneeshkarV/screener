@@ -9,6 +9,13 @@ import numpy as np
 import pandas as pd
 
 
+def _preview_warning(symbols: list[str], template: str) -> str:
+    """Format a bounded symbol preview for rolling-backtest warnings."""
+    preview = ", ".join(sorted(symbols)[:5])
+    more = "" if len(symbols) <= 5 else f" (+{len(symbols) - 5} more)"
+    return template.format(count=len(symbols), preview=f"{preview}{more}")
+
+
 @dataclass(frozen=True)
 class _RollingCandidateMatrices:
     """Precomputed per-day matrices for vectorized candidate selection.
@@ -56,6 +63,8 @@ def _build_rolling_candidate_matrices(
     lookback_required: int,
     membership_added: dict[str, date] | None = None,
     regime_allowed: pd.Series | None = None,
+    earnings_blackout: dict[str, list[date]] | None = None,
+    earnings_blackout_days: int | None = None,
     warnings: list[str] | None = None,
 ) -> _RollingCandidateMatrices:
     """Build once-per-run matrices for daily candidate scans."""
@@ -84,6 +93,40 @@ def _build_rolling_candidate_matrices(
             regime_allowed.reindex(master_ix, method="ffill").fillna(False).astype(bool)
         )
         signal_mat.loc[~allowed.to_numpy(), :] = False
+    # Earnings blackout gate: suppress entries on calendar days within N days
+    # before (and including) a known earnings date for that ticker. Tickers with
+    # no known earnings dates are left untouched (and warned about below).
+    if (
+        earnings_blackout is not None
+        and earnings_blackout_days is not None
+        and earnings_blackout_days >= 0
+        and not signal_mat.empty
+    ):
+        day_ord = master_ix.map(pd.Timestamp.toordinal).to_numpy(dtype=np.int64)
+        missing_earnings: list[str] = []
+        for tv in valid_tickers:
+            edates = earnings_blackout.get(tv) or []
+            if not edates:
+                missing_earnings.append(tv)
+                continue
+            ed_ord = np.fromiter(
+                (pd.Timestamp(d).toordinal() for d in edates),
+                dtype=np.int64,
+                count=len(edates),
+            )
+            # In blackout when some earnings date E satisfies 0 <= E - day <= N.
+            diffs = ed_ord[None, :] - day_ord[:, None]
+            in_blackout = ((diffs >= 0) & (diffs <= earnings_blackout_days)).any(axis=1)
+            if in_blackout.any():
+                signal_mat.loc[in_blackout, tv] = False
+        if missing_earnings and warnings is not None:
+            warnings.append(
+                _preview_warning(
+                    missing_earnings,
+                    "earnings blackout active but {count} ticker(s) lack earnings "
+                    "dates; not gated: {preview}",
+                )
+            )
     # Empty dict sentinel: no min-price / ADV filters configured.
     filter_mat: pd.DataFrame | None
     if filter_signals_by_tv:
@@ -130,11 +173,12 @@ def _build_rolling_candidate_matrices(
     # Those names get an all-NaN score and are silently dropped at selection
     # time, so surface them explicitly rather than excluding them without trace.
     if any_score and missing_score and warnings is not None:
-        preview = ", ".join(sorted(missing_score)[:5])
-        more = "" if len(missing_score) <= 5 else f" (+{len(missing_score) - 5} more)"
         warnings.append(
-            f"factor ranking active but {len(missing_score)} ticker(s) lack a "
-            f"rank_score column; excluded from selection: {preview}{more}"
+            _preview_warning(
+                missing_score,
+                "factor ranking active but {count} ticker(s) lack a rank_score "
+                "column; excluded from selection: {preview}",
+            )
         )
 
     bar_idx_mat = pd.DataFrame(bar_cols, index=master_ix)

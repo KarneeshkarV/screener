@@ -213,6 +213,17 @@ __all__ = [
     ),
 )
 @click.option(
+    "--earnings-blackout",
+    "earnings_blackout_days",
+    type=int,
+    default=None,
+    help=(
+        "Suppress entry signals within N calendar days before (and including) "
+        "a known earnings date for each ticker. Tickers with no known earnings "
+        "dates remain eligible (a warning is recorded)."
+    ),
+)
+@click.option(
     "--fundamentals-provider",
     type=click.Choice(["fmp", "openscreener", "yfinance"]),
     default=None,
@@ -306,6 +317,7 @@ def backtest_rolling(
     price_adjustment,
     interval,
     regime_filter_args,
+    earnings_blackout_days,
     fundamentals_provider,
     fundamental_field_args,
     fundamental_lag_days,
@@ -319,6 +331,8 @@ def backtest_rolling(
     """Run a true daily rolling backtest over a date window."""
     if output_csv and dashboard:
         raise click.UsageError("--csv and --dashboard cannot be used together.")
+    if earnings_blackout_days is not None and earnings_blackout_days < 0:
+        raise click.UsageError("--earnings-blackout must be >= 0.")
     if fundamentals_provider == "fmp" and market != "us":
         raise click.UsageError(
             "--fundamentals-provider fmp currently supports only -m us."
@@ -453,6 +467,7 @@ def backtest_rolling(
         price_adjustment=price_adjustment,
         interval=interval,
         regime_filter=tuple(dict.fromkeys(regime_filter_args)),
+        earnings_blackout_days=earnings_blackout_days,
         fundamentals_provider=fundamentals_provider,
         fundamental_fields=resolved_fundamental_fields,
         fundamental_lag_days=max(resolved_fundamental_lag_days, 0),

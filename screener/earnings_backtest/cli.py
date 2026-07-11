@@ -6,6 +6,7 @@ from contextlib import nullcontext
 
 import csv
 import sys
+from contextlib import nullcontext
 
 import click
 from rich.console import Console
