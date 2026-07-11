@@ -10,6 +10,9 @@ from typing import Any, cast
 import pandas as pd
 
 from screener.options.models import OptionChain, OptionContract
+from screener.options._parse import nonnegative_or_zero
+from screener.options._parse import number as _as_number
+from screener.options._parse import positive as _positive
 from screener.operator.fetch import CACHE_ROOT, FO_ARCHIVE_URL
 from screener.resilience import call_with_resilience
 from screener.unusual_volume.nse_client import (
@@ -31,26 +34,6 @@ REQUIRED_COLUMNS = frozenset(
     }
 )
 BhavcopyFetcher = Callable[[date], pd.DataFrame]
-
-
-def _as_number(value: object) -> float | None:
-    try:
-        result = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    if pd.isna(result):
-        return None
-    return result
-
-
-def _positive(value: object) -> float | None:
-    number = _as_number(value)
-    return number if number is not None and number > 0 else None
-
-
-def _nonnegative(value: object) -> float:
-    number = _as_number(value)
-    return max(number or 0.0, 0.0)
 
 
 def _row_date(row: Mapping[str, Any], fallback: date) -> date:
@@ -131,9 +114,9 @@ def normalize_bhavcopy_options(
                     expiry=expiry,
                     strike=strike,
                     right="call" if right_raw == "CE" else "put",
-                    oi=_nonnegative(row.get("OpnIntrst")),
+                    oi=nonnegative_or_zero(row.get("OpnIntrst")),
                     oi_change=_as_number(row.get("ChngInOpnIntrst")),
-                    volume=_nonnegative(row.get("TtlTradgVol")),
+                    volume=nonnegative_or_zero(row.get("TtlTradgVol")),
                     last=_last_price(row),
                     previous_close=_positive(row.get("PrvsClsgPric")),
                     lot_size=embedded_lot or mapped_lot,

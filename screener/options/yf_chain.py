@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from datetime import date, datetime, timezone
-import math
 from typing import Any, cast
 
 import pandas as pd
@@ -12,6 +11,8 @@ import yfinance as yf
 
 from screener.options.greeks import black_scholes_greeks
 from screener.options.models import OptionChain, OptionContract, OptionsMarket
+from screener.options._parse import number as _number
+from screener.options._parse import quote_pair as _quote_pair
 from screener.providers import CachedProvider, ProviderSpec
 
 _YF_CACHE = CachedProvider(
@@ -25,16 +26,6 @@ def _configure() -> None:
     _configure_yfinance()
 
 
-def _number(value: object, *, nonnegative: bool = False) -> float | None:
-    try:
-        result = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(result) or (nonnegative and result < 0):
-        return None
-    return result
-
-
 def _spot_from_ticker(ticker: Any) -> float | None:
     try:
         fast_info = ticker.fast_info
@@ -46,14 +37,6 @@ def _spot_from_ticker(ticker: Any) -> float | None:
         value = getattr(fast_info, "last_price", None)
     spot = _number(value, nonnegative=True)
     return spot if spot and spot > 0 else None
-
-
-def _quote_pair(row: Mapping[str, Any]) -> tuple[float | None, float | None]:
-    bid = _number(row.get("bid"), nonnegative=True)
-    ask = _number(row.get("ask"), nonnegative=True)
-    if bid is not None and ask is not None and ask < bid:
-        return None, None
-    return bid, ask
 
 
 def _contracts_from_frame(

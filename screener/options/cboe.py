@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date, datetime, timezone
-import math
 import re
 from typing import Any, cast
 from zoneinfo import ZoneInfo
@@ -18,6 +17,8 @@ from screener.options.models import (
     OptionRight,
     OptionsMarket,
 )
+from screener.options._parse import number as _number
+from screener.options._parse import quote_pair as _quote_pair
 from screener.providers import CachedProvider, ProviderSpec
 
 CBOE_DELAYED_URL = (
@@ -30,16 +31,6 @@ _OCC_SYMBOL = re.compile(r"^(.+?)(\d{6})([CP])(\d{8})$")
 _CBOE_CACHE = CachedProvider(
     ProviderSpec(provider="cboe", namespace="options_cboe", ttl_seconds=900)
 )
-
-
-def _number(value: object, *, nonnegative: bool = False) -> float | None:
-    try:
-        result = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(result) or (nonnegative and result < 0):
-        return None
-    return result
 
 
 def _venue_timestamp(value: object, fallback: datetime) -> datetime:
@@ -63,14 +54,6 @@ def _contract_parts(symbol: str) -> tuple[str, date, OptionRight, float] | None:
     except ValueError:
         return None
     return root, expiry, "call" if right_raw == "C" else "put", strike
-
-
-def _quote_pair(row: dict[str, Any]) -> tuple[float | None, float | None]:
-    bid = _number(row.get("bid"), nonnegative=True)
-    ask = _number(row.get("ask"), nonnegative=True)
-    if bid is not None and ask is not None and ask < bid:
-        return None, None
-    return bid, ask
 
 
 def parse_cboe_chain(

@@ -257,7 +257,7 @@ def test_parse_nse_live_and_filtered_fallback(nse_raw):
     assert parse_nse_chain({}, symbol="TCS") is None
 
 
-def test_nse_provider_refresh_and_signature_fallback(nse_raw):
+def test_nse_provider_forwards_refresh(nse_raw):
     calls = []
 
     def fetch(symbol, refresh=False):
@@ -268,8 +268,6 @@ def test_nse_provider_refresh_and_signature_fallback(nse_raw):
     assert provider.fetch_chain("reliance", "india", refresh=True) is not None
     assert calls == [("RELIANCE", True)]
 
-    one_arg = NSELiveOptionsProvider(raw_fetcher=lambda _symbol: nse_raw)
-    assert one_arg.fetch_chain("RELIANCE", "india") is not None
     with pytest.raises(ValueError, match="only India"):
         provider.fetch_chain("RELIANCE", "us")
     with pytest.raises(ValueError, match="empty"):

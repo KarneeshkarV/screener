@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, timezone
-import math
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -16,18 +15,14 @@ from screener.options.models import (
     OptionRight,
     OptionsMarket,
 )
+from screener.options._parse import number as _number
+from screener.options._parse import quote_pair
 
-RawFetcher = Callable[[str], dict[str, Any] | None]
 
-
-def _number(value: object, *, nonnegative: bool = False) -> float | None:
-    try:
-        result = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(result) or (nonnegative and result < 0):
-        return None
-    return result
+class RawFetcher(Protocol):
+    def __call__(
+        self, symbol: str, *, refresh: bool = False
+    ) -> dict[str, Any] | None: ...
 
 
 def _timestamp(raw: object, now: datetime) -> datetime:
@@ -52,11 +47,11 @@ def _expiry(
 
 
 def _quote_pair(leg: Mapping[str, Any]) -> tuple[float | None, float | None]:
-    bid = _number(leg.get("bidprice") or leg.get("bidPrice"), nonnegative=True)
-    ask = _number(leg.get("askPrice") or leg.get("askprice"), nonnegative=True)
-    if bid is not None and ask is not None and ask < bid:
-        return None, None
-    return bid, ask
+    return quote_pair(
+        leg,
+        bid_keys=("bidprice", "bidPrice"),
+        ask_keys=("askPrice", "askprice"),
+    )
 
 
 def _contracts_from_records(
@@ -203,10 +198,10 @@ def parse_nse_chain(
     )
 
 
-def _default_fetcher(symbol: str) -> dict[str, Any] | None:
+def _default_fetcher(symbol: str, *, refresh: bool = False) -> dict[str, Any] | None:
     from screener.unusual_volume.option_chain import fetch_option_chain
 
-    return fetch_option_chain(symbol)
+    return fetch_option_chain(symbol, refresh=refresh)
 
 
 class NSELiveOptionsProvider:
@@ -234,10 +229,7 @@ class NSELiveOptionsProvider:
         normalized = symbol.strip().upper()
         if not normalized:
             raise ValueError("symbol must not be empty")
-        try:
-            raw = self.raw_fetcher(normalized, refresh=refresh)  # type: ignore[call-arg]
-        except TypeError:
-            raw = self.raw_fetcher(normalized)
+        raw = self.raw_fetcher(normalized, refresh=refresh)
         if not isinstance(raw, dict):
             return None
         return parse_nse_chain(raw, symbol=normalized, expiry=expiry, now=self.now())
