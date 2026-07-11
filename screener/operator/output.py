@@ -65,17 +65,7 @@ def _format(df: pd.DataFrame) -> pd.DataFrame:
         "DELIV_PER": "Deliv_Pct",
         "PREV_CLOSE": "Prev_Close",
     }
-    formatted = df.rename(columns=rename)
-    defaults: dict[str, object] = {
-        "Options_OI_Confirmation": None,
-        "Options_Confirms_Futures": False,
-        "ATM_Call_Writing_OI": float("nan"),
-        "ATM_Put_Writing_OI": float("nan"),
-    }
-    for column, default in defaults.items():
-        if column not in formatted.columns:
-            formatted[column] = default
-    return formatted
+    return df.rename(columns=rename)
 
 
 def _sort(df: pd.DataFrame) -> pd.DataFrame:

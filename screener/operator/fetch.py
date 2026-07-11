@@ -170,20 +170,13 @@ def fetch_fo_bhavcopy(d: date) -> pd.DataFrame:
         archive_url_template=FO_ARCHIVE_URL,
         resilience_call=call_with_resilience,
     )
-    # Preserve the option rows on the returned frame's metadata so the
-    # operator pipeline can add ATM call/put-writing confirmation without a
-    # second archive download. Existing futures consumers still see exactly
-    # the same columns/rows.
-    option_rows = raw[raw["FinInstrmTp"].isin(["STO", "IDO"])].copy()
     df = raw[raw["FinInstrmTp"] == "STF"].copy()  # stock futures only
     df["XpryDt"] = pd.to_datetime(df["XpryDt"], errors="coerce")
     df["OpnIntrst"] = pd.to_numeric(df["OpnIntrst"], errors="coerce")
     df = df.rename(
         columns={"TckrSymb": "SYMBOL", "OpnIntrst": "OI", "XpryDt": "EXPIRY"}
     )
-    result = df[["SYMBOL", "EXPIRY", "OI"]].reset_index(drop=True)
-    result.attrs["options_rows"] = option_rows
-    return result
+    return df[["SYMBOL", "EXPIRY", "OI"]].reset_index(drop=True)
 
 
 def near_month_oi(fo_df: pd.DataFrame) -> pd.DataFrame:

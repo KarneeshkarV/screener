@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from collections.abc import Mapping
 from typing import cast
 
 import pandas as pd
 
 from screener.options.metrics import compute_chain_metrics
-from screener.options.nse_bhavcopy import normalize_bhavcopy_options
+from screener.options.models import OptionChain
+from screener.options.nse_bhavcopy import load_bhavcopy_chains
 
 from .fetch import (
     fetch_cash_bhavcopy,
@@ -34,7 +36,7 @@ LOG = logging.getLogger(__name__)
 DELIVERY_LOOKBACK = 5  # 5-day avg per spec
 
 
-def _options_oi_confirmation(raw_options: object, as_of: date) -> pd.DataFrame:
+def _options_oi_confirmation(chains: Mapping[str, OptionChain]) -> pd.DataFrame:
     """Collapse exact option OI/premium changes into an ATM confirmation row."""
     columns = [
         "SYMBOL",
@@ -42,11 +44,7 @@ def _options_oi_confirmation(raw_options: object, as_of: date) -> pd.DataFrame:
         "ATM_Put_Writing_OI",
         "Options_OI_Confirmation",
     ]
-    if not isinstance(raw_options, pd.DataFrame) or raw_options.empty:
-        return pd.DataFrame(columns=columns)
-    try:
-        chains = normalize_bhavcopy_options(raw_options, as_of=as_of)
-    except (ValueError, TypeError, KeyError):
+    if not chains:
         return pd.DataFrame(columns=columns)
     rows: list[dict[str, object]] = []
     for symbol, chain in chains.items():
@@ -125,9 +123,7 @@ def build_dataset(
     avg_deliv = _five_day_avg_delivery(today)
 
     fo_today_raw = fetch_fo_bhavcopy(today)
-    options_confirmation = _options_oi_confirmation(
-        fo_today_raw.attrs.get("options_rows"), today
-    )
+    options_confirmation = _options_oi_confirmation(load_bhavcopy_chains(today))
     fo_today = near_month_oi(fo_today_raw)
     prev_day = _trailing_trading_days(today, 1)[0]
     fo_prev = near_month_oi(fetch_fo_bhavcopy(prev_day))[["SYMBOL", "Cumulative_OI"]]

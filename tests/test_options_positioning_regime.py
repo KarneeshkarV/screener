@@ -14,6 +14,7 @@ from screener.operator import output as operator_output
 from screener.operator import process as operator_process
 from screener.operator import screen as operator_screen
 from screener.options import cli as options_cli
+from screener.options import nse_bhavcopy
 from screener.options.participant import (
     build_participant_panel,
     fetch_market_lots,
@@ -231,18 +232,19 @@ def test_fred_parser_fetch_and_us_regime_panel(panel_root: Path):
         build_us_regime_panel(date(2026, 7, 9), date(2026, 7, 6))
 
 
-def test_operator_reuses_discarded_options_for_confirmation(monkeypatch):
+def test_operator_loads_explicit_option_chains_for_confirmation(monkeypatch):
     raw = pd.read_csv(FIXTURES / "nse_fo_bhavcopy_options_sample.csv")
     monkeypatch.setattr(operator_fetch, "read_fo_bhavcopy_raw", lambda *a, **k: raw)
+    monkeypatch.setattr(nse_bhavcopy, "read_fo_bhavcopy_raw", lambda *a, **k: raw)
     futures = operator_fetch.fetch_fo_bhavcopy(date(2026, 7, 8))
     assert set(futures["SYMBOL"]) == {"RELIANCE"}
-    options = futures.attrs["options_rows"]
-    assert len(options) == 12
-    confirmation = operator_process._options_oi_confirmation(options, date(2026, 7, 8))
+    assert futures.attrs == {}
+    chains = operator_process.load_bhavcopy_chains(date(2026, 7, 8))
+    confirmation = operator_process._options_oi_confirmation(chains)
     row = confirmation.iloc[0]
     assert row["Options_OI_Confirmation"] == "Bearish: call writing"
     assert row["ATM_Call_Writing_OI"] > row["ATM_Put_Writing_OI"]
-    assert operator_process._options_oi_confirmation(None, date(2026, 7, 8)).empty
+    assert operator_process._options_oi_confirmation({}).empty
 
 
 def test_operator_label_and_output_surface_confirmation():
@@ -268,7 +270,7 @@ def test_operator_label_and_output_surface_confirmation():
     )
     labelled = operator_screen.label(frame)
     assert labelled["Options_Confirms_Futures"].tolist() == [True, False]
-    formatted = operator_output._format(pd.DataFrame({"SYMBOL": ["AAA"]}))
+    formatted = operator_output._format(labelled)
     assert "Options_OI_Confirmation" in formatted
     assert "Options_Confirms_Futures" in operator_output.OUTPUT_COLUMNS
 
