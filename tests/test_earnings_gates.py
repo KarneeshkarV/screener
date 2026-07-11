@@ -5,7 +5,7 @@ All network access is stubbed — no live yfinance / NSE calls.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from threading import Barrier, get_ident
 
 import pandas as pd
@@ -414,3 +414,21 @@ def test_screen_workflow_earnings_buffer(tmp_path):
     assert outcome.mode is ScreenMode.CSV
     assert outcome.df is not None
     assert outcome.df["name"].tolist() == ["BBB", "CCC"]
+
+
+def test_enrich_days_to_earnings_default_provider(monkeypatch):
+    """provider=None imports the real earnings-dates fetcher lazily."""
+    import screener.earnings_backtest.earnings_dates as earnings_dates
+
+    as_of = date(2024, 3, 1)
+    seen: list[tuple] = []
+
+    def fake_fetch(symbols, market, *, as_of):
+        seen.append((tuple(symbols), market, as_of))
+        return {sym: as_of + timedelta(days=3) for sym in symbols}
+
+    monkeypatch.setattr(earnings_dates, "fetch_next_earnings_dates", fake_fetch)
+    df = pd.DataFrame([{"name": "AAA"}])
+    enriched = enrich_days_to_earnings(df, "us", as_of=as_of)
+    assert seen and seen[0][1] == "us"
+    assert enriched["days_to_earnings"].tolist() == [3]
