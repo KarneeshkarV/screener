@@ -203,8 +203,8 @@ def _bars(n: int = 5) -> pd.DataFrame:
 def test_fillmodel_unknown_entry_order_type_returns_warning():
     cfg = _cfg().model_copy(update={"entry_order_type": "moo"})
     # Force an unknown order type past validation via private attribute bypass:
-    # construct the model and monkeypatch cfg through object.__setattr__.
-    object.__setattr__(cfg, "entry_order_type", "weird")
+    # mutate the policy that canonically owns execution settings.
+    object.__setattr__(cfg.execution, "entry_order_type", "weird")
     model = FillModel(cfg)
     idx, price, warn = model.entry_price(_bars(), 0)
     assert idx is None and price is None
