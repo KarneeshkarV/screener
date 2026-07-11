@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import csv
 import sys
 
@@ -111,9 +113,14 @@ def earnings_backtest(
     if tickers:
         ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
 
-    with console.status(
-        f"[bold green]Running earnings-backtest ({market}, {strategy}, {years}y)…"
-    ):
+    status = (
+        nullcontext()
+        if output_csv
+        else console.status(
+            f"[bold green]Running earnings-backtest ({market}, {strategy}, {years}y)…"
+        )
+    )
+    with status:
         trades = run_earnings_backtest(
             market=market,
             years=years,

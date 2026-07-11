@@ -114,7 +114,6 @@ def _open(portfolio: Portfolio, state: _SlotState, cfg: BacktestConfig) -> None:
         ticker=state.ticker,
         entry_date=state.entry_date,
         entry_price=state.entry_fill,
-        commission_bps=cfg.commission_bps,
     )
 
 

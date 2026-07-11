@@ -22,6 +22,7 @@ from screener.backtester.core import (
     _prepare_strategy_bars,
     _resolve_universe,
 )
+from screener.backtester.costs import cost_model_from_config
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.fills import FillModel
 from screener.backtester.data import PriceFetcher
@@ -214,7 +215,11 @@ def _prepare_simulation(
         regime_allowed=regime_allowed,
         warnings=warnings,
     )
-    portfolio = Portfolio(cfg.initial_capital, max(cfg.top, 1))
+    portfolio = Portfolio(
+        cfg.initial_capital,
+        max(cfg.top, 1),
+        cost_model=cost_model_from_config(cfg),
+    )
     slot_states: dict[int, _SlotState | None] = {
         slot_id: None for slot_id in range(max(cfg.top, 1))
     }
@@ -359,7 +364,6 @@ class _DailyRankingSource:
                     ticker=ticker,
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
-                    commission_bps=cfg.commission_bps,
                 )
                 slot_states[slot_id] = state
                 self.slot_bars[slot_id] = bars
