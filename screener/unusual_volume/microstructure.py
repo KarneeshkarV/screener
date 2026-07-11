@@ -13,7 +13,9 @@ import requests
 from screener.unusual_volume.detector import Event
 from screener.unusual_volume.enrichment import Enrichment, EnrichmentDiagnostic
 from screener.unusual_volume.fii_dii import EVENT_FIELDS as FII_DII_EVENT_FIELDS
-from screener.unusual_volume.option_chain import EVENT_FIELDS as OPTION_CHAIN_EVENT_FIELDS
+from screener.unusual_volume.option_chain import (
+    EVENT_FIELDS as OPTION_CHAIN_EVENT_FIELDS,
+)
 from screener.pledge import EVENT_FIELDS as PLEDGE_EVENT_FIELDS
 
 
