@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from screener import history
 from screener.backtester.cli_common import (
     build_slippage_model,
     parse_partial_exits,
@@ -25,7 +26,31 @@ from screener.markets import as_of_option, get_market, get_price_fetcher, market
     help="Market to backtest.",
 )
 @as_of_option(
-    param_name="as_of", required=True, help="Signal evaluation date (YYYY-MM-DD)."
+    param_name="as_of",
+    required=False,
+    help="Signal evaluation date (YYYY-MM-DD). Required unless --from-run is used.",
+)
+@click.option(
+    "--from-run",
+    "from_run",
+    default=None,
+    help=(
+        "Replay a persisted screen run as the backtest universe. Accepts a run id "
+        "(see `screener history`) or MARKET:CRITERIA (e.g. india:ema), which picks "
+        "the most recent run at least --run-age-days old. Sets --as-of to the run "
+        "date and the universe to the stored tickers; --entry defaults to "
+        "'close > 0' (buy what the screen picked) and --top to the snapshot size."
+    ),
+)
+@click.option(
+    "--run-age-days",
+    type=int,
+    default=0,
+    show_default=True,
+    help=(
+        "With --from-run MARKET:CRITERIA, require the run to be at least this many "
+        "calendar days old (0 = latest). Ignored for numeric run ids."
+    ),
 )
 @click.option("--hold", type=int, default=20, help="Holding period (trading days).")
 @click.option("--top", type=int, default=10, help="Top N tickers to select.")
@@ -194,6 +219,8 @@ from screener.markets import as_of_option, get_market, get_price_fetcher, market
 def backtest_historical(
     market,
     as_of,
+    from_run,
+    run_age_days,
     hold,
     top,
     entry_expr,
@@ -231,6 +258,45 @@ def backtest_historical(
     open_report,
 ):
     """Run an accurate historical backtest with Pine-like entry/exit expressions."""
+    ctx = click.get_current_context()
+    snapshot = None
+    if from_run:
+        if tickers or universe_file:
+            raise click.UsageError(
+                "--from-run supplies the universe; drop --tickers/--universe-file."
+            )
+        if as_of is not None:
+            raise click.UsageError(
+                "--from-run derives --as-of from the stored run; drop --as-of."
+            )
+        try:
+            snapshot = history.resolve_replay_run(from_run, min_age_days=run_age_days)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
+        if (
+            ctx.get_parameter_source("market") != click.core.ParameterSource.DEFAULT
+            and market != snapshot.market
+        ):
+            raise click.UsageError(
+                f"screen run #{snapshot.run_id} is for market "
+                f"{snapshot.market!r}, not {market!r}."
+            )
+        market = snapshot.market
+        as_of = snapshot.run_date
+        if not strategy_name and not entry_expr:
+            # Pure replay: admit every stored ticker at the run date.
+            entry_expr = "close > 0"
+        if ctx.get_parameter_source("top") == click.core.ParameterSource.DEFAULT:
+            top = len(snapshot.tickers)
+        click.echo(
+            f"Replaying screen run #{snapshot.run_id} "
+            f"({snapshot.market}/{snapshot.criteria} @ {snapshot.run_date.isoformat()}, "
+            f"{len(snapshot.tickers)} tickers)",
+            err=True,
+        )
+    elif as_of is None:
+        raise click.UsageError("--as-of is required unless --from-run is used.")
+
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
     slip_model = build_slippage_model(
         slippage_model, slippage_bps, half_spread_bps, vol_impact_k
@@ -240,11 +306,13 @@ def backtest_historical(
     as_of_date: date = as_of.date() if isinstance(as_of, datetime) else as_of
 
     ticker_tuple = None
-    if tickers:
+    if snapshot is not None:
+        ticker_tuple = tuple(snapshot.tickers)
+    elif tickers:
         ticker_tuple = tuple(t.strip() for t in tickers.split(",") if t.strip())
     if not ticker_tuple and not universe_file:
         raise click.UsageError(
-            "No universe provided: pass --tickers or --universe-file. "
+            "No universe provided: pass --tickers, --universe-file, or --from-run. "
             "The TradingView current-screener fallback was removed because it injects survivorship bias."
         )
 
@@ -303,11 +371,19 @@ def backtest_historical(
     if generated_report:
         from screener.backtester.tearsheet import render_tearsheet
 
-        universe_note = (
-            f"explicit universe: {len(ticker_tuple)} tickers via --tickers"
-            if ticker_tuple
-            else f"universe file: {universe_file}"
-        ) + "; survivorship bias: supplied list is not point-in-time"
+        if snapshot is not None:
+            universe_note = (
+                f"replayed screen run #{snapshot.run_id} "
+                f"({snapshot.market}/{snapshot.criteria} @ {snapshot.run_date.isoformat()}, "
+                f"{len(snapshot.tickers)} saved rows); point-in-time snapshot of what the "
+                "screen showed — limited to the top-N persisted at screen time"
+            )
+        else:
+            universe_note = (
+                f"explicit universe: {len(ticker_tuple)} tickers via --tickers"
+                if ticker_tuple
+                else f"universe file: {universe_file}"
+            ) + "; survivorship bias: supplied list is not point-in-time"
         render_tearsheet(
             result,
             generated_report,

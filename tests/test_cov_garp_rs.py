@@ -96,9 +96,12 @@ def test_load_garp_universe_both_markets(monkeypatch, market) -> None:
 
 
 def test_fetch_india_sections_uses_openscreener(monkeypatch) -> None:
+    seen_scrapers: list[object] = []
+
     class FakeStock:
-        def __init__(self, symbol: str) -> None:
+        def __init__(self, symbol: str, scraper=None) -> None:
             self.symbol = symbol
+            seen_scrapers.append(scraper)
 
         def fetch(self, section: str):
             return {"section": section} if section == "ratios" else None
@@ -111,6 +114,11 @@ def test_fetch_india_sections_uses_openscreener(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "openscreener", fake_mod)
 
     out = garp_module._fetch_india_sections("AAA")
+    # The plain-HTTP scraper must be injected — openscreener's default
+    # PlaywrightScraper launches a headless Chromium per symbol.
+    from screener.insiders import _HttpScraper
+
+    assert seen_scrapers and isinstance(seen_scrapers[0], _HttpScraper)
     assert out["ratios"] == {"section": "ratios"}
     # None payloads coerced to {}
     assert out["profit_loss"] == {}
