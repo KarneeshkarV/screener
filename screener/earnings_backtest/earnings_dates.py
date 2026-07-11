@@ -350,6 +350,215 @@ def _fetch_openscreener_earnings_rows(
     return rows
 
 
+# ── Earnings dates + EPS surprise (Financial Modeling Prep) ──────────────
+
+
+def fetch_earnings_dates_fmp(
+    ticker: str,
+    years: int = 3,
+) -> Optional[pd.DataFrame]:
+    """Return FMP historical earnings for *ticker* with a computed EPS surprise.
+
+    FMP's ``historical/earning_calendar`` endpoint reports the real
+    announcement ``date`` together with ``eps`` and ``epsEstimated``, so an EPS
+    surprise ``(eps - epsEstimated) / |epsEstimated| * 100`` is computable — the
+    piece the India NSE/openscreener path lacks. FMP uses the same ``.NS`` /
+    ``.BO`` suffixes as this codebase, so *ticker* is passed through unchanged.
+
+    Requires ``FMP_API_KEY`` (resolved via :func:`screener.fmp.resolve_api_key`,
+    the shared key helper); returns ``None`` when the key is unset or the
+    endpoint yields nothing usable. Only the lower ``years`` cutoff is applied,
+    mirroring :func:`fetch_earnings_dates_yf`.
+    """
+    from screener import fmp
+
+    def _fetch() -> list[dict[str, Any]]:
+        api_key = fmp.resolve_api_key()
+        if not api_key:
+            return []
+        try:
+            client = fmp.FmpClient(api_key, base_url=fmp.FMP_V3_BASE_URL)
+            payload = client.get(f"historical/earning_calendar/{ticker}")
+        except Exception as exc:
+            logger.debug(
+                "fmp_earnings_failed", extra={"ticker": ticker, "error": str(exc)}
+            )
+            return []
+        if not isinstance(payload, list) or not payload:
+            return []
+
+        cutoff = pd.Timestamp(date.today() - timedelta(days=years * 365))
+        records: list[dict[str, Any]] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            raw = item.get("date")
+            if not raw:
+                continue
+            ts = pd.to_datetime(raw, errors="coerce")
+            if pd.isna(ts):
+                continue
+            ed = ts.normalize()
+            if ed < cutoff:
+                continue
+            eps = item.get("eps")
+            eps_est = item.get("epsEstimated")
+            surprise = None
+            if eps is not None and eps_est is not None and eps_est != 0:
+                surprise = (eps - eps_est) / abs(eps_est) * 100.0
+            records.append(
+                {
+                    "earnings_date": ed.date().isoformat(),
+                    "eps_estimate": jsonable(eps_est),
+                    "reported_eps": jsonable(eps),
+                    "surprise_pct": jsonable(surprise),
+                }
+            )
+        return records
+
+    try:
+        records = cached_json_call(
+            "earnings_fmp",
+            (ticker, years),
+            ttl_seconds=EARNINGS_CACHE_DAYS * 86_400,
+            refresh=False,
+            fetch=_fetch,
+        )
+    except Exception as exc:
+        logger.debug(
+            "fmp_earnings_cache_failed", extra={"ticker": ticker, "error": str(exc)}
+        )
+        return None
+    return _earnings_from_records(records)
+
+
+def _fmp_earnings_rows_for_ticker(ticker: str, years: int) -> list[dict[str, Any]]:
+    ed = fetch_earnings_dates_fmp(ticker, years=years)
+    if ed is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    for idx, row in ed.iterrows():
+        rows.append(
+            {
+                "ticker": ticker,
+                "earnings_date": idx.date() if hasattr(idx, "date") else idx,
+                "eps_estimate": row.get("EPS Estimate", float("nan")),
+                "reported_eps": row.get("Reported EPS", float("nan")),
+                "surprise_pct": row.get("Surprise(%)", float("nan")),
+            }
+        )
+    return rows
+
+
+def _fetch_fmp_earnings_rows(
+    tickers: list[str], years: int, batch_size: int
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    max_workers = min(MAX_WORKERS, max(1, batch_size), max(1, len(tickers)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_ticker = {
+            executor.submit(_fmp_earnings_rows_for_ticker, ticker, years): ticker
+            for ticker in tickers
+        }
+        for future in as_completed(future_to_ticker):
+            ticker = future_to_ticker[future]
+            try:
+                rows.extend(future.result())
+            except Exception as exc:
+                logger.debug(
+                    "fmp_earnings_collect_error",
+                    extra={"ticker": ticker, "error": str(exc)},
+                )
+    return rows
+
+
+def _reported_quarter(announcement: pd.Timestamp) -> pd.Period:
+    """Map an announcement date to the fiscal quarter it reports on.
+
+    Results are filed after a quarter closes, so the reported quarter is the one
+    that ended most recently BEFORE the announcement. Rolling back to the prior
+    quarter-end is stable across the realistic 30-90d filing-delay range (see the
+    NSE dedup rationale in :func:`collect_earnings_events`).
+    """
+    return (announcement + pd.offsets.QuarterEnd(-1)).to_period("Q")
+
+
+def _collect_india_fmp_events(
+    tickers: list[str], years: int, batch_size: int
+) -> list[dict[str, Any]]:
+    """India earnings with FMP EPS surprise, reconciled against NSE dates.
+
+    Reconciliation policy (documented in the PR): NSE corporate announcements
+    carry the authoritative point-in-time announcement date but no EPS surprise;
+    FMP carries both a date and a computable surprise. For each fiscal quarter we
+    PREFER the real NSE announcement date and ENRICH it with the FMP surprise;
+    quarters covered only by FMP are added using FMP's own (already
+    point-in-time) announcement date. openscreener is deliberately not used in
+    this mode — it has no surprise and only an estimated date that FMP
+    supersedes.
+    """
+    cutoff = pd.Timestamp(date.today() - timedelta(days=years * 365))
+
+    # FMP surprise rows keyed by (ticker, fiscal quarter reported on).
+    fmp_by_quarter: dict[tuple[str, pd.Period], dict[str, Any]] = {}
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i : i + batch_size]
+        logger.info(
+            "fmp_earnings_batch",
+            extra={"batch": f"{i}-{i + len(batch)}", "size": len(batch)},
+        )
+        for fmp_row in _fetch_fmp_earnings_rows(batch, years, batch_size):
+            quarter = _reported_quarter(pd.Timestamp(fmp_row["earnings_date"]))
+            fmp_by_quarter[(str(fmp_row["ticker"]), quarter)] = fmp_row
+
+    rows: list[dict[str, Any]] = []
+    matched_fmp: set[tuple[str, pd.Period]] = set()
+
+    nse_events = fetch_earnings_dates_nse()
+    if nse_events is not None and not nse_events.empty:
+        ticker_set = set(tickers)
+        filtered = nse_events[nse_events["ticker"].isin(ticker_set)]
+        filtered = filtered[filtered["earnings_date"] >= cutoff]
+        for _, row in filtered.iterrows():
+            ann = pd.Timestamp(row["earnings_date"])
+            key = (str(row["ticker"]), _reported_quarter(ann))
+            fmp_match = fmp_by_quarter.get(key)
+            if fmp_match is not None:
+                matched_fmp.add(key)
+            rows.append(
+                {
+                    "ticker": row["ticker"],
+                    "earnings_date": row["earnings_date"],
+                    "eps_estimate": (
+                        fmp_match["eps_estimate"] if fmp_match else float("nan")
+                    ),
+                    "reported_eps": (
+                        fmp_match["reported_eps"] if fmp_match else float("nan")
+                    ),
+                    "surprise_pct": (
+                        fmp_match["surprise_pct"] if fmp_match else float("nan")
+                    ),
+                }
+            )
+    else:
+        logger.warning("india_nse_earnings_unavailable")
+
+    # FMP-only quarters (no matching NSE announcement): keep FMP's own date.
+    for key, fmp_row in fmp_by_quarter.items():
+        if key in matched_fmp:
+            continue
+        rows.append(
+            {
+                "ticker": fmp_row["ticker"],
+                "earnings_date": fmp_row["earnings_date"],
+                "eps_estimate": fmp_row["eps_estimate"],
+                "reported_eps": fmp_row["reported_eps"],
+                "surprise_pct": fmp_row["surprise_pct"],
+            }
+        )
+    return rows
+
+
 # ── Batch earnings collector ────────────────────────────────────────────
 
 
@@ -358,15 +567,25 @@ def collect_earnings_events(
     years: int = 3,
     batch_size: int = 50,
     market: str = "us",
+    surprise_source: Optional[str] = None,
 ) -> pd.DataFrame:
     """Collect earnings dates for all *tickers*.
 
-    For India: uses jugaad_data (NSE announcements) only.
-    For US: uses yfinance only.
+    For India: uses jugaad_data (NSE announcements) + screener.in (openscreener)
+    by default. Pass ``surprise_source="fmp"`` to instead source India earnings
+    from Financial Modeling Prep (NSE dates enriched with FMP EPS surprise; see
+    :func:`_collect_india_fmp_events`) — the only India source that carries a
+    computable surprise, as required by the PEAD backtest. The default keeps the
+    existing India behaviour bit-for-bit unchanged.
+
+    For US: uses yfinance only (already carries EPS surprise); ``surprise_source``
+    is ignored.
     """
     rows: list[dict] = []
 
-    if market == "india":
+    if market == "india" and surprise_source == "fmp":
+        rows = _collect_india_fmp_events(tickers, years, batch_size)
+    elif market == "india":
         # NSE-announced (ticker, fiscal-quarter) pairs already covered by a real
         # announcement date, so the openscreener period-end+lag estimate for the
         # same result is not double-counted.
