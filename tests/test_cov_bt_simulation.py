@@ -608,6 +608,38 @@ def test_cached_trailing_liquidity_empty_window():
     assert _cached_trailing_liquidity(fc, bars, 100, window=5) == (0.0, 0.0)
 
 
+def test_cached_trailing_liquidity_single_bar_window():
+    bars = make_bars(n=5, open_base=100.0)
+    fc = _build_frame_cache(bars)
+    # Window holds a single close: ADV is that bar's volume, sigma is zero.
+    adv, sigma = _cached_trailing_liquidity(fc, bars, 0, window=5)
+    assert adv == float(bars["volume"].iloc[0])
+    assert sigma == 0.0
+
+
+def test_needs_liquidity_inputs_composite_and_unknown():
+    from screener.backtester.slippage import (
+        CompositeSlippage,
+        FixedBpsSlippage,
+        VolumeImpactSlippage,
+        needs_liquidity_inputs,
+    )
+
+    fixed_only = CompositeSlippage(models=(FixedBpsSlippage(bps=1.0),))
+    assert needs_liquidity_inputs(fixed_only) is False
+    with_impact = CompositeSlippage(
+        models=(FixedBpsSlippage(bps=1.0), VolumeImpactSlippage())
+    )
+    assert needs_liquidity_inputs(with_impact) is True
+
+    class UnknownModel:
+        def adverse_fraction(self, side, shares, adv, sigma_daily):
+            return 0.0
+
+    # Unknown models conservatively get liquidity inputs.
+    assert needs_liquidity_inputs(UnknownModel()) is True
+
+
 def test_cached_trailing_liquidity_nan_close_fallback():
     bars = make_bars(n=20, open_base=100.0)
     bars.iloc[10, bars.columns.get_loc("close")] = np.nan

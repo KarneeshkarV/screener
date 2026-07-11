@@ -62,6 +62,10 @@ class Portfolio:
         self._ranks[ticker] = rank
         self._signal_dates[ticker] = signal_date
 
+    def entry_budget(self) -> float:
+        """Cash available to the next slot, before entry price/commission."""
+        return min(self.slot_capital, max(self._cash, 0.0))
+
     def _active_keys(self, ticker: str) -> list[tuple[str, int]]:
         return [k for k in self._open if k[0] == ticker]
 
@@ -93,7 +97,7 @@ class Portfolio:
         # cannot overdraw the portfolio.
         # Proportional fee models do not depend on notional; pass budget as a
         # stable reference for any future notional-dependent schedules.
-        budget = min(self.slot_capital, max(self._cash, 0.0))
+        budget = self.entry_budget()
         c = float(self.cost_model.side_cost_fraction("buy", budget))
         if c < 0.0:
             c = 0.0

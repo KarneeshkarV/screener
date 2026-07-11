@@ -313,19 +313,24 @@ def _make_slot_state(
     rank: int,
     fill_model: Optional[FillModel] = None,
     caches: Optional[_RunCaches] = None,
+    entry_budget: Optional[float] = None,
 ) -> tuple[Optional[_SlotState], Optional[str]]:
     """Build the per-slot state used by both historical and rolling flows."""
     fills = fill_model if fill_model is not None else FillModel(cfg)
     frame_cache = caches.frame(ticker, bars) if caches is not None else None
-    adv_shares, sigma_daily = (
-        _cached_trailing_liquidity(frame_cache, bars, signal_idx)
-        if frame_cache is not None
-        else _trailing_liquidity(bars, signal_idx)
-    )
+    if fills.needs_liquidity_inputs:
+        adv_shares, sigma_daily = (
+            _cached_trailing_liquidity(frame_cache, bars, signal_idx)
+            if frame_cache is not None
+            else _trailing_liquidity(bars, signal_idx)
+        )
+    else:
+        adv_shares, sigma_daily = 0.0, 0.0
     half_spread = _half_spread_at_signal(bars, signal_idx, cfg, frame_cache)
     entry_idx, entry_fill, entry_warn = fills.entry_price(
         bars,
         signal_idx,
+        budget=entry_budget,
         adv_shares=adv_shares,
         sigma_daily=sigma_daily,
         half_spread=half_spread,
@@ -443,6 +448,7 @@ def _fire_partial_exits_at_bar(
             reason="target",
             bar_open=bar_open,
             level=target_price,
+            shares=pos.shares * state.partial_fractions[tier_idx],
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
             half_spread=state.half_spread,
@@ -465,6 +471,7 @@ def _check_exit_at_bar(
     i: int,
     cfg: BacktestConfig,
     fill_model: FillModel,
+    shares: float = 0.0,
 ) -> Optional[tuple[float, ExitReason]]:
     """Evaluate exit rules for ``state`` at ``bars[i]``."""
     frame_cache = state.frame_cache
@@ -491,6 +498,7 @@ def _check_exit_at_bar(
             bar_open=bar_open,
             level=level,
             close=close,
+            shares=shares,
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
             half_spread=state.half_spread,
@@ -537,12 +545,20 @@ def simulate_ticker(
         exit_ast=exit_ast,
         rank=0,
         fill_model=fill_model,
+        entry_budget=cfg.initial_capital / max(cfg.top, 1),
     )
     if state is None:
         return _SimOutcome(trade=None, warning=warning)
 
     for i in range(state.entry_idx + 1, len(bars)):
-        exit_ = _check_exit_at_bar(state, bars, i, cfg, fill_model)
+        exit_ = _check_exit_at_bar(
+            state,
+            bars,
+            i,
+            cfg,
+            fill_model,
+            shares=(cfg.initial_capital / max(cfg.top, 1)) / state.entry_fill,
+        )
         if exit_ is not None:
             fill, reason = exit_
             return _SimOutcome(
@@ -561,6 +577,7 @@ def simulate_ticker(
     fill = fill_model.exit_price(
         reason="eod",
         close=float(last_bar["close"]),
+        shares=(cfg.initial_capital / max(cfg.top, 1)) / state.entry_fill,
         adv_shares=state.adv_shares,
         sigma_daily=state.sigma_daily,
         half_spread=state.half_spread,
@@ -854,7 +871,15 @@ def _close_slot_at_day(
     if portfolio.get_position(state.ticker) is None:
         slot_states[slot_id] = None
         return True
-    exit_ = _check_exit_at_bar(state, bars, i, cfg, fill_model)
+    position = portfolio.get_position(state.ticker)
+    exit_ = _check_exit_at_bar(
+        state,
+        bars,
+        i,
+        cfg,
+        fill_model,
+        shares=position.shares if position is not None else 0.0,
+    )
     if exit_ is None:
         return False
     fill, reason = exit_
@@ -890,6 +915,11 @@ def _force_close_open_slots(
         fill = fill_model.exit_price(
             reason="eod",
             close=float(last_bar["close"]),
+            shares=(
+                position.shares
+                if (position := portfolio.get_position(state.ticker)) is not None
+                else 0.0
+            ),
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
             half_spread=state.half_spread,

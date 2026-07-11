@@ -12,7 +12,7 @@ from screener.backtester.core import simulate_ticker
 from screener.backtester.costs import FlatCommission
 from screener.backtester.historical import run_backtest
 from screener.backtester.rolling import run_rolling_backtest
-from screener.backtester.metrics import compute_metrics
+from screener.backtester.metrics import _exposure, compute_metrics
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.pine import parse
 from screener.backtester.portfolio import Portfolio, build_equity_curve
@@ -63,6 +63,43 @@ def _trend_bars(
     return pd.DataFrame(
         {"open": openp, "high": high, "low": low, "close": close, "volume": vol}
     )
+
+
+def test_exposure_difference_array_matches_inclusive_trade_masks():
+    index = pd.date_range("2024-01-02", periods=5, freq="B")
+
+    def trade(entry: str, exit_: str) -> Trade:
+        return Trade(
+            ticker="AAA",
+            rank=1,
+            signal_date=date(2024, 1, 1),
+            entry_date=pd.Timestamp(entry).date(),
+            entry_price=100.0,
+            exit_date=pd.Timestamp(exit_).date(),
+            exit_price=101.0,
+            exit_reason="time",
+            shares=1.0,
+            entry_cost=100.0,
+            exit_value=101.0,
+            pnl=1.0,
+            return_pct=0.01,
+        )
+
+    trades = [
+        trade("2024-01-02", "2024-01-04"),
+        trade("2024-01-06", "2024-01-09"),  # weekend entry, inclusive exit
+        trade("2023-12-01", "2024-01-01"),  # wholly before the curve
+        trade("2024-01-08", "2024-02-01"),  # begins on the last session
+    ]
+    legacy_counts = pd.Series(0, index=index, dtype=int)
+    for item in trades:
+        mask = (index >= pd.Timestamp(item.entry_date)) & (
+            index <= pd.Timestamp(item.exit_date)
+        )
+        legacy_counts.loc[mask] += 1
+    expected = float(legacy_counts.mean() / 2)
+    assert legacy_counts.to_list() == [1, 1, 1, 0, 2]
+    assert _exposure(index, trades, slot_count=2) == expected
 
 
 # ── entry/exit mechanics ──────────────────────────────────────────────

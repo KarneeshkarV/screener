@@ -31,7 +31,7 @@ from typing import Optional
 import pandas as pd
 
 from screener.backtester.models import BacktestConfig
-from screener.backtester.slippage import Side, apply_slippage
+from screener.backtester.slippage import Side, apply_slippage, needs_liquidity_inputs
 
 
 def _resolve_entry_fill(
@@ -90,6 +90,12 @@ class FillModel:
     def __init__(self, cfg: BacktestConfig) -> None:
         self.cfg = cfg
 
+    @property
+    def needs_liquidity_inputs(self) -> bool:
+        """Whether the configured slippage model uses size/liquidity inputs."""
+        assert self.cfg.slippage_model is not None
+        return needs_liquidity_inputs(self.cfg.slippage_model)
+
     # ── slippage routing ─────────────────────────────────────────────
     def _apply_slip(
         self,
@@ -120,6 +126,7 @@ class FillModel:
         bars: pd.DataFrame,
         signal_idx: int,
         *,
+        budget: Optional[float] = None,
         adv_shares: float = 0.0,
         sigma_daily: float = 0.0,
         half_spread: float = 0.0,
@@ -134,9 +141,19 @@ class FillModel:
         entry_idx, entry_ref, warn = _resolve_entry_fill(bars, signal_idx, self.cfg)
         if entry_idx is None or entry_ref is None:
             return None, None, warn
+        # Entry price and acquired shares are circular when impact depends on
+        # order size. Use the pre-slippage reference (including commission) as
+        # the deterministic sizing convention; Portfolio.open then computes
+        # the actual shares from the impacted fill without a hidden iteration.
+        if budget is None:
+            budget = self.cfg.initial_capital / max(self.cfg.top, 1)
+        commission = self.cfg.commission_bps / 10_000.0
+        gross_reference = entry_ref * (1.0 + commission)
+        shares = budget / gross_reference if gross_reference > 0.0 else 0.0
         fill = self._apply_slip(
             entry_ref,
             "buy",
+            shares=shares,
             adv_shares=adv_shares,
             sigma_daily=sigma_daily,
             half_spread=half_spread,
@@ -152,6 +169,7 @@ class FillModel:
         level: Optional[float] = None,
         close: float = 0.0,
         side: Side = "sell",
+        shares: float = 0.0,
         adv_shares: float = 0.0,
         sigma_daily: float = 0.0,
         half_spread: float = 0.0,
@@ -179,6 +197,7 @@ class FillModel:
         return self._apply_slip(
             ref,
             side,
+            shares=shares,
             adv_shares=adv_shares,
             sigma_daily=sigma_daily,
             half_spread=half_spread,
