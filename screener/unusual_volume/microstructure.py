@@ -12,6 +12,9 @@ import requests
 
 from screener.unusual_volume.detector import Event
 from screener.unusual_volume.enrichment import Enrichment, EnrichmentDiagnostic
+from screener.unusual_volume.fii_dii import EVENT_FIELDS as FII_DII_EVENT_FIELDS
+from screener.unusual_volume.option_chain import EVENT_FIELDS as OPTION_CHAIN_EVENT_FIELDS
+from screener.pledge import EVENT_FIELDS as PLEDGE_EVENT_FIELDS
 
 
 _OVERLAY_ERRORS = (
@@ -24,9 +27,9 @@ _OVERLAY_ERRORS = (
 )
 
 _EVENT_FIELDS: dict[Enrichment, tuple[str, ...]] = {
-    Enrichment.OPTION_CHAIN: ("call_put_oi_ratio", "pcr"),
-    Enrichment.FII_DII: ("fii_5d_net", "fii_trend", "dii_5d_net"),
-    Enrichment.PLEDGE: ("pledge_pct",),
+    Enrichment.OPTION_CHAIN: OPTION_CHAIN_EVENT_FIELDS,
+    Enrichment.FII_DII: FII_DII_EVENT_FIELDS,
+    Enrichment.PLEDGE: PLEDGE_EVENT_FIELDS,
 }
 
 
@@ -206,8 +209,6 @@ def run_microstructure_enrichments(
         for enrichment in ordered
         if enrichment in by_enrichment
     )
-    outcomes.sort(key=lambda outcome: ordered.index(outcome.diagnostic.enrichment))
-
     if attach_to_events:
         for outcome in outcomes:
             if outcome.diagnostic.status == "applied":

@@ -20,6 +20,7 @@ from .nse_client import nse_cached_json
 
 _OC_URL = "https://www.nseindia.com/api/option-chain-equities?symbol={sym}"
 _OC_PAGE = "https://www.nseindia.com/option-chain"
+EVENT_FIELDS = ("call_put_oi_ratio", "pcr")
 
 
 def fetch_option_chain(symbol: str, *, refresh: bool = False) -> Optional[dict]:

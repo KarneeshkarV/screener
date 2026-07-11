@@ -1,6 +1,7 @@
 from datetime import date
 import threading
 
+from screener import pledge
 from screener.unusual_volume import fii_dii, option_chain
 from screener.unusual_volume.detector import Event
 from screener.unusual_volume.enrichment import Enrichment
@@ -118,3 +119,44 @@ def test_stage_failure_is_structured_and_isolated(monkeypatch) -> None:
     assert diagnostics[0].status == "failed"
     assert diagnostics[0].enrichment is Enrichment.OPTION_CHAIN
     assert "NSE unavailable" in diagnostics[0].message
+
+
+def _changed_fields(before: Event, after: Event) -> set[str]:
+    return {
+        name
+        for name, value in before.model_dump().items()
+        if after.model_dump()[name] != value
+    }
+
+
+def test_overlays_only_mutate_their_declared_event_fields(monkeypatch) -> None:
+    event = _event()
+    before = event.model_copy(deep=True)
+    monkeypatch.setattr(
+        option_chain,
+        "fetch_option_chain",
+        lambda *args, **kwargs: {
+            "filtered": {"CE": {"totOI": 10}, "PE": {"totOI": 20}}
+        },
+    )
+    option_chain.overlay_option_chain([event], max_workers=1)
+    assert _changed_fields(before, event) <= set(option_chain.EVENT_FIELDS)
+
+    event = _event()
+    before = event.model_copy(deep=True)
+    monkeypatch.setattr(fii_dii, "fetch_fii_dii_today", lambda **kwargs: None)
+    monkeypatch.setattr(
+        fii_dii,
+        "read_frame",
+        lambda path: __import__("pandas").DataFrame(
+            [{"date": event.date, "fii_net": 10.0, "dii_net": 5.0}]
+        ),
+    )
+    fii_dii.overlay_fii_dii([event], event.date)
+    assert _changed_fields(before, event) <= set(fii_dii.EVENT_FIELDS)
+
+    event = _event()
+    before = event.model_copy(deep=True)
+    monkeypatch.setattr(pledge, "resolve_pledge_pct", lambda *args, **kwargs: 3.5)
+    pledge.overlay_pledge([event], max_workers=1)
+    assert _changed_fields(before, event) <= set(pledge.EVENT_FIELDS)
