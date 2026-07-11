@@ -78,6 +78,7 @@ class UnusualVolumeRequest(BaseModel):
         "fii_dii": Enrichment.FII_DII,
         "pledge": Enrichment.PLEDGE,
     }
+    # Remove this flag shim once CLI/tests use ``enrichments`` enum values only.
 
     @model_validator(mode="before")
     @classmethod

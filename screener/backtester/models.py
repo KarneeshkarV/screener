@@ -126,6 +126,8 @@ class BacktestConfig(BaseModel):
     _LEGACY_FIELDS: ClassVar[frozenset[str]] = frozenset(
         field for fields in _GROUP_FIELDS.values() for field in fields
     )
+    # Remove this flat shim once tests and the optimization grid construct and
+    # update the nested policy models directly.
 
     @model_validator(mode="before")
     @classmethod
