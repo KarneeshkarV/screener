@@ -8,11 +8,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from screener.backtester.data import PriceFetcher
 from screener.backtester.rolling import run_rolling_backtest
-from screener.backtester.models import BacktestConfig
+from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.optimization.grid import GridSearchResult, grid_search
 from screener.backtester.optimization.metrics import optimization_metrics
 
@@ -43,6 +43,7 @@ class WalkForwardSummary(BaseModel):
     aggregate_metrics: dict[str, float]
     overfit_flag: bool
     train_test_score_ratio: float
+    oos_trades: tuple[Trade, ...] = Field(default=(), exclude=True)
 
 
 def generate_walk_forward_windows(
@@ -127,6 +128,7 @@ def walk_forward_optimize(
     weighted_metrics: dict[str, float] = {}
     train_scores: list[float] = []
     test_scores: list[float] = []
+    oos_trades: list[Trade] = []
 
     for idx, window in enumerate(windows):
         window_cache = None
@@ -158,6 +160,7 @@ def walk_forward_optimize(
         )
         metrics = optimization_metrics(test_result)
         count = len(test_result.trades)
+        oos_trades.extend(test_result.trades)
         results.append(
             WalkForwardResult(
                 window=window,
@@ -194,4 +197,5 @@ def walk_forward_optimize(
         aggregate_metrics=aggregate,
         overfit_flag=bool(train_avg > 0 and ratio >= overfit_ratio),
         train_test_score_ratio=ratio,
+        oos_trades=tuple(oos_trades),
     )
