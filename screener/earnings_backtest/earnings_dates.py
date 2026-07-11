@@ -550,7 +550,7 @@ def fetch_next_earnings_dates(
     fetch_yf = yf_fetcher if yf_fetcher is not None else data.fetch_earnings_dates_yf
     from screener.symbols import tv_to_yf
 
-    for sym in symbols:
+    def _fetch_one(sym: str) -> tuple[str, date | None]:
         yf_sym = tv_to_yf(str(sym), market)
         try:
             ed = fetch_yf(yf_sym)
@@ -559,11 +559,15 @@ def fetch_next_earnings_dates(
                 "yf_next_earnings_failed",
                 extra={"ticker": yf_sym, "error": str(exc)},
             )
-            continue
+            return sym, None
         if ed is None or (isinstance(ed, pd.DataFrame) and ed.empty):
-            continue
+            return sym, None
         if isinstance(ed, pd.DataFrame):
-            result[sym] = next_earnings_date(list(ed.index), as_of_d)
-        else:
-            result[sym] = next_earnings_date(ed, as_of_d)
+            return sym, next_earnings_date(list(ed.index), as_of_d)
+        return sym, next_earnings_date(ed, as_of_d)
+
+    max_workers = min(data.MAX_WORKERS, len(symbols))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for sym, earnings_date in executor.map(_fetch_one, symbols):
+            result[sym] = earnings_date
     return result

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from datetime import date
-from typing import Any
+from typing import Any, Protocol
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+class EarningsDatesProvider(Protocol):
+    def __call__(
+        self, symbols: list[str], market: str, *, as_of: date
+    ) -> dict[str, date | None]: ...
 
 
 def enrich_fundamentals(df: pd.DataFrame, market: str) -> pd.DataFrame:
@@ -61,7 +66,7 @@ def enrich_days_to_earnings(
     market: str,
     *,
     as_of: date | None = None,
-    provider: Callable[..., dict[str, date | None]] | None = None,
+    provider: EarningsDatesProvider | None = None,
 ) -> pd.DataFrame:
     """Attach a ``days_to_earnings`` column for final screen result rows.
 
@@ -83,16 +88,6 @@ def enrich_days_to_earnings(
 
     try:
         next_dates = fetch(symbols, market, as_of=as_of_d)
-    except TypeError:
-        # Allow simpler stubs: provider(symbols, market) without as_of.
-        try:
-            next_dates = fetch(symbols, market)
-        except Exception as exc:
-            logger.warning(
-                "days_to_earnings_enrich_failed",
-                extra={"market": market, "error": str(exc)},
-            )
-            return out
     except Exception as exc:
         logger.warning(
             "days_to_earnings_enrich_failed",

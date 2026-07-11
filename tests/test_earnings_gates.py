@@ -6,6 +6,7 @@ All network access is stubbed — no live yfinance / NSE calls.
 from __future__ import annotations
 
 from datetime import date
+from threading import Barrier, get_ident
 
 import pandas as pd
 import pytest
@@ -190,6 +191,31 @@ def test_fetch_next_earnings_dates_us_stub():
     assert out["ZZZ"] is None
 
 
+def test_fetch_next_earnings_dates_us_fetches_tickers_concurrently():
+    barrier = Barrier(2, timeout=2)
+    thread_ids: set[int] = set()
+
+    def yf_fetcher(ticker):
+        thread_ids.add(get_ident())
+        barrier.wait()
+        return pd.DataFrame(
+            {"EPS Estimate": [1.0]}, index=pd.to_datetime(["2024-05-10"])
+        )
+
+    out = fetch_next_earnings_dates(
+        ["AAA", "BBB"],
+        "us",
+        as_of=date(2024, 5, 1),
+        yf_fetcher=yf_fetcher,
+    )
+
+    assert out == {
+        "AAA": date(2024, 5, 10),
+        "BBB": date(2024, 5, 10),
+    }
+    assert len(thread_ids) == 2
+
+
 def test_fetch_next_earnings_dates_india_stub():
     nse = pd.DataFrame(
         {
@@ -272,7 +298,7 @@ def test_enrich_days_to_earnings_and_buffer_filter():
     )
     as_of = date(2024, 5, 1)
 
-    def provider(symbols, market, as_of=None):
+    def provider(symbols, market, *, as_of):
         return {
             "AAA": date(2024, 5, 6),  # 5 days
             "BBB": date(2024, 6, 1),  # 31 days
@@ -299,34 +325,25 @@ def test_enrich_days_to_earnings_provider_failure_leaves_column():
     assert out["days_to_earnings"].tolist() == [None]
 
 
-def test_enrich_days_to_earnings_symbol_fallbacks_and_simple_provider():
+def test_enrich_days_to_earnings_symbol_fallbacks_and_provider_protocol():
     assert enrich_days_to_earnings(pd.DataFrame(), "us").empty
     assert enrich_days_to_earnings(pd.DataFrame({"close": [1.0]}), "us")[
         "days_to_earnings"
     ].tolist() == [None]
 
-    def simple_provider(symbols, market):
+    def provider(symbols, market, *, as_of):
         assert symbols == ["AAA"]
         assert market == "us"
+        assert as_of == date(2024, 5, 1)
         return {"AAA": date(2024, 5, 1)}
 
     out = enrich_days_to_earnings(
         pd.DataFrame({"ticker": ["AAA"]}),
         "us",
         as_of=date(2024, 5, 1),
-        provider=simple_provider,
+        provider=provider,
     )
     assert out["days_to_earnings"].tolist() == [0]
-
-    def type_error_then_failure(*args, **kwargs):
-        if kwargs:
-            raise TypeError("no keyword arguments")
-        raise RuntimeError("offline")
-
-    failed = enrich_days_to_earnings(
-        pd.DataFrame({"ticker": ["AAA"]}), "us", provider=type_error_then_failure
-    )
-    assert failed["days_to_earnings"].tolist() == [None]
 
 
 def test_filter_earnings_buffer_rejects_negative():
@@ -350,7 +367,7 @@ def test_earnings_blackout_validation_errors():
         _rolling_cfg(interval="2h")
 
 
-def test_screen_workflow_earnings_buffer(tmp_path, monkeypatch):
+def test_screen_workflow_earnings_buffer(tmp_path):
     from screener.criteria import FilterCriteriaSelection
     from screener.screen_workflow import (
         ScreenMode,
@@ -363,12 +380,10 @@ def test_screen_workflow_earnings_buffer(tmp_path, monkeypatch):
         {"name": ["AAA", "BBB", "CCC"], "description": ["a", "b", "c"]}
     )
 
-    def fake_enrich(df, market, **kwargs):
+    def fake_enrich(df, market):
         out = df.copy()
         out["days_to_earnings"] = [3, 20, None]
         return out
-
-    monkeypatch.setattr("screener.enrich.enrich_days_to_earnings", fake_enrich)
 
     deps = ScreenWorkflowDeps(
         resolve_criteria=lambda names: FilterCriteriaSelection(
@@ -381,6 +396,7 @@ def test_screen_workflow_earnings_buffer(tmp_path, monkeypatch):
         diff=lambda current, previous: ([], []),
         temp_report_path=lambda prefix: tmp_path / f"{prefix}.html",
         render_report=lambda *args, **kwargs: tmp_path / "unused.html",
+        enrich_days_to_earnings=fake_enrich,
     )
     request = ScreenRequest(
         market="us",

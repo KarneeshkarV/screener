@@ -10,6 +10,7 @@ from screener.cache import parse_ttl
 from screener import history
 from screener.criteria import CRITERIA, registry as criteria_registry, resolve_criteria
 from screener.display import print_csv, print_results
+from screener.enrich import enrich_days_to_earnings
 from screener.markets import market_option
 from screener.scanner import scan
 from screener.screen_workflow import (
@@ -39,6 +40,7 @@ def _screen_workflow_deps() -> ScreenWorkflowDeps:
         diff=history.diff,
         temp_report_path=lambda prefix: reporting.temp_report_path(prefix),
         render_report=render_screen_report,
+        enrich_days_to_earnings=enrich_days_to_earnings,
     )
 
 
@@ -88,13 +90,18 @@ def _screen_workflow_deps() -> ScreenWorkflowDeps:
     help="Open the generated HTML report in the default browser.",
 )
 @click.option(
+    "--earnings",
+    is_flag=True,
+    help="Attach days_to_earnings to final result rows.",
+)
+@click.option(
     "--earnings-buffer",
     type=int,
     default=None,
     help=(
         "Drop result rows whose next earnings date is within N calendar days. "
-        "Rows with unknown earnings dates are kept. The days_to_earnings column "
-        "is always attached for final result rows."
+        "Rows with unknown earnings dates are kept. This also enables earnings "
+        "enrichment."
     ),
 )
 def screen(
@@ -108,6 +115,7 @@ def screen(
     cache_ttl: str,
     report_path: Path | None,
     open_report: bool,
+    earnings: bool,
     earnings_buffer: int | None,
 ) -> None:
     """Screen stocks based on technical criteria."""
@@ -125,6 +133,7 @@ def screen(
         cache_ttl=cache_ttl,
         report_path=report_path,
         open_report=open_report,
+        earnings=earnings,
         earnings_buffer=earnings_buffer,
     )
     try:
