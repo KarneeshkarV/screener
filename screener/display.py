@@ -59,6 +59,7 @@ COLUMNS: dict[str, ColumnSpec] = {
     "roe_5y": ColumnSpec("ROE 5Y%", "right", fmt_float),
     "roce_or_roic": ColumnSpec("ROCE/ROIC", "right", fmt_float),
     "quarterly_profit_growth": ColumnSpec("Q Profit%", "right", fmt_float),
+    "days_to_earnings": ColumnSpec("Days to Earn", "right", fmt_float),
 }
 
 #: Backward-compatible label map (e.g. ``commands.screen_report`` lookups).

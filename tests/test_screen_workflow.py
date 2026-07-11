@@ -17,6 +17,7 @@ def _request(
     *,
     output_csv: bool = False,
     report_path: Path | None = None,
+    earnings: bool = False,
 ) -> ScreenRequest:
     return ScreenRequest(
         market="us",
@@ -28,6 +29,7 @@ def _request(
         refresh=False,
         cache_ttl="15m",
         report_path=report_path,
+        earnings=earnings,
     )
 
 
@@ -52,13 +54,42 @@ def test_screen_workflow_csv_short_circuits_history_and_report(tmp_path):
         render_report=lambda *args, **kwargs: (
             calls.append("report") or tmp_path / "unused.html"
         ),
+        enrich_days_to_earnings=lambda df, market: df.assign(days_to_earnings=None),
+    )
+
+    outcome = run_screen_workflow(_request(output_csv=True, earnings=True), deps)
+
+    assert outcome.mode is ScreenMode.CSV
+    assert outcome.df is not None
+    assert outcome.df["name"].tolist() == ["AAA", "BBB"]
+    assert "days_to_earnings" in outcome.df.columns
+    assert calls == ["scan"]
+
+
+def test_screen_workflow_skips_earnings_enrichment_by_default(tmp_path):
+    frame = _df("AAA")
+
+    def unexpected_enrichment(df, market):
+        raise AssertionError("earnings enrichment must be opt-in")
+
+    deps = ScreenWorkflowDeps(
+        resolve_criteria=lambda names: FilterCriteriaSelection(
+            tuple(names), "ema", ["FILTER"]
+        ),
+        parse_cache_ttl=lambda raw: 900.0,
+        scan=lambda **kwargs: (1, frame),
+        save_run=lambda *args: 1,
+        previous_run=lambda *args: None,
+        diff=lambda current, previous: ([], []),
+        temp_report_path=lambda prefix: tmp_path / f"{prefix}.html",
+        render_report=lambda *args, **kwargs: tmp_path / "unused.html",
+        enrich_days_to_earnings=unexpected_enrichment,
     )
 
     outcome = run_screen_workflow(_request(output_csv=True), deps)
 
-    assert outcome.mode is ScreenMode.CSV
-    assert outcome.df is frame
-    assert calls == ["scan"]
+    assert outcome.df is not None
+    assert "days_to_earnings" not in outcome.df.columns
 
 
 def test_screen_workflow_first_run_uses_default_report_path(tmp_path):
@@ -83,6 +114,7 @@ def test_screen_workflow_first_run_uses_default_report_path(tmp_path):
         diff=lambda current, previous: (["unused"], ["unused"]),
         temp_report_path=lambda prefix: report,
         render_report=render_report,
+        enrich_days_to_earnings=lambda df, market: df,
     )
 
     outcome = run_screen_workflow(_request(), deps)
@@ -96,7 +128,9 @@ def test_screen_workflow_first_run_uses_default_report_path(tmp_path):
     assert rendered == {"path": report, "first_run": True}
 
 
-def test_screen_workflow_previous_run_diff_uses_explicit_report_path(tmp_path):
+def test_screen_workflow_previous_run_diff_uses_explicit_report_path(
+    tmp_path,
+):
     frame = _df("AAA")
     prev = pd.DataFrame({"ticker": ["BBB"]})
     explicit = tmp_path / "explicit.html"
@@ -114,6 +148,7 @@ def test_screen_workflow_previous_run_diff_uses_explicit_report_path(tmp_path):
         render_report=lambda *args, **kwargs: (
             Path(args[4]).write_text("report", encoding="utf-8") or Path(args[4])
         ),
+        enrich_days_to_earnings=lambda df, market: df,
     )
 
     outcome = run_screen_workflow(_request(report_path=explicit), deps)
@@ -142,6 +177,9 @@ def test_screen_workflow_pipeline_bypasses_filter_scan_history_and_report(tmp_pa
         temp_report_path=lambda prefix: tmp_path / f"{prefix}.html",
         render_report=lambda *args, **kwargs: (
             calls.append(("report", args)) or tmp_path / "unused.html"
+        ),
+        enrich_days_to_earnings=lambda df, market: (
+            calls.append(("enrich", market)) or df
         ),
     )
 

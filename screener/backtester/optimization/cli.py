@@ -423,3 +423,178 @@ def optimize_validate(
     Console().print(table)
     if json_path:
         write_json_report(result.model_dump(mode="json"), json_path)
+
+
+def _parse_param_specs(params: tuple[str, ...]) -> dict[str, list[Any]]:
+    """Parse repeated ``--param name=v1,v2`` flags into a parameter grid."""
+    grid: dict[str, list[Any]] = {}
+    for spec in params:
+        if "=" not in spec:
+            raise click.UsageError(
+                f"Invalid --param {spec!r}; expected name=v1,v2[,...]."
+            )
+        name, raw = spec.split("=", 1)
+        name = name.strip()
+        if not name:
+            raise click.UsageError(f"Invalid --param {spec!r}; missing name.")
+        cast: type = int if name in {"hold", "top"} else float
+        allow_none = name not in {"hold", "top"}
+        values = _parse_values(raw, cast, allow_none=allow_none)
+        if not values:
+            raise click.UsageError(f"No values parsed from --param {spec!r}.")
+        grid[name] = values
+    return grid
+
+
+def _resolve_universe_tickers(
+    *,
+    market: str,
+    tickers: str | None,
+    universe_file: str | None,
+    universe: str | None,
+    end_date: date,
+    max_universe: int,
+) -> tuple[str | None, str | None]:
+    """Return ``(tickers_csv, universe_file)`` for :func:`_base_config`."""
+    if tickers or universe_file:
+        return tickers, universe_file
+    if universe is None:
+        return tickers, universe_file
+    from screener.universes import UniverseName, load_current_universe
+
+    loaded = load_current_universe(
+        type_cast(UniverseName, universe),
+        as_of=end_date,
+    )
+    symbols = list(loaded.symbols)
+    if max_universe and max_universe > 0:
+        symbols = symbols[: int(max_universe)]
+    if not symbols:
+        raise click.UsageError(f"Universe {universe!r} resolved to zero symbols.")
+    return ",".join(symbols), None
+
+
+@optimize.command(name="research-report")
+@_common_options
+@click.option(
+    "--param",
+    "param_specs",
+    multiple=True,
+    help='Parameter grid entry as name=v1,v2 (e.g. "hold=5,10"). Repeatable. '
+    "When set, replaces the default stop/take/trail/hold grid.",
+)
+@click.option(
+    "--universe",
+    type=click.Choice(["sp500", "nifty50"]),
+    default=None,
+    help="Index universe when --tickers/--universe-file are omitted.",
+)
+@click.option("--train-days", type=int, default=252, show_default=True)
+@click.option("--test-days", type=int, default=63, show_default=True)
+@click.option("--step-days", type=int, default=63, show_default=True)
+@click.option("--mc-iterations", type=int, default=1000, show_default=True)
+@click.option("--mc-seed", type=int, default=42, show_default=True)
+@click.option("--ruin-threshold", type=float, default=0.5, show_default=True)
+@click.option(
+    "--out",
+    "out_path",
+    type=click.Path(path_type=Path),
+    required=True,
+    help="Output path stem; writes <out>.json and <out>.html.",
+)
+def research_report(
+    param_specs: tuple[str, ...],
+    universe: str | None,
+    train_days: int,
+    test_days: int,
+    step_days: int,
+    mc_iterations: int,
+    mc_seed: int,
+    ruin_threshold: float,
+    out_path: Path,
+    **kwargs: Any,
+) -> None:
+    """One-command research report: grid → walk-forward → Monte Carlo.
+
+    Reuses a single price fetcher across all stages. Writes ``<out>.json`` and
+    ``<out>.html`` plus a concise stdout summary.
+    """
+    from screener.backtester.optimization.research_report import run_research_report
+
+    start_date, end_date = _resolve_dates(
+        kwargs.pop("start_arg"), kwargs.pop("end_arg"), kwargs.pop("years")
+    )
+    # Drop export paths from common options; --out owns artifacts.
+    kwargs.pop("json_path", None)
+    kwargs.pop("html_path", None)
+
+    if param_specs:
+        parameter_grid = _parse_param_specs(param_specs)
+    else:
+        parameter_grid = _parameter_grid(
+            kwargs["stop_loss"],
+            kwargs["take_profit"],
+            kwargs["trailing_stop"],
+            kwargs["hold"],
+        )
+    if not parameter_grid:
+        raise click.UsageError(
+            "Empty parameter grid; pass --param and/or hold/stop/take/trail ranges."
+        )
+
+    hold_values = parameter_grid.get("hold") or _parse_values(
+        kwargs["hold"], int, allow_none=False
+    )
+    hold0 = int(hold_values[0])
+    top_values = parameter_grid.get("top")
+    top0 = int(top_values[0]) if top_values else int(kwargs["top"])
+
+    tickers_csv, universe_file = _resolve_universe_tickers(
+        market=kwargs["market"],
+        tickers=kwargs["tickers"],
+        universe_file=kwargs["universe_file"],
+        universe=universe,
+        end_date=end_date,
+        max_universe=int(kwargs["max_universe"]),
+    )
+    cfg = _base_config(
+        market=kwargs["market"],
+        end_date=end_date,
+        hold=hold0,
+        top=top0,
+        entry_expr=kwargs["entry_expr"],
+        exit_expr=kwargs["exit_expr"],
+        strategy_name=kwargs["strategy_name"],
+        tickers=tickers_csv,
+        universe_file=universe_file,
+        max_universe=kwargs["max_universe"],
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=kwargs["slippage_bps"],
+        commission_bps=kwargs["commission_bps"],
+        initial_capital=kwargs["initial_capital"],
+        benchmark=kwargs["benchmark"],
+        min_price=kwargs["min_price"],
+        min_avg_dollar_volume=kwargs["min_avg_dollar_volume"],
+        adv_window=kwargs["adv_window"],
+    )
+    run_research_report(
+        cfg,
+        _fetcher(),
+        parameter_grid,
+        start_date=start_date,
+        end_date=end_date,
+        train_days=train_days,
+        test_days=test_days,
+        step_days=step_days,
+        metric=kwargs["metric"],
+        min_trades=kwargs["min_trades"],
+        max_workers=kwargs["workers"],
+        cache_path=kwargs["cache_path"],
+        mc_iterations=mc_iterations,
+        mc_seed=mc_seed,
+        ruin_threshold=ruin_threshold,
+        top_n=kwargs["top_n"],
+        out_path=out_path,
+    )

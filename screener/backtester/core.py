@@ -5,11 +5,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Optional, Union, cast
+from typing import TYPE_CHECKING, Optional, Union, cast
 
 import numpy as np
 import pandas as pd
 
+from screener.backtester.costs import corwin_schultz_half_spread
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fills import FillModel
 from screener.backtester.fills import (  # noqa: F401  (re-export compat shims)
@@ -20,6 +21,9 @@ from screener.backtester.fills import (  # noqa: F401  (re-export compat shims)
 from screener.backtester.models import BacktestConfig, ExitReason, Trade
 from screener.backtester.pine import PineError, evaluate
 from screener.backtester.portfolio import Portfolio
+
+if TYPE_CHECKING:
+    from screener.strategies.spec import StrategySpec
 
 
 @dataclass(frozen=True)
@@ -99,6 +103,9 @@ class _FrameCache:
     liquidity_by_idx: dict[tuple[int, int], tuple[float, float]] = field(
         default_factory=dict
     )
+    # Lazily filled Corwin-Schultz half-spread series (fraction), aligned to
+    # ``bars.index``. None until first ``spread_proxy`` lookup for this frame.
+    half_spread_s: Optional[pd.Series] = None
 
 
 def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
@@ -254,6 +261,7 @@ class _SlotState:
     exit_signal: Optional[pd.Series]
     adv_shares: float = 0.0
     sigma_daily: float = 0.0
+    half_spread: float = 0.0
     partial_targets: tuple[float, ...] = ()
     partial_fractions: tuple[float, ...] = ()
     partial_fired: list[bool] = field(default_factory=list)
@@ -262,6 +270,38 @@ class _SlotState:
     # per-bar helpers fall back to the original pandas access paths.
     frame_cache: Optional[_FrameCache] = None
     exit_signal_values: Optional[np.ndarray] = None
+
+
+def _half_spread_at_signal(
+    bars: pd.DataFrame,
+    signal_idx: int,
+    cfg: BacktestConfig,
+    frame_cache: Optional[_FrameCache] = None,
+) -> float:
+    """Corwin-Schultz half-spread at ``signal_idx`` when ``spread_proxy`` is on."""
+    if not cfg.spread_proxy:
+        return 0.0
+    if signal_idx < 0 or signal_idx >= len(bars):
+        return 0.0
+    if "high" not in bars.columns or "low" not in bars.columns:
+        return 0.0
+    series: Optional[pd.Series] = None
+    if frame_cache is not None and frame_cache.half_spread_s is not None:
+        series = frame_cache.half_spread_s
+    else:
+        try:
+            series = corwin_schultz_half_spread(bars["high"], bars["low"])
+        except (TypeError, ValueError):
+            return 0.0
+        if frame_cache is not None:
+            frame_cache.half_spread_s = series
+    try:
+        value = float(series.iloc[signal_idx])
+    except (TypeError, ValueError, IndexError):
+        return 0.0
+    if not np.isfinite(value) or value < 0.0:
+        return 0.0
+    return value
 
 
 def _make_slot_state(
@@ -282,8 +322,13 @@ def _make_slot_state(
         if frame_cache is not None
         else _trailing_liquidity(bars, signal_idx)
     )
+    half_spread = _half_spread_at_signal(bars, signal_idx, cfg, frame_cache)
     entry_idx, entry_fill, entry_warn = fills.entry_price(
-        bars, signal_idx, adv_shares=adv_shares, sigma_daily=sigma_daily
+        bars,
+        signal_idx,
+        adv_shares=adv_shares,
+        sigma_daily=sigma_daily,
+        half_spread=half_spread,
     )
     if entry_idx is None or entry_fill is None:
         return None, entry_warn
@@ -325,6 +370,7 @@ def _make_slot_state(
             exit_signal=exit_signal,
             adv_shares=adv_shares,
             sigma_daily=sigma_daily,
+            half_spread=half_spread,
             partial_targets=partial_targets,
             partial_fractions=partial_fractions,
             partial_fired=[False] * len(partial_targets),
@@ -399,6 +445,7 @@ def _fire_partial_exits_at_bar(
             level=target_price,
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
+            half_spread=state.half_spread,
         )
         portfolio.partial_close(
             ticker=state.ticker,
@@ -406,7 +453,6 @@ def _fire_partial_exits_at_bar(
             exit_price=fill,
             reason="target",
             fraction=state.partial_fractions[tier_idx],
-            commission_bps=cfg.commission_bps,
         )
         state.partial_fired[tier_idx] = True
         if state.stop_ref is None or state.stop_ref < state.entry_fill:
@@ -447,6 +493,7 @@ def _check_exit_at_bar(
             close=close,
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
+            half_spread=state.half_spread,
         )
 
     if stop_hit and target_hit:
@@ -516,6 +563,7 @@ def simulate_ticker(
         close=float(last_bar["close"]),
         adv_shares=state.adv_shares,
         sigma_daily=state.sigma_daily,
+        half_spread=state.half_spread,
     )
     return _SimOutcome(
         trade=_make_exit(
@@ -592,8 +640,8 @@ def _resolve_universe(cfg: BacktestConfig) -> tuple[list[str], list[str]]:
     raise ValueError(_NO_UNIVERSE_MSG)
 
 
-def _prepare_strategy_bars(
-    cfg: BacktestConfig,
+def prepare_strategy_bars(
+    strategy: str | StrategySpec | None,
     bars_by_tv: dict[str, pd.DataFrame],
     price_panel: dict[str, pd.DataFrame],
     tv_symbols: list[str],
@@ -601,18 +649,28 @@ def _prepare_strategy_bars(
     end: date,
     fetcher: PriceFetcher,
     warnings: list[str],
+    *,
+    market: str,
+    benchmark: str,
 ) -> tuple[dict[str, pd.DataFrame], int]:
-    """Dispatch to the strategy's ``prepare_bars`` / ``required_lookback`` hooks."""
-    from screener.strategies.spec import PrepareCtx, registry as strategy_registry
+    """Resolve a strategy and run its preparation/lookback hooks."""
+    from screener.strategies.spec import PrepareCtx, resolve_strategy_spec
 
-    spec = strategy_registry.get_optional(cfg.strategy_name)
+    try:
+        spec = (
+            resolve_strategy_spec(strategy) if isinstance(strategy, str) else strategy
+        )
+    except ValueError as exc:
+        warnings.append(f"strategy error: {exc}")
+        return bars_by_tv, 0
     if spec is None:
         return bars_by_tv, 0
     lookback_floor = spec.required_lookback() if spec.required_lookback else 0
     if spec.prepare_bars is None:
         return bars_by_tv, lookback_floor
     ctx = PrepareCtx(
-        cfg=cfg,
+        market=market,
+        benchmark=benchmark,
         bars_by_tv=bars_by_tv,
         price_panel=price_panel,
         tv_symbols=tv_symbols,
@@ -801,7 +859,6 @@ def _close_slot_at_day(
         exit_date=_bar_label(day, cfg),
         exit_price=fill,
         reason=reason,
-        commission_bps=cfg.commission_bps,
     )
     slot_states[slot_id] = None
     return True
@@ -831,12 +888,12 @@ def _force_close_open_slots(
             close=float(last_bar["close"]),
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
+            half_spread=state.half_spread,
         )
         portfolio.close(
             ticker=state.ticker,
             exit_date=_bar_label(tail.index[-1], cfg),
             exit_price=fill,
             reason="eod",
-            commission_bps=cfg.commission_bps,
         )
         slot_states[slot_id] = None
