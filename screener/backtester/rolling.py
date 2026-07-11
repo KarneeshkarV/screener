@@ -213,6 +213,15 @@ __all__ = [
     ),
 )
 @click.option(
+    "--sector-neutral",
+    is_flag=True,
+    default=False,
+    help=(
+        "Z-score rank_score within each sector group per day before ranking "
+        "(factor strategies only; no-op when no rank_score column exists)."
+    ),
+)
+@click.option(
     "--earnings-blackout",
     "earnings_blackout_days",
     type=int,
@@ -317,6 +326,7 @@ def backtest_rolling(
     price_adjustment,
     interval,
     regime_filter_args,
+    sector_neutral,
     earnings_blackout_days,
     fundamentals_provider,
     fundamental_field_args,
@@ -471,6 +481,7 @@ def backtest_rolling(
         fundamentals_provider=fundamentals_provider,
         fundamental_fields=resolved_fundamental_fields,
         fundamental_lag_days=max(resolved_fundamental_lag_days, 0),
+        sector_neutral=bool(sector_neutral),
     )
 
     fetcher = get_price_fetcher(

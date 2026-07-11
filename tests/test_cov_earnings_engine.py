@@ -575,6 +575,11 @@ def test_cli_earnings_backtest_summary_without_taken(monkeypatch):
 
 def test_cli_earnings_backtest_csv(monkeypatch):
     _patch_backtest(monkeypatch, [_cli_trade(5.0)])
+    monkeypatch.setattr(
+        cli_module.console,
+        "status",
+        lambda *_args, **_kwargs: pytest.fail("CSV output must not create a spinner"),
+    )
     res = CliRunner().invoke(
         cli,
         ["earnings-backtest", "--tickers", "AAA", "--csv"],

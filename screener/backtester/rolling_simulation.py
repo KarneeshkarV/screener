@@ -19,7 +19,7 @@ from screener.backtester.core import (
     _make_slot_state,
     _precompute_entry_signals,
     _precompute_filter_signals,
-    _prepare_strategy_bars,
+    prepare_strategy_bars,
     _resolve_universe,
 )
 from screener.backtester.costs import cost_model_from_config
@@ -123,8 +123,8 @@ def _prepare_simulation(
     bars_by_tv = {
         tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
     }
-    bars_by_tv, strategy_lookback = _prepare_strategy_bars(
-        cfg,
+    bars_by_tv, strategy_lookback = prepare_strategy_bars(
+        cfg.strategy_name,
         bars_by_tv,
         price_panel,
         tv_symbols,
@@ -132,6 +132,8 @@ def _prepare_simulation(
         fetch_end,
         fetcher,
         warnings,
+        market=cfg.market,
+        benchmark=cfg.benchmark,
     )
     lookback = max(lookback, strategy_lookback)
 
@@ -206,6 +208,11 @@ def _prepare_simulation(
         )
 
     master_dates = list(pd.DatetimeIndex(np.unique(np.concatenate(day_arrays))))
+    sector_by_tv: dict[str, str] | None = None
+    if cfg.sector_neutral:
+        from screener.sectors import sector_by_ticker
+
+        sector_by_tv = sector_by_ticker(tv_symbols, cfg.market)
 
     # Resolve earnings blackout map when the gate is configured. Prefer an
     # injected mapping (tests); otherwise collect via the market-aware earnings
@@ -239,6 +246,8 @@ def _prepare_simulation(
         earnings_blackout=resolved_earnings_blackout,
         earnings_blackout_days=cfg.earnings_blackout_days,
         warnings=warnings,
+        sector_neutral=cfg.sector_neutral,
+        sector_by_tv=sector_by_tv,
     )
     portfolio = Portfolio(
         cfg.initial_capital,

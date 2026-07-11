@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-
 import csv
 import sys
-from contextlib import nullcontext
 
 import click
 from rich.console import Console
@@ -133,7 +131,6 @@ def earnings_backtest(
             batch_size=batch_size,
             tickers=ticker_list,
         )
-
     if not trades:
         console.print(
             "[yellow]No earnings events found for the given parameters.[/yellow]"

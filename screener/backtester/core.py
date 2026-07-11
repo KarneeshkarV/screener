@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Optional, Union, cast
+from typing import TYPE_CHECKING, Optional, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -21,6 +21,9 @@ from screener.backtester.fills import (  # noqa: F401  (re-export compat shims)
 from screener.backtester.models import BacktestConfig, ExitReason, Trade
 from screener.backtester.pine import PineError, evaluate
 from screener.backtester.portfolio import Portfolio
+
+if TYPE_CHECKING:
+    from screener.strategies.spec import StrategySpec
 
 
 @dataclass(frozen=True)
@@ -637,8 +640,8 @@ def _resolve_universe(cfg: BacktestConfig) -> tuple[list[str], list[str]]:
     raise ValueError(_NO_UNIVERSE_MSG)
 
 
-def _prepare_strategy_bars(
-    cfg: BacktestConfig,
+def prepare_strategy_bars(
+    strategy: str | StrategySpec | None,
     bars_by_tv: dict[str, pd.DataFrame],
     price_panel: dict[str, pd.DataFrame],
     tv_symbols: list[str],
@@ -646,18 +649,28 @@ def _prepare_strategy_bars(
     end: date,
     fetcher: PriceFetcher,
     warnings: list[str],
+    *,
+    market: str,
+    benchmark: str,
 ) -> tuple[dict[str, pd.DataFrame], int]:
-    """Dispatch to the strategy's ``prepare_bars`` / ``required_lookback`` hooks."""
-    from screener.strategies.spec import PrepareCtx, registry as strategy_registry
+    """Resolve a strategy and run its preparation/lookback hooks."""
+    from screener.strategies.spec import PrepareCtx, resolve_strategy_spec
 
-    spec = strategy_registry.get_optional(cfg.strategy_name)
+    try:
+        spec = (
+            resolve_strategy_spec(strategy) if isinstance(strategy, str) else strategy
+        )
+    except ValueError as exc:
+        warnings.append(f"strategy error: {exc}")
+        return bars_by_tv, 0
     if spec is None:
         return bars_by_tv, 0
     lookback_floor = spec.required_lookback() if spec.required_lookback else 0
     if spec.prepare_bars is None:
         return bars_by_tv, lookback_floor
     ctx = PrepareCtx(
-        cfg=cfg,
+        market=market,
+        benchmark=benchmark,
         bars_by_tv=bars_by_tv,
         price_panel=price_panel,
         tv_symbols=tv_symbols,
