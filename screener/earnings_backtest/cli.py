@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import csv
 import sys
 
@@ -111,8 +112,14 @@ def earnings_backtest(
     if tickers:
         ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
 
-    # Skip the status spinner in CSV mode so stdout stays machine-parseable.
-    if output_csv:
+    status = (
+        nullcontext()
+        if output_csv
+        else console.status(
+            f"[bold green]Running earnings-backtest ({market}, {strategy}, {years}y)…"
+        )
+    )
+    with status:
         trades = run_earnings_backtest(
             market=market,
             years=years,
@@ -124,22 +131,6 @@ def earnings_backtest(
             batch_size=batch_size,
             tickers=ticker_list,
         )
-    else:
-        with console.status(
-            f"[bold green]Running earnings-backtest ({market}, {strategy}, {years}y)…"
-        ):
-            trades = run_earnings_backtest(
-                market=market,
-                years=years,
-                strategy=strategy,
-                days_before=days_before,
-                min_score=min_score,
-                commission_bps=commission_bps,
-                slippage_bps=slippage_bps,
-                batch_size=batch_size,
-                tickers=ticker_list,
-            )
-
     if not trades:
         console.print(
             "[yellow]No earnings events found for the given parameters.[/yellow]"
