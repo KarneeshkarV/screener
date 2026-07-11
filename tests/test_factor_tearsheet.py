@@ -461,3 +461,16 @@ def test_factor_tearsheet_cli_success_and_errors(
         ft.factor_tearsheet, ["--strategy", "x", "--tickers", "A"]
     )
     assert empty_closes.exit_code == 2 and "no close prices" in empty_closes.output
+
+
+def test_load_factor_panels_unknown_strategy() -> None:
+    with pytest.raises(ValueError, match="unknown factor strategy"):
+        ft.load_factor_panels(
+            market="us",
+            strategy_name="definitely-not-a-strategy",
+            tickers=["AAA"],
+            start=date(2024, 1, 1),
+            end=date(2024, 3, 1),
+            fetcher=None,
+            warnings=[],
+        )

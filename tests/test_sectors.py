@@ -191,3 +191,12 @@ def test_sector_fetch_failure_blank_and_empty_input(monkeypatch, tmp_path) -> No
     assert sector_by_ticker(
         ["BLANK"], "us", use_cache=False, info_fetcher=lambda symbol: {"sector": " "}
     ) == {"BLANK": UNKNOWN_SECTOR}
+
+
+def test_sector_neutralize_single_cell_frame():
+    idx = pd.DatetimeIndex([pd.Timestamp("2024-01-02")])
+    scores = pd.DataFrame({"AAA": [1.5]}, index=idx)
+    out = _sector_neutralize_scores(scores, {"AAA": "Tech"})
+    # A single name in its (day, sector) group neutralizes to 0.
+    assert out.shape == scores.shape
+    assert float(out.iloc[0, 0]) == 0.0
