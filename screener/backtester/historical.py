@@ -34,6 +34,7 @@ from screener.backtester.models import (
 from screener.backtester.historical_cli import backtest_historical
 from screener.backtester.pine import PineError, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.options.backtest import merge_referenced_options
 
 
 def select_candidates(
@@ -463,6 +464,13 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         benchmark=cfg.benchmark,
     )
     lookback = max(lookback, strategy_lookback)
+    bars_by_tv = merge_referenced_options(
+        bars_by_tv,
+        market=cfg.market,
+        entry_ast=entry_ast,
+        exit_ast=exit_ast,
+        warnings=warnings,
+    )
 
     caches = _RunCaches()
     selection, sel_warnings = select_candidates(

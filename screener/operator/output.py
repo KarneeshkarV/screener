@@ -2,7 +2,8 @@
 
 Output columns (per spec Step 4 emphasis on Operator_Action / Close / VWAP):
 
-  SYMBOL, Operator_Action, High_Momentum_Watch,
+  SYMBOL, Operator_Action, High_Momentum_Watch, Options_OI_Confirmation,
+  Options_Confirms_Futures, ATM_Call_Writing_OI, ATM_Put_Writing_OI,
   Close, VWAP, %_Change_Price, %_Change_OI, %_Change_Delivery,
   Dist_From_52W_High, 52W_High, 52W_Low,
   Deliv_Qty, Deliv_Pct, 5_Day_Avg_Delivery,
@@ -31,6 +32,10 @@ OUTPUT_COLUMNS = [
     "SYMBOL",
     "Operator_Action",
     "High_Momentum_Watch",
+    "Options_OI_Confirmation",
+    "Options_Confirms_Futures",
+    "ATM_Call_Writing_OI",
+    "ATM_Put_Writing_OI",
     "Close",
     "VWAP",
     "%_Change_Price",
