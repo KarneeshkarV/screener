@@ -78,6 +78,14 @@ def test_backtest_help_lists_flags():
         assert flag in res.output, f"missing flag in help: {flag}"
 
 
+def test_screen_help_lists_earnings_flags():
+    res = CliRunner().invoke(cli, ["screen", "--help"])
+
+    assert res.exit_code == 0
+    assert "--earnings" in res.output
+    assert "--earnings-buffer" in res.output
+
+
 def test_rolling_backtest_help_lists_core_flags():
     runner = CliRunner()
     res = runner.invoke(cli, ["backtest-rolling", "--help"])
@@ -158,6 +166,24 @@ def test_screen_csv_skips_auto_temp_report(tmp_path, monkeypatch):
     assert not report.exists()
     parsed = pd.read_csv(io.StringIO(res.output))
     assert parsed["name"].tolist() == ["AAA", "BBB"]
+
+
+def test_screen_earnings_flag_enables_enrichment(monkeypatch):
+    calls: list[tuple[list[str], str]] = []
+
+    def enrich(df, market):
+        calls.append((df["name"].tolist(), market))
+        return df.assign(days_to_earnings=[4, None])
+
+    monkeypatch.setattr(screen_mod, "scan", lambda **kwargs: (2, _screen_df()))
+    monkeypatch.setattr(screen_mod, "enrich_days_to_earnings", enrich)
+
+    res = CliRunner().invoke(cli, ["screen", "--earnings", "--csv"])
+
+    assert res.exit_code == 0, res.output
+    assert calls == [(["AAA", "BBB"], "us")]
+    parsed = pd.read_csv(io.StringIO(res.output))
+    assert parsed["days_to_earnings"].iloc[0] == 4
 
 
 def test_rolling_backtest_rejects_csv_with_dashboard():

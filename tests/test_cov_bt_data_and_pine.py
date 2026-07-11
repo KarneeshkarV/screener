@@ -36,7 +36,7 @@ from screener.backtester.core import (
     _make_slot_state,
     _passes_entry_filters,
     _precompute_filter_signals,
-    _prepare_strategy_bars,
+    prepare_strategy_bars,
     _resolve_universe,
     _trailing_liquidity,
 )
@@ -112,7 +112,6 @@ def _open_slot(bars, *, entry_idx=1, ticker="AAA", **state_kw):
         ticker=ticker,
         entry_date=bars.index[entry_idx].date(),
         entry_price=entry_fill,
-        commission_bps=0.0,
     )
     defaults = dict(
         ticker=ticker,
@@ -674,8 +673,8 @@ def test_resolve_universe_none_raises():
 def test_prepare_strategy_bars_no_spec():
     cfg = _cfg(strategy_name=None)
     bars_by = {"AAA": make_bars(n=5)}
-    out, lb = _prepare_strategy_bars(
-        cfg,
+    out, lb = prepare_strategy_bars(
+        cfg.strategy_name,
         bars_by,
         {},
         ["AAA"],
@@ -683,6 +682,8 @@ def test_prepare_strategy_bars_no_spec():
         date(2024, 4, 1),
         StubPriceFetcher({}),
         [],
+        market=cfg.market,
+        benchmark=cfg.benchmark,
     )
     assert out is bars_by and lb == 0
 

@@ -6,7 +6,6 @@ import pytest
 from pydantic import ValidationError
 
 from screener.backtester import pine_runner
-from screener.backtester.models import BacktestConfig
 from screener.strategies.plugins.rs_breakout import (
     _prepare_rs_breakout,
     _rs_breakout_lookback,
@@ -248,22 +247,8 @@ def _prepare_ctx(
 ) -> PrepareCtx:
     bars = _ohlcv(50)
     return PrepareCtx(
-        cfg=BacktestConfig(
-            market=market,
-            as_of=pd.Timestamp("2024-03-01").date(),
-            hold=5,
-            top=1,
-            entry_expr="close > 0",
-            exit_expr=None,
-            stop_loss=None,
-            take_profit=None,
-            trailing_stop=None,
-            slippage_bps=0.0,
-            commission_bps=0.0,
-            initial_capital=10_000.0,
-            tickers=("AAA",),
-            benchmark=benchmark,
-        ),
+        market=market,
+        benchmark=benchmark,
         bars_by_tv=bars_by_tv or {"AAA": bars},
         price_panel=price_panel or {benchmark: bars},
         tv_symbols=["AAA"],

@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from collections.abc import Mapping
-from typing import Any, ClassVar, Literal, Optional, Self
+from typing import Any, ClassVar, Literal, Optional, Self, cast
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from screener.backtester.slippage import FixedBpsSlippage, SlippageModel
+from screener.backtester.slippage import (
+    CompositeSlippage,
+    EstimatedHalfSpreadSlippage,
+    FixedBpsSlippage,
+    SlippageModel,
+)
 
 
 ExitReason = Literal["stop", "target", "trail", "time", "exit_expr", "eod"]
@@ -36,9 +41,18 @@ class SignalPolicy(BaseModel):
     exit_expr: Optional[str]
     strategy_name: Optional[str] = None
     regime_filter: tuple[str, ...] = ()
+    # Earnings blackout entry gate (rolling backtest): when set to N, suppress
+    # entry signals on any calendar day within N days BEFORE (and including) a
+    # known earnings date for that ticker. ``None`` disables the gate. Tickers
+    # with no known earnings dates remain eligible (a warning is recorded).
+    earnings_blackout_days: int | None = None
     fundamentals_provider: Optional[str] = None
     fundamental_fields: tuple[str, ...] = ()
     fundamental_lag_days: int = 1
+    # Cross-sectional sector neutralization of ``rank_score`` inside the rolling
+    # candidate builder. When True and a factor score matrix exists, scores are
+    # z-scored within each sector group per day before ranking.
+    sector_neutral: bool = False
 
 
 class DataPolicy(BaseModel):
@@ -68,6 +82,12 @@ class ExecutionPolicy(BaseModel):
     slippage_bps: float
     commission_bps: float
     slippage_model: Optional[SlippageModel] = None
+    # Statutory fee model name (cash impact, not fill-price). ``flat`` uses
+    # ``commission_bps`` exactly as before; ``india`` applies NSE delivery fees.
+    cost_model: Literal["flat", "india"] = "flat"
+    # When True, compute Corwin-Schultz half-spread from bar high/low and feed
+    # it into the fill-layer slippage stack as ``half_spread``.
+    spread_proxy: bool = False
     gap_fills: bool = True
     entry_order_type: Literal["moo", "moc", "limit"] = "moo"
     entry_limit_bps: Optional[float] = None
@@ -80,6 +100,22 @@ class ExecutionPolicy(BaseModel):
             data = dict(data)
             data["slippage_model"] = FixedBpsSlippage(bps=data.get("slippage_bps", 0.0))
         return data
+
+    @model_validator(mode="after")
+    def _validate_spread_proxy_consumer(self) -> ExecutionPolicy:
+        def consumes_estimated_spread(model: SlippageModel) -> bool:
+            if isinstance(model, EstimatedHalfSpreadSlippage):
+                return True
+            if isinstance(model, CompositeSlippage):
+                return any(consumes_estimated_spread(item) for item in model.models)
+            return False
+
+        consumes = consumes_estimated_spread(cast(SlippageModel, self.slippage_model))
+        if self.spread_proxy != consumes:
+            raise ValueError(
+                "spread_proxy and EstimatedHalfSpreadSlippage must be enabled together"
+            )
+        return self
 
 
 class PortfolioPolicy(BaseModel):
@@ -211,6 +247,14 @@ class BacktestConfig(BaseModel):
         return self.signals.regime_filter
 
     @property
+    def earnings_blackout_days(self) -> Optional[int]:
+        return self.signals.earnings_blackout_days
+
+    @property
+    def sector_neutral(self) -> bool:
+        return self.signals.sector_neutral
+
+    @property
     def fundamentals_provider(self) -> Optional[str]:
         return self.signals.fundamentals_provider
 
@@ -257,6 +301,14 @@ class BacktestConfig(BaseModel):
     @property
     def slippage_model(self) -> Optional[SlippageModel]:
         return self.execution.slippage_model
+
+    @property
+    def cost_model(self) -> Literal["flat", "india"]:
+        return self.execution.cost_model
+
+    @property
+    def spread_proxy(self) -> bool:
+        return self.execution.spread_proxy
 
     @property
     def gap_fills(self) -> bool:

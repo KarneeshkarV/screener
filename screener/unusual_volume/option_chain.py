@@ -15,19 +15,28 @@ from typing import Any, Optional, cast
 
 import numpy as np
 
+from screener.options.metrics import compute_chain_metrics
+from screener.options.nse_live import NSELiveOptionsProvider
+
 from .detector import Event
 from .nse_client import nse_cached_json
 
-_OC_URL = "https://www.nseindia.com/api/option-chain-equities?symbol={sym}"
+_OC_EQUITY_URL = "https://www.nseindia.com/api/option-chain-equities?symbol={sym}"
+_OC_INDEX_URL = "https://www.nseindia.com/api/option-chain-indices?symbol={sym}"
+_OC_INDEX_SYMBOLS = frozenset(
+    {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"}
+)
 _OC_PAGE = "https://www.nseindia.com/option-chain"
 EVENT_FIELDS = ("call_put_oi_ratio", "pcr")
 
 
 def fetch_option_chain(symbol: str, *, refresh: bool = False) -> Optional[dict]:
-    url = _OC_URL.format(sym=urllib.parse.quote(symbol.upper()))
+    normalized = symbol.upper()
+    template = _OC_INDEX_URL if normalized in _OC_INDEX_SYMBOLS else _OC_EQUITY_URL
+    url = template.format(sym=urllib.parse.quote(normalized))
     raw = nse_cached_json(
         "nse_option_chain",
-        ("oc", symbol.upper(), str(date.today())),
+        ("oc", normalized, str(date.today())),
         url,
         f"option chain {symbol}",
         refresh=refresh,
@@ -125,9 +134,21 @@ def overlay_option_chain(
         return {}
     symbols = sorted({ev.symbol.upper() for ev in events})
 
+    provider = NSELiveOptionsProvider(raw_fetcher=fetch_option_chain)
+
     def _one(sym: str) -> tuple[str, Optional[dict]]:
-        raw = fetch_option_chain(sym, refresh=refresh)
-        return sym, (compute_oc_metrics(raw) if raw else None)
+        chain = provider.fetch_chain(sym, "india", refresh=refresh)
+        if chain is None:
+            return sym, None
+        derived = compute_chain_metrics(chain)
+        ce_oi = derived.call_oi or None
+        pe_oi = derived.put_oi or None
+        return sym, {
+            "ce_oi": ce_oi,
+            "pe_oi": pe_oi,
+            "call_put_oi_ratio": _safe_ratio(ce_oi, pe_oi),
+            "pcr": _safe_ratio(pe_oi, ce_oi),
+        }
 
     metrics: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:

@@ -71,4 +71,12 @@ def label(df: pd.DataFrame) -> pd.DataFrame:
     # NaN dist (cache miss) is treated as not-near-high.
     near_high = df["Dist_From_52W_High"].le(15.0).fillna(False)
     df["High_Momentum_Watch"] = (df["Operator_Action"] == "Long Build-up") & near_high
+    confirmation = df.get(
+        "Options_OI_Confirmation", pd.Series(None, index=df.index, dtype=object)
+    ).astype(str)
+    bullish_action = df["Operator_Action"].isin(["Long Build-up", "Short Covering"])
+    bearish_action = df["Operator_Action"].isin(["Short Build-up", "Long Unwinding"])
+    df["Options_Confirms_Futures"] = (
+        bullish_action & confirmation.str.startswith("Bullish")
+    ) | (bearish_action & confirmation.str.startswith("Bearish"))
     return df

@@ -109,7 +109,6 @@ def _open_slot(bars, *, entry_idx=1, ticker="AAA", **state_kw):
         ticker=ticker,
         entry_date=bars.index[entry_idx].date(),
         entry_price=entry_fill,
-        commission_bps=0.0,
     )
     defaults = dict(
         ticker=ticker,

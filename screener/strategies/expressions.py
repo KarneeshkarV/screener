@@ -51,9 +51,14 @@ NAMED_STRATEGIES: DerivedView[NamedStrategy] = DerivedView(_named_of)
 
 
 def resolve_strategy(name: str) -> NamedStrategy:
+    from screener.strategies.spec import resolve_strategy_spec
+
     try:
-        return NAMED_STRATEGIES[name]
-    except KeyError:
+        spec = resolve_strategy_spec(name)
+    except ValueError as exc:
+        raise KeyError(str(exc)) from exc
+    if not isinstance(spec, ExpressionStrategySpec):
         raise KeyError(
             f"Unknown strategy {name!r}. Known: {sorted(NAMED_STRATEGIES)}"
         ) from None
+    return NamedStrategy(entry=spec.entry, exit=spec.exit)

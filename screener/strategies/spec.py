@@ -23,7 +23,6 @@ from pydantic import BaseModel, ConfigDict, SkipValidation, field_validator
 
 from screener._registry import Registry, autodiscover
 from screener.backtester.data import PriceFetcher
-from screener.backtester.models import BacktestConfig
 from screener.strategies.trades import Trade
 
 
@@ -35,7 +34,8 @@ V = TypeVar("V")
 class PrepareCtx(BaseModel):
     """Inputs handed to a strategy's ``prepare_bars`` hook."""
 
-    cfg: BacktestConfig
+    market: str
+    benchmark: str
     bars_by_tv: dict[str, pd.DataFrame]
     price_panel: dict[str, pd.DataFrame]
     tv_symbols: list[str]
@@ -172,3 +172,15 @@ def discover_plugins() -> None:
     from screener.strategies import plugins
 
     autodiscover(plugins)
+
+
+def resolve_strategy_spec(name: str | None) -> StrategySpec | None:
+    """Resolve a registered or dynamic strategy through one canonical path."""
+    if name is None:
+        return None
+    discover_plugins()
+    from screener.strategies.combo import is_combo_strategy, resolve_combo_spec
+
+    if is_combo_strategy(name):
+        return resolve_combo_spec(name)
+    return registry.get_optional(name)

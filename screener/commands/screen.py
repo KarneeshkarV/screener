@@ -10,6 +10,7 @@ from screener.cache import parse_ttl
 from screener import history
 from screener.criteria import CRITERIA, resolve_criteria
 from screener.display import print_csv, print_results
+from screener.enrich import enrich_days_to_earnings
 from screener.markets import market_option
 from screener.scanner import scan
 from screener.screen_workflow import (
@@ -38,6 +39,7 @@ def _screen_workflow_deps() -> ScreenWorkflowDeps:
         diff=history.diff,
         temp_report_path=lambda prefix: reporting.temp_report_path(prefix),
         render_report=render_screen_report,
+        enrich_days_to_earnings=enrich_days_to_earnings,
     )
 
 
@@ -86,6 +88,21 @@ def _screen_workflow_deps() -> ScreenWorkflowDeps:
     default=False,
     help="Open the generated HTML report in the default browser.",
 )
+@click.option(
+    "--earnings",
+    is_flag=True,
+    help="Attach days_to_earnings to final result rows.",
+)
+@click.option(
+    "--earnings-buffer",
+    type=int,
+    default=None,
+    help=(
+        "Drop result rows whose next earnings date is within N calendar days. "
+        "Rows with unknown earnings dates are kept. This also enables earnings "
+        "enrichment."
+    ),
+)
 def screen(
     market: str,
     criteria_names: tuple[str, ...],
@@ -97,8 +114,12 @@ def screen(
     cache_ttl: str,
     report_path: Path | None,
     open_report: bool,
+    earnings: bool,
+    earnings_buffer: int | None,
 ) -> None:
     """Screen stocks based on technical criteria."""
+    if earnings_buffer is not None and earnings_buffer < 0:
+        raise click.UsageError("--earnings-buffer must be >= 0.")
     try:
         alias = resolve_screen_alias(criteria_names)
     except ScreenAliasSelectionError as exc:
@@ -123,6 +144,8 @@ def screen(
         cache_ttl=cache_ttl,
         report_path=report_path,
         open_report=open_report,
+        earnings=earnings,
+        earnings_buffer=earnings_buffer,
     )
     outcome = run_screen_workflow(request, _screen_workflow_deps())
 

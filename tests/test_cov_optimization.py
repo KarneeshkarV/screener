@@ -590,6 +590,8 @@ def test_walk_forward_optimize_full_path(monkeypatch):
     assert isinstance(summary, WalkForwardSummary)
     assert summary.windows
     assert summary.aggregate_metrics  # test_trade_counts > 0 branch
+    assert len(summary.oos_trades) == 2 * len(summary.windows)
+    assert "oos_trades" not in summary.model_dump()
     # overfit detection: train avg (2.0) >> test avg sharpe -> ratio large.
     assert summary.train_test_score_ratio > 0
 

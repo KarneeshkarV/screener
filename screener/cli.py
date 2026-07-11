@@ -10,9 +10,10 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from screener.backtester.factor_tearsheet import factor_tearsheet
 from screener.backtester.historical import backtest_historical
 from screener.backtester.lab import backtest_lab
-from screener.backtester.optimization.cli import optimize
+from screener.backtester.optimization.cli import optimize, research_report
 from screener.backtester.rolling import backtest_rolling
 from screener.backtester.vbt_sweep import vbt_sweep
 from screener.commands.cache import cache_group
@@ -29,6 +30,7 @@ from screener.config import load_config
 from screener.earnings_backtest.cli import earnings_backtest, earnings_pead
 from screener.logging_config import configure_logging
 from screener.operator.cli import register as _register_operator_cli
+from screener.options.cli import options
 from screener import usage
 from screener.unusual_volume.cli import unusual_volume
 
@@ -155,11 +157,14 @@ cli.add_command(earnings_backtest)
 cli.add_command(earnings_pead)
 cli.add_command(backtest_historical)
 cli.add_command(backtest_rolling)
+cli.add_command(factor_tearsheet)
 cli.add_command(vbt_sweep)
 cli.add_command(backtest_lab)
 _register_operator_cli(cli)
 cli.add_command(optimize)
+cli.add_command(research_report)
 cli.add_command(cache_group)
+cli.add_command(options)
 
 
 @click.command(name="usage-report")

@@ -14,6 +14,7 @@ from typing import Protocol
 from screener.screen_alias_plugins.garp import garp_pipeline
 from screener.screen_alias_plugins.mark_minervini import mark_minervini_pipeline
 from screener.screen_alias_plugins.obv_trend import obv_trend_pipeline
+from screener.screen_alias_plugins.options_signals import OPTIONS_SIGNAL_ALIASES
 from screener.screen_alias_plugins.promoter_buys import promoter_buys_pipeline
 from screener.screen_alias_plugins.rs_breakout import rs_breakout_pipeline
 from screener.screen_alias_plugins.unusual_volume import unusual_volume_pipeline
@@ -50,6 +51,7 @@ SCREEN_ALIASES: dict[str, ScreenAliasFn] = {
     "rs-breakout": rs_breakout_pipeline,
     "unusual-volume": unusual_volume_pipeline,
     "vol-breakout": vol_breakout_pipeline,
+    **OPTIONS_SIGNAL_ALIASES,
 }
 
 

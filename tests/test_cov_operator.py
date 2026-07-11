@@ -427,6 +427,7 @@ def _patch_build_dataset(monkeypatch):
         )
 
     monkeypatch.setattr(process_mod, "fetch_fo_bhavcopy", fake_fo)
+    monkeypatch.setattr(process_mod, "load_bhavcopy_chains", lambda d: {})
     monkeypatch.setattr(process_mod, "near_month_oi", fetch_mod.near_month_oi)
     monkeypatch.setattr(process_mod, "_trailing_trading_days", lambda d, n: [prev])
     monkeypatch.setattr(
@@ -529,6 +530,10 @@ def _labeled_df() -> pd.DataFrame:
             "SYMBOL": ["AAA", "BBB", "CCC"],
             "Operator_Action": ["Long Build-up", None, "Short Covering"],
             "High_Momentum_Watch": [True, False, False],
+            "Options_OI_Confirmation": [None, None, None],
+            "Options_Confirms_Futures": [False, False, False],
+            "ATM_Call_Writing_OI": [float("nan")] * 3,
+            "ATM_Put_Writing_OI": [float("nan")] * 3,
             "CLOSE_PRICE": [110.0, 48.0, 30.0],
             "AVG_PRICE": [105.0, 49.0, 29.0],
             "%_Change_Price": [1.0, -2.0, 0.5],

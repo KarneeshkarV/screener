@@ -164,13 +164,13 @@ def fetch_fo_bhavcopy(d: date) -> pd.DataFrame:
     ``daily_reports`` API is only fronted CurrentDay+PreviousDay, so it
     fails for older dates — we skip it entirely.
     """
-    df = read_fo_bhavcopy_raw(
+    raw = read_fo_bhavcopy_raw(
         d,
         cache_root=CACHE_ROOT,
         archive_url_template=FO_ARCHIVE_URL,
         resilience_call=call_with_resilience,
     )
-    df = df[df["FinInstrmTp"] == "STF"].copy()  # stock futures only
+    df = raw[raw["FinInstrmTp"] == "STF"].copy()  # stock futures only
     df["XpryDt"] = pd.to_datetime(df["XpryDt"], errors="coerce")
     df["OpnIntrst"] = pd.to_numeric(df["OpnIntrst"], errors="coerce")
     df = df.rename(

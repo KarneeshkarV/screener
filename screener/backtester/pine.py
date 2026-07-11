@@ -4,7 +4,8 @@ Parses a small subset of Pine Script into an AST and evaluates it against a
 pandas DataFrame of OHLCV bars. Does NOT use Python ``eval``.
 
 Supported:
-  series: open, high, low, close, volume, adj_close
+  series: open, high, low, close, volume, adj_close, plus numeric columns
+          joined onto the bars (for example options-panel fields such as pcr)
   literals: int / float
   arithmetic: + - * /
   comparison: > >= < <= == !=

@@ -1,0 +1,56 @@
+{
+  "records": {
+    "timestamp": "10-Jul-2026 15:30:00",
+    "expiryDates": ["28-Jul-2026", "25-Aug-2026"],
+    "data": [
+      {
+        "strikePrice": 1250,
+        "expiryDate": "28-Jul-2026",
+        "CE": {
+          "identifier": "RELIANCE26JUL1250CE",
+          "openInterest": 1000,
+          "changeinOpenInterest": 100,
+          "totalTradedVolume": 50,
+          "impliedVolatility": 22.5,
+          "bidprice": 44.0,
+          "askPrice": 45.0,
+          "lastPrice": 44.5,
+          "underlyingValue": 1275.9
+        },
+        "PE": {
+          "identifier": "RELIANCE26JUL1250PE",
+          "openInterest": 2000,
+          "changeinOpenInterest": 250,
+          "totalTradedVolume": 80,
+          "impliedVolatility": 24.5,
+          "bidprice": 17.5,
+          "askPrice": 18.0,
+          "lastPrice": 17.8,
+          "underlyingValue": 1275.9
+        }
+      },
+      {
+        "strikePrice": 1300,
+        "expiryDate": "25-Aug-2026",
+        "CE": {
+          "identifier": "RELIANCE26AUG1300CE",
+          "openInterest": 3000,
+          "changeinOpenInterest": -100,
+          "totalTradedVolume": 30,
+          "impliedVolatility": 25.0,
+          "lastPrice": 38.0,
+          "underlyingValue": 1275.9
+        },
+        "PE": {
+          "identifier": "RELIANCE26AUG1300PE",
+          "openInterest": 1500,
+          "changeinOpenInterest": 50,
+          "totalTradedVolume": 20,
+          "impliedVolatility": 27.0,
+          "lastPrice": 52.5,
+          "underlyingValue": 1275.9
+        }
+      }
+    ]
+  }
+}
