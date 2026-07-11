@@ -18,6 +18,7 @@ from screener.backtester.vbt_sweep import vbt_sweep
 from screener.commands.cache import cache_group
 from screener.commands.conviction import conviction
 from screener.commands.garp import garp
+from screener.commands.history_list import history_list
 from screener.commands.index_inclusion import index_inclusion
 from screener.commands.insiders import promoter_buys
 from screener.commands.institutional import institutional
@@ -141,6 +142,7 @@ def cli(
 
 
 cli.add_command(screen)
+cli.add_command(history_list)
 cli.add_command(rs_breakout)
 cli.add_command(garp)
 cli.add_command(conviction)
