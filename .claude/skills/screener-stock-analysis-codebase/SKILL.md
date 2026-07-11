@@ -57,6 +57,7 @@ uv run pytest
 - Use yfinance-backed OHLCV through `screener.backtester.data.build_price_fetcher()` for time-series analysis.
 - Intraday bars: `backtest-rolling` / `backtest-historical` accept `--interval` (`1d` default, `1h`, `30m`, `15m`, `5m`, `1m`); `build_price_fetcher(interval=...)` threads it through. yfinance caps history (1m ~30d, 5m-30m ~60d, 1h ~730d; no chunking yet), FMP serves intraday via `historical-chart` when `FMP_API_KEY` is set (raw, unadjusted bars). All intraday timestamps are canonical naive UTC across providers; intraday caches are namespaced per interval (`AAPL__15m`, `fmp_AAPL__15m`) so daily parquet files are never polluted. Metrics annualize by bars-per-year for the interval. Long-warmup strategies (e.g. SMA200) usually cannot fill their lookback inside the capped intraday windows.
 - Use FMP only when `FMP_API_KEY` is present, mostly for US insider/fundamental/event context (plus intraday/daily price fallback).
+- India EPS surprise for PEAD backtests comes from FMP's historical earnings calendar (needs `FMP_API_KEY`): real NSE announcement dates are preferred and enriched with FMP surprise; quarters NSE lacks fall back to FMP's own point-in-time dates. The default India earnings path (NSE + openscreener with filing-lag floor) is unchanged.
 - Use screener.in / openscreener for Indian fundamentals and promoter/shareholding context.
 - Use NSE cash/F&O bhavcopy and option-chain helpers for India delivery, operator intent, and unusual-volume overlays.
 - When giving current stock advice, verify the latest available data timestamp and state it. Do not invent fundamentals, analyst targets, earnings dates, or promoter changes.
@@ -78,6 +79,7 @@ Use these modules instead of recreating logic:
 - Unusual volume: `screener/screener/unusual_volume/`.
 - Operator scan: `screener/screener/operator/`.
 - Optimization: `screener/screener/backtester/optimization/`.
+- Earnings-event backtests: `screener/screener/earnings_backtest/` (`earnings_dates.py` for providers/surprise, `pead.py` for PEAD simulation, `cli.py` for `earnings-backtest` / `earnings-pead`).
 
 For quick per-symbol technical detail, it is often easier to import bot logic:
 
@@ -122,6 +124,7 @@ Rust config intentionally supports YAML strategy and criteria aliases through `s
    - Prefer `backtest-rolling` for live-like selection behavior.
    - Use `backtest-historical` for point-in-time candidate checks.
    - Use `vbt-sweep` for fast triage only; validate promising ideas with rolling backtests.
+   - Use `earnings-backtest` / `earnings-pead` for earnings-event claims. `earnings-pead --exit-mode fixed` (default) holds `--hold-days` sessions; `--exit-mode dynamic` holds a beat (`--min-surprise`) until a later report misses, tagging trades with `exit_reason`.
    - Include slippage, commission, liquidity filters, benchmark, and clear start/end dates.
 6. Convert evidence into action levels only after the above:
    - Close-based stop.
