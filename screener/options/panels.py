@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 import json
 import logging
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -59,7 +60,7 @@ def metrics_row(chain: OptionChain) -> dict[str, object]:
 
 def _history_metrics(group: pd.DataFrame) -> pd.DataFrame:
     ordered = group.sort_values("as_of").copy()
-    iv = pd.to_numeric(ordered.get("median_iv"), errors="coerce")
+    iv = pd.to_numeric(cast(Any, ordered.get("median_iv")), errors="coerce")
     if not isinstance(iv, pd.Series):
         iv = pd.Series(np.nan, index=ordered.index, dtype=float)
     history_days = iv.notna().cumsum()
@@ -83,7 +84,7 @@ def _history_metrics(group: pd.DataFrame) -> pd.DataFrame:
         percentiles.append(less_or_equal / len(seen) * 100.0)
     ordered["iv_percentile"] = percentiles
 
-    volume = pd.to_numeric(ordered.get("options_volume"), errors="coerce")
+    volume = pd.to_numeric(cast(Any, ordered.get("options_volume")), errors="coerce")
     if not isinstance(volume, pd.Series):
         volume = pd.Series(np.nan, index=ordered.index, dtype=float)
     baseline = volume.shift(1).rolling(20, min_periods=5).mean()
@@ -93,11 +94,11 @@ def _history_metrics(group: pd.DataFrame) -> pd.DataFrame:
     for side in ("call", "put"):
         oi_col = f"{side}_oi"
         change_col = f"{side}_oi_change"
-        oi = pd.to_numeric(ordered.get(oi_col), errors="coerce")
+        oi = pd.to_numeric(cast(Any, ordered.get(oi_col)), errors="coerce")
         if not isinstance(oi, pd.Series):
             oi = pd.Series(np.nan, index=ordered.index, dtype=float)
         snapshot_change = oi.diff()
-        supplied = pd.to_numeric(ordered.get(change_col), errors="coerce")
+        supplied = pd.to_numeric(cast(Any, ordered.get(change_col)), errors="coerce")
         if not isinstance(supplied, pd.Series):
             supplied = pd.Series(np.nan, index=ordered.index, dtype=float)
         ordered[change_col] = supplied.fillna(snapshot_change)
@@ -105,7 +106,9 @@ def _history_metrics(group: pd.DataFrame) -> pd.DataFrame:
     call_change = pd.to_numeric(ordered["call_oi_change"], errors="coerce")
     put_change = pd.to_numeric(ordered["put_oi_change"], errors="coerce")
     snapshot_ratio = (put_change / call_change).where(call_change != 0)
-    supplied_ratio = pd.to_numeric(ordered.get("oi_chg_ratio"), errors="coerce")
+    supplied_ratio = pd.to_numeric(
+        cast(Any, ordered.get("oi_chg_ratio")), errors="coerce"
+    )
     if not isinstance(supplied_ratio, pd.Series):
         supplied_ratio = pd.Series(np.nan, index=ordered.index, dtype=float)
     ordered["oi_chg_ratio"] = supplied_ratio.fillna(snapshot_ratio)

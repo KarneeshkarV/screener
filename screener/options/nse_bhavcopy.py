@@ -37,7 +37,7 @@ BhavcopyFetcher = Callable[[date], pd.DataFrame]
 
 
 def _row_date(row: Mapping[str, Any], fallback: date) -> date:
-    parsed = pd.to_datetime(row.get("TradDt"), errors="coerce")
+    parsed = pd.to_datetime(cast(Any, row.get("TradDt")), errors="coerce")
     if pd.isna(parsed):
         return fallback
     return pd.Timestamp(parsed).date()

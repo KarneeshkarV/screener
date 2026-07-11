@@ -132,7 +132,7 @@ def parse_india_vix_live(raw: object, *, as_of: date) -> pd.DataFrame:
             continue
         if str(item.get("index") or "").strip().upper() != "INDIA VIX":
             continue
-        value = pd.to_numeric(item.get("last"), errors="coerce")
+        value = pd.to_numeric(cast(Any, item.get("last")), errors="coerce")
         if pd.isna(value):
             return pd.DataFrame()
         vix = float(value)
@@ -252,8 +252,8 @@ def parse_fred_volatility_csv(text: str, *, start: date, end: date) -> pd.DataFr
     if "observation_date" not in frame.columns:
         raise ValueError("FRED volatility CSV missing observation_date")
     frame["as_of"] = pd.to_datetime(frame.pop("observation_date"), errors="coerce")
-    frame["vix"] = pd.to_numeric(frame.get("VIXCLS"), errors="coerce")
-    frame["vix3m"] = pd.to_numeric(frame.get("VXVCLS"), errors="coerce")
+    frame["vix"] = pd.to_numeric(cast(Any, frame.get("VIXCLS")), errors="coerce")
+    frame["vix3m"] = pd.to_numeric(cast(Any, frame.get("VXVCLS")), errors="coerce")
     frame = frame[
         frame["as_of"].notna()
         & frame["as_of"].between(pd.Timestamp(start), pd.Timestamp(end))

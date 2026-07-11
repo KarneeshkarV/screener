@@ -26,7 +26,7 @@ class RawFetcher(Protocol):
 
 
 def _timestamp(raw: object, now: datetime) -> datetime:
-    parsed = pd.to_datetime(raw, dayfirst=True, errors="coerce")
+    parsed = pd.to_datetime(cast(Any, raw), dayfirst=True, errors="coerce")
     if pd.isna(parsed):
         return now.astimezone(timezone.utc)
     ts = pd.Timestamp(parsed)
@@ -41,7 +41,9 @@ def _expiry(
     default: date,
 ) -> date:
     parsed = pd.to_datetime(
-        leg.get("expiryDate") or row.get("expiryDate"), dayfirst=True, errors="coerce"
+        cast(Any, leg.get("expiryDate") or row.get("expiryDate")),
+        dayfirst=True,
+        errors="coerce",
     )
     return default if pd.isna(parsed) else pd.Timestamp(parsed).date()
 
@@ -158,7 +160,9 @@ def parse_nse_chain(
     first_expiry = (
         expiry_dates[0] if isinstance(expiry_dates, list) and expiry_dates else None
     )
-    parsed_default = pd.to_datetime(first_expiry, dayfirst=True, errors="coerce")
+    parsed_default = pd.to_datetime(
+        cast(Any, first_expiry), dayfirst=True, errors="coerce"
+    )
     default_expiry = (
         as_of.date() if pd.isna(parsed_default) else pd.Timestamp(parsed_default).date()
     )

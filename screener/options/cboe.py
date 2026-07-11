@@ -34,7 +34,7 @@ _CBOE_CACHE = CachedProvider(
 
 
 def _venue_timestamp(value: object, fallback: datetime) -> datetime:
-    parsed = pd.to_datetime(value, errors="coerce")
+    parsed = pd.to_datetime(cast(Any, value), errors="coerce")
     if pd.isna(parsed):
         return fallback.astimezone(timezone.utc)
     ts = pd.Timestamp(parsed)
