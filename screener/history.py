@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -7,7 +8,9 @@ from typing import Optional
 import pandas as pd
 
 
-DB_PATH = Path.home() / ".screener" / "history.db"
+_DEFAULT_DB_PATH = Path.home() / ".screener" / "history.db"
+# Overridable via SCREENER_HISTORY_DB; tests may also monkeypatch this directly.
+DB_PATH = Path(os.environ.get("SCREENER_HISTORY_DB") or _DEFAULT_DB_PATH)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -39,6 +42,11 @@ CREATE INDEX IF NOT EXISTS idx_runs_key ON runs(market, criteria, run_ts DESC);
 def _connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    # foreign_keys must be enabled per-connection for run_rows' ON DELETE CASCADE
+    # to fire; WAL + NORMAL trade a little durability for far better concurrency.
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(_SCHEMA)
     return conn
 
@@ -59,16 +67,26 @@ def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
     run_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     conn = _connect()
     try:
-        cur = conn.execute(
-            "INSERT INTO runs (run_ts, market, criteria, total_matches) VALUES (?, ?, ?, ?)",
+        # Two runs landing in the same second collide on UNIQUE(run_ts, market,
+        # criteria); upsert so the later one wins and reuses the existing id.
+        conn.execute(
+            """
+            INSERT INTO runs (run_ts, market, criteria, total_matches)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(run_ts, market, criteria)
+            DO UPDATE SET total_matches = excluded.total_matches
+            """,
             (run_ts, market, criteria, int(total)),
         )
-        # sqlite types lastrowid as int | None; it is never None after an INSERT.
-        run_id = cur.lastrowid
-        if (
-            run_id is None
-        ):  # pragma: no cover - sqlite always sets lastrowid post-INSERT
-            raise RuntimeError("INSERT into runs did not return a rowid")
+        id_row = conn.execute(
+            "SELECT id FROM runs WHERE run_ts = ? AND market = ? AND criteria = ?",
+            (run_ts, market, criteria),
+        ).fetchone()
+        if id_row is None:  # pragma: no cover - the upsert just wrote this row
+            raise RuntimeError("upsert into runs did not yield a rowid")
+        run_id = int(id_row[0])
+        # Replace any rows from a prior run that shared this natural key.
+        conn.execute("DELETE FROM run_rows WHERE run_id = ?", (run_id,))
 
         rows = []
         for rank, (_, row) in enumerate(df.iterrows(), start=1):

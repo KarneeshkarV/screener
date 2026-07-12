@@ -70,6 +70,10 @@ help-factor-tearsheet:
 help-history:
     @{{python}} main.py history --help
 
+# Show history-backup command help.
+help-history-backup:
+    @{{python}} main.py history-backup --help
+
 # Show index inclusion command help.
 help-index-inclusion:
     @{{python}} main.py index-inclusion --help
@@ -193,6 +197,10 @@ factor-tearsheet *args:
 # List persisted screen runs (replay with `backtest-historical --from-run`).
 history *args:
     @{{python}} main.py history "$@"
+
+# Back up screen-run history to Turso (or restore with --restore).
+history-backup *args:
+    @{{python}} main.py history-backup "$@"
 
 # Event study of post-addition excess drift for S&P 500 additions vs SPY.
 index-inclusion *args:

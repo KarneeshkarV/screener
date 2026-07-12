@@ -7,6 +7,8 @@
 # Phase 2: for each market:criteria pair, replay the most recent persisted run
 #   that is at least $REPLAY_AGE_DAYS old via `backtest-historical --from-run`,
 #   writing the metrics log and HTML tear-sheet to $LOG_DIR.
+# Phase 3: back up the local history.db to Turso via `screener history-backup`
+#   (reads TURSO_* creds from the repo's .env). Non-fatal.
 #
 # Pairs without an old-enough run are skipped (logged, non-fatal), so the first
 # $REPLAY_AGE_DAYS days after install only accumulate history.
@@ -56,6 +58,13 @@ for market in $MARKETS; do
     fi
   done
 done
+
+backup_log="$LOG_DIR/history-backup-$stamp.log"
+if uv run screener --log-level ERROR history-backup >"$backup_log" 2>&1; then
+  echo "[$stamp] backup ok      history.db → Turso ($(tail -n 1 "$backup_log"))"
+else
+  echo "[$stamp] backup FAILED  history.db → Turso (see $backup_log)"
+fi
 
 find "$LOG_DIR" -type f -mtime "+$KEEP_DAYS" -delete
 echo "[$stamp] done"

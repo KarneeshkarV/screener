@@ -147,7 +147,7 @@ Caveats: only the top-N rows shown at screen time were persisted, so the replay 
 
 #### Daily replay cron
 
-`scripts/daily_screen_replay.sh` runs every registered screen criterion on every market (persisting each run), then replays each `market:criteria` pair's most recent run that is at least `REPLAY_AGE_DAYS` (default 7) old, writing logs and HTML tear-sheets to `~/.screener/replay-logs/`. Pairs without an old-enough run are skipped, so the first week after install only accumulates history.
+`scripts/daily_screen_replay.sh` runs every registered screen criterion on every market (persisting each run), then replays each `market:criteria` pair's most recent run that is at least `REPLAY_AGE_DAYS` (default 7) old, writing logs and HTML tear-sheets to `~/.screener/replay-logs/`. Pairs without an old-enough run are skipped, so the first week after install only accumulates history. Finally it backs up the local `history.db` to Turso via `screener history-backup` (reading `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` from the repo's `.env`); a backup failure is logged but never aborts the run.
 
 ```cron
 # m h dom mon dow  command
