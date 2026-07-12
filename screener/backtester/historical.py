@@ -33,6 +33,7 @@ from screener.backtester.models import (
 from screener.backtester.historical_cli import backtest_historical
 from screener.backtester.pine import PineError, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.backtester.sizing import entry_budget_for
 from screener.options.backtest import merge_referenced_options
 
 
@@ -188,6 +189,9 @@ class _ReserveRotationSource:
                 if reentry_signal_idx is None:
                     continue
                 new_rank = portfolio._ranks.get(ticker, 0)
+                entry_budget = entry_budget_for(
+                    cfg, portfolio, slot_frame, reentry_signal_idx
+                )
                 state, warn = _make_slot_state(
                     ticker,
                     slot_frame,
@@ -197,7 +201,7 @@ class _ReserveRotationSource:
                     new_rank,
                     self.fill_model,
                     caches=self.caches,
-                    entry_budget=portfolio.entry_budget(),
+                    entry_budget=entry_budget,
                 )
                 if state is None:
                     if warn:
@@ -209,6 +213,7 @@ class _ReserveRotationSource:
                     ticker=ticker,
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
+                    budget=entry_budget,
                 )
                 self.slot_states[slot_id] = state
                 del self.pending_reentry[slot_id]
@@ -249,6 +254,9 @@ class _ReserveRotationSource:
                 )
                 if reserve_signal_idx is None:
                     continue
+                entry_budget = entry_budget_for(
+                    cfg, portfolio, reserve_bars, reserve_signal_idx
+                )
                 state, warn = _make_slot_state(
                     ticker,
                     reserve_bars,
@@ -258,7 +266,7 @@ class _ReserveRotationSource:
                     int(reserve["rank"]),
                     self.fill_model,
                     caches=self.caches,
-                    entry_budget=portfolio.entry_budget(),
+                    entry_budget=entry_budget,
                 )
                 if state is None:
                     if warn:
@@ -269,6 +277,7 @@ class _ReserveRotationSource:
                     ticker=ticker,
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
+                    budget=entry_budget,
                 )
                 self.slot_states[slot_id] = state
                 self.slot_bars[slot_id] = reserve_bars
@@ -318,6 +327,7 @@ def _run_event_driven_sim(
             slot_states[slot_id] = None
             continue
         signal_idx = int(np.where(mask)[0][-1])
+        entry_budget = entry_budget_for(cfg, portfolio, bars, signal_idx)
         state, warn = _make_slot_state(
             ticker,
             bars,
@@ -327,7 +337,7 @@ def _run_event_driven_sim(
             int(row["rank"]),
             fill_model,
             caches=caches,
-            entry_budget=portfolio.entry_budget(),
+            entry_budget=entry_budget,
         )
         if state is None:
             if warn:
@@ -339,6 +349,7 @@ def _run_event_driven_sim(
             ticker=ticker,
             entry_date=state.entry_date,
             entry_price=state.entry_fill,
+            budget=entry_budget,
         )
         slot_states[slot_id] = state
         slot_bars[slot_id] = bars

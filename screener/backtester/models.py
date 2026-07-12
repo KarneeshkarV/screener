@@ -131,6 +131,27 @@ class PortfolioPolicy(BaseModel):
     allow_reentry: bool = False
     max_reentries: int = 0
     max_concurrent_per_ticker: int = 1
+    # Rule-based per-entry sizing (see ``screener.backtester.sizing``).
+    # ``equal_slot`` reproduces the legacy fixed-slot budget exactly; every
+    # other rule sizes DOWN from that slot ceiling, never above it.
+    sizing_rule: str = "equal_slot"
+    sizing_risk_pct: float = Field(default=0.01, gt=0.0)
+    sizing_position_pct: float = Field(default=0.10, gt=0.0)
+    sizing_atr_window: int = Field(default=14, gt=0)
+    sizing_atr_multiple: float = Field(default=2.0, gt=0.0)
+    sizing_vol_window: int = Field(default=20, gt=1)
+
+    @field_validator("sizing_rule")
+    @classmethod
+    def _validate_sizing_rule(cls, value: str) -> str:
+        from screener.backtester.sizing import available_sizing_rules
+
+        if value not in available_sizing_rules():
+            raise ValueError(
+                f"unknown sizing rule {value!r}; expected one of "
+                f"{', '.join(available_sizing_rules())}"
+            )
+        return value
 
 
 class BacktestConfig(BaseModel):
@@ -185,6 +206,14 @@ class BacktestConfig(BaseModel):
             grouped.update(legacy)
             data[group] = grouped
         return data
+
+    @model_validator(mode="after")
+    def _validate_sizing_dependencies(self) -> BacktestConfig:
+        if self.portfolio.sizing_rule == "fixed_risk" and (
+            self.execution.stop_loss is None or self.execution.stop_loss <= 0
+        ):
+            raise ValueError("sizing rule 'fixed_risk' requires a positive stop_loss")
+        return self
 
     def to_flat_dict(self) -> dict[str, Any]:
         """Return the historical flat configuration shape for external seams."""
