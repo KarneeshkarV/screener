@@ -13,6 +13,8 @@ from screener.backtester.cli_common import (
     parse_partial_exits,
     resolve_min_filters,
     resolve_strategy_exprs,
+    sizing_options,
+    validate_sizing,
 )
 from screener.backtester.data import build_price_fetcher
 from screener.backtester.display import print_backtest, print_ledger_csv
@@ -224,6 +226,7 @@ from screener.markets import as_of_option, get_market, get_price_fetcher, market
     default=False,
     help="Open the generated HTML report in the default browser.",
 )
+@sizing_options
 def backtest_historical(
     market,
     as_of,
@@ -264,8 +267,15 @@ def backtest_historical(
     output_csv,
     report_path,
     open_report,
+    sizing_rule,
+    sizing_risk_pct,
+    sizing_position_pct,
+    sizing_atr_window,
+    sizing_atr_multiple,
+    sizing_vol_window,
 ):
     """Run an accurate historical backtest with Pine-like entry/exit expressions."""
+    validate_sizing(sizing_rule, stop_loss)
     ctx = click.get_current_context()
     snapshot = None
     if from_run:
@@ -366,6 +376,12 @@ def backtest_historical(
             reinvest=not no_reinvest,
             allow_reentry=bool(allow_reentry),
             max_reentries=int(max_reentries),
+            sizing_rule=sizing_rule,
+            sizing_risk_pct=float(sizing_risk_pct),
+            sizing_position_pct=float(sizing_position_pct),
+            sizing_atr_window=int(sizing_atr_window),
+            sizing_atr_multiple=float(sizing_atr_multiple),
+            sizing_vol_window=int(sizing_vol_window),
         ),
     )
 

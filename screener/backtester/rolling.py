@@ -15,6 +15,8 @@ from screener.backtester.cli_common import (
     referenced_fundamental_fields,
     resolve_min_filters,
     resolve_strategy_exprs,
+    sizing_options,
+    validate_sizing,
 )
 from screener.backtester.data import build_price_fetcher
 from screener.backtester.display import print_backtest, print_ledger_csv
@@ -293,6 +295,7 @@ __all__ = [
     show_default=True,
     help="Directory for generated dashboard HTML files.",
 )
+@sizing_options
 def backtest_rolling(
     market,
     start_arg,
@@ -342,10 +345,17 @@ def backtest_rolling(
     dashboard,
     dashboard_port,
     dashboard_dir,
+    sizing_rule,
+    sizing_risk_pct,
+    sizing_position_pct,
+    sizing_atr_window,
+    sizing_atr_multiple,
+    sizing_vol_window,
 ):
     """Run a true daily rolling backtest over a date window."""
     if output_csv and dashboard:
         raise click.UsageError("--csv and --dashboard cannot be used together.")
+    validate_sizing(sizing_rule, stop_loss)
     if earnings_blackout_days is not None and earnings_blackout_days < 0:
         raise click.UsageError("--earnings-blackout must be >= 0.")
     if fundamentals_provider == "fmp" and market != "us":
@@ -493,6 +503,12 @@ def backtest_rolling(
             min_avg_dollar_volume=resolved_min_adv,
             avg_dollar_volume_window=int(adv_window),
             reinvest=True,
+            sizing_rule=sizing_rule,
+            sizing_risk_pct=float(sizing_risk_pct),
+            sizing_position_pct=float(sizing_position_pct),
+            sizing_atr_window=int(sizing_atr_window),
+            sizing_atr_multiple=float(sizing_atr_multiple),
+            sizing_vol_window=int(sizing_vol_window),
         ),
     )
 

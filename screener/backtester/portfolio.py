@@ -82,11 +82,16 @@ class Portfolio:
         entry_price: float,
         *,
         raise_if_exists: bool = True,
+        budget: float | None = None,
     ) -> Position:
         """Open a position for ``ticker``. By default raises if the ticker is
         already active (legacy invariant). Pass ``raise_if_exists=False`` to
         allow pyramiding: a new ``open_seq`` is allocated and the position is
         tracked as a distinct concurrent lot.
+
+        ``budget`` lets a sizing rule spend less than the slot budget; it is
+        always clamped to ``entry_budget()`` so a rule can never exceed the
+        slot ceiling or overdraw cash.
 
         Fees come from the cost model owned by this portfolio.
         """
@@ -97,7 +102,8 @@ class Portfolio:
         # cannot overdraw the portfolio.
         # Proportional fee models do not depend on notional; pass budget as a
         # stable reference for any future notional-dependent schedules.
-        budget = self.entry_budget()
+        cap = self.entry_budget()
+        budget = cap if budget is None else min(max(float(budget), 0.0), cap)
         c = float(self.cost_model.side_cost_fraction("buy", budget))
         if c < 0.0:
             c = 0.0

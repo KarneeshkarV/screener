@@ -41,6 +41,7 @@ from screener.backtester.models import (
 )
 from screener.backtester.pine import parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.backtester.sizing import entry_budget_for
 from screener.regime import classify_regimes
 from screener.options.backtest import merge_referenced_options
 from screener.backtester.rolling_candidates import (
@@ -382,6 +383,9 @@ class _DailyRankingSource:
                     bars is None or bars.empty
                 ):  # pragma: no cover - only valid tickers ranked
                     continue
+                entry_budget = entry_budget_for(
+                    cfg, portfolio, bars, int(row["signal_idx"])
+                )
                 state, warn = _make_slot_state(
                     ticker,
                     bars,
@@ -391,7 +395,7 @@ class _DailyRankingSource:
                     int(row["rank"]),
                     self.fill_model,
                     caches=self.caches,
-                    entry_budget=portfolio.entry_budget(),
+                    entry_budget=entry_budget,
                 )
                 if (
                     state is None
@@ -408,6 +412,7 @@ class _DailyRankingSource:
                     ticker=ticker,
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
+                    budget=entry_budget,
                 )
                 slot_states[slot_id] = state
                 self.slot_bars[slot_id] = bars
