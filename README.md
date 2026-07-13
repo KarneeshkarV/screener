@@ -193,6 +193,42 @@ uv run screener backtest-lab --host 127.0.0.1 --port 8766
 just backtest-lab
 ```
 
+### `earnings-backtest`
+
+Backtests sentiment-scored earnings entries: buy one or two sessions before a
+report (E-1/E-2), exit at E. Wrapped by `just earnings-backtest`.
+
+```bash
+uv run screener earnings-backtest -m us --years 3 --strategy drift --entry-days 1
+just earnings-backtest -m india --years 2 --csv > trades.csv
+```
+
+### `earnings-pead`
+
+Backtests post-earnings-announcement drift (PEAD): enter at the next open after
+a report whose EPS surprise is at least `--min-surprise` (default 5%). Wrapped
+by `just earnings-pead`.
+
+Two exit modes via `--exit-mode` (default `fixed`):
+
+- `fixed` — exit at the close `--hold-days` sessions after entry (default 40).
+- `dynamic` — stay in the position until a later report fails the surprise
+  criterion (exit at the next open, `exit_reason=criteria_failed`) or the price
+  history ends (`exit_reason=end_of_data`). `--hold-days` is ignored and the
+  CSV ledger gains a trailing `exit_reason` column.
+
+```bash
+uv run screener earnings-pead -m us --years 3 --min-surprise 5
+uv run screener earnings-pead -m india --years 2 --exit-mode dynamic --csv > pead.csv
+just earnings-pead -m us --exit-mode dynamic
+```
+
+India surprise data comes from FMP's historical earnings calendar (requires
+`FMP_API_KEY`): real NSE announcement dates are preferred and enriched with
+FMP's EPS surprise, and quarters NSE lacks fall back to FMP's own
+point-in-time dates. The default India earnings path used by
+`earnings-backtest` is unchanged.
+
 ### Standalone Pine Runner
 
 The standalone Pine strategy runner is not a `uv run screener` subcommand; it is a separate script wrapped by `just pine`.

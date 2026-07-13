@@ -55,6 +55,7 @@ uv run pytest
 - Use TradingView scanner data for broad technical universes in `screen`.
 - Use yfinance-backed OHLCV through `screener.backtester.data.build_price_fetcher()` for time-series analysis.
 - Use FMP only when `FMP_API_KEY` is present, mostly for US insider/fundamental/event context.
+- India EPS surprise for PEAD backtests comes from FMP's historical earnings calendar (needs `FMP_API_KEY`): real NSE announcement dates are preferred and enriched with FMP surprise; quarters NSE lacks fall back to FMP's own point-in-time dates. The default India earnings path (NSE + openscreener with filing-lag floor) is unchanged.
 - Use screener.in / openscreener for Indian fundamentals and promoter/shareholding context.
 - Use NSE cash/F&O bhavcopy and option-chain helpers for India delivery, operator intent, and unusual-volume overlays.
 - When giving current stock advice, verify the latest available data timestamp and state it. Do not invent fundamentals, analyst targets, earnings dates, or promoter changes.
@@ -76,6 +77,7 @@ Use these modules instead of recreating logic:
 - Unusual volume: `screener/screener/unusual_volume/`.
 - Operator scan: `screener/screener/operator/`.
 - Optimization: `screener/screener/backtester/optimization/`.
+- Earnings-event backtests: `screener/screener/earnings_backtest/` (`earnings_dates.py` for providers/surprise, `pead.py` for PEAD simulation, `cli.py` for `earnings-backtest` / `earnings-pead`).
 
 For quick per-symbol technical detail, it is often easier to import bot logic:
 
@@ -120,6 +122,7 @@ Rust config intentionally supports YAML strategy and criteria aliases through `s
    - Prefer `backtest-rolling` for live-like selection behavior.
    - Use `backtest-historical` for point-in-time candidate checks.
    - Use `vbt-sweep` for fast triage only; validate promising ideas with rolling backtests.
+   - Use `earnings-backtest` / `earnings-pead` for earnings-event claims. `earnings-pead --exit-mode fixed` (default) holds `--hold-days` sessions; `--exit-mode dynamic` holds a beat (`--min-surprise`) until a later report misses, tagging trades with `exit_reason`.
    - Include slippage, commission, liquidity filters, benchmark, and clear start/end dates.
 6. Convert evidence into action levels only after the above:
    - Close-based stop.

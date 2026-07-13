@@ -481,6 +481,138 @@ def test_fetch_openscreener_rows_exception(monkeypatch):
     assert rows == []
 
 
+# ── fetch_earnings_dates_fmp ─────────────────────────────────────────────
+
+
+def _inject_fmp(monkeypatch, *, api_key="k", payload=None, boom=False):
+    """Patch screener.fmp key resolution + client for the FMP earnings source."""
+    from screener import fmp
+
+    monkeypatch.setattr(fmp, "resolve_api_key", lambda: api_key)
+
+    class _Client:
+        def __init__(self, key, *, base_url=None, **kwargs):
+            assert key == api_key
+
+        def get(self, path, params=None):
+            if boom:
+                raise RuntimeError("fmp down")
+            assert path.startswith("historical/earning_calendar/")
+            return payload
+
+    monkeypatch.setattr(fmp, "FmpClient", _Client)
+
+
+def test_fetch_earnings_dates_fmp_cache_hit(monkeypatch):
+    recs = ebd._earnings_to_records(
+        _earnings_df(["2024-01-15"], eps_est=[1.0], reported=[1.2], surprise=[20.0])
+    )
+    monkeypatch.setattr(earnings_dates, "cached_json_call", lambda *a, **kw: recs)
+    out = ebd.fetch_earnings_dates_fmp("RELIANCE.NS")
+    assert out is not None
+    assert pd.Timestamp("2024-01-15") in out.index
+
+
+def test_fetch_earnings_dates_fmp_success(monkeypatch, no_disk_cache):
+    recent = (date.today() - timedelta(days=30)).isoformat()
+    old = (date.today() - timedelta(days=5000)).isoformat()
+    payload = [
+        {"date": recent, "eps": 1.2, "epsEstimated": 1.0},  # surprise 20%
+        {"date": recent, "eps": 1.2, "epsEstimated": 0},  # zero estimate -> None
+        {"date": recent, "eps": None, "epsEstimated": 1.0},  # no eps -> None
+        {"date": old, "eps": 2.0, "epsEstimated": 1.0},  # before cutoff
+        {"date": "", "eps": 1.0, "epsEstimated": 1.0},  # missing date
+        {"date": "not-a-date", "eps": 1.0, "epsEstimated": 1.0},  # unparseable
+        "not a dict",  # skipped
+    ]
+    _inject_fmp(monkeypatch, payload=payload)
+    out = ebd.fetch_earnings_dates_fmp("RELIANCE.NS", years=3)
+    assert out is not None
+    assert len(out) == 3
+    surprises = out["Surprise(%)"].tolist()
+    assert surprises[0] == pytest.approx(20.0)
+    assert pd.isna(surprises[1]) and pd.isna(surprises[2])
+    assert pd.Timestamp(old) not in out.index
+
+
+def test_fetch_earnings_dates_fmp_negative_estimate_surprise(
+    monkeypatch, no_disk_cache
+):
+    recent = (date.today() - timedelta(days=30)).isoformat()
+    # eps 0.5 vs estimate -1.0: (0.5 - -1.0)/|-1.0| = +150% (abs denominator).
+    payload = [{"date": recent, "eps": 0.5, "epsEstimated": -1.0}]
+    _inject_fmp(monkeypatch, payload=payload)
+    out = ebd.fetch_earnings_dates_fmp("RELIANCE.NS")
+    assert out["Surprise(%)"].iloc[0] == pytest.approx(150.0)
+
+
+def test_fetch_earnings_dates_fmp_no_api_key(monkeypatch, no_disk_cache):
+    _inject_fmp(monkeypatch, api_key=None)
+    assert ebd.fetch_earnings_dates_fmp("RELIANCE.NS") is None
+
+
+def test_fetch_earnings_dates_fmp_empty_payload(monkeypatch, no_disk_cache):
+    _inject_fmp(monkeypatch, payload=[])
+    assert ebd.fetch_earnings_dates_fmp("RELIANCE.NS") is None
+
+
+def test_fetch_earnings_dates_fmp_non_list_payload(monkeypatch, no_disk_cache):
+    _inject_fmp(monkeypatch, payload={"error": "nope"})
+    assert ebd.fetch_earnings_dates_fmp("RELIANCE.NS") is None
+
+
+def test_fetch_earnings_dates_fmp_request_exception(monkeypatch, no_disk_cache):
+    _inject_fmp(monkeypatch, boom=True)
+    assert ebd.fetch_earnings_dates_fmp("RELIANCE.NS") is None
+
+
+def test_fetch_earnings_dates_fmp_cache_exception(monkeypatch):
+    def raise_cache(*a, **kw):
+        raise RuntimeError("cache io")
+
+    monkeypatch.setattr(earnings_dates, "cached_json_call", raise_cache)
+    assert ebd.fetch_earnings_dates_fmp("RELIANCE.NS") is None
+
+
+# ── _fmp_earnings_rows_for_ticker / _fetch_fmp_earnings_rows ─────────────
+
+
+def test_fmp_rows_for_ticker_none(monkeypatch):
+    monkeypatch.setattr(
+        earnings_dates, "fetch_earnings_dates_fmp", lambda t, years: None
+    )
+    assert ebd._fmp_earnings_rows_for_ticker("R.NS", 3) == []
+
+
+def test_fmp_rows_for_ticker_rows(monkeypatch):
+    df = _earnings_df(["2024-01-15"], eps_est=[1.0], reported=[1.2], surprise=[20.0])
+    monkeypatch.setattr(earnings_dates, "fetch_earnings_dates_fmp", lambda t, years: df)
+    rows = ebd._fmp_earnings_rows_for_ticker("R.NS", 3)
+    assert rows[0]["ticker"] == "R.NS"
+    assert rows[0]["earnings_date"] == date(2024, 1, 15)
+    assert rows[0]["surprise_pct"] == 20.0
+
+
+def test_fetch_fmp_earnings_rows(monkeypatch):
+    df = _earnings_df(["2024-01-15"], surprise=[20.0])
+    monkeypatch.setattr(
+        earnings_dates,
+        "fetch_earnings_dates_fmp",
+        lambda t, years: df if t == "GOOD.NS" else None,
+    )
+    rows = ebd._fetch_fmp_earnings_rows(["GOOD.NS", "BAD.NS"], 3, 50)
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "GOOD.NS"
+
+
+def test_fetch_fmp_earnings_rows_handles_future_exception(monkeypatch):
+    def boom(t, years):
+        raise RuntimeError("worker boom")
+
+    monkeypatch.setattr(earnings_dates, "_fmp_earnings_rows_for_ticker", boom)
+    assert ebd._fetch_fmp_earnings_rows(["A.NS"], 3, 50) == []
+
+
 # ── collect_earnings_events ──────────────────────────────────────────────
 
 
@@ -590,6 +722,124 @@ def test_collect_india_no_nse(monkeypatch):
     )
     out = ebd.collect_earnings_events(["R.NS"], market="india")
     assert "R.NS" in set(out["ticker"])
+
+
+# ── collect_earnings_events (India, surprise_source="fmp") ───────────────
+
+
+def _recent_quarter_dates():
+    """Two announcement dates in the recent past reporting different quarters."""
+    today = pd.Timestamp(date.today()).normalize()
+    ann = today - pd.Timedelta(days=90)
+    prior_ann = ann - pd.Timedelta(days=95)  # previous fiscal quarter
+    return ann, prior_ann
+
+
+def test_collect_india_fmp_enriches_nse_dates(monkeypatch):
+    ann, prior_ann = _recent_quarter_dates()
+    nse_df = pd.DataFrame(
+        {
+            "ticker": ["RELIANCE.NS", "OTHER.NS", "NOFMP.NS"],
+            "earnings_date": [ann, ann, ann],
+            "desc": ["x", "y", "z"],
+        }
+    )
+    monkeypatch.setattr(earnings_dates, "fetch_earnings_dates_nse", lambda: nse_df)
+    # FMP: same fiscal quarter as the RELIANCE NSE announcement (a few days
+    # earlier) plus an FMP-only prior quarter. Nothing for NOFMP.NS.
+    fmp_rows = [
+        {
+            "ticker": "RELIANCE.NS",
+            "earnings_date": (ann - pd.Timedelta(days=4)).date(),
+            "eps_estimate": 1.0,
+            "reported_eps": 1.2,
+            "surprise_pct": 20.0,
+        },
+        {
+            "ticker": "RELIANCE.NS",
+            "earnings_date": prior_ann.date(),
+            "eps_estimate": 2.0,
+            "reported_eps": 1.8,
+            "surprise_pct": -10.0,
+        },
+    ]
+    monkeypatch.setattr(
+        earnings_dates,
+        "_fetch_fmp_earnings_rows",
+        lambda batch, years, bs: fmp_rows,
+    )
+    out = ebd.collect_earnings_events(
+        ["RELIANCE.NS", "NOFMP.NS"], market="india", surprise_source="fmp"
+    )
+
+    rel = out[out["ticker"] == "RELIANCE.NS"]
+    # Same-quarter row: NSE announcement date preferred, FMP surprise attached.
+    enriched = rel[pd.to_datetime(rel["earnings_date"]) == ann]
+    assert len(enriched) == 1
+    assert enriched["surprise_pct"].iloc[0] == 20.0
+    # FMP's own (earlier) date for the matched quarter is NOT double-counted.
+    assert pd.Timestamp(ann - pd.Timedelta(days=4)) not in set(
+        pd.to_datetime(rel["earnings_date"])
+    )
+    # FMP-only prior quarter kept with FMP's date and surprise.
+    fmp_only = rel[pd.to_datetime(rel["earnings_date"]) == prior_ann]
+    assert len(fmp_only) == 1
+    assert fmp_only["surprise_pct"].iloc[0] == -10.0
+    # NSE announcement without any FMP match keeps a NaN surprise.
+    nofmp = out[out["ticker"] == "NOFMP.NS"]
+    assert len(nofmp) == 1
+    assert pd.isna(nofmp["surprise_pct"].iloc[0])
+    # OTHER.NS is outside the requested ticker universe -> excluded.
+    assert "OTHER.NS" not in set(out["ticker"])
+
+
+def test_collect_india_fmp_without_nse(monkeypatch):
+    ann, _ = _recent_quarter_dates()
+    monkeypatch.setattr(earnings_dates, "fetch_earnings_dates_nse", lambda: None)
+    monkeypatch.setattr(
+        earnings_dates,
+        "_fetch_fmp_earnings_rows",
+        lambda batch, years, bs: [
+            {
+                "ticker": "R.NS",
+                "earnings_date": ann.date(),
+                "eps_estimate": 1.0,
+                "reported_eps": 1.1,
+                "surprise_pct": 10.0,
+            }
+        ],
+    )
+    out = ebd.collect_earnings_events(["R.NS"], market="india", surprise_source="fmp")
+    assert list(out["ticker"]) == ["R.NS"]
+    assert out["surprise_pct"].iloc[0] == 10.0
+
+
+def test_collect_india_fmp_empty(monkeypatch):
+    monkeypatch.setattr(earnings_dates, "fetch_earnings_dates_nse", lambda: None)
+    monkeypatch.setattr(
+        earnings_dates, "_fetch_fmp_earnings_rows", lambda batch, years, bs: []
+    )
+    out = ebd.collect_earnings_events(["R.NS"], market="india", surprise_source="fmp")
+    assert out.empty
+
+
+def test_collect_us_ignores_surprise_source(monkeypatch):
+    monkeypatch.setattr(
+        earnings_dates,
+        "_fetch_yf_earnings_rows",
+        lambda batch, years, bs: [
+            {
+                "ticker": t,
+                "earnings_date": date(2024, 1, 1),
+                "eps_estimate": 1.0,
+                "reported_eps": 1.1,
+                "surprise_pct": 10.0,
+            }
+            for t in batch
+        ],
+    )
+    out = ebd.collect_earnings_events(["AAA"], market="us", surprise_source="fmp")
+    assert set(out["ticker"]) == {"AAA"}
 
 
 # ── fetch_analyst_sentiment ──────────────────────────────────────────────

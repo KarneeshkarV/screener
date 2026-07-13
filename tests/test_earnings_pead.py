@@ -179,6 +179,209 @@ def test_pead_rejects_non_positive_hold_days(monkeypatch):
         run_pead_backtest("us", hold_days=0, tickers=["AAA"])
 
 
+def test_pead_rejects_unknown_exit_mode(monkeypatch):
+    _patch_events(monkeypatch, _events([]))
+    with pytest.raises(ValueError, match="exit_mode"):
+        run_pead_backtest("us", exit_mode="hodl", tickers=["AAA"])
+
+
+# ── Dynamic exit mode ─────────────────────────────────────────────────────
+
+
+def test_pead_dynamic_holds_until_criteria_fails(monkeypatch):
+    events = _events(
+        [
+            _event("AAA", IDX[9].date(), 10.0),  # beat -> enter next open
+            _event("AAA", IDX[20].date(), 2.0),  # miss -> exit next open
+        ]
+    )
+    trades = _run(monkeypatch, events, {"AAA": _frame(IDX)}, exit_mode="dynamic")
+
+    assert len(trades) == 1
+    t = trades[0]
+    assert t.earnings_date == IDX[9].date()
+    assert t.entry_date == IDX[10].date()
+    assert t.exit_date == IDX[21].date()
+    assert t.entry_price == pytest.approx(110.0)  # open[10]
+    assert t.exit_price == pytest.approx(121.0)  # open[21]
+    assert t.return_pct == pytest.approx((121.0 / 110.0 - 1.0) * 100, abs=1e-3)
+    assert t.surprise_pct == pytest.approx(10.0)
+    # Trading days inclusive of entry (10) and exit (21).
+    assert t.holding_days == 12
+    assert t.details["exit_reason"] == "criteria_failed"
+
+
+def test_pead_dynamic_force_exits_at_end_of_data(monkeypatch):
+    events = _events([_event("AAA", IDX[9].date(), 10.0)])  # never sells
+    trades = _run(monkeypatch, events, {"AAA": _frame(IDX)}, exit_mode="dynamic")
+
+    assert len(trades) == 1
+    t = trades[0]
+    assert t.entry_date == IDX[10].date()
+    assert t.exit_date == IDX[-1].date()
+    # Exit at the last bar's close.
+    assert t.exit_price == pytest.approx(float(_frame(IDX).iloc[-1]["close"]))
+    assert t.details["exit_reason"] == "end_of_data"
+    assert t.holding_days == len(IDX) - 10
+
+
+def test_pead_dynamic_holds_through_consecutive_beats(monkeypatch):
+    events = _events(
+        [
+            _event("AAA", IDX[5].date(), 10.0),  # enter IDX[6]
+            _event("AAA", IDX[15].date(), 30.0),  # still beating -> keep holding
+            _event("AAA", IDX[25].date(), 1.0),  # miss -> exit IDX[26]
+        ]
+    )
+    trades = _run(monkeypatch, events, {"AAA": _frame(IDX)}, exit_mode="dynamic")
+
+    assert len(trades) == 1
+    t = trades[0]
+    assert t.entry_date == IDX[6].date()
+    assert t.exit_date == IDX[26].date()
+    # The position keeps the ORIGINAL entry surprise, not the later beat's.
+    assert t.surprise_pct == pytest.approx(10.0)
+    assert t.details["exit_reason"] == "criteria_failed"
+
+
+def test_pead_india_routes_through_fmp_surprise_source(monkeypatch):
+    captured: dict = {}
+
+    def fake_collect(tickers, **kwargs):
+        captured.update(kwargs)
+        return _events([_event("AAA.NS", IDX[9].date(), 10.0)])
+
+    monkeypatch.setattr(pead_module, "collect_earnings_events", fake_collect)
+    trades = run_pead_backtest(
+        market="india",
+        hold_days=5,
+        commission_bps=0.0,
+        slippage_bps=0.0,
+        tickers=["AAA.NS"],
+        fetcher=StubPriceFetcher({"AAA.NS": _frame(IDX)}),
+    )
+
+    assert captured["surprise_source"] == "fmp"
+    assert [t.ticker for t in trades] == ["AAA.NS"]
+
+
+def test_pead_us_uses_default_surprise_source(monkeypatch):
+    captured: dict = {}
+
+    def fake_collect(tickers, **kwargs):
+        captured.update(kwargs)
+        return _events([])
+
+    monkeypatch.setattr(pead_module, "collect_earnings_events", fake_collect)
+    assert run_pead_backtest(market="us", tickers=["AAA"]) == []
+    assert captured["surprise_source"] is None
+
+
+def test_pead_dynamic_reenters_after_exit(monkeypatch):
+    events = _events(
+        [
+            _event("AAA", IDX[5].date(), 10.0),  # enter IDX[6]
+            _event("AAA", IDX[15].date(), 1.0),  # exit IDX[16] (criteria_failed)
+            _event("AAA", IDX[25].date(), 20.0),  # re-enter IDX[26]; never sells
+        ]
+    )
+    trades = _run(monkeypatch, events, {"AAA": _frame(IDX)}, exit_mode="dynamic")
+
+    assert len(trades) == 2
+    first, second = trades
+    assert first.entry_date == IDX[6].date()
+    assert first.exit_date == IDX[16].date()
+    assert first.details["exit_reason"] == "criteria_failed"
+    assert second.entry_date == IDX[26].date()
+    assert second.surprise_pct == pytest.approx(20.0)
+    assert second.details["exit_reason"] == "end_of_data"
+
+
+def test_pead_dynamic_failing_report_without_post_bars(monkeypatch):
+    # A miss on the very last bar has no next open: exit at that bar's close.
+    events = _events(
+        [
+            _event("AAA", IDX[9].date(), 10.0),  # enter
+            _event("AAA", IDX[-1].date(), 0.0),  # miss on last bar -> exit at close
+        ]
+    )
+    trades = _run(monkeypatch, events, {"AAA": _frame(IDX)}, exit_mode="dynamic")
+
+    assert len(trades) == 1
+    t = trades[0]
+    assert t.exit_date == IDX[-1].date()
+    assert t.exit_price == pytest.approx(float(_frame(IDX).iloc[-1]["close"]))
+    assert t.details["exit_reason"] == "criteria_failed"
+
+
+def test_pead_dynamic_below_threshold_never_enters(monkeypatch):
+    events = _events(
+        [
+            _event("AAA", IDX[9].date(), 2.0),  # below min_surprise
+            _event("AAA", IDX[20].date(), 3.0),  # still below
+        ]
+    )
+    trades = _run(
+        monkeypatch,
+        events,
+        {"AAA": _frame(IDX)},
+        exit_mode="dynamic",
+        min_surprise=5.0,
+    )
+
+    assert trades == []
+
+
+def test_pead_dynamic_skips_entry_when_no_post_bars(monkeypatch):
+    # Beat on the last bar: no next open to enter on -> no trade.
+    events = _events([_event("AAA", IDX[-1].date(), 10.0)])
+    trades = _run(monkeypatch, events, {"AAA": _frame(IDX)}, exit_mode="dynamic")
+
+    assert trades == []
+
+
+def test_pead_dynamic_skips_non_positive_entry_price(monkeypatch):
+    frame = _frame(IDX)
+    frame.iat[10, frame.columns.get_loc("open")] = 0.0  # entry bar open is 0
+    events = _events([_event("AAA", IDX[9].date(), 10.0)])
+    trades = _run(monkeypatch, events, {"AAA": frame}, exit_mode="dynamic")
+
+    assert trades == []
+
+
+def test_pead_dynamic_skips_tickers_without_price_data(monkeypatch):
+    events = _events(
+        [_event("AAA", IDX[9].date(), 10.0), _event("ZZZ", IDX[9].date(), 10.0)]
+    )
+    data = {"AAA": _frame(IDX), "ZZZ": pd.DataFrame()}
+    trades = _run(monkeypatch, events, data, exit_mode="dynamic")
+
+    assert [t.ticker for t in trades] == ["AAA"]
+
+
+def test_pead_dynamic_applies_slippage_and_commission(monkeypatch):
+    events = _events(
+        [
+            _event("AAA", IDX[9].date(), 10.0),
+            _event("AAA", IDX[20].date(), 1.0),
+        ]
+    )
+    trades = _run(
+        monkeypatch,
+        events,
+        {"AAA": _frame(IDX)},
+        exit_mode="dynamic",
+        commission_bps=10.0,
+        slippage_bps=5.0,
+    )
+
+    entry = 110.0 * (1 + 5 / 10_000)
+    exit_ = 121.0 * (1 - 5 / 10_000)
+    expected = ((exit_ / entry - 1.0) - 10 / 10_000) * 100
+    assert trades[0].return_pct == pytest.approx(expected, abs=1e-3)
+    assert trades[0].details["raw_return_pct"] > trades[0].return_pct
+
+
 # ── Summary / quintiles ──────────────────────────────────────────────────
 
 
@@ -270,6 +473,39 @@ def test_cli_earnings_pead_csv_ledger(monkeypatch):
     )
     assert header in res.output
     assert f"AAA,{ed.isoformat()}" in res.output
+
+
+def test_cli_earnings_pead_dynamic_csv_has_exit_reason(monkeypatch):
+    ed = _patch_cli_inputs(monkeypatch)
+    runner = CliRunner()
+    res = runner.invoke(
+        cli,
+        ["earnings-pead", "--tickers", "AAA", "--exit-mode", "dynamic", "--csv"],
+        catch_exceptions=False,
+    )
+
+    assert res.exit_code == 0
+    header = (
+        "ticker,earnings_date,entry_date,exit_date,"
+        "entry_price,exit_price,return_pct,surprise_pct,holding_days,exit_reason"
+    )
+    assert header in res.output
+    assert f"AAA,{ed.isoformat()}" in res.output
+    assert "end_of_data" in res.output
+
+
+def test_cli_earnings_pead_dynamic_prints_summary(monkeypatch):
+    _patch_cli_inputs(monkeypatch)
+    runner = CliRunner()
+    res = runner.invoke(
+        cli,
+        ["earnings-pead", "--tickers", "AAA", "--exit-mode", "dynamic"],
+        catch_exceptions=False,
+    )
+
+    assert res.exit_code == 0
+    assert "PEAD Backtest Summary" in res.output
+    assert "AAA" in res.output
 
 
 def test_cli_earnings_pead_no_events(monkeypatch):
