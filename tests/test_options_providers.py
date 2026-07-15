@@ -80,6 +80,41 @@ def test_black_scholes_price_greeks_and_iv_inversion():
     assert implied_volatility(500, 100, 100, 1, 0.05, "call") is None
 
 
+@pytest.mark.parametrize(
+    ("strike", "days", "volatility", "right"),
+    [
+        (130, 1, 0.8, "call"),
+        (130, 5, 0.5, "call"),
+        (70, 5, 0.5, "put"),
+        (110, 5, 0.5, "call"),
+        (90, 5, 0.5, "put"),
+    ],
+)
+def test_implied_volatility_low_vega_round_trip(strike, days, volatility, right):
+    time_years = days / 365
+    price = black_scholes_price(100, strike, time_years, 0.0, volatility, right)
+    assert price is not None
+
+    recovered = implied_volatility(price, 100, strike, time_years, 0.0, right)
+
+    assert recovered == pytest.approx(volatility, abs=1e-6)
+
+
+def test_implied_volatility_returns_none_when_price_contains_no_volatility_signal():
+    price = black_scholes_price(100, 70, 1 / 365, 0.0, 0.2, "call")
+    assert price == 30.0
+    assert implied_volatility(price, 100, 70, 1 / 365, 0.0, "call") is None
+
+
+def test_implied_volatility_expands_initial_bracket():
+    price = black_scholes_price(100, 100, 1.0, 0.0, 6.0, "call")
+    assert price is not None
+
+    recovered = implied_volatility(price, 100, 100, 1.0, 0.0, "call")
+
+    assert recovered == pytest.approx(6.0, abs=1e-6)
+
+
 def test_parse_verified_cboe_shape(cboe_raw):
     chain = parse_cboe_chain(cboe_raw, requested_symbol="AAPL")
     assert chain is not None

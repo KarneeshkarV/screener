@@ -222,16 +222,39 @@ def test_nse_default_fetcher_routes_through_uv_seam(monkeypatch):
 
 
 def test_implied_volatility_estimate_none(monkeypatch):
-    monkeypatch.setattr(greeks, "black_scholes_price", lambda *a, **kw: None)
+    calls = 0
+
+    def price_then_none(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 1.0
+        if calls == 2:
+            return 10.0
+        return None
+
+    monkeypatch.setattr(greeks, "black_scholes_price", price_then_none)
     assert greeks.implied_volatility(5.0, 100.0, 100.0, 0.5, 0.02, "call") is None
 
 
 def test_implied_volatility_iteration_cap():
-    # One iteration cannot converge to a tiny tolerance → midpoint returned.
+    # One iteration cannot converge to a tiny volatility tolerance.
     result = greeks.implied_volatility(
         5.0, 100.0, 100.0, 0.5, 0.02, "call", tolerance=1e-12, max_iterations=1
     )
-    assert result is not None
+    assert result is None
+
+
+def test_implied_volatility_cannot_establish_bracket(monkeypatch):
+    monkeypatch.setattr(greeks, "black_scholes_price", lambda *a, **kw: 1.0)
+    assert greeks.implied_volatility(5.0, 100.0, 100.0, 0.5, 0.02, "call") is None
+
+
+def test_implied_volatility_rejects_non_positive_tolerance():
+    assert (
+        greeks.implied_volatility(5.0, 100.0, 100.0, 0.5, 0.02, "call", tolerance=0.0)
+        is None
+    )
 
 
 # ───────────────────────── panels ─────────────────────────
