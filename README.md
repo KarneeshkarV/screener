@@ -32,7 +32,9 @@ uv run screener screen -m us -c intraday_momentum --csv
 Features:
 
 - Markets: `us`, `india`.
-- Criteria: `ema`, `breakout`, `ema_breakout`, `value`, `quality`, `cheap_quality`, `undervalued`, `dividend`, `momentum_value`, `intraday_momentum`, `intraday_breakout`.
+- Core criteria: `ema`, `breakout`, `ema_breakout`, `value`, `quality`, `cheap_quality`, `undervalued`, `dividend`, `momentum_value`, `intraday_momentum`, `intraday_breakout`, `near_52_high`.
+- Alias criteria (plugin-backed screens): `garp`, `mark-minervini`, `obv-trend`, `promoter-buys`, `rs-breakout`, `unusual-volume`, `vol-breakout`.
+- Options-panel criteria: `unusual_options`, `bullish_oi_buildup`, `high_iv_rank`, `low_iv_rank`, `cheap_earnings_vol`.
 - Local `setup_score` ranking by default.
 - Optional CSV output with `--csv`.
 - Optional fundamentals with `--detail`.
@@ -47,6 +49,26 @@ Lists the screen runs persisted to `~/.screener/history.db`, newest first, with 
 uv run screener history
 uv run screener history -m india -c ema --limit 10
 uv run screener history --csv
+```
+
+### `history-backup`
+
+Mirrors the local screen-run history to Turso (or pulls remote runs missing locally with `--restore`). Reads `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`.
+
+```bash
+uv run screener history-backup
+uv run screener history-backup --restore
+just history-backup
+```
+
+### `conviction`
+
+One composite 0-100 conviction card per ticker, fusing trend, breakout, volume, smart-money, fundamentals, and risk pillars. Point-in-time aware: pillars without dated data are skipped for stale `--as-of` dates and weights renormalize over survivors.
+
+```bash
+uv run screener conviction AAPL -m us
+uv run screener conviction RELIANCE -m india --as-of 2026-06-30 --json
+just conviction AAPL -m us
 ```
 
 ### `garp`
@@ -70,6 +92,34 @@ just promoter-buys -m india --min-change 0.5
 ```
 
 India mode uses screener.in promoter data with optional yfinance cross-checks. US mode uses yfinance insider transaction data.
+
+### `institutional`
+
+Shows FMP institutional (13F) ownership per US ticker, ranked by quarter-over-quarter change. Requires `FMP_API_KEY`.
+
+```bash
+uv run screener institutional --tickers AAPL,MSFT
+just institutional --tickers AAPL,MSFT --csv
+```
+
+### `index-inclusion`
+
+Event study of post-addition excess drift for S&P 500 additions versus SPY.
+
+```bash
+uv run screener index-inclusion --years 5
+just index-inclusion --years 5 --csv
+```
+
+### `seasonality`
+
+Monthly, turn-of-month, and day-of-week seasonality statistics for a ticker.
+
+```bash
+uv run screener seasonality AAPL --years 10
+uv run screener seasonality RELIANCE -m india --csv
+just seasonality AAPL
+```
 
 ### `rs-breakout`
 
@@ -168,6 +218,22 @@ just backtest-rolling -m us --years 2 --strategy rs_breakout --top 10
 
 Supports position sizing slots, holding period, stop loss, take profit, trailing stop, slippage/commission, benchmark, liquidity filters, custom tickers, CSV ledger output, and optional dashboard output.
 
+### Position sizing (`--sizing`)
+
+Both backtest commands accept rule-based per-entry position sizing. The default `equal_slot` matches the legacy fixed-slot engine bit-for-bit; every other rule sizes down from the slot budget (never above it, never beyond available cash):
+
+- `fixed_fraction` — `--sizing-position-pct` of initial capital per position (default 0.1).
+- `fixed_risk` — risk `--sizing-risk-pct` of initial capital per trade (default 0.01); requires `--stop-loss`.
+- `atr_risk` — risk budget divided by `--sizing-atr-multiple` × ATR(`--sizing-atr-window`) per share.
+- `inverse_vol` — targets `--sizing-risk-pct` daily volatility using a `--sizing-vol-window` return lookback.
+
+ATR/volatility lookbacks read only up to the signal bar (no lookahead) and fall back to the slot budget during warmup.
+
+```bash
+uv run screener backtest-rolling -m us --years 2 --strategy rs_breakout --top 10 --sizing atr_risk --sizing-risk-pct 0.01
+uv run screener backtest-historical -m us --as-of 2026-03-20 --tickers AAPL,MSFT --entry "close > 0" --sizing fixed_risk --stop-loss 0.08
+```
+
 ### Intraday intervals
 
 Both backtest commands accept `--interval` (default `1d`; also `1h`, `30m`, `15m`, `5m`, `1m`). All bar-count parameters (`--hold`, lookbacks in entry/exit expressions) are interpreted in bars of the chosen interval, trades carry full timestamps, and metrics annualize by bars-per-year for the interval.
@@ -191,6 +257,24 @@ Launches a local browser UI for comparing rolling backtest strategies.
 uv run screener backtest-lab
 uv run screener backtest-lab --host 127.0.0.1 --port 8766
 just backtest-lab
+```
+
+### `factor-tearsheet`
+
+Computes factor IC and quantile tearsheet for a named strategy (or a `combo:name=w,...` weighting) that emits `rank_score`.
+
+```bash
+uv run screener factor-tearsheet -m us --strategy momentum_12_1 --years 3
+just factor-tearsheet -m india --strategy momentum_12_1 --universe nifty50
+```
+
+### `vbt-sweep`
+
+Fast vectorbt grid search for exploration only — fills, sizing, and liquidity are not modeled, so always validate promising combinations with `backtest-rolling`.
+
+```bash
+uv run screener vbt-sweep -m us --years 2 --strategy rs_breakout
+just vbt-sweep -m us --years 2 --strategy rs_breakout
 ```
 
 ### `earnings-backtest`
@@ -268,6 +352,15 @@ uv run screener optimize validate --trades trades.csv --iterations 5000 --json v
 just optimize validate --trades trades.csv --iterations 5000 --json validation.json
 ```
 
+### `research-report`
+
+One-command research pipeline: grid search → walk-forward → Monte Carlo, reusing a single price fetcher across stages. Writes `<out>.json` and `<out>.html` plus a stdout summary.
+
+```bash
+uv run screener research-report -m us --years 1 --strategy rs_breakout --top 10
+just research-report -m us --years 1 --strategy rs_breakout
+```
+
 ## Utility Commands
 
 ### `usage-report`
@@ -277,6 +370,16 @@ Shows successful feature usage counts from Turso.
 ```bash
 uv run screener usage-report
 just usage-report
+```
+
+### `cache`
+
+Inspects and prunes the screener's on-disk caches under `~/.screener/`.
+
+```bash
+uv run screener cache status
+uv run screener cache clean --older-than 30
+just cache status
 ```
 
 ## Config File
@@ -361,17 +464,13 @@ Current `justfile` recipes:
 ```bash
 just
 just help
-just help-screen
-just help-backtest
-just help-backtest-rolling
-just help-backtest-lab
-just help-garp
-just help-promoter-buys
-just help-rs-breakout
-just help-operator-scan
-just help-optimize
-just help-pine
-just help-unusual-volume
+just help-<command>          # per-command help: screen, backtest, backtest-rolling,
+                             # backtest-lab, cache, conviction, earnings-backtest,
+                             # earnings-pead, factor-tearsheet, garp, history,
+                             # history-backup, index-inclusion, institutional,
+                             # operator-scan, optimize, options, pine, promoter-buys,
+                             # research-report, rs-breakout, seasonality,
+                             # unusual-volume, vbt-sweep
 just screen ...
 just screen-us ...
 just screen-india ...
@@ -380,10 +479,23 @@ just backtest-rolling ...
 just backtest-lab ...
 just backtest-smoke-us
 just backtest-smoke-india
+just cache ...
+just conviction ...
+just earnings-backtest ...
+just earnings-pead ...
+just factor-tearsheet ...
+just history ...
+just history-backup ...
+just index-inclusion ...
+just institutional ...
+just options ...
 just pine ...
 just pine-us ...
 just pine-india ...
+just research-report ...
+just seasonality ...
 just unusual-volume ...
+just vbt-sweep ...
 just garp ...
 just promoter-buys ...
 just rs-breakout ...
@@ -391,6 +503,11 @@ just operator-scan ...
 just optimize ...
 just usage-report
 just compile
+just test ...
+just lint
+just format-check
+just typecheck
+just ci
 ```
 
 All current top-level `uv run screener` commands are wrapped by `just`.

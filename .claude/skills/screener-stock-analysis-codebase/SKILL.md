@@ -11,7 +11,7 @@ Use this skill for codebase-backed stock analysis, portfolio reviews, signal che
 
 - `screener/`: primary Python CLI and research code. Use `uv` from this directory.
 - `screener_bot/`: Telegram bot that wraps the Python `screener` package for portfolio checks, alerts, charts, and scheduled screen diffs.
-- `screener-rs/`: Rust migration and parity/performance implementation. Use Cargo from this directory.
+- `screener-rs/`: Rust migration and parity/performance implementation. Use Cargo from this directory. **Currently not present in this workspace** — skip all Rust/parity guidance below unless the directory exists.
 
 If repo guidance conflicts, follow `screener/AGENTS.md`: use `uv`; bot code lives in `../screener_bot/`. The root instruction references `RTK.md`, but this workspace currently does not contain that file.
 
@@ -29,10 +29,13 @@ uv run screener unusual-volume -m us --tickers AAPL,MSFT
 uv run screener promoter-buys -m india --min-change 0.5
 uv run screener garp -m us --universe-size 300 --workers 8
 uv run screener backtest-rolling -m us --years 2 --strategy rs_breakout --top 10
+uv run screener backtest-rolling -m us --years 2 --strategy rs_breakout --top 10 --sizing atr_risk --sizing-risk-pct 0.01
 uv run screener backtest-rolling -m us --tickers AAPL,MSFT --start 2026-06-22 --end 2026-07-02 --interval 15m --entry "close > sma(close,5)" --hold 4
+uv run screener conviction AAPL -m us
+uv run screener research-report -m us --years 1 --strategy rs_breakout --top 10
 ```
 
-Use Rust when the task is parity, speed, CLI migration, or checking behavior against the migration target:
+Use Rust when the task is parity, speed, CLI migration, or checking behavior against the migration target (only if `screener-rs/` exists in the workspace):
 
 ```bash
 cd screener-rs
@@ -70,6 +73,7 @@ Use these modules instead of recreating logic:
 - Technical screen: `screener/screener/commands/screen.py`, `screener/screener/scanner.py`, `screener/screener/criteria/plugins/`.
 - Custom criteria: add a plugin in `screener/screener/criteria/plugins/` with `@criterion("name")`; use `pipeline=True` only when the scan needs enrichment/history/external providers.
 - Backtests: `screener/screener/backtester/historical.py`, `rolling.py`, `core.py`, `models.py`, `metrics.py`.
+- Position sizing: `screener/screener/backtester/sizing.py` (`@sizer` registry: `equal_slot`, `fixed_fraction`, `fixed_risk`, `atr_risk`, `inverse_vol`); exposed as `--sizing`/`--sizing-*` on both backtest commands. Default `equal_slot` is bit-identical to the legacy engine; other rules clamp to the slot budget and read only up to the signal bar.
 - Price data: `screener/screener/backtester/data.py`; use `tv_to_yf()` for symbol mapping and injected `PriceFetcher` for tests. Interval-aware: pass `interval=` to the fetcher constructors, never mix intervals in one cache key.
 - Pine-like expressions: `screener/screener/backtester/pine.py`.
 - Named strategies: `screener/screener/strategies/plugins/` with `@strategy(...)`; expressions flow through `screener/strategies/expressions.py`.
@@ -80,6 +84,11 @@ Use these modules instead of recreating logic:
 - Operator scan: `screener/screener/operator/`.
 - Optimization: `screener/screener/backtester/optimization/`.
 - Earnings-event backtests: `screener/screener/earnings_backtest/` (`earnings_dates.py` for providers/surprise, `pead.py` for PEAD simulation, `cli.py` for `earnings-backtest` / `earnings-pead`).
+- Options data layer: `screener/screener/options/` (NSE/CBOE/yfinance chains, panels, greeks, PCR/IV/max-pain, point-in-time backtest fields) plus options screen criteria (`unusual_options`, `bullish_oi_buildup`, `high_iv_rank`, `low_iv_rank`, `cheap_earnings_vol`); see `screener/docs/options.md`.
+- Conviction card: `screener/screener/conviction.py` and `screener/screener/commands/conviction.py` (composite pillar score, PIT-aware pillar skipping).
+- Seasonality: `screener/screener/seasonality.py`; index-inclusion event study: `screener/screener/index_inclusion.py`; US institutional (13F): `screener/screener/institutional.py`.
+- Factor research: `screener/screener/backtester/factor_tearsheet.py` (`factor-tearsheet`), `vbt_sweep.py` (`vbt-sweep`); one-command pipeline: `research-report` (grid → walk-forward → Monte Carlo) in `screener/screener/backtester/optimization/`.
+- Screen-run history: `screener/screener/history.py` (SQLite `~/.screener/history.db`), replay via `backtest-historical --from-run`, Turso mirror via `screener/screener/history_sync.py` (`history-backup`).
 
 For quick per-symbol technical detail, it is often easier to import bot logic:
 
@@ -91,7 +100,7 @@ but remember `screener_bot` normally depends on bot config and portfolio objects
 
 ## Rust Analysis Paths
 
-Rust mirrors many Python concepts but is not just a wrapper:
+(Only applicable when `screener-rs/` is present in the workspace.) Rust mirrors many Python concepts but is not just a wrapper:
 
 - CLI entrypoint and command wiring: `screener-rs/src/main.rs`.
 - Backtest engine and rolling/historical simulation: `screener-rs/src/backtester/engine.rs`.
@@ -125,6 +134,7 @@ Rust config intentionally supports YAML strategy and criteria aliases through `s
    - Use `backtest-historical` for point-in-time candidate checks.
    - Use `vbt-sweep` for fast triage only; validate promising ideas with rolling backtests.
    - Use `earnings-backtest` / `earnings-pead` for earnings-event claims. `earnings-pead --exit-mode fixed` (default) holds `--hold-days` sessions; `--exit-mode dynamic` holds a beat (`--min-surprise`) until a later report misses, tagging trades with `exit_reason`.
+   - For sizing-sensitive claims, state the `--sizing` rule (default `equal_slot`); risk-based rules (`fixed_risk`, `atr_risk`, `inverse_vol`) change per-trade exposure and drawdown, not just returns.
    - Include slippage, commission, liquidity filters, benchmark, and clear start/end dates.
 6. Convert evidence into action levels only after the above:
    - Close-based stop.
