@@ -102,6 +102,19 @@ uv run screener institutional --tickers AAPL,MSFT
 just institutional --tickers AAPL,MSFT --csv
 ```
 
+### `filings`
+
+Reads US SEC filings via FMP. `filings list` shows recent filings (10-K/10-Q/8-K) with document links; `filings report` reads a filed 10-K/10-Q by section (case-insensitive `--section` substring match). Requires `FMP_API_KEY`.
+
+```bash
+uv run screener filings list AAPL --type 10-K --limit 5
+uv run screener filings report AAPL --year 2024 --list-sections
+uv run screener filings report AAPL --year 2024 --section "balance sheet"
+just filings report AAPL --year 2024 --period Q3 --section revenue
+```
+
+`filings report` with no `--section` lists the available sections. Add `--json PATH` to dump the matched section JSON.
+
 ### `index-inclusion`
 
 Event study of post-addition excess drift for S&P 500 additions versus SPY.
@@ -466,7 +479,7 @@ just
 just help
 just help-<command>          # per-command help: screen, backtest, backtest-rolling,
                              # backtest-lab, cache, conviction, earnings-backtest,
-                             # earnings-pead, factor-tearsheet, garp, history,
+                             # earnings-pead, factor-tearsheet, filings, garp, history,
                              # history-backup, index-inclusion, institutional,
                              # operator-scan, optimize, options, pine, promoter-buys,
                              # research-report, rs-breakout, seasonality,
