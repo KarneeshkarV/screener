@@ -18,6 +18,7 @@ from screener.backtester.rolling import backtest_rolling
 from screener.backtester.vbt_sweep import vbt_sweep
 from screener.commands.cache import cache_group
 from screener.commands.conviction import conviction
+from screener.commands.filings import filings
 from screener.commands.garp import garp
 from screener.commands.history_backup import history_backup
 from screener.commands.history_list import history_list
@@ -152,6 +153,7 @@ cli.add_command(garp)
 cli.add_command(conviction)
 cli.add_command(promoter_buys)
 cli.add_command(institutional)
+cli.add_command(filings)
 cli.add_command(index_inclusion)
 cli.add_command(seasonality)
 cli.add_command(unusual_volume)

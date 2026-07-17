@@ -78,6 +78,10 @@ help-history-backup:
 help-index-inclusion:
     @{{python}} main.py index-inclusion --help
 
+# Show filings reader command help.
+help-filings:
+    @{{python}} main.py filings --help
+
 # Show institutional ownership command help.
 help-institutional:
     @{{python}} main.py institutional --help
@@ -205,6 +209,10 @@ history-backup *args:
 # Event study of post-addition excess drift for S&P 500 additions vs SPY.
 index-inclusion *args:
     @{{python}} main.py index-inclusion "$@"
+
+# Read US SEC filings (list recent filings, or a 10-K/10-Q by section).
+filings *args:
+    @{{python}} main.py filings "$@"
 
 # Show FMP institutional ownership per ticker, ranked by QoQ change.
 institutional *args:
