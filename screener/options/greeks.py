@@ -7,6 +7,9 @@ from typing import Literal
 
 Right = Literal["call", "put"]
 
+_INITIAL_VOLATILITY_UPPER_BOUND = 5.0
+_MAX_VOLATILITY = 100.0
+
 
 def _cdf(value: float) -> float:
     return 0.5 * (1.0 + erf(value / sqrt(2.0)))
@@ -118,8 +121,13 @@ def implied_volatility(
     tolerance: float = 1e-6,
     max_iterations: int = 100,
 ) -> float | None:
-    """Invert Black-Scholes IV with a bounded bisection search."""
-    if price <= 0 or spot <= 0 or strike <= 0 or time_years <= 0:
+    """Invert Black-Scholes IV with a bracketed bisection search.
+
+    ``tolerance`` is measured in absolute volatility units. ``None`` is
+    returned when the price does not identify a finite volatility, a bracket
+    cannot be established, or the iteration budget is exhausted.
+    """
+    if price <= 0 or spot <= 0 or strike <= 0 or time_years <= 0 or tolerance <= 0:
         return None
     discounted_spot = spot * exp(-dividend_yield * time_years)
     discounted_strike = strike * exp(-rate * time_years)
@@ -129,11 +137,46 @@ def implied_volatility(
         else max(discounted_strike - discounted_spot, 0.0)
     )
     upper_bound = discounted_spot if right == "call" else discounted_strike
-    if price < intrinsic or price > upper_bound:
+    if price < intrinsic or price >= upper_bound:
         return None
 
     low = 1e-6
-    high = 5.0
+    low_price = black_scholes_price(
+        spot,
+        strike,
+        time_years,
+        rate,
+        low,
+        right,
+        dividend_yield=dividend_yield,
+    )
+    if low_price is None or price <= low_price:
+        return None
+
+    high = _INITIAL_VOLATILITY_UPPER_BOUND
+    high_price = black_scholes_price(
+        spot,
+        strike,
+        time_years,
+        rate,
+        high,
+        right,
+        dividend_yield=dividend_yield,
+    )
+    while high_price is not None and high_price < price and high < _MAX_VOLATILITY:
+        high = min(high * 2.0, _MAX_VOLATILITY)
+        high_price = black_scholes_price(
+            spot,
+            strike,
+            time_years,
+            rate,
+            high,
+            right,
+            dividend_yield=dividend_yield,
+        )
+    if high_price is None or high_price < price:
+        return None
+
     for _ in range(max(int(max_iterations), 1)):
         mid = (low + high) / 2.0
         estimate = black_scholes_price(
@@ -147,14 +190,13 @@ def implied_volatility(
         )
         if estimate is None:
             return None
-        difference = estimate - price
-        if abs(difference) <= tolerance:
-            return mid
-        if difference > 0:
+        if estimate > price:
             high = mid
         else:
             low = mid
-    return (low + high) / 2.0
+        if high - low <= tolerance:
+            return (low + high) / 2.0
+    return None
 
 
 __all__ = ["black_scholes_greeks", "black_scholes_price", "implied_volatility"]
