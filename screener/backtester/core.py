@@ -21,6 +21,7 @@ from screener.backtester.fills import (  # noqa: F401  (re-export compat shims)
 from screener.backtester.models import BacktestConfig, ExitReason, Trade
 from screener.backtester.pine import PineError, evaluate
 from screener.backtester.portfolio import Portfolio
+from screener.backtester.sessions import is_session_last, market_timezone
 
 if TYPE_CHECKING:
     from screener.strategies.spec import StrategySpec
@@ -106,6 +107,9 @@ class _FrameCache:
     # Lazily filled Corwin-Schultz half-spread series (fraction), aligned to
     # ``bars.index``. None until first ``spread_proxy`` lookup for this frame.
     half_spread_s: Optional[pd.Series] = None
+    # Lazily filled session-last mask (see ``sessions.is_session_last``); None
+    # until the first ``intraday_only`` slot open on this frame.
+    session_last: Optional[np.ndarray] = None
 
 
 def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
@@ -270,6 +274,8 @@ class _SlotState:
     # per-bar helpers fall back to the original pandas access paths.
     frame_cache: Optional[_FrameCache] = None
     exit_signal_values: Optional[np.ndarray] = None
+    # Session-last mask aligned to ``bars.index`` when ``cfg.intraday_only``.
+    session_last: Optional[np.ndarray] = None
 
 
 def _half_spread_at_signal(
@@ -337,6 +343,18 @@ def _make_slot_state(
     )
     if entry_idx is None or entry_fill is None:
         return None, entry_warn
+    session_last = None
+    if cfg.intraday_only:
+        if frame_cache is not None and frame_cache.session_last is not None:
+            session_last = frame_cache.session_last
+        else:
+            session_last = is_session_last(
+                cast(pd.DatetimeIndex, bars.index), market_timezone(cfg.market)
+            )
+            if frame_cache is not None:
+                frame_cache.session_last = session_last
+        if session_last[entry_idx]:
+            return None, "entry skipped: session-last bar (intraday-only)"
     exit_signal = None
     if exit_ast is not None:
         cached_exit = caches.exit_signals.get(ticker) if caches is not None else None
@@ -383,6 +401,7 @@ def _make_slot_state(
             exit_signal_values=(
                 exit_signal.to_numpy() if exit_signal is not None else None
             ),
+            session_last=session_last,
         ),
         None,
     )
@@ -524,6 +543,8 @@ def _check_exit_at_bar(
         )
         if fired:
             return _sell("exit_expr"), "exit_expr"
+    if state.session_last is not None and state.session_last[i]:
+        return _sell("session"), "session"
     if i >= state.hold_limit_idx:
         return _sell("time"), "time"
     return None

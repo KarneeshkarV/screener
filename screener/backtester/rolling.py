@@ -10,7 +10,9 @@ import click
 from rich.console import Console
 
 from screener.backtester.cli_common import (
+    build_data_policy,
     build_slippage_model,
+    intraday_options,
     parse_partial_exits,
     referenced_fundamental_fields,
     resolve_min_filters,
@@ -23,7 +25,6 @@ from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.models import (
     SUPPORTED_INTERVALS,
     BacktestConfig,
-    DataPolicy,
     ExecutionPolicy,
     PortfolioPolicy,
     SignalPolicy,
@@ -295,6 +296,7 @@ __all__ = [
     show_default=True,
     help="Directory for generated dashboard HTML files.",
 )
+@intraday_options
 @sizing_options
 def backtest_rolling(
     market,
@@ -351,6 +353,7 @@ def backtest_rolling(
     sizing_atr_window,
     sizing_atr_multiple,
     sizing_vol_window,
+    intraday_only,
 ):
     """Run a true daily rolling backtest over a date window."""
     if output_csv and dashboard:
@@ -480,7 +483,11 @@ def backtest_rolling(
             fundamental_lag_days=max(resolved_fundamental_lag_days, 0),
             sector_neutral=bool(sector_neutral),
         ),
-        data=DataPolicy(interval=interval, price_adjustment=price_adjustment),
+        data=build_data_policy(
+            interval=interval,
+            price_adjustment=price_adjustment,
+            intraday_only=bool(intraday_only),
+        ),
         execution=ExecutionPolicy(
             hold=int(hold),
             stop_loss=stop_loss,

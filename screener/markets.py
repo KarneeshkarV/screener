@@ -22,6 +22,9 @@ class Market:
     min_adv: float
     screen_min_close: float
     rs_breakout_min_close: float
+    # IANA timezone of the exchange; intraday bars are stored naive UTC, so
+    # session-day grouping must convert back to this zone (DST-safe).
+    timezone: str
 
 
 MARKETS: dict[str, Market] = {
@@ -34,6 +37,7 @@ MARKETS: dict[str, Market] = {
         min_adv=1_000.0,
         screen_min_close=1.0,
         rs_breakout_min_close=5.0,
+        timezone="America/New_York",
     ),
     "india": Market(
         name="india",
@@ -44,6 +48,7 @@ MARKETS: dict[str, Market] = {
         min_adv=100_000.0,
         screen_min_close=10.0,
         rs_breakout_min_close=50.0,
+        timezone="Asia/Kolkata",
     ),
 }
 
