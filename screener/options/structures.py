@@ -85,7 +85,9 @@ def _bs_delta(
     t = dte / _DAYS_PER_YEAR
     iv = contract.iv
     if iv is None or iv <= 0:
-        iv = implied_volatility(price, spot, contract.strike, t, _RISK_FREE, contract.right)
+        iv = implied_volatility(
+            price, spot, contract.strike, t, _RISK_FREE, contract.right
+        )
     if iv is None or iv <= 0:
         return None
     greeks = black_scholes_greeks(

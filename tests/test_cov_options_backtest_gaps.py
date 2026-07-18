@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 
 import click
 import pandas as pd
@@ -14,7 +14,6 @@ from screener.options import cli as options_cli
 from screener.options import position_backtest as pb
 from screener.options import structures as st
 from screener.options.bt_models import LegFill, OptionsBacktestConfig
-from screener.options.position_backtest import run_options_position_backtest
 from tests.conftest import StubPriceFetcher
 from tests.test_options_position_backtest import (
     _WEEKDAY,
@@ -138,9 +137,7 @@ def test_mark_price_settle_fallback_and_find_contract():
     assert pb._mark_price(dead) is None
     chain = _chain(_contract())
     assert (
-        pb._find_contract(
-            chain, right="put", strike=999.0, expiry=date(2026, 7, 28)
-        )
+        pb._find_contract(chain, right="put", strike=999.0, expiry=date(2026, 7, 28))
         is None
     )
 
@@ -412,8 +409,8 @@ def test_loader_exception_records_warning():
 
 
 def test_pending_entry_waits_for_chain():
-    d0, d1, d2 = date(2026, 7, 6), date(2026, 7, 7), date(2026, 7, 8)
-    # No chain on d1 → pending entry carries to d2.
+    d0, d2 = date(2026, 7, 6), date(2026, 7, 8)
+    # No chain on the intermediate session → pending entry carries to d2.
     schedule = {d2: _call_put_pair(d2, call_last=10.0, put_last=5.0)}
     cfg = _cfg(d0, d2, exit_dte=0)
     result = _run(
@@ -429,9 +426,7 @@ def test_expiry_intrinsic_without_chain():
     expiry = date(2026, 7, 9)
     d0, d1 = date(2026, 7, 7), date(2026, 7, 8)
     # Entry d1; expiry day has no archive chain → intrinsic vs underlying close.
-    schedule = {
-        d1: _call_put_pair(d1, call_last=10.0, put_last=5.0, expiry=expiry)
-    }
+    schedule = {d1: _call_put_pair(d1, call_last=10.0, put_last=5.0, expiry=expiry)}
     cfg = _cfg(d0, expiry, exit_dte=0)
     result = _run(
         cfg,
@@ -551,9 +546,7 @@ def test_cli_default_fetcher_and_loader(monkeypatch):
     _weekday_calendar(monkeypatch)
     d0, d1 = date(2026, 7, 6), date(2026, 7, 7)
     schedule = {d1: _call_put_pair(d1, call_last=10.0, put_last=5.0)}
-    monkeypatch.setattr(
-        options_cli, "get_price_fetcher", lambda obj: _fetcher(d0, d1)
-    )
+    monkeypatch.setattr(options_cli, "get_price_fetcher", lambda obj: _fetcher(d0, d1))
     monkeypatch.setattr(
         pb,
         "load_bhavcopy_chains",
@@ -595,7 +588,8 @@ def test_cli_market_and_ticker_guards():
         )
     res = CliRunner().invoke(
         options_cli.options,
-        _base_args(date(2026, 7, 6), date(2026, 7, 8))[:2] + [" "]
+        _base_args(date(2026, 7, 6), date(2026, 7, 8))[:2]
+        + [" "]
         + _base_args(date(2026, 7, 6), date(2026, 7, 8))[3:],
     )
     assert res.exit_code != 0

@@ -53,7 +53,9 @@ def _contract(**overrides) -> OptionContract:
     return OptionContract(**values)
 
 
-def _chain(*contracts: OptionContract, spot: float = 1275.0, day: date | None = None) -> OptionChain:
+def _chain(
+    *contracts: OptionContract, spot: float = 1275.0, day: date | None = None
+) -> OptionChain:
     as_of = day or date(2026, 7, 8)
     return OptionChain(
         underlying="RELIANCE",
@@ -181,9 +183,7 @@ def test_target_hit():
         target_pct=25.0,
         exit_dte=1,
     )
-    result = _run(
-        cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher
-    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
     assert result.trades
     trade = result.trades[0]
     assert trade.exit_reason == "target"
@@ -208,9 +208,7 @@ def test_stop_hit():
         stop_pct=40.0,
         exit_dte=1,
     )
-    result = _run(
-        cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher
-    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
     assert result.trades
     assert result.trades[0].exit_reason == "stop"
 
@@ -239,9 +237,7 @@ def test_hold_to_expiry_intrinsic_settle():
         exit_dte=0,
         max_hold=None,
     )
-    result = _run(
-        cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher
-    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
     assert result.trades
     trade = result.trades[0]
     assert trade.exit_reason in {"expiry", "end", "dte"}
@@ -267,9 +263,7 @@ def test_dte_exit():
         entry_expr="true",
         exit_dte=3,
     )
-    result = _run(
-        cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher
-    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
     assert result.trades
     assert result.trades[0].exit_reason == "dte"
 
@@ -290,9 +284,7 @@ def test_liquidity_skip():
         entry_expr="true",
         min_oi=50_000.0,
     )
-    result = _run(
-        cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher
-    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
     assert result.trades == []
     assert any("liquidity" in w.lower() for w in result.warnings)
 
@@ -319,9 +311,7 @@ def test_cost_arithmetic_to_the_rupee():
         exit_dte=1,
         lots=1,
     )
-    result = _run(
-        cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher
-    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
     assert result.trades
     trade = result.trades[0]
     lot = 500.0
@@ -340,13 +330,13 @@ def test_cost_arithmetic_to_the_rupee():
 
 
 def test_missing_day_carry_forward():
-    d0, d1, d2, d3 = (
+    d0, d1, d3 = (
         date(2026, 7, 6),
         date(2026, 7, 7),
-        date(2026, 7, 8),
         date(2026, 7, 9),
     )
-    # d2 missing from archive; position should carry and exit on d3 via target.
+    # Intermediate session missing from archive; position should carry and exit
+    # on d3 via target.
     schedule = {
         d1: _call_put_pair(d1, call_last=10.0, put_last=5.0),
         d3: _call_put_pair(d3, call_last=20.0, put_last=2.0),
@@ -362,9 +352,7 @@ def test_missing_day_carry_forward():
         target_pct=50.0,
         exit_dte=1,
     )
-    result = _run(
-        cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher
-    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
     assert result.trades
     assert result.trades[0].exit_date == d3
     assert result.trades[0].exit_reason == "target"
@@ -385,9 +373,7 @@ def test_pit_entry_after_signal():
         entry_expr="true",
         exit_dte=1,
     )
-    result = _run(
-        cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher
-    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
     assert result.trades
     trade = result.trades[0]
     assert trade.entry_date == d1
@@ -412,9 +398,7 @@ def test_summary_via_compute_backtest_summary():
         target_pct=10.0,
         exit_dte=1,
     )
-    result = _run(
-        cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher
-    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
     summary = compute_backtest_summary(result.trades, strategy="straddle")
     assert summary["trades_taken"] == len(result.trades)
     assert "avg_return_pct" in summary
