@@ -12,8 +12,11 @@ from typing import Optional
 
 import pandas as pd
 
-from screener.backtester.execution import net_round_trip_return
-from screener.earnings_backtest._execution import apply_slippage
+from screener.backtester.costs import build_cost_model
+from screener.earnings_backtest._execution import (
+    apply_round_trip_costs,
+    apply_slippage,
+)
 from screener.earnings_backtest.data import (
     collect_earnings_events,
     fetch_analyst_sentiment,
@@ -40,6 +43,7 @@ def run_earnings_backtest(
     days_before: int = 1,
     min_score: float = 0.55,
     commission_bps: float = 10.0,
+    cost_model: str = "flat",
     slippage_bps: float = 5.0,
     batch_size: int = 50,
     tickers: Optional[list[str]] = None,
@@ -54,7 +58,23 @@ def run_earnings_backtest(
       5. Apply min_score filter.
       6. Simulate buy-close-E-N / sell-close-E trades.
       7. Return list of EarningsTrade objects.
+
+    Fees use the shared :func:`~screener.backtester.costs.build_cost_model`
+    stack (``flat`` / ``india`` / ``us_vested``). For ``cost_model="flat"``,
+    ``commission_bps`` remains a **round-trip** total (legacy earnings CLI
+    semantics); it is split evenly across buy and sell so
+    :class:`~screener.backtester.costs.FlatCommission` per-side rates sum to
+    the same drag as the previous single subtraction — bit-identical for flat.
     """
+    # FlatCommission is per-fill; earnings historically treated commission_bps
+    # as a single round-trip total. Split so buy+sell fractions match legacy.
+    model_name = (cost_model or "flat").strip().lower()
+    flat_bps = (
+        float(commission_bps) / 2.0 if model_name == "flat" else float(commission_bps)
+    )
+    costs = build_cost_model(model_name, commission_bps=flat_bps)
+    fees_paid: dict[str, float] = {}
+
     # 1. Universe
     if tickers is None:
         tickers = load_universe(market)
@@ -134,7 +154,7 @@ def run_earnings_backtest(
         entry_price = float(entry_bar.iloc[-1]["close"])
         exit_price = float(exit_bar.iloc[-1]["close"])
 
-        # Apply slippage and commission
+        # Apply slippage and cost-model fees (fees do not move the fill price).
         entry_price, exit_price = apply_slippage(entry_price, exit_price, slippage_bps)
 
         # Evaluate strategies
@@ -194,10 +214,11 @@ def run_earnings_backtest(
 
         passed_filter = final_score >= min_score
 
-        # Only record trade if the strategy filter passes
-        ret_raw, ret_net = net_round_trip_return(
-            entry_price, exit_price, commission_bps
+        ret_raw, ret_net, trade_fees = apply_round_trip_costs(
+            entry_price, exit_price, costs
         )
+        for name, amount in trade_fees.items():
+            fees_paid[name] = fees_paid.get(name, 0.0) + amount
 
         trade = EarningsTrade(
             ticker=ticker,
@@ -214,9 +235,17 @@ def run_earnings_backtest(
                 "scores": scores,
                 "signals": signal_details,
                 "raw_return_pct": round(ret_raw * 100, 4),
+                "fees": trade_fees,
             },
         )
         trades.append(trade)
+
+    # Stash run-level fee totals on the trade details so summary/CLI can surface
+    # aggregates without changing the return type (list[EarningsTrade]).
+    if trades:
+        totals = dict(fees_paid)
+        for trade in trades:
+            trade.details["fees_paid_total"] = totals
 
     logger.info("backtest_complete", extra={"trades": len(trades)})
     return trades

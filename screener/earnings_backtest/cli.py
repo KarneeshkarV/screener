@@ -69,7 +69,21 @@ console = Console()
     type=float,
     default=10.0,
     show_default=True,
-    help="Round-trip commission in basis points.",
+    help=(
+        "Round-trip commission in basis points when --cost-model=flat "
+        "(split evenly across buy and sell)."
+    ),
+)
+@click.option(
+    "--cost-model",
+    type=click.Choice(["flat", "india", "us_vested"]),
+    default="flat",
+    show_default=True,
+    help=(
+        "Statutory fee model. 'flat' applies --commission-bps as a round-trip "
+        "total (legacy). 'india' applies NSE equity delivery fees. "
+        "'us_vested' applies the Vested/DriveWealth US equity fee stack."
+    ),
 )
 @click.option(
     "--slippage-bps",
@@ -103,6 +117,7 @@ def earnings_backtest(
     days_before: int,
     min_score: float,
     commission_bps: float,
+    cost_model: str,
     slippage_bps: float,
     batch_size: int,
     tickers: str | None,
@@ -128,6 +143,7 @@ def earnings_backtest(
             days_before=days_before,
             min_score=min_score,
             commission_bps=commission_bps,
+            cost_model=cost_model,
             slippage_bps=slippage_bps,
             batch_size=batch_size,
             tickers=ticker_list,
@@ -150,6 +166,37 @@ def earnings_backtest(
     _print_summary(summary)
     if taken:
         _print_trade_table(taken)
+
+
+_FEE_COMPONENT_LABELS = {
+    "commission": "brokerage",
+    "brokerage": "brokerage",
+    "stt": "stt",
+    "stamp_duty": "stamp_duty",
+    "exchange_txn": "exchange_txn",
+    "sebi": "sebi",
+    "gst": "gst",
+    "ipft": "ipft",
+    "sec_fee": "sec_fee",
+    "taf": "taf",
+}
+
+
+def _format_costs_line(summary: dict) -> str | None:
+    total = summary.get("total_fees")
+    if total is None:
+        return None
+    total_f = float(total)
+    parts: list[str] = []
+    for key, value in summary.items():
+        if not key.startswith("fee_") or float(value) == 0.0:
+            continue
+        name = key[len("fee_") :]
+        label = _FEE_COMPONENT_LABELS.get(name, name)
+        parts.append(f"{label}: {float(value):,.4f}")
+    if parts:
+        return f"Total costs: {total_f:,.4f} ({', '.join(parts)})"
+    return f"Total costs: {total_f:,.4f}"
 
 
 def _print_summary(summary: dict) -> None:
@@ -182,6 +229,9 @@ def _print_summary(summary: dict) -> None:
         table.add_row(label, str(val))
 
     console.print(table)
+    costs_line = _format_costs_line(summary)
+    if costs_line is not None:
+        console.print(f"[dim]{costs_line}[/dim]")
 
 
 def _print_trade_table(trades: list[EarningsTrade]) -> None:

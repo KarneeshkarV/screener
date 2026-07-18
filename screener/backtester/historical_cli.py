@@ -87,13 +87,14 @@ from screener.markets import as_of_option, get_market, get_price_fetcher, market
 )
 @click.option(
     "--cost-model",
-    type=click.Choice(["flat", "india"]),
+    type=click.Choice(["flat", "india", "us_vested"]),
     default="flat",
     show_default=True,
     help=(
         "Statutory fee model. 'flat' applies --commission-bps on every fill "
         "(legacy). 'india' applies NSE equity delivery fees (STT, stamp duty, "
-        "exchange, SEBI, GST, IPFT)."
+        "exchange, SEBI, GST, IPFT). 'us_vested' applies the Vested/DriveWealth "
+        "US equity fee stack (brokerage cap, SEC Section 31, FINRA TAF)."
     ),
 )
 @click.option("--initial-capital", type=float, default=100_000.0)

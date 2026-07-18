@@ -25,6 +25,18 @@ class CostModel(Protocol):
     def side_cost_fraction(self, side: Side, notional: float) -> float:
         """Total fees as a non-negative fraction of ``notional`` for ``side``."""
 
+    def side_cost_breakdown(
+        self, side: Side, notional: float, shares: float | None = None
+    ) -> dict[str, float]:
+        """Per-component fees as **absolute currency amounts** for ``side``.
+
+        Keys name each statutory/broker component (e.g. ``"brokerage"``,
+        ``"stt"``, ``"sec_fee"``, ``"taf"``); values are non-negative amounts
+        in the account currency. ``shares`` is required only by per-share
+        components (e.g. FINRA TAF); when omitted such components are 0. The
+        sum of the values is the total fee charged for the fill.
+        """
+
 
 def _bps_fraction(bps: float) -> float:
     return bps / 10_000.0
@@ -39,6 +51,11 @@ class FlatCommission(BaseModel):
 
     def side_cost_fraction(self, side: Side, notional: float) -> float:
         return _bps_fraction(self.bps)
+
+    def side_cost_breakdown(
+        self, side: Side, notional: float, shares: float | None = None
+    ) -> dict[str, float]:
+        return {"commission": abs(float(notional)) * _bps_fraction(self.bps)}
 
 
 class IndiaDeliveryCosts(BaseModel):
@@ -83,6 +100,74 @@ class IndiaDeliveryCosts(BaseModel):
             total += self.stamp_duty_rate
         return total
 
+    def side_cost_breakdown(
+        self, side: Side, notional: float, shares: float | None = None
+    ) -> dict[str, float]:
+        notional = abs(float(notional))
+        brokerage_frac = _bps_fraction(self.brokerage_bps)
+        gst_frac = self.gst_rate * (
+            brokerage_frac + self.exchange_txn_rate + self.sebi_turnover_rate
+        )
+        out = {
+            "brokerage": notional * brokerage_frac,
+            "stt": notional * self.stt_rate,
+            "stamp_duty": notional * self.stamp_duty_rate if side == "buy" else 0.0,
+            "exchange_txn": notional * self.exchange_txn_rate,
+            "sebi": notional * self.sebi_turnover_rate,
+            "gst": notional * gst_frac,
+            "ipft": notional * self.ipft_rate,
+        }
+        return out
+
+
+class VestedUSCosts(BaseModel):
+    """US equity fee stack for retail access via Vested Finance (DriveWealth).
+
+    Rates are constructor fields so future regulatory changes and plan tiers
+    need no code edits. Defaults match Vested's **Basic** plan and FY2026
+    statutory rates:
+
+    * brokerage 0.25% of trade value, capped at $35, on BOTH buy and sell
+      (pass ``brokerage_rate=0.0015`` for the Premium plan, same cap)
+    * SEC Section 31 fee — $20.60 per $1M of principal, **sell side only**
+    * FINRA Trading Activity Fee (TAF) — $0.000195 per share, capped at $9.79
+      per trade, **sell side only** (needs the share count, not just notional)
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    # Brokerage as a fraction of trade value, both sides (Basic plan 0.25%).
+    brokerage_rate: float = 0.0025
+    # Per-trade brokerage cap in USD, both sides.
+    brokerage_cap: float = 35.0
+    # SEC Section 31 fee — fraction of principal, SELL side only (FY2026).
+    sec_fee_rate: float = 0.0000206
+    # FINRA TAF — USD per share sold, SELL side only.
+    taf_per_share: float = 0.000195
+    # Per-trade TAF cap in USD.
+    taf_cap: float = 9.79
+
+    def side_cost_breakdown(
+        self, side: Side, notional: float, shares: float | None = None
+    ) -> dict[str, float]:
+        notional = abs(float(notional))
+        brokerage = min(notional * self.brokerage_rate, self.brokerage_cap)
+        out = {"brokerage": brokerage, "sec_fee": 0.0, "taf": 0.0}
+        if side == "sell":
+            out["sec_fee"] = notional * self.sec_fee_rate
+            if shares is not None:
+                out["taf"] = min(abs(float(shares)) * self.taf_per_share, self.taf_cap)
+        return out
+
+    def side_cost_fraction(self, side: Side, notional: float) -> float:
+        """Fee fraction of ``notional``. The per-share TAF is unknown without a
+        share count, so it is omitted here; the portfolio charges the exact
+        amount via :meth:`side_cost_breakdown` where shares are known."""
+        notional = abs(float(notional))
+        if notional <= 0.0:
+            return 0.0
+        return sum(self.side_cost_breakdown(side, notional).values()) / notional
+
 
 def build_cost_model(
     name: str = "flat",
@@ -93,13 +178,18 @@ def build_cost_model(
 
     ``"flat"`` — :class:`FlatCommission` using ``commission_bps`` (legacy).
     ``"india"`` — :class:`IndiaDeliveryCosts` with published delivery defaults.
+    ``"us_vested"`` — :class:`VestedUSCosts` (Vested Basic plan + US statutory).
     """
     key = (name or "flat").strip().lower()
     if key == "flat":
         return FlatCommission(bps=float(commission_bps))
     if key == "india":
         return IndiaDeliveryCosts()
-    raise ValueError(f"unknown cost_model {name!r}; expected 'flat' or 'india'")
+    if key == "us_vested":
+        return VestedUSCosts()
+    raise ValueError(
+        f"unknown cost_model {name!r}; expected 'flat', 'india' or 'us_vested'"
+    )
 
 
 def cost_model_from_config(cfg: object) -> CostModel:

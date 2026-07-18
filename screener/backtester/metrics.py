@@ -284,6 +284,28 @@ def _trade_return_stats(trades: Iterable[Trade]) -> dict[str, float | int]:
     }
 
 
+def compute_cost_metrics(
+    fees_paid: dict[str, float],
+    initial_capital: float,
+    net_pnl: float,
+) -> dict:
+    """Fee-attribution metrics from a portfolio's accumulated fee breakdown.
+
+    Returns ``total_fees`` (currency), one ``fee_<component>`` key per charged
+    component (e.g. ``fee_brokerage``, ``fee_stt``, ``fee_sec_fee``,
+    ``fee_taf``), plus ``fees_pct_capital`` (total fees / initial capital) and
+    ``fees_pct_net_pnl`` (total fees / realized net PnL, 0 when flat). All
+    ratios are fractions; the caller formats them as percentages.
+    """
+    total = float(sum(float(v) for v in fees_paid.values()))
+    out: dict[str, float] = {"total_fees": total}
+    for name, amount in fees_paid.items():
+        out[f"fee_{name}"] = float(amount)
+    out["fees_pct_capital"] = total / initial_capital if initial_capital else 0.0
+    out["fees_pct_net_pnl"] = total / net_pnl if net_pnl else 0.0
+    return out
+
+
 def compute_regime_metrics(benchmark: pd.Series, trades: list[Trade]) -> dict:
     """Per-regime trade stats keyed by each trade's entry-date regime.
 

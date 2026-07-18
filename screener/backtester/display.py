@@ -67,6 +67,53 @@ def _format_metric(key: str, value) -> str:
     return str(value)
 
 
+_FEE_COMPONENT_LABELS = {
+    "commission": "Commission",
+    "brokerage": "Brokerage",
+    "stt": "STT",
+    "stamp_duty": "Stamp Duty",
+    "exchange_txn": "Exchange Txn",
+    "sebi": "SEBI",
+    "gst": "GST",
+    "ipft": "IPFT",
+    "sec_fee": "SEC Section 31",
+    "taf": "FINRA TAF",
+}
+
+
+def _print_cost_metrics(metrics: dict) -> None:
+    """Render the fee-attribution breakdown when cost metrics are present."""
+    if "total_fees" not in metrics:
+        return
+    total = float(metrics["total_fees"])
+    components = sorted(
+        (
+            (key[len("fee_") :], float(value))
+            for key, value in metrics.items()
+            if key.startswith("fee_") and float(value) != 0.0
+        ),
+        key=lambda kv: kv[1],
+        reverse=True,
+    )
+    if total == 0.0 and not components:
+        return
+    table = Table(title="Costs", show_header=True, header_style="bold")
+    table.add_column("Component")
+    table.add_column("Amount", justify="right")
+    table.add_column("% of Total", justify="right")
+    for name, amount in components:
+        label = _FEE_COMPONENT_LABELS.get(name, name.replace("_", " ").title())
+        share = amount / total * 100 if total else 0.0
+        table.add_row(label, f"{amount:,.2f}", f"{share:.1f}%")
+    table.add_row("[bold]Total Costs[/bold]", f"[bold]{total:,.2f}[/bold]", "100.0%")
+    console.print(table)
+    console.print(
+        f"[dim]Total costs {total:,.2f} = "
+        f"{metrics.get('fees_pct_capital', 0.0) * 100:.3f}% of initial capital, "
+        f"{metrics.get('fees_pct_net_pnl', 0.0) * 100:.2f}% of net PnL[/dim]"
+    )
+
+
 def _print_regime_metrics(metrics: dict) -> None:
     """Render per-regime trade stats when regime_* keys are present."""
     rows = [label for label in _REGIME_LABELS if f"regime_{label}_trades" in metrics]
@@ -107,6 +154,7 @@ def print_backtest(result: BacktestResult) -> None:
         if key in result.metrics:
             metrics_table.add_row(label, _format_metric(key, result.metrics[key]))
     console.print(metrics_table)
+    _print_cost_metrics(result.metrics)
     _print_regime_metrics(result.metrics)
 
     if not result.trades:

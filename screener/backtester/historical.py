@@ -22,6 +22,7 @@ from screener.backtester.data import PriceFetcher
 from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
 from screener.backtester.fills import FillModel
 from screener.backtester.metrics import (
+    compute_cost_metrics,
     compute_metrics,
     compute_regime_metrics,
     periods_per_year_for_interval,
@@ -583,6 +584,13 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         periods_per_year=periods_per_year_for_interval(cfg.interval),
     )
     metrics.update(compute_regime_metrics(benchmark, trades))
+    metrics.update(
+        compute_cost_metrics(
+            portfolio.fees_paid,
+            cfg.initial_capital,
+            sum(float(t.pnl) for t in trades),
+        )
+    )
 
     return BacktestResult(
         config=cfg,

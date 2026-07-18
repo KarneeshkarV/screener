@@ -737,7 +737,14 @@ def test_run_parameter_sweep_scalar_chunk_metrics(fake_vbt, monkeypatch):
     # Force the chunk metrics to be plain scalars (not Series) so the ``_concat``
     # fallback (``cleaned`` empty -> ``parts[0]``) branch is exercised.
     def fake_chunk(
-        close, fill_price, entries_chunk, exits_chunk, *, vbt, initial_capital
+        close,
+        fill_price,
+        entries_chunk,
+        exits_chunk,
+        *,
+        vbt,
+        initial_capital,
+        fees=0.0,
     ):  # noqa: ANN001
         return (0.5, 0.1, 0.4, -0.1, 0.5, 3)
 

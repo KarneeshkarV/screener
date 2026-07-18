@@ -7,7 +7,8 @@ from ``backtest-rolling`` because the following are **not** modeled here:
 - partial exits
 - dividends
 - custom slippage models (``slippage=0.0`` hard-coded)
-- commissions / fees (``fees=0.0`` hard-coded)
+- full statutory fee cash accounting (fees approximated per-side from the cost
+  model at a representative notional; TAF/per-share components excluded)
 - trailing stops, stop-loss, take-profit (custom engine supports all three)
 
 Entries/exits are shifted by one bar and filled at the next bar's **open** to
@@ -85,6 +86,7 @@ from screener.backtester.vbt.sweep import (
     _scalar_metric,
     rank_results,
     run_combo_backtest,
+    vbt_fee_fraction,
 )
 from screener.backtester.vbt.walk_forward import (
     WalkForwardSweepSummary,
@@ -164,5 +166,6 @@ __all__ = [
     "run_parameter_sweep",
     "run_walk_forward_sweep",
     "sma_crossover_signals",
+    "vbt_fee_fraction",
     "vbt_sweep",
 ]

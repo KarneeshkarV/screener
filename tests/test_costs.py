@@ -13,6 +13,7 @@ from screener.backtester import core as backtester_core
 from screener.backtester.costs import (
     FlatCommission,
     IndiaDeliveryCosts,
+    VestedUSCosts,
     build_cost_model,
     corwin_schultz_half_spread,
     cost_model_from_config,
@@ -144,6 +145,87 @@ def test_portfolio_clamps_negative_cost_fraction():
     portfolio = Portfolio(1_000.0, 1, cost_model=NegativeCost())
     position = portfolio.open("AAA", date(2024, 1, 2), 100.0)
     assert position.shares == pytest.approx(10.0)
+
+
+# ── VestedUSCosts ────────────────────────────────────────────────────
+
+
+def test_vested_breakdown_buy_below_cap_no_sell_fees():
+    m = VestedUSCosts()
+    # notional 10k → brokerage 0.25% = 25 < 35 cap; no SEC/TAF on buy.
+    bd = m.side_cost_breakdown("buy", 10_000.0, shares=100.0)
+    assert bd["brokerage"] == pytest.approx(25.0)
+    assert bd["sec_fee"] == 0.0
+    assert bd["taf"] == 0.0
+    assert m.side_cost_fraction("buy", 10_000.0) == pytest.approx(0.0025)
+
+
+def test_vested_brokerage_cap_binds():
+    m = VestedUSCosts()
+    # notional 100k → 0.25% = 250, capped at 35 both sides.
+    assert m.side_cost_breakdown("buy", 100_000.0)["brokerage"] == pytest.approx(35.0)
+    assert m.side_cost_breakdown("sell", 100_000.0)["brokerage"] == pytest.approx(35.0)
+
+
+def test_vested_sell_sec_and_taf_with_shares():
+    m = VestedUSCosts()
+    bd = m.side_cost_breakdown("sell", 10_000.0, shares=100.0)
+    assert bd["brokerage"] == pytest.approx(25.0)
+    assert bd["sec_fee"] == pytest.approx(10_000.0 * 0.0000206)  # 0.206
+    assert bd["taf"] == pytest.approx(100.0 * 0.000195)  # 0.0195, below cap
+    # Fraction path (no shares) omits TAF but keeps SEC + brokerage.
+    frac = m.side_cost_fraction("sell", 10_000.0)
+    assert frac == pytest.approx((25.0 + 0.206) / 10_000.0)
+
+
+def test_vested_sell_without_shares_omits_taf():
+    m = VestedUSCosts()
+    bd = m.side_cost_breakdown("sell", 10_000.0, shares=None)
+    assert bd["taf"] == 0.0
+    assert bd["sec_fee"] == pytest.approx(0.206)
+
+
+def test_vested_taf_cap_binds():
+    m = VestedUSCosts()
+    # 100k shares * 0.000195 = 19.5 > 9.79 cap.
+    bd = m.side_cost_breakdown("sell", 1_000_000.0, shares=100_000.0)
+    assert bd["taf"] == pytest.approx(9.79)
+
+
+def test_vested_premium_plan_configurable():
+    m = VestedUSCosts(brokerage_rate=0.0015)
+    assert m.side_cost_breakdown("buy", 10_000.0)["brokerage"] == pytest.approx(15.0)
+
+
+def test_build_cost_model_us_vested():
+    m = build_cost_model("us_vested")
+    assert isinstance(m, VestedUSCosts)
+    cfg = _cfg(cost_model="us_vested")
+    assert isinstance(cost_model_from_config(cfg), VestedUSCosts)
+
+
+def test_portfolio_accumulates_vested_fees_round_trip():
+    m = VestedUSCosts()
+    pf = Portfolio(100_000.0, 1, cost_model=m)
+    pf.open("AAA", date(2024, 1, 2), 100.0)
+    # Buy side: only brokerage, and notional is large so the $35 cap binds.
+    assert pf.fees_paid == {"brokerage": pytest.approx(35.0)}
+    trade = pf.close("AAA", date(2024, 1, 10), 110.0, "time")
+    # Sell adds a second capped brokerage plus SEC + TAF components.
+    assert pf.fees_paid["brokerage"] == pytest.approx(70.0)
+    expected_sec = trade.shares * 110.0 * 0.0000206
+    expected_taf = min(trade.shares * 0.000195, 9.79)
+    assert pf.fees_paid["sec_fee"] == pytest.approx(expected_sec)
+    assert pf.fees_paid["taf"] == pytest.approx(expected_taf)
+    assert pf.total_fees_paid == pytest.approx(70.0 + expected_sec + expected_taf)
+
+
+def test_portfolio_flat_fees_tracked_as_commission():
+    pf = Portfolio(100_000.0, 1, cost_model=FlatCommission(bps=10.0))
+    pf.open("AAA", date(2024, 1, 2), 100.0)
+    pf.close("AAA", date(2024, 1, 10), 110.0, "time")
+    assert set(pf.fees_paid) == {"commission"}
+    assert pf.total_fees_paid > 0.0
 
 
 # ── Corwin-Schultz ───────────────────────────────────────────────────

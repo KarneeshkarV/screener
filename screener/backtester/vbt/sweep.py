@@ -9,7 +9,11 @@ import click
 import numpy as np
 import pandas as pd
 
+from screener.backtester.costs import CostModel, build_cost_model
 from screener.backtester.vbt.config import (
+    COMMISSION_BPS_DEFAULT,
+    COST_MODEL_DEFAULT,
+    FEE_NOTIONAL_DEFAULT,
     INITIAL_CAPITAL_DEFAULT,
     MetricName,
     SOLO_INDICATORS_NAN_SLOW,
@@ -19,6 +23,36 @@ from screener.backtester.vbt.indicators import (
     _build_indicator_signal_panels,
     iter_indicator_combos,
 )
+
+
+def vbt_fee_fraction(
+    cost_model: str | CostModel = COST_MODEL_DEFAULT,
+    *,
+    commission_bps: float = COMMISSION_BPS_DEFAULT,
+    notional: float = FEE_NOTIONAL_DEFAULT,
+) -> float:
+    """Approximate per-side fee fraction for vectorbt's single ``fees`` param.
+
+    vectorbt applies one scalar on every fill. We average buy and sell
+    :meth:`~screener.backtester.costs.CostModel.side_cost_fraction` at a
+    representative ``notional``. Per-share components (e.g. FINRA TAF) are
+    omitted because the fraction API has no share count.
+    """
+    model = (
+        cost_model
+        if not isinstance(cost_model, str)
+        else build_cost_model(cost_model, commission_bps=commission_bps)
+    )
+    n = abs(float(notional))
+    if n <= 0.0:
+        n = FEE_NOTIONAL_DEFAULT
+    buy = float(model.side_cost_fraction("buy", n))
+    sell = float(model.side_cost_fraction("sell", n))
+    if buy < 0.0:
+        buy = 0.0
+    if sell < 0.0:
+        sell = 0.0
+    return 0.5 * (buy + sell)
 
 
 def _require_vectorbt() -> Any:
@@ -55,6 +89,9 @@ def run_combo_backtest(
     vbt: Any,
     open_: pd.DataFrame | None = None,
     initial_capital: float = INITIAL_CAPITAL_DEFAULT,
+    fees: float | None = None,
+    cost_model: str = COST_MODEL_DEFAULT,
+    commission_bps: float = COMMISSION_BPS_DEFAULT,
 ) -> dict[str, float | int]:
     entries, exits = STRATEGY_BUILDERS["sma_cross"](close, fast, slow, hold, vbt)
     # Match custom engine MOO semantics: signals on bar t fill at bar t+1 open.
@@ -62,13 +99,18 @@ def run_combo_backtest(
     entries_shifted = entries.astype(bool).shift(1, fill_value=False).astype(bool)
     exits_shifted = exits.astype(bool).shift(1, fill_value=False).astype(bool)
     fill_price = open_ if open_ is not None else close
+    fee_frac = (
+        float(fees)
+        if fees is not None
+        else vbt_fee_fraction(cost_model, commission_bps=commission_bps)
+    )
     pf = vbt.Portfolio.from_signals(
         close,
         entries_shifted,
         exits_shifted,
         price=fill_price,
         init_cash=float(initial_capital),
-        fees=0.0,
+        fees=fee_frac,
         slippage=0.0,
         group_by=True,
         cash_sharing=True,
@@ -109,6 +151,7 @@ def _portfolio_chunk_metrics(
     *,
     vbt: Any,
     initial_capital: float,
+    fees: float = 0.0,
 ) -> tuple[Any, ...]:
     """Run one ``Portfolio.from_signals`` call over a slice of combo columns.
 
@@ -137,7 +180,7 @@ def _portfolio_chunk_metrics(
         exits_chunk,
         price=price_broadcast,
         init_cash=float(initial_capital),
-        fees=0.0,
+        fees=float(fees),
         slippage=0.0,
         group_by=["indicator", "fast", "slow", "hold"],
         cash_sharing=True,
@@ -172,6 +215,8 @@ def run_parameter_sweep(
     open_: pd.DataFrame | None = None,
     initial_capital: float = INITIAL_CAPITAL_DEFAULT,
     chunk_size: int | None = None,
+    cost_model: str = COST_MODEL_DEFAULT,
+    commission_bps: float = COMMISSION_BPS_DEFAULT,
     require_vectorbt_fn: Callable[[], Any] | None = None,
     portfolio_chunk_metrics_fn: Callable[..., tuple[Any, ...]] | None = None,
 ) -> pd.DataFrame:
@@ -201,6 +246,7 @@ def run_parameter_sweep(
     entries_shifted = entries.astype(bool).shift(1, fill_value=False).astype(bool)
     exits_shifted = exits.astype(bool).shift(1, fill_value=False).astype(bool)
     fill_price = open_ if open_ is not None else close
+    fee_frac = vbt_fee_fraction(cost_model, commission_bps=commission_bps)
 
     n_tickers = close.shape[1]
     n_combos = len(combos)
@@ -232,6 +278,7 @@ def run_parameter_sweep(
             exits_chunk,
             vbt=vbt,
             initial_capital=initial_capital,
+            fees=fee_frac,
         )
         sharpe_parts.append(sharpe_c)
         total_return_parts.append(total_c)

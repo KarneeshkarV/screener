@@ -83,8 +83,9 @@ class ExecutionPolicy(BaseModel):
     commission_bps: float
     slippage_model: Optional[SlippageModel] = None
     # Statutory fee model name (cash impact, not fill-price). ``flat`` uses
-    # ``commission_bps`` exactly as before; ``india`` applies NSE delivery fees.
-    cost_model: Literal["flat", "india"] = "flat"
+    # ``commission_bps`` exactly as before; ``india`` applies NSE delivery fees;
+    # ``us_vested`` applies the Vested/DriveWealth US equity fee stack.
+    cost_model: Literal["flat", "india", "us_vested"] = "flat"
     # When True, compute Corwin-Schultz half-spread from bar high/low and feed
     # it into the fill-layer slippage stack as ``half_spread``.
     spread_proxy: bool = False
@@ -332,7 +333,7 @@ class BacktestConfig(BaseModel):
         return self.execution.slippage_model
 
     @property
-    def cost_model(self) -> Literal["flat", "india"]:
+    def cost_model(self) -> Literal["flat", "india", "us_vested"]:
         return self.execution.cost_model
 
     @property

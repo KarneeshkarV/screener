@@ -11,6 +11,8 @@ from rich.console import Console
 from screener.backtester.data import PriceFetcher, build_price_fetcher, tv_to_yf
 from screener.backtester.optimization.walk_forward import generate_walk_forward_windows
 from screener.backtester.vbt.config import (
+    COMMISSION_BPS_DEFAULT,
+    COST_MODEL_DEFAULT,
     DEFAULT_BBANDS_STD,
     DEFAULT_BBANDS_WINDOWS,
     DEFAULT_BREAKOUT_WINDOWS,
@@ -106,6 +108,8 @@ def run_parameter_sweep(
     open_: pd.DataFrame | None = None,
     initial_capital: float = INITIAL_CAPITAL_DEFAULT,
     chunk_size: int | None = None,
+    cost_model: str = COST_MODEL_DEFAULT,
+    commission_bps: float = COMMISSION_BPS_DEFAULT,
 ) -> pd.DataFrame:
     """Compatibility wrapper for the extracted sweep implementation."""
     return _run_parameter_sweep(
@@ -126,6 +130,8 @@ def run_parameter_sweep(
         open_=open_,
         initial_capital=initial_capital,
         chunk_size=chunk_size,
+        cost_model=cost_model,
+        commission_bps=commission_bps,
         require_vectorbt_fn=_require_vectorbt,
         portfolio_chunk_metrics_fn=_portfolio_chunk_metrics,
     )
@@ -384,6 +390,23 @@ def _run_cli_walk_forward(
     help="Metric used to rank combinations.",
 )
 @click.option(
+    "--cost-model",
+    type=click.Choice(["flat", "india", "us_vested"]),
+    default=COST_MODEL_DEFAULT,
+    show_default=True,
+    help=(
+        "Statutory fee model used to approximate vectorbt's per-side fees. "
+        "'flat' applies --commission-bps on every fill (default 0 → fees=0)."
+    ),
+)
+@click.option(
+    "--commission-bps",
+    type=float,
+    default=COMMISSION_BPS_DEFAULT,
+    show_default=True,
+    help="Commission per fill (bps) when --cost-model=flat.",
+)
+@click.option(
     "--walk-forward",
     "walk_forward_arg",
     default=None,
@@ -417,6 +440,8 @@ def vbt_sweep(
     top: int,
     output_csv: bool,
     metric: str,
+    cost_model: str,
+    commission_bps: float,
     walk_forward_arg: str | None,
 ) -> None:
     """Fast vectorbt grid search for exploration (not validation).
@@ -548,6 +573,8 @@ def vbt_sweep(
         "keltner_windows": keltner_windows,
         "rsi_thresholds": rsi_thresholds,
         "obv_ema_windows": obv_ema_windows,
+        "cost_model": cost_model,
+        "commission_bps": float(commission_bps),
     }
 
     if walk_forward_spec is not None:

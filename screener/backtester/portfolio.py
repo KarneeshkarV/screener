@@ -28,7 +28,7 @@ from typing import Any, Iterable, Optional, Union, cast
 import numpy as np
 import pandas as pd
 
-from screener.backtester.costs import CostModel, FlatCommission
+from screener.backtester.costs import CostModel, FlatCommission, Side
 from screener.backtester.models import ExitReason, Position, Trade
 
 # Trade/position stamps are date-only for daily runs and full datetimes for
@@ -49,6 +49,10 @@ class Portfolio:
         self.slot_count = slot_count
         self.slot_capital = self.initial_capital / slot_count
         self.cost_model = cost_model or FlatCommission()
+        # Running attribution of statutory/broker fees actually charged, keyed
+        # by cost-model component name (e.g. "brokerage", "stt", "sec_fee",
+        # "taf"). Populated on every buy/sell fill; see ``total_fees_paid``.
+        self.fees_paid: dict[str, float] = {}
         self._cash = self.initial_capital
         # Keyed by (ticker, open_seq). Legacy callers use ticker only; helper
         # methods resolve to the FIFO-oldest open position for that ticker.
@@ -65,6 +69,44 @@ class Portfolio:
     def entry_budget(self) -> float:
         """Cash available to the next slot, before entry price/commission."""
         return min(self.slot_capital, max(self._cash, 0.0))
+
+    def _charge_fees(
+        self,
+        side: Side,
+        notional: float,
+        shares: float | None = None,
+    ) -> float:
+        """Return the total fee for a ``side`` fill and record its breakdown.
+
+        Uses the cost model's per-component ``side_cost_breakdown`` when
+        available (so per-share/capped components are exact), falling back to
+        the fraction API for legacy cost models that only expose
+        ``side_cost_fraction``. Negative amounts are clamped to 0. The returned
+        total is the sum of the accumulated components.
+        """
+        breakdown_fn = getattr(self.cost_model, "side_cost_breakdown", None)
+        if callable(breakdown_fn):
+            breakdown = breakdown_fn(side, notional, shares)
+        else:
+            frac = float(self.cost_model.side_cost_fraction(side, notional))
+            if frac < 0.0:
+                frac = 0.0
+            breakdown = {"commission": notional * frac}
+        total = 0.0
+        for name, amount in breakdown.items():
+            amt = float(amount)
+            if amt <= 0.0:
+                # Skip inapplicable components (e.g. sell-only fees on a buy)
+                # so the attribution map lists only what was actually charged.
+                continue
+            self.fees_paid[name] = self.fees_paid.get(name, 0.0) + amt
+            total += amt
+        return total
+
+    @property
+    def total_fees_paid(self) -> float:
+        """Sum of all statutory/broker fees charged over the run."""
+        return float(sum(self.fees_paid.values()))
 
     def _active_keys(self, ticker: str) -> list[tuple[str, int]]:
         return [k for k in self._open if k[0] == ticker]
@@ -110,9 +152,7 @@ class Portfolio:
         gross_per_share = entry_price * (1.0 + c)
         shares = budget / gross_per_share if gross_per_share > 0 else 0.0
         notional = shares * entry_price
-        commission = notional * float(
-            self.cost_model.side_cost_fraction("buy", notional)
-        )
+        commission = self._charge_fees("buy", notional, shares)
         entry_cost = notional + commission  # <= budget by construction for c>=0
         self._cash -= entry_cost
         position = Position(
@@ -173,9 +213,7 @@ class Portfolio:
             raise KeyError(f"No open position for {ticker}")
         position = self._open.pop(key)
         proceeds = position.shares * exit_price
-        commission = proceeds * float(
-            self.cost_model.side_cost_fraction("sell", proceeds)
-        )
+        commission = self._charge_fees("sell", proceeds, position.shares)
         exit_value = proceeds - commission
         self._cash += exit_value
         entry_cost = position.slot_capital
@@ -240,9 +278,7 @@ class Portfolio:
         pro_rata_div = position.dividend_income * fraction
         remaining_div = position.dividend_income - pro_rata_div
         proceeds = close_shares * exit_price
-        commission = proceeds * float(
-            self.cost_model.side_cost_fraction("sell", proceeds)
-        )
+        commission = self._charge_fees("sell", proceeds, close_shares)
         exit_value = proceeds - commission
         self._cash += exit_value
         # Total PnL includes the pro-rata dividend income for the closed sleeve
