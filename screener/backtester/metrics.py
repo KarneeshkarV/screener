@@ -301,9 +301,7 @@ def compute_cost_metrics(
     out: dict[str, float] = {"total_fees": total}
     for name, amount in fees_paid.items():
         out[f"fee_{name}"] = float(amount)
-    out["fees_pct_capital"] = (
-        total / initial_capital if initial_capital else 0.0
-    )
+    out["fees_pct_capital"] = total / initial_capital if initial_capital else 0.0
     out["fees_pct_net_pnl"] = total / net_pnl if net_pnl else 0.0
     return out
 

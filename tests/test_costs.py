@@ -217,9 +217,7 @@ def test_portfolio_accumulates_vested_fees_round_trip():
     expected_taf = min(trade.shares * 0.000195, 9.79)
     assert pf.fees_paid["sec_fee"] == pytest.approx(expected_sec)
     assert pf.fees_paid["taf"] == pytest.approx(expected_taf)
-    assert pf.total_fees_paid == pytest.approx(
-        70.0 + expected_sec + expected_taf
-    )
+    assert pf.total_fees_paid == pytest.approx(70.0 + expected_sec + expected_taf)
 
 
 def test_portfolio_flat_fees_tracked_as_commission():

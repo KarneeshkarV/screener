@@ -156,9 +156,7 @@ class VestedUSCosts(BaseModel):
         if side == "sell":
             out["sec_fee"] = notional * self.sec_fee_rate
             if shares is not None:
-                out["taf"] = min(
-                    abs(float(shares)) * self.taf_per_share, self.taf_cap
-                )
+                out["taf"] = min(abs(float(shares)) * self.taf_per_share, self.taf_cap)
         return out
 
     def side_cost_fraction(self, side: Side, notional: float) -> float:
