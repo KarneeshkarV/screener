@@ -79,10 +79,18 @@ StrategyBuilder = Callable[
 
 INITIAL_CAPITAL_DEFAULT = 100_000.0
 
+# Representative notional for converting CostModel side fractions into the
+# single per-side ``fees`` scalar that vectorbt accepts.
+COST_MODEL_DEFAULT = "flat"
+COMMISSION_BPS_DEFAULT = 0.0
+FEE_NOTIONAL_DEFAULT = 100_000.0
+
 DISCLAIMER = (
     "[yellow]Exploration only — approximations; validate with backtest-rolling.\n"
     "Not modeled: slot allocation, partial exits, dividends, custom slippage "
-    "(slippage=0), fees (fees=0), trailing stops, stop-loss, take-profit.\n"
+    "(slippage=0), trailing stops, stop-loss, take-profit.\n"
+    "Fees: approximated per-side from the cost model at a representative "
+    "notional (TAF/per-share components excluded); not full cash accounting.\n"
     "Fills: next-bar open (MOO match); residual MOC differences may apply.[/yellow]"
 )
 

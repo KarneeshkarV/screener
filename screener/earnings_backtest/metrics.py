@@ -23,7 +23,32 @@ def _empty_summary(total_events: int, strategy: str) -> dict[str, str | int | fl
         "profit_factor": 0.0,
         "avg_holding_days": 0.0,
         "sharpe_approx": 0.0,
+        "total_fees": 0.0,
     }
+
+
+def _aggregate_fees(trades: Sequence[EventTradeSummary]) -> dict[str, float]:
+    """Sum per-component fees from trade details (run-level or per-trade)."""
+    if not trades:
+        return {}
+    # Prefer the run-level totals stamped by the engine when present.
+    first_details = getattr(trades[0], "details", None) or {}
+    run_total = first_details.get("fees_paid_total")
+    if isinstance(run_total, dict) and run_total:
+        return {str(k): float(v) for k, v in run_total.items() if float(v) != 0.0}
+
+    out: dict[str, float] = {}
+    for trade in trades:
+        details = getattr(trade, "details", None) or {}
+        fees = details.get("fees") or {}
+        if not isinstance(fees, dict):
+            continue
+        for name, amount in fees.items():
+            amt = float(amount)
+            if amt <= 0.0:
+                continue
+            out[str(name)] = out.get(str(name), 0.0) + amt
+    return out
 
 
 def compute_backtest_summary(
@@ -34,8 +59,17 @@ def compute_backtest_summary(
         return _empty_summary(0, strategy)
 
     taken = [trade for trade in trades if trade.passed_filter]
+    fees_paid = _aggregate_fees(trades)
+    fee_fields: dict[str, float] = {
+        "total_fees": round(float(sum(fees_paid.values())), 6),
+    }
+    for name, amount in fees_paid.items():
+        fee_fields[f"fee_{name}"] = round(float(amount), 6)
+
     if not taken:
-        return _empty_summary(len(trades), strategy)
+        empty = _empty_summary(len(trades), strategy)
+        empty.update(fee_fields)
+        return empty
 
     returns = np.array([trade.return_pct for trade in taken])
     winners = returns[returns > 0]
@@ -72,6 +106,7 @@ def compute_backtest_summary(
         "profit_factor": round(profit_factor, 4),
         "avg_holding_days": round(avg_holding, 2),
         "sharpe_approx": sharpe,
+        **fee_fields,
     }
 
 

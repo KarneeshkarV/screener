@@ -31,6 +31,7 @@ from screener.backtester.fundamentals import (
     merge_fundamentals_into_bars,
 )
 from screener.backtester.metrics import (
+    compute_cost_metrics,
     compute_metrics,
     compute_regime_metrics,
     periods_per_year_for_interval,
@@ -471,6 +472,13 @@ def _assemble_results(
     )
     metrics["unique_tickers"] = len({trade.ticker for trade in trades})
     metrics.update(compute_regime_metrics(benchmark, trades))
+    metrics.update(
+        compute_cost_metrics(
+            portfolio.fees_paid,
+            cfg.initial_capital,
+            sum(float(t.pnl) for t in trades),
+        )
+    )
 
     selection = pd.DataFrame(
         selection_rows,
