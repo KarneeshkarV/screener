@@ -20,6 +20,7 @@ MIN_IV_HISTORY_DAYS = 5
 UNUSUAL_OPTIONS_MULTIPLE = 2.0
 HIGH_IV_RANK = 80.0
 LOW_IV_RANK = 20.0
+HIGH_PCR = 1.3
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,68 @@ def _bullish_oi_buildup(latest: pd.DataFrame) -> OptionsCriterionResult:
         selected.sort_values("bullish_oi_score", ascending=False),
         "India uses exact bhavcopy OI/premium changes; US uses consecutive "
         "snapshot OI differences when writing direction is unavailable.",
+    )
+
+
+def _bearish_oi_buildup(latest: pd.DataFrame) -> OptionsCriterionResult:
+    call_change = _numeric(latest, "call_oi_change")
+    put_change = _numeric(latest, "put_oi_change")
+    call_writing = _numeric(latest, "call_writing_near_spot")
+    put_writing = _numeric(latest, "put_writing_near_spot")
+
+    exact = call_writing.gt(0) & call_writing.gt(put_writing.fillna(0))
+    proxy = (
+        put_change.gt(0)
+        & call_change.gt(0)
+        & call_change.gt(put_change)
+        & put_writing.isna()
+    )
+    selected = latest[exact | proxy].copy()
+    if selected.empty and call_change.isna().all():
+        return OptionsCriterionResult(
+            selected,
+            "Options panel has no OI-change baseline yet; take another daily "
+            "snapshot before using bearish_oi_buildup.",
+        )
+    selected["signal"] = "bearish_oi_buildup"
+    selected["oi_signal_basis"] = [
+        "exact_call_writing" if bool(exact.loc[index]) else "snapshot_diff_proxy"
+        for index in selected.index
+    ]
+    selected["coverage_days"] = _numeric(selected, "history_days").fillna(1).astype(int)
+    selected["bearish_oi_score"] = (
+        _numeric(selected, "call_writing_near_spot")
+        .fillna(_numeric(selected, "call_oi_change"))
+        .fillna(0)
+    )
+    return OptionsCriterionResult(
+        selected.sort_values("bearish_oi_score", ascending=False),
+        "India uses exact bhavcopy OI/premium changes; US uses consecutive "
+        "snapshot OI differences when writing direction is unavailable.",
+    )
+
+
+def _high_pcr_reversal(latest: pd.DataFrame) -> OptionsCriterionResult:
+    # Coverage guard: PCR is only meaningful on a genuinely two-sided chain, so
+    # require both call_oi and put_oi > 0 (an empty/one-sided snapshot yields a
+    # degenerate or NaN PCR that we must not fire on).
+    call_oi = _numeric(latest, "call_oi")
+    put_oi = _numeric(latest, "put_oi")
+    pcr = _numeric(latest, "pcr")
+    covered = call_oi.gt(0) & put_oi.gt(0)
+    if not covered.any():
+        return OptionsCriterionResult(
+            latest.iloc[0:0].copy(),
+            "Options panel is thin: high_pcr_reversal needs both call and put "
+            "open interest (> 0) per symbol to compute a reliable PCR.",
+        )
+    selected = latest[covered & pcr.ge(HIGH_PCR)].copy()
+    selected["signal"] = "high_pcr_reversal"
+    selected["coverage_days"] = _numeric(selected, "history_days").fillna(1).astype(int)
+    return OptionsCriterionResult(
+        selected.sort_values("pcr", ascending=False),
+        f"Contrarian signal: PCR >= {HIGH_PCR} flags crowded put positioning that "
+        "often precedes a mean-reversion bounce; higher PCR ranks first.",
     )
 
 
@@ -267,6 +330,14 @@ def _evaluate_bullish(latest: pd.DataFrame, **_: object) -> OptionsCriterionResu
     return _bullish_oi_buildup(latest)
 
 
+def _evaluate_bearish(latest: pd.DataFrame, **_: object) -> OptionsCriterionResult:
+    return _bearish_oi_buildup(latest)
+
+
+def _evaluate_high_pcr(latest: pd.DataFrame, **_: object) -> OptionsCriterionResult:
+    return _high_pcr_reversal(latest)
+
+
 def _high_iv_rank(latest: pd.DataFrame, **_: object) -> OptionsCriterionResult:
     return _iv_rank(latest, high=True)
 
@@ -278,6 +349,8 @@ def _low_iv_rank(latest: pd.DataFrame, **_: object) -> OptionsCriterionResult:
 OPTIONS_CRITERIA: dict[str, Callable[..., OptionsCriterionResult]] = {
     "unusual_options": _evaluate_unusual,
     "bullish_oi_buildup": _evaluate_bullish,
+    "bearish_oi_buildup": _evaluate_bearish,
+    "high_pcr_reversal": _evaluate_high_pcr,
     "high_iv_rank": _high_iv_rank,
     "low_iv_rank": _low_iv_rank,
     "cheap_earnings_vol": _cheap_earnings_vol,
