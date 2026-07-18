@@ -28,7 +28,7 @@ from typing import Any, Iterable, Optional, Union, cast
 import numpy as np
 import pandas as pd
 
-from screener.backtester.costs import CostModel, FlatCommission
+from screener.backtester.costs import CostModel, FlatCommission, Side
 from screener.backtester.models import ExitReason, Position, Trade
 
 # Trade/position stamps are date-only for daily runs and full datetimes for
@@ -72,7 +72,7 @@ class Portfolio:
 
     def _charge_fees(
         self,
-        side: str,
+        side: Side,
         notional: float,
         shares: float | None = None,
     ) -> float:
