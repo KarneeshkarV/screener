@@ -22,7 +22,9 @@ _EULER_MASCHERONI = 0.5772156649015329
 # Regular-session bars per trading day for each supported interval (US markets:
 # a 6.5h session). Used to scale the 252-trading-day annualization factor so
 # intraday equity curves annualize over the right number of periods. Daily is
-# 1 bar/day, reproducing the legacy 252 factor exactly.
+# 1 bar/day, reproducing the legacy 252 factor exactly. India sessions are
+# shorter (~6.25h), so India intraday annualization is slightly off; no behavior
+# change intended.
 _BARS_PER_SESSION = {"1d": 1, "1h": 7, "30m": 13, "15m": 26, "5m": 78, "1m": 390}
 
 

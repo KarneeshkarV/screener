@@ -181,7 +181,8 @@ class FillModel:
         * ``"stop"`` / ``"trail"`` — gap-down aware against ``level`` (the stop
           or trailing-stop reference) using ``bar_open``.
         * ``"target"`` — gap-up aware against ``level`` (the target reference).
-        * ``"exit_expr"`` / ``"time"`` / ``"eod"`` — fill at ``close``.
+        * ``"exit_expr"`` / ``"time"`` / ``"eod"`` / ``"session"`` — fill at
+          ``close`` (session-last is a market-on-close flat).
 
         Slippage is applied to the resolved reference before returning.
         """

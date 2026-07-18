@@ -169,6 +169,45 @@ def sizing_options(command):
     return command
 
 
+def intraday_options(command):
+    """Attach the shared intraday session-exit option to a backtest command."""
+    options = [
+        click.option(
+            "--intraday-only",
+            is_flag=True,
+            default=False,
+            help=(
+                "Force positions flat on the last bar of each trading session "
+                "(intraday intervals only; rejects --interval 1d)."
+            ),
+        ),
+    ]
+    for option in reversed(options):
+        command = option(command)
+    return command
+
+
+def build_data_policy(
+    *,
+    interval: str,
+    price_adjustment: str,
+    intraday_only: bool = False,
+):
+    """Build a ``DataPolicy``, mapping pydantic validation errors to Click usage."""
+    from pydantic import ValidationError
+
+    from screener.backtester.models import DataPolicy
+
+    try:
+        return DataPolicy(
+            interval=interval,
+            price_adjustment=price_adjustment,  # type: ignore[arg-type]
+            intraday_only=intraday_only,
+        )
+    except ValidationError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+
 def validate_sizing(sizing_rule: str, stop_loss: float | None) -> None:
     if sizing_rule == "fixed_risk" and (stop_loss is None or stop_loss <= 0):
         raise click.UsageError("--sizing fixed_risk requires --stop-loss.")

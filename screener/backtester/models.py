@@ -15,7 +15,7 @@ from screener.backtester.slippage import (
 )
 
 
-ExitReason = Literal["stop", "target", "trail", "time", "exit_expr", "eod"]
+ExitReason = Literal["stop", "target", "trail", "time", "exit_expr", "eod", "session"]
 
 # Supported bar intervals. "1d" is the default daily bar; the rest are intraday
 # bars sourced from yfinance. A ``date | datetime`` union is used on all the
@@ -60,6 +60,9 @@ class DataPolicy(BaseModel):
 
     interval: str = "1d"
     price_adjustment: Literal["full", "splits_only", "none"] = "full"
+    # Force positions flat on the last bar of each trading session so intraday
+    # runs never hold overnight. Requires an intraday interval.
+    intraday_only: bool = False
 
     @field_validator("interval")
     @classmethod
@@ -70,6 +73,12 @@ class DataPolicy(BaseModel):
                 f"{', '.join(SUPPORTED_INTERVALS)}"
             )
         return value
+
+    @model_validator(mode="after")
+    def _validate_intraday_only(self) -> DataPolicy:
+        if self.intraday_only and self.interval == "1d":
+            raise ValueError("intraday_only requires an intraday interval (got '1d')")
+        return self
 
 
 class ExecutionPolicy(BaseModel):
@@ -302,6 +311,10 @@ class BacktestConfig(BaseModel):
     @property
     def price_adjustment(self) -> Literal["full", "splits_only", "none"]:
         return self.data.price_adjustment
+
+    @property
+    def intraday_only(self) -> bool:
+        return self.data.intraday_only
 
     @property
     def hold(self) -> int:

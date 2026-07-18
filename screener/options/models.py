@@ -48,6 +48,8 @@ class OptionContract(BaseModel):
     ask: float | None = Field(default=None, ge=0)
     last: float | None = Field(default=None, ge=0)
     previous_close: float | None = Field(default=None, ge=0)
+    # Official settlement (NSE SttlmPric); used for expiry intrinsic when present.
+    settle: float | None = Field(default=None, ge=0)
     delta: float | None = None
     gamma: float | None = None
     theta: float | None = None

@@ -9,7 +9,9 @@ import click
 
 from screener import history
 from screener.backtester.cli_common import (
+    build_data_policy,
     build_slippage_model,
+    intraday_options,
     parse_partial_exits,
     resolve_min_filters,
     resolve_strategy_exprs,
@@ -21,7 +23,6 @@ from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.models import (
     SUPPORTED_INTERVALS,
     BacktestConfig,
-    DataPolicy,
     ExecutionPolicy,
     PortfolioPolicy,
     SignalPolicy,
@@ -226,6 +227,7 @@ from screener.markets import as_of_option, get_market, get_price_fetcher, market
     default=False,
     help="Open the generated HTML report in the default browser.",
 )
+@intraday_options
 @sizing_options
 def backtest_historical(
     market,
@@ -273,6 +275,7 @@ def backtest_historical(
     sizing_atr_window,
     sizing_atr_multiple,
     sizing_vol_window,
+    intraday_only,
 ):
     """Run an accurate historical backtest with Pine-like entry/exit expressions."""
     validate_sizing(sizing_rule, stop_loss)
@@ -351,7 +354,11 @@ def backtest_historical(
             entry_expr=entry_expr,
             exit_expr=exit_expr,
         ),
-        data=DataPolicy(interval=interval, price_adjustment=price_adjustment),
+        data=build_data_policy(
+            interval=interval,
+            price_adjustment=price_adjustment,
+            intraday_only=bool(intraday_only),
+        ),
         execution=ExecutionPolicy(
             hold=int(hold),
             stop_loss=stop_loss,

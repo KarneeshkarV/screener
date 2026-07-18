@@ -119,6 +119,7 @@ def normalize_bhavcopy_options(
                     volume=nonnegative_or_zero(row.get("TtlTradgVol")),
                     last=_last_price(row),
                     previous_close=_positive(row.get("PrvsClsgPric")),
+                    settle=_positive(row.get("SttlmPric")),
                     lot_size=embedded_lot or mapped_lot,
                     as_of=datetime.combine(
                         contract_as_of, time.min, tzinfo=timezone.utc
