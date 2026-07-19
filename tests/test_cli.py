@@ -44,7 +44,6 @@ def test_package_cli_matches_main_wrapper():
         "unusual-volume",
         "backtest-historical",
         "backtest-rolling",
-        "backtest-lab",
         "operator-scan",
         "optimize",
     ]:
@@ -218,14 +217,6 @@ def test_rolling_backtest_unknown_strategy_is_usage_error():
 
     assert res.exit_code != 0
     assert "Unknown strategy 'sma_cross'" in res.output
-
-
-def test_backtest_lab_help_lists_server_flags():
-    res = CliRunner().invoke(cli, ["backtest-lab", "--help"])
-
-    assert res.exit_code == 0
-    assert "--host" in res.output
-    assert "--port" in res.output
 
 
 def _stub_env():

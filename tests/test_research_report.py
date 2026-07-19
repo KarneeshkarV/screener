@@ -222,6 +222,7 @@ def test_cli_research_report_offline(tmp_path):
     res = CliRunner().invoke(
         cli,
         [
+            "optimize",
             "research-report",
             "--tickers",
             "AAA,BBB",
@@ -306,9 +307,6 @@ def test_cli_optimize_research_report_alias(tmp_path):
 
 
 def test_cli_help_lists_research_report():
-    res = CliRunner().invoke(cli, ["--help"])
-    assert res.exit_code == 0
-    assert "research-report" in res.output
     res = CliRunner().invoke(cli, ["optimize", "--help"])
     assert res.exit_code == 0
     assert "research-report" in res.output

@@ -21,7 +21,6 @@ from screener.indicators.plugins.rsi import rsi
 from screener.indicators.plugins.sma import sma
 from screener.indicators.plugins.stdev import stdev
 from screener.indicators.plugins.supertrend import supertrend_dir
-from screener.backtester.vbt_sweep import _obv
 
 from tests.correctness.reference_adapters import finite_tail_mask, require_talib
 
@@ -127,16 +126,6 @@ def test_supertrend_dir_matches_pandas_ta_signflip_tail(series):
     assert np.all(np.sign(got[tail]) == -np.sign(ref_dir[tail]))
 
 
-def test_obv_matches_pandas_ta_after_offset_removal(series):
-    """TA-Lib/pandas_ta seed OBV at volume[0]; screener starts at 0. Compare diffs."""
-    close = pd.DataFrame({"a": series["close"]})
-    volume = pd.DataFrame({"a": series["volume"]})
-    got = _obv(close, volume)[:, 0]
-    ref = pta.obv(pd.Series(series["close"]), pd.Series(series["volume"])).to_numpy()
-    # First-differencing removes the constant seed offset.
-    np.testing.assert_allclose(np.diff(got), np.diff(ref), atol=1e-6, rtol=0)
-
-
 # --------------------------------------------------------------------------- #
 # TA-Lib as a second independent witness (skipped if the C lib is absent)
 # --------------------------------------------------------------------------- #
@@ -166,13 +155,3 @@ def test_atr_matches_talib_tail(series):
     ref = talib.ATR(series["high"], series["low"], series["close"], 14)
     mask = finite_tail_mask(got, ref, start=100)
     np.testing.assert_allclose(got[mask], ref[mask], atol=1e-2, rtol=0)
-
-
-def test_obv_seed_offset_is_volume0(series):
-    """Pin the documented OBV seed difference: TA-Lib starts at volume[0], we start at 0."""
-    talib = require_talib()
-    close = pd.DataFrame({"a": series["close"]})
-    volume = pd.DataFrame({"a": series["volume"]})
-    got = _obv(close, volume)[:, 0]
-    ref = talib.OBV(series["close"], series["volume"])
-    np.testing.assert_allclose(got, ref - series["volume"][0], atol=1e-6, rtol=0)

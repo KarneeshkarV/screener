@@ -28,14 +28,9 @@ from rich.table import Table
 
 from screener.backtester.data import (
     PriceFetcher,
+    _naive_normalized_index,
     build_price_fetcher,
     tv_to_yf,
-)
-from screener.backtester.vbt_sweep import (
-    DEFAULT_VOL_MA_WINDOW,
-    DEFAULT_VOL_MULTIPLIER,
-    build_close_panel,
-    build_volume_panel,
 )
 from screener.indicators.frames import on_balance_volume
 from screener.markets import (
@@ -46,6 +41,61 @@ from screener.markets import (
     resolve_as_of,
 )
 from screener.universes import UniverseName, load_current_universe
+
+DEFAULT_VOL_MA_WINDOW: int = 20
+DEFAULT_VOL_MULTIPLIER: float = 1.0
+
+
+def _build_column_panel(
+    price_panel: dict[str, pd.DataFrame],
+    yf_symbols: list[str],
+    *,
+    column: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    """Build a wide OHLCV panel (dates x symbols) for one column."""
+    series: dict[str, pd.Series] = {}
+    for sym in yf_symbols:
+        frame = price_panel.get(sym)
+        if frame is None or frame.empty or column not in frame.columns:
+            continue
+        col = frame[column].astype(float)
+        col.index = _naive_normalized_index(col.index)
+        trimmed = col.loc[(col.index >= start) & (col.index <= end)]
+        if trimmed.empty:
+            continue
+        series[sym] = trimmed
+    if not series:
+        raise ValueError(f"No usable {column} prices for the requested window.")
+    panel = pd.DataFrame(series).sort_index()
+    panel = panel.ffill()
+    panel = panel.dropna(axis=1, how="any")
+    return panel.dropna(how="all")
+
+
+def build_close_panel(
+    price_panel: dict[str, pd.DataFrame],
+    yf_symbols: list[str],
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    return _build_column_panel(
+        price_panel, yf_symbols, column="close", start=start, end=end
+    )
+
+
+def build_volume_panel(
+    price_panel: dict[str, pd.DataFrame],
+    yf_symbols: list[str],
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    return _build_column_panel(
+        price_panel, yf_symbols, column="volume", start=start, end=end
+    )
 
 
 def _market_to_universe(market: str) -> UniverseName:
