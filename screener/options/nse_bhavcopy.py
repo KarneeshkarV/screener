@@ -11,6 +11,7 @@ from typing import Any, cast
 import pandas as pd
 
 from screener.options.greeks import black_scholes_greeks, implied_volatility
+from screener.options.lot_history import historical_lot_sizes
 from screener.options.models import OptionChain, OptionContract, OptionRight
 from screener.options._parse import nonnegative_or_zero
 from screener.options._parse import number as _as_number
@@ -271,6 +272,7 @@ def load_bhavcopy_chains(
     fetcher: BhavcopyFetcher | None = None,
     cash_fetcher: CashCloseFetcher | None = None,
     derive_iv: bool = True,
+    lot_sizes: Mapping[str, float] | None = None,
 ) -> dict[str, OptionChain]:
     """Load and normalize all NSE option chains stamped on ``d``.
 
@@ -278,7 +280,9 @@ def load_bhavcopy_chains(
     removes only that date's decoded cache file before re-downloading. For
     pre-UDiff dates (``d < FO_UDIFF_START``), which lack an underlying price,
     equity closes from the cash bhavcopy fill spot; ``cash_fetcher`` is
-    injectable for offline tests.
+    injectable for offline tests. Legacy rows also lack an embedded lot size,
+    so for those dates a point-in-time ``lot_sizes`` fallback is loaded from the
+    user's lot-history file unless one is passed explicitly.
     """
     loader = fetcher or _read_raw
     if refresh and fetcher is None:
@@ -289,12 +293,15 @@ def load_bhavcopy_chains(
     if d < FO_UDIFF_START:
         cash_loader = cash_fetcher or _read_cash_closes
         spot_prices = cash_loader(d)
+        if lot_sizes is None:
+            lot_sizes = historical_lot_sizes(d)
     return normalize_bhavcopy_options(
         frame,
         as_of=d,
         symbols=symbols,
         spot_prices=spot_prices,
         derive_iv=derive_iv,
+        lot_sizes=lot_sizes,
     )
 
 

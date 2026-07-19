@@ -23,6 +23,26 @@ earnings-sentiment output remains percentage based for backward compatibility.
 
 No paid options provider is required. FMP is not used for option chains.
 
+### Historical lot sizes
+
+Legacy (pre-July-2024) bhavcopy rows carry no board lot, and NSE does not
+publish historical lot sizes reliably, so they are never fabricated. To get
+correct pre-2024 rupee notionals, maintain an optional point-in-time CSV at
+`~/.screener/lot_sizes_history.csv`:
+
+```csv
+symbol,effective_from,lot_size
+RELIANCE,2020-01-01,505
+RELIANCE,2023-06-01,250
+TCS,2022-01-01,150
+```
+
+`effective_from` is an ISO date marking when that lot took effect. For any
+`as_of`, the latest row per symbol with `effective_from <= as_of` is used;
+symbols whose first record starts later are omitted. A missing or malformed
+file is simply ignored (no lot fallback). An embedded `NewBrdLotQty` on a row
+always takes precedence over this file, so it only affects legacy dates.
+
 ## Commands
 
 Run all commands through `uv`.
