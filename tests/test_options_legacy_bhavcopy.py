@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pandas as pd
 
+import pytest
+
+from screener.options.greeks import black_scholes_price
+from screener.options.metrics import compute_chain_metrics
 from screener.options.nse_bhavcopy import (
     load_bhavcopy_chains,
     normalize_bhavcopy_options,
@@ -127,3 +131,103 @@ def test_load_bhavcopy_chains_udiff_unaffected_by_cash_fetcher() -> None:
     )
     assert chains["RELIANCE"].spot == 1275.9
     assert calls == []
+
+
+_RATE = 0.065
+_TRAD_DT = "2024-01-01"
+_XPRY_DT = "2024-01-31"
+_TIME_YEARS = 30 / 365.25
+
+
+def _iv_frame(vol: float = 0.30, spot: float = 100.0) -> pd.DataFrame:
+    """A synthetic UDiff frame whose ATM call/put are priced with ``vol``."""
+    rows = []
+    for right in ("CE", "PE"):
+        price = black_scholes_price(
+            spot,
+            100.0,
+            _TIME_YEARS,
+            _RATE,
+            vol,
+            "call" if right == "CE" else "put",
+        )
+        rows.append(
+            {
+                "TradDt": _TRAD_DT,
+                "FinInstrmTp": "STO",
+                "TckrSymb": "ABC",
+                "XpryDt": _XPRY_DT,
+                "StrkPric": 100.0,
+                "OptnTp": right,
+                "FinInstrmNm": f"ABC24JAN100{right}",
+                "ClsPric": price,
+                "LastPric": price,
+                "PrvsClsgPric": price,
+                "UndrlygPric": spot,
+                "SttlmPric": price,
+                "OpnIntrst": 5000,
+                "ChngInOpnIntrst": 100,
+                "TtlTradgVol": 200,
+                "NewBrdLotQty": 500,
+            }
+        )
+    # A dead row (no OI, no volume) that must be skipped by IV derivation.
+    rows.append(
+        {
+            "TradDt": _TRAD_DT,
+            "FinInstrmTp": "STO",
+            "TckrSymb": "ABC",
+            "XpryDt": _XPRY_DT,
+            "StrkPric": 130.0,
+            "OptnTp": "CE",
+            "FinInstrmNm": "ABC24JAN130CE",
+            "ClsPric": 0.5,
+            "LastPric": 0.5,
+            "PrvsClsgPric": 0.5,
+            "UndrlygPric": spot,
+            "SttlmPric": 0.5,
+            "OpnIntrst": 0,
+            "ChngInOpnIntrst": 0,
+            "TtlTradgVol": 0,
+            "NewBrdLotQty": 500,
+        }
+    )
+    return pd.DataFrame(rows)
+
+
+def test_derived_iv_round_trips_known_vol() -> None:
+    chains = normalize_bhavcopy_options(_iv_frame(vol=0.30), as_of=date(2024, 1, 1))
+    contracts = {c.strike: c for c in chains["ABC"].contracts if c.right == "call"}
+    atm = contracts[100.0]
+    assert atm.iv == pytest.approx(0.30, abs=1e-3)
+    # Greeks populated alongside a found IV.
+    assert atm.delta is not None and 0 < atm.delta < 1
+    assert atm.gamma is not None and atm.vega is not None
+    # Dead row skipped -> no IV.
+    assert contracts[130.0].iv is None
+    assert contracts[130.0].delta is None
+
+
+def test_derive_iv_disabled_leaves_iv_none() -> None:
+    chains = normalize_bhavcopy_options(
+        _iv_frame(), as_of=date(2024, 1, 1), derive_iv=False
+    )
+    assert all(c.iv is None for c in chains["ABC"].contracts)
+
+
+def test_metrics_use_bhavcopy_derived_iv() -> None:
+    chains = normalize_bhavcopy_options(_iv_frame(vol=0.30), as_of=date(2024, 1, 1))
+    metrics = compute_chain_metrics(chains["ABC"])
+    assert metrics.atm_iv == pytest.approx(0.30, abs=1e-3)
+    assert metrics.median_iv is not None
+
+
+def test_risk_free_rate_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCREENER_INDIA_RISK_FREE_RATE", "0.10")
+    # Price the frame at rate 0.065 but invert at 0.10 -> IV shifts off 0.30.
+    chains = normalize_bhavcopy_options(_iv_frame(vol=0.30), as_of=date(2024, 1, 1))
+    atm = next(
+        c for c in chains["ABC"].contracts if c.right == "call" and c.strike == 100.0
+    )
+    assert atm.iv is not None
+    assert abs(atm.iv - 0.30) > 1e-3

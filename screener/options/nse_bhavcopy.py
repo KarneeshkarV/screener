@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from datetime import date, datetime, time, timezone
 from pathlib import Path
@@ -9,7 +10,8 @@ from typing import Any, cast
 
 import pandas as pd
 
-from screener.options.models import OptionChain, OptionContract
+from screener.options.greeks import black_scholes_greeks, implied_volatility
+from screener.options.models import OptionChain, OptionContract, OptionRight
 from screener.options._parse import nonnegative_or_zero
 from screener.options._parse import number as _as_number
 from screener.options._parse import positive as _positive
@@ -36,6 +38,51 @@ REQUIRED_COLUMNS = frozenset(
     }
 )
 BhavcopyFetcher = Callable[[date], pd.DataFrame]
+
+# Bhavcopy has no IV, so point-in-time IV/greeks are inverted from the daily
+# settle (or close) using a flat risk-free rate; India's ~91-day T-bill sits
+# near this level. Overridable per run via the environment variable.
+_RISK_FREE_RATE_ENV = "SCREENER_INDIA_RISK_FREE_RATE"
+_DEFAULT_RISK_FREE_RATE = 0.065
+
+
+def _india_risk_free_rate() -> float:
+    raw = os.environ.get(_RISK_FREE_RATE_ENV)
+    if raw is None:
+        return _DEFAULT_RISK_FREE_RATE
+    try:
+        return float(raw)
+    except ValueError:
+        return _DEFAULT_RISK_FREE_RATE
+
+
+def _derive_iv_greeks(
+    *,
+    spot: float | None,
+    strike: float,
+    expiry: date,
+    as_of: date,
+    right: OptionRight,
+    price: float | None,
+    rate: float,
+) -> tuple[float | None, dict[str, float] | None]:
+    """Invert IV (decimal) + greeks from a settle/close price; None on failure.
+
+    Guards invalid geometry (non-positive spot/strike/price, non-future expiry)
+    and lets the pricing library return None for prices it cannot identify.
+    """
+    if spot is None or spot <= 0 or strike <= 0 or price is None or price <= 0:
+        return None, None
+    if expiry <= as_of:
+        return None, None
+    time_years = (expiry - as_of).days / 365.25
+    if time_years <= 0:
+        return None, None
+    iv = implied_volatility(price, spot, strike, time_years, rate, right)
+    if iv is None:
+        return None, None
+    greeks = black_scholes_greeks(spot, strike, time_years, rate, iv, right)
+    return iv, greeks
 
 
 def _row_date(row: Mapping[str, Any], fallback: date) -> date:
@@ -70,13 +117,19 @@ def normalize_bhavcopy_options(
     symbols: set[str] | None = None,
     lot_sizes: Mapping[str, float] | None = None,
     spot_prices: Mapping[str, float] | None = None,
+    derive_iv: bool = True,
 ) -> dict[str, OptionChain]:
     """Normalize UDiff option rows into one multi-expiry chain per underlying.
 
     ``spot_prices`` (SYMBOL -> price) is a spot fallback for legacy bhavcopies,
     which carry no ``UndrlygPric``; it is used only when the per-contract
     underlying price yields nothing for an underlying.
+
+    Bhavcopy has no IV, so when ``derive_iv`` is set (default) a point-in-time
+    IV (decimal) and greeks are inverted from the settle/close price for live
+    contracts (positive OI or volume) once spot is known.
     """
+    rate = _india_risk_free_rate()
     missing = REQUIRED_COLUMNS - set(frame.columns)
     if missing:
         raise ValueError(f"NSE F&O bhavcopy missing columns: {sorted(missing)}")
@@ -119,24 +172,44 @@ def normalize_bhavcopy_options(
             embedded_lot = _positive(row.get("NewBrdLotQty"))
             mapped_lot = _positive((lot_sizes or {}).get(underlying))
             contract_as_of = _row_date(row, as_of)
+            right: OptionRight = "call" if right_raw == "CE" else "put"
+            oi = nonnegative_or_zero(row.get("OpnIntrst"))
+            volume = nonnegative_or_zero(row.get("TtlTradgVol"))
+            settle = _positive(row.get("SttlmPric"))
+            last = _last_price(row)
+            iv: float | None = None
+            greeks: dict[str, float] | None = None
+            if derive_iv and (oi > 0 or volume > 0):
+                iv, greeks = _derive_iv_greeks(
+                    spot=spot,
+                    strike=strike,
+                    expiry=expiry,
+                    as_of=contract_as_of,
+                    right=right,
+                    price=settle or last,
+                    rate=rate,
+                )
+            greek_kwargs = greeks or {}
             contracts.append(
                 OptionContract(
                     symbol=_contract_symbol(row, underlying, expiry),
                     underlying=underlying,
                     expiry=expiry,
                     strike=strike,
-                    right="call" if right_raw == "CE" else "put",
-                    oi=nonnegative_or_zero(row.get("OpnIntrst")),
+                    right=right,
+                    oi=oi,
                     oi_change=_as_number(row.get("ChngInOpnIntrst")),
-                    volume=nonnegative_or_zero(row.get("TtlTradgVol")),
-                    last=_last_price(row),
+                    volume=volume,
+                    iv=iv,
+                    last=last,
                     previous_close=_positive(row.get("PrvsClsgPric")),
-                    settle=_positive(row.get("SttlmPric")),
+                    settle=settle,
                     lot_size=embedded_lot or mapped_lot,
                     as_of=datetime.combine(
                         contract_as_of, time.min, tzinfo=timezone.utc
                     ),
                     source="nse_bhavcopy",
+                    **greek_kwargs,
                 )
             )
         if not contracts:
@@ -197,6 +270,7 @@ def load_bhavcopy_chains(
     refresh: bool = False,
     fetcher: BhavcopyFetcher | None = None,
     cash_fetcher: CashCloseFetcher | None = None,
+    derive_iv: bool = True,
 ) -> dict[str, OptionChain]:
     """Load and normalize all NSE option chains stamped on ``d``.
 
@@ -216,7 +290,11 @@ def load_bhavcopy_chains(
         cash_loader = cash_fetcher or _read_cash_closes
         spot_prices = cash_loader(d)
     return normalize_bhavcopy_options(
-        frame, as_of=d, symbols=symbols, spot_prices=spot_prices
+        frame,
+        as_of=d,
+        symbols=symbols,
+        spot_prices=spot_prices,
+        derive_iv=derive_iv,
     )
 
 
