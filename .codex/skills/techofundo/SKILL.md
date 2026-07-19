@@ -5,16 +5,14 @@ description: Use when the user invokes /use techofundo or asks for technofundame
 
 # Techofundo
 
-Analyze the user’s stock or portfolio input and return an accurate technofundamental view with stop-loss and take-profit levels.
+Analyze the stock or portfolio input the user supplies (plain tickers, comma-separated tickers, or `SYMBOL:ENTRY:MARKET_VALUE`).
 
-## Input
-
-Accept plain tickers, comma-separated tickers, or `SYMBOL:ENTRY:MARKET_VALUE`. If quantity, average price, timeframe, or risk style is supplied, use it. If not supplied, make a conservative swing-trade assumption and state it.
+Produce an accurate technofundamental analysis with stop-loss and take-profit levels. Treat this as a current-market, high-accuracy task.
 
 ## Workflow
 
-1. Read the project docs and inspect the codebase enough to identify available data providers, screeners, indicators, backtesters, FMP/yfinance integrations, and portfolio tooling.
-2. Use the repository freely: run existing CLI commands, import modules in small scripts, or add temporary/ad-hoc analysis code if useful. Do not assume any single helper or command is mandatory.
+1. Parse the input as one or more holdings. Accept plain tickers, comma-separated tickers, or `SYMBOL:ENTRY:MARKET_VALUE`. If quantity, average price, timeframe, or risk style is supplied, use it. If not supplied, make a conservative swing-trade assumption and state it.
+2. Read the project docs and inspect the codebase enough to identify available data providers, screeners, indicators, backtesters, FMP/yfinance integrations, and portfolio tooling. Use the repository freely: run existing CLI commands, import modules in small scripts, or add temporary/ad-hoc analysis code if useful. Do not assume any single helper or command is mandatory.
 3. Verify current/recent market data. Prefer the repo’s configured providers and caches. Use FMP when `FMP_API_KEY` is available, especially for quote, valuation, rating, profile, analyst/target, insider, or fundamental context. Fall back to yfinance/repo OHLCV when FMP is unavailable. Browse only when needed for current facts, and cite links if external web data materially affects the answer.
 4. Run a technical pass:
    - Current price, entry P&L when entry is provided.

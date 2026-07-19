@@ -13,7 +13,7 @@ Use this skill for codebase-backed stock analysis, portfolio reviews, signal che
 - `screener_bot/`: Telegram bot that wraps the Python `screener` package for portfolio checks, alerts, charts, and scheduled screen diffs.
 - `screener-rs/`: Rust migration and parity/performance implementation. Use Cargo from this directory. **Currently not present in this workspace** — skip all Rust/parity guidance below unless the directory exists.
 
-If repo guidance conflicts, follow `screener/AGENTS.md`: use `uv`; bot code lives in `../screener_bot/`. The root instruction references `RTK.md`, but this workspace currently does not contain that file.
+If repo guidance conflicts, follow `screener/AGENTS.md`: use `uv`; bot code lives in `../screener_bot/`.
 
 ## First Choice Tooling
 
@@ -72,7 +72,7 @@ uv run pytest
 Use these modules instead of recreating logic:
 
 - Technical screen: `screener/screener/commands/screen.py`, `screener/screener/scanner.py`, `screener/screener/criteria/plugins/`.
-- Custom criteria: add a plugin in `screener/screener/criteria/plugins/` with `@criterion("name")`; use `pipeline=True` only when the scan needs enrichment/history/external providers.
+- Custom criteria are pure filters: add a plugin in `screener/screener/criteria/plugins/` with `@criterion("name")`. `criterion()` takes only a name and wraps a zero-argument callable returning TradingView filter expressions — there is no `pipeline` kwarg. Full command workflows (enrichment, history, external providers) live in `screener/screener/screen_aliases.py` and `screener/screener/screen_alias_plugins/`, not this registry.
 - Backtests: `screener/screener/backtester/historical.py`, `rolling.py`, `core.py`, `models.py`, `metrics.py`.
 - Position sizing: `screener/screener/backtester/sizing.py` (`@sizer` registry: `equal_slot`, `fixed_fraction`, `fixed_risk`, `atr_risk`, `inverse_vol`); exposed as `--sizing`/`--sizing-*` on both backtest commands. Default `equal_slot` is bit-identical to the legacy engine; other rules clamp to the slot budget and read only up to the signal bar.
 - Price data: `screener/screener/backtester/data.py`; use `tv_to_yf()` for symbol mapping and injected `PriceFetcher` for tests. Interval-aware: pass `interval=` to the fetcher constructors, never mix intervals in one cache key.

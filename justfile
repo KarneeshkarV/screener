@@ -260,3 +260,69 @@ typecheck:
 
 # Run every CI gate locally: tests, lint, format check, types.
 ci: test lint format-check typecheck
+
+# Re-generate the .codex and .opencode agent copies from the canonical
+# .claude sources. `.claude/` is the single source of truth for agent
+# skills/commands; never hand-edit the generated .codex/.opencode copies.
+# Idempotent: running `just sync-skills` twice produces no diff.
+sync-skills:
+    #!/usr/bin/env python3
+    import pathlib
+
+    # `.claude/` is canonical. Codex skills use `name:` + `description:`
+    # frontmatter (no argument-hint/allowed-tools); opencode commands keep
+    # only `description:`. `$ARGUMENTS` is Claude/opencode command syntax,
+    # so the codex skill describes its input in prose instead.
+    CODEX_TECHOFUNDO_DESCRIPTION = (
+        "Use when the user invokes /use techofundo or asks for technofundamental "
+        "stock or portfolio analysis with stop-loss and take-profit levels. Inputs "
+        "may be plain tickers, comma-separated tickers, or portfolio entries like "
+        "SYMBOL:ENTRY:MARKET_VALUE. The output should combine technical and "
+        "fundamental evidence from the repo/providers and explain the logic behind "
+        "stop-loss and take-profit levels."
+    )
+    CODEX_TECHOFUNDO_INPUT = (
+        "Analyze the stock or portfolio input the user supplies (plain tickers, "
+        "comma-separated tickers, or `SYMBOL:ENTRY:MARKET_VALUE`)."
+    )
+
+    def write(path, text):
+        p = pathlib.Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+
+    # 1. screener-stock-analysis-codebase: codex uses identical name+description
+    #    frontmatter, so the skill is a verbatim copy of the canonical version.
+    skill = pathlib.Path(
+        ".claude/skills/screener-stock-analysis-codebase/SKILL.md"
+    ).read_text()
+    write(".codex/skills/screener-stock-analysis-codebase/SKILL.md", skill)
+
+    # 2. techofundo: canonical command is .claude/commands/techofundo.md.
+    cmd = pathlib.Path(".claude/commands/techofundo.md").read_text()
+    _, frontmatter, body = cmd.split("---\n", 2)
+
+    # opencode command: drop argument-hint/allowed-tools, keep description + body.
+    opencode_fm = [
+        line
+        for line in frontmatter.splitlines(keepends=True)
+        if not line.startswith(("argument-hint:", "allowed-tools:"))
+    ]
+    write(
+        ".opencode/commands/techofundo.md",
+        "---\n" + "".join(opencode_fm) + "---\n" + body,
+    )
+
+    # codex skill: name+description frontmatter, prose input instead of $ARGUMENTS.
+    codex_body = body.replace("# /techofundo", "# Techofundo").replace(
+        "Input portfolio or stock list: `$ARGUMENTS`",
+        CODEX_TECHOFUNDO_INPUT,
+    )
+    write(
+        ".codex/skills/techofundo/SKILL.md",
+        "---\nname: techofundo\ndescription: "
+        + CODEX_TECHOFUNDO_DESCRIPTION
+        + "\n---\n"
+        + codex_body,
+    )
+    print("Synced .codex and .opencode copies from .claude sources.")
