@@ -150,8 +150,8 @@ def test_bb_pattern_double_bottom_entry_and_exit():
 
 
 def test_sar_short_series_returns_zeros():
-    from screener.indicators.registry import get_indicator
+    from screener.indicators.registry import registry
 
-    sar = get_indicator("sar")
+    sar = registry.get("sar")
     out = sar(np.array([1.0]), np.array([1.0]), np.array([1.0]))
     assert out.tolist() == [0.0]

@@ -6,17 +6,14 @@ from pathlib import Path
 
 import click
 
-from screener.cache import parse_ttl
 from screener import history
-from screener.criteria import CRITERIA, resolve_criteria
+from screener.criteria import CRITERIA
 from screener.display import print_csv, print_results
-from screener.enrich import enrich_days_to_earnings
 from screener.markets import market_option
 from screener.scanner import scan
 from screener.screen_workflow import (
     ScreenMode,
     ScreenRequest,
-    ScreenWorkflowDeps,
     run_screen_workflow,
 )
 from screener.screen_aliases import (
@@ -24,23 +21,6 @@ from screener.screen_aliases import (
     ScreenAliasSelectionError,
     resolve_screen_alias,
 )
-
-
-def _screen_workflow_deps() -> ScreenWorkflowDeps:
-    from screener import reporting
-    from screener.commands.screen_report import render_screen_report
-
-    return ScreenWorkflowDeps(
-        resolve_criteria=resolve_criteria,
-        parse_cache_ttl=lambda value: parse_ttl(value, default=900),
-        scan=scan,
-        save_run=history.save_run,
-        previous_run=history.previous_run,
-        diff=history.diff,
-        temp_report_path=lambda prefix: reporting.temp_report_path(prefix),
-        render_report=render_screen_report,
-        enrich_days_to_earnings=enrich_days_to_earnings,
-    )
 
 
 @click.command()
@@ -147,7 +127,7 @@ def screen(
         earnings=earnings,
         earnings_buffer=earnings_buffer,
     )
-    outcome = run_screen_workflow(request, _screen_workflow_deps())
+    outcome = run_screen_workflow(request)
 
     if outcome.mode is ScreenMode.CSV:
         print_csv(outcome.df)

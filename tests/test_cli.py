@@ -14,7 +14,7 @@ from screener.backtester import historical as historical_cli
 from screener.backtester.models import BacktestResult
 from screener.backtester.optimization import cli as optimize_cli
 from screener import history as history_mod
-from screener.commands import screen as screen_mod
+from screener import screen_workflow as workflow_mod
 from screener.cli import cli as package_cli
 
 from tests.conftest import StubPriceFetcher, make_bars
@@ -138,8 +138,8 @@ def _screen_df() -> pd.DataFrame:
 def test_screen_auto_temp_report(tmp_path, monkeypatch):
     report = tmp_path / "screen.html"
     monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
-    monkeypatch.setattr("screener.reporting.temp_report_path", lambda prefix: report)
-    monkeypatch.setattr(screen_mod, "scan", lambda **kwargs: (2, _screen_df()))
+    monkeypatch.setattr(workflow_mod, "temp_report_path", lambda prefix: report)
+    monkeypatch.setattr(workflow_mod, "scan", lambda **kwargs: (2, _screen_df()))
 
     res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2"])
 
@@ -156,8 +156,8 @@ def test_screen_auto_temp_report(tmp_path, monkeypatch):
 def test_screen_csv_skips_auto_temp_report(tmp_path, monkeypatch):
     report = tmp_path / "screen.html"
     monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
-    monkeypatch.setattr("screener.reporting.temp_report_path", lambda prefix: report)
-    monkeypatch.setattr(screen_mod, "scan", lambda **kwargs: (2, _screen_df()))
+    monkeypatch.setattr(workflow_mod, "temp_report_path", lambda prefix: report)
+    monkeypatch.setattr(workflow_mod, "scan", lambda **kwargs: (2, _screen_df()))
 
     res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2", "--csv"])
 
@@ -175,8 +175,8 @@ def test_screen_earnings_flag_enables_enrichment(monkeypatch):
         calls.append((df["name"].tolist(), market))
         return df.assign(days_to_earnings=[4, None])
 
-    monkeypatch.setattr(screen_mod, "scan", lambda **kwargs: (2, _screen_df()))
-    monkeypatch.setattr(screen_mod, "enrich_days_to_earnings", enrich)
+    monkeypatch.setattr(workflow_mod, "scan", lambda **kwargs: (2, _screen_df()))
+    monkeypatch.setattr(workflow_mod, "enrich_days_to_earnings", enrich)
 
     res = CliRunner().invoke(cli, ["screen", "--earnings", "--csv"])
 

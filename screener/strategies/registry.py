@@ -13,7 +13,6 @@ with an ``@strategy(...)`` decorator. No edits to this file are needed.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from typing import Optional
 
 from screener.strategies.base import StrategyFn
@@ -34,16 +33,3 @@ def _callable_of(spec: StrategySpec) -> Optional[StrategyFn]:
 
 
 STRATEGIES: DerivedView[StrategyFn] = DerivedView(_callable_of)
-
-
-def get_strategy(name: str) -> StrategyFn:
-    try:
-        return STRATEGIES[name]
-    except KeyError:
-        raise KeyError(
-            f"Unknown strategy {name!r}. Known: {sorted(STRATEGIES)}"
-        ) from None
-
-
-def iter_strategies() -> Iterator[tuple[str, StrategyFn]]:
-    return iter(STRATEGIES.items())

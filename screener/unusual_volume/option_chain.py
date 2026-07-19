@@ -11,9 +11,7 @@ from __future__ import annotations
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
-from typing import Any, Optional, cast
-
-import numpy as np
+from typing import Optional
 
 from screener.options.metrics import compute_chain_metrics
 from screener.options.nse_live import NSELiveOptionsProvider
@@ -49,81 +47,6 @@ def _safe_ratio(num: float | None, denom: float | None) -> Optional[float]:
     if num is None or denom is None or denom == 0:
         return None
     return round(float(num) / float(denom), 4)
-
-
-def compute_oc_metrics(raw: dict) -> dict:
-    """Extract CE/PE total OI and derive call_put_oi_ratio + pcr.
-
-    Prefers NSE's precomputed near-expiry ``filtered.CE/PE.totOI``; falls back
-    to summing per-strike ``records.data[*].CE/PE.openInterest``.
-    """
-    ce_oi: Optional[float] = None
-    pe_oi: Optional[float] = None
-    filtered = raw.get("filtered") if isinstance(raw, dict) else None
-    if isinstance(filtered, dict):
-        ce = filtered.get("CE") or {}
-        pe = filtered.get("PE") or {}
-        ce_oi = _as_float(ce.get("totOI"))
-        pe_oi = _as_float(pe.get("totOI"))
-    if ce_oi is None or pe_oi is None:
-        records = (raw.get("records") or {}).get("data") or []
-        ce_sum = pe_sum = 0.0
-        for row in records:
-            ce_sum += _as_float((row.get("CE") or {}).get("openInterest")) or 0.0
-            pe_sum += _as_float((row.get("PE") or {}).get("openInterest")) or 0.0
-        ce_oi = ce_sum or None
-        pe_oi = pe_sum or None
-    # A zero OI leg is meaningless data — both ratios collapse to None.
-    if not ce_oi:
-        ce_oi = None
-    if not pe_oi:
-        pe_oi = None
-    return {
-        "ce_oi": ce_oi,
-        "pe_oi": pe_oi,
-        "call_put_oi_ratio": _safe_ratio(ce_oi, pe_oi),
-        "pcr": _safe_ratio(pe_oi, ce_oi),
-    }
-
-
-def compute_oc_iv_volume(raw: dict) -> dict:
-    """Median strike IV (%) and total CE/PE traded volume from an NSE chain.
-
-    Sums per-strike ``records.data[*].CE/PE.totalTradedVolume`` and gathers the
-    per-strike ``impliedVolatility`` (kept only within a plausible 0-500% band,
-    dropping NSE's zero/garbage rows). Complements :func:`compute_oc_metrics`
-    (OI / PCR) for callers that also need IV and volume — e.g. the earnings
-    IV-sentiment signal. ``median_iv`` is ``None`` when no usable IV survives.
-    """
-    records = (raw.get("records") or {}).get("data") or []
-    total_ce_vol = 0.0
-    total_pe_vol = 0.0
-    iv_vals: list[float] = []
-    for row in records:
-        ce = row.get("CE") or {}
-        pe = row.get("PE") or {}
-        total_ce_vol += _as_float(ce.get("totalTradedVolume")) or 0.0
-        total_pe_vol += _as_float(pe.get("totalTradedVolume")) or 0.0
-        for leg in (ce, pe):
-            iv = _as_float(leg.get("impliedVolatility"))
-            if iv is not None and 0 < iv < 500:
-                iv_vals.append(iv)
-    median_iv = float(np.percentile(iv_vals, 50)) if iv_vals else None
-    return {
-        "median_iv": median_iv,
-        "total_call_volume": total_ce_vol,
-        "total_put_volume": total_pe_vol,
-    }
-
-
-def _as_float(value: object) -> Optional[float]:
-    try:
-        if value is None:
-            return None
-        # value is object; the try/except guards non-numeric inputs.
-        return float(cast(Any, value))
-    except (TypeError, ValueError):
-        return None
 
 
 def overlay_option_chain(

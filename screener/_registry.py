@@ -1,16 +1,13 @@
 """Tiny plugin-registry primitive shared by strategies, criteria, and indicators.
 
 Each registry stores ``name -> value`` plus optional metadata. Plugin modules
-register entries with the ``register`` decorator. ``autodiscover`` imports every
-submodule of a package so module-level decorators fire on first import.
+register entries with the ``register`` decorator; each package imports its plugin
+modules explicitly so those module-level decorators fire on first import.
 """
 
 from __future__ import annotations
 
-import importlib
-import pkgutil
 from collections.abc import Callable, ItemsView, Iterator
-from types import ModuleType
 from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
@@ -72,11 +69,3 @@ class Registry(Generic[T]):
     def as_dict(self) -> dict[str, T]:
         """Return a snapshot dict — handy for backwards-compat exports."""
         return dict(self._entries)
-
-
-def autodiscover(package: ModuleType) -> None:
-    """Import every submodule of ``package`` so registration side effects fire."""
-    if not hasattr(package, "__path__"):
-        raise TypeError(f"autodiscover expects a package, got {package!r}")
-    for mod_info in pkgutil.iter_modules(package.__path__):
-        importlib.import_module(f"{package.__name__}.{mod_info.name}")

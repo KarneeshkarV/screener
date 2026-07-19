@@ -1,8 +1,7 @@
-"""Plugin directory for strategies. Auto-discovered by ``screener.strategies``.
+"""Plugin directory for strategies.
 
-Drop a new ``*.py`` file in here with ``@strategy("name")`` for callable
-strategies or a top-level ``register_expression_strategy(...)`` call for
-expression strategies.
-decorator — it will be registered automatically the next time the package
-loads. No central edits required.
+Each ``*.py`` file registers a strategy via a top-level ``@strategy("name")``
+decorator (callable strategies) or a ``register_expression_strategy(...)`` call
+(expression strategies). New strategies are added by dropping a module here and
+importing it from ``screener.strategies.spec.discover_plugins``.
 """

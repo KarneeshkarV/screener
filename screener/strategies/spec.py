@@ -21,7 +21,7 @@ from typing import Any, Callable, Literal, Optional, TypeVar, cast
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, SkipValidation, field_validator
 
-from screener._registry import Registry, autodiscover
+from screener._registry import Registry
 from screener.backtester.data import PriceFetcher
 from screener.strategies.trades import Trade
 
@@ -169,9 +169,33 @@ def register_expression_strategy(
 
 def discover_plugins() -> None:
     """Import every plugin module so its ``@strategy`` decorators fire."""
-    from screener.strategies import plugins
-
-    autodiscover(plugins)
+    from screener.strategies.plugins import (  # noqa: F401
+        awesome_oscillator,
+        bb_breakout,
+        bb_pattern,
+        breakout,
+        ema150_200_revenue,
+        ema_trend,
+        heikin_ashi,
+        low_volatility,
+        ma_cross,
+        ma_cross_regime,
+        ma_cross_st_entry,
+        ma_cross_st_exit,
+        macd_oscillator,
+        macd_rsi,
+        mark_minervini,
+        mom_lowvol_combo,
+        momentum_12_1,
+        parabolic_sar,
+        rs_breakout,
+        rsi_ema,
+        rsi_pattern,
+        shooting_star,
+        supertrend,
+        supertrend_rsi,
+        vivek_equity_tool,
+    )
 
 
 def resolve_strategy_spec(name: str | None) -> StrategySpec | None:

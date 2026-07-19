@@ -6,9 +6,8 @@ Indicators self-register via ``@indicator(...)`` in plugin modules under
 
 from screener.indicators.registry import (
     IndicatorFn,
-    get_indicator,
     indicator,
     registry,
 )
 
-__all__ = ["IndicatorFn", "get_indicator", "indicator", "registry"]
+__all__ = ["IndicatorFn", "indicator", "registry"]

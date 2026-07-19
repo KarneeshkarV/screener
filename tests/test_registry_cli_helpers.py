@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import types
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import ANY
@@ -8,7 +7,7 @@ from unittest.mock import ANY
 import click
 import pytest
 
-from screener._registry import Registry, autodiscover
+from screener._registry import Registry
 from screener.backtester.cli_common import (
     build_slippage_model,
     parse_partial_exits,
@@ -59,11 +58,6 @@ def test_registry_exposes_snapshots_and_errors():
         reg.add("one", 2)
     with pytest.raises(KeyError, match="Unknown thing 'missing'"):
         reg.get("missing")
-
-
-def test_autodiscover_rejects_non_package():
-    with pytest.raises(TypeError, match="expects a package"):
-        autodiscover(types.ModuleType("plain_module"))
 
 
 def test_resolve_strategy_exprs_uses_named_strategy(monkeypatch):

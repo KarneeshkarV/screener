@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol, TypeVar
 
-from screener._registry import Registry, autodiscover
+from screener._registry import Registry
 
 
 class FilterCriterionFn(Protocol):
@@ -66,13 +66,12 @@ def resolve_criteria(names: Sequence[str]) -> FilterCriteriaSelection:
     )
 
 
-def _discover() -> None:
-    from screener.criteria import plugins
+def _register_plugins() -> None:
+    """Import plugin modules so their ``@criterion`` decorators fire."""
+    from screener.criteria.plugins import fundamental, technical  # noqa: F401
 
-    autodiscover(plugins)
 
-
-_discover()
+_register_plugins()
 
 CRITERIA: dict[str, FilterCriterionFn] = registry.as_dict()
 

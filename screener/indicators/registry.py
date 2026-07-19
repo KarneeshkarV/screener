@@ -1,15 +1,16 @@
-"""Indicator registry. Public ``indicator(name)`` decorator + autodiscovery.
+"""Indicator registry. Public ``indicator(name)`` decorator + explicit registration.
 
-Drop a new file in ``screener/indicators/plugins/`` with ``@indicator("name")``
-and it's available via ``get_indicator("name")`` and re-exported by
-``screener.indicators.numpy`` under its legacy ``_name`` alias if applicable.
+Drop a new file in ``screener/indicators/plugins/`` with ``@indicator("name")``,
+import it from ``_register_plugins`` below, and it's available via
+``registry.get("name")`` and re-exported by ``screener.indicators.numpy`` under
+its legacy ``_name`` alias if applicable.
 """
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
-from screener._registry import Registry, autodiscover
+from screener._registry import Registry
 
 IndicatorFn = Callable[..., Any]
 
@@ -21,17 +22,22 @@ def indicator(name: str, **meta) -> Callable[[IndicatorFn], IndicatorFn]:
     return registry.register(name, **meta)
 
 
-def get_indicator(name: str) -> IndicatorFn:
-    return registry.get(name)
+def _register_plugins() -> None:
+    """Import plugin modules so their ``@indicator`` decorators fire."""
+    from screener.indicators.plugins import (  # noqa: F401
+        atr,
+        bollinger_bands,
+        ema,
+        rma,
+        rsi,
+        sar,
+        sma,
+        stdev,
+        supertrend,
+    )
 
 
-def _discover() -> None:
-    from screener.indicators import plugins
-
-    autodiscover(plugins)
+_register_plugins()
 
 
-_discover()
-
-
-__all__ = ["IndicatorFn", "get_indicator", "indicator", "registry"]
+__all__ = ["IndicatorFn", "indicator", "registry"]

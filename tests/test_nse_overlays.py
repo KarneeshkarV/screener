@@ -87,35 +87,6 @@ def test_compute_delivery_metrics_empty_has_new_columns():
 # ── option chain (pcr / call_put_oi_ratio) ─────────────────────────────────
 
 
-def test_compute_oc_metrics_prefers_filtered_totals():
-    raw = {"filtered": {"CE": {"totOI": 1000}, "PE": {"totOI": 2000}}}
-    m = option_chain.compute_oc_metrics(raw)
-    assert m["call_put_oi_ratio"] == 0.5
-    assert m["pcr"] == 2.0
-
-
-def test_compute_oc_metrics_sums_records_when_no_filtered():
-    raw = {
-        "records": {
-            "data": [
-                {"CE": {"openInterest": 100}, "PE": {"openInterest": 50}},
-                {"CE": {"openInterest": 300}, "PE": {"openInterest": 150}},
-            ]
-        }
-    }
-    m = option_chain.compute_oc_metrics(raw)
-    assert m["call_put_oi_ratio"] == 2.0
-    assert m["pcr"] == 0.5
-
-
-def test_compute_oc_metrics_zero_leg_is_none():
-    m = option_chain.compute_oc_metrics(
-        {"filtered": {"CE": {"totOI": 0}, "PE": {"totOI": 100}}}
-    )
-    assert m["call_put_oi_ratio"] is None
-    assert m["pcr"] is None
-
-
 def test_overlay_option_chain_mutates_and_returns_map(monkeypatch):
     monkeypatch.setattr(
         option_chain,
