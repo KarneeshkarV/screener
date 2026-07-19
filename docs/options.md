@@ -11,7 +11,7 @@ earnings-sentiment output remains percentage based for backward compatibility.
 
 | Market | Source | What it supplies | Historical coverage / freshness |
 |---|---|---|---|
-| India | NSE F&O UDiff bhavcopy | Exact end-of-day contract OI, OI change, volume, price, strike, expiry, underlying price, and board lot | Immutable daily archive. The current UDiff format begins in July 2024; unavailable dates are skipped and reported. This is the primary backtest source. |
+| India | NSE F&O UDiff + legacy bhavcopy | Exact end-of-day contract OI, OI change, volume, price, strike, expiry, underlying price, and board lot | Immutable daily archive. The UDiff format begins 2024-07-08; earlier dates fall back to the legacy archive (roughly 2000 onward) normalized to the same schema. Unavailable dates are skipped and reported. This is the primary backtest source. |
 | India | NSE equity/index option-chain API | Intraday OI, OI change, volume, IV, bid/ask and last price | Live snapshot only. Equity and NIFTY/BANKNIFTY/FINNIFTY-family index endpoints use the existing primed NSE session and 15-minute cache. |
 | India | NSE participant OI archive | Client/DII/FII/Pro long and short positioning across index/stock futures and options | Exact daily archive, backfillable with `options participants`. |
 | India | NSE all-index close archive / `allIndices` | India VIX close or current value | Exact daily archive plus a live fallback. |
@@ -80,6 +80,32 @@ uv run screener options regime -m us --start 2026-07-01 --end 2026-07-08
 
 `--refresh` bypasses the relevant provider cache. NSE fan-out remains modest;
 one unavailable archive day does not abort a multi-day backfill.
+
+## Deep historical backfill
+
+The India panel now reaches back to the pre-UDiff era (roughly 2000 onward)
+using NSE's legacy F&O archive. All range commands accept arbitrary multi-year
+`--start`/`--end` windows; a missing archive day is skipped and reported, so a
+long run degrades gracefully rather than aborting. `just` wraps the recommended
+order:
+
+```bash
+just options-backfill 2020-01-01 2024-12-31          # per-contract chains + metrics
+just options-backfill-context 2020-01-01 2024-12-31  # participant OI, then India VIX regime
+```
+
+Run the panel build first (it is the base layer), then the participant OI and
+regime context. A five-year build spans a bit over a thousand trading days;
+because each day is one throttled archive download plus local normalization,
+expect on the order of a few tens of minutes per year on a cold cache, and near
+instant re-runs once cached.
+
+Two caveats specific to the pre-2024 era. Legacy bhavcopies carry no underlying
+price, so spot is filled from that day's NSE cash bhavcopy (equity closes);
+index underlyings such as NIFTY have no matching equity symbol and keep a null
+spot. And legacy files carry no IV, so IV and greeks are derived point-in-time
+by inverting the daily settle price (see Metrics), rather than being read from
+the feed.
 
 ## Metrics
 

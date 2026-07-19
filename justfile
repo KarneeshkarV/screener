@@ -223,6 +223,15 @@ institutional *args:
 options *args:
     @{{screener}} options "$@"
 
+# Deep multi-year India options panel backfill. Example: just options-backfill 2020-01-01 2024-12-31
+options-backfill start end:
+    @{{python}} main.py options build-panel -m india --start {{start}} --end {{end}}
+
+# Backfill India participant OI + VIX regime context for a range. Example: just options-backfill-context 2020-01-01 2024-12-31
+options-backfill-context start end:
+    @{{python}} main.py options participants --start {{start}} --end {{end}}
+    @{{python}} main.py options regime -m india --start {{start}} --end {{end}}
+
 # One-command research report: grid -> walk-forward -> Monte Carlo.
 research-report *args:
     @{{screener}} research-report "$@"
