@@ -438,6 +438,26 @@ def read_fo_bhavcopy_raw(
 
 _HOLIDAYS_URL = "https://www.nseindia.com/api/holiday-master?type=trading"
 
+# NSE occasionally trades on a weekend (Union Budget day, Diwali Muhurat, or a
+# disaster-recovery drill). Each date below was confirmed to have a real FO
+# bhavcopy archive (HTTP-200 application/zip) via a live probe:
+#   2024-01-20 (Sat) special live-trading session
+#   2024-03-02 (Sat) special session
+#   2024-05-18 (Sat) special / DR session
+#   2025-02-01 (Sat) Union Budget session
+#   2026-02-01 (Sun) Union Budget session
+#   2023-11-12 (Sun) Diwali Muhurat trading
+SPECIAL_TRADING_SESSIONS: frozenset[date] = frozenset(
+    {
+        date(2023, 11, 12),
+        date(2024, 1, 20),
+        date(2024, 3, 2),
+        date(2024, 5, 18),
+        date(2025, 2, 1),
+        date(2026, 2, 1),
+    }
+)
+
 
 def _parse_holiday_payload(raw: Any) -> set[date]:
     """Extract trading-holiday dates from NSE's ``holiday-master`` payload.
@@ -501,8 +521,11 @@ class TradingCalendar:
         """True if ``d`` is a weekday and not a known NSE holiday.
 
         When the holiday set is unavailable this is a pure weekday check,
-        preserving the legacy weekend-only behaviour.
+        preserving the legacy weekend-only behaviour. Known NSE weekend
+        special sessions are always trading days.
         """
+        if d in SPECIAL_TRADING_SESSIONS:
+            return True
         if d.weekday() >= 5:
             return False
         return d not in self._holiday_set()

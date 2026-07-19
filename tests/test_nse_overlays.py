@@ -252,6 +252,20 @@ def test_calendar_degrades_to_weekday_only_when_holiday_fetch_fails(monkeypatch)
     assert cal.last_trading_day_on_or_before(date(2026, 1, 3)) == date(2026, 1, 2)
 
 
+def test_calendar_includes_weekend_special_sessions():
+    cal = nse_client.TradingCalendar()
+    cal._holidays = set()
+    # A known NSE weekend special session is a trading day despite being a
+    # weekend; a plain weekend is not; a stubbed weekday holiday still isn't.
+    special = date(2026, 2, 1)  # Sunday, Union Budget session
+    assert special in nse_client.SPECIAL_TRADING_SESSIONS
+    assert special.weekday() >= 5
+    assert cal.is_trading_day(special) is True
+    assert cal.is_trading_day(date(2026, 1, 3)) is False  # plain Saturday
+    cal._holidays = {date(2026, 1, 26)}  # Republic Day (a Monday)
+    assert cal.is_trading_day(date(2026, 1, 26)) is False
+
+
 # ── FII/DII derivation + broadcast ─────────────────────────────────────────
 
 
