@@ -39,6 +39,9 @@ from screener.unusual_volume import (
 from screener.unusual_volume import service as uv_service
 
 
+from screener.unusual_volume.enrichment import Enrichment
+
+
 from screener.unusual_volume.buildup import BuildupScore
 
 
@@ -591,8 +594,6 @@ def test_service_models_and_small_helpers():
             strength_floor="HIGH",
             min_avg_volume=0,
             include_fno_ban=False,
-            deep_india=False,
-            buildup_enabled=False,
             buildup_window=20,
             buildup_min_score=0.5,
         )
@@ -606,8 +607,6 @@ def test_service_models_and_small_helpers():
             strength_floor="HIGH",
             min_avg_volume=0,
             include_fno_ban=False,
-            deep_india=False,
-            buildup_enabled=False,
             buildup_window=20,
             buildup_min_score=0.5,
         )
@@ -667,10 +666,9 @@ def test_service_private_overlay_helpers_cover_fallbacks(monkeypatch):
         min_avg_volume=0,
         min_market_cap=None,
         include_fno_ban=True,
-        deep_india=False,
-        buildup_enabled=True,
         buildup_window=20,
         buildup_min_score=0.5,
+        enrichments=frozenset({Enrichment.BUILDUP}),
     )
     assert uv_service._overlay_india_delivery(
         req_us, {"AAA": make_bars()}, [], console
@@ -742,7 +740,12 @@ def test_service_private_overlay_helpers_cover_fallbacks(monkeypatch):
     )
     assert events == [ev]
 
-    pledge_req = req_us.model_copy(update={"market": "india", "pledge": True})
+    pledge_req = req_us.model_copy(
+        update={
+            "market": "india",
+            "enrichments": frozenset({Enrichment.BUILDUP, Enrichment.PLEDGE}),
+        }
+    )
     monkeypatch.setattr(uv_service, "_live_nse_snapshot_date", lambda: as_of)
     monkeypatch.setitem(
         sys.modules,

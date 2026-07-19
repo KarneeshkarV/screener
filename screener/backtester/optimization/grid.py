@@ -77,7 +77,7 @@ def _stable_fingerprint(value: Any) -> Any:
 
 
 def _config_fingerprint(cfg: BacktestConfig) -> dict[str, Any]:
-    data = cfg.to_flat_dict()
+    data = cfg.model_dump(exclude={"slippage_model"})
     data["slippage_model"] = _stable_fingerprint(cfg.slippage_model)
     return data
 
