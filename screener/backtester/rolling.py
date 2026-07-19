@@ -10,28 +10,25 @@ import click
 from rich.console import Console
 
 from screener.backtester.cli_common import (
-    build_data_policy,
+    CommonBacktestParams,
+    backtest_options,
+    build_backtest_config,
+    build_backtest_fetcher,
     build_slippage_model,
     intraday_options,
     parse_partial_exits,
+    parse_ticker_list,
     referenced_fundamental_fields,
     resolve_min_filters,
+    resolve_report_path,
     resolve_strategy_exprs,
     sizing_options,
     validate_sizing,
+    write_tearsheet,
 )
-from screener.backtester.data import build_price_fetcher
 from screener.backtester.display import print_backtest, print_ledger_csv
-from screener.backtester.models import (
-    SUPPORTED_INTERVALS,
-    BacktestConfig,
-    ExecutionPolicy,
-    PortfolioPolicy,
-    SignalPolicy,
-    UniversePolicy,
-)
 from screener.backtester.rolling_simulation import run_rolling_backtest
-from screener.markets import get_market, get_price_fetcher, market_option
+from screener.markets import get_market, market_option
 from screener.regime import TREND_LABELS
 from screener.universes import (
     UniverseName,
@@ -60,13 +57,7 @@ __all__ = ["backtest_rolling"]
     show_default=True,
     help="Trailing calendar years when --start is omitted.",
 )
-@click.option("--hold", type=int, default=20, help="Holding period (trading days).")
-@click.option("--top", type=int, default=10, help="Concurrent portfolio slots.")
-@click.option("--entry", "entry_expr", default=None, help="Pine-like entry expression.")
-@click.option("--exit", "exit_expr", default=None, help="Pine-like exit expression.")
-@click.option(
-    "--strategy", "strategy_name", default=None, help="Named strategy shortcut."
-)
+@backtest_options("rolling", "hold", "top", "entry", "exit", "strategy")
 @click.option(
     "--universe",
     type=click.Choice(["sp500", "nifty50"]),
@@ -89,39 +80,17 @@ __all__ = ["backtest_rolling"]
         "absent because their delisted history is unavailable."
     ),
 )
-@click.option("--tickers", default=None, help="Comma-separated ticker list.")
-@click.option(
-    "--universe-file", default=None, help="Path to newline-separated ticker file."
-)
-@click.option(
-    "--max-universe",
-    type=int,
-    default=0,
-    help="Cap universe size before fetching prices. Pass 0 to disable.",
-)
-@click.option(
-    "--stop-loss", type=float, default=None, help="Stop loss (fraction, e.g. 0.08)."
-)
-@click.option("--take-profit", type=float, default=None, help="Take profit (fraction).")
-@click.option(
-    "--trailing-stop", type=float, default=None, help="Trailing stop (fraction)."
-)
-@click.option(
-    "--slippage-bps", type=float, default=0.0, help="Slippage per fill (bps)."
-)
-@click.option(
-    "--commission-bps", type=float, default=0.0, help="Commission per fill (bps)."
-)
-@click.option(
-    "--cost-model",
-    type=click.Choice(["flat", "india"]),
-    default="flat",
-    show_default=True,
-    help=(
-        "Statutory fee model. 'flat' applies --commission-bps on every fill "
-        "(legacy). 'india' applies NSE equity delivery fees (STT, stamp duty, "
-        "exchange, SEBI, GST, IPFT)."
-    ),
+@backtest_options(
+    "rolling",
+    "tickers",
+    "universe-file",
+    "max-universe",
+    "stop-loss",
+    "take-profit",
+    "trailing-stop",
+    "slippage-bps",
+    "commission-bps",
+    "cost-model",
 )
 @click.option(
     "--spread-proxy",
@@ -132,62 +101,22 @@ __all__ = ["backtest_rolling"]
         "estimator and charge it as slippage (on top of --slippage-model)."
     ),
 )
-@click.option("--initial-capital", type=float, default=100_000.0)
-@click.option(
-    "--benchmark",
-    default=None,
-    help="Benchmark symbol (default: SPY for US, ^NSEI for India).",
-)
-@click.option(
-    "--min-price",
-    type=float,
-    default=None,
-    help="Minimum signal-day close. Pass 0 to disable.",
-)
-@click.option(
-    "--min-avg-dollar-volume",
-    type=float,
-    default=None,
-    help="Minimum rolling mean dollar volume. Pass 0 to disable.",
-)
-@click.option(
-    "--adv-window",
-    type=int,
-    default=20,
-    help="Lookback bars for average dollar-volume filter.",
-)
-@click.option(
-    "--slippage-model",
-    type=click.Choice(["fixed", "half-spread", "vol-impact", "composite"]),
-    default="fixed",
-)
-@click.option("--half-spread-bps", type=float, default=0.0)
-@click.option("--vol-impact-k", type=float, default=0.1)
-@click.option("--no-gap-fills", is_flag=True, default=False)
-@click.option(
-    "--entry-order", type=click.Choice(["moo", "moc", "limit"]), default="moo"
-)
-@click.option("--entry-limit-bps", type=float, default=None)
-@click.option(
-    "--partial-exit",
-    "partial_exit_args",
-    multiple=True,
-    help="Scale-out tier as PROFIT_FRAC:SHARES_FRAC.",
-)
-@click.option(
-    "--price-adjustment",
-    type=click.Choice(["full", "splits_only", "none"]),
-    default="full",
-)
-@click.option(
-    "--interval",
-    type=click.Choice(list(SUPPORTED_INTERVALS)),
-    default="1d",
-    show_default=True,
-    help=(
-        "Bar interval. Intraday values (1h/30m/15m/5m/1m) fetch from yfinance "
-        "and are subject to its history caps (1m ~30d, 15m/30m ~60d, 1h ~730d)."
-    ),
+@backtest_options(
+    "rolling",
+    "initial-capital",
+    "benchmark",
+    "min-price",
+    "min-avg-dollar-volume",
+    "adv-window",
+    "slippage-model",
+    "half-spread-bps",
+    "vol-impact-k",
+    "no-gap-fills",
+    "entry-order",
+    "entry-limit-bps",
+    "partial-exit",
+    "price-adjustment",
+    "interval",
 )
 @click.option(
     "--regime-filter",
@@ -241,20 +170,7 @@ __all__ = ["backtest_rolling"]
     default=None,
     help="Calendar-day lag applied to fundamental effective dates (defaults: fmp=1, openscreener=60).",
 )
-@click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
-@click.option(
-    "--report",
-    "report_path",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    help="Write a static, self-contained HTML tear-sheet to this file.",
-)
-@click.option(
-    "--open-report",
-    is_flag=True,
-    default=False,
-    help="Open the generated HTML report in the default browser.",
-)
+@backtest_options("rolling", "csv", "report", "open-report")
 @click.option(
     "--dashboard",
     is_flag=True,
@@ -400,7 +316,7 @@ def backtest_rolling(
     universe_note = None
     membership_added: tuple[tuple[str, date], ...] = ()
     if tickers:
-        ticker_tuple = tuple(t.strip() for t in tickers.split(",") if t.strip())
+        ticker_tuple = parse_ticker_list(tickers)
     elif not universe_file:
         resolved_universe = cast(
             UniverseName,
@@ -441,81 +357,68 @@ def backtest_rolling(
             "--tickers or --universe-file."
         )
 
-    cfg = BacktestConfig(
+    common = CommonBacktestParams(
         market=market,
-        as_of=end_date,
         benchmark=bench,
-        universe=UniversePolicy(
-            tickers=ticker_tuple,
-            universe_file=universe_file,
-            membership_added=membership_added,
-            max_universe=int(max_universe),
-        ),
-        signals=SignalPolicy(
-            strategy_name=strategy_name,
-            entry_expr=entry_expr,
-            exit_expr=exit_expr,
-            regime_filter=tuple(dict.fromkeys(regime_filter_args)),
-            earnings_blackout_days=earnings_blackout_days,
-            fundamentals_provider=fundamentals_provider,
-            fundamental_fields=resolved_fundamental_fields,
-            fundamental_lag_days=max(resolved_fundamental_lag_days, 0),
-            sector_neutral=bool(sector_neutral),
-        ),
-        data=build_data_policy(
-            interval=interval,
-            price_adjustment=price_adjustment,
-            intraday_only=bool(intraday_only),
-        ),
-        execution=ExecutionPolicy(
-            hold=int(hold),
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            trailing_stop=trailing_stop,
-            slippage_bps=float(slippage_bps),
-            commission_bps=float(commission_bps),
-            slippage_model=slip_model,
-            cost_model=cost_model,
-            spread_proxy=bool(spread_proxy),
-            gap_fills=not no_gap_fills,
-            entry_order_type=entry_order,
-            entry_limit_bps=entry_limit_bps,
-            partial_exits=partial_exits,
-        ),
-        portfolio=PortfolioPolicy(
-            top=int(top),
-            initial_capital=float(initial_capital),
-            min_price=resolved_min_price,
-            min_avg_dollar_volume=resolved_min_adv,
-            avg_dollar_volume_window=int(adv_window),
-            reinvest=True,
-            sizing_rule=sizing_rule,
-            sizing_risk_pct=float(sizing_risk_pct),
-            sizing_position_pct=float(sizing_position_pct),
-            sizing_atr_window=int(sizing_atr_window),
-            sizing_atr_multiple=float(sizing_atr_multiple),
-            sizing_vol_window=int(sizing_vol_window),
-        ),
+        hold=hold,
+        top=top,
+        entry_expr=entry_expr,
+        exit_expr=exit_expr,
+        strategy_name=strategy_name,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        trailing_stop=trailing_stop,
+        slippage_bps=slippage_bps,
+        commission_bps=commission_bps,
+        cost_model=cost_model,
+        slippage_model=slip_model,
+        initial_capital=initial_capital,
+        tickers=ticker_tuple,
+        universe_file=universe_file,
+        max_universe=max_universe,
+        min_price=resolved_min_price,
+        min_avg_dollar_volume=resolved_min_adv,
+        adv_window=adv_window,
+        gap_fills=not no_gap_fills,
+        entry_order_type=entry_order,
+        entry_limit_bps=entry_limit_bps,
+        partial_exits=partial_exits,
+        price_adjustment=price_adjustment,
+        interval=interval,
+        intraday_only=bool(intraday_only),
+        sizing_rule=sizing_rule,
+        sizing_risk_pct=sizing_risk_pct,
+        sizing_position_pct=sizing_position_pct,
+        sizing_atr_window=sizing_atr_window,
+        sizing_atr_multiple=sizing_atr_multiple,
+        sizing_vol_window=sizing_vol_window,
+    )
+    cfg = build_backtest_config(
+        common,
+        as_of=end_date,
+        membership_added=membership_added,
+        spread_proxy=bool(spread_proxy),
+        signal_extra={
+            "regime_filter": tuple(dict.fromkeys(regime_filter_args)),
+            "earnings_blackout_days": earnings_blackout_days,
+            "fundamentals_provider": fundamentals_provider,
+            "fundamental_fields": resolved_fundamental_fields,
+            "fundamental_lag_days": max(resolved_fundamental_lag_days, 0),
+            "sector_neutral": bool(sector_neutral),
+        },
     )
 
-    fetcher = get_price_fetcher(
+    fetcher = build_backtest_fetcher(
         click.get_current_context().obj,
-        builder=build_price_fetcher,
-        auto_adjust=price_adjustment == "full",
+        price_adjustment=price_adjustment,
         interval=interval,
     )
     result = run_rolling_backtest(
         cfg, fetcher, start_date=start_date, end_date=end_date
     )
-    generated_report = report_path
-    if generated_report is None and not output_csv:
-        from screener.reporting import temp_report_path
-
-        generated_report = temp_report_path("backtest-rolling")
+    generated_report = resolve_report_path(report_path, output_csv, "backtest-rolling")
     if generated_report:
-        from screener.backtester.tearsheet import render_tearsheet
-
-        render_tearsheet(
+        write_tearsheet(
             result,
             generated_report,
             title="Rolling Backtest Tear Sheet",

@@ -13,6 +13,7 @@ from screener.cache import append_panel_snapshot
 from screener.earnings_backtest.metrics import compute_backtest_summary
 from screener.markets import get_price_fetcher, market_option
 from screener.options.bt_models import OptionPositionTrade, OptionsBacktestConfig
+from screener.options.criteria import OPTIONS_CRITERIA, run_options_criterion
 from screener.options.panels import build_india_panel, show_symbol, snapshot_us
 from screener.options.participant import build_participant_panel
 from screener.options.position_backtest import run_options_position_backtest
@@ -118,6 +119,34 @@ def build_panel(
             "--log-level INFO for provider details.",
             err=True,
         )
+
+
+@options.command(name="signals")
+@market_option(
+    default="us",
+    choices=("us", "india"),
+    help="Options panel market.",
+    show_default=True,
+)
+@click.option(
+    "-c",
+    "--criterion",
+    type=click.Choice(list(OPTIONS_CRITERIA)),
+    required=True,
+    help="Panel-backed options signal to screen.",
+)
+@click.option("-n", "--limit", type=int, default=50, show_default=True)
+@click.option("--csv", "output_csv", is_flag=True, help="Emit raw CSV.")
+def signals(market: str, criterion: str, limit: int, output_csv: bool) -> None:
+    """Screen the accumulated options panel for a single signal.
+
+    Point-in-time evaluation of one registered options criterion (formerly
+    exposed as ``screen -c <criterion>``). Run ``options snapshot`` /
+    ``options build-panel`` first to accumulate the panel history.
+    """
+    run_options_criterion(
+        criterion, market=market, limit=int(limit), output_csv=output_csv
+    )
 
 
 @options.command(name="show")
@@ -670,5 +699,6 @@ __all__ = [
     "participants",
     "regime",
     "show",
+    "signals",
     "snapshot",
 ]

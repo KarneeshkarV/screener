@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
-from types import SimpleNamespace
-from unittest.mock import ANY
-
 import click
 import pytest
 
@@ -26,13 +22,6 @@ from screener.criteria import (
     combine,
     registry,
     resolve_criteria,
-)
-from screener.screen_alias_plugins import garp, obv_trend, promoter_buys, rs_breakout
-from screener.screen_alias_plugins import unusual_volume, vol_breakout
-from screener.screen_aliases import (
-    SCREEN_ALIASES,
-    ScreenAliasSelectionError,
-    resolve_screen_alias,
 )
 from screener.strategies.expressions import NamedStrategy
 
@@ -122,7 +111,6 @@ def test_criteria_registry_and_combine():
     assert registry.get("ema") is CRITERIA["ema"]
     assert registry.get_optional("does-not-exist") is None
     assert "garp" not in CRITERIA
-    assert "garp" in SCREEN_ALIASES
 
     def first() -> list[int]:
         return [1, 2]
@@ -133,22 +121,12 @@ def test_criteria_registry_and_combine():
     assert combine(first, second)() == [1, 2, 3]
 
 
-def test_criteria_and_screen_alias_interfaces_are_separate():
+def test_criteria_selection_resolves_filter_names():
     filters = resolve_criteria(("ema", "value"))
     assert isinstance(filters, FilterCriteriaSelection)
     assert filters.names == ("ema", "value")
     assert filters.label == "ema+value"
     assert filters.filters
-
-    alias = resolve_screen_alias(("garp",))
-    assert alias is not None
-    assert alias.name == "garp"
-    assert resolve_screen_alias(("ema",)) is None
-
-
-def test_screen_alias_interface_rejects_filter_combinations():
-    with pytest.raises(ScreenAliasSelectionError, match="cannot be combined"):
-        resolve_screen_alias(("garp", "ema"))
 
 
 def test_all_filter_only_criteria_build_filter_lists():
@@ -157,162 +135,3 @@ def test_all_filter_only_criteria_build_filter_lists():
 
         assert isinstance(filters, list), name
         assert filters, name
-
-
-def test_garp_pipeline_prints_no_results(monkeypatch, capsys):
-    monkeypatch.setattr(garp, "parse_ttl", lambda raw, default: 123)
-    monkeypatch.setattr(garp, "run_garp_screen", lambda *args, **kwargs: None)
-
-    garp.garp_pipeline(
-        market="us",
-        limit=5,
-        output_csv=False,
-        refresh=True,
-        cache_ttl="1d",
-    )
-
-    assert "No tickers returned" in capsys.readouterr().out
-
-
-def test_garp_pipeline_outputs_csv_or_rich_results(monkeypatch):
-    calls: list[tuple[str, object]] = []
-    rows = [SimpleNamespace(symbol="AAA")]
-
-    def fake_run(*args, on_universe, **kwargs):
-        on_universe(["AAA", "BBB"])
-        calls.append(("run", (args, kwargs)))
-        return rows
-
-    monkeypatch.setattr(garp, "parse_ttl", lambda raw, default: 321)
-    monkeypatch.setattr(garp, "run_garp_screen", fake_run)
-    monkeypatch.setattr(
-        garp, "print_csv", lambda results: calls.append(("csv", results))
-    )
-    monkeypatch.setattr(
-        garp,
-        "print_garp_results",
-        lambda results, market: calls.append(("rich", (results, market))),
-    )
-
-    garp.garp_pipeline(
-        market="india",
-        limit=3,
-        output_csv=True,
-        refresh=False,
-        cache_ttl="5m",
-    )
-    garp.garp_pipeline(
-        market="india",
-        limit=3,
-        output_csv=False,
-        refresh=False,
-        cache_ttl="5m",
-    )
-
-    assert ("csv", rows) in calls
-    assert ("rich", (rows, "india")) in calls
-
-
-def test_pipeline_criteria_delegate_to_command_runners(monkeypatch, capsys):
-    calls: list[tuple[str, dict]] = []
-
-    monkeypatch.setattr(
-        "screener.commands.live_strategies.run_obv_trend_live",
-        lambda **kwargs: calls.append(("obv", kwargs)),
-    )
-    monkeypatch.setattr(
-        "screener.commands.live_strategies.run_vol_breakout_live",
-        lambda **kwargs: calls.append(("vol", kwargs)),
-    )
-    monkeypatch.setattr(
-        "screener.commands.insiders.run_promoter_buys",
-        lambda **kwargs: calls.append(("promoter", kwargs)),
-    )
-    monkeypatch.setattr(
-        "screener.unusual_volume.cli._resolve_universe",
-        lambda m, t, f: ["AAA"],
-    )
-    monkeypatch.setattr(
-        "screener.unusual_volume.cli.run_unusual_volume",
-        lambda request, **kwargs: calls.append(
-            (
-                "unusual",
-                {
-                    "market": request.market,
-                    "as_of": request.as_of,
-                    "limit": kwargs.get("limit"),
-                    "refresh": request.refresh,
-                },
-            )
-        ),
-    )
-
-    obv_trend.obv_trend_pipeline(market="us", limit=4, output_csv=True)
-    vol_breakout.vol_breakout_pipeline(market="india", limit=5, cache_ttl="1h")
-    promoter_buys.promoter_buys_pipeline(
-        market="india",
-        limit=6,
-        output_csv=True,
-        refresh=True,
-        cache_ttl="1h",
-    )
-    unusual_volume.unusual_volume_pipeline(
-        market="us", limit=7, refresh=False, output_csv=True
-    )
-
-    assert calls[0] == ("obv", {"market": "us", "as_of": date.today(), "limit": 4})
-    assert calls[1] == (
-        "vol",
-        {"market": "india", "as_of": date.today(), "limit": 5},
-    )
-    assert calls[2][0] == "promoter"
-    assert calls[2][1]["market"] == "india"
-    assert calls[2][1]["limit"] == 6
-    assert calls[2][1]["output_csv"] is True
-    assert calls[3] == (
-        "unusual",
-        {"market": "us", "as_of": date.today(), "limit": 7, "refresh": False},
-    )
-    warnings = capsys.readouterr().err
-    assert "obv-trend ignores --csv/--cache-ttl" in warnings
-    assert "vol-breakout ignores --csv/--cache-ttl" in warnings
-    assert "unusual-volume ignores --csv/--cache-ttl" in warnings
-
-
-def test_rs_breakout_pipeline_renders_and_writes(monkeypatch, capsys):
-    calls: list[tuple[str, object]] = []
-    result = SimpleNamespace(rows=[])
-
-    monkeypatch.setattr(rs_breakout, "parse_ttl", lambda raw, default: 456)
-    monkeypatch.setattr(
-        "screener.commands.rs_breakout.run_rs_breakout_screen",
-        lambda *args, **kwargs: result,
-    )
-    monkeypatch.setattr(
-        "screener.commands.rs_breakout.write_default_outputs",
-        lambda *args, **kwargs: ("out.json", "out.md"),
-    )
-    monkeypatch.setattr(
-        rs_breakout,
-        "render_result",
-        lambda *args, **kwargs: calls.append(("render", (args, kwargs))),
-    )
-
-    rs_breakout.rs_breakout_pipeline(
-        market="india",
-        limit=8,
-        refresh=True,
-        output_csv=True,
-        cache_ttl="15m",
-    )
-
-    assert calls == [
-        (
-            "render",
-            (
-                (result, ANY),
-                {"limit": 8, "market": "india"},
-            ),
-        )
-    ]
-    assert "rs-breakout ignores --csv" in capsys.readouterr().err

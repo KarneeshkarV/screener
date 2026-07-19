@@ -32,9 +32,8 @@ uv run screener screen -m us -c intraday_momentum --csv
 Features:
 
 - Markets: `us`, `india`.
-- Core criteria: `ema`, `breakout`, `ema_breakout`, `value`, `quality`, `cheap_quality`, `undervalued`, `dividend`, `momentum_value`, `intraday_momentum`, `intraday_breakout`, `near_52_high`.
-- Alias criteria (plugin-backed screens): `garp`, `mark-minervini`, `obv-trend`, `promoter-buys`, `rs-breakout`, `unusual-volume`, `vol-breakout`.
-- Options-panel criteria: `unusual_options`, `bullish_oi_buildup`, `high_iv_rank`, `low_iv_rank`, `cheap_earnings_vol`.
+- Composable `-c` criteria: `ema`, `breakout`, `ema_breakout`, `value`, `quality`, `cheap_quality`, `undervalued`, `dividend`, `momentum_value`, `intraday_momentum`, `intraday_breakout`, `near_52_high` (repeat `-c` to combine).
+- Full workflows are their own top-level commands, not `-c` criteria: `garp`, `mark-minervini`, `rs-breakout`, `promoter-buys`, `unusual-volume`, `vol-breakout-live`, `obv-trend-live`, and `options signals -c <unusual_options|bullish_oi_buildup|high_iv_rank|low_iv_rank|cheap_earnings_vol>`.
 - Local `setup_score` ranking by default.
 - Optional CSV output with `--csv`.
 - Optional fundamentals with `--detail`.

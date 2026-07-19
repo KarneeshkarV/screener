@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from screener.cli import cli
 from screener import minervini
-from screener.screen_alias_plugins import mark_minervini as mark_minervini_plugin
+from screener.commands import minervini as minervini_command
 from screener.backtester.pine import evaluate, parse
 from screener.minervini import (
     MINERVINI_ENTRY_EXPR,
@@ -76,9 +76,9 @@ def test_strategy_registry_exposes_mark_minervini() -> None:
     assert strategy.exit is not None
 
 
-def test_screen_pipeline_runs_with_stubbed_rows(monkeypatch) -> None:
+def test_mark_minervini_command_runs_with_stubbed_rows(monkeypatch) -> None:
     monkeypatch.setattr(
-        mark_minervini_plugin,
+        minervini_command,
         "scan_minervini",
         lambda *args, **kwargs: [
             minervini.MinerviniRow(
@@ -97,7 +97,7 @@ def test_screen_pipeline_runs_with_stubbed_rows(monkeypatch) -> None:
 
     res = CliRunner().invoke(
         cli,
-        ["screen", "-c", "mark-minervini", "-m", "us", "-n", "1"],
+        ["mark-minervini", "-m", "us", "-n", "1"],
     )
 
     assert res.exit_code == 0, res.output

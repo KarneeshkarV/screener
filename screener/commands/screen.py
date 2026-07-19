@@ -16,11 +16,6 @@ from screener.screen_workflow import (
     ScreenRequest,
     run_screen_workflow,
 )
-from screener.screen_aliases import (
-    SCREEN_ALIASES,
-    ScreenAliasSelectionError,
-    resolve_screen_alias,
-)
 
 
 @click.command()
@@ -32,7 +27,7 @@ from screener.screen_aliases import (
     "-c",
     "--criteria",
     "criteria_names",
-    type=click.Choice([*CRITERIA, *SCREEN_ALIASES]),
+    type=click.Choice(list(CRITERIA)),
     multiple=True,
     default=("ema",),
     help="Screening criteria (repeat to combine, e.g. -c ema -c breakout).",
@@ -100,19 +95,6 @@ def screen(
     """Screen stocks based on technical criteria."""
     if earnings_buffer is not None and earnings_buffer < 0:
         raise click.UsageError("--earnings-buffer must be >= 0.")
-    try:
-        alias = resolve_screen_alias(criteria_names)
-    except ScreenAliasSelectionError as exc:
-        raise click.UsageError(str(exc)) from exc
-    if alias is not None:
-        alias.runner(
-            market=market,
-            limit=int(limit),
-            output_csv=output_csv,
-            refresh=refresh,
-            cache_ttl=cache_ttl,
-        )
-        return
     request = ScreenRequest(
         market=market,
         criteria_names=criteria_names,
