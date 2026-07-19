@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from screener.options.nse_bhavcopy import normalize_bhavcopy_options
+from screener.options.nse_bhavcopy import (
+    load_bhavcopy_chains,
+    normalize_bhavcopy_options,
+)
 from screener.unusual_volume.nse_client import (
     fo_bhavcopy_cache_path,
     normalize_legacy_fo_bhavcopy,
@@ -77,3 +80,50 @@ def test_normalize_bhavcopy_options_builds_chain_from_legacy() -> None:
     assert chain.spot is None
     rights = {contract.right for contract in chain.contracts}
     assert rights == {"call", "put"}
+
+
+def test_spot_prices_fill_spot_when_underlying_missing() -> None:
+    frame = normalize_legacy_fo_bhavcopy(_legacy_frame())
+    chains = normalize_bhavcopy_options(
+        frame, as_of=date(2023, 1, 2), spot_prices={"RELIANCE": 2600.0}
+    )
+    assert chains["RELIANCE"].spot == 2600.0
+    # NIFTY has no cash close (index) -> stays None.
+    assert chains["NIFTY"].spot is None
+
+
+def test_load_bhavcopy_chains_legacy_uses_injected_cash_closes() -> None:
+    legacy = normalize_legacy_fo_bhavcopy(_legacy_frame())
+
+    def fetcher(_d: date) -> pd.DataFrame:
+        return legacy
+
+    chains = load_bhavcopy_chains(
+        date(2023, 1, 2),
+        fetcher=fetcher,
+        cash_fetcher=lambda _d: {"RELIANCE": 2600.0},
+    )
+    assert chains["RELIANCE"].spot == 2600.0
+
+    # Missing cash mapping leaves spot unresolved.
+    chains_none = load_bhavcopy_chains(
+        date(2023, 1, 2), fetcher=fetcher, cash_fetcher=lambda _d: {}
+    )
+    assert chains_none["RELIANCE"].spot is None
+
+
+def test_load_bhavcopy_chains_udiff_unaffected_by_cash_fetcher() -> None:
+    fixture = Path(__file__).parent / "fixtures" / "nse_fo_bhavcopy_options_sample.csv"
+    udiff = pd.read_csv(fixture)
+    calls: list[date] = []
+
+    def cash_fetcher(d: date) -> dict[str, float]:
+        calls.append(d)
+        return {"RELIANCE": 9999.0}
+
+    # 2026-07-08 is post-UDiff: spot comes from UndrlygPric, cash_fetcher unused.
+    chains = load_bhavcopy_chains(
+        date(2026, 7, 8), fetcher=lambda _d: udiff, cash_fetcher=cash_fetcher
+    )
+    assert chains["RELIANCE"].spot == 1275.9
+    assert calls == []

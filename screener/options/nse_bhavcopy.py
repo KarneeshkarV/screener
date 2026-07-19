@@ -16,7 +16,9 @@ from screener.options._parse import positive as _positive
 from screener.operator.fetch import CACHE_ROOT, FO_ARCHIVE_URL
 from screener.resilience import call_with_resilience
 from screener.unusual_volume.nse_client import (
+    FO_UDIFF_START,
     fo_bhavcopy_cache_path,
+    read_cash_bhavcopy_raw,
     read_fo_bhavcopy_raw,
 )
 
@@ -67,8 +69,14 @@ def normalize_bhavcopy_options(
     as_of: date,
     symbols: set[str] | None = None,
     lot_sizes: Mapping[str, float] | None = None,
+    spot_prices: Mapping[str, float] | None = None,
 ) -> dict[str, OptionChain]:
-    """Normalize UDiff option rows into one multi-expiry chain per underlying."""
+    """Normalize UDiff option rows into one multi-expiry chain per underlying.
+
+    ``spot_prices`` (SYMBOL -> price) is a spot fallback for legacy bhavcopies,
+    which carry no ``UndrlygPric``; it is used only when the per-contract
+    underlying price yields nothing for an underlying.
+    """
     missing = REQUIRED_COLUMNS - set(frame.columns)
     if missing:
         raise ValueError(f"NSE F&O bhavcopy missing columns: {sorted(missing)}")
@@ -95,6 +103,10 @@ def normalize_bhavcopy_options(
             if value is not None
         ]
         spot = float(pd.Series(spots).median()) if spots else None
+        if spot is None and spot_prices:
+            fallback = spot_prices.get(underlying)
+            if fallback is not None and fallback > 0:
+                spot = float(fallback)
         for raw_row in group.to_dict("records"):
             row = cast(dict[str, Any], raw_row)
             right_raw = str(row.get("OptnTp") or "").strip().upper()
@@ -141,6 +153,9 @@ def normalize_bhavcopy_options(
     return chains
 
 
+CashCloseFetcher = Callable[[date], Mapping[str, float]]
+
+
 def _read_raw(d: date) -> pd.DataFrame:
     return read_fo_bhavcopy_raw(
         d,
@@ -150,24 +165,59 @@ def _read_raw(d: date) -> pd.DataFrame:
     )
 
 
+def _read_cash_closes(d: date) -> Mapping[str, float]:
+    """Return {SYMBOL: equity close} for ``d`` (SERIES == 'EQ').
+
+    Degrades to an empty mapping when the cash bhavcopy is unavailable, so
+    legacy chains simply keep ``spot=None`` rather than failing.
+    """
+    try:
+        raw = read_cash_bhavcopy_raw(
+            d,
+            cache_root=CACHE_ROOT,
+            resilience_call=call_with_resilience,
+        )
+    except (OSError, RuntimeError, FileNotFoundError, pd.errors.ParserError):
+        return {}
+    if raw.empty or "SYMBOL" not in raw.columns or "CLOSE_PRICE" not in raw.columns:
+        return {}
+    rows = raw[raw["SERIES"] == "EQ"] if "SERIES" in raw.columns else raw
+    closes: dict[str, float] = {}
+    prices = pd.to_numeric(rows["CLOSE_PRICE"], errors="coerce")
+    for symbol, close in zip(rows["SYMBOL"], prices):
+        if pd.notna(close):
+            closes[str(symbol).strip().upper()] = float(close)
+    return closes
+
+
 def load_bhavcopy_chains(
     d: date,
     *,
     symbols: set[str] | None = None,
     refresh: bool = False,
     fetcher: BhavcopyFetcher | None = None,
+    cash_fetcher: CashCloseFetcher | None = None,
 ) -> dict[str, OptionChain]:
     """Load and normalize all NSE option chains stamped on ``d``.
 
     Archive bytes are immutable and use the existing NSE cache. ``refresh``
-    removes only that date's decoded cache file before re-downloading.
+    removes only that date's decoded cache file before re-downloading. For
+    pre-UDiff dates (``d < FO_UDIFF_START``), which lack an underlying price,
+    equity closes from the cash bhavcopy fill spot; ``cash_fetcher`` is
+    injectable for offline tests.
     """
     loader = fetcher or _read_raw
     if refresh and fetcher is None:
         cache_path = fo_bhavcopy_cache_path(d, Path(CACHE_ROOT))
         cache_path.unlink(missing_ok=True)
     frame = loader(d)
-    return normalize_bhavcopy_options(frame, as_of=d, symbols=symbols)
+    spot_prices: Mapping[str, float] | None = None
+    if d < FO_UDIFF_START:
+        cash_loader = cash_fetcher or _read_cash_closes
+        spot_prices = cash_loader(d)
+    return normalize_bhavcopy_options(
+        frame, as_of=d, symbols=symbols, spot_prices=spot_prices
+    )
 
 
 __all__ = [
