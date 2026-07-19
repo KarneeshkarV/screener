@@ -9,7 +9,7 @@ close. Reuses the earnings-event and price plumbing of this module.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date
 from typing import Any, Optional, cast
 
 import pandas as pd
@@ -26,6 +26,7 @@ from screener.earnings_backtest.data import (
 from screener.earnings_backtest.earnings_dates import collect_earnings_events
 from screener.earnings_backtest.metrics import compute_backtest_summary
 from screener.earnings_backtest.models import PeadTrade
+from screener.earnings_backtest.prepare import prepare_earnings_run
 
 logger = logging.getLogger(__name__)
 
@@ -71,73 +72,46 @@ def run_pead_backtest(
     if exit_mode not in EXIT_MODES:
         raise ValueError(f"exit_mode must be one of {EXIT_MODES}")
 
-    # 1. Universe
-    if tickers is None:
-        tickers = load_universe(market)
-    logger.info("universe_loaded", extra={"market": market, "count": len(tickers)})
-
-    # 2. Earnings events with surprise data. India's NSE/openscreener path has no
-    #    EPS surprise, so route India through the FMP surprise source.
+    # India's NSE/openscreener path has no EPS surprise, so route India through
+    # the FMP surprise source. The fixed mode pre-filters on the threshold (its
+    # historical behaviour); the dynamic mode keeps the full known-surprise
+    # stream so it can detect the report that later fails the criterion.
     surprise_source = "fmp" if market == "india" else None
-    cutoff_date = date.today() - timedelta(days=years * 365)
-    events_df = collect_earnings_events(
-        tickers,
+
+    def _refine(events_df: pd.DataFrame) -> pd.DataFrame:
+        events_df = events_df.copy()
+        events_df["surprise_pct"] = pd.to_numeric(
+            events_df["surprise_pct"], errors="coerce"
+        )
+        events_df = events_df.dropna(subset=["surprise_pct"])
+        if exit_mode == "fixed":
+            events_df = events_df[events_df["surprise_pct"] >= min_surprise]
+        return events_df
+
+    # Steps 1-6 (universe -> events -> price panels) are shared acquisition; the
+    # entry/exit policy below is PEAD-specific. ``collect_earnings_events`` and
+    # ``fetch_price_data`` are this module's globals so their test seams stay
+    # authoritative inside the shared step.
+    prepared = prepare_earnings_run(
+        market=market,
         years=years,
         batch_size=batch_size,
-        market=market,
-        surprise_source=surprise_source,
+        tickers=tickers,
+        load_universe=load_universe,
+        collect_events=collect_earnings_events,
+        fetch_prices=fetch_price_data,
+        price_window=lambda events_df, _cutoff: _pead_price_window(
+            events_df, exit_mode, hold_days
+        ),
+        collect_kwargs={"surprise_source": surprise_source},
+        refine_events=_refine,
+        fetcher=fetcher,
     )
+    events_df = prepared.events
+    price_data = prepared.prices
     if events_df.empty:
-        logger.warning("no_earnings_events_found")
+        logger.warning("no_pead_events_found")
         return []
-
-    events_df = events_df.copy()
-    events_df["earnings_date"] = pd.to_datetime(events_df["earnings_date"])
-    events_df["surprise_pct"] = pd.to_numeric(
-        events_df["surprise_pct"], errors="coerce"
-    )
-    events_df = events_df[
-        (events_df["earnings_date"] >= pd.Timestamp(cutoff_date))
-        & (events_df["earnings_date"] <= pd.Timestamp(date.today()))
-    ]
-
-    # 3. Drop events without usable surprise data. The fixed mode also pre-filters
-    #    on the threshold (its historical behaviour); the dynamic mode keeps the
-    #    full known-surprise stream so it can detect the report that later fails
-    #    the criterion and triggers the exit.
-    events_df = events_df.dropna(subset=["surprise_pct"])
-    if exit_mode == "fixed":
-        events_df = events_df[events_df["surprise_pct"] >= min_surprise]
-    logger.info("pead_events_selected", extra={"count": len(events_df)})
-    if events_df.empty:
-        return []
-
-    # Price window: a few days before the first event through the exit window. In
-    # dynamic mode a position can be held for many quarters, so the window runs
-    # through today; in fixed mode it spans the bounded drift window.
-    event_tickers = events_df["ticker"].unique().tolist()
-    earliest = (events_df["earnings_date"].min() - pd.Timedelta(days=5)).date()
-    if exit_mode == "dynamic":
-        latest = date.today()
-    else:
-        # hold_days trading days ~= hold_days * 7/5 calendar days, plus buffer
-        latest = (
-            events_df["earnings_date"].max()
-            + pd.Timedelta(days=int(hold_days * 1.6) + 10)
-        ).date()
-
-    price_data = fetch_price_data(
-        event_tickers,
-        earliest,
-        latest,
-        # TODO(plan-005): run_pead_backtest accepts the broad PriceFetcher
-        # Protocol but fetch_price_data is typed for YFinancePriceFetcher;
-        # widening fetch_price_data's param is a public-signature change.
-        fetcher=fetcher,  # type: ignore[arg-type]
-        batch_size=batch_size,
-    )
-    price_data = {k: v for k, v in price_data.items() if not v.empty}
-    logger.info("price_data_fetched", extra={"tickers": len(price_data)})
 
     # 4. Simulate per the requested exit mode.
     if exit_mode == "dynamic":
@@ -151,6 +125,26 @@ def run_pead_backtest(
 
     logger.info("pead_backtest_complete", extra={"trades": len(trades)})
     return trades
+
+
+def _pead_price_window(
+    events_df: pd.DataFrame, exit_mode: str, hold_days: int
+) -> tuple[date, date]:
+    """PEAD price window: a few sessions before the first event to the exit.
+
+    In dynamic mode a position can be held for many quarters, so the window runs
+    through today; in fixed mode it spans the bounded ``hold_days`` drift window.
+    """
+    earliest = (events_df["earnings_date"].min() - pd.Timedelta(days=5)).date()
+    if exit_mode == "dynamic":
+        latest = date.today()
+    else:
+        # hold_days trading days ~= hold_days * 7/5 calendar days, plus buffer
+        latest = (
+            events_df["earnings_date"].max()
+            + pd.Timedelta(days=int(hold_days * 1.6) + 10)
+        ).date()
+    return earliest, latest
 
 
 def _simulate_fixed_hold(

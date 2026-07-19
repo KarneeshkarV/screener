@@ -1,10 +1,19 @@
-"""CLI entry-point for ``screener earnings-backtest``."""
+"""CLI entry-points for ``screener earnings-backtest`` and ``earnings-pead``.
+
+The two commands run genuinely different entry/exit policies but share all of
+their plumbing: option surface, ticker parsing, spinner/empty-result handling,
+and the summary/trade-table renderers. That shared scaffolding lives here as
+:func:`_common_options`, :func:`_parse_tickers`, :func:`_render_summary`, and
+:func:`_render_trade_table`; only the policy-specific options, CSV schemas, and
+summary labels stay per-command.
+"""
 
 from __future__ import annotations
 
 from contextlib import nullcontext
 import csv
 import sys
+from typing import Any, Callable
 
 import click
 from rich.console import Console
@@ -34,15 +43,124 @@ STRATEGY_CHOICES = [
 console = Console()
 
 
+# ── Shared option surface ───────────────────────────────────────────────
+
+
+def _common_options(func: Callable) -> Callable:
+    """Apply the options both earnings commands share.
+
+    Kept as a single decorator so the market/years/slippage/batch/tickers/csv
+    surface stays identical between the two commands.
+    """
+    decorators = [
+        market_option(default="us", help="Market: US (S&P 500) or India (Nifty 500)."),
+        click.option(
+            "--years",
+            type=int,
+            default=3,
+            show_default=True,
+            help="Look-back period for earnings history.",
+        ),
+        click.option(
+            "--slippage-bps",
+            type=float,
+            default=5.0,
+            show_default=True,
+            help="Slippage per fill in basis points.",
+        ),
+        click.option(
+            "--batch-size",
+            type=int,
+            default=50,
+            show_default=True,
+            help="Symbols per API batch (controls RAM).",
+        ),
+        click.option(
+            "--tickers",
+            default=None,
+            help="Comma-separated ticker list (overrides universe).",
+        ),
+        click.option(
+            "--csv",
+            "output_csv",
+            is_flag=True,
+            help="Output trade ledger as CSV.",
+        ),
+    ]
+    for decorator in reversed(decorators):
+        func = decorator(func)
+    return func
+
+
+def _parse_tickers(tickers: str | None) -> list[str] | None:
+    """Normalize a comma-separated ``--tickers`` value to an upper-cased list."""
+    if not tickers:
+        return None
+    return [t.strip().upper() for t in tickers.split(",") if t.strip()]
+
+
+# ── Shared renderers ────────────────────────────────────────────────────
+
+
+def _render_summary(
+    summary: dict, *, title: str, labels: dict[str, str], footer: str | None = None
+) -> None:
+    """Render a two-column Metric/Value summary table with an optional footer."""
+    table = Table(title=title, show_header=True, header_style="bold cyan")
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+    for key, label in labels.items():
+        val = summary.get(key, "")
+        if isinstance(val, float):
+            val = f"{val:,.4f}"
+        table.add_row(label, str(val))
+    console.print(table)
+    if footer is not None:
+        console.print(footer)
+
+
+def _render_trade_table(
+    trades: list,
+    *,
+    last_header: str,
+    last_value: Callable[[Any], str],
+) -> None:
+    """Render the top-30 trade table shared by both commands.
+
+    The first seven columns are identical across policies; the eighth column
+    (score vs surprise) is supplied via *last_header* / *last_value*.
+    """
+    shown = sorted(trades, key=lambda t: t.return_pct, reverse=True)[:30]
+    table = Table(
+        title=f"Top Trades (showing {len(shown)} of {len(trades)})",
+        show_header=True,
+        header_style="bold cyan",
+    )
+    table.add_column("Ticker", style="bold")
+    for col in ("Earnings", "Entry", "Exit", "Entry $", "Exit $", "Return %"):
+        table.add_column(col, justify="right")
+    table.add_column(last_header, justify="right")
+
+    for t in shown:
+        ret_color = "green" if t.return_pct > 0 else "red"
+        table.add_row(
+            t.ticker,
+            str(t.earnings_date),
+            str(t.entry_date),
+            str(t.exit_date),
+            f"{t.entry_price:,.2f}",
+            f"{t.exit_price:,.2f}",
+            f"[{ret_color}]{t.return_pct:+.2f}%[/{ret_color}]",
+            last_value(t),
+        )
+    console.print(table)
+
+
+# ── earnings-drift (E-1/E-2 -> E) ────────────────────────────────────────
+
+
 @click.command(name="earnings-backtest")
-@market_option(default="us", help="Market: US (S&P 500) or India (Nifty 500).")
-@click.option(
-    "--years",
-    type=int,
-    default=3,
-    show_default=True,
-    help="Look-back period for earnings history.",
-)
+@_common_options
 @click.option(
     "--strategy",
     type=click.Choice(STRATEGY_CHOICES),
@@ -85,31 +203,6 @@ console = Console()
         "'us_vested' applies the Vested/DriveWealth US equity fee stack."
     ),
 )
-@click.option(
-    "--slippage-bps",
-    type=float,
-    default=5.0,
-    show_default=True,
-    help="Slippage per fill in basis points.",
-)
-@click.option(
-    "--batch-size",
-    type=int,
-    default=50,
-    show_default=True,
-    help="Symbols per API batch (controls RAM).",
-)
-@click.option(
-    "--tickers",
-    default=None,
-    help="Comma-separated ticker list (overrides universe).",
-)
-@click.option(
-    "--csv",
-    "output_csv",
-    is_flag=True,
-    help="Output trade ledger as CSV.",
-)
 def earnings_backtest(
     market: str,
     years: int,
@@ -124,9 +217,7 @@ def earnings_backtest(
     output_csv: bool,
 ) -> None:
     """Backtest earnings-drift entry (E-1/E-2 → E) with sentiment filters."""
-    ticker_list = None
-    if tickers:
-        ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    ticker_list = _parse_tickers(tickers)
 
     status = (
         nullcontext()
@@ -154,7 +245,6 @@ def earnings_backtest(
         )
         return
 
-    # Summary
     summary = compute_backtest_summary(trades, strategy=strategy)
     taken = [t for t in trades if t.passed_filter]
 
@@ -162,10 +252,11 @@ def earnings_backtest(
         _print_csv(taken)
         return
 
-    # Rich output
     _print_summary(summary)
     if taken:
-        _print_trade_table(taken)
+        _render_trade_table(
+            taken, last_header="Score", last_value=lambda t: f"{t.score:.3f}"
+        )
 
 
 _FEE_COMPONENT_LABELS = {
@@ -199,72 +290,30 @@ def _format_costs_line(summary: dict) -> str | None:
     return f"Total costs: {total_f:,.4f}"
 
 
+_EARNINGS_SUMMARY_LABELS = {
+    "total_events": "Total Events Scanned",
+    "trades_taken": "Trades Taken",
+    "strategy": "Strategy",
+    "win_rate": "Win Rate (%)",
+    "avg_return_pct": "Avg Return (%)",
+    "median_return_pct": "Median Return (%)",
+    "total_return_pct": "Cumulative Return (%)",
+    "max_winner_pct": "Best Trade (%)",
+    "max_loser_pct": "Worst Trade (%)",
+    "profit_factor": "Profit Factor",
+    "avg_holding_days": "Avg Hold (days)",
+    "sharpe_approx": "Sharpe (approx)",
+}
+
+
 def _print_summary(summary: dict) -> None:
-    table = Table(
-        title="Earnings-Drift Backtest Summary",
-        show_header=True,
-        header_style="bold cyan",
-    )
-    table.add_column("Metric", style="bold")
-    table.add_column("Value", justify="right")
-
-    labels = {
-        "total_events": "Total Events Scanned",
-        "trades_taken": "Trades Taken",
-        "strategy": "Strategy",
-        "win_rate": "Win Rate (%)",
-        "avg_return_pct": "Avg Return (%)",
-        "median_return_pct": "Median Return (%)",
-        "total_return_pct": "Cumulative Return (%)",
-        "max_winner_pct": "Best Trade (%)",
-        "max_loser_pct": "Worst Trade (%)",
-        "profit_factor": "Profit Factor",
-        "avg_holding_days": "Avg Hold (days)",
-        "sharpe_approx": "Sharpe (approx)",
-    }
-    for key, label in labels.items():
-        val = summary.get(key, "")
-        if isinstance(val, float):
-            val = f"{val:,.4f}"
-        table.add_row(label, str(val))
-
-    console.print(table)
     costs_line = _format_costs_line(summary)
-    if costs_line is not None:
-        console.print(f"[dim]{costs_line}[/dim]")
-
-
-def _print_trade_table(trades: list[EarningsTrade]) -> None:
-    # Limit display to top 30 by absolute return
-    shown = sorted(trades, key=lambda t: t.return_pct, reverse=True)[:30]
-    table = Table(
-        title=f"Top Trades (showing {len(shown)} of {len(trades)})",
-        show_header=True,
-        header_style="bold cyan",
+    _render_summary(
+        summary,
+        title="Earnings-Drift Backtest Summary",
+        labels=_EARNINGS_SUMMARY_LABELS,
+        footer=f"[dim]{costs_line}[/dim]" if costs_line is not None else None,
     )
-    table.add_column("Ticker", style="bold")
-    table.add_column("Earnings", justify="right")
-    table.add_column("Entry", justify="right")
-    table.add_column("Exit", justify="right")
-    table.add_column("Entry $", justify="right")
-    table.add_column("Exit $", justify="right")
-    table.add_column("Return %", justify="right")
-    table.add_column("Score", justify="right")
-
-    for t in shown:
-        ret_color = "green" if t.return_pct > 0 else "red"
-        table.add_row(
-            t.ticker,
-            str(t.earnings_date),
-            str(t.entry_date),
-            str(t.exit_date),
-            f"{t.entry_price:,.2f}",
-            f"{t.exit_price:,.2f}",
-            f"[{ret_color}]{t.return_pct:+.2f}%[/{ret_color}]",
-            f"{t.score:.3f}",
-        )
-
-    console.print(table)
 
 
 def _print_csv(trades: list[EarningsTrade]) -> None:
@@ -313,14 +362,7 @@ def _print_csv(trades: list[EarningsTrade]) -> None:
 
 
 @click.command(name="earnings-pead")
-@market_option(default="us", help="Market: US (S&P 500) or India (Nifty 500).")
-@click.option(
-    "--years",
-    type=int,
-    default=3,
-    show_default=True,
-    help="Look-back period for earnings history.",
-)
+@_common_options
 @click.option(
     "--min-surprise",
     type=float,
@@ -352,31 +394,6 @@ def _print_csv(trades: list[EarningsTrade]) -> None:
     show_default=True,
     help="Round-trip commission in basis points.",
 )
-@click.option(
-    "--slippage-bps",
-    type=float,
-    default=5.0,
-    show_default=True,
-    help="Slippage per fill in basis points.",
-)
-@click.option(
-    "--batch-size",
-    type=int,
-    default=50,
-    show_default=True,
-    help="Symbols per API batch (controls RAM).",
-)
-@click.option(
-    "--tickers",
-    default=None,
-    help="Comma-separated ticker list (overrides universe).",
-)
-@click.option(
-    "--csv",
-    "output_csv",
-    is_flag=True,
-    help="Output trade ledger as CSV.",
-)
 def earnings_pead(
     market: str,
     years: int,
@@ -390,9 +407,7 @@ def earnings_pead(
     output_csv: bool,
 ) -> None:
     """Backtest post-earnings-announcement drift (next open → hold N days)."""
-    ticker_list = None
-    if tickers:
-        ticker_list = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    ticker_list = _parse_tickers(tickers)
 
     hold_label = "dynamic hold" if exit_mode == "dynamic" else f"{hold_days}d hold"
     with console.status(
@@ -424,39 +439,31 @@ def earnings_pead(
     summary = compute_pead_summary(trades, min_surprise, hold_days)
     _print_pead_summary(summary)
     _print_pead_quintiles(summary.get("surprise_quintiles", {}))
-    _print_pead_trade_table(trades)
+    _render_trade_table(
+        trades,
+        last_header="Surprise %",
+        last_value=lambda t: f"{t.surprise_pct:+.2f}",
+    )
+
+
+_PEAD_SUMMARY_LABELS = {
+    "total_events": "Qualifying Events",
+    "trades_taken": "Trades Taken",
+    "min_surprise_pct": "Min Surprise (%)",
+    "hold_days": "Hold (trading days)",
+    "win_rate": "Win Rate (%)",
+    "avg_return_pct": "Avg Return (%)",
+    "median_return_pct": "Median Return (%)",
+    "total_return_pct": "Cumulative Return (%)",
+    "max_winner_pct": "Best Trade (%)",
+    "max_loser_pct": "Worst Trade (%)",
+    "profit_factor": "Profit Factor",
+    "sharpe_approx": "Sharpe (approx)",
+}
 
 
 def _print_pead_summary(summary: dict) -> None:
-    table = Table(
-        title="PEAD Backtest Summary",
-        show_header=True,
-        header_style="bold cyan",
-    )
-    table.add_column("Metric", style="bold")
-    table.add_column("Value", justify="right")
-
-    labels = {
-        "total_events": "Qualifying Events",
-        "trades_taken": "Trades Taken",
-        "min_surprise_pct": "Min Surprise (%)",
-        "hold_days": "Hold (trading days)",
-        "win_rate": "Win Rate (%)",
-        "avg_return_pct": "Avg Return (%)",
-        "median_return_pct": "Median Return (%)",
-        "total_return_pct": "Cumulative Return (%)",
-        "max_winner_pct": "Best Trade (%)",
-        "max_loser_pct": "Worst Trade (%)",
-        "profit_factor": "Profit Factor",
-        "sharpe_approx": "Sharpe (approx)",
-    }
-    for key, label in labels.items():
-        val = summary.get(key, "")
-        if isinstance(val, float):
-            val = f"{val:,.4f}"
-        table.add_row(label, str(val))
-
-    console.print(table)
+    _render_summary(summary, title="PEAD Backtest Summary", labels=_PEAD_SUMMARY_LABELS)
 
 
 def _print_pead_quintiles(quintiles: dict) -> None:
@@ -483,38 +490,6 @@ def _print_pead_quintiles(quintiles: dict) -> None:
             f"{row['avg_return_pct']:+,.4f}",
             f"{row['median_return_pct']:+,.4f}",
             f"{row['win_rate']:,.2f}",
-        )
-
-    console.print(table)
-
-
-def _print_pead_trade_table(trades: list[PeadTrade]) -> None:
-    shown = sorted(trades, key=lambda t: t.return_pct, reverse=True)[:30]
-    table = Table(
-        title=f"Top Trades (showing {len(shown)} of {len(trades)})",
-        show_header=True,
-        header_style="bold cyan",
-    )
-    table.add_column("Ticker", style="bold")
-    table.add_column("Earnings", justify="right")
-    table.add_column("Entry", justify="right")
-    table.add_column("Exit", justify="right")
-    table.add_column("Entry $", justify="right")
-    table.add_column("Exit $", justify="right")
-    table.add_column("Return %", justify="right")
-    table.add_column("Surprise %", justify="right")
-
-    for t in shown:
-        ret_color = "green" if t.return_pct > 0 else "red"
-        table.add_row(
-            t.ticker,
-            str(t.earnings_date),
-            str(t.entry_date),
-            str(t.exit_date),
-            f"{t.entry_price:,.2f}",
-            f"{t.exit_price:,.2f}",
-            f"[{ret_color}]{t.return_pct:+.2f}%[/{ret_color}]",
-            f"{t.surprise_pct:+.2f}",
         )
 
     console.print(table)

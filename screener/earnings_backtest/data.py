@@ -20,7 +20,7 @@ from typing import Optional
 
 import pandas as pd
 
-from screener.backtester.data import YFinancePriceFetcher
+from screener.backtester.data import PriceFetcher, YFinancePriceFetcher
 
 # ── Universe loaders ────────────────────────────────────────────────────
 
@@ -56,10 +56,15 @@ def fetch_price_data(
     tickers: list[str],
     start: date,
     end: date,
-    fetcher: Optional[YFinancePriceFetcher] = None,
+    fetcher: Optional[PriceFetcher] = None,
     batch_size: int = 50,
 ) -> dict[str, pd.DataFrame]:
-    """Fetch OHLCV bars for *tickers* from *start* to *end*."""
+    """Fetch OHLCV bars for *tickers* from *start* to *end*.
+
+    Accepts any :class:`~screener.backtester.data.PriceFetcher` (the broad
+    protocol both engines already type against); defaults to a yfinance-backed
+    fetcher when none is supplied.
+    """
     if fetcher is None:
         fetcher = YFinancePriceFetcher(auto_adjust=True)
 
