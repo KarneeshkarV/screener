@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+from datetime import date
+from pathlib import Path
+
+import pandas as pd
+
+from screener.options.nse_bhavcopy import normalize_bhavcopy_options
+from screener.unusual_volume.nse_client import (
+    fo_bhavcopy_cache_path,
+    normalize_legacy_fo_bhavcopy,
+    read_fo_bhavcopy_raw,
+)
+
+
+def _legacy_frame() -> pd.DataFrame:
+    """A tiny legacy-shaped FO bhavcopy (with the trailing junk column)."""
+    return pd.DataFrame(
+        {
+            "INSTRUMENT": ["OPTSTK", "OPTSTK", "FUTSTK", "OPTIDX"],
+            "SYMBOL": ["RELIANCE", "RELIANCE", "RELIANCE", "NIFTY"],
+            "EXPIRY_DT": ["25-Jan-2023", "25-Jan-2023", "25-Jan-2023", "25-Jan-2023"],
+            "STRIKE_PR": [2500.0, 2500.0, 0.0, 18000.0],
+            "OPTION_TYP": ["CE", "PE", "XX", "CE"],
+            "OPEN": [10.0, 8.0, 2500.0, 100.0],
+            "HIGH": [12.0, 9.0, 2550.0, 120.0],
+            "LOW": [9.0, 7.0, 2480.0, 90.0],
+            "CLOSE": [11.0, 8.5, 2530.0, 110.0],
+            "SETTLE_PR": [11.0, 8.5, 2530.0, 110.0],
+            "CONTRACTS": [1000, 800, 500, 2000],
+            "VAL_INLAKH": [11.0, 6.8, 12.6, 22.0],
+            "OPEN_INT": [50000, 40000, 30000, 60000],
+            "CHG_IN_OI": [5000, -2000, 1000, 3000],
+            "TIMESTAMP": ["02-JAN-2023"] * 4,
+            "Unnamed: 15": [float("nan")] * 4,
+        }
+    )
+
+
+def test_normalize_legacy_maps_columns_instruments_and_dates() -> None:
+    out = normalize_legacy_fo_bhavcopy(_legacy_frame())
+    # UDiff column names present; legacy names and junk gone.
+    for col in ("TckrSymb", "XpryDt", "StrkPric", "OptnTp", "ClsPric", "OpnIntrst"):
+        assert col in out.columns
+    assert "INSTRUMENT" not in out.columns
+    assert not any(str(c).startswith("Unnamed") for c in out.columns)
+    # Instrument codes mapped to UDiff.
+    assert list(out["FinInstrmTp"]) == ["STO", "STO", "STF", "IDO"]
+    # Dates parsed to datetime64.
+    assert pd.api.types.is_datetime64_any_dtype(out["TradDt"])
+    assert out["TradDt"].iloc[0] == pd.Timestamp(2023, 1, 2)
+    assert out["XpryDt"].iloc[0] == pd.Timestamp(2023, 1, 25)
+
+
+def test_read_fo_bhavcopy_raw_normalizes_cached_legacy(tmp_path: Path) -> None:
+    d = date(2023, 1, 2)
+    cache_path = fo_bhavcopy_cache_path(d, tmp_path)
+    _legacy_frame().to_csv(cache_path, index=False)
+    # Cached legacy CSV must be normalized even without a fresh download.
+    df = read_fo_bhavcopy_raw(
+        d,
+        cache_root=tmp_path,
+        archive_url_template="unused-{yyyymmdd}",
+    )
+    assert "FinInstrmTp" in df.columns
+    assert set(df["FinInstrmTp"]) == {"STO", "STF", "IDO"}
+
+
+def test_normalize_bhavcopy_options_builds_chain_from_legacy() -> None:
+    frame = normalize_legacy_fo_bhavcopy(_legacy_frame())
+    chains = normalize_bhavcopy_options(frame, as_of=date(2023, 1, 2))
+    # STO (RELIANCE) and IDO (NIFTY) both yield option chains; FUTSTK is dropped.
+    assert set(chains) == {"RELIANCE", "NIFTY"}
+    chain = chains["RELIANCE"]
+    assert chain.market == "india"
+    # Legacy frames have no UndrlygPric, so spot is unresolved here (commit 2).
+    assert chain.spot is None
+    rights = {contract.right for contract in chain.contracts}
+    assert rights == {"call", "put"}
