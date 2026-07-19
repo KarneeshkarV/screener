@@ -1,8 +1,11 @@
-"""Offline line-coverage tests for ``screener.earnings_backtest.data``.
+"""Behavioral tests for earnings-date & IV-sentiment acquisition.
 
-All network/provider access (yfinance, jugaad_data, openscreener, requests,
-NSELive) is stubbed via monkeypatch / injected fake modules. No disk cache is
-touched unless the test explicitly drives the cache helpers in a tmp dir.
+Covers ``screener.earnings_backtest.earnings_dates`` and ``.sentiment``: the
+point-in-time date resolution across yfinance/NSE/openscreener/FMP sources, the
+Indian filing-lag floor, multi-source de-duplication and enrichment, and the
+implied-volatility / analyst sentiment scoring. All provider access (yfinance,
+jugaad_data, openscreener, requests, NSELive) is stubbed via monkeypatch or
+injected fakes so the tests are deterministic and never touch the network.
 """
 
 from __future__ import annotations
@@ -20,12 +23,6 @@ from screener.earnings_backtest import earnings_dates, sentiment
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
-
-
-def test_data_facade_is_a_one_way_eager_export() -> None:
-    assert ebd.fetch_earnings_dates_yf is earnings_dates.fetch_earnings_dates_yf
-    assert ebd.fetch_iv_sentiment is sentiment.fetch_iv_sentiment
-    assert "__getattr__" not in vars(ebd)
 
 
 def _earnings_df(dates, eps_est=None, reported=None, surprise=None):

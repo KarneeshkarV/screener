@@ -57,12 +57,34 @@ markers = [
 [tool.coverage.run]
 source = ["screener"]
 branch = false
+# The vbt-sweep integration talks to vectorbt, an OPTIONAL extra that CI does
+# not install (`uv sync --all-groups` installs dependency-groups, not extras).
+# Its core paths cannot execute without that dependency, so the only way they
+# were ever "covered" was the fake-vectorbt tests removed in this PR. Exercising
+# them behaviorally is impossible in CI, so exclude the vectorbt-only modules
+# from the denominator rather than fake the dependency. (The whole vbt-sweep
+# surface is slated for removal in a later simplification PR.)
+omit = [
+    "screener/backtester/vbt/indicators.py",
+    "screener/backtester/vbt/sweep.py",
+    "screener/backtester/vbt/cli.py",
+    "screener/backtester/vbt/render.py",
+    "screener/backtester/vbt/panels.py",
+    "screener/backtester/vbt_sweep.py",
+]
 
 [tool.coverage.report]
 show_missing = true
-# Current coverage is 99.75%; keep a small buffer so an incidental line does
-# not break CI, but any meaningfully untested new code does.
-fail_under = 99.5
+# Coverage is a floor, not a target. We test behavior — hand-computed trades,
+# look-ahead safety, corporate actions, provider contracts, cross-engine
+# reconciliation, CLI smoke — not lines. The previous 99.5% gate incentivized
+# ~19.6k LOC of coverage-chasing tests that only forced exception handlers,
+# output-formatting branches, compatibility re-exports, and faked optional
+# dependencies; those have been removed. 90% keeps genuinely untested new code
+# visible without demanding tests that assert nothing about behavior. Do not
+# add tests solely to lift this number: if a line is hard to reach behaviorally,
+# prefer deleting the dead code or marking it `# pragma: no cover`.
+fail_under = 90
 exclude_also = [
     "def __repr__",
     "if self\\.debug",
