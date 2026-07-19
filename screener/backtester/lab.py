@@ -26,8 +26,11 @@ from screener.backtester.models import (
     SignalPolicy,
     UniversePolicy,
 )
-from screener.backtester.rolling import run_rolling_backtest
-from screener.backtester.strategies import STRATEGIES, resolve_strategy
+from screener.backtester.rolling_simulation import run_rolling_backtest
+from screener.strategies.expressions import (
+    NAMED_STRATEGIES as STRATEGIES,
+    resolve_strategy,
+)
 from screener.html_report import html_page
 from screener.markets import get_market
 from screener.universes import UniverseName, load_current_universe

@@ -668,7 +668,7 @@ def test_rolling_benchmark_split_adjusted_in_splits_only(stub_fetcher_factory):
     # the path the factor strategies actually run on. The rolling backtester must
     # reuse the split-adjusted panel benchmark (not re-fetch it raw), so the
     # benchmark curve used for regime metrics has no phantom -50% step.
-    from screener.backtester.rolling import run_rolling_backtest
+    from screener.backtester.rolling_simulation import run_rolling_backtest
 
     aaa = make_bars(n=20, seed=5, open_base=100.0)
     spy = _spy_with_2for1_split(split_bar=6, n=20)

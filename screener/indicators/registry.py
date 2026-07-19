@@ -2,8 +2,7 @@
 
 Drop a new file in ``screener/indicators/plugins/`` with ``@indicator("name")``,
 import it from ``_register_plugins`` below, and it's available via
-``registry.get("name")`` and re-exported by ``screener.indicators.numpy`` under
-its legacy ``_name`` alias if applicable.
+``registry.get("name")``.
 """
 
 from __future__ import annotations

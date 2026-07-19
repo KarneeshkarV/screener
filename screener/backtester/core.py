@@ -13,11 +13,6 @@ import pandas as pd
 from screener.backtester.costs import corwin_schultz_half_spread
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fills import FillModel
-from screener.backtester.fills import (  # noqa: F401  (re-export compat shims)
-    _resolve_entry_fill,
-    _resolve_stop_fill,
-    _resolve_target_fill,
-)
 from screener.backtester.models import BacktestConfig, ExitReason, Trade
 from screener.backtester.pine import PineError, evaluate
 from screener.backtester.portfolio import Portfolio

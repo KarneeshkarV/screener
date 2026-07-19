@@ -12,7 +12,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from main import cli
+from screener.cli import cli
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.optimization.grid import GridSearchResult
 from screener.backtester.optimization.research_report import (

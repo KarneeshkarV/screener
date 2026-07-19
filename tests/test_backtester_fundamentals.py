@@ -7,11 +7,11 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from main import cli
+from screener.cli import cli
 
 from screener.backtester import fundamentals, rolling, rolling_simulation
 from screener.backtester.models import BacktestConfig
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 
 from tests.conftest import StubPriceFetcher, make_bars
 

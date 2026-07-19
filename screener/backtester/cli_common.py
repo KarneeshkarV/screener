@@ -21,7 +21,7 @@ def resolve_strategy_exprs(
     entry_expr: str | None,
     exit_expr: str | None,
 ) -> tuple[str, str | None]:
-    from screener.backtester.strategies import resolve_strategy
+    from screener.strategies.expressions import resolve_strategy
 
     if strategy_name:
         try:

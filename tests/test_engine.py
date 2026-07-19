@@ -11,7 +11,7 @@ import pytest
 from screener.backtester.core import simulate_ticker
 from screener.backtester.costs import FlatCommission
 from screener.backtester.historical import run_backtest
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.metrics import _exposure, compute_metrics
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.pine import parse

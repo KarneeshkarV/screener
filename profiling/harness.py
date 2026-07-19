@@ -24,7 +24,7 @@ import pandas as pd
 
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 
 CACHE_DIR = os.environ.get(
     "HARNESS_CACHE",

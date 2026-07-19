@@ -468,7 +468,7 @@ def test_universe_leaf_loaders(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "run_pinescript_strategies",
+        "screener.research.pine_runner",
         types.SimpleNamespace(load_universe=lambda market: [f"{market}:AAA"]),
     )
 

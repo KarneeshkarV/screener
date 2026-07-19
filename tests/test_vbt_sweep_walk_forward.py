@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from main import cli
+from screener.cli import cli
 from screener.backtester.optimization.walk_forward import (
     generate_walk_forward_windows,
 )

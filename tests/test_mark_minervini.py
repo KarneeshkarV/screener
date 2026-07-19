@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from click.testing import CliRunner
 
-from main import cli
+from screener.cli import cli
 from screener import minervini
 from screener.screen_alias_plugins import mark_minervini as mark_minervini_plugin
 from screener.backtester.pine import evaluate, parse

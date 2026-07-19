@@ -5,7 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from screener.indicators.numpy import _ema, _supertrend_dir
+from screener.indicators.plugins.ema import ema as _ema
+from screener.indicators.plugins.supertrend import supertrend_dir as _supertrend_dir
 from screener.strategies.spec import strategy
 from screener.strategies.trades import Trade, _walk
 

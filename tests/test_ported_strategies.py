@@ -132,7 +132,7 @@ def test_bb_pattern_double_bottom_entry_and_exit():
     # bar's upper band (satisfying the tight alpha tolerances), a rise for the
     # node-L check, a slight decline near the lower band, then a breakout above
     # the upper band, followed by a flat region that contracts and exits.
-    from screener.indicators.numpy import _bb
+    from screener.indicators.plugins.bollinger_bands import bollinger_bands as _bb
 
     n, v = 185, 101.0
     close = np.full(n, 100.0)

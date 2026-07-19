@@ -6,7 +6,7 @@ import json
 import pandas as pd
 from click.testing import CliRunner
 
-from main import cli
+from screener.cli import cli
 from screener.commands import rs_breakout as rs_breakout_cli
 from screener.rs_breakout import (
     delivery_lookup,

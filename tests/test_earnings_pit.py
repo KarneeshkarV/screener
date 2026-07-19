@@ -20,7 +20,7 @@ import pandas as pd
 import pytest
 
 from screener.earnings_backtest import earnings_dates
-from screener.earnings_backtest.data import (
+from screener.earnings_backtest.earnings_dates import (
     INDIA_EARNINGS_FILING_LAG_DAYS,
     collect_earnings_events,
     fetch_earnings_dates_openscreener,

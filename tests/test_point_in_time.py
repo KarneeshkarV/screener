@@ -8,7 +8,8 @@ from click.testing import CliRunner
 
 from screener import universes
 from screener.backtester.models import BacktestConfig
-from screener.backtester.rolling import backtest_rolling, run_rolling_backtest
+from screener.backtester.rolling import backtest_rolling
+from screener.backtester.rolling_simulation import run_rolling_backtest
 
 
 _SP500_HTML = """

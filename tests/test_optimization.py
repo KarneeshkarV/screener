@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from main import cli
+from screener.cli import cli
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
 from screener.backtester.optimization import grid as grid_module
 from screener.backtester.optimization.grid import (

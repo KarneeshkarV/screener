@@ -37,7 +37,7 @@ from screener.backtester.optimization.walk_forward import (
     WalkForwardSummary,
     walk_forward_optimize,
 )
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 
 # Relative score range below which a parameter optimum is treated as a plateau
 # rather than a narrow spike (range / max(|best|, eps)).

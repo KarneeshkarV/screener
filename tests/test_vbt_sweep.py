@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from main import cli
+from screener.cli import cli
 from screener.backtester.costs import IndiaDeliveryCosts, build_cost_model
 from screener.backtester.vbt.sweep import vbt_fee_fraction
 from screener.backtester.vbt_sweep import (
