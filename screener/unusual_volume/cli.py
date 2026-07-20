@@ -39,17 +39,29 @@ def _resolve_universe(
     tickers: Optional[str],
     universe_file: Optional[str],
 ) -> list[str]:
-    if tickers:
-        return [t.strip() for t in tickers.split(",") if t.strip()]
-    if universe_file:
-        path = Path(universe_file)
-        if not path.exists():
-            raise click.UsageError(f"--universe-file not found: {universe_file}")
-        return [line.strip() for line in path.read_text().splitlines() if line.strip()]
-    # Fallback to the project's default universe loader.
-    from screener.research.pine_runner import load_universe  # lazy import; pulls TV
+    from screener.universes import (
+        UniverseRequest,
+        UniverseSource,
+        parse_ticker_csv,
+        resolve_universe,
+    )
 
-    return load_universe(market)
+    def _tv_loader() -> list[str]:
+        # Lazy import; pulls TradingView. Kept module-local so it stays patchable.
+        from screener.research.pine_runner import load_universe
+
+        return load_universe(market)
+
+    request = UniverseRequest(
+        source=UniverseSource.TV_LIQUIDITY,
+        market=market,
+        tickers=tuple(parse_ticker_csv(tickers)) if tickers else None,
+        file=universe_file,
+    )
+    try:
+        return resolve_universe(request, tv_loader=_tv_loader)
+    except FileNotFoundError as exc:
+        raise click.UsageError(f"--universe-file not found: {universe_file}") from exc
 
 
 @click.command(name="unusual-volume")

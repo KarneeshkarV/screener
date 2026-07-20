@@ -8,39 +8,22 @@ backtestable history accumulates over time.
 
 from __future__ import annotations
 
-import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
 from typing import Optional
 
 from screener.options.metrics import compute_chain_metrics
+
+# The raw NSE option-chain transport now lives in the options package; import it
+# here so unusual_volume depends on options (not the reverse). Re-exported for
+# existing callers (earnings sentiment, the earnings data facade) and tests that
+# reference the transport/URL seam at this module.
+from screener.options.nse_live import _OC_PAGE as _OC_PAGE
 from screener.options.nse_live import NSELiveOptionsProvider
+from screener.options.nse_live import fetch_option_chain as fetch_option_chain
 
 from .detector import Event
-from .nse_client import nse_cached_json
 
-_OC_EQUITY_URL = "https://www.nseindia.com/api/option-chain-equities?symbol={sym}"
-_OC_INDEX_URL = "https://www.nseindia.com/api/option-chain-indices?symbol={sym}"
-_OC_INDEX_SYMBOLS = frozenset(
-    {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"}
-)
-_OC_PAGE = "https://www.nseindia.com/option-chain"
 EVENT_FIELDS = ("call_put_oi_ratio", "pcr")
-
-
-def fetch_option_chain(symbol: str, *, refresh: bool = False) -> Optional[dict]:
-    normalized = symbol.upper()
-    template = _OC_INDEX_URL if normalized in _OC_INDEX_SYMBOLS else _OC_EQUITY_URL
-    url = template.format(sym=urllib.parse.quote(normalized))
-    raw = nse_cached_json(
-        "nse_option_chain",
-        ("oc", normalized, str(date.today())),
-        url,
-        f"option chain {symbol}",
-        refresh=refresh,
-        extra_prime_page=_OC_PAGE,
-    )
-    return raw if isinstance(raw, dict) else None
 
 
 def _safe_ratio(num: float | None, denom: float | None) -> Optional[float]:

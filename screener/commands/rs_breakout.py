@@ -68,16 +68,28 @@ def resolve_universe(
     cache_ttl: float | None = 900,
     refresh: bool = False,
 ) -> list[str]:
-    if tickers:
-        return [t.strip() for t in tickers.split(",") if t.strip()]
-    if universe_file:
-        path = Path(universe_file)
-        if not path.exists():
-            raise click.UsageError(f"--universe-file not found: {universe_file}")
-        return [line.strip() for line in path.read_text().splitlines() if line.strip()]
-    return load_universe(
-        market, int(universe_limit), cache_ttl=cache_ttl, refresh=refresh
+    from screener.universes import (
+        UniverseRequest,
+        UniverseSource,
+        parse_ticker_csv,
+        resolve_universe as resolve_universe_request,
     )
+
+    request = UniverseRequest(
+        source=UniverseSource.TV_LIQUIDITY,
+        market=market,
+        tickers=tuple(parse_ticker_csv(tickers)) if tickers else None,
+        file=universe_file,
+    )
+    try:
+        return resolve_universe_request(
+            request,
+            tv_loader=lambda: load_universe(
+                market, int(universe_limit), cache_ttl=cache_ttl, refresh=refresh
+            ),
+        )
+    except FileNotFoundError as exc:
+        raise click.UsageError(f"--universe-file not found: {universe_file}") from exc
 
 
 def load_universe(

@@ -461,13 +461,20 @@ def _resolve_universe_tickers(
         return tickers, universe_file
     if universe is None:
         return tickers, universe_file
-    from screener.universes import UniverseName, load_current_universe
-
-    loaded = load_current_universe(
-        type_cast(UniverseName, universe),
-        as_of=end_date,
+    from screener.universes import (
+        UniverseName,
+        UniverseRequest,
+        UniverseSource,
+        resolve_universe,
     )
-    symbols = list(loaded.symbols)
+
+    symbols = resolve_universe(
+        UniverseRequest(
+            source=UniverseSource.INDEX_PIT,
+            index_name=type_cast(UniverseName, universe),
+            as_of=end_date,
+        )
+    )
     if max_universe and max_universe > 0:
         symbols = symbols[: int(max_universe)]
     if not symbols:
