@@ -8,7 +8,12 @@ import click
 from rich.console import Console
 
 from screener.backtester.data import build_price_fetcher
-from screener.markets import as_of_option, get_price_fetcher, market_option, resolve_as_of
+from screener.markets import (
+    as_of_option,
+    get_price_fetcher,
+    market_option,
+    resolve_as_of,
+)
 from screener.minervini import render_rows, scan_minervini
 
 
