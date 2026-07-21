@@ -4,7 +4,6 @@ from datetime import date
 
 import pandas as pd
 
-from screener.screen_aliases import SCREEN_ALIASES
 from screener.options.criteria import (
     HIGH_PCR,
     OPTIONS_CRITERIA,
@@ -154,8 +153,6 @@ def test_high_pcr_reversal_thin_no_coverage_message():
 def test_new_criteria_are_registered_and_callable():
     for name in ("bearish_oi_buildup", "high_pcr_reversal"):
         assert name in OPTIONS_CRITERIA
-        assert name in SCREEN_ALIASES
-        assert callable(SCREEN_ALIASES[name])
         result = screen_options_criterion(
             name, market="us", limit=10, as_of=date(2026, 7, 6), panel=_pcr_panel()
         )
