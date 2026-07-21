@@ -1,7 +1,11 @@
-"""Line-coverage tests for the earnings-backtest engine, strategies, CLI, and PEAD.
+"""Behavioral tests for earnings-backtest signals, engine, CLI, and PEAD.
 
-All offline and deterministic: every provider / fetcher / earnings source is
-monkeypatched. CLI paths use click's CliRunner.
+Covers the price-momentum / volume-surge / analyst / IV sentiment scorers and
+their hand-computed thresholds, symmetric bit-identical slippage, entry/exit
+bar selection, the drift and PEAD engines' event loop, and summary statistics
+(profit factor, Sharpe, holding-day edge cases). All offline and deterministic:
+every provider / fetcher / earnings source is monkeypatched and CLI paths use
+click's CliRunner.
 """
 
 from __future__ import annotations
