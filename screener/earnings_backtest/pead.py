@@ -15,13 +15,15 @@ from typing import Any, Optional, cast
 import pandas as pd
 
 from screener.backtester.data import PriceFetcher
-from screener.backtester.execution import net_round_trip_return
-from screener.earnings_backtest._execution import apply_slippage
+from screener.backtester.execution import (
+    fixed_bps_round_trip,
+    net_round_trip_return,
+)
 from screener.earnings_backtest.data import (
-    collect_earnings_events,
     fetch_price_data,
     load_universe,
 )
+from screener.earnings_backtest.earnings_dates import collect_earnings_events
 from screener.earnings_backtest.metrics import compute_backtest_summary
 from screener.earnings_backtest.models import PeadTrade
 
@@ -183,7 +185,9 @@ def _simulate_fixed_hold(
         if entry_price <= 0:
             continue
 
-        entry_price, exit_price = apply_slippage(entry_price, exit_price, slippage_bps)
+        entry_price, exit_price = fixed_bps_round_trip(
+            entry_price, exit_price, slippage_bps
+        )
 
         ret_raw, ret_net = net_round_trip_return(
             entry_price, exit_price, commission_bps
@@ -220,7 +224,7 @@ def _dynamic_trade(
 ) -> PeadTrade:
     """Build one dynamic-hold trade from an open *position* and its exit fill."""
     entry_ts = position["entry_ts"]
-    entry_fill, exit_fill = apply_slippage(
+    entry_fill, exit_fill = fixed_bps_round_trip(
         position["entry_price"], exit_price, slippage_bps
     )
     ret_raw, ret_net = net_round_trip_return(entry_fill, exit_fill, commission_bps)

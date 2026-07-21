@@ -35,7 +35,7 @@ from screener.backtester.models import (
     SignalPolicy,
     UniversePolicy,
 )
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 
 # ── panel geometry ───────────────────────────────────────────────────
 _PANEL_START = "2022-01-03"

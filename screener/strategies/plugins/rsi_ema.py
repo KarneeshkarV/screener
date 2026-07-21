@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener.indicators.numpy import _ema, _rsi
+from screener.indicators.plugins.ema import ema as _ema
+from screener.indicators.plugins.rsi import rsi as _rsi
 from screener.strategies.spec import strategy
 from screener.strategies.trades import Trade, _walk
 

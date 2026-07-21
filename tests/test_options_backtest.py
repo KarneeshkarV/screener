@@ -10,7 +10,7 @@ from screener import cache
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import parse
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.options import backtest as options_backtest
 from screener.options.backtest import (
     OPTION_EXPRESSION_FIELDS,

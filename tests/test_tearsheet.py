@@ -9,7 +9,8 @@ from click.testing import CliRunner
 
 from screener.backtester.historical import backtest_historical
 from screener.backtester.models import BacktestConfig
-from screener.backtester.rolling import backtest_rolling, run_rolling_backtest
+from screener.backtester.rolling import backtest_rolling
+from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.tearsheet import render_tearsheet
 
 SECTION_MARKERS = [

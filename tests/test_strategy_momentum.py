@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from screener.backtester.models import BacktestConfig
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.strategies.plugins.momentum_12_1 import momentum_12_1_score
 from screener.strategies.spec import discover_plugins, registry
 from tests.conftest import StubPriceFetcher

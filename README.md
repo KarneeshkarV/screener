@@ -333,7 +333,7 @@ The standalone Pine strategy runner is not a `uv run screener` subcommand; it is
 ```bash
 just pine --market us --years 3 --limit 50
 just pine-india --years 2
-uv run python run_pinescript_strategies.py --market us --years 3 --limit 50
+uv run python -m screener.research.pine_runner --market us --years 3 --limit 50
 ```
 
 ## Optimization

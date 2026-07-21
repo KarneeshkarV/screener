@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from screener.backtester.models import BacktestConfig
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.strategies.plugins.low_volatility import realized_volatility
 from screener.strategies.spec import discover_plugins, registry
 from tests.conftest import StubPriceFetcher

@@ -62,7 +62,7 @@ def test_registry_exposes_snapshots_and_errors():
 
 def test_resolve_strategy_exprs_uses_named_strategy(monkeypatch):
     monkeypatch.setattr(
-        "screener.backtester.strategies.resolve_strategy",
+        "screener.strategies.expressions.resolve_strategy",
         lambda name: NamedStrategy(entry="close > ema(close, 20)", exit="close < open"),
     )
 
@@ -80,7 +80,7 @@ def test_resolve_strategy_exprs_reports_usage_errors(monkeypatch):
     def fail(_: str) -> NamedStrategy:
         raise KeyError("not here")
 
-    monkeypatch.setattr("screener.backtester.strategies.resolve_strategy", fail)
+    monkeypatch.setattr("screener.strategies.expressions.resolve_strategy", fail)
 
     with pytest.raises(click.UsageError, match="not here"):
         resolve_strategy_exprs("missing", None, None)

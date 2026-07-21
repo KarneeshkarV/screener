@@ -1,9 +1,9 @@
 """Cross-check indicator primitives between the engine and the pine-port.
 
-The engine (screener/backtester/pine.py) and the pine-port
-(run_pinescript_strategies.py) each implement their own SMA/EMA/RSI/ATR/etc.
+The engine (screener/backtester/pine.py) and the numpy indicator plugins
+(screener/indicators/plugins/) each implement their own SMA/EMA/RSI/ATR/etc.
 for different callers: the engine operates on pandas Series for AST evaluation,
-while the pine-port operates on numpy arrays for speed.
+while the plugins operate on numpy arrays for speed.
 
 If these diverge numerically, downstream backtests can't be compared. This
 module feeds a deterministic OHLCV frame through both and asserts parity.
@@ -26,10 +26,10 @@ import pytest
 from screener.backtester.pine import _atr as pine_atr
 from screener.backtester.pine import _rsi as pine_rsi
 
-from screener.backtester.pine_runner import _atr as pp_atr
-from screener.backtester.pine_runner import _ema as pp_ema
-from screener.backtester.pine_runner import _rsi as pp_rsi
-from screener.backtester.pine_runner import _sma as pp_sma
+from screener.indicators.plugins.atr import atr as pp_atr
+from screener.indicators.plugins.ema import ema as pp_ema
+from screener.indicators.plugins.rsi import rsi as pp_rsi
+from screener.indicators.plugins.sma import sma as pp_sma
 
 
 @pytest.fixture(scope="module")

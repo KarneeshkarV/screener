@@ -1,6 +1,7 @@
 set positional-arguments
 
 python := ".venv/bin/python"
+screener := ".venv/bin/screener"
 
 # List available recipes.
 default:
@@ -8,239 +9,239 @@ default:
 
 # Show top-level CLI help.
 help:
-    @{{python}} main.py --help
+    @{{screener}} --help
 
 # Show screen command help.
 help-screen:
-    @{{python}} main.py screen --help
+    @{{screener}} screen --help
 
 # Show historical backtest command help.
 help-backtest:
-    @{{python}} main.py backtest-historical --help
+    @{{screener}} backtest-historical --help
 
 # Show rolling backtest command help.
 help-backtest-rolling:
-    @{{python}} main.py backtest-rolling --help
+    @{{screener}} backtest-rolling --help
 
 # Show backtest lab command help.
 help-backtest-lab:
-    @{{python}} main.py backtest-lab --help
+    @{{screener}} backtest-lab --help
 
 # Show GARP command help.
 help-garp:
-    @{{python}} main.py garp --help
+    @{{screener}} garp --help
 
 # Show promoter/insider buys command help.
 help-promoter-buys:
-    @{{python}} main.py promoter-buys --help
+    @{{screener}} promoter-buys --help
 
 # Show RS breakout command help.
 help-rs-breakout:
-    @{{python}} main.py rs-breakout --help
+    @{{screener}} rs-breakout --help
 
 # Show operator scan command help.
 help-operator-scan:
-    @{{python}} main.py operator-scan --help
+    @{{screener}} operator-scan --help
 
 # Show optimize command help.
 help-optimize:
-    @{{python}} main.py optimize --help
+    @{{screener}} optimize --help
 
 # Show cache command help.
 help-cache:
-    @{{python}} main.py cache --help
+    @{{screener}} cache --help
 
 # Show conviction command help.
 help-conviction:
-    @{{python}} main.py conviction --help
+    @{{screener}} conviction --help
 
 # Show earnings backtest command help.
 help-earnings-backtest:
-    @{{python}} main.py earnings-backtest --help
+    @{{screener}} earnings-backtest --help
 
 # Show earnings PEAD command help.
 help-earnings-pead:
-    @{{python}} main.py earnings-pead --help
+    @{{screener}} earnings-pead --help
 
 # Show factor tearsheet command help.
 help-factor-tearsheet:
-    @{{python}} main.py factor-tearsheet --help
+    @{{screener}} factor-tearsheet --help
 
 # Show history command help.
 help-history:
-    @{{python}} main.py history --help
+    @{{screener}} history --help
 
 # Show history-backup command help.
 help-history-backup:
-    @{{python}} main.py history-backup --help
+    @{{screener}} history-backup --help
 
 # Show index inclusion command help.
 help-index-inclusion:
-    @{{python}} main.py index-inclusion --help
+    @{{screener}} index-inclusion --help
 
 # Show filings reader command help.
 help-filings:
-    @{{python}} main.py filings --help
+    @{{screener}} filings --help
 
 # Show institutional ownership command help.
 help-institutional:
-    @{{python}} main.py institutional --help
+    @{{screener}} institutional --help
 
 # Show options data command help.
 help-options:
-    @{{python}} main.py options --help
+    @{{screener}} options --help
 
 # Show research report command help.
 help-research-report:
-    @{{python}} main.py research-report --help
+    @{{screener}} research-report --help
 
 # Show seasonality command help.
 help-seasonality:
-    @{{python}} main.py seasonality --help
+    @{{screener}} seasonality --help
 
 # Show vectorbt sweep command help.
 help-vbt-sweep:
-    @{{python}} main.py vbt-sweep --help
+    @{{screener}} vbt-sweep --help
 
 # Show standalone Pine strategy runner help.
 help-pine:
-    @{{python}} run_pinescript_strategies.py --help
+    @{{python}} -m screener.research.pine_runner --help
 
 # Run the screener. Example: just screen -m us -n 20 --csv
 screen *args:
-    @{{python}} main.py screen "$@"
+    @{{screener}} screen "$@"
 
 # Run the US screener. Example: just screen-us -n 20 --detail
 screen-us *args:
-    @{{python}} main.py screen -m us "$@"
+    @{{screener}} screen -m us "$@"
 
 # Run the India screener. Example: just screen-india -n 20 --csv
 screen-india *args:
-    @{{python}} main.py screen -m india "$@"
+    @{{screener}} screen -m india "$@"
 
 # Run historical backtesting. Requires --as-of plus --entry/--strategy and a universe.
 backtest *args:
-    @{{python}} main.py backtest-historical "$@"
+    @{{screener}} backtest-historical "$@"
 
 # Run a true daily rolling backtest over a date window.
 backtest-rolling *args:
-    @{{python}} main.py backtest-rolling "$@"
+    @{{screener}} backtest-rolling "$@"
 
 # Launch a browser UI for comparing rolling backtest strategies.
 backtest-lab *args:
-    @{{python}} main.py backtest-lab "$@"
+    @{{screener}} backtest-lab "$@"
 
 # Live US historical backtest smoke run.
 backtest-smoke-us:
-    @{{python}} main.py backtest-historical -m us --as-of 2026-03-20 --entry "close > 0" --exit false --tickers AAPL,MSFT,NVDA,AMD --hold 5 --top 2 --stop-loss 0.05 --take-profit 0.08 --trailing-stop 0.04
+    @{{screener}} backtest-historical -m us --as-of 2026-03-20 --entry "close > 0" --exit false --tickers AAPL,MSFT,NVDA,AMD --hold 5 --top 2 --stop-loss 0.05 --take-profit 0.08 --trailing-stop 0.04
 
 # Live India historical backtest smoke run.
 backtest-smoke-india:
-    @{{python}} main.py backtest-historical -m india --as-of 2026-03-20 --entry "close > 0" --exit false --tickers RELIANCE,TCS,INFY,HDFCBANK --hold 5 --top 2 --min-price 0 --min-avg-dollar-volume 0
+    @{{screener}} backtest-historical -m india --as-of 2026-03-20 --entry "close > 0" --exit false --tickers RELIANCE,TCS,INFY,HDFCBANK --hold 5 --top 2 --min-price 0 --min-avg-dollar-volume 0
 
 # Run standalone Pine strategy backtests. Example: just pine --market us --years 3 --limit 50
 pine *args:
-    @{{python}} run_pinescript_strategies.py "$@"
+    @{{python}} -m screener.research.pine_runner "$@"
 
 # Run standalone Pine strategy backtests for the US market.
 pine-us *args:
-    @{{python}} run_pinescript_strategies.py --market us "$@"
+    @{{python}} -m screener.research.pine_runner --market us "$@"
 
 # Run standalone Pine strategy backtests for the India market.
 pine-india *args:
-    @{{python}} run_pinescript_strategies.py --market india "$@"
+    @{{python}} -m screener.research.pine_runner --market india "$@"
 
 # Detect unusual-volume events. Example: just unusual-volume -m us --tickers AAPL,MSFT
 unusual-volume *args:
-    @{{python}} main.py unusual-volume "$@"
+    @{{screener}} unusual-volume "$@"
 
 # Find GARP stocks using market-specific fundamental data.
 garp *args:
-    @{{python}} main.py garp "$@"
+    @{{screener}} garp "$@"
 
 # Find stocks where promoter/insider holding has increased.
 promoter-buys *args:
-    @{{python}} main.py promoter-buys "$@"
+    @{{screener}} promoter-buys "$@"
 
 # Screen stocks for RS + SuperTrend + breakout/volume setups.
 rs-breakout *args:
-    @{{python}} main.py rs-breakout "$@"
+    @{{screener}} rs-breakout "$@"
 
 # Run the NSE Operator Intent screener.
 operator-scan *args:
-    @{{python}} main.py operator-scan "$@"
+    @{{screener}} operator-scan "$@"
 
 # Optimize and validate backtest parameters. Example: just optimize grid --help
 optimize *args:
-    @{{python}} main.py optimize "$@"
+    @{{screener}} optimize "$@"
 
 # Show successful feature usage counts from Turso.
 usage-report:
-    @{{python}} main.py usage-report
+    @{{screener}} usage-report
 
 # Inspect and prune the screener's on-disk caches. Example: just cache status
 cache *args:
-    @{{python}} main.py cache "$@"
+    @{{screener}} cache "$@"
 
 # One composite conviction card for TICKER, fusing the screen pillars.
 conviction *args:
-    @{{python}} main.py conviction "$@"
+    @{{screener}} conviction "$@"
 
 # Backtest earnings-drift entry (E-1/E-2 -> E) with sentiment filters.
 earnings-backtest *args:
-    @{{python}} main.py earnings-backtest "$@"
+    @{{screener}} earnings-backtest "$@"
 
 # Backtest post-earnings-announcement drift (next open -> hold N days).
 earnings-pead *args:
-    @{{python}} main.py earnings-pead "$@"
+    @{{screener}} earnings-pead "$@"
 
 # Compute factor IC and quantile tearsheet for a named strategy.
 factor-tearsheet *args:
-    @{{python}} main.py factor-tearsheet "$@"
+    @{{screener}} factor-tearsheet "$@"
 
 # List persisted screen runs (replay with `backtest-historical --from-run`).
 history *args:
-    @{{python}} main.py history "$@"
+    @{{screener}} history "$@"
 
 # Back up screen-run history to Turso (or restore with --restore).
 history-backup *args:
-    @{{python}} main.py history-backup "$@"
+    @{{screener}} history-backup "$@"
 
 # Event study of post-addition excess drift for S&P 500 additions vs SPY.
 index-inclusion *args:
-    @{{python}} main.py index-inclusion "$@"
+    @{{screener}} index-inclusion "$@"
 
 # Read US SEC filings (list recent filings, or a 10-K/10-Q by section).
 filings *args:
-    @{{python}} main.py filings "$@"
+    @{{screener}} filings "$@"
 
 # Show FMP institutional ownership per ticker, ranked by QoQ change.
 institutional *args:
-    @{{python}} main.py institutional "$@"
+    @{{screener}} institutional "$@"
 
 # Build, snapshot, and inspect normalized options data. Example: just options snapshot --help
 options *args:
-    @{{python}} main.py options "$@"
+    @{{screener}} options "$@"
 
 # One-command research report: grid -> walk-forward -> Monte Carlo.
 research-report *args:
-    @{{python}} main.py research-report "$@"
+    @{{screener}} research-report "$@"
 
 # Show monthly, turn-of-month and day-of-week seasonality for TICKER.
 seasonality *args:
-    @{{python}} main.py seasonality "$@"
+    @{{screener}} seasonality "$@"
 
 # Fast vectorbt grid search for exploration (not validation).
 vbt-sweep *args:
-    @{{python}} main.py vbt-sweep "$@"
+    @{{screener}} vbt-sweep "$@"
 
 # Show unusual-volume command help.
 help-unusual-volume:
-    @{{python}} main.py unusual-volume --help
+    @{{screener}} unusual-volume --help
 
 # Compile Python files without running tests.
 compile:
-    @{{python}} -m compileall main.py run_pinescript_strategies.py screener
+    @{{python}} -m compileall screener
 
 # Run the test suite with coverage, matching CI.
 test *args:

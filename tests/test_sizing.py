@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from screener.backtester.models import BacktestConfig, PortfolioPolicy
 from screener.backtester.portfolio import Portfolio
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.sizing import entry_budget_for
 from tests.conftest import StubPriceFetcher
 

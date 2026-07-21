@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from screener.indicators.numpy import _bb
+from screener.indicators.plugins.bollinger_bands import bollinger_bands as _bb
 from screener.strategies.spec import strategy
 from screener.strategies.trades import Trade, _walk
 

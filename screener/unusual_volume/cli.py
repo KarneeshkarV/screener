@@ -47,7 +47,7 @@ def _resolve_universe(
             raise click.UsageError(f"--universe-file not found: {universe_file}")
         return [line.strip() for line in path.read_text().splitlines() if line.strip()]
     # Fallback to the project's default universe loader.
-    from screener.backtester.pine_runner import load_universe  # lazy import; pulls TV
+    from screener.research.pine_runner import load_universe  # lazy import; pulls TV
 
     return load_universe(market)
 

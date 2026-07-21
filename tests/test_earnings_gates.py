@@ -12,9 +12,9 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from main import cli
+from screener.cli import cli
 from screener.backtester.models import BacktestConfig
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.rolling_candidates import _build_rolling_candidate_matrices
 from screener.backtester.rolling_candidates import _candidate_rows_for_day
 from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer

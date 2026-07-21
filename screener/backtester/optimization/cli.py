@@ -104,7 +104,7 @@ def _base_config(
     min_avg_dollar_volume: float | None,
     adv_window: int,
 ) -> BacktestConfig:
-    from screener.backtester.strategies import resolve_strategy
+    from screener.strategies.expressions import resolve_strategy
 
     if strategy_name:
         strategy = resolve_strategy(strategy_name)

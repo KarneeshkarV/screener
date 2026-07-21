@@ -3,7 +3,7 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from screener.indicators.numpy import _rsi
+from screener.indicators.plugins.rsi import rsi as _rsi
 from screener.strategies.spec import strategy
 from screener.strategies.trades import Trade, _walk
 

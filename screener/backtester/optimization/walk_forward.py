@@ -11,7 +11,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
 from screener.backtester.data import PriceFetcher
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.optimization.grid import GridSearchResult, grid_search
 from screener.backtester.optimization.metrics import optimization_metrics

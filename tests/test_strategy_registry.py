@@ -5,7 +5,6 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from screener.backtester import pine_runner
 from screener.strategies.plugins.rs_breakout import (
     _prepare_rs_breakout,
     _rs_breakout_lookback,
@@ -15,7 +14,7 @@ from screener.strategies.plugins.vivek_equity_tool import (
     _vivek_lookback,
 )
 from screener.strategies import spec as strategy_spec_module
-from screener.strategies.pine_ports import (
+from screener.strategies.plugins.ma_cross_st_entry import (
     strat_ma_cross_st_entry,
 )
 from screener.strategies.expressions import NAMED_STRATEGIES, resolve_strategy
@@ -51,7 +50,6 @@ def test_strategy_registry_preserves_pine_runner_names():
     }
 
     assert set(STRATEGIES) == expected
-    assert set(pine_runner.STRATEGIES) == expected
     assert dict(STRATEGIES.items()) == dict(STRATEGIES)
 
 
@@ -79,12 +77,6 @@ def test_strategy_registry_lookup_returns_callable():
 
     with pytest.raises(KeyError, match="missing"):
         STRATEGIES["missing"]
-
-
-def test_backtester_pine_runner_reexports_legacy_helpers():
-    assert pine_runner._ema is not None
-    assert pine_runner._rsi is not None
-    assert pine_runner.load_universe is not None
 
 
 def _ohlcv(n: int = 700) -> pd.DataFrame:

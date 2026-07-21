@@ -8,8 +8,8 @@ Two universes are stitched together (per user choice ``fo+cash``):
 
   Top-500 cash universe — TradingView screener filtered to NSE-listed stocks
     above a price floor, ranked by daily volume. Reused from
-    ``run_pinescript_strategies.load_universe`` so we share the same survivor
-    bias (or lack thereof) as the existing daily picks pipeline.
+    ``screener.research.pine_runner.load_universe`` so we share the same
+    survivor bias (or lack thereof) as the existing daily picks pipeline.
 
 Non-F&O cash names get blank OI columns and ``Operator_Action == None``
 in the final output, but their delivery + price metrics still appear.
@@ -38,7 +38,7 @@ def cash_top_500() -> list[str]:
     Reuses the existing universe loader so the operator screener stays in
     sync with the existing backtester universe selection.
     """
-    from run_pinescript_strategies import load_universe
+    from screener.research.pine_runner import load_universe
 
     return load_universe("india")
 

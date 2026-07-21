@@ -30,7 +30,7 @@ from screener.backtester.metrics import (
     periods_per_year_for_interval,
 )
 from screener.backtester.models import BacktestConfig
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 from tests.conftest import StubPriceFetcher
 
 

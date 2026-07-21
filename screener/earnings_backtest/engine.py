@@ -13,16 +13,18 @@ from typing import Optional
 import pandas as pd
 
 from screener.backtester.costs import build_cost_model
-from screener.earnings_backtest._execution import (
+from screener.backtester.execution import (
     apply_round_trip_costs,
-    apply_slippage,
+    fixed_bps_round_trip,
 )
 from screener.earnings_backtest.data import (
-    collect_earnings_events,
-    fetch_analyst_sentiment,
-    fetch_iv_sentiment,
     fetch_price_data,
     load_universe,
+)
+from screener.earnings_backtest.earnings_dates import collect_earnings_events
+from screener.earnings_backtest.sentiment import (
+    fetch_analyst_sentiment,
+    fetch_iv_sentiment,
 )
 from screener.earnings_backtest.strategies import (
     STRATEGY_FUNCS,
@@ -155,7 +157,9 @@ def run_earnings_backtest(
         exit_price = float(exit_bar.iloc[-1]["close"])
 
         # Apply slippage and cost-model fees (fees do not move the fill price).
-        entry_price, exit_price = apply_slippage(entry_price, exit_price, slippage_bps)
+        entry_price, exit_price = fixed_bps_round_trip(
+            entry_price, exit_price, slippage_bps
+        )
 
         # Evaluate strategies
         scores: dict[str, float] = {}

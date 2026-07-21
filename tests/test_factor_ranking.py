@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from screener.backtester.models import BacktestConfig
-from screener.backtester.rolling import run_rolling_backtest
+from screener.backtester.rolling_simulation import run_rolling_backtest
 from tests.conftest import StubPriceFetcher
 
 _START = "2024-01-01"
