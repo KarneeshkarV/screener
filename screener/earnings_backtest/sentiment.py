@@ -159,11 +159,11 @@ def fetch_iv_sentiment_nse(symbol: str) -> Optional[dict]:
     *symbol* is the NSE symbol (e.g. 'RELIANCE'), NOT the yfinance ticker.
     Routes through the shared ``unusual_volume`` NSE seam
     (:func:`~screener.unusual_volume.option_chain.fetch_option_chain` — primed
-    session, soft-block reprime, circuit breaker) and reuses
-    :func:`~screener.unusual_volume.option_chain.compute_oc_metrics` for the OI
-    put/call ratio and :func:`~screener.unusual_volume.option_chain.compute_oc_iv_volume`
-    for median strike IV and traded volume. The returned dict shape matches
-    :func:`fetch_iv_sentiment_yf` so strategy consumers are source-agnostic.
+    session, soft-block reprime, circuit breaker) and derives the OI put/call
+    ratio, median strike IV, and traded volume via
+    :func:`~screener.options.metrics.compute_chain_metrics`. The returned dict
+    shape matches :func:`fetch_iv_sentiment_yf` so strategy consumers are
+    source-agnostic.
     """
 
     def _fetch() -> Optional[dict]:
@@ -179,10 +179,10 @@ def fetch_iv_sentiment_nse(symbol: str) -> Optional[dict]:
                 return None
             metrics = compute_chain_metrics(chain)
 
-            # P/C ratio on OI (more stable than volume). ``compute_oc_metrics``
-            # collapses a zero-OI leg to None; preserve the legacy default of
-            # 1.0 (neutral) when call OI is absent so downstream numeric
-            # comparisons in the iv_sentiment strategy never see None.
+            # P/C ratio on OI (more stable than volume). A zero-OI call leg
+            # collapses to None; preserve the legacy default of 1.0 (neutral)
+            # when call OI is absent so downstream numeric comparisons in the
+            # iv_sentiment strategy never see None.
             ce_oi = metrics.call_oi or None
             pe_oi = metrics.put_oi
             pc_ratio = round(pe_oi / ce_oi, 4) if ce_oi else 1.0

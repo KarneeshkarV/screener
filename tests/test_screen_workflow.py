@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pandas as pd
 
+import screener.screen_workflow as sw
 from screener.criteria import FilterCriteriaSelection
 from screener.screen_workflow import (
     ScreenMode,
     ScreenRequest,
-    ScreenWorkflowDeps,
     run_screen_workflow,
 )
 
@@ -37,27 +37,30 @@ def _df(*names: str) -> pd.DataFrame:
     return pd.DataFrame({"name": list(names), "description": list(names)})
 
 
-def test_screen_workflow_csv_short_circuits_history_and_report(tmp_path):
+def _patch(monkeypatch, **overrides) -> None:
+    for name, fn in overrides.items():
+        monkeypatch.setattr(sw, name, fn)
+
+
+def test_screen_workflow_csv_short_circuits_history_and_report(monkeypatch, tmp_path):
     calls: list[str] = []
     frame = _df("AAA", "BBB")
 
-    deps = ScreenWorkflowDeps(
+    _patch(
+        monkeypatch,
         resolve_criteria=lambda names: FilterCriteriaSelection(
             tuple(names), "ema", ["FILTER"]
         ),
-        parse_cache_ttl=lambda raw: 900.0,
         scan=lambda **kwargs: calls.append("scan") or (2, frame),
         save_run=lambda *args: calls.append("save") or 1,
         previous_run=lambda *args: calls.append("previous") or None,
-        diff=lambda current, previous: ([], []),
-        temp_report_path=lambda prefix: tmp_path / f"{prefix}.html",
-        render_report=lambda *args, **kwargs: (
+        render_screen_report=lambda *args, **kwargs: (
             calls.append("report") or tmp_path / "unused.html"
         ),
         enrich_days_to_earnings=lambda df, market: df.assign(days_to_earnings=None),
     )
 
-    outcome = run_screen_workflow(_request(output_csv=True, earnings=True), deps)
+    outcome = run_screen_workflow(_request(output_csv=True, earnings=True))
 
     assert outcome.mode is ScreenMode.CSV
     assert outcome.df is not None
@@ -66,33 +69,28 @@ def test_screen_workflow_csv_short_circuits_history_and_report(tmp_path):
     assert calls == ["scan"]
 
 
-def test_screen_workflow_skips_earnings_enrichment_by_default(tmp_path):
+def test_screen_workflow_skips_earnings_enrichment_by_default(monkeypatch, tmp_path):
     frame = _df("AAA")
 
     def unexpected_enrichment(df, market):
         raise AssertionError("earnings enrichment must be opt-in")
 
-    deps = ScreenWorkflowDeps(
+    _patch(
+        monkeypatch,
         resolve_criteria=lambda names: FilterCriteriaSelection(
             tuple(names), "ema", ["FILTER"]
         ),
-        parse_cache_ttl=lambda raw: 900.0,
         scan=lambda **kwargs: (1, frame),
-        save_run=lambda *args: 1,
-        previous_run=lambda *args: None,
-        diff=lambda current, previous: ([], []),
-        temp_report_path=lambda prefix: tmp_path / f"{prefix}.html",
-        render_report=lambda *args, **kwargs: tmp_path / "unused.html",
         enrich_days_to_earnings=unexpected_enrichment,
     )
 
-    outcome = run_screen_workflow(_request(output_csv=True), deps)
+    outcome = run_screen_workflow(_request(output_csv=True))
 
     assert outcome.df is not None
     assert "days_to_earnings" not in outcome.df.columns
 
 
-def test_screen_workflow_first_run_uses_default_report_path(tmp_path):
+def test_screen_workflow_first_run_uses_default_report_path(monkeypatch, tmp_path):
     frame = _df("AAA")
     report = tmp_path / "screen.html"
     rendered: dict[str, object] = {}
@@ -103,21 +101,19 @@ def test_screen_workflow_first_run_uses_default_report_path(tmp_path):
         Path(args[4]).write_text("report", encoding="utf-8")
         return Path(args[4])
 
-    deps = ScreenWorkflowDeps(
+    _patch(
+        monkeypatch,
         resolve_criteria=lambda names: FilterCriteriaSelection(
             tuple(names), "ema", ["FILTER"]
         ),
-        parse_cache_ttl=lambda raw: 900.0,
         scan=lambda **kwargs: (1, frame),
         save_run=lambda *args: 7,
         previous_run=lambda *args: None,
-        diff=lambda current, previous: (["unused"], ["unused"]),
         temp_report_path=lambda prefix: report,
-        render_report=render_report,
-        enrich_days_to_earnings=lambda df, market: df,
+        render_screen_report=render_report,
     )
 
-    outcome = run_screen_workflow(_request(), deps)
+    outcome = run_screen_workflow(_request())
 
     assert outcome.mode is ScreenMode.RESULTS
     assert outcome.first_run is True
@@ -129,29 +125,27 @@ def test_screen_workflow_first_run_uses_default_report_path(tmp_path):
 
 
 def test_screen_workflow_previous_run_diff_uses_explicit_report_path(
-    tmp_path,
+    monkeypatch, tmp_path
 ):
     frame = _df("AAA")
     prev = pd.DataFrame({"ticker": ["BBB"]})
     explicit = tmp_path / "explicit.html"
 
-    deps = ScreenWorkflowDeps(
+    _patch(
+        monkeypatch,
         resolve_criteria=lambda names: FilterCriteriaSelection(
             tuple(names), "ema+value", ["EMA", "VALUE"]
         ),
-        parse_cache_ttl=lambda raw: 123.0,
         scan=lambda **kwargs: (1, frame),
         save_run=lambda *args: 8,
         previous_run=lambda *args: prev,
         diff=lambda current, previous: (["AAA"], ["BBB"]),
-        temp_report_path=lambda prefix: tmp_path / "unused.html",
-        render_report=lambda *args, **kwargs: (
+        render_screen_report=lambda *args, **kwargs: (
             Path(args[4]).write_text("report", encoding="utf-8") or Path(args[4])
         ),
-        enrich_days_to_earnings=lambda df, market: df,
     )
 
-    outcome = run_screen_workflow(_request(report_path=explicit), deps)
+    outcome = run_screen_workflow(_request(report_path=explicit))
 
     assert outcome.label == "ema+value"
     assert outcome.first_run is False

@@ -367,12 +367,12 @@ def test_earnings_blackout_validation_errors():
         _rolling_cfg(interval="2h")
 
 
-def test_screen_workflow_earnings_buffer(tmp_path):
+def test_screen_workflow_earnings_buffer(monkeypatch, tmp_path):
+    import screener.screen_workflow as sw
     from screener.criteria import FilterCriteriaSelection
     from screener.screen_workflow import (
         ScreenMode,
         ScreenRequest,
-        ScreenWorkflowDeps,
         run_screen_workflow,
     )
 
@@ -385,19 +385,13 @@ def test_screen_workflow_earnings_buffer(tmp_path):
         out["days_to_earnings"] = [3, 20, None]
         return out
 
-    deps = ScreenWorkflowDeps(
-        resolve_criteria=lambda names: FilterCriteriaSelection(
-            tuple(names), "ema", ["FILTER"]
-        ),
-        parse_cache_ttl=lambda raw: 900.0,
-        scan=lambda **kwargs: (3, frame),
-        save_run=lambda *args: 1,
-        previous_run=lambda *args: None,
-        diff=lambda current, previous: ([], []),
-        temp_report_path=lambda prefix: tmp_path / f"{prefix}.html",
-        render_report=lambda *args, **kwargs: tmp_path / "unused.html",
-        enrich_days_to_earnings=fake_enrich,
+    monkeypatch.setattr(
+        sw,
+        "resolve_criteria",
+        lambda names: FilterCriteriaSelection(tuple(names), "ema", ["FILTER"]),
     )
+    monkeypatch.setattr(sw, "scan", lambda **kwargs: (3, frame))
+    monkeypatch.setattr(sw, "enrich_days_to_earnings", fake_enrich)
     request = ScreenRequest(
         market="us",
         criteria_names=("ema",),
@@ -410,7 +404,7 @@ def test_screen_workflow_earnings_buffer(tmp_path):
         report_path=None,
         earnings_buffer=5,
     )
-    outcome = run_screen_workflow(request, deps)
+    outcome = run_screen_workflow(request)
     assert outcome.mode is ScreenMode.CSV
     assert outcome.df is not None
     assert outcome.df["name"].tolist() == ["BBB", "CCC"]

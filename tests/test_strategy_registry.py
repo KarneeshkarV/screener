@@ -19,7 +19,7 @@ from screener.strategies.pine_ports import (
     strat_ma_cross_st_entry,
 )
 from screener.strategies.expressions import NAMED_STRATEGIES, resolve_strategy
-from screener.strategies.registry import STRATEGIES, get_strategy, iter_strategies
+from screener.strategies.registry import STRATEGIES
 from screener.strategies.spec import (
     CallableStrategySpec,
     DerivedView,
@@ -52,7 +52,7 @@ def test_strategy_registry_preserves_pine_runner_names():
 
     assert set(STRATEGIES) == expected
     assert set(pine_runner.STRATEGIES) == expected
-    assert dict(iter_strategies()) == STRATEGIES
+    assert dict(STRATEGIES.items()) == dict(STRATEGIES)
 
 
 def test_strategy_views_are_live_derived_over_single_registry():
@@ -73,13 +73,12 @@ def test_strategy_views_are_live_derived_over_single_registry():
 
 
 def test_strategy_registry_lookup_returns_callable():
-    strategy = get_strategy("ma_cross_st_entry")
+    strategy = STRATEGIES["ma_cross_st_entry"]
 
-    assert strategy is STRATEGIES["ma_cross_st_entry"]
     assert callable(strategy)
 
-    with pytest.raises(KeyError, match="Unknown strategy 'missing'"):
-        get_strategy("missing")
+    with pytest.raises(KeyError, match="missing"):
+        STRATEGIES["missing"]
 
 
 def test_backtester_pine_runner_reexports_legacy_helpers():

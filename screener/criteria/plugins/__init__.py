@@ -1,5 +1,7 @@
-"""Plugin directory for screening criteria. Auto-discovered.
+"""Plugin modules for screening criteria.
 
-Drop a new ``*.py`` file with a top-level ``@criterion("name")`` decorator and
-it will be available the next time the package loads.
+Criteria are grouped by theme (``technical``, ``fundamental``); each is
+registered by a top-level ``@criterion("name")`` decorator. New criteria are
+added by decorating a function here and importing its module from
+``screener.criteria._register_plugins``.
 """
