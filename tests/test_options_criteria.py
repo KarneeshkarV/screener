@@ -7,10 +7,9 @@ import pandas as pd
 import pytest
 
 from screener.cli import cli
-from screener.screen_aliases import SCREEN_ALIASES
-from screener.screen_alias_plugins import options_signals
 from screener.options import criteria as options_criteria
 from screener.options.criteria import (
+    OPTIONS_CRITERIA,
     OptionsCriterionResult,
     latest_panel_rows,
     realized_earnings_moves,
@@ -49,7 +48,7 @@ def _panel() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_options_plugins_are_registered_as_screen_aliases():
+def test_options_criteria_are_registered():
     expected = {
         "unusual_options",
         "bullish_oi_buildup",
@@ -57,8 +56,8 @@ def test_options_plugins_are_registered_as_screen_aliases():
         "low_iv_rank",
         "cheap_earnings_vol",
     }
-    assert expected <= set(SCREEN_ALIASES)
-    assert all(callable(SCREEN_ALIASES[name]) for name in expected)
+    assert expected <= set(OPTIONS_CRITERIA)
+    assert all(callable(OPTIONS_CRITERIA[name]) for name in expected)
 
 
 def test_latest_panel_rows_is_point_in_time_and_validates_schema():
@@ -234,7 +233,7 @@ def test_realized_moves_and_cheap_vol_degrade_cleanly():
     assert "unavailable: offline" in failed.message
 
 
-def test_runner_and_plugin_render_paths(monkeypatch, capsys):
+def test_runner_render_paths(monkeypatch, capsys):
     result = OptionsCriterionResult(
         pd.DataFrame(
             [
@@ -257,36 +256,17 @@ def test_runner_and_plugin_render_paths(monkeypatch, capsys):
     run_options_criterion("high_iv_rank", market="us", limit=10, output_csv=True)
     assert "SYMBOL" in capsys.readouterr().out
 
+
+def test_options_signals_command_dispatches_criterion(monkeypatch):
     calls = []
     monkeypatch.setattr(
-        options_signals,
-        "run_options_criterion",
-        lambda name, **kwargs: calls.append((name, kwargs)),
-    )
-    options_signals.high_iv_rank(market="us", limit=5, output_csv=False)
-    options_signals.low_iv_rank(market="us", limit=5, output_csv=False)
-    options_signals.unusual_options(market="us", limit=5, output_csv=False)
-    options_signals.bullish_oi_buildup(market="us", limit=5, output_csv=False)
-    options_signals.cheap_earnings_vol(market="us", limit=5, output_csv=False)
-    assert [name for name, _kwargs in calls] == [
-        "high_iv_rank",
-        "low_iv_rank",
-        "unusual_options",
-        "bullish_oi_buildup",
-        "cheap_earnings_vol",
-    ]
-
-
-def test_screen_cli_dispatches_options_pipeline(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        options_signals,
-        "run_options_criterion",
+        "screener.options.cli.run_options_criterion",
         lambda name, **kwargs: calls.append((name, kwargs)),
     )
     result = CliRunner().invoke(
-        cli, ["screen", "-m", "us", "-c", "high_iv_rank", "-n", "3"]
+        cli, ["options", "signals", "-m", "us", "-c", "high_iv_rank", "-n", "3"]
     )
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     assert calls[0][0] == "high_iv_rank"
+    assert calls[0][1] == {"market": "us", "limit": 3, "output_csv": False}
     assert calls[0][1]["limit"] == 3

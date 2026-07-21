@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
 
 import click
 
+from screener.backtester.models import SUPPORTED_INTERVALS
 from screener.markets import MARKETS
 
 if TYPE_CHECKING:
+    from datetime import date
+    from pathlib import Path
+
+    from screener.backtester.models import BacktestConfig
     from screener.backtester.slippage import SlippageModel
 
 DEFAULT_BENCHMARK = {name: market.benchmark for name, market in MARKETS.items()}
@@ -231,3 +238,538 @@ def resolve_min_filters(
     if resolved_min_adv == 0:
         resolved_min_adv = None
     return resolved_min_price, resolved_min_adv
+
+
+# ---------------------------------------------------------------------------
+# Shared backtest command options
+#
+# ``backtest-historical`` and ``backtest-rolling`` share 31 long-form options.
+# Each option is defined exactly once here as a ``mode``-aware builder so both
+# commands keep byte-identical ``--help`` output (help text and defaults differ
+# for a handful of options between the two modes). A command composes its own
+# option order by calling ``backtest_options(mode, *names)`` around the
+# mode-specific options it declares inline, so help ordering is preserved.
+# ---------------------------------------------------------------------------
+
+OptionDecorator = Callable[[Any], Any]
+OptionBuilder = Callable[[str], OptionDecorator]
+
+
+def _opt_hold(mode: str) -> OptionDecorator:
+    return click.option(
+        "--hold", type=int, default=20, help="Holding period (trading days)."
+    )
+
+
+def _opt_top(mode: str) -> OptionDecorator:
+    help_text = (
+        "Top N tickers to select."
+        if mode == "historical"
+        else "Concurrent portfolio slots."
+    )
+    return click.option("--top", type=int, default=10, help=help_text)
+
+
+def _opt_entry(mode: str) -> OptionDecorator:
+    return click.option(
+        "--entry", "entry_expr", default=None, help="Pine-like entry expression."
+    )
+
+
+def _opt_exit(mode: str) -> OptionDecorator:
+    return click.option(
+        "--exit", "exit_expr", default=None, help="Pine-like exit expression."
+    )
+
+
+def _opt_strategy(mode: str) -> OptionDecorator:
+    help_text = (
+        "Named strategy shortcut (overrides --entry/--exit if given)."
+        if mode == "historical"
+        else "Named strategy shortcut."
+    )
+    return click.option("--strategy", "strategy_name", default=None, help=help_text)
+
+
+def _opt_stop_loss(mode: str) -> OptionDecorator:
+    return click.option(
+        "--stop-loss", type=float, default=None, help="Stop loss (fraction, e.g. 0.08)."
+    )
+
+
+def _opt_take_profit(mode: str) -> OptionDecorator:
+    return click.option(
+        "--take-profit", type=float, default=None, help="Take profit (fraction)."
+    )
+
+
+def _opt_trailing_stop(mode: str) -> OptionDecorator:
+    return click.option(
+        "--trailing-stop", type=float, default=None, help="Trailing stop (fraction)."
+    )
+
+
+def _opt_slippage_bps(mode: str) -> OptionDecorator:
+    return click.option(
+        "--slippage-bps", type=float, default=0.0, help="Slippage per fill (bps)."
+    )
+
+
+def _opt_commission_bps(mode: str) -> OptionDecorator:
+    return click.option(
+        "--commission-bps", type=float, default=0.0, help="Commission per fill (bps)."
+    )
+
+
+def _opt_cost_model(mode: str) -> OptionDecorator:
+    if mode == "historical":
+        choices = ["flat", "india", "us_vested"]
+        help_text = (
+            "Statutory fee model. 'flat' applies --commission-bps on every fill "
+            "(legacy). 'india' applies NSE equity delivery fees (STT, stamp duty, "
+            "exchange, SEBI, GST, IPFT). 'us_vested' applies the Vested/DriveWealth "
+            "US equity fee stack (brokerage cap, SEC Section 31, FINRA TAF)."
+        )
+    else:
+        choices = ["flat", "india"]
+        help_text = (
+            "Statutory fee model. 'flat' applies --commission-bps on every fill "
+            "(legacy). 'india' applies NSE equity delivery fees (STT, stamp duty, "
+            "exchange, SEBI, GST, IPFT)."
+        )
+    return click.option(
+        "--cost-model",
+        type=click.Choice(choices),
+        default="flat",
+        show_default=True,
+        help=help_text,
+    )
+
+
+def _opt_initial_capital(mode: str) -> OptionDecorator:
+    return click.option("--initial-capital", type=float, default=100_000.0)
+
+
+def _opt_benchmark(mode: str) -> OptionDecorator:
+    return click.option(
+        "--benchmark",
+        default=None,
+        help="Benchmark symbol (default: SPY for US, ^NSEI for India).",
+    )
+
+
+def _opt_tickers(mode: str) -> OptionDecorator:
+    return click.option("--tickers", default=None, help="Comma-separated ticker list.")
+
+
+def _opt_universe_file(mode: str) -> OptionDecorator:
+    return click.option(
+        "--universe-file", default=None, help="Path to newline-separated ticker file."
+    )
+
+
+def _opt_max_universe(mode: str) -> OptionDecorator:
+    if mode == "historical":
+        return click.option(
+            "--max-universe",
+            type=int,
+            default=200,
+            help="Cap supplied universe size before fetching prices. Pass 0 to disable.",
+        )
+    return click.option(
+        "--max-universe",
+        type=int,
+        default=0,
+        help="Cap universe size before fetching prices. Pass 0 to disable.",
+    )
+
+
+def _opt_min_price(mode: str) -> OptionDecorator:
+    help_text = (
+        "Minimum as-of close to admit a ticker. Default: $1 (US) / ₹10 (India). Pass 0 to disable."
+        if mode == "historical"
+        else "Minimum signal-day close. Pass 0 to disable."
+    )
+    return click.option("--min-price", type=float, default=None, help=help_text)
+
+
+def _opt_min_avg_dollar_volume(mode: str) -> OptionDecorator:
+    help_text = (
+        "Minimum rolling-mean dollar volume (close*volume) over --adv-window. Default: $1,000 (US) / ₹100,000 (India). Pass 0 to disable."
+        if mode == "historical"
+        else "Minimum rolling mean dollar volume. Pass 0 to disable."
+    )
+    return click.option(
+        "--min-avg-dollar-volume", type=float, default=None, help=help_text
+    )
+
+
+def _opt_adv_window(mode: str) -> OptionDecorator:
+    help_text = (
+        "Lookback (bars) for average dollar-volume filter."
+        if mode == "historical"
+        else "Lookback bars for average dollar-volume filter."
+    )
+    return click.option("--adv-window", type=int, default=20, help=help_text)
+
+
+def _opt_slippage_model(mode: str) -> OptionDecorator:
+    if mode == "historical":
+        return click.option(
+            "--slippage-model",
+            type=click.Choice(["fixed", "half-spread", "vol-impact", "composite"]),
+            default="fixed",
+            help="Slippage model. 'fixed' = constant bps (legacy); 'half-spread' adds quoted-spread cost; 'vol-impact' adds Almgren-Chriss sqrt-law impact; 'composite' sums all three.",
+        )
+    return click.option(
+        "--slippage-model",
+        type=click.Choice(["fixed", "half-spread", "vol-impact", "composite"]),
+        default="fixed",
+    )
+
+
+def _opt_half_spread_bps(mode: str) -> OptionDecorator:
+    if mode == "historical":
+        return click.option(
+            "--half-spread-bps",
+            type=float,
+            default=0.0,
+            help="Half-spread charged on every fill (bps). Used by half-spread/composite.",
+        )
+    return click.option("--half-spread-bps", type=float, default=0.0)
+
+
+def _opt_vol_impact_k(mode: str) -> OptionDecorator:
+    if mode == "historical":
+        return click.option(
+            "--vol-impact-k",
+            type=float,
+            default=0.1,
+            help="Coefficient for sqrt-law market impact (vol-impact/composite).",
+        )
+    return click.option("--vol-impact-k", type=float, default=0.1)
+
+
+def _opt_no_gap_fills(mode: str) -> OptionDecorator:
+    if mode == "historical":
+        return click.option(
+            "--no-gap-fills",
+            is_flag=True,
+            default=False,
+            help="Disable gap-aware stop/target fills (fills always at reference price).",
+        )
+    return click.option("--no-gap-fills", is_flag=True, default=False)
+
+
+def _opt_entry_order(mode: str) -> OptionDecorator:
+    if mode == "historical":
+        return click.option(
+            "--entry-order",
+            type=click.Choice(["moo", "moc", "limit"]),
+            default="moo",
+            help="Entry order type. moo=next-bar open (default); moc=next-bar close; limit=limit order at close*(1 - entry_limit_bps/1e4).",
+        )
+    return click.option(
+        "--entry-order", type=click.Choice(["moo", "moc", "limit"]), default="moo"
+    )
+
+
+def _opt_entry_limit_bps(mode: str) -> OptionDecorator:
+    if mode == "historical":
+        return click.option(
+            "--entry-limit-bps",
+            type=float,
+            default=None,
+            help="Discount below signal-bar close for limit entries (bps).",
+        )
+    return click.option("--entry-limit-bps", type=float, default=None)
+
+
+def _opt_partial_exit(mode: str) -> OptionDecorator:
+    help_text = (
+        "Scale-out tier as 'PROFIT_FRAC:SHARES_FRAC' (e.g. 0.05:0.5 = close half at +5%). Repeat to configure multiple tiers."
+        if mode == "historical"
+        else "Scale-out tier as PROFIT_FRAC:SHARES_FRAC."
+    )
+    return click.option(
+        "--partial-exit", "partial_exit_args", multiple=True, help=help_text
+    )
+
+
+def _opt_price_adjustment(mode: str) -> OptionDecorator:
+    if mode == "historical":
+        return click.option(
+            "--price-adjustment",
+            type=click.Choice(["full", "splits_only", "none"]),
+            default="full",
+            help="Price-adjustment regime. full=legacy (yfinance auto_adjust=True); splits_only=split-adjust OHLC and credit dividends as cash; none=raw OHLC.",
+        )
+    return click.option(
+        "--price-adjustment",
+        type=click.Choice(["full", "splits_only", "none"]),
+        default="full",
+    )
+
+
+def _opt_interval(mode: str) -> OptionDecorator:
+    return click.option(
+        "--interval",
+        type=click.Choice(list(SUPPORTED_INTERVALS)),
+        default="1d",
+        show_default=True,
+        help=(
+            "Bar interval. Intraday values (1h/30m/15m/5m/1m) fetch from yfinance "
+            "and are subject to its history caps (1m ~30d, 15m/30m ~60d, 1h ~730d)."
+        ),
+    )
+
+
+def _opt_csv(mode: str) -> OptionDecorator:
+    return click.option(
+        "--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV."
+    )
+
+
+def _opt_report(mode: str) -> OptionDecorator:
+    from pathlib import Path
+
+    return click.option(
+        "--report",
+        "report_path",
+        type=click.Path(dir_okay=False, path_type=Path),
+        default=None,
+        help="Write a static, self-contained HTML tear-sheet to this file.",
+    )
+
+
+def _opt_open_report(mode: str) -> OptionDecorator:
+    return click.option(
+        "--open-report",
+        is_flag=True,
+        default=False,
+        help="Open the generated HTML report in the default browser.",
+    )
+
+
+_OPTION_BUILDERS: dict[str, OptionBuilder] = {
+    "hold": _opt_hold,
+    "top": _opt_top,
+    "entry": _opt_entry,
+    "exit": _opt_exit,
+    "strategy": _opt_strategy,
+    "stop-loss": _opt_stop_loss,
+    "take-profit": _opt_take_profit,
+    "trailing-stop": _opt_trailing_stop,
+    "slippage-bps": _opt_slippage_bps,
+    "commission-bps": _opt_commission_bps,
+    "cost-model": _opt_cost_model,
+    "initial-capital": _opt_initial_capital,
+    "benchmark": _opt_benchmark,
+    "tickers": _opt_tickers,
+    "universe-file": _opt_universe_file,
+    "max-universe": _opt_max_universe,
+    "min-price": _opt_min_price,
+    "min-avg-dollar-volume": _opt_min_avg_dollar_volume,
+    "adv-window": _opt_adv_window,
+    "slippage-model": _opt_slippage_model,
+    "half-spread-bps": _opt_half_spread_bps,
+    "vol-impact-k": _opt_vol_impact_k,
+    "no-gap-fills": _opt_no_gap_fills,
+    "entry-order": _opt_entry_order,
+    "entry-limit-bps": _opt_entry_limit_bps,
+    "partial-exit": _opt_partial_exit,
+    "price-adjustment": _opt_price_adjustment,
+    "interval": _opt_interval,
+    "csv": _opt_csv,
+    "report": _opt_report,
+    "open-report": _opt_open_report,
+}
+
+
+def backtest_options(mode: str, *names: str) -> OptionDecorator:
+    """Return a decorator stacking the named shared backtest options in order.
+
+    ``mode`` is ``"historical"`` or ``"rolling"``; a handful of options carry
+    mode-specific help text/defaults so each command reproduces its exact
+    ``--help`` output. Options render in the given ``names`` order (which the
+    caller interleaves with its mode-specific ``click.option`` decorators).
+    """
+
+    def decorator(command: Any) -> Any:
+        for name in reversed(names):
+            command = _OPTION_BUILDERS[name](mode)(command)
+        return command
+
+    return decorator
+
+
+@dataclass(frozen=True)
+class CommonBacktestParams:
+    """Parsed values for the options shared by both backtest commands.
+
+    Instances are built from the raw Click values (tickers already split,
+    slippage model already constructed, partial exits already parsed, min
+    filters already resolved) so ``build_backtest_config`` can assemble the
+    five policy models identically for both modes.
+    """
+
+    market: str
+    benchmark: str
+    hold: int
+    top: int
+    entry_expr: str
+    exit_expr: str | None
+    strategy_name: str | None
+    stop_loss: float | None
+    take_profit: float | None
+    trailing_stop: float | None
+    slippage_bps: float
+    commission_bps: float
+    cost_model: Literal["flat", "india", "us_vested"]
+    slippage_model: SlippageModel
+    initial_capital: float
+    tickers: tuple[str, ...] | None
+    universe_file: str | None
+    max_universe: int
+    min_price: float | None
+    min_avg_dollar_volume: float | None
+    adv_window: int
+    gap_fills: bool
+    entry_order_type: Literal["moo", "moc", "limit"]
+    entry_limit_bps: float | None
+    partial_exits: tuple[tuple[float, float], ...]
+    price_adjustment: str
+    interval: str
+    intraday_only: bool
+    sizing_rule: str
+    sizing_risk_pct: float
+    sizing_position_pct: float
+    sizing_atr_window: int
+    sizing_atr_multiple: float
+    sizing_vol_window: int
+
+
+def parse_ticker_list(tickers: str | None) -> tuple[str, ...] | None:
+    """Split a comma-separated ``--tickers`` value into a tuple (or ``None``)."""
+    if not tickers:
+        return None
+    return tuple(t.strip() for t in tickers.split(",") if t.strip())
+
+
+def build_backtest_fetcher(ctx_obj: Any, *, price_adjustment: str, interval: str):
+    """Resolve the shared price fetcher exactly as both commands do."""
+    from screener.backtester.data import build_price_fetcher
+    from screener.markets import get_price_fetcher
+
+    return get_price_fetcher(
+        ctx_obj,
+        builder=build_price_fetcher,
+        auto_adjust=price_adjustment == "full",
+        interval=interval,
+    )
+
+
+def resolve_report_path(
+    report_path: Path | None, output_csv: bool, prefix: str
+) -> Path | None:
+    """Return the tear-sheet path (a temp path unless CSV output is requested)."""
+    if report_path is not None:
+        return report_path
+    if output_csv:
+        return None
+    from screener.reporting import temp_report_path
+
+    return temp_report_path(prefix)
+
+
+def write_tearsheet(
+    result: Any, path: Path, *, title: str, extra_notes: Sequence[str]
+) -> None:
+    """Render the static HTML tear-sheet (thin wrapper for lazy import)."""
+    from screener.backtester.tearsheet import render_tearsheet
+
+    render_tearsheet(result, path, title=title, extra_notes=list(extra_notes))
+
+
+def build_backtest_config(
+    common: CommonBacktestParams,
+    *,
+    as_of: date,
+    membership_added: tuple[tuple[str, date], ...] = (),
+    signal_extra: dict[str, Any] | None = None,
+    spread_proxy: bool = False,
+    reserve_multiple: int = 3,
+    reinvest: bool = True,
+    allow_reentry: bool = False,
+    max_reentries: int = 0,
+) -> BacktestConfig:
+    """Assemble a ``BacktestConfig`` from shared params plus mode-specific extras.
+
+    The five policy models are constructed exactly the way both CLIs do today;
+    ``signal_extra`` carries the rolling-only signal fields (regime filter,
+    earnings blackout, fundamentals, sector neutralization), and the portfolio
+    keyword arguments cover the historical-only reserve/re-entry knobs.
+    """
+    from screener.backtester.models import (
+        BacktestConfig,
+        ExecutionPolicy,
+        PortfolioPolicy,
+        SignalPolicy,
+        UniversePolicy,
+    )
+
+    signal_extra = signal_extra or {}
+    return BacktestConfig(
+        market=common.market,
+        as_of=as_of,
+        benchmark=common.benchmark,
+        universe=UniversePolicy(
+            tickers=common.tickers,
+            universe_file=common.universe_file,
+            membership_added=membership_added,
+            max_universe=int(common.max_universe),
+        ),
+        signals=SignalPolicy(
+            strategy_name=common.strategy_name,
+            entry_expr=common.entry_expr,
+            exit_expr=common.exit_expr,
+            **signal_extra,
+        ),
+        data=build_data_policy(
+            interval=common.interval,
+            price_adjustment=common.price_adjustment,
+            intraday_only=bool(common.intraday_only),
+        ),
+        execution=ExecutionPolicy(
+            hold=int(common.hold),
+            stop_loss=common.stop_loss,
+            take_profit=common.take_profit,
+            trailing_stop=common.trailing_stop,
+            slippage_bps=float(common.slippage_bps),
+            commission_bps=float(common.commission_bps),
+            slippage_model=common.slippage_model,
+            cost_model=common.cost_model,
+            spread_proxy=bool(spread_proxy),
+            gap_fills=common.gap_fills,
+            entry_order_type=common.entry_order_type,
+            entry_limit_bps=common.entry_limit_bps,
+            partial_exits=common.partial_exits,
+        ),
+        portfolio=PortfolioPolicy(
+            top=int(common.top),
+            initial_capital=float(common.initial_capital),
+            min_price=common.min_price,
+            min_avg_dollar_volume=common.min_avg_dollar_volume,
+            avg_dollar_volume_window=int(common.adv_window),
+            reserve_multiple=int(reserve_multiple),
+            reinvest=reinvest,
+            allow_reentry=bool(allow_reentry),
+            max_reentries=int(max_reentries),
+            sizing_rule=common.sizing_rule,
+            sizing_risk_pct=float(common.sizing_risk_pct),
+            sizing_position_pct=float(common.sizing_position_pct),
+            sizing_atr_window=int(common.sizing_atr_window),
+            sizing_atr_multiple=float(common.sizing_atr_multiple),
+            sizing_vol_window=int(common.sizing_vol_window),
+        ),
+    )

@@ -1,8 +1,9 @@
 """Composable TradingView filter criteria.
 
 Every registered criterion has one shape: a zero-argument callable returning
-TradingView filter expressions. Full command workflows intentionally live in
-``screener.screen_aliases`` instead of sharing this registry.
+TradingView filter expressions. Full command workflows are their own top-level
+commands (e.g. ``garp``, ``mark-minervini``, ``options signals``) instead of
+sharing this registry.
 """
 
 from __future__ import annotations

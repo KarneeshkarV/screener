@@ -3,32 +3,28 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from pathlib import Path
 
 import click
 
 from screener import history
 from screener.backtester.cli_common import (
-    build_data_policy,
+    CommonBacktestParams,
+    backtest_options,
+    build_backtest_config,
+    build_backtest_fetcher,
     build_slippage_model,
     intraday_options,
     parse_partial_exits,
+    parse_ticker_list,
     resolve_min_filters,
+    resolve_report_path,
     resolve_strategy_exprs,
     sizing_options,
     validate_sizing,
+    write_tearsheet,
 )
-from screener.backtester.data import build_price_fetcher
 from screener.backtester.display import print_backtest, print_ledger_csv
-from screener.backtester.models import (
-    SUPPORTED_INTERVALS,
-    BacktestConfig,
-    ExecutionPolicy,
-    PortfolioPolicy,
-    SignalPolicy,
-    UniversePolicy,
-)
-from screener.markets import as_of_option, get_market, get_price_fetcher, market_option
+from screener.markets import as_of_option, get_market, market_option
 
 
 @click.command(name="backtest-historical")
@@ -63,74 +59,27 @@ from screener.markets import as_of_option, get_market, get_price_fetcher, market
         "calendar days old (0 = latest). Ignored for numeric run ids."
     ),
 )
-@click.option("--hold", type=int, default=20, help="Holding period (trading days).")
-@click.option("--top", type=int, default=10, help="Top N tickers to select.")
-@click.option("--entry", "entry_expr", default=None, help="Pine-like entry expression.")
-@click.option("--exit", "exit_expr", default=None, help="Pine-like exit expression.")
-@click.option(
-    "--strategy",
-    "strategy_name",
-    default=None,
-    help="Named strategy shortcut (overrides --entry/--exit if given).",
-)
-@click.option(
-    "--stop-loss", type=float, default=None, help="Stop loss (fraction, e.g. 0.08)."
-)
-@click.option("--take-profit", type=float, default=None, help="Take profit (fraction).")
-@click.option(
-    "--trailing-stop", type=float, default=None, help="Trailing stop (fraction)."
-)
-@click.option(
-    "--slippage-bps", type=float, default=0.0, help="Slippage per fill (bps)."
-)
-@click.option(
-    "--commission-bps", type=float, default=0.0, help="Commission per fill (bps)."
-)
-@click.option(
-    "--cost-model",
-    type=click.Choice(["flat", "india", "us_vested"]),
-    default="flat",
-    show_default=True,
-    help=(
-        "Statutory fee model. 'flat' applies --commission-bps on every fill "
-        "(legacy). 'india' applies NSE equity delivery fees (STT, stamp duty, "
-        "exchange, SEBI, GST, IPFT). 'us_vested' applies the Vested/DriveWealth "
-        "US equity fee stack (brokerage cap, SEC Section 31, FINRA TAF)."
-    ),
-)
-@click.option("--initial-capital", type=float, default=100_000.0)
-@click.option(
-    "--benchmark",
-    default=None,
-    help="Benchmark symbol (default: SPY for US, ^NSEI for India).",
-)
-@click.option("--tickers", default=None, help="Comma-separated ticker list.")
-@click.option(
-    "--universe-file", default=None, help="Path to newline-separated ticker file."
-)
-@click.option(
-    "--max-universe",
-    type=int,
-    default=200,
-    help="Cap supplied universe size before fetching prices. Pass 0 to disable.",
-)
-@click.option(
-    "--min-price",
-    type=float,
-    default=None,
-    help="Minimum as-of close to admit a ticker. Default: $1 (US) / ₹10 (India). Pass 0 to disable.",
-)
-@click.option(
-    "--min-avg-dollar-volume",
-    type=float,
-    default=None,
-    help="Minimum rolling-mean dollar volume (close*volume) over --adv-window. Default: $1,000 (US) / ₹100,000 (India). Pass 0 to disable.",
-)
-@click.option(
-    "--adv-window",
-    type=int,
-    default=20,
-    help="Lookback (bars) for average dollar-volume filter.",
+@backtest_options(
+    "historical",
+    "hold",
+    "top",
+    "entry",
+    "exit",
+    "strategy",
+    "stop-loss",
+    "take-profit",
+    "trailing-stop",
+    "slippage-bps",
+    "commission-bps",
+    "cost-model",
+    "initial-capital",
+    "benchmark",
+    "tickers",
+    "universe-file",
+    "max-universe",
+    "min-price",
+    "min-avg-dollar-volume",
+    "adv-window",
 )
 @click.option(
     "--reserve-multiple",
@@ -144,41 +93,14 @@ from screener.markets import as_of_option, get_market, get_price_fetcher, market
     default=False,
     help="Disable reserve rotation (freed cash stays idle, matches legacy behavior).",
 )
-@click.option(
-    "--slippage-model",
-    type=click.Choice(["fixed", "half-spread", "vol-impact", "composite"]),
-    default="fixed",
-    help="Slippage model. 'fixed' = constant bps (legacy); 'half-spread' adds quoted-spread cost; 'vol-impact' adds Almgren-Chriss sqrt-law impact; 'composite' sums all three.",
-)
-@click.option(
-    "--half-spread-bps",
-    type=float,
-    default=0.0,
-    help="Half-spread charged on every fill (bps). Used by half-spread/composite.",
-)
-@click.option(
-    "--vol-impact-k",
-    type=float,
-    default=0.1,
-    help="Coefficient for sqrt-law market impact (vol-impact/composite).",
-)
-@click.option(
-    "--no-gap-fills",
-    is_flag=True,
-    default=False,
-    help="Disable gap-aware stop/target fills (fills always at reference price).",
-)
-@click.option(
-    "--entry-order",
-    type=click.Choice(["moo", "moc", "limit"]),
-    default="moo",
-    help="Entry order type. moo=next-bar open (default); moc=next-bar close; limit=limit order at close*(1 - entry_limit_bps/1e4).",
-)
-@click.option(
-    "--entry-limit-bps",
-    type=float,
-    default=None,
-    help="Discount below signal-bar close for limit entries (bps).",
+@backtest_options(
+    "historical",
+    "slippage-model",
+    "half-spread-bps",
+    "vol-impact-k",
+    "no-gap-fills",
+    "entry-order",
+    "entry-limit-bps",
 )
 @click.option(
     "--allow-reentry",
@@ -192,41 +114,14 @@ from screener.markets import as_of_option, get_market, get_price_fetcher, market
     default=0,
     help="Maximum number of re-entries per slot when --allow-reentry is set.",
 )
-@click.option(
-    "--partial-exit",
-    "partial_exit_args",
-    multiple=True,
-    help="Scale-out tier as 'PROFIT_FRAC:SHARES_FRAC' (e.g. 0.05:0.5 = close half at +5%). Repeat to configure multiple tiers.",
-)
-@click.option(
-    "--price-adjustment",
-    type=click.Choice(["full", "splits_only", "none"]),
-    default="full",
-    help="Price-adjustment regime. full=legacy (yfinance auto_adjust=True); splits_only=split-adjust OHLC and credit dividends as cash; none=raw OHLC.",
-)
-@click.option(
-    "--interval",
-    type=click.Choice(list(SUPPORTED_INTERVALS)),
-    default="1d",
-    show_default=True,
-    help=(
-        "Bar interval. Intraday values (1h/30m/15m/5m/1m) fetch from yfinance "
-        "and are subject to its history caps (1m ~30d, 15m/30m ~60d, 1h ~730d)."
-    ),
-)
-@click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
-@click.option(
-    "--report",
-    "report_path",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    help="Write a static, self-contained HTML tear-sheet to this file.",
-)
-@click.option(
-    "--open-report",
-    is_flag=True,
-    default=False,
-    help="Open the generated HTML report in the default browser.",
+@backtest_options(
+    "historical",
+    "partial-exit",
+    "price-adjustment",
+    "interval",
+    "csv",
+    "report",
+    "open-report",
 )
 @intraday_options
 @sizing_options
@@ -331,7 +226,7 @@ def backtest_historical(
     if snapshot is not None:
         ticker_tuple = tuple(snapshot.tickers)
     elif tickers:
-        ticker_tuple = tuple(t.strip() for t in tickers.split(",") if t.strip())
+        ticker_tuple = parse_ticker_list(tickers)
     if not ticker_tuple and not universe_file:
         raise click.UsageError(
             "No universe provided: pass --tickers, --universe-file, or --from-run. "
@@ -341,75 +236,61 @@ def backtest_historical(
     resolved_min_price, resolved_min_adv = resolve_min_filters(
         market, min_price, min_avg_dollar_volume
     )
-    cfg = BacktestConfig(
+    common = CommonBacktestParams(
         market=market,
-        as_of=as_of_date,
         benchmark=bench,
-        universe=UniversePolicy(
-            tickers=ticker_tuple,
-            universe_file=universe_file,
-            max_universe=int(max_universe),
-        ),
-        signals=SignalPolicy(
-            strategy_name=strategy_name,
-            entry_expr=entry_expr,
-            exit_expr=exit_expr,
-        ),
-        data=build_data_policy(
-            interval=interval,
-            price_adjustment=price_adjustment,
-            intraday_only=bool(intraday_only),
-        ),
-        execution=ExecutionPolicy(
-            hold=int(hold),
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            trailing_stop=trailing_stop,
-            slippage_bps=float(slippage_bps),
-            commission_bps=float(commission_bps),
-            slippage_model=slip_model,
-            cost_model=cost_model,
-            gap_fills=not no_gap_fills,
-            entry_order_type=entry_order,
-            entry_limit_bps=entry_limit_bps,
-            partial_exits=partial_exits,
-        ),
-        portfolio=PortfolioPolicy(
-            top=int(top),
-            initial_capital=float(initial_capital),
-            min_price=resolved_min_price,
-            min_avg_dollar_volume=resolved_min_adv,
-            avg_dollar_volume_window=int(adv_window),
-            reserve_multiple=int(reserve_multiple),
-            reinvest=not no_reinvest,
-            allow_reentry=bool(allow_reentry),
-            max_reentries=int(max_reentries),
-            sizing_rule=sizing_rule,
-            sizing_risk_pct=float(sizing_risk_pct),
-            sizing_position_pct=float(sizing_position_pct),
-            sizing_atr_window=int(sizing_atr_window),
-            sizing_atr_multiple=float(sizing_atr_multiple),
-            sizing_vol_window=int(sizing_vol_window),
-        ),
+        hold=hold,
+        top=top,
+        entry_expr=entry_expr,
+        exit_expr=exit_expr,
+        strategy_name=strategy_name,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        trailing_stop=trailing_stop,
+        slippage_bps=slippage_bps,
+        commission_bps=commission_bps,
+        cost_model=cost_model,
+        slippage_model=slip_model,
+        initial_capital=initial_capital,
+        tickers=ticker_tuple,
+        universe_file=universe_file,
+        max_universe=max_universe,
+        min_price=resolved_min_price,
+        min_avg_dollar_volume=resolved_min_adv,
+        adv_window=adv_window,
+        gap_fills=not no_gap_fills,
+        entry_order_type=entry_order,
+        entry_limit_bps=entry_limit_bps,
+        partial_exits=partial_exits,
+        price_adjustment=price_adjustment,
+        interval=interval,
+        intraday_only=bool(intraday_only),
+        sizing_rule=sizing_rule,
+        sizing_risk_pct=sizing_risk_pct,
+        sizing_position_pct=sizing_position_pct,
+        sizing_atr_window=sizing_atr_window,
+        sizing_atr_multiple=sizing_atr_multiple,
+        sizing_vol_window=sizing_vol_window,
+    )
+    cfg = build_backtest_config(
+        common,
+        as_of=as_of_date,
+        reserve_multiple=int(reserve_multiple),
+        reinvest=not no_reinvest,
+        allow_reentry=bool(allow_reentry),
+        max_reentries=int(max_reentries),
     )
 
-    fetcher = get_price_fetcher(
-        click.get_current_context().obj,
-        builder=build_price_fetcher,
-        auto_adjust=price_adjustment == "full",
-        interval=interval,
+    fetcher = build_backtest_fetcher(
+        ctx.obj, price_adjustment=price_adjustment, interval=interval
     )
     from screener.backtester import historical as historical_engine
 
     result = historical_engine.run_backtest(cfg, fetcher)
-    generated_report = report_path
-    if generated_report is None and not output_csv:
-        from screener.reporting import temp_report_path
-
-        generated_report = temp_report_path("backtest-historical")
+    generated_report = resolve_report_path(
+        report_path, output_csv, "backtest-historical"
+    )
     if generated_report:
-        from screener.backtester.tearsheet import render_tearsheet
-
         if snapshot is not None:
             universe_note = (
                 f"replayed screen run #{snapshot.run_id} "
@@ -423,7 +304,7 @@ def backtest_historical(
                 if ticker_tuple
                 else f"universe file: {universe_file}"
             ) + "; survivorship bias: supplied list is not point-in-time"
-        render_tearsheet(
+        write_tearsheet(
             result,
             generated_report,
             title="Historical Backtest Tear Sheet",
