@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import click
 
@@ -675,6 +675,10 @@ def build_backtest_config(
     *,
     as_of: date,
     membership_added: tuple[tuple[str, date], ...] = (),
+    membership_windows: tuple[tuple[str, date, date | None], ...] = (),
+    dynamic_universe_size: int | None = None,
+    dynamic_universe_lookback: int = 60,
+    dynamic_universe_rebalance: str = "monthly",
     signal_extra: dict[str, Any] | None = None,
     spread_proxy: bool = False,
     reserve_multiple: int = 3,
@@ -702,6 +706,13 @@ def build_backtest_config(
             tickers=common.tickers,
             universe_file=common.universe_file,
             membership_added=membership_added,
+            membership_windows=membership_windows,
+            dynamic_universe_size=dynamic_universe_size,
+            dynamic_universe_lookback=dynamic_universe_lookback,
+            dynamic_universe_rebalance=cast(
+                Literal["daily", "weekly", "monthly", "quarterly"],
+                dynamic_universe_rebalance,
+            ),
             max_universe=int(common.max_universe),
             strategy_name=common.strategy_name,
             entry_expr=common.entry_expr,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import cast
 
 import click
 from rich.console import Console
@@ -31,8 +30,8 @@ from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.markets import get_market, market_option
 from screener.regime import TREND_LABELS
 from screener.universes import (
-    UniverseName,
-    load_current_universe,
+    available_universes,
+    load_universe_selection,
     load_sp500_membership,
 )
 
@@ -60,9 +59,45 @@ __all__ = ["backtest_rolling"]
 @backtest_options("rolling", "hold", "top", "entry", "exit", "strategy")
 @click.option(
     "--universe",
-    type=click.Choice(["sp500", "nifty50"]),
+    type=str,
     default=None,
-    help="Current index universe. Defaults to sp500 for US and nifty50 for India.",
+    help=(
+        "Named universe (built-ins: "
+        + ", ".join((*available_universes(), "dynamic"))
+        + "). Defaults to the market index."
+    ),
+)
+@click.option(
+    "--universe-config",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="TOML/YAML/JSON definitions for custom static, snapshot, or dynamic universes.",
+)
+@click.option(
+    "--dynamic-base",
+    default=None,
+    help="Candidate index for --universe dynamic (default: sp500 or nifty500).",
+)
+@click.option(
+    "--universe-size",
+    type=int,
+    default=100,
+    show_default=True,
+    help="Number of highest lagged-ADV names in a dynamic universe.",
+)
+@click.option(
+    "--universe-lookback",
+    type=int,
+    default=60,
+    show_default=True,
+    help="Trailing bars used for dynamic-universe ADV ranking.",
+)
+@click.option(
+    "--universe-rebalance",
+    type=click.Choice(["daily", "weekly", "monthly", "quarterly"]),
+    default="monthly",
+    show_default=True,
+    help="Dynamic-universe membership refresh frequency.",
 )
 @click.option(
     "--no-universe-cache",
@@ -75,9 +110,8 @@ __all__ = ["backtest_rolling"]
     is_flag=True,
     default=False,
     help=(
-        "Reduce survivorship bias: only allow entries after a symbol's index "
-        "'date added' (sp500 universe only). Removed ex-members are still "
-        "absent because their delisted history is unavailable."
+        "Require point-in-time membership. Custom snapshot universes use full "
+        "membership windows; sp500 uses its available historical additions."
     ),
 )
 @backtest_options(
@@ -204,6 +238,11 @@ def backtest_rolling(
     exit_expr,
     strategy_name,
     universe,
+    universe_config,
+    dynamic_base,
+    universe_size,
+    universe_lookback,
+    universe_rebalance,
     no_universe_cache,
     point_in_time,
     tickers,
@@ -315,43 +354,78 @@ def backtest_rolling(
     ticker_tuple = None
     universe_note = None
     membership_added: tuple[tuple[str, date], ...] = ()
+    membership_windows: tuple[tuple[str, date, date | None], ...] = ()
+    dynamic_universe_size: int | None = None
+    dynamic_universe_lookback = int(universe_lookback)
+    dynamic_universe_rebalance = str(universe_rebalance)
     if tickers:
         ticker_tuple = parse_ticker_list(tickers)
     elif not universe_file:
-        resolved_universe = cast(
-            UniverseName,
-            universe or market_meta.default_universe,
-        )
-        loaded = load_current_universe(
-            resolved_universe,
-            as_of=end_date,
-            use_cache=not no_universe_cache,
-        )
-        ticker_tuple = loaded.symbols
-        universe_note = f"{loaded.name}: {len(loaded.symbols)} symbols from {loaded.source}; cache={loaded.cached_path}"
-        if point_in_time:
-            if resolved_universe != "sp500":
-                raise click.UsageError(
-                    "--point-in-time currently supports only the sp500 universe."
-                )
-            added_by_symbol = load_sp500_membership(
-                as_of=end_date, use_cache=not no_universe_cache
+        resolved_universe = str(universe or market_meta.default_universe).lower()
+        try:
+            selection = load_universe_selection(
+                resolved_universe,
+                market=market,
+                as_of=end_date,
+                config_path=universe_config,
+                use_cache=not no_universe_cache,
+                dynamic_base=dynamic_base,
+                dynamic_size=int(universe_size),
+                dynamic_lookback=int(universe_lookback),
+                dynamic_rebalance=str(universe_rebalance),
             )
-            membership_added = tuple(
-                (symbol, added)
-                for symbol, added in added_by_symbol.items()
-                if added is not None
-            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            raise click.UsageError(str(exc)) from exc
+        ticker_tuple = selection.symbols
+        membership_windows = selection.membership_windows
+        dynamic_universe_size = selection.dynamic_size
+        dynamic_universe_lookback = selection.dynamic_lookback
+        dynamic_universe_rebalance = selection.dynamic_rebalance
+        if benchmark is None and selection.benchmark:
+            bench = selection.benchmark
+        universe_note = (
+            f"{selection.name}: {len(selection.symbols)} candidate symbols from "
+            f"{selection.source}"
+        )
+        if membership_windows:
+            universe_note += f"; point-in-time snapshots ({len(membership_windows)} membership windows)"
+        if dynamic_universe_size is not None:
             universe_note += (
-                f"; point-in-time entries via 'date added' "
-                f"({len(membership_added)} dated symbols; removed ex-members not reconstructed)"
+                f"; top {dynamic_universe_size} by prior {dynamic_universe_lookback}-bar "
+                f"ADV, rebalanced {dynamic_universe_rebalance}; candidate base is an "
+                "as-of-end snapshot and may retain survivorship bias"
             )
-        else:
+        if point_in_time:
+            if membership_windows or dynamic_universe_size is not None:
+                pass
+            elif resolved_universe != "sp500":
+                raise click.UsageError(
+                    "--point-in-time requires snapshot history or the sp500 universe."
+                )
+            else:
+                added_by_symbol = load_sp500_membership(
+                    as_of=end_date, use_cache=not no_universe_cache
+                )
+                membership_added = tuple(
+                    (symbol, added)
+                    for symbol, added in added_by_symbol.items()
+                    if added is not None
+                )
+                universe_note += (
+                    f"; point-in-time entries via 'date added' "
+                    f"({len(membership_added)} dated symbols; removed ex-members not reconstructed)"
+                )
+        elif not membership_windows and dynamic_universe_size is None:
             universe_note += (
                 "; survivorship bias: today's members applied to history "
                 "(pass --point-in-time to filter by 'date added')"
             )
-    if point_in_time and not membership_added:
+    if (
+        point_in_time
+        and not membership_added
+        and not membership_windows
+        and dynamic_universe_size is None
+    ):
         raise click.UsageError(
             "--point-in-time requires an index universe; it cannot be used with "
             "--tickers or --universe-file."
@@ -397,6 +471,10 @@ def backtest_rolling(
         common,
         as_of=end_date,
         membership_added=membership_added,
+        membership_windows=membership_windows,
+        dynamic_universe_size=dynamic_universe_size,
+        dynamic_universe_lookback=dynamic_universe_lookback,
+        dynamic_universe_rebalance=dynamic_universe_rebalance,
         spread_proxy=bool(spread_proxy),
         signal_extra={
             "regime_filter": tuple(dict.fromkeys(regime_filter_args)),

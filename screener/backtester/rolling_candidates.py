@@ -105,6 +105,10 @@ def _build_rolling_candidate_matrices(
     master_dates: list[pd.Timestamp],
     lookback_required: int,
     membership_added: dict[str, date] | None = None,
+    membership_windows: tuple[tuple[str, date, date | None], ...] = (),
+    dynamic_universe_size: int | None = None,
+    dynamic_universe_lookback: int = 60,
+    dynamic_universe_rebalance: str = "monthly",
     regime_allowed: pd.Series | None = None,
     earnings_blackout: dict[str, list[date]] | None = None,
     earnings_blackout_days: int | None = None,
@@ -131,6 +135,18 @@ def _build_rolling_candidate_matrices(
         for tv, added in membership_added.items():
             if tv in signal_mat.columns:
                 signal_mat.loc[master_ix < pd.Timestamp(added), tv] = False
+    if membership_windows:
+        membership_mask = pd.DataFrame(
+            False, index=master_ix, columns=valid_tickers, dtype=bool
+        )
+        for tv, effective_from, effective_to in membership_windows:
+            if tv not in membership_mask.columns:
+                continue
+            eligible = master_ix >= pd.Timestamp(effective_from)
+            if effective_to is not None:
+                eligible &= master_ix < pd.Timestamp(effective_to)
+            membership_mask.loc[eligible, tv] = True
+        signal_mat &= membership_mask
     # Benchmark-regime gate: suppress every entry signal on days whose
     # benchmark regime is not allowed (days missing from the benchmark
     # calendar inherit the most recent prior regime; warmup days are blocked).
@@ -192,6 +208,7 @@ def _build_rolling_candidate_matrices(
     # Cross-sectional factor scores (as-of the signal bar), only populated for
     # tickers whose prepared bars carry a ``rank_score`` column.
     score_cols: dict[str, np.ndarray] = {}
+    dynamic_score_cols: dict[str, np.ndarray] = {}
     any_score = False
     missing_score: list[str] = []
     for tv in valid_tickers:
@@ -206,6 +223,17 @@ def _build_rolling_candidate_matrices(
         lookback_cols[tv] = (pos + 1 >= lookback_required + 1) & (pos + 1 < n) & has_bar
         close_cols[tv] = np.where(has_bar, close[pos], np.nan)
         volume_cols[tv] = np.where(has_bar, volume[pos], np.nan)
+        if dynamic_universe_size is not None:
+            lagged_adv = (
+                (bars["close"].astype(float) * bars["volume"].astype(float))
+                .shift(1)
+                .rolling(
+                    dynamic_universe_lookback, min_periods=dynamic_universe_lookback
+                )
+                .mean()
+                .to_numpy()
+            )
+            dynamic_score_cols[tv] = np.where(has_bar, lagged_adv[pos], np.nan)
         if "rank_score" in bars.columns:
             any_score = True
             score = bars["rank_score"].astype(float).to_numpy()
@@ -232,6 +260,13 @@ def _build_rolling_candidate_matrices(
     close_mat = pd.DataFrame(close_cols, index=master_ix)
     volume_mat = pd.DataFrame(volume_cols, index=master_ix)
     dollar_vol_mat = close_mat * volume_mat
+    if dynamic_universe_size is not None:
+        dynamic_score_mat = pd.DataFrame(dynamic_score_cols, index=master_ix)
+        signal_mat &= _dynamic_eligibility_mask(
+            dynamic_score_mat,
+            size=dynamic_universe_size,
+            rebalance=dynamic_universe_rebalance,
+        )
     rank_score_mat = pd.DataFrame(score_cols, index=master_ix) if any_score else None
     # Sector neutralization is a no-op when ranking is inactive (no rank_score)
     # or the flag is off. When active, z-score within each sector per day.
@@ -272,6 +307,35 @@ def _build_rolling_candidate_matrices(
         bar_idx_np=bar_idx_mat.to_numpy(),
         rank_score_np=rank_score_mat.to_numpy() if rank_score_mat is not None else None,
     )
+
+
+def _dynamic_eligibility_mask(
+    scores: pd.DataFrame, *, size: int, rebalance: str
+) -> pd.DataFrame:
+    """Select the top lagged scores on each rebalance date and hold membership."""
+    mask = pd.DataFrame(False, index=scores.index, columns=scores.columns, dtype=bool)
+    if scores.empty:
+        return mask
+    if rebalance == "daily":
+        rebalance_rows = np.arange(len(scores), dtype=int)
+    else:
+        freq = {"weekly": "W-FRI", "monthly": "M", "quarterly": "Q"}[rebalance]
+        periods = pd.DatetimeIndex(scores.index).to_period(freq)
+        rebalance_rows = np.flatnonzero(
+            np.r_[True, periods[1:].to_numpy() != periods[:-1].to_numpy()]
+        )
+    selected = np.zeros(len(scores.columns), dtype=bool)
+    rebalance_set = set(int(row) for row in rebalance_rows)
+    raw = scores.to_numpy(dtype=float)
+    for row in range(len(scores)):
+        if row in rebalance_set:
+            finite = np.flatnonzero(np.isfinite(raw[row]))
+            selected = np.zeros(len(scores.columns), dtype=bool)
+            if finite.size:
+                order = np.argsort(-raw[row, finite], kind="stable")
+                selected[finite[order[:size]]] = True
+        mask.iloc[row] = selected
+    return mask
 
 
 def _candidate_rows_for_day(
