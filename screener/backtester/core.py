@@ -648,8 +648,14 @@ _NO_UNIVERSE_MSG = (
 def _resolve_universe(cfg: BacktestConfig) -> tuple[list[str], list[str]]:
     """Return ``(tv_symbols, warnings)`` for the configured universe."""
     warnings: list[str] = []
+    # Dynamic ADV ranking and snapshot membership windows do the real
+    # selection downstream; pre-capping here would silently shrink the
+    # candidate pool to the first ``max_universe`` names in loader order.
+    skip_cap = cfg.dynamic_universe_size is not None or bool(cfg.membership_windows)
 
     def _cap(tickers: list[str]) -> list[str]:
+        if skip_cap:
+            return tickers
         max_universe = int(cfg.max_universe)
         if max_universe <= 0 or len(tickers) <= max_universe:
             return tickers
