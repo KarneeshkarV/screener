@@ -26,7 +26,7 @@ from rich.table import Table
 
 from screener.backtester.data import build_price_fetcher, tv_to_yf
 from screener.markets import get_market, get_price_fetcher, market_option
-from screener.universes import UniverseName, load_current_universe
+from screener.universes import available_universes, load_current_universe
 
 
 # ── pure computation ────────────────────────────────────────────────
@@ -289,7 +289,7 @@ def _resolve_tickers(
             raise click.UsageError(f"universe file is empty: {universe_file}")
         return resolved, f"file:{universe_file}"
     market_meta = get_market(market)
-    resolved_universe = cast(UniverseName, universe or market_meta.default_universe)
+    resolved_universe = universe or market_meta.default_universe
     loaded = load_current_universe(
         resolved_universe,
         as_of=end_date,
@@ -578,7 +578,7 @@ def write_tearsheet_csv(
 )
 @click.option(
     "--universe",
-    type=click.Choice(["sp500", "nifty50"]),
+    type=click.Choice(list(available_universes())),
     default=None,
     help="Index universe. Defaults to market default when --tickers omitted.",
 )

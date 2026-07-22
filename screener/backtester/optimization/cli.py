@@ -25,6 +25,7 @@ from screener.backtester.optimization.walk_forward import walk_forward_optimize
 from screener.backtester.cli_common import resolve_min_filters
 from screener.backtester.data import PriceFetcher
 from screener.markets import get_market, get_price_fetcher, market_option
+from screener.universes import available_universes
 
 
 P = ParamSpec("P")
@@ -462,7 +463,6 @@ def _resolve_universe_tickers(
     if universe is None:
         return tickers, universe_file
     from screener.universes import (
-        UniverseName,
         UniverseRequest,
         UniverseSource,
         resolve_universe,
@@ -471,7 +471,7 @@ def _resolve_universe_tickers(
     symbols = resolve_universe(
         UniverseRequest(
             source=UniverseSource.INDEX_PIT,
-            index_name=type_cast(UniverseName, universe),
+            index_name=universe,
             as_of=end_date,
         )
     )
@@ -493,7 +493,7 @@ def _resolve_universe_tickers(
 )
 @click.option(
     "--universe",
-    type=click.Choice(["sp500", "nifty50"]),
+    type=click.Choice(list(available_universes())),
     default=None,
     help="Index universe when --tickers/--universe-file are omitted.",
 )
