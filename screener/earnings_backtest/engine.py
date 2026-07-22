@@ -22,6 +22,7 @@ from screener.earnings_backtest.data import (
     load_universe,
 )
 from screener.earnings_backtest.earnings_dates import collect_earnings_events
+from screener.earnings_backtest.prepare import prepare_earnings_run
 from screener.earnings_backtest.sentiment import (
     fetch_analyst_sentiment,
     fetch_iv_sentiment,
@@ -77,52 +78,27 @@ def run_earnings_backtest(
     costs = build_cost_model(model_name, commission_bps=flat_bps)
     fees_paid: dict[str, float] = {}
 
-    # 1. Universe
-    if tickers is None:
-        tickers = load_universe(market)
-    logger.info("universe_loaded", extra={"market": market, "count": len(tickers)})
-
-    # 2. Earnings events
-    cutoff_date = date.today() - timedelta(days=years * 365)
-    events_df = collect_earnings_events(
-        tickers, years=years, batch_size=batch_size, market=market
+    # Steps 1-6 (universe -> events -> price panels) are shared acquisition;
+    # only the entry/exit policy below is drift-specific. ``collect_earnings_events``
+    # and ``fetch_price_data`` are passed as this module's globals so their test
+    # seams (monkeypatched below) stay authoritative inside the shared step.
+    prepared = prepare_earnings_run(
+        market=market,
+        years=years,
+        batch_size=batch_size,
+        tickers=tickers,
+        load_universe=load_universe,
+        collect_events=collect_earnings_events,
+        fetch_prices=fetch_price_data,
+        price_window=_predrift_price_window,
     )
+    events_df = prepared.events
+    price_data = prepared.prices
     if events_df.empty:
         logger.warning("no_earnings_events_found")
         return []
 
-    # Filter to past earnings (we need the exit price)
-    events_df["earnings_date"] = pd.to_datetime(events_df["earnings_date"])
-    events_df = events_df[
-        (events_df["earnings_date"] >= pd.Timestamp(cutoff_date))
-        & (events_df["earnings_date"] <= pd.Timestamp(date.today()))
-    ]
-    logger.info("earnings_events_collected", extra={"count": len(events_df)})
-
-    if events_df.empty:
-        return []
-
-    # 3. Fetch price data (batched for RAM)
-    # We need bars from ~25 days before E to E itself
-    all_tickers_in_events = events_df["ticker"].unique().tolist()
-    earliest = (events_df["earnings_date"].min() - pd.Timedelta(days=30)).date()
-    latest = (events_df["earnings_date"].max() + pd.Timedelta(days=5)).date()
-
-    # Free up: only keep events for tickers we actually have data for
-    price_start = max(earliest, cutoff_date - timedelta(days=30))
-
-    # Fetch in batches to control RAM
-    price_data: dict[str, pd.DataFrame] = {}
-    for i in range(0, len(all_tickers_in_events), batch_size):
-        batch = all_tickers_in_events[i : i + batch_size]
-        data = fetch_price_data(batch, price_start, latest)
-        price_data.update(data)
-        # Don't keep empty frames
-        price_data = {k: v for k, v in price_data.items() if not v.empty}
-
-    logger.info("price_data_fetched", extra={"tickers": len(price_data)})
-
-    # 4-6. Evaluate strategies and simulate trades
+    # Evaluate strategies and simulate the E-N -> E drift trades.
     trades: list[EarningsTrade] = []
     analyzed_strategies = _resolve_strategies(strategy)
 
@@ -253,6 +229,20 @@ def run_earnings_backtest(
 
     logger.info("backtest_complete", extra={"trades": len(trades)})
     return trades
+
+
+def _predrift_price_window(
+    events_df: pd.DataFrame, cutoff_date: date
+) -> tuple[date, date]:
+    """Drift window: ~30 sessions before the first event through E + 5 days.
+
+    The start is clamped to ``cutoff_date - 30d`` so a stray far-past event
+    cannot widen the fetch beyond the look-back the run asked for.
+    """
+    earliest = (events_df["earnings_date"].min() - pd.Timedelta(days=30)).date()
+    latest = (events_df["earnings_date"].max() + pd.Timedelta(days=5)).date()
+    price_start = max(earliest, cutoff_date - timedelta(days=30))
+    return price_start, latest
 
 
 def _can_use_current_snapshot(as_of_date: date) -> bool:
