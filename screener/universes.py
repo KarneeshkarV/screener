@@ -663,10 +663,14 @@ def _fetch_sensex() -> tuple[list[str], str]:
         )
         table = table[entry_dates.isna() | (entry_dates.dt.date <= date.today())]
     symbols = table["Symbol"].dropna().astype(str).str.strip().str.upper().tolist()
+    pre_filter_count = len(symbols)
+    LOG.debug("sensex table yielded %d rows before .BO filter", pre_filter_count)
     symbols = [symbol for symbol in symbols if symbol.endswith(".BO")]
     if not 25 <= len(set(symbols)) <= 35:
         raise RuntimeError(
-            f"Sensex constituent count failed validation: {len(set(symbols))}"
+            f"Sensex constituent count failed validation: {len(set(symbols))} "
+            f"of .BO-suffixed rows (from {pre_filter_count} table rows); "
+            "upstream table format may have changed"
         )
     return _dedupe(symbols), _SENSEX_SOURCE
 
