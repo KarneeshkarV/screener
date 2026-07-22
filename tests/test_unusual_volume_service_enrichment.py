@@ -33,6 +33,9 @@ from screener.unusual_volume import (
 from screener.unusual_volume import service as uv_service
 
 
+from screener.unusual_volume.enrichment import Enrichment
+
+
 from screener.unusual_volume import buildup as uv_buildup
 
 
@@ -452,13 +455,17 @@ def test_service_delivery_buildup_microstructure_and_scan(monkeypatch):
         min_avg_volume=0,
         min_market_cap=1,
         include_fno_ban=False,
-        deep_india=True,
-        buildup_enabled=True,
         buildup_window=20,
         buildup_min_score=0.5,
-        option_chain=True,
-        fii_dii=True,
-        pledge=True,
+        enrichments=frozenset(
+            {
+                Enrichment.DEEP_INDIA,
+                Enrichment.BUILDUP,
+                Enrichment.OPTION_CHAIN,
+                Enrichment.FII_DII,
+                Enrichment.PLEDGE,
+            }
+        ),
         refresh=True,
     )
 
@@ -483,8 +490,6 @@ def test_service_scan_empty_paths_and_overlay_failures(monkeypatch):
         min_avg_volume=0,
         min_market_cap=None,
         include_fno_ban=True,
-        deep_india=False,
-        buildup_enabled=False,
         buildup_window=20,
         buildup_min_score=0.5,
     )
@@ -507,9 +512,9 @@ def test_service_scan_empty_paths_and_overlay_failures(monkeypatch):
         update={
             "market": "india",
             "include_fno_ban": True,
-            "option_chain": True,
-            "fii_dii": True,
-            "pledge": True,
+            "enrichments": frozenset(
+                {Enrichment.OPTION_CHAIN, Enrichment.FII_DII, Enrichment.PLEDGE}
+            ),
         }
     )
     ev = _event_for_output("AAA", as_of, direction="BUYING", strength="HIGH")

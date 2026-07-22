@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from datetime import date, timedelta
-from typing import Any, ClassVar, Optional, Self
+from typing import Optional
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import requests
 from rich.console import Console
 
@@ -71,28 +70,6 @@ class UnusualVolumeRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    _LEGACY_ENRICHMENT_FLAGS: ClassVar[dict[str, Enrichment]] = {
-        "buildup_enabled": Enrichment.BUILDUP,
-        "deep_india": Enrichment.DEEP_INDIA,
-        "option_chain": Enrichment.OPTION_CHAIN,
-        "fii_dii": Enrichment.FII_DII,
-        "pledge": Enrichment.PLEDGE,
-    }
-    # Remove this flag shim once CLI/tests use ``enrichments`` enum values only.
-
-    @model_validator(mode="before")
-    @classmethod
-    def _collect_enrichment_flags(cls, value: Any) -> Any:
-        if not isinstance(value, Mapping):
-            return value
-        data = dict(value)
-        selected = set(data.get("enrichments", ()))
-        for flag, enrichment in cls._LEGACY_ENRICHMENT_FLAGS.items():
-            if data.pop(flag, False):
-                selected.add(enrichment)
-        data["enrichments"] = selected
-        return data
-
     @field_validator("market", "strength_floor")
     @classmethod
     def _strip_non_empty(cls, value: str) -> str:
@@ -111,38 +88,6 @@ class UnusualVolumeRequest(BaseModel):
 
     def includes(self, enrichment: Enrichment) -> bool:
         return enrichment in self.enrichments
-
-    def model_copy(
-        self,
-        *,
-        update: Mapping[str, Any] | None = None,
-        deep: bool = False,
-    ) -> Self:
-        if update and self._LEGACY_ENRICHMENT_FLAGS.keys() & update.keys():
-            data = self.model_dump()
-            data.update(update)
-            return self.__class__.model_validate(data)
-        return super().model_copy(update=dict(update) if update else None, deep=deep)
-
-    @property
-    def buildup_enabled(self) -> bool:
-        return self.includes(Enrichment.BUILDUP)
-
-    @property
-    def deep_india(self) -> bool:
-        return self.includes(Enrichment.DEEP_INDIA)
-
-    @property
-    def option_chain(self) -> bool:
-        return self.includes(Enrichment.OPTION_CHAIN)
-
-    @property
-    def fii_dii(self) -> bool:
-        return self.includes(Enrichment.FII_DII)
-
-    @property
-    def pledge(self) -> bool:
-        return self.includes(Enrichment.PLEDGE)
 
 
 class UnusualVolumeResult(BaseModel):
@@ -292,7 +237,7 @@ def run_unusual_volume_scan(
     floor_rank = STRENGTH_RANK[request.strength_floor.upper()]
     events = [e for e in events if STRENGTH_RANK[e.strength] >= floor_rank]
 
-    if request.buildup_enabled:
+    if request.includes(Enrichment.BUILDUP):
         _apply_buildup_overlay(request, liquid, panel, events, console)
 
     diagnostics: list[EnrichmentDiagnostic] = []
@@ -323,7 +268,7 @@ def run_unusual_volume_scan(
             f"{len(events)}/{before} survive.[/dim]"
         )
 
-    if request.market == "india" and request.deep_india and events:
+    if request.market == "india" and request.includes(Enrichment.DEEP_INDIA) and events:
         console.print(
             "[dim]Running openscreener deep enrichment for India events...[/dim]"
         )

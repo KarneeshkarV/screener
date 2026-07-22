@@ -29,7 +29,7 @@ import pandas as pd
 from screener.indicators.frames import wilder_atr
 
 if TYPE_CHECKING:
-    from screener.backtester.models import BacktestConfig, PortfolioPolicy
+    from screener.backtester.models import BacktestConfig
     from screener.backtester.portfolio import Portfolio
 
 
@@ -44,7 +44,7 @@ class SizingContext:
     equity: float
     base_budget: float
     stop_loss: float | None
-    policy: PortfolioPolicy
+    policy: BacktestConfig
     bars: pd.DataFrame
     signal_idx: int
 
@@ -138,14 +138,14 @@ def entry_budget_for(
     bars: pd.DataFrame,
     signal_idx: int,
 ) -> float:
-    """Dollar budget for the next entry under ``cfg.portfolio.sizing_rule``.
+    """Dollar budget for the next entry under ``cfg.sizing_rule``.
 
     ``equal_slot`` short-circuits to ``portfolio.entry_budget()`` so the
     default path is bit-identical to the pre-sizing engine. Every other rule
     is clamped to ``[0, entry_budget()]``.
     """
     base = portfolio.entry_budget()
-    rule = cfg.portfolio.sizing_rule
+    rule = cfg.sizing_rule
     if rule == "equal_slot":
         return base
     func = _SIZERS.get(rule)
@@ -158,7 +158,7 @@ def entry_budget_for(
         equity=portfolio.initial_capital,
         base_budget=base,
         stop_loss=cfg.stop_loss,
-        policy=cfg.portfolio,
+        policy=cfg,
         bars=bars,
         signal_idx=signal_idx,
     )

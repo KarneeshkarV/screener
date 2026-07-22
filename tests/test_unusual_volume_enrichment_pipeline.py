@@ -28,26 +28,27 @@ def _event() -> Event:
     )
 
 
-def test_request_collects_legacy_flags_into_typed_enrichments() -> None:
+def test_request_tracks_typed_enrichments() -> None:
     request = UnusualVolumeRequest(
         market="india",
         as_of=date(2026, 5, 15),
         universe=["RELIANCE"],
-        buildup_enabled=True,
-        option_chain=True,
+        enrichments=frozenset({Enrichment.BUILDUP, Enrichment.OPTION_CHAIN}),
     )
 
     assert request.enrichments == {
         Enrichment.BUILDUP,
         Enrichment.OPTION_CHAIN,
     }
-    assert request.buildup_enabled
-    assert request.option_chain
-    assert not request.pledge
+    assert request.includes(Enrichment.BUILDUP)
+    assert request.includes(Enrichment.OPTION_CHAIN)
+    assert not request.includes(Enrichment.PLEDGE)
 
-    updated = request.model_copy(update={"pledge": True})
-    assert updated.pledge
-    assert updated.option_chain
+    updated = request.model_copy(
+        update={"enrichments": request.enrichments | {Enrichment.PLEDGE}}
+    )
+    assert updated.includes(Enrichment.PLEDGE)
+    assert updated.includes(Enrichment.OPTION_CHAIN)
 
 
 def test_independent_microstructure_stages_run_concurrently(monkeypatch) -> None:

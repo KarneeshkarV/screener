@@ -661,14 +661,9 @@ def _resolve_universe(cfg: BacktestConfig) -> tuple[list[str], list[str]]:
     if cfg.tickers:
         return _cap(list(cfg.tickers)), warnings
     if cfg.universe_file:
-        from pathlib import Path
+        from screener.universes import read_universe_file
 
-        content = Path(cfg.universe_file).read_text()
-        tickers = [
-            line.strip()
-            for line in content.splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
+        tickers = read_universe_file(cfg.universe_file, comment_prefixes=("#",))
         return _cap(tickers), warnings
     raise ValueError(_NO_UNIVERSE_MSG)
 

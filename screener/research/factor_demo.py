@@ -27,14 +27,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from screener.backtester.models import (
-    BacktestConfig,
-    BacktestResult,
-    ExecutionPolicy,
-    PortfolioPolicy,
-    SignalPolicy,
-    UniversePolicy,
-)
+from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.rolling_simulation import run_rolling_backtest
 
 # ── panel geometry ───────────────────────────────────────────────────
@@ -166,21 +159,18 @@ def run_demo_backtest(
         market="us",
         as_of=BACKTEST_END,
         benchmark=BENCHMARK,
-        universe=UniversePolicy(tickers=DEMO_TICKERS),
-        signals=SignalPolicy(
-            strategy_name=strategy_name,
-            entry_expr="",  # filled from the registry below
-            exit_expr=None,
-        ),
-        execution=ExecutionPolicy(
-            hold=hold,
-            stop_loss=None,
-            take_profit=None,
-            trailing_stop=None,
-            slippage_bps=0.0,
-            commission_bps=0.0,
-        ),
-        portfolio=PortfolioPolicy(top=top, initial_capital=100_000.0),
+        tickers=DEMO_TICKERS,
+        strategy_name=strategy_name,
+        entry_expr="",  # filled from the registry below
+        exit_expr=None,
+        hold=hold,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        top=top,
+        initial_capital=100_000.0,
     )
     from screener.strategies.spec import discover_plugins
     from screener.strategies.spec import registry as strategy_registry

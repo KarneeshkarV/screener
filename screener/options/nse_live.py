@@ -17,6 +17,7 @@ from screener.options.models import (
 )
 from screener.options._parse import number as _number
 from screener.options._parse import quote_pair
+from screener.unusual_volume.nse_client import nse_cached_json
 
 
 class RawFetcher(Protocol):
@@ -203,8 +204,6 @@ def parse_nse_chain(
 
 
 def _default_fetcher(symbol: str, *, refresh: bool = False) -> dict[str, Any] | None:
-    from screener.unusual_volume.option_chain import fetch_option_chain
-
     return fetch_option_chain(symbol, refresh=refresh)
 
 
@@ -239,4 +238,45 @@ class NSELiveOptionsProvider:
         return parse_nse_chain(raw, symbol=normalized, expiry=expiry, now=self.now())
 
 
-__all__ = ["NSELiveOptionsProvider", "RawFetcher", "parse_nse_chain"]
+# ---------------------------------------------------------------------------
+# Raw NSE option-chain HTTP transport
+#
+# NSE serves the equity/index option chain live only (no historical archive).
+# This is the low-level fetch that primes the browser session and returns the
+# raw JSON payload; ``NSELiveOptionsProvider`` (above) normalizes it into an
+# ``OptionChain``. It lives here so the options package owns its own transport
+# and ``unusual_volume`` depends on ``options`` rather than the reverse.
+# ---------------------------------------------------------------------------
+
+_OC_EQUITY_URL = "https://www.nseindia.com/api/option-chain-equities?symbol={sym}"
+_OC_INDEX_URL = "https://www.nseindia.com/api/option-chain-indices?symbol={sym}"
+_OC_INDEX_SYMBOLS = frozenset(
+    {"NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "NIFTYNXT50"}
+)
+_OC_PAGE = "https://www.nseindia.com/option-chain"
+
+
+def fetch_option_chain(symbol: str, *, refresh: bool = False) -> dict[str, Any] | None:
+    """Fetch the raw live NSE option-chain JSON for ``symbol`` (or ``None``)."""
+    import urllib.parse
+
+    normalized = symbol.upper()
+    template = _OC_INDEX_URL if normalized in _OC_INDEX_SYMBOLS else _OC_EQUITY_URL
+    url = template.format(sym=urllib.parse.quote(normalized))
+    raw = nse_cached_json(
+        "nse_option_chain",
+        ("oc", normalized, str(date.today())),
+        url,
+        f"option chain {symbol}",
+        refresh=refresh,
+        extra_prime_page=_OC_PAGE,
+    )
+    return raw if isinstance(raw, dict) else None
+
+
+__all__ = [
+    "NSELiveOptionsProvider",
+    "RawFetcher",
+    "fetch_option_chain",
+    "parse_nse_chain",
+]

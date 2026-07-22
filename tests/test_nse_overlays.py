@@ -17,6 +17,7 @@ from screener.unusual_volume import service
 from screener.unusual_volume import fii_dii, nse_client, option_chain
 from screener.unusual_volume.delivery import compute_delivery_metrics, overlay_events
 from screener.unusual_volume.detector import Event
+from screener.unusual_volume.enrichment import Enrichment
 
 
 def _event(symbol: str = "RELIANCE", d: date = date(2026, 5, 15)) -> Event:
@@ -408,13 +409,9 @@ def test_live_nse_overlays_preserve_historical_events(monkeypatch, tmp_path):
         strength_floor="MODERATE",
         min_avg_volume=0.0,
         include_fno_ban=False,
-        deep_india=False,
-        buildup_enabled=False,
         buildup_window=20,
         buildup_min_score=0.0,
-        option_chain=True,
-        fii_dii=True,
-        pledge=False,
+        enrichments=frozenset({Enrichment.OPTION_CHAIN, Enrichment.FII_DII}),
     )
 
     ev = _event("RELIANCE", historical_as_of)
@@ -481,13 +478,9 @@ def test_india_microstructure_runs_after_buildup_adds_events(monkeypatch):
         min_avg_volume=0.0,
         min_market_cap=0.0,
         include_fno_ban=True,
-        deep_india=False,
-        buildup_enabled=True,
         buildup_window=20,
         buildup_min_score=0.0,
-        option_chain=True,
-        fii_dii=False,
-        pledge=False,
+        enrichments=frozenset({Enrichment.BUILDUP, Enrichment.OPTION_CHAIN}),
     )
 
     result = service.run_unusual_volume_scan(request, Console(file=io.StringIO()))

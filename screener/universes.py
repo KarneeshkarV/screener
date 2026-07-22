@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
+from enum import Enum
 import json
 import logging
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 import warnings
 
 import pandas as pd
@@ -22,6 +24,112 @@ LOG = logging.getLogger(__name__)
 CACHE_DIR = Path.home() / ".screener" / "universes"
 _SP500_CHANGES_CACHE_TTL_SECONDS = 24 * 60 * 60
 UniverseName = Literal["sp500", "nifty50", "nifty500"]
+
+
+class UniverseSource(str, Enum):
+    """Where a universe's symbols come from.
+
+    These are deliberately NOT interchangeable — current TradingView liquidity,
+    current index membership, and point-in-time index membership carry different
+    survivorship characteristics, and user-supplied tickers/files bypass all of
+    them. Each call site names its source explicitly so the choice is auditable.
+    """
+
+    TICKERS = "tickers"  # explicit user-supplied symbols
+    FILE = "file"  # user newline-delimited file
+    TV_LIQUIDITY = "tv_liquidity"  # current TradingView volume/price scan
+    INDEX_CURRENT = "index_current"  # today's index membership
+    INDEX_PIT = "index_pit"  # point-in-time index membership as of a date
+
+
+class UniverseRequest(BaseModel):
+    """A single, explicit request for a backtest/scan universe.
+
+    ``tickers`` and ``file`` are honoured first (in that order) when present,
+    regardless of ``source``; ``source`` selects the fetch used when neither is
+    supplied. ``comment_prefixes`` controls which file lines are dropped as
+    comments, ``limit`` caps a fetched list, and ``as_of``/``index_name`` drive
+    the index sources. Symbol normalization is intentionally left to each fetch
+    (TradingView names, ``.NS`` suffixes, etc.) so no source is silently coerced
+    into another's convention.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source: UniverseSource
+    market: str = ""
+    tickers: Optional[tuple[str, ...]] = None
+    file: Optional[str] = None
+    comment_prefixes: tuple[str, ...] = ()
+    limit: int = 0
+    as_of: Optional[date] = None
+    index_name: Optional[UniverseName] = None
+
+
+def parse_ticker_csv(raw: str | None) -> list[str]:
+    """Split a comma-separated ticker string, trimming blanks."""
+    if not raw:
+        return []
+    return [token.strip() for token in raw.split(",") if token.strip()]
+
+
+def read_universe_file(
+    path: str | Path, *, comment_prefixes: tuple[str, ...] = ()
+) -> list[str]:
+    """Read newline-separated symbols from ``path``.
+
+    Blank lines are dropped; a line whose stripped form starts with any of
+    ``comment_prefixes`` is treated as a comment and skipped. Raises the usual
+    ``FileNotFoundError`` when ``path`` does not exist so callers can map it to
+    their own error surface (e.g. a Click usage error).
+    """
+    lines = Path(path).read_text().splitlines()
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if comment_prefixes and stripped.startswith(comment_prefixes):
+            continue
+        out.append(stripped)
+    return out
+
+
+def resolve_universe(
+    request: UniverseRequest,
+    *,
+    tv_loader: Callable[[], list[str]] | None = None,
+) -> list[str]:
+    """Resolve ``request`` to a concrete symbol list.
+
+    Explicit ``tickers`` then ``file`` win over ``source``. TradingView liquidity
+    is delegated to ``tv_loader`` (which stays in the owning module so its scan
+    remains individually testable/patchable); index membership is served by
+    :func:`load_current_universe`, keeping the current-vs-point-in-time
+    distinction explicit.
+    """
+    if request.tickers is not None:
+        return list(request.tickers)
+    if request.file is not None:
+        return read_universe_file(
+            request.file, comment_prefixes=request.comment_prefixes
+        )
+    if request.source is UniverseSource.TV_LIQUIDITY:
+        if tv_loader is None:
+            raise ValueError("TV liquidity source requires a tv_loader")
+        return list(tv_loader())
+    if request.source in (UniverseSource.INDEX_CURRENT, UniverseSource.INDEX_PIT):
+        if request.index_name is None:
+            raise ValueError(f"{request.source.value} source requires index_name")
+        if request.source is UniverseSource.INDEX_CURRENT:
+            return list(load_current_universe(request.index_name).symbols)
+        return list(
+            load_current_universe(request.index_name, as_of=request.as_of).symbols
+        )
+    raise ValueError(
+        "no universe resolved: pass tickers or file for a "
+        f"{request.source.value} request"
+    )
 
 
 class Universe(BaseModel):

@@ -11,7 +11,7 @@ from click.testing import CliRunner
 from pydantic import ValidationError
 
 from screener.backtester.core import simulate_ticker
-from screener.backtester.models import BacktestConfig, DataPolicy
+from screener.backtester.models import BacktestConfig
 from screener.backtester.sessions import is_session_last, market_timezone, session_dates
 from screener.cli import cli
 from tests.conftest import StubPriceFetcher
@@ -114,9 +114,9 @@ def test_is_session_last_empty():
 
 def test_data_policy_rejects_intraday_only_on_daily():
     with pytest.raises(ValidationError, match="intraday_only"):
-        DataPolicy(interval="1d", intraday_only=True)
+        _cfg(interval="1d", intraday_only=True)
     # Intraday + flag is fine.
-    ok = DataPolicy(interval="15m", intraday_only=True)
+    ok = _cfg(interval="15m", intraday_only=True)
     assert ok.intraday_only is True
 
 

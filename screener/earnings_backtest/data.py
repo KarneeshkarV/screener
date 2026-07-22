@@ -26,7 +26,7 @@ from screener.backtester.data import PriceFetcher, YFinancePriceFetcher
 
 
 def load_sp500() -> list[str]:
-    """Return current S&P 500 ticker list."""
+    """Return current S&P 500 ticker list (current index membership)."""
     from screener.universes import load_current_universe
 
     univ = load_current_universe("sp500")
@@ -34,7 +34,7 @@ def load_sp500() -> list[str]:
 
 
 def load_nifty500() -> list[str]:
-    """Return Nifty 500 ticker list with .NS suffix."""
+    """Return Nifty 500 ticker list with .NS suffix (current index membership)."""
     from screener.universes import load_current_universe
 
     univ = load_current_universe("nifty500")

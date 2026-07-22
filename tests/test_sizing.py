@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from screener.backtester.models import BacktestConfig, PortfolioPolicy
+from screener.backtester.models import BacktestConfig
 from screener.backtester.portfolio import Portfolio
 from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.sizing import entry_budget_for
@@ -153,7 +153,7 @@ def test_open_smaller_budget_spends_exactly_that_budget():
 
 def test_portfolio_policy_rejects_unknown_sizing_rule():
     with pytest.raises(ValidationError):
-        PortfolioPolicy(top=1, initial_capital=100_000.0, sizing_rule="nonsense")
+        _sizing_cfg(sizing_rule="nonsense")
 
 
 def test_config_rejects_fixed_risk_without_stop_loss():

@@ -11,15 +11,7 @@ from typing import cast as type_cast
 
 import click
 
-from screener.backtester.models import (
-    BacktestConfig,
-    ExecutionPolicy,
-    ExitReason,
-    PortfolioPolicy,
-    SignalPolicy,
-    Trade,
-    UniversePolicy,
-)
+from screener.backtester.models import BacktestConfig, ExitReason, Trade
 from screener.backtester.optimization.grid import grid_search
 from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
 from screener.backtester.optimization.reporting import (
@@ -126,32 +118,24 @@ def _base_config(
         market=market,
         as_of=end_date,
         benchmark=benchmark or get_market(market).benchmark,
-        universe=UniversePolicy(
-            tickers=ticker_tuple,
-            universe_file=universe_file,
-            max_universe=int(max_universe),
-        ),
-        signals=SignalPolicy(
-            strategy_name=strategy_name,
-            entry_expr=entry_expr,
-            exit_expr=exit_expr,
-        ),
-        execution=ExecutionPolicy(
-            hold=int(hold),
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            trailing_stop=trailing_stop,
-            slippage_bps=float(slippage_bps),
-            commission_bps=float(commission_bps),
-        ),
-        portfolio=PortfolioPolicy(
-            top=int(top),
-            initial_capital=float(initial_capital),
-            min_price=resolved_min_price,
-            min_avg_dollar_volume=resolved_min_adv,
-            avg_dollar_volume_window=int(adv_window),
-            reinvest=True,
-        ),
+        tickers=ticker_tuple,
+        universe_file=universe_file,
+        max_universe=int(max_universe),
+        strategy_name=strategy_name,
+        entry_expr=entry_expr,
+        exit_expr=exit_expr,
+        hold=int(hold),
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        trailing_stop=trailing_stop,
+        slippage_bps=float(slippage_bps),
+        commission_bps=float(commission_bps),
+        top=int(top),
+        initial_capital=float(initial_capital),
+        min_price=resolved_min_price,
+        min_avg_dollar_volume=resolved_min_adv,
+        avg_dollar_volume_window=int(adv_window),
+        reinvest=True,
     )
 
 
@@ -477,13 +461,20 @@ def _resolve_universe_tickers(
         return tickers, universe_file
     if universe is None:
         return tickers, universe_file
-    from screener.universes import UniverseName, load_current_universe
-
-    loaded = load_current_universe(
-        type_cast(UniverseName, universe),
-        as_of=end_date,
+    from screener.universes import (
+        UniverseName,
+        UniverseRequest,
+        UniverseSource,
+        resolve_universe,
     )
-    symbols = list(loaded.symbols)
+
+    symbols = resolve_universe(
+        UniverseRequest(
+            source=UniverseSource.INDEX_PIT,
+            index_name=type_cast(UniverseName, universe),
+            as_of=end_date,
+        )
+    )
     if max_universe and max_universe > 0:
         symbols = symbols[: int(max_universe)]
     if not symbols:

@@ -194,27 +194,6 @@ def intraday_options(command):
     return command
 
 
-def build_data_policy(
-    *,
-    interval: str,
-    price_adjustment: str,
-    intraday_only: bool = False,
-):
-    """Build a ``DataPolicy``, mapping pydantic validation errors to Click usage."""
-    from pydantic import ValidationError
-
-    from screener.backtester.models import DataPolicy
-
-    try:
-        return DataPolicy(
-            interval=interval,
-            price_adjustment=price_adjustment,  # type: ignore[arg-type]
-            intraday_only=intraday_only,
-        )
-    except ValidationError as exc:
-        raise click.UsageError(str(exc)) from exc
-
-
 def validate_sizing(sizing_rule: str, stop_loss: float | None) -> None:
     if sizing_rule == "fixed_risk" and (stop_loss is None or stop_loss <= 0):
         raise click.UsageError("--sizing fixed_risk requires --stop-loss.")
@@ -705,42 +684,32 @@ def build_backtest_config(
 ) -> BacktestConfig:
     """Assemble a ``BacktestConfig`` from shared params plus mode-specific extras.
 
-    The five policy models are constructed exactly the way both CLIs do today;
     ``signal_extra`` carries the rolling-only signal fields (regime filter,
     earnings blackout, fundamentals, sector neutralization), and the portfolio
-    keyword arguments cover the historical-only reserve/re-entry knobs.
+    keyword arguments cover the historical-only reserve/re-entry knobs. Pydantic
+    validation errors (e.g. an invalid interval) map to a Click usage error.
     """
-    from screener.backtester.models import (
-        BacktestConfig,
-        ExecutionPolicy,
-        PortfolioPolicy,
-        SignalPolicy,
-        UniversePolicy,
-    )
+    from pydantic import ValidationError
+
+    from screener.backtester.models import BacktestConfig
 
     signal_extra = signal_extra or {}
-    return BacktestConfig(
-        market=common.market,
-        as_of=as_of,
-        benchmark=common.benchmark,
-        universe=UniversePolicy(
+    try:
+        return BacktestConfig(
+            market=common.market,
+            as_of=as_of,
+            benchmark=common.benchmark,
             tickers=common.tickers,
             universe_file=common.universe_file,
             membership_added=membership_added,
             max_universe=int(common.max_universe),
-        ),
-        signals=SignalPolicy(
             strategy_name=common.strategy_name,
             entry_expr=common.entry_expr,
             exit_expr=common.exit_expr,
             **signal_extra,
-        ),
-        data=build_data_policy(
             interval=common.interval,
-            price_adjustment=common.price_adjustment,
+            price_adjustment=common.price_adjustment,  # type: ignore[arg-type]
             intraday_only=bool(common.intraday_only),
-        ),
-        execution=ExecutionPolicy(
             hold=int(common.hold),
             stop_loss=common.stop_loss,
             take_profit=common.take_profit,
@@ -754,8 +723,6 @@ def build_backtest_config(
             entry_order_type=common.entry_order_type,
             entry_limit_bps=common.entry_limit_bps,
             partial_exits=common.partial_exits,
-        ),
-        portfolio=PortfolioPolicy(
             top=int(common.top),
             initial_capital=float(common.initial_capital),
             min_price=common.min_price,
@@ -771,5 +738,6 @@ def build_backtest_config(
             sizing_atr_window=int(common.sizing_atr_window),
             sizing_atr_multiple=float(common.sizing_atr_multiple),
             sizing_vol_window=int(common.sizing_vol_window),
-        ),
-    )
+        )
+    except ValidationError as exc:
+        raise click.UsageError(str(exc)) from exc
