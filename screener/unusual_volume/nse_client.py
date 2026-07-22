@@ -288,6 +288,97 @@ def fo_bhavcopy_cache_path(d: date, cache_root: Path) -> Path:
     return day_dir / f"BhavCopy_NSE_FO_{d.strftime('%Y%m%d')}.csv"
 
 
+# NSE switched the F&O bhavcopy to the UDiff format on this date; earlier dates
+# only exist in the legacy ``fo<DD><MMM><YYYY>bhav.csv.zip`` archive below.
+FO_UDIFF_START = date(2024, 7, 8)
+
+# Legacy (pre-UDiff) F&O bhavcopy archive, e.g.
+# .../content/historical/DERIVATIVES/2023/JAN/fo02JAN2023bhav.csv.zip
+LEGACY_FO_ARCHIVE_URL = (
+    "https://nsearchives.nseindia.com/content/historical/DERIVATIVES/"
+    "{yyyy}/{mmm}/fo{dd}{mmm}{yyyy}bhav.csv.zip"
+)
+_MONTHS = [
+    "JAN",
+    "FEB",
+    "MAR",
+    "APR",
+    "MAY",
+    "JUN",
+    "JUL",
+    "AUG",
+    "SEP",
+    "OCT",
+    "NOV",
+    "DEC",
+]
+
+# Legacy FO bhavcopy columns -> UDiff schema names. Legacy header:
+#   INSTRUMENT, SYMBOL, EXPIRY_DT, STRIKE_PR, OPTION_TYP, OPEN, HIGH, LOW,
+#   CLOSE, SETTLE_PR, CONTRACTS, VAL_INLAKH, OPEN_INT, CHG_IN_OI, TIMESTAMP
+# Legacy has no UndrlygPric and no NewBrdLotQty.
+_LEGACY_COLUMN_MAP = {
+    "SYMBOL": "TckrSymb",
+    "EXPIRY_DT": "XpryDt",
+    "STRIKE_PR": "StrkPric",
+    "OPTION_TYP": "OptnTp",
+    "OPEN": "OpnPric",
+    "HIGH": "HghPric",
+    "LOW": "LwPric",
+    "CLOSE": "ClsPric",
+    "SETTLE_PR": "SttlmPric",
+    "OPEN_INT": "OpnIntrst",
+    "CHG_IN_OI": "ChngInOpnIntrst",
+    "CONTRACTS": "TtlTradgVol",
+    "TIMESTAMP": "TradDt",
+}
+# Legacy INSTRUMENT -> UDiff FinInstrmTp.
+_LEGACY_INSTRUMENT_MAP = {
+    "OPTSTK": "STO",
+    "OPTIDX": "IDO",
+    "FUTSTK": "STF",
+    "FUTIDX": "IDF",
+}
+
+
+def _legacy_fo_url(d: date) -> str:
+    mmm = _MONTHS[d.month - 1]
+    return LEGACY_FO_ARCHIVE_URL.format(yyyy=d.year, mmm=mmm, dd=f"{d.day:02d}")
+
+
+def normalize_legacy_fo_bhavcopy(frame: pd.DataFrame) -> pd.DataFrame:
+    """Map legacy FO bhavcopy columns/values onto the UDiff schema.
+
+    Detected by the presence of the legacy ``INSTRUMENT`` column, so cached
+    legacy CSVs normalize on re-read too. Dates become ``datetime64`` (legacy
+    ``TIMESTAMP`` is ``02-JAN-2023``; ``EXPIRY_DT`` is ``25-Jan-2023``), which
+    the downstream ``pd.to_datetime`` consumers accept unchanged. The trailing
+    ``Unnamed`` junk column is dropped.
+    """
+    df = frame.rename(columns=_LEGACY_COLUMN_MAP)
+    junk = [c for c in df.columns if str(c).startswith("Unnamed")]
+    if junk:
+        df = df.drop(columns=junk)
+    if "INSTRUMENT" in df.columns:
+        df["FinInstrmTp"] = (
+            df["INSTRUMENT"]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .map(_LEGACY_INSTRUMENT_MAP)
+            .fillna(df["INSTRUMENT"])
+        )
+        df = df.drop(columns=["INSTRUMENT"])
+    for col in ("TradDt", "XpryDt"):
+        if col in df.columns:
+            df[col] = pd.to_datetime(
+                df[col].astype(str).str.strip().str.title(),
+                format="%d-%b-%Y",
+                errors="coerce",
+            )
+    return df
+
+
 def read_fo_bhavcopy_raw(
     d: date,
     *,
@@ -295,13 +386,23 @@ def read_fo_bhavcopy_raw(
     archive_url_template: str,
     resilience_call=call_with_resilience,
 ) -> pd.DataFrame:
-    """Download or load decoded raw F&O UDiff bhavcopy CSV."""
+    """Download or load decoded raw F&O bhavcopy CSV.
+
+    Dates on or after :data:`FO_UDIFF_START` use the UDiff archive (via
+    ``archive_url_template``); earlier dates fall back to the legacy archive
+    and are normalized to the UDiff column names so callers see one schema.
+    """
     from jugaad_data.nse import NSEArchives
 
+    is_legacy = d < FO_UDIFF_START
     path = fo_bhavcopy_cache_path(d, cache_root)
     if not path.exists():
         n = NSEArchives()
-        url = archive_url_template.format(yyyymmdd=d.strftime("%Y%m%d"))
+        url = (
+            _legacy_fo_url(d)
+            if is_legacy
+            else archive_url_template.format(yyyymmdd=d.strftime("%Y%m%d"))
+        )
         response = resilience_call(
             "nse",
             f"fo bhavcopy {d}",
@@ -327,12 +428,35 @@ def read_fo_bhavcopy_raw(
                 path.write_bytes(fp.read())
     df = pd.read_csv(path)
     df.columns = [str(c).strip() for c in df.columns]
+    # Detect a legacy-shaped frame (fresh or cached) and normalize to UDiff.
+    if "INSTRUMENT" in df.columns:
+        df = normalize_legacy_fo_bhavcopy(df)
     return df
 
 
 # ── trading calendar ───────────────────────────────────────────────────────
 
 _HOLIDAYS_URL = "https://www.nseindia.com/api/holiday-master?type=trading"
+
+# NSE occasionally trades on a weekend (Union Budget day, Diwali Muhurat, or a
+# disaster-recovery drill). Each date below was confirmed to have a real FO
+# bhavcopy archive (HTTP-200 application/zip) via a live probe:
+#   2024-01-20 (Sat) special live-trading session
+#   2024-03-02 (Sat) special session
+#   2024-05-18 (Sat) special / DR session
+#   2025-02-01 (Sat) Union Budget session
+#   2026-02-01 (Sun) Union Budget session
+#   2023-11-12 (Sun) Diwali Muhurat trading
+SPECIAL_TRADING_SESSIONS: frozenset[date] = frozenset(
+    {
+        date(2023, 11, 12),
+        date(2024, 1, 20),
+        date(2024, 3, 2),
+        date(2024, 5, 18),
+        date(2025, 2, 1),
+        date(2026, 2, 1),
+    }
+)
 
 
 def _parse_holiday_payload(raw: Any) -> set[date]:
@@ -397,8 +521,11 @@ class TradingCalendar:
         """True if ``d`` is a weekday and not a known NSE holiday.
 
         When the holiday set is unavailable this is a pure weekday check,
-        preserving the legacy weekend-only behaviour.
+        preserving the legacy weekend-only behaviour. Known NSE weekend
+        special sessions are always trading days.
         """
+        if d in SPECIAL_TRADING_SESSIONS:
+            return True
         if d.weekday() >= 5:
             return False
         return d not in self._holiday_set()

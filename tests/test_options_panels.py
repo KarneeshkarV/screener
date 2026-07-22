@@ -185,7 +185,9 @@ def test_core_metrics_from_real_bhavcopy(sample_frame: pd.DataFrame):
     assert metrics.notional_oi == pytest.approx(
         (metrics.call_oi + metrics.put_oi) * 500 * 1275.9
     )
-    assert metrics.median_iv is None
+    # IV is now inverted point-in-time from the bhavcopy settle price.
+    assert metrics.median_iv is not None and 0 < metrics.median_iv < 5.0
+    assert metrics.atm_iv is not None
 
     labels = {row["classification"] for row in classify_oi_changes(chain)}
     assert labels == {"short_buildup", "long_buildup"}

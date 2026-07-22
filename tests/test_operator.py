@@ -162,7 +162,7 @@ def test_fetch_fo_bhavcopy_reads_cache_and_collapses_near_month(tmp_path, monkey
 
 def test_fetch_fo_bhavcopy_downloads_zip(tmp_path, monkeypatch):
     monkeypatch.setattr(fetch, "CACHE_ROOT", tmp_path)
-    d = date(2024, 1, 5)
+    d = date(2024, 8, 5)  # post-UDiff cutover -> UDiff archive URL
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w") as zf:
         zf.writestr(
@@ -177,7 +177,7 @@ def test_fetch_fo_bhavcopy_downloads_zip(tmp_path, monkeypatch):
 
     class FakeSession:
         def get(self, url: str, timeout: int):
-            assert "20240105" in url
+            assert "20240805" in url
             assert timeout == 10
             return Response()
 
