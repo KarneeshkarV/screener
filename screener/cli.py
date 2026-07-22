@@ -30,6 +30,7 @@ from screener.commands.minervini import mark_minervini
 from screener.commands.rs_breakout import rs_breakout
 from screener.commands.screen import screen
 from screener.commands.seasonality import seasonality
+from screener.commands.universes import universes_group
 from screener.config import load_config
 from screener.earnings_backtest.cli import earnings_backtest, earnings_pead
 from screener.logging_config import configure_logging
@@ -161,6 +162,7 @@ cli.add_command(institutional)
 cli.add_command(filings)
 cli.add_command(index_inclusion)
 cli.add_command(seasonality)
+cli.add_command(universes_group)
 cli.add_command(unusual_volume)
 cli.add_command(earnings_backtest)
 cli.add_command(earnings_pead)

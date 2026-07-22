@@ -129,6 +129,31 @@ def test_rolling_backtest_suppresses_entries_before_date_added(stub_fetcher_fact
     )
 
 
+def test_rolling_backtest_applies_snapshot_membership_windows(stub_fetcher_factory):
+    switched = date(2024, 2, 15)
+    fetcher = stub_fetcher_factory(
+        {"AAA": _trend_bars(), "BBB": _trend_bars(), "SPY": _trend_bars()}
+    )
+    cfg = _pit_cfg(
+        membership_windows=(
+            ("AAA", date(2024, 1, 1), switched),
+            ("BBB", switched, None),
+        )
+    )
+
+    result = run_rolling_backtest(
+        cfg,
+        fetcher,
+        start_date=date(2024, 2, 1),
+        end_date=date(2024, 3, 1),
+    )
+
+    aaa = result.selection[result.selection["ticker"] == "AAA"]
+    bbb = result.selection[result.selection["ticker"] == "BBB"]
+    assert not aaa.empty and (aaa["signal_date"] < switched).all()
+    assert not bbb.empty and (bbb["signal_date"] >= switched).all()
+
+
 def test_point_in_time_rejects_explicit_ticker_universe():
     runner = CliRunner()
     result = runner.invoke(

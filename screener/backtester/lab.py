@@ -8,7 +8,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, cast
+from typing import Any
 
 import click
 import pandas as pd
@@ -542,8 +542,8 @@ class LabHandler(BaseHTTPRequestHandler):
                 top=int(payload.get("top", 5)),
                 initial_capital=float(payload.get("initial_capital", 100_000.0)),
                 # Both are validated against {None, "sp500", "nifty50"} above.
-                universe=cast("UniverseName | None", universe),
-                compare_universe=cast("UniverseName | None", compare_universe),
+                universe=universe,
+                compare_universe=compare_universe,
             )
             body = json.dumps(data, default=_json_default).encode()
             self._send(HTTPStatus.OK, body, "application/json")

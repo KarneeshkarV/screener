@@ -42,6 +42,12 @@ class BacktestConfig(BaseModel):
     tickers: Optional[tuple[str, ...]] = None
     universe_file: Optional[str] = None
     membership_added: tuple[tuple[str, date], ...] = ()
+    membership_windows: tuple[tuple[str, date, date | None], ...] = ()
+    dynamic_universe_size: int | None = None
+    dynamic_universe_lookback: int = Field(default=60, ge=2)
+    dynamic_universe_rebalance: Literal["daily", "weekly", "monthly", "quarterly"] = (
+        "monthly"
+    )
     max_universe: int = 200
 
     # Signals

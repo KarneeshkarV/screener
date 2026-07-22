@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 import json
+import hashlib
 import logging
 from pathlib import Path
-from typing import Literal, Optional
+import tomllib
+from typing import Any, Optional, cast
 import warnings
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, field_validator
 import requests
+import yaml  # type: ignore[import-untyped]
 
 from screener.cache import is_fresh
 from screener.resilience import call_with_resilience
@@ -23,7 +27,63 @@ LOG = logging.getLogger(__name__)
 
 CACHE_DIR = Path.home() / ".screener" / "universes"
 _SP500_CHANGES_CACHE_TTL_SECONDS = 24 * 60 * 60
-UniverseName = Literal["sp500", "nifty50", "nifty500"]
+UniverseName = str
+
+
+@dataclass(frozen=True)
+class UniverseDefinition:
+    """Metadata and loader for a named current-constituent universe."""
+
+    name: str
+    market: str
+    benchmark: str
+    loader: Callable[[], tuple[list[str], str]]
+
+
+@dataclass(frozen=True)
+class UniverseSelection:
+    """Resolved universe plus optional point-in-time selection policy.
+
+    ``membership_windows`` contains half-open ``[start, end)`` eligibility
+    intervals. ``dynamic_*`` fields request a lagged ADV-ranked universe that
+    is recomputed by the rolling engine on each configured rebalance date.
+    """
+
+    name: str
+    market: str
+    benchmark: str | None
+    symbols: tuple[str, ...]
+    source: str
+    membership_windows: tuple[tuple[str, date, date | None], ...] = ()
+    dynamic_size: int | None = None
+    dynamic_lookback: int = 60
+    dynamic_rebalance: str = "monthly"
+
+
+_UNIVERSE_REGISTRY: dict[str, UniverseDefinition] = {}
+
+
+def register_universe(definition: UniverseDefinition) -> None:
+    """Register a named universe, rejecting accidental duplicate providers."""
+    key = definition.name.strip().lower()
+    if not key:
+        raise ValueError("universe name must not be empty")
+    if key in _UNIVERSE_REGISTRY:
+        raise ValueError(f"universe already registered: {key}")
+    _UNIVERSE_REGISTRY[key] = definition
+
+
+def available_universes() -> tuple[str, ...]:
+    """Return built-in universe names in deterministic order."""
+    return tuple(sorted(_UNIVERSE_REGISTRY))
+
+
+def get_universe_definition(name: str) -> UniverseDefinition:
+    try:
+        return _UNIVERSE_REGISTRY[name.strip().lower()]
+    except KeyError as exc:
+        choices = ", ".join(available_universes())
+        raise ValueError(f"unknown universe: {name}; built-ins: {choices}") from exc
 
 
 class UniverseSource(str, Enum):
@@ -249,6 +309,7 @@ def load_current_universe(
       emits a loud warning that the result is survivorship-biased and NOT
       point-in-time, so callers are not silently misled.
     """
+    name = name.strip().lower()
     as_of = as_of or date.today()
     is_past = as_of < date.today()
     if use_cache:
@@ -272,16 +333,13 @@ def load_current_universe(
                 if is_past and not point_in_time:
                     _warn_not_point_in_time(name, as_of)
                 return universe
-    if name == "sp500":
+    normalized_name = name.strip().lower()
+    if normalized_name == "sp500":
         symbols, source, point_in_time = _fetch_sp500_pit(as_of, use_cache=use_cache)
-    elif name == "nifty50":
-        symbols, source = _fetch_nifty50()
-        point_in_time = not is_past
-    elif name == "nifty500":
-        symbols, source = _fetch_nifty500()
-        point_in_time = not is_past
     else:
-        raise ValueError(f"unknown universe: {name}")
+        definition = get_universe_definition(normalized_name)
+        symbols, source = definition.loader()
+        point_in_time = not is_past
     if is_past and not point_in_time:
         _warn_not_point_in_time(name, as_of)
     write_metadata = (
@@ -562,6 +620,57 @@ def _fetch_nifty500() -> tuple[list[str], str]:
     return _dedupe([f"{s}.NS" for s in symbols]), _NIFTY500_SOURCE
 
 
+_SENSEX_SOURCE = "https://en.wikipedia.org/wiki/List_of_BSE_SENSEX_companies"
+
+
+def _fetch_sensex() -> tuple[list[str], str]:
+    """Load current Sensex constituents in yfinance's ``.BO`` vocabulary.
+
+    BSE's public constituent page is bot-protected and does not expose a stable
+    documented API. This free adapter therefore uses the auditable Wikipedia
+    table and records that source explicitly; custom/provider snapshots can be
+    used when licensed BSE data is available.
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+        )
+    }
+    resp = call_with_resilience(
+        "wikipedia",
+        "sensex constituents",
+        lambda: requests.get(_SENSEX_SOURCE, headers=headers, timeout=30),
+        fallback=None,
+    )
+    if resp is None:
+        raise RuntimeError("Sensex constituents unavailable")
+    resp.raise_for_status()
+    from io import StringIO
+
+    tables = pd.read_html(StringIO(resp.text))
+    table = next((df for df in tables if "Symbol" in df.columns), None)
+    if table is None:
+        raise RuntimeError("Sensex constituents table missing Symbol column")
+    if "Entry date" in table.columns:
+        # The public table may stage an announced replacement before its
+        # effective date, temporarily showing both the incoming and outgoing
+        # name. Do not admit the future constituent early.
+        entry_dates = pd.to_datetime(
+            table["Entry date"].astype(str).str.replace(r"\[.*", "", regex=True),
+            errors="coerce",
+            dayfirst=True,
+        )
+        table = table[entry_dates.isna() | (entry_dates.dt.date <= date.today())]
+    symbols = table["Symbol"].dropna().astype(str).str.strip().str.upper().tolist()
+    symbols = [symbol for symbol in symbols if symbol.endswith(".BO")]
+    if not 25 <= len(set(symbols)) <= 35:
+        raise RuntimeError(
+            f"Sensex constituent count failed validation: {len(set(symbols))}"
+        )
+    return _dedupe(symbols), _SENSEX_SOURCE
+
+
 def _dedupe(symbols: list[str]) -> list[str]:
     return list(dict.fromkeys(s for s in symbols if s))
 
@@ -617,3 +726,315 @@ def load_sp500_membership(
         )
     )
     return membership
+
+
+def _load_definition_file(path: Path) -> tuple[Mapping[str, Any], str]:
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"could not read universe config {path}: {exc}") from exc
+    digest = hashlib.sha256(raw).hexdigest()[:12]
+    try:
+        if path.suffix.lower() == ".toml":
+            payload = tomllib.loads(raw.decode())
+        elif path.suffix.lower() in {".yaml", ".yml"}:
+            payload = yaml.safe_load(raw.decode()) or {}
+        elif path.suffix.lower() == ".json":
+            payload = json.loads(raw)
+        else:
+            raise ValueError("universe config must be TOML, YAML, or JSON")
+    except (
+        UnicodeDecodeError,
+        tomllib.TOMLDecodeError,
+        yaml.YAMLError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise ValueError(f"could not parse universe config {path}: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("universe config must contain a top-level mapping")
+    return payload, digest
+
+
+def _config_entry(name: str, config_path: Path) -> tuple[Mapping[str, Any], str]:
+    payload, digest = _load_definition_file(config_path)
+    entries = payload.get("universes", payload)
+    if not isinstance(entries, Mapping) or name not in entries:
+        raise ValueError(f"universe {name!r} not found in {config_path}")
+    entry = entries[name]
+    if not isinstance(entry, Mapping):
+        raise ValueError(f"universe {name!r} must be a mapping")
+    return entry, digest
+
+
+def configured_universe_names(config_path: str | Path) -> tuple[str, ...]:
+    """Return custom universe names declared by a config file."""
+    payload, _ = _load_definition_file(Path(config_path))
+    entries = payload.get("universes", payload)
+    if not isinstance(entries, Mapping):
+        raise ValueError("universes must be a mapping")
+    return tuple(sorted(str(name) for name in entries))
+
+
+def sync_universe_snapshot(
+    name: str,
+    *,
+    output: str | Path,
+    as_of: date | None = None,
+    use_cache: bool = False,
+) -> tuple[Path, bool, int]:
+    """Append a complete dated snapshot when named membership has changed.
+
+    Returns ``(path, changed, symbol_count)``. Repeated runs with unchanged
+    membership are idempotent, making the function suitable for cron or CI.
+    """
+    effective = as_of or date.today()
+    loaded = load_current_universe(name, as_of=effective, use_cache=use_cache)
+    path = Path(output).expanduser()
+    existing = pd.DataFrame(columns=["effective_date", "symbol"])
+    if path.exists():
+        existing = pd.read_csv(path, dtype=str)
+        required = {"effective_date", "symbol"}
+        if not required.issubset(existing.columns):
+            raise ValueError(
+                f"snapshot CSV {path} requires columns: effective_date, symbol"
+            )
+    normalized = tuple(dict.fromkeys(symbol.strip() for symbol in loaded.symbols))
+    if not existing.empty:
+        latest_date = str(existing["effective_date"].max())
+        latest = tuple(
+            existing.loc[existing["effective_date"] == latest_date, "symbol"]
+            .dropna()
+            .astype(str)
+            .tolist()
+        )
+        if set(latest) == set(normalized):
+            return path, False, len(normalized)
+        if effective < date.fromisoformat(latest_date):
+            raise ValueError(
+                f"cannot append {effective.isoformat()} before latest snapshot {latest_date}"
+            )
+    addition = pd.DataFrame(
+        {
+            "effective_date": [effective.isoformat()] * len(normalized),
+            "symbol": normalized,
+        }
+    )
+    if not existing.empty:
+        existing = existing[existing["effective_date"] != effective.isoformat()]
+    combined = pd.concat([existing, addition], ignore_index=True)
+    combined = combined.sort_values(["effective_date", "symbol"], kind="stable")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    combined.to_csv(temporary, index=False)
+    temporary.replace(path)
+    return path, True, len(normalized)
+
+
+def _normalized_symbols(values: Any) -> tuple[str, ...]:
+    if not isinstance(values, (list, tuple)):
+        raise ValueError("symbols must be a list")
+    symbols = tuple(
+        dict.fromkeys(
+            str(value).strip().upper() for value in values if str(value).strip()
+        )
+    )
+    if not symbols:
+        raise ValueError("universe symbols must not be empty")
+    return symbols
+
+
+def _read_snapshot_source(source: str, *, base_dir: Path) -> pd.DataFrame:
+    if source.startswith(("https://", "http://")):
+        resp = requests.get(source, timeout=30)
+        resp.raise_for_status()
+        from io import StringIO
+
+        return pd.read_csv(StringIO(resp.text))
+    path = Path(source)
+    if not path.is_absolute():
+        path = base_dir / path
+    return pd.read_csv(path)
+
+
+def _snapshot_rows(
+    entry: Mapping[str, Any], *, base_dir: Path, as_of: date
+) -> list[tuple[date, tuple[str, ...]]]:
+    raw_snapshots = entry.get("snapshots")
+    rows: list[tuple[date, tuple[str, ...]]] = []
+    if isinstance(raw_snapshots, Mapping):
+        for raw_date, raw_symbols in raw_snapshots.items():
+            snapshot_date = date.fromisoformat(str(raw_date))
+            if snapshot_date <= as_of:
+                rows.append((snapshot_date, _normalized_symbols(raw_symbols)))
+    else:
+        source = entry.get("path") or entry.get("url")
+        if not source:
+            raise ValueError("snapshot universe requires snapshots, path, or url")
+        frame = _read_snapshot_source(str(source), base_dir=base_dir)
+        date_col = next(
+            (
+                column
+                for column in ("effective_date", "snapshot_date", "date")
+                if column in frame.columns
+            ),
+            None,
+        )
+        if date_col is None or "symbol" not in frame.columns:
+            raise ValueError(
+                "snapshot CSV requires symbol and effective_date/snapshot_date columns"
+            )
+        frame = frame.copy()
+        frame[date_col] = pd.to_datetime(frame[date_col], errors="coerce")
+        frame = frame[frame[date_col].notna()]
+        for timestamp, group in frame.groupby(date_col, sort=True):
+            snapshot_date = pd.Timestamp(cast(Any, timestamp)).date()
+            if snapshot_date <= as_of:
+                rows.append(
+                    (snapshot_date, _normalized_symbols(group["symbol"].tolist()))
+                )
+    rows.sort(key=lambda row: row[0])
+    if not rows:
+        raise ValueError("snapshot universe has no snapshots on or before --end")
+    return rows
+
+
+def _windows_from_snapshots(
+    snapshots: list[tuple[date, tuple[str, ...]]],
+) -> tuple[tuple[str, date, date | None], ...]:
+    windows: list[tuple[str, date, date | None]] = []
+    for index, (effective, symbols) in enumerate(snapshots):
+        until = snapshots[index + 1][0] if index + 1 < len(snapshots) else None
+        windows.extend((symbol, effective, until) for symbol in symbols)
+    return tuple(windows)
+
+
+def load_universe_selection(
+    name: str,
+    *,
+    market: str,
+    as_of: date,
+    config_path: str | Path | None = None,
+    use_cache: bool = True,
+    dynamic_base: str | None = None,
+    dynamic_size: int = 100,
+    dynamic_lookback: int = 60,
+    dynamic_rebalance: str = "monthly",
+) -> UniverseSelection:
+    """Resolve a built-in, custom, or lagged rule-based universe."""
+    key = name.strip().lower()
+    if key == "dynamic":
+        base = dynamic_base or ("nifty500" if market == "india" else "sp500")
+        loaded = load_current_universe(base, as_of=as_of, use_cache=use_cache)
+        definition = get_universe_definition(base)
+        return UniverseSelection(
+            name="dynamic",
+            market=market,
+            benchmark=definition.benchmark,
+            symbols=loaded.symbols,
+            source=f"dynamic base={base}; {loaded.source}",
+            dynamic_size=_validate_dynamic_size(dynamic_size),
+            dynamic_lookback=_validate_dynamic_lookback(dynamic_lookback),
+            dynamic_rebalance=_validate_rebalance(dynamic_rebalance),
+        )
+    if key in _UNIVERSE_REGISTRY:
+        definition = get_universe_definition(key)
+        if definition.market != market:
+            raise ValueError(
+                f"universe {key!r} belongs to market {definition.market!r}, not {market!r}"
+            )
+        loaded = load_current_universe(key, as_of=as_of, use_cache=use_cache)
+        return UniverseSelection(
+            name=key,
+            market=definition.market,
+            benchmark=definition.benchmark,
+            symbols=loaded.symbols,
+            source=f"{loaded.source}; cache={loaded.cached_path}",
+        )
+    if config_path is None:
+        choices = ", ".join((*available_universes(), "dynamic"))
+        raise ValueError(
+            f"custom universe {key!r} requires --universe-config; built-ins: {choices}"
+        )
+    path = Path(config_path)
+    entry, digest = _config_entry(key, path)
+    configured_market = str(entry.get("market", market)).strip().lower()
+    if configured_market != market:
+        raise ValueError(
+            f"universe {key!r} belongs to market {configured_market!r}, not {market!r}"
+        )
+    kind = str(entry.get("type", "static")).strip().lower()
+    benchmark = str(entry["benchmark"]).strip() if entry.get("benchmark") else None
+    source = f"config:{path}#{key}@sha256:{digest}"
+    if kind == "static":
+        symbols = _normalized_symbols(entry.get("symbols"))
+        return UniverseSelection(key, market, benchmark, symbols, source)
+    if kind == "snapshots":
+        snapshots = _snapshot_rows(entry, base_dir=path.parent, as_of=as_of)
+        symbols = tuple(
+            dict.fromkeys(symbol for _, members in snapshots for symbol in members)
+        )
+        return UniverseSelection(
+            key,
+            market,
+            benchmark,
+            symbols,
+            source,
+            membership_windows=_windows_from_snapshots(snapshots),
+        )
+    if kind == "dynamic":
+        if entry.get("symbols") is not None:
+            symbols = _normalized_symbols(entry.get("symbols"))
+        elif entry.get("path"):
+            raw_path = Path(str(entry["path"]))
+            if not raw_path.is_absolute():
+                raw_path = path.parent / raw_path
+            symbols = tuple(read_universe_file(raw_path, comment_prefixes=("#",)))
+        else:
+            base = str(entry.get("base", "")).strip().lower()
+            if not base:
+                raise ValueError("dynamic universe requires symbols, path, or base")
+            symbols = load_current_universe(
+                base, as_of=as_of, use_cache=use_cache
+            ).symbols
+        return UniverseSelection(
+            key,
+            market,
+            benchmark,
+            symbols,
+            source,
+            dynamic_size=_validate_dynamic_size(int(entry.get("size", dynamic_size))),
+            dynamic_lookback=_validate_dynamic_lookback(
+                int(entry.get("lookback", dynamic_lookback))
+            ),
+            dynamic_rebalance=_validate_rebalance(
+                str(entry.get("rebalance", dynamic_rebalance))
+            ),
+        )
+    raise ValueError(f"unsupported universe type {kind!r}")
+
+
+def _validate_dynamic_size(value: int) -> int:
+    if value <= 0:
+        raise ValueError("dynamic universe size must be > 0")
+    return value
+
+
+def _validate_dynamic_lookback(value: int) -> int:
+    if value < 2:
+        raise ValueError("dynamic universe lookback must be >= 2")
+    return value
+
+
+def _validate_rebalance(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized not in {"daily", "weekly", "monthly", "quarterly"}:
+        raise ValueError(
+            "dynamic universe rebalance must be daily, weekly, monthly, or quarterly"
+        )
+    return normalized
+
+
+register_universe(UniverseDefinition("sp500", "us", "SPY", _fetch_sp500))
+register_universe(UniverseDefinition("nifty50", "india", "^NSEI", _fetch_nifty50))
+register_universe(UniverseDefinition("nifty500", "india", "^NSEI", _fetch_nifty500))
+register_universe(UniverseDefinition("sensex", "india", "^BSESN", _fetch_sensex))

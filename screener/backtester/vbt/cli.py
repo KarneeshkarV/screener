@@ -55,7 +55,7 @@ from screener.backtester.vbt.walk_forward import (
     run_walk_forward_sweep as _run_walk_forward_sweep,
 )
 from screener.markets import get_market, get_price_fetcher, market_option
-from screener.universes import UniverseName, load_current_universe
+from screener.universes import available_universes, load_current_universe
 
 
 def parse_int_list(raw: str, *, name: str) -> list[int]:
@@ -291,7 +291,7 @@ def _run_cli_walk_forward(
 )
 @click.option(
     "--universe",
-    type=click.Choice(["sp500", "nifty50"]),
+    type=click.Choice(list(available_universes())),
     default=None,
     help="Current index universe. Defaults to sp500 for US and nifty50 for India.",
 )
@@ -497,10 +497,7 @@ def vbt_sweep(
             if line.strip() and not line.strip().startswith("#")
         ]
     else:
-        resolved_universe = cast(
-            UniverseName,
-            universe or market_meta.default_universe,
-        )
+        resolved_universe = universe or market_meta.default_universe
         loaded = load_current_universe(
             resolved_universe,
             as_of=end_date,

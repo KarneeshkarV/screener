@@ -49,7 +49,7 @@ from screener.universes import UniverseName, load_current_universe
 
 
 def _market_to_universe(market: str) -> UniverseName:
-    return cast(UniverseName, get_market(market).default_universe)
+    return get_market(market).default_universe
 
 
 def _crossed_above_np(a: np.ndarray, b: np.ndarray) -> np.ndarray:
