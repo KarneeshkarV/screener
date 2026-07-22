@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from screener import universes
+from screener.backtester.core import _resolve_universe
 from screener.backtester.rolling_candidates import _build_rolling_candidate_matrices
 
 
@@ -191,3 +192,43 @@ def test_snapshot_sync_is_idempotent_and_appends_changes(monkeypatch, tmp_path) 
     assert set(frame["effective_date"]) == {"2024-01-01", "2024-03-01"}
     latest = frame[frame["effective_date"] == "2024-03-01"]
     assert set(latest["symbol"]) == {"BBB", "CCC"}
+
+
+def test_resolve_universe_does_not_cap_dynamic_or_snapshot_pools() -> None:
+    """Dynamic/snapshot selection runs downstream; max_universe must not
+    silently truncate the candidate pool first (regression)."""
+    tickers = tuple(f"NSE:T{i}" for i in range(500))
+
+    dynamic_cfg = SimpleNamespace(
+        tickers=tickers,
+        universe_file=None,
+        membership_windows=(),
+        dynamic_universe_size=100,
+        max_universe=200,
+    )
+    symbols, warnings = _resolve_universe(dynamic_cfg)
+    assert len(symbols) == 500
+    assert warnings == []
+
+    snapshot_cfg = SimpleNamespace(
+        tickers=tickers,
+        universe_file=None,
+        membership_windows=(("NSE:T0", date(2024, 1, 1), None),),
+        dynamic_universe_size=None,
+        max_universe=200,
+    )
+    symbols, warnings = _resolve_universe(snapshot_cfg)
+    assert len(symbols) == 500
+    assert warnings == []
+
+    # Plain universes keep the existing cap + warning behavior.
+    plain_cfg = SimpleNamespace(
+        tickers=tickers,
+        universe_file=None,
+        membership_windows=(),
+        dynamic_universe_size=None,
+        max_universe=200,
+    )
+    symbols, warnings = _resolve_universe(plain_cfg)
+    assert len(symbols) == 200
+    assert warnings == ["capped universe from 500 to 200 tickers"]
