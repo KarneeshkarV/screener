@@ -42,6 +42,7 @@ from screener.backtester.models import (
 )
 from screener.backtester.pine import parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.backtester.sessions import market_timezone
 from screener.backtester.sizing import entry_budget_for
 from screener.regime import classify_regimes
 from screener.options.backtest import merge_referenced_options
@@ -568,7 +569,12 @@ def run_rolling_backtest(
         selection_rows=setup.selection_rows,
         warnings=warnings,
     )
-    run_day_loop(setup.master_dates, setup.day_loop, source)
+    run_day_loop(
+        setup.master_dates,
+        setup.day_loop,
+        source,
+        market_tz=market_timezone(cfg.market) if cfg.interval != "1d" else None,
+    )
 
     _force_close_open_slots(
         slot_states=setup.slot_states,

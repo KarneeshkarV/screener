@@ -19,6 +19,37 @@ from pydantic import BaseModel, ConfigDict
 
 Side = Literal["buy", "sell"]
 
+# Per-interval default flat commission (bps), applied by the CLI when
+# ``--commission-bps`` is not given. Commission is charged per fill, so finer
+# intervals already scale the total drag through fill count; the per-fill
+# default therefore stays 0.0 at every interval (the legacy behaviour).
+DEFAULT_COMMISSION_BPS_BY_INTERVAL: dict[str, float] = {
+    "1d": 0.0,
+    "1h": 0.0,
+    "30m": 0.0,
+    "15m": 0.0,
+    "5m": 0.0,
+    "1m": 0.0,
+}
+
+
+def default_commission_bps(interval: str) -> float:
+    """Default per-fill flat commission (bps) for ``interval``."""
+    return DEFAULT_COMMISSION_BPS_BY_INTERVAL.get(interval, 0.0)
+
+
+def default_spread_window(interval: str) -> int:
+    """Rolling window (bars) for the Corwin-Schultz half-spread estimator.
+
+    The daily default (21 bars ≈ one trading month) is preserved exactly;
+    intraday intervals scale by bars-per-session so the estimator averages
+    over the same ~21 sessions regardless of bar size.
+    """
+    from screener.backtester.metrics import periods_per_year_for_interval
+
+    bars_per_session = max(periods_per_year_for_interval(interval) // 252, 1)
+    return 21 * bars_per_session
+
 
 @runtime_checkable
 class CostModel(Protocol):

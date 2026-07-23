@@ -24,6 +24,12 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 
+from screener.backtester.bar_store import (
+    BARS_ROOT,
+    bar_path as _bar_path,
+    load_bars as _load_store_bars,
+    save_bars as _save_store_bars,
+)
 from screener.backtester.price_cache import (
     CACHE_DIR,
     FMP_CACHE_DIR,
@@ -36,6 +42,7 @@ from screener.backtester.price_cache import (
 from screener.backtester.price_frames import (
     CORPORATE_ACTION_COLUMNS as CORPORATE_ACTION_COLUMNS,
     OHLCV_COLUMNS,
+    RESAMPLE_MINUTES_FROM_1M,
     apply_splits_only_adjustment as apply_splits_only_adjustment,
     empty_ohlcv_frame as _empty_ohlcv_frame,
     frame_has_range as _has_range,
@@ -43,9 +50,11 @@ from screener.backtester.price_frames import (
     merge_price_frames as _merge_cached,
     naive_normalized_index,
     normalize_price_frame,
+    resample_intraday_bars as _resample_intraday_bars,
     split_yfinance_download as _split_download,
     warn_unadjustable_fmp_frames as warn_unadjustable_fmp_frames,
 )
+from screener.backtester.sessions import market_timezone as _market_timezone
 from screener.resilience import call_with_resilience
 
 # Re-exported for backward compatibility: several modules and the docs import
@@ -147,7 +156,7 @@ class PriceFetcher(Protocol):
 
 
 class YFinancePriceFetcher:
-    """Fetches daily OHLCV from yfinance with a parquet on-disk cache.
+    """Fetches daily OHLCV from yfinance with an on-disk parquet cache.
 
     Two regimes are supported:
 
@@ -161,9 +170,13 @@ class YFinancePriceFetcher:
         can credit cash dividends explicitly and compute split-adjusted
         prices on demand via ``_normalize_frame``.
 
-    Cached parquet files are keyed by ticker name; switching regimes will not
-    collide because the regime is encoded in an optional ``_meta`` suffix
-    when ``auto_adjust=False`` is selected.
+    Daily bars use the legacy flat cache (``~/.screener/prices``) keyed by
+    ticker; switching regimes does not collide because the regime is encoded
+    in an optional ``__raw`` suffix. Intraday bars use the interval-partitioned
+    bar store (``~/.screener/bars/{market}/{interval}/{symbol}.parquet``, see
+    :mod:`screener.backtester.bar_store`): one stored 1m series serves
+    5m/15m/30m/1h requests via local session-anchored resampling instead of
+    separate per-interval caches.
     """
 
     def __init__(
@@ -174,6 +187,8 @@ class YFinancePriceFetcher:
         refresh: bool = False,
         max_workers: int = 4,
         interval: str = "1d",
+        market: str = "us",
+        bars_root: Optional[Path] = None,
     ) -> None:
         self.cache_dir = cache_dir or CACHE_DIR
         self.auto_adjust = bool(auto_adjust)
@@ -181,12 +196,99 @@ class YFinancePriceFetcher:
         self.refresh = bool(refresh)
         self.max_workers = max(1, int(max_workers))
         self.interval = str(interval)
+        self.market = str(market)
+        self.bars_root = bars_root or BARS_ROOT
 
     def _cache_key(self, ticker: str) -> str:
-        # Intraday intervals get their own cache namespace so the existing daily
-        # parquet files stay valid and are never polluted with 15m/1h bars.
+        # Daily cache keys stay flat (``AAPL`` / ``AAPL__raw``). Intraday bars
+        # moved to the bar store; the key remains only for the daily path.
         base = ticker if self.interval == "1d" else f"{ticker}__{self.interval}"
         return base if self.auto_adjust else f"{base}__raw"
+
+    # ── bar-store I/O (intraday) vs legacy flat cache (daily) ────────────
+    def _uses_bar_store(self) -> bool:
+        return self.interval != "1d"
+
+    def _load_stored(self, ticker: str, cache_key: str) -> Optional[pd.DataFrame]:
+        if self._uses_bar_store():
+            return _load_store_bars(
+                ticker,
+                market=self.market,
+                interval=self.interval,
+                raw=not self.auto_adjust,
+                root=self.bars_root,
+            )
+        return _load_cached(cache_key, self.cache_dir, self.interval)
+
+    def _stored_path(self, ticker: str, cache_key: str) -> Path:
+        if self._uses_bar_store():
+            return _bar_path(
+                ticker,
+                market=self.market,
+                interval=self.interval,
+                raw=not self.auto_adjust,
+                root=self.bars_root,
+            )
+        return _cache_path(cache_key, self.cache_dir)
+
+    def _save_stored(self, ticker: str, cache_key: str, frame: pd.DataFrame) -> None:
+        if self._uses_bar_store():
+            _save_store_bars(
+                ticker,
+                frame,
+                market=self.market,
+                interval=self.interval,
+                raw=not self.auto_adjust,
+                root=self.bars_root,
+            )
+        else:
+            _save_cache(cache_key, frame, self.cache_dir)
+
+    def _serve_from_stored_1m(
+        self, ticker: str, start_ts: pd.Timestamp, end_ts: pd.Timestamp
+    ) -> Optional[pd.DataFrame]:
+        """Resample the stored 1m series when it covers the request window.
+
+        Returns ``None`` when the 1m archive is missing or does not cover the
+        window, so the caller falls back to a native-interval download.
+        """
+        if (
+            self.refresh
+            or self.interval == "1m"
+            or self.interval not in RESAMPLE_MINUTES_FROM_1M
+        ):
+            return None
+        one_m = _load_store_bars(
+            ticker,
+            market=self.market,
+            interval="1m",
+            raw=not self.auto_adjust,
+            root=self.bars_root,
+        )
+        if one_m is None or one_m.empty:
+            return None
+        if not _has_range(one_m, start_ts, end_ts, "1m"):
+            return None
+        # Same tail-freshness discipline as the regular cache path: a 1m
+        # archive that covers the window but hasn't recorded recent sessions
+        # must not serve a near-present request stale.
+        if _needs_tail_refresh(
+            _bar_path(
+                ticker,
+                market=self.market,
+                interval="1m",
+                raw=not self.auto_adjust,
+                root=self.bars_root,
+            ),
+            end_ts,
+        ):
+            return None
+        resampled = _resample_intraday_bars(
+            one_m, self.interval, _market_timezone(self.market)
+        )
+        return resampled.loc[
+            (resampled.index >= start_ts) & (resampled.index <= end_ts)
+        ]
 
     # Approximate yfinance intraday history caps, in calendar days.
     _INTRADAY_CAP_DAYS = {
@@ -253,11 +355,11 @@ class YFinancePriceFetcher:
 
         for ticker in tickers:
             cache_key = self._cache_key(ticker)
-            cached = (
-                None
-                if self.refresh
-                else _load_cached(cache_key, self.cache_dir, self.interval)
-            )
+            served = self._serve_from_stored_1m(ticker, start_ts, end_ts)
+            if served is not None:
+                results[ticker] = served
+                continue
+            cached = None if self.refresh else self._load_stored(ticker, cache_key)
             if cached is not None and not cached.empty:
                 cached_by_ticker[ticker] = cached
             if (
@@ -265,7 +367,7 @@ class YFinancePriceFetcher:
                 and cached is not None
                 and _has_range(cached, start_ts, end_ts, self.interval)
             ):
-                if _needs_tail_refresh(_cache_path(cache_key, self.cache_dir), end_ts):
+                if _needs_tail_refresh(self._stored_path(ticker, cache_key), end_ts):
                     tail_start = max(cached.index) - pd.Timedelta(days=7)
                     missing.setdefault((tail_start, end_ts), []).append(ticker)
                     tail_refresh_tickers.add(ticker)
@@ -369,7 +471,7 @@ class YFinancePriceFetcher:
             if not merged.empty and (
                 not norm.empty or ticker not in tail_refresh_tickers
             ):
-                _save_cache(cache_key, merged, self.cache_dir)
+                self._save_stored(ticker, cache_key, merged)
             results[ticker] = merged.loc[
                 (merged.index >= start_ts) & (merged.index <= end_ts)
             ]
@@ -615,12 +717,13 @@ def build_price_fetcher(
     auto_adjust: bool = True,
     refresh: bool = False,
     interval: str = "1d",
+    market: str = "us",
 ) -> PriceFetcher:
     _load_env_file()
     resolved = (provider or os.environ.get("SCREENER_PRICE_PROVIDER") or "auto").lower()
     if resolved in {"auto", "default"}:
         primary = YFinancePriceFetcher(
-            auto_adjust=auto_adjust, refresh=refresh, interval=interval
+            auto_adjust=auto_adjust, refresh=refresh, interval=interval, market=market
         )
         if os.environ.get("FMP_API_KEY"):
             fallback = FMPPriceFetcher(
@@ -630,7 +733,7 @@ def build_price_fetcher(
         return primary
     if resolved in {"yf", "yfinance"}:
         return YFinancePriceFetcher(
-            auto_adjust=auto_adjust, refresh=refresh, interval=interval
+            auto_adjust=auto_adjust, refresh=refresh, interval=interval, market=market
         )
     if resolved in {"fmp", "financialmodelingprep"}:
         return FMPPriceFetcher(

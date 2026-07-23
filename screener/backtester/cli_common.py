@@ -290,13 +290,22 @@ def _opt_trailing_stop(mode: str) -> OptionDecorator:
 
 def _opt_slippage_bps(mode: str) -> OptionDecorator:
     return click.option(
-        "--slippage-bps", type=float, default=0.0, help="Slippage per fill (bps)."
+        "--slippage-bps",
+        type=float,
+        default=None,
+        help=(
+            "Slippage per fill (bps). Default: 0 for 1d; interval-aware for "
+            "intraday (2/3/5/7/10 bps at 1h/30m/15m/5m/1m)."
+        ),
     )
 
 
 def _opt_commission_bps(mode: str) -> OptionDecorator:
     return click.option(
-        "--commission-bps", type=float, default=0.0, help="Commission per fill (bps)."
+        "--commission-bps",
+        type=float,
+        default=None,
+        help="Commission per fill (bps). Default: 0.",
     )
 
 
@@ -635,7 +644,31 @@ def parse_ticker_list(tickers: str | None) -> tuple[str, ...] | None:
     return tuple(t.strip() for t in tickers.split(",") if t.strip())
 
 
-def build_backtest_fetcher(ctx_obj: Any, *, price_adjustment: str, interval: str):
+def resolve_interval_cost_defaults(
+    interval: str,
+    slippage_bps: float | None,
+    commission_bps: float | None,
+) -> tuple[float, float]:
+    """Apply per-interval cost defaults when the CLI flags were left unset.
+
+    Daily defaults stay 0.0 (legacy behaviour, byte-identical runs); intraday
+    slippage defaults scale up as bars get finer because the quoted spread is
+    a larger fraction of a fine bar's range (see
+    :data:`screener.backtester.slippage.DEFAULT_SLIPPAGE_BPS_BY_INTERVAL`).
+    """
+    from screener.backtester.costs import default_commission_bps
+    from screener.backtester.slippage import default_slippage_bps
+
+    if slippage_bps is None:
+        slippage_bps = default_slippage_bps(interval)
+    if commission_bps is None:
+        commission_bps = default_commission_bps(interval)
+    return float(slippage_bps), float(commission_bps)
+
+
+def build_backtest_fetcher(
+    ctx_obj: Any, *, price_adjustment: str, interval: str, market: str = "us"
+):
     """Resolve the shared price fetcher exactly as both commands do."""
     from screener.backtester.data import build_price_fetcher
     from screener.markets import get_price_fetcher
@@ -645,6 +678,7 @@ def build_backtest_fetcher(ctx_obj: Any, *, price_adjustment: str, interval: str
         builder=build_price_fetcher,
         auto_adjust=price_adjustment == "full",
         interval=interval,
+        market=market,
     )
 
 

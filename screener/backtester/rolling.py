@@ -18,6 +18,7 @@ from screener.backtester.cli_common import (
     parse_partial_exits,
     parse_ticker_list,
     referenced_fundamental_fields,
+    resolve_interval_cost_defaults,
     resolve_min_filters,
     resolve_report_path,
     resolve_strategy_exprs,
@@ -315,6 +316,9 @@ def backtest_rolling(
     if needed_fundamentals and fundamentals_provider is None:
         fundamentals_provider = "fmp" if market == "us" else "openscreener"
 
+    slippage_bps, commission_bps = resolve_interval_cost_defaults(
+        interval, slippage_bps, commission_bps
+    )
     slip_model = build_slippage_model(
         slippage_model,
         slippage_bps,
@@ -490,6 +494,7 @@ def backtest_rolling(
         click.get_current_context().obj,
         price_adjustment=price_adjustment,
         interval=interval,
+        market=market,
     )
     result = run_rolling_backtest(
         cfg, fetcher, start_date=start_date, end_date=end_date

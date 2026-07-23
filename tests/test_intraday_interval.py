@@ -18,11 +18,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from screener.backtester.bar_store import save_bars
 from screener.backtester.data import (
     YFinancePriceFetcher,
     _naive_normalized_index,
     _normalize_frame,
-    _save_cache,
 )
 from screener.backtester.historical import _warmup_days_for_interval
 from screener.backtester.metrics import (
@@ -100,25 +100,36 @@ def test_normalize_frame_does_not_collapse_intraday_bars():
     assert len(daily) == 2  # one surviving bar per calendar day (keep last)
 
 
-def test_cache_key_namespaces_intraday_but_not_daily():
+def test_cache_key_stays_flat_for_daily_and_bar_store_covers_intraday(tmp_path):
     daily = YFinancePriceFetcher(interval="1d")
     assert daily._cache_key("AAPL") == "AAPL"
+    assert not daily._uses_bar_store()
 
     daily_raw = YFinancePriceFetcher(interval="1d", auto_adjust=False)
     assert daily_raw._cache_key("AAPL") == "AAPL__raw"
 
-    intraday = YFinancePriceFetcher(interval="15m")
-    assert intraday._cache_key("AAPL") == "AAPL__15m"
+    # Intraday intervals are served from the interval-partitioned bar store
+    # (~/.screener/bars/{market}/{interval}/{symbol}.parquet) instead of
+    # per-interval flat-cache keys.
+    intraday = YFinancePriceFetcher(interval="15m", bars_root=tmp_path)
+    assert intraday._uses_bar_store()
+    assert intraday._stored_path("AAPL", "") == tmp_path / "us" / "15m" / "AAPL.parquet"
 
-    intraday_raw = YFinancePriceFetcher(interval="15m", auto_adjust=False)
-    assert intraday_raw._cache_key("AAPL") == "AAPL__15m__raw"
+    intraday_raw = YFinancePriceFetcher(
+        interval="15m", auto_adjust=False, bars_root=tmp_path
+    )
+    assert intraday_raw._stored_path("AAPL", "") == (
+        tmp_path / "us" / "15m" / "AAPL__raw.parquet"
+    )
 
 
-def test_yfinance_intraday_fetch_includes_whole_end_date_from_cache(tmp_path):
-    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1h")
+def test_yfinance_intraday_fetch_includes_whole_end_date_from_bar_store(tmp_path):
+    fetcher = YFinancePriceFetcher(
+        cache_dir=tmp_path, interval="1h", bars_root=tmp_path
+    )
     index = pd.DatetimeIndex(["2026-07-01 13:30", "2026-07-01 14:30"])
     frame = _rising_frame(index, 100.0, 10_000.0)
-    _save_cache(fetcher._cache_key("AAPL"), frame, tmp_path)
+    save_bars("AAPL", frame, market="us", interval="1h", root=tmp_path)
 
     out = fetcher.fetch(["AAPL"], date(2026, 7, 1), date(2026, 7, 1))["AAPL"]
 
@@ -151,7 +162,9 @@ def test_yfinance_one_minute_downloads_are_chunked_and_stitched(tmp_path, monkey
         )
 
     monkeypatch.setattr(yf, "download", fake_download)
-    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1m", max_workers=1)
+    fetcher = YFinancePriceFetcher(
+        cache_dir=tmp_path, interval="1m", max_workers=1, bars_root=tmp_path
+    )
 
     out = fetcher.fetch(["AAA"], start, end)["AAA"]
 

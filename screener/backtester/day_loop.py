@@ -28,6 +28,20 @@ drives one ``CandidateSource`` and one ``DayLoop`` over a calendar:
         freed = day_loop.process_exits_for_day(day)
         source.after_exits(day, freed)         # engine-specific refill
 
+For intraday runs the "days" are bar timestamps and the driver becomes a
+*session loop*: the calendar is grouped into exchange sessions keyed on
+:func:`screener.backtester.sessions.is_session_last` (positional detection, so
+half-days end at their actual last bar and market hours are honoured by
+construction), and each session's last bar additionally runs
+:meth:`DayLoop.flatten_at_session_end` before the refill so ``intraday_only``
+portfolios are guaranteed flat at close:
+
+    for each session:
+        for each bar in session:
+            before_exits → process_exits_for_day
+            if session-last bar: flatten_at_session_end
+            after_exits
+
 The exit sequence per slot, per day, is invariant:
 
     dividends → partial exits → (full-close-by-partial check) → exit check
@@ -43,10 +57,11 @@ from typing import Iterable, Protocol
 
 import pandas as pd
 
-from screener.backtester.core import _SlotState, _close_slot_at_day
+from screener.backtester.core import _SlotState, _bar_label, _close_slot_at_day
 from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig
 from screener.backtester.portfolio import Portfolio
+from screener.backtester.sessions import is_session_last, market_timezone
 
 
 @dataclass(frozen=True)
@@ -112,6 +127,56 @@ class DayLoop:
                 freed.append(FreedSlot(slot_id=slot_id, state=state))
         return freed
 
+    def flatten_at_session_end(self, session_last_bar: pd.Timestamp) -> list[FreedSlot]:
+        """Force-flatten stragglers at a session's last bar (``intraday_only``).
+
+        Slot-level session exits fire inside ``_check_exit_at_bar`` whenever a
+        slot's own bars include a session-last bar; this driver-level pass is
+        the guarantee on top: any slot still open after the session's last
+        *calendar* bar is closed at its own last bar of that session with
+        reason ``"session"`` (a market-on-close flat), so an intraday-only run
+        never carries a position overnight. No-op unless ``cfg.intraday_only``.
+        """
+        if not self.cfg.intraday_only:
+            return []
+        session_last_bar = pd.Timestamp(session_last_bar)
+        tz = market_timezone(self.cfg.market)
+        target_session = session_last_bar.tz_localize("UTC").tz_convert(tz).date()
+        freed: list[FreedSlot] = []
+        for slot_id, state in list(self.slot_states.items()):
+            if state is None:
+                continue
+            bars = self.slot_bars[slot_id]
+            # bars.index is a sorted DatetimeIndex; searchsorted is O(log n).
+            pos = int(bars.index.searchsorted(session_last_bar, side="right")) - 1
+            if pos < state.entry_idx + 1:
+                continue
+            bar_ts = bars.index[pos]
+            if bar_ts.tz_localize("UTC").tz_convert(tz).date() != target_session:
+                continue  # no bar in this session; the end-of-run pass handles it
+            position = self.portfolio.get_position(state.ticker)
+            if position is None:
+                self.slot_states[slot_id] = None
+                freed.append(FreedSlot(slot_id=slot_id, state=state))
+                continue
+            fill = self.fill_model.exit_price(
+                reason="session",
+                close=float(bars.iloc[pos]["close"]),
+                shares=position.shares,
+                adv_shares=state.adv_shares,
+                sigma_daily=state.sigma_daily,
+                half_spread=state.half_spread,
+            )
+            self.portfolio.close(
+                ticker=state.ticker,
+                exit_date=_bar_label(bar_ts, self.cfg),
+                exit_price=fill,
+                reason="session",
+            )
+            self.slot_states[slot_id] = None
+            freed.append(FreedSlot(slot_id=slot_id, state=state))
+        return freed
+
 
 class CandidateSource(Protocol):
     """The engine-specific *fill* half of a backtest day.
@@ -144,15 +209,39 @@ def run_day_loop(
     days: Iterable[pd.Timestamp],
     day_loop: DayLoop,
     source: CandidateSource,
+    *,
+    market_tz: str | None = None,
 ) -> None:
     """Drive one ``DayLoop`` and one ``CandidateSource`` over ``days``.
 
-    The single shared per-day skeleton: pre-exit fill, the invariant exit sweep,
-    then post-exit refill. Both engines' full per-day semantics live in their
-    ``CandidateSource`` adapter; this driver only fixes the ordering between the
-    exit half and the fill half.
+    With ``market_tz=None`` (daily runs) this is the original per-day skeleton:
+    pre-exit fill, the invariant exit sweep, then post-exit refill. Both
+    engines' full per-day semantics live in their ``CandidateSource`` adapter;
+    this driver only fixes the ordering between the exit half and the fill half.
+
+    When ``market_tz`` is given (intraday runs), the driver becomes a session
+    loop: bars are grouped into exchange sessions keyed on
+    :func:`~screener.backtester.sessions.is_session_last` — positional
+    detection, so half-days end at their actual last bar and market hours are
+    honoured by construction. Bars are processed in the same chronological
+    order as the flat loop (fills are unchanged); the only addition is
+    :meth:`DayLoop.flatten_at_session_end` on each session's last bar, before
+    the refill, so ``intraday_only`` portfolios are guaranteed flat at close.
     """
-    for day in days:
+    day_list = list(days)
+    if market_tz is None:
+        for day in day_list:
+            source.before_exits(day)
+            freed = day_loop.process_exits_for_day(day)
+            source.after_exits(day, freed)
+        return
+    if not day_list:
+        return
+    index = pd.DatetimeIndex(day_list)
+    session_last_mask = is_session_last(index, market_tz)
+    for pos, day in enumerate(index):
         source.before_exits(day)
         freed = day_loop.process_exits_for_day(day)
+        if session_last_mask[pos]:
+            freed.extend(day_loop.flatten_at_session_end(day))
         source.after_exits(day, freed)

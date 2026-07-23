@@ -5,11 +5,20 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 CORPORATE_ACTION_COLUMNS = ["dividend", "split_factor", "stock_splits"]
+
+# Intraday intervals a stored 1m series can be downsampled into locally, with
+# the bucket width in minutes. Buckets are anchored at each session's first
+# bar (see ``resample_intraday_bars``), so the result matches how providers
+# label their native bars (US 1h: 09:30/10:30/... ET; India 30m: 09:15/09:45
+# IST) — a plain clock-aligned resample would land on :00/:30 boundaries
+# instead.
+RESAMPLE_MINUTES_FROM_1M = {"5m": 5, "15m": 15, "30m": 30, "1h": 60}
 
 
 def naive_normalized_index(index: pd.Index, interval: str = "1d") -> pd.DatetimeIndex:
@@ -147,6 +156,68 @@ def frame_has_range(
     )
 
 
+def resample_intraday_bars(
+    frame: pd.DataFrame, interval: str, market_tz: str
+) -> pd.DataFrame:
+    """Downsample 1m bars to a coarser intraday interval, anchored per session.
+
+    Buckets are anchored at the first bar of each exchange session (session
+    labels come from :func:`screener.backtester.sessions.session_dates` on the
+    naive-UTC index), so US 1h bars land on 09:30/10:30/... ET and India 30m
+    bars on 09:15/09:45 IST — matching how providers label native bars.
+    Half-day sessions simply produce fewer buckets. Aggregation is the standard
+    OHLCV roll-up (open=first, high=max, low=min, close=last, volume=sum);
+    ``adj_close`` takes last and ``dividend``/``stock_splits`` take sum when
+    present.
+
+    When a session's first stored bar is late (partial archive), that session's
+    buckets anchor at the first *stored* bar instead of the true session open —
+    labels can drift by less than one bucket for that session only.
+    """
+    minutes = RESAMPLE_MINUTES_FROM_1M.get(interval)
+    if minutes is None:
+        raise ValueError(
+            f"cannot resample to interval {interval!r}; expected one of "
+            f"{sorted(RESAMPLE_MINUTES_FROM_1M)}"
+        )
+    if frame is None or frame.empty:
+        return empty_ohlcv_frame()
+
+    from screener.backtester.sessions import session_dates
+
+    index = pd.DatetimeIndex(frame.index)
+    ts_ns = index.to_numpy().view("i8")
+    labels = session_dates(index, market_tz)
+    n = len(index)
+    session_change = np.empty(n, dtype=bool)
+    session_change[0] = True
+    session_change[1:] = labels[1:] != labels[:-1]
+    session_id = np.cumsum(session_change) - 1
+    session_first_ns = ts_ns[session_change][session_id]
+    bucket = (ts_ns - session_first_ns) // pd.Timedelta(minutes=minutes).value
+    # Unique per (session, bucket); non-decreasing because the index is sorted.
+    key = session_id.astype(np.int64) * (1 << 24) + bucket
+    first_in_bucket = np.empty(n, dtype=bool)
+    first_in_bucket[0] = True
+    first_in_bucket[1:] = key[1:] != key[:-1]
+
+    aggregations = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+        "adj_close": "last",
+        "dividend": "sum",
+        "stock_splits": "sum",
+        "split_factor": "last",
+    }
+    agg = {col: fn for col, fn in aggregations.items() if col in frame.columns}
+    out = frame.groupby(key, sort=False).agg(agg)
+    out.index = pd.DatetimeIndex(index[first_in_bucket])
+    return out
+
+
 def split_yfinance_download(
     raw: pd.DataFrame, tickers: list[str], interval: str = "1d"
 ) -> dict[str, pd.DataFrame]:
@@ -176,6 +247,7 @@ def split_yfinance_download(
 __all__ = [
     "CORPORATE_ACTION_COLUMNS",
     "OHLCV_COLUMNS",
+    "RESAMPLE_MINUTES_FROM_1M",
     "apply_splits_only_adjustment",
     "empty_ohlcv_frame",
     "frame_has_range",
@@ -183,6 +255,7 @@ __all__ = [
     "merge_price_frames",
     "naive_normalized_index",
     "normalize_price_frame",
+    "resample_intraday_bars",
     "split_yfinance_download",
     "warn_unadjustable_fmp_frames",
 ]

@@ -20,6 +20,7 @@ def cache_dirs(tmp_path) -> dict[str, Path]:
     dirs = {
         "prices": tmp_path / "prices",
         "fmp_prices": tmp_path / "fmp_prices",
+        "bars": tmp_path / "bars",
         "universes": tmp_path / "universes",
         "scanner": tmp_path / "cache",
         "panels": tmp_path / "panels",

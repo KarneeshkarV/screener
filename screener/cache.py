@@ -44,6 +44,12 @@ def _fmp_prices_cache_dir() -> Path:
     return FMP_CACHE_DIR
 
 
+def _bars_cache_dir() -> Path:
+    from screener.backtester.bar_store import BARS_ROOT
+
+    return BARS_ROOT
+
+
 def _universes_cache_dir() -> Path:
     from screener import universes
 
@@ -65,6 +71,7 @@ def _operator_bhavcopy_cache_dir() -> Path:
 _CACHE_AREA_GETTERS: dict[str, Callable[[], Path]] = {
     "prices": _prices_cache_dir,
     "fmp_prices": _fmp_prices_cache_dir,
+    "bars": _bars_cache_dir,
     "universes": _universes_cache_dir,
     "scanner": lambda: CACHE_ROOT,
     "panels": lambda: PANEL_ROOT,
@@ -76,6 +83,7 @@ _CACHE_AREA_GETTERS: dict[str, Callable[[], Path]] = {
 _CACHE_AREAS: dict[str, CacheArea] = {
     "prices": CacheArea("prices", "yfinance OHLCV parquet cache"),
     "fmp_prices": CacheArea("fmp_prices", "FMP OHLCV parquet cache"),
+    "bars": CacheArea("bars", "interval-partitioned intraday bar store"),
     "universes": CacheArea("universes", "index universe membership cache"),
     "scanner": CacheArea("scanner", "TradingView scanner and provider cache"),
     "panels": CacheArea("panels", "accumulating microstructure panels"),

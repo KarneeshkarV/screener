@@ -16,6 +16,7 @@ from screener.backtester.cli_common import (
     intraday_options,
     parse_partial_exits,
     parse_ticker_list,
+    resolve_interval_cost_defaults,
     resolve_min_filters,
     resolve_report_path,
     resolve_strategy_exprs,
@@ -215,6 +216,9 @@ def backtest_historical(
         raise click.UsageError("--as-of is required unless --from-run is used.")
 
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
+    slippage_bps, commission_bps = resolve_interval_cost_defaults(
+        interval, slippage_bps, commission_bps
+    )
     slip_model = build_slippage_model(
         slippage_model, slippage_bps, half_spread_bps, vol_impact_k
     )
@@ -282,7 +286,7 @@ def backtest_historical(
     )
 
     fetcher = build_backtest_fetcher(
-        ctx.obj, price_adjustment=price_adjustment, interval=interval
+        ctx.obj, price_adjustment=price_adjustment, interval=interval, market=market
     )
     from screener.backtester import historical as historical_engine
 
