@@ -322,7 +322,12 @@ def run_intraday_options_backtest(
 
     ``provider`` defaults to the forward-capture contract store for ``market``.
     Positions never carry overnight: whatever is open at a session's last
-    snapshot is flattened there (``session_end``).
+    snapshot is flattened there (``session_end``). Each symbol is entered at most
+    once per session unless ``allow_reentry`` is set.
+
+    Multi-ticker runs are evaluated sequentially against one running equity, not
+    as a concurrent shared-capital portfolio; true portfolio accounting is the
+    ``day_loop`` structure-slot follow-up noted in the roadmap.
     """
     provider = provider or default_history_provider(cfg.market)
     fill_cfg = _fill_cfg(cfg)
@@ -389,10 +394,16 @@ def run_intraday_options_backtest(
                 equity_points.append((chain.as_of, equity))
                 pos = None
 
+    # Points are appended per symbol, so sort by timestamp for a chronological
+    # curve when more than one ticker is backtested.
     if equity_points:
         idx_e = pd.DatetimeIndex([ts for ts, _ in equity_points])
-        result.equity_curve = pd.Series([v for _, v in equity_points], index=idx_e)
+        result.equity_curve = pd.Series(
+            [v for _, v in equity_points], index=idx_e
+        ).sort_index()
     if margin_points:
         idx_m = pd.DatetimeIndex([ts for ts, _ in margin_points])
-        result.margin_curve = pd.Series([v for _, v in margin_points], index=idx_m)
+        result.margin_curve = pd.Series(
+            [v for _, v in margin_points], index=idx_m
+        ).sort_index()
     return result
