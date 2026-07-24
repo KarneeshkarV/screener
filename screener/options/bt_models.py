@@ -19,7 +19,15 @@ from screener.options.models import OptionRight
 StrikeRule = str  # "atm" | "moneyness:<±pct>" | "delta:<abs>"
 ExpiryRule = str  # "front" | "next" | "dte:<n>"
 ExitReason = Literal[
-    "expiry", "target", "stop", "dte", "exit_expr", "time", "end", "roll"
+    "expiry",
+    "target",
+    "stop",
+    "dte",
+    "exit_expr",
+    "time",
+    "end",
+    "roll",
+    "session_end",  # Phase 4.2: intraday flatten at the session's last snapshot
 ]
 # Fill model for entry/exit pricing. ``legacy`` reproduces the historical
 # mid-or-last-with-settle-fallback + percent-slippage behaviour byte-for-byte.
