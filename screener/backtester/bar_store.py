@@ -55,6 +55,33 @@ def bar_path(
     return Path(root or BARS_ROOT) / market / interval / name
 
 
+def stored_symbols(
+    market: str,
+    interval: str,
+    *,
+    raw: bool = False,
+    root: Optional[Path] = None,
+) -> list[str]:
+    """List the symbols with a stored series for one (market, interval).
+
+    Returns the on-disk file stems (sanitized symbol identifiers), sorted, so a
+    local scanner can enumerate the archive without a universe list. The raw and
+    adjusted namespaces are kept separate: ``raw=False`` skips ``{symbol}__raw``
+    files, ``raw=True`` returns only those.
+    """
+    directory = Path(root or BARS_ROOT) / market / interval
+    if not directory.is_dir():
+        return []
+    names: list[str] = []
+    for path in directory.glob("*.parquet"):
+        stem = path.stem
+        is_raw = stem.endswith("__raw")
+        if is_raw != raw:
+            continue
+        names.append(stem[: -len("__raw")] if is_raw else stem)
+    return sorted(names)
+
+
 def load_bars(
     symbol: str,
     *,
@@ -141,4 +168,5 @@ __all__ = [
     "bar_path",
     "load_bars",
     "save_bars",
+    "stored_symbols",
 ]

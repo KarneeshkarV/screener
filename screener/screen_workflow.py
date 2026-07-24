@@ -20,6 +20,7 @@ from screener.commands.screen_report import render_screen_report
 from screener.criteria import resolve_criteria
 from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from screener.history import diff, previous_run, save_run
+from screener.local_scanner import local_scan
 from screener.reporting import temp_report_path
 from screener.scanner import scan
 
@@ -27,6 +28,11 @@ from screener.scanner import scan
 class ScreenMode(str, Enum):
     CSV = "csv"
     RESULTS = "results"
+
+
+class ScreenSource(str, Enum):
+    TRADINGVIEW = "tradingview"
+    LOCAL = "local"
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,13 @@ class ScreenRequest:
     # Drop final result rows whose next earnings date is within N calendar days.
     # ``None`` disables the filter. Unknown earnings dates are always kept.
     earnings_buffer: int | None = None
+    # Scan source: TradingView (default, daily, broad universe) or the local
+    # bar-store scanner (offline, intraday, limited to stored symbols).
+    source: ScreenSource = ScreenSource.TRADINGVIEW
+    # Bar interval for the local source (1m/5m/15m/30m/1h); ignored for TV.
+    interval: str = "5m"
+    # Bar-store root override for the local source (tests point this at a tmp dir).
+    bar_store_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -64,15 +77,26 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
     """Run the full non-Click screen lifecycle and return its outcome."""
     selection = resolve_criteria(request.criteria_names)
 
-    total, df = scan(
-        market=request.market,
-        filters=selection.filters,
-        limit=request.limit,
-        order_by=request.order_by,
-        detail=request.detail,
-        cache_ttl=parse_ttl(request.cache_ttl, default=900),
-        refresh=request.refresh,
-    )
+    if request.source is ScreenSource.LOCAL:
+        total, df = local_scan(
+            market=request.market,
+            filters=selection.filters,
+            interval=request.interval,
+            limit=request.limit,
+            order_by=request.order_by,
+            detail=request.detail,
+            root=request.bar_store_root,
+        )
+    else:
+        total, df = scan(
+            market=request.market,
+            filters=selection.filters,
+            limit=request.limit,
+            order_by=request.order_by,
+            detail=request.detail,
+            cache_ttl=parse_ttl(request.cache_ttl, default=900),
+            refresh=request.refresh,
+        )
 
     # Earnings enrichment is opt-in and runs only on final result rows.
     if request.earnings or request.earnings_buffer is not None:
@@ -135,5 +159,6 @@ __all__ = [
     "ScreenMode",
     "ScreenOutcome",
     "ScreenRequest",
+    "ScreenSource",
     "run_screen_workflow",
 ]
