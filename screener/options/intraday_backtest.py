@@ -96,6 +96,9 @@ class IntradayOptionsBacktestConfig:
     # Phase 4.3: signed underlying units held alongside each option position.
     equity_hedge_qty: float = 0.0
     initial_capital: float = 100_000.0
+    # By default a symbol is entered at most once per session; set True to let a
+    # strategy re-enter after an intraday exit (target/stop/exit_time).
+    allow_reentry: bool = False
 
 
 @dataclass
@@ -336,15 +339,20 @@ def run_intraday_options_backtest(
             if not chains:
                 continue
             pos: _OpenIntradayPosition | None = None
+            entered_today = False
             for idx, chain in enumerate(chains):
                 is_last = idx == len(chains) - 1
                 local_t = _local_time(chain.as_of, tz)
 
                 if pos is None:
                     entry_ok = cfg.entry_time is None or local_t >= cfg.entry_time
+                    # One entry per session unless re-entry is opted in.
+                    if entered_today and not cfg.allow_reentry:
+                        entry_ok = False
                     # Never open at the last snapshot (no bar left to exit on).
                     if entry_ok and not is_last:
                         pos = _open_position(chain, cfg, fill_cfg, result.warnings)
+                        entered_today = pos is not None
                     equity_points.append((chain.as_of, equity))
                     continue
 

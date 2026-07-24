@@ -184,6 +184,33 @@ def test_margin_curve_tracked_for_short_put():
     assert not result.margin_curve.empty
 
 
+def _five_rising_snapshots() -> _StubProvider:
+    chains = [
+        _chain(_utc(13, 30), _call(_utc(13, 30), last=10.0), spot=100.0),
+        _chain(_utc(14, 0), _call(_utc(14, 0), last=13.0), spot=103.0),
+        _chain(_utc(14, 30), _call(_utc(14, 30), last=16.0), spot=106.0),
+        _chain(_utc(15, 0), _call(_utc(15, 0), last=20.0), spot=110.0),
+        _chain(_utc(15, 30), _call(_utc(15, 30), last=25.0), spot=115.0),
+    ]
+    return _StubProvider({("SPY", DAY): chains})
+
+
+def test_single_entry_per_session_by_default():
+    # After a target exit the engine must NOT re-enter the same session.
+    result = run_intraday_options_backtest(
+        _cfg(target_pct=15.0), _five_rising_snapshots()
+    )
+    assert len(result.trades) == 1
+    assert result.trades[0].legs[0].entry_price == 10.0
+
+
+def test_allow_reentry_reopens_after_exit():
+    result = run_intraday_options_backtest(
+        _cfg(target_pct=15.0, allow_reentry=True), _five_rising_snapshots()
+    )
+    assert len(result.trades) >= 2  # re-enters after each intraday target exit
+
+
 def test_no_snapshots_yields_empty_result():
     result = run_intraday_options_backtest(_cfg(), _StubProvider({}))
     assert result.trades == []
