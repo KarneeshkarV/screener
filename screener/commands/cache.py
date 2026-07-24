@@ -101,7 +101,26 @@ def cache_status() -> None:
             )
         else:
             table.add_row(name, str(root), "0", "0 B", "-", "-")
-    Console().print(table)
+    console = Console()
+    console.print(table)
+    _print_contract_store_health(console)
+
+
+def _print_contract_store_health(console: Console) -> None:
+    """Report last-snapshot age + gaps for the options contract store."""
+    from screener.options.contract_store import store_health
+
+    lines: list[str] = []
+    for market in ("us", "india"):
+        health = store_health(market)
+        if health.last_snapshot is None:
+            continue
+        marker = "[yellow]stale[/yellow]" if health.is_stale else "[green]fresh[/green]"
+        lines.append(f"{marker} {health.summary()}")
+    if lines:
+        console.print("Contract store:")
+        for line in lines:
+            console.print(f"  {line}")
 
 
 @cache_group.command(name="clean")

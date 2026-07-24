@@ -274,6 +274,20 @@ Notes:
 
 Tunables via environment: `MARKETS` (default `us india`), `DAYS` (default 2), `LOG_DIR`, `KEEP_DAYS` (log retention, default 30).
 
+#### Options snapshot recorder cron
+
+`screener options record` forward-captures option chains into the first-class contract store at `~/.screener/contracts/{market}/{date}/{underlying}.parquet` — delayed CBOE quotes (US, yfinance fallback) and the NSE live chain API (India). Each snapshot is enriched on ingest (missing IV inverted from the mark; missing greeks filled from IV) and appends idempotently (dedupe on contract + snapshot timestamp). `--every 15m` runs a session-bounded loop (no-op outside session hours, exits at the close), so one session-open cron per market covers the day; `--once` suits a plain 15-minute cron. Default watchlist is index options — extend with `--watchlist` / `--watchlist-file`. `scripts/daily_options_record.sh` wraps it, and `screener cache status` reports contract-store freshness and missing-session gaps.
+
+```cron
+# India session 09:15–15:30 IST, US session 09:30–16:00 ET (CRON_TZ per market)
+CRON_TZ=Asia/Kolkata
+10 9 * * 1-5  MARKETS=india /root/screneer_main/screener/scripts/daily_options_record.sh >> "$HOME/.screener/options-logs/cron.log" 2>&1
+CRON_TZ=America/New_York
+25 9 * * 1-5  MARKETS=us    /root/screneer_main/screener/scripts/daily_options_record.sh >> "$HOME/.screener/options-logs/cron.log" 2>&1
+```
+
+US intraday options history is capture-start-forward (deep history needs a paid Polygon/ThetaData adapter — a documented stub seam); India is capture-forward plus EOD bhavcopy.
+
 ### `backtest-lab`
 
 Launches a local browser UI for comparing rolling backtest strategies.

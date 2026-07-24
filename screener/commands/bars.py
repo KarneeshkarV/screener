@@ -106,14 +106,10 @@ def bars_record(
         with_data += 1
         append_bars(symbol, frame, market=market, interval="1m")
     store_dir = BARS_ROOT / market / "1m"
-    click.echo(
-        f"appended bars for {with_data}/{len(yf_symbols)} symbols → {store_dir}"
-    )
+    click.echo(f"appended bars for {with_data}/{len(yf_symbols)} symbols → {store_dir}")
     if with_data < len(yf_symbols):
         missing = [
-            symbol
-            for symbol, frame in frames.items()
-            if frame is None or frame.empty
+            symbol for symbol, frame in frames.items() if frame is None or frame.empty
         ]
         click.echo(
             f"no bars returned for {len(missing)} symbol(s): "

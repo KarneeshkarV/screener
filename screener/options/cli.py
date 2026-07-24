@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
 
 import click
 import pandas as pd
@@ -255,6 +256,123 @@ def snapshot(
             f"Unavailable: {', '.join(result.missing)} (providers degraded cleanly).",
             err=True,
         )
+
+
+@options.command(name="record")
+@market_option(
+    default="us",
+    choices=("us", "india"),
+    help="Market whose watchlist chains are snapshotted.",
+    show_default=True,
+)
+@click.option(
+    "--every",
+    "every",
+    default=None,
+    help="Snapshot cadence (e.g. 15m) for a session-bounded loop; "
+    "omit for a single pass.",
+)
+@click.option(
+    "--once",
+    is_flag=True,
+    default=False,
+    help="Force a single pass even when --every is given (what a 15m cron calls).",
+)
+@click.option(
+    "--watchlist",
+    default=None,
+    help="Comma-separated underlyings to snapshot (default: index options).",
+)
+@click.option(
+    "--watchlist-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="File of underlyings (comma/newline separated; # comments allowed).",
+)
+@click.option(
+    "--max-underlyings",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="Cap the number of underlyings (0 = no cap).",
+)
+@click.option("--refresh", is_flag=True, help="Bypass provider snapshot caches.")
+@click.pass_context
+def record(
+    ctx: click.Context,
+    market: str,
+    every: str | None,
+    once: bool,
+    watchlist: str | None,
+    watchlist_file: Path | None,
+    max_underlyings: int,
+    refresh: bool,
+) -> None:
+    """Snapshot delayed/live option chains into the contract store.
+
+    Forward-capture: each pass appends every watchlist underlying's chain as a
+    timestamped snapshot (idempotent). US uses delayed CBOE (yfinance
+    fallback); India uses the NSE live chain API. Run one pass per invocation
+    from a 15-minute cron (``--once``), or a session-bounded loop from a single
+    session-open cron (``--every 15m``).
+    """
+    from screener.cache import parse_ttl
+    from screener.options import recorder
+    from screener.options.contract_store import store_health
+
+    provider = None
+    root = None
+    obj = ctx.obj if ctx is not None else None
+    if isinstance(obj, dict):
+        provider = obj.get("provider")
+        root = obj.get("root")
+    if provider is None:
+        provider = recorder.default_provider(market)  # type: ignore[arg-type]
+
+    symbols = recorder.resolve_watchlist(
+        market,
+        watchlist=watchlist,
+        watchlist_file=watchlist_file,
+        max_underlyings=max_underlyings,
+    )
+    if not symbols:
+        raise click.UsageError("no underlyings resolved for the watchlist")
+
+    if every and not once:
+        seconds = parse_ttl(every)
+        if not seconds or seconds <= 0:
+            raise click.UsageError(f"invalid --every interval: {every!r}")
+        recorder.record_loop(
+            market,  # type: ignore[arg-type]
+            symbols,
+            provider=provider,
+            every_seconds=float(seconds),
+            root=root,
+            refresh=refresh,
+            echo=click.echo,
+        )
+    else:
+        result = recorder.run_pass(
+            market,  # type: ignore[arg-type]
+            symbols,
+            provider=provider,
+            root=root,
+            refresh=refresh,
+        )
+        for symbol, count in result.recorded:
+            click.echo(f"{symbol}: {count} contracts snapshotted")
+        click.echo(
+            f"{market.upper()} options record: "
+            f"{len(result.recorded)}/{len(symbols)} underlyings, "
+            f"{result.contract_count} contracts appended."
+        )
+        if result.missing:
+            click.echo(
+                f"Unavailable: {', '.join(result.missing)} "
+                "(providers degraded cleanly).",
+                err=True,
+            )
+    click.echo(store_health(market, root=root).summary(), err=True)
 
 
 @options.command(name="participants")
@@ -697,6 +815,7 @@ __all__ = [
     "build_panel",
     "options",
     "participants",
+    "record",
     "regime",
     "show",
     "signals",
