@@ -39,5 +39,11 @@ for market in $MARKETS; do
   fi
 done
 
+# Storage watch: surface (non-fatally) when a store exceeds its size budget.
+# Set SCREENER_BARS_BUDGET_MB / SCREENER_CONTRACTS_BUDGET_MB to enable.
+if uv run screener cache storage-watch 2>&1 | sed "s/^/[$stamp] storage: /"; then :; else
+  echo "[$stamp] storage: OVER BUDGET — see line(s) above"
+fi
+
 find "$LOG_DIR" -type f -mtime "+$KEEP_DAYS" -delete
 echo "[$stamp] done"
