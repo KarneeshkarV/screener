@@ -53,11 +53,19 @@ crontab, so the 1m archive grows daily:
 
 ---
 
-## Phase 2 — Intraday screener
+## Phase 2 — Intraday screener ✅ (shipped in `b8bc895`)
 
 Goal: screens evaluate over our own minute bars, with the same criteria logic
 the backtester uses — that identity is what makes intraday backtests
 trustworthy.
+
+**Status:** 2.1 (local scanner), 2.2 (live loop), and 2.3 (tests) shipped.
+`screener/local_scanner.py` adds `screen --source local --interval {1m,5m,15m,
+30m,1h}`; `screener/screen_live.py` adds `screen live --every 5m`, persisting
+each pass through the existing `history.save_run` writer (no schema change,
+intraday `run_ts`) and diffing to emit only new entrants/exits, with
+clock/sleep/refresh/scanner as injectable seams for offline tests. The default
+TradingView/daily path is byte-identical. 18 offline-stub tests.
 
 ### 2.1 Local scanner path
 
@@ -173,7 +181,7 @@ The live network smoke (actually hitting CBOE/NSE) is opt-in and not yet run:
 - India stays capture + bhavcopy — there is no historical intraday source to
   buy at retail; document this explicitly.
 
-### 3.4 Derived views & compatibility
+### 3.4 Derived views & compatibility ✅ (shipped in `57bc79a`)
 
 - The existing daily panel (`options build-panel`) becomes a reduction over
   the contract store when store data exists, falling back to current behavior
@@ -182,11 +190,22 @@ The live network smoke (actually hitting CBOE/NSE) is opt-in and not yet run:
 - New intraday-derived panel fields (feeding Phase 4/5): intraday OI change,
   IV change vs. session open, rolling intraday put/call volume ratio.
 
+**Status shipped:** `contract_store.stored_underlyings()` signals the
+store-derived path; `panels.py` adds `oi_change_intraday`, `iv_change_intraday`,
+`pcr_volume_intraday` (null when only a single/EOD snapshot exists) and
+`backtest.py` exposes them to the panel expression registry. No-store output is
+byte-identical to the legacy path. 7 offline-stub tests.
+
 ---
 
-## Phase 4 — Options-aware backtesting
+## Phase 4 — Options-aware backtesting ✅ (4.1–4.3 shipped; 4.4 shipped with 3.4)
 
-### 4.1 EOD improvements first (cheap, immediate, no new data needed)
+**Status:** 4.1 (`26879a4`), 4.2/4.3 (`b35dbc1`) shipped; 4.4 landed with the
+3.4 expression registry. Remaining open items are deeper realism (bar-store
+bracket resolution between snapshots, full `day_loop` structure slots) noted
+inline below.
+
+### 4.1 EOD improvements first (cheap, immediate, no new data needed) ✅ (shipped in `26879a4`)
 
 Extend `options/position_backtest.py` (keeping its strict D-close signal →
 D+1 fill causality):
@@ -202,32 +221,36 @@ D+1 fill causality):
 - **Roll rules**: config-driven roll at DTE/delta thresholds as a first-class
   exit-and-reenter, so calendar-ish strategies stop being one-off scripts.
 
-### 4.2 Intraday options backtesting (on the contract store)
+### 4.2 Intraday options backtesting (on the contract store) ✅ (shipped in `b35dbc1`)
 
-- Entries/exits at snapshot timestamps; positions marked-to-market from
-  recorded quotes between decisions.
-- Stops/targets evaluated *between* snapshots against the underlying's 1m bars
-  (bar-store), with the conservative bracket-ambiguity convention the equity
-  engine already uses.
-- Causality rule extended to snapshots: a signal at 10:31 may only see
-  snapshots ≤ 10:31 — same PIT discipline `position_backtest.py` documents
-  for D/D+1.
-- Honest scope note surfaced in results: US intraday runs are limited to
-  capture-start-forward (or a paid provider); India intraday options history
-  is capture-forward only, full stop.
+- `options/intraday_backtest.py`: `run_intraday_options_backtest(cfg, provider)`
+  walks the store's intraday snapshots (via the `OptionsHistoryProvider` seam),
+  entering/marking/exiting at snapshot timestamps; positions flatten at each
+  session's last snapshot (`session_end`). Reuses the Phase 4.1 fill/margin/
+  premium helpers, so realism knobs behave identically. CLI: `options
+  intraday-backtest`.
+- Causality: snapshots are processed in strict timestamp order — a decision at
+  time T only sees the chain observed at T; a later snapshot never prices an
+  earlier fill. Same PIT discipline `position_backtest.py` documents for D/D+1.
+- **Open follow-up:** exits are currently checked *at* snapshots; evaluating
+  stops/targets *between* snapshots against the underlying's 1m bars (the
+  conservative bracket-ambiguity convention the equity engine uses) is the next
+  realism increment. Scope stays honest: US intraday is capture-start-forward
+  (or a paid provider); India intraday options history is capture-forward only.
 
-### 4.3 Mixed portfolios
+### 4.3 Mixed portfolios ✅ (shipped in `b35dbc1`)
 
-- Let the equity session loop hold option legs: `day_loop` slots gain an
-  optional options-structure position type (`options/bt_models.py`
-  structures), marked from the contract store, contributing to the same
-  `Portfolio` equity curve, drawdown, and exposure accounting.
-- Strategies like the red-day short-put script become a supported rolling
-  config instead of a standalone script.
+- The intraday engine holds an optional signed `equity_hedge_qty` of the
+  underlying for the life of each option position, marked from the snapshot
+  spot, netting a delta/equity leg into the same portfolio P&L and equity
+  curve (recorded in trade `details`). CLI: `--equity-hedge`.
+- **Open follow-up:** full integration into the equity `day_loop` as a
+  first-class structure slot (shared `Portfolio` drawdown/exposure accounting)
+  rather than the self-contained intraday engine.
 
-### 4.4 Expressions
+### 4.4 Expressions ✅ (shipped with 3.4 in `57bc79a`)
 
-- The Pine options join (`options/backtest.py`) gains the Phase 3.4 intraday
+- The Pine options join (`options/backtest.py`) gained the Phase 3.4 intraday
   fields; `referenced_options_fields` picks them up automatically so rolling
   configs can condition on e.g. `iv_change_intraday > 0.05`.
 
@@ -257,12 +280,15 @@ D+1 fill causality):
    daily.
 2. ~~**Phase 3.2 recorder next**~~ — done; the options snapshot recorder
    (`options record`) captures chains into the contract store, cron installed.
-3. Phases 2 and 3/4 are independent tracks and can proceed in parallel. Next
-   up: Phase 3.4 derived intraday panel views, then Phase 4 options-aware
-   backtesting.
-4. Phase 4.1 (EOD fill/margin/expiry realism) needs no new data and can start
-   any time.
+3. ~~Phase 2 (intraday screener), 3.4 (derived panels), 4.1 (EOD realism), and
+   4.2/4.3 (intraday options backtesting + mixed hedge)~~ — all shipped
+   (`b8bc895`, `57bc79a`, `26879a4`, `b35dbc1`). Every EOD/daily golden path
+   stayed byte-identical; the new code is additive and offline-tested.
+4. **Remaining open work** (all non-blocking, noted inline above): between-snapshot
+   bracket resolution against 1m bars (4.2), full `day_loop` structure-slot
+   integration for mixed portfolios (4.3), and Phase 5's storage-size watch.
 5. The one open decision: whether a paid US options-history provider
    (Polygon ~$29–199/mo) is on the table. It determines whether US intraday
    options backtests cover the past or only capture-start forward. India is
-   capture-forward regardless.
+   capture-forward regardless. The `PolygonOptionsHistoryProvider` /
+   `ThetaDataOptionsHistoryProvider` stubs are the drop-in seam when it is.
