@@ -392,6 +392,23 @@ def _row_to_contract(row: pd.Series) -> OptionContract:
     )
 
 
+def stored_underlyings(
+    market: str, *, day: date, root: Optional[Path] = None
+) -> list[str]:
+    """Underlyings with a stored snapshot file for one (market, session date).
+
+    Returns the partition file stems (upper-cased underlyings) present on disk,
+    ascending; an empty list when nothing has been recorded for that session.
+    Callers use a non-empty result as the signal to take the store-derived
+    daily-panel path instead of the legacy EOD path.
+    """
+    base = (Path(root) if root is not None else _default_root()) / market
+    day_dir = base / day.isoformat()
+    if not day_dir.is_dir():
+        return []
+    return sorted(path.stem for path in day_dir.glob("*.parquet"))
+
+
 def _present_session_dates(market: str, *, root: Optional[Path] = None) -> list[date]:
     """Session dates with at least one stored file, ascending."""
     base = (Path(root) if root is not None else _default_root()) / market
@@ -488,4 +505,5 @@ __all__ = [
     "load_contracts",
     "load_range",
     "store_health",
+    "stored_underlyings",
 ]

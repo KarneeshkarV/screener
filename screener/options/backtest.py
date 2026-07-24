@@ -10,7 +10,7 @@ import pandas as pd
 
 from screener.backtester.pine import Node, collect_names
 from screener.options.models import ChainMetrics
-from screener.options.panels import read_options_panel
+from screener.options.panels import INTRADAY_PANEL_FIELDS, read_options_panel
 from screener.symbols import tv_to_nse, tv_to_yf
 
 
@@ -34,6 +34,9 @@ PANEL_DERIVED_EXPRESSION_FIELDS = frozenset(
         "options_volume_avg_20",
         "unusual_options_ratio",
         "history_days",
+        # Phase 3.4 intraday-derived columns (present on the panel schema, NaN
+        # until a store reduction fills them); expressions may reference them.
+        *INTRADAY_PANEL_FIELDS,
     }
 )
 OPTION_EXPRESSION_FIELDS = _numeric_metrics_fields() | PANEL_DERIVED_EXPRESSION_FIELDS
