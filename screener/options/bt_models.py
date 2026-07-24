@@ -18,7 +18,20 @@ from screener.options.models import OptionRight
 
 StrikeRule = str  # "atm" | "moneyness:<±pct>" | "delta:<abs>"
 ExpiryRule = str  # "front" | "next" | "dte:<n>"
-ExitReason = Literal["expiry", "target", "stop", "dte", "exit_expr", "time", "end"]
+ExitReason = Literal[
+    "expiry", "target", "stop", "dte", "exit_expr", "time", "end", "roll"
+]
+# Fill model for entry/exit pricing. ``legacy`` reproduces the historical
+# mid-or-last-with-settle-fallback + percent-slippage behaviour byte-for-byte.
+FillModel = Literal["legacy", "mid", "cross"]
+# Short-option margin approximation. ``none`` disables margin tracking (the
+# historical default). ``span`` is an India SPAN-like worst-of scenario grid;
+# ``regt`` is a US Reg-T approximation.
+MarginModel = Literal["none", "span", "regt"]
+# Expiry settlement mark. ``intrinsic`` (default) settles legs at intrinsic
+# value against the underlying close; ``settle`` prefers the official
+# per-contract settlement price when present.
+Settlement = Literal["intrinsic", "settle"]
 
 
 @dataclass(frozen=True)
@@ -106,14 +119,59 @@ class OptionsBacktestConfig(BaseModel):
     refresh: bool = False
     initial_capital: float = Field(default=100_000.0, gt=0)
 
+    # --- Phase 4.1: fill realism -------------------------------------------
+    # ``legacy`` (default) keeps the historical fill exactly. ``mid`` fills at
+    # the bid/ask mid; ``cross`` crosses the spread (buy the ask, sell the bid).
+    fill_model: FillModel = "legacy"
+    # Extra slippage applied on top of the fill model, in basis points of the
+    # fill price and/or whole ticks. Both default to 0 (no-op).
+    slippage_bps: float = Field(default=0.0, ge=0)
+    slippage_ticks: float = Field(default=0.0, ge=0)
+    tick_size: float = Field(default=0.05, gt=0)
+    # When a leg has no quotes, proxy a full spread of this fraction of the mark
+    # (widened by observed settle/close dispersion). 0 disables proxying.
+    illiquid_spread_pct: float = Field(default=0.0, ge=0)
+
+    # --- Phase 4.1: margin model -------------------------------------------
+    margin_model: MarginModel = "none"
+    # Cap on portfolio margin as a fraction of ``initial_capital``. ``None``
+    # (default) is unlimited; entries that would breach the cap are skipped.
+    margin_cap_pct: float | None = Field(default=None, gt=0)
+    # SPAN-like scenario grid parameters (India). Underlying is shocked by
+    # ``span_price_scan_pct`` and IV by ``span_vol_scan`` (absolute vol points).
+    span_price_scan_pct: float = Field(default=0.05, gt=0)
+    span_vol_scan: float = Field(default=0.10, ge=0)
+    span_exposure_pct: float = Field(default=0.03, ge=0)
+    # Reg-T naked-option parameters (US): margin = premium +
+    # max(regt_pct*underlying - OTM, regt_min_pct*strike).
+    regt_pct: float = Field(default=0.20, ge=0)
+    regt_min_pct: float = Field(default=0.10, ge=0)
+
+    # --- Phase 4.1: expiry mechanics ---------------------------------------
+    settlement: Settlement = "intrinsic"
+    # Physical (stock-option) vs cash (index) settlement. Only affects recorded
+    # assignment metadata; P&L is intrinsic either way in an EOD model.
+    physical_settlement: bool = False
+
+    # --- Phase 4.1: roll rules ---------------------------------------------
+    # Roll (exit + same-session re-enter) when days-to-expiry drops to
+    # ``roll_dte`` or the position's |net delta| reaches ``roll_delta``.
+    roll_dte: int | None = Field(default=None, ge=0)
+    roll_delta: float | None = Field(default=None, gt=0)
+    # Expiry rule used for the re-entered structure when rolling.
+    roll_expiry_rule: str = "next"
+
 
 __all__ = [
     "ExitReason",
     "ExpiryRule",
+    "FillModel",
     "LegFill",
     "LegSpec",
+    "MarginModel",
     "OptionPositionTrade",
     "OptionsBacktestConfig",
+    "Settlement",
     "StrikeRule",
     "StructureSpec",
 ]

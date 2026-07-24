@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from pathlib import Path
+from typing import cast
 
 import click
 import pandas as pd
@@ -13,7 +14,13 @@ from rich.table import Table
 from screener.cache import append_panel_snapshot
 from screener.earnings_backtest.metrics import compute_backtest_summary
 from screener.markets import get_price_fetcher, market_option
-from screener.options.bt_models import OptionPositionTrade, OptionsBacktestConfig
+from screener.options.bt_models import (
+    FillModel,
+    MarginModel,
+    OptionPositionTrade,
+    OptionsBacktestConfig,
+    Settlement,
+)
 from screener.options.criteria import OPTIONS_CRITERIA, run_options_criterion
 from screener.options.panels import build_india_panel, show_symbol, snapshot_us
 from screener.options.participant import build_participant_panel
@@ -617,6 +624,85 @@ def regime(
     show_default=True,
     help="Flat commission per leg per side (rupees).",
 )
+@click.option(
+    "--fill-model",
+    type=click.Choice(["legacy", "mid", "cross"]),
+    default="legacy",
+    show_default=True,
+    help="Fill pricing: legacy (mid/last+settle), mid, or bid/ask cross.",
+)
+@click.option(
+    "--slippage-bps",
+    type=float,
+    default=0.0,
+    show_default=True,
+    help="Extra fill slippage in basis points (mid/cross models).",
+)
+@click.option(
+    "--slippage-ticks",
+    type=float,
+    default=0.0,
+    show_default=True,
+    help="Extra fill slippage in whole ticks (mid/cross models).",
+)
+@click.option(
+    "--tick-size",
+    type=float,
+    default=0.05,
+    show_default=True,
+    help="Tick size for --slippage-ticks.",
+)
+@click.option(
+    "--illiquid-spread-pct",
+    type=float,
+    default=0.0,
+    show_default=True,
+    help="Proxy spread (fraction of mark) for legs lacking quotes.",
+)
+@click.option(
+    "--margin-model",
+    type=click.Choice(["none", "span", "regt"]),
+    default="none",
+    show_default=True,
+    help="Short-option margin: none, SPAN-like (India), or Reg-T (US).",
+)
+@click.option(
+    "--margin-cap-pct",
+    type=float,
+    default=None,
+    help="Skip entries exceeding this fraction of initial capital in margin.",
+)
+@click.option(
+    "--settlement",
+    type=click.Choice(["intrinsic", "settle"]),
+    default="intrinsic",
+    show_default=True,
+    help="Expiry mark: intrinsic vs official per-contract settlement price.",
+)
+@click.option(
+    "--physical-settlement",
+    is_flag=True,
+    help="Record physical (stock) rather than cash (index) expiry settlement.",
+)
+@click.option(
+    "--roll-dte",
+    type=int,
+    default=None,
+    help="Roll (exit + re-enter) when days-to-expiry drops to this value.",
+)
+@click.option(
+    "--roll-delta",
+    type=float,
+    default=None,
+    help="Roll when the position's |net delta| reaches this value.",
+)
+@click.option(
+    "--roll-expiry",
+    "roll_expiry_rule",
+    default="next",
+    show_default=True,
+    help="Expiry rule for the re-entered structure when rolling.",
+)
 @click.option("--min-oi", type=float, default=0.0, show_default=True)
 @click.option("--min-volume", type=float, default=0.0, show_default=True)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
@@ -642,6 +728,18 @@ def backtest(
     max_hold: int | None,
     slippage_pct: float,
     commission_per_order: float,
+    fill_model: str,
+    slippage_bps: float,
+    slippage_ticks: float,
+    tick_size: float,
+    illiquid_spread_pct: float,
+    margin_model: str,
+    margin_cap_pct: float | None,
+    settlement: str,
+    physical_settlement: bool,
+    roll_dte: int | None,
+    roll_delta: float | None,
+    roll_expiry_rule: str,
     min_oi: float,
     min_volume: float,
     output_csv: bool,
@@ -692,6 +790,20 @@ def backtest(
             max_hold=max_hold,
             slippage_pct=float(slippage_pct),
             commission_per_order=float(commission_per_order),
+            fill_model=cast(FillModel, fill_model),
+            slippage_bps=float(slippage_bps),
+            slippage_ticks=float(slippage_ticks),
+            tick_size=float(tick_size),
+            illiquid_spread_pct=float(illiquid_spread_pct),
+            margin_model=cast(MarginModel, margin_model),
+            margin_cap_pct=(
+                float(margin_cap_pct) if margin_cap_pct is not None else None
+            ),
+            settlement=cast(Settlement, settlement),
+            physical_settlement=bool(physical_settlement),
+            roll_dte=roll_dte,
+            roll_delta=roll_delta,
+            roll_expiry_rule=roll_expiry_rule,
             min_oi=float(min_oi),
             min_volume=float(min_volume),
             refresh=bool(refresh),
@@ -723,6 +835,11 @@ def backtest(
 
     summary = compute_backtest_summary(result.trades, strategy=structure)
     _print_options_summary(console, summary)
+    if margin_model != "none" and result.peak_margin > 0:
+        console.print(
+            f"[cyan]Peak margin used: {result.peak_margin:,.0f} "
+            f"({result.peak_margin_utilization * 100:.1f}% of capital)[/cyan]"
+        )
     if result.trades:
         _print_options_ledger(console, result.trades)
     else:
