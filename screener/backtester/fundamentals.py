@@ -267,14 +267,15 @@ def _normalize_fmp_payload(
 
 
 class FMPFundamentalFetcher:
-    """Fetch dated US fundamentals from FMP and normalize expression columns."""
+    """Fetch dated US or India fundamentals from FMP and normalize expression columns."""
 
-    markets = frozenset({"us"})
+    markets = frozenset({"us", "india"})
 
     def __init__(
         self,
         *,
         api_key: str | None = None,
+        market: str = "us",
         fields: Iterable[str] | None = None,
         lag_days: int = 1,
         refresh: bool = False,
@@ -285,6 +286,11 @@ class FMPFundamentalFetcher:
     ) -> None:
         load_env_file()
         self.api_key = api_key or os.environ.get("FMP_API_KEY")
+        if market not in self.markets:
+            raise ValueError(
+                "FMP fundamentals currently support only the US and India markets"
+            )
+        self.market = market
         if not self.api_key:
             raise ValueError("FMP_API_KEY is required to use FMP fundamentals")
         self.fields = tuple(dict.fromkeys(fields or DEFAULT_FUNDAMENTAL_FIELDS))
@@ -306,7 +312,13 @@ class FMPFundamentalFetcher:
         ticker_list = [t for t in dict.fromkeys(tickers) if t]
 
         def fetch_one(ticker: str) -> tuple[str, pd.DataFrame]:
-            symbol = ticker.split(".", 1)[0].upper()
+            # FMP serves NSE/BSE data under the full ``RELIANCE.NS``/``.BO``
+            # symbol, so keep the exchange suffix for India; US symbols are bare.
+            symbol = (
+                ticker.split(".", 1)[0].upper()
+                if self.market == "us"
+                else ticker.upper()
+            )
 
             def fetch_payload(symbol: str = symbol) -> dict[str, Any]:
                 return _fetch_fmp_sections(
@@ -321,7 +333,7 @@ class FMPFundamentalFetcher:
 
             fallback: dict[str, Any] = {}
             payload: dict[str, Any] = _FMP_PROVIDER.fetch(
-                ("us", symbol, self.limit, self.fields),
+                (self.market, symbol, self.limit, self.fields),
                 fetch_payload,
                 refresh=self.refresh,
                 fallback=fallback,
@@ -677,10 +689,14 @@ def build_fundamental_fetcher(
         raise ValueError(
             f"--fundamentals-provider {resolved} currently supports only -m {supported}."
         )
-    return cast(
-        FundamentalFetcher,
-        definition.fetcher_type(fields=fields, lag_days=lag_days, refresh=refresh),
-    )
+    fetcher_args: dict[str, Any] = {
+        "fields": fields,
+        "lag_days": lag_days,
+        "refresh": refresh,
+    }
+    if definition.fetcher_type is FMPFundamentalFetcher:
+        fetcher_args["market"] = market
+    return cast(FundamentalFetcher, definition.fetcher_type(**fetcher_args))
 
 
 def merge_fundamentals_into_bars(

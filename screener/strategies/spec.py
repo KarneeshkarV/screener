@@ -186,6 +186,7 @@ def discover_plugins() -> None:
         macd_oscillator,
         macd_rsi,
         mark_minervini,
+        minervini_filtered,
         mom_lowvol_combo,
         momentum_12_1,
         parabolic_sar,

@@ -219,25 +219,18 @@ def test_rolling_backtest_missing_fundamentals_does_not_break_price_only_entry()
     assert isinstance(result.trades, list)
 
 
-def test_fundamentals_provider_rejects_non_us_market():
-    res = CliRunner().invoke(
-        cli,
-        [
-            "backtest-rolling",
-            "-m",
-            "india",
-            "--tickers",
-            "RELIANCE",
-            "--entry",
-            "close > 0",
-            "--fundamentals-provider",
-            "fmp",
-        ],
-        obj=StubPriceFetcher({}),
+def test_fmp_provider_accepts_india_market(monkeypatch):
+    from screener.backtester.workflow import resolve_backtest_run
+
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    monkeypatch.setenv("FMP_API_KEY", "x")
+    run = resolve_backtest_run(
+        _rolling_request(market="india", fundamentals_provider="fmp")
     )
 
-    assert res.exit_code != 0
-    assert "supports only -m us" in res.output
+    assert run.config.fundamentals_provider == "fmp"
+    assert isinstance(run.fundamental_fetcher, fundamentals.FMPFundamentalFetcher)
+    assert run.fundamental_fetcher.market == "india"
 
 
 def test_openscreener_provider_rejects_non_india_market():
@@ -465,9 +458,31 @@ def test_fmp_fetcher_init_normalizes_config():
 
 
 def test_fundamental_fetchers_declare_supported_markets():
-    assert fundamentals.FMPFundamentalFetcher.markets == frozenset({"us"})
+    assert fundamentals.FMPFundamentalFetcher.markets == frozenset({"us", "india"})
     assert fundamentals.OpenScreenerFundamentalFetcher.markets == frozenset({"india"})
     assert fundamentals.YFinanceFundamentalFetcher.markets == frozenset({"india"})
+
+
+def test_fmp_fetcher_keeps_india_suffix_but_strips_us(monkeypatch):
+    captured_keys: list[tuple] = []
+
+    def fake_provider_fetch(key, _fetch_payload, **_kwargs):
+        captured_keys.append(key)
+        return {}
+
+    monkeypatch.setattr(fundamentals._FMP_PROVIDER, "fetch", fake_provider_fetch)
+    india_fetcher = fundamentals.FMPFundamentalFetcher(
+        api_key="test", market="india", max_workers=1
+    )
+    india_fetcher.fetch(["RELIANCE.NS"], date(2020, 1, 1), date(2024, 1, 1))
+    assert captured_keys[-1][:2] == ("india", "RELIANCE.NS")
+
+    us_fetcher = fundamentals.FMPFundamentalFetcher(api_key="test", max_workers=1)
+    us_fetcher.fetch(["AAPL.NASDAQ"], date(2020, 1, 1), date(2024, 1, 1))
+    assert captured_keys[-1][:2] == ("us", "AAPL")
+
+    with pytest.raises(ValueError, match="US and India"):
+        fundamentals.FMPFundamentalFetcher(api_key="test", market="japan")
 
 
 def test_fmp_fetcher_fetch_single_ticker(monkeypatch, fake_provider):
@@ -564,6 +579,9 @@ def test_build_fundamental_fetcher_resolves_providers(monkeypatch):
         fundamentals.build_fundamental_fetcher("FMP", market="us"),
         fundamentals.FMPFundamentalFetcher,
     )
+    india_fmp = fundamentals.build_fundamental_fetcher("fmp", market="india")
+    assert isinstance(india_fmp, fundamentals.FMPFundamentalFetcher)
+    assert india_fmp.market == "india"
     assert isinstance(
         fundamentals.build_fundamental_fetcher("openscreener", market="india"),
         fundamentals.OpenScreenerFundamentalFetcher,
@@ -577,8 +595,6 @@ def test_build_fundamental_fetcher_resolves_providers(monkeypatch):
         fundamentals.build_fundamental_fetcher("yfinance", market="india"),
         fundamentals.YFinanceFundamentalFetcher,
     )
-    with pytest.raises(ValueError, match="supports only -m us"):
-        fundamentals.build_fundamental_fetcher("fmp", market="india")
     with pytest.raises(ValueError):
         fundamentals.build_fundamental_fetcher("garbage", market="us")
 
