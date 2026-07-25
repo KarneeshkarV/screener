@@ -22,6 +22,7 @@ coverage.xml
 
 # Generated local reports
 *.html
+!profiling/webview/*.html
 *_report_*.md
 picks_today.json
 picks_today.md
@@ -32,3 +33,6 @@ momentum_out/
 oi_lab/
 sweep_results/
 reports/
+
+# generated backtest analysis scratch (raw ledgers, per-combo metrics)
+profiling/_analysis/
