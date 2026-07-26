@@ -31,6 +31,17 @@ from screener.unusual_volume.service import india_symbol as uv_india_symbol
         ("NASDAQ:TSLA", "india", "TSLA"),
         ("BSE:WIPRO", "us", "WIPRO.BO"),
         ("NSE:INFY", "us", "INFY.NS"),
+        # Yahoo uses hyphens where TV liquidity scans often use underscores.
+        ("BAJAJ_AUTO", "india", "BAJAJ-AUTO.NS"),
+        ("NAM_INDIA", "india", "NAM-INDIA.NS"),
+        ("NSE:BAJAJ_AUTO", "india", "BAJAJ-AUTO.NS"),
+        ("BAJAJ_AUTO.NS", "india", "BAJAJ-AUTO.NS"),
+        # TradingView REIT/InvIT suffix → NSE yfinance form.
+        ("EMBASSY.RR", "india", "EMBASSY.NS"),
+        ("NSE:EMBASSY.RR", "india", "EMBASSY.NS"),
+        ("BAGMANE.RR", "india", "BAGMANE.NS"),
+        # Ampersand tickers are already Yahoo-shaped; leave them alone.
+        ("M&M", "india", "M&M.NS"),
     ],
 )
 def test_tv_to_yf(symbol: str, market: str, expected: str) -> None:

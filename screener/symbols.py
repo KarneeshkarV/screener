@@ -7,6 +7,30 @@ Single home for the symbol-conversion rules that were previously duplicated
 
 from __future__ import annotations
 
+# yfinance exchange suffixes we already understand.
+_INDIA_YF_SUFFIXES = (".NS", ".BO")
+# TradingView-only suffixes that should not be sent to Yahoo as-is.
+# REITs/InvITs often appear as ``EMBASSY.RR`` on TV liquidity scans; Yahoo
+# lists the same names under ``EMBASSY.NS``.
+_INDIA_TV_ONLY_SUFFIXES = (".RR",)
+
+
+def _india_yf_root(root: str) -> str:
+    """Normalize an India ticker root for yfinance.
+
+    TradingView / some scanners use underscores (``BAJAJ_AUTO``, ``NAM_INDIA``);
+    Yahoo Finance uses hyphens (``BAJAJ-AUTO.NS``, ``NAM-INDIA.NS``).
+    """
+    return root.replace("_", "-")
+
+
+def _strip_known_suffix(symbol: str, suffixes: tuple[str, ...]) -> tuple[str, str | None]:
+    """Return ``(root, suffix)`` when ``symbol`` ends with a known suffix."""
+    for suffix in suffixes:
+        if symbol.endswith(suffix):
+            return symbol[: -len(suffix)], suffix
+    return symbol, None
+
 
 def tv_to_yf(symbol: str, market: str) -> str:
     """Translate a TradingView-style symbol to a yfinance symbol.
@@ -17,17 +41,31 @@ def tv_to_yf(symbol: str, market: str) -> str:
       'NASDAQ:AAPL' + us    → 'AAPL'
       'AAPL'        + us    → 'AAPL'
       'RELIANCE'    + india → 'RELIANCE.NS'
+      'BAJAJ_AUTO'  + india → 'BAJAJ-AUTO.NS'
+      'EMBASSY.RR'  + india → 'EMBASSY.NS'
     """
     sym = symbol.strip().upper()
     if ":" in sym:
         exch, rest = sym.split(":", 1)
-        if exch == "NSE":
-            return f"{rest}.NS"
-        if exch == "BSE":
+        if exch in ("NSE", "BSE"):
+            rest, _ = _strip_known_suffix(rest, _INDIA_TV_ONLY_SUFFIXES)
+            rest = _india_yf_root(rest)
+            if exch == "NSE":
+                return f"{rest}.NS"
             return f"{rest}.BO"
         return rest
-    if market == "india" and "." not in sym:
-        return f"{sym}.NS"
+
+    if market == "india":
+        root, yf_suffix = _strip_known_suffix(sym, _INDIA_YF_SUFFIXES)
+        if yf_suffix is not None:
+            return f"{_india_yf_root(root)}{yf_suffix}"
+        root, tv_suffix = _strip_known_suffix(sym, _INDIA_TV_ONLY_SUFFIXES)
+        if tv_suffix is not None:
+            return f"{_india_yf_root(root)}.NS"
+        if "." not in sym:
+            return f"{_india_yf_root(sym)}.NS"
+        return sym
+
     return sym
 
 
