@@ -15,16 +15,15 @@ def _prepare_rs_momentum_regime(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         )
         return ctx.bars_by_tv
 
-    benchmark_close = benchmark_bars[["date", "close"]].rename(
-        columns={"close": "benchmark_close"}
-    )
+    # Bars are indexed by date (no "date" column), so align on the index.
+    benchmark_close = benchmark_bars["close"]
 
     prepared: dict[str, pd.DataFrame] = {}
     for symbol, bars in ctx.bars_by_tv.items():
-        merged = bars.merge(benchmark_close, on="date", how="left")
-        merged["benchmark_close"] = merged["benchmark_close"].ffill()
-        merged["rs"] = merged["close"] / merged["benchmark_close"]
-        prepared[symbol] = merged.drop(columns=["benchmark_close"])
+        merged = bars.copy()
+        aligned = benchmark_close.reindex(merged.index).ffill()
+        merged["rs"] = merged["close"] / aligned
+        prepared[symbol] = merged
     return prepared
 
 
