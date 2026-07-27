@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from screener.options.lot_history import historical_lot_sizes
 from screener.options.models import (
     OptionChain,
     OptionContract,
@@ -19,11 +20,71 @@ from screener.options._parse import number as _number
 from screener.options._parse import quote_pair
 from screener.unusual_volume.nse_client import nse_cached_json
 
+# Documented defaults for the India recorder watchlist when neither the
+# live chain payload nor ``~/.screener/lot_sizes_history.csv`` supplies a lot.
+# Prefer those sources when present; these are last-resort multipliers only.
+# (NSE revises index lots periodically — keep history CSV current for accuracy.)
+DEFAULT_INDIA_LOT_SIZES: dict[str, float] = {
+    "NIFTY": 75.0,
+    "BANKNIFTY": 35.0,
+    "FINNIFTY": 65.0,
+    "MIDCPNIFTY": 120.0,
+    "NIFTYNXT50": 25.0,
+}
+
+_LEG_LOT_KEYS: tuple[str, ...] = (
+    "marketLot",
+    "market_lot",
+    "lotSize",
+    "boardLotQuantity",
+    "NewBrdLotQty",
+)
+
 
 class RawFetcher(Protocol):
     def __call__(
         self, symbol: str, *, refresh: bool = False
     ) -> dict[str, Any] | None: ...
+
+
+def _lot_from_mapping(payload: Mapping[str, Any] | None) -> float | None:
+    """Extract a positive lot size from common NSE payload field names."""
+    if payload is None:
+        return None
+    for key in _LEG_LOT_KEYS:
+        value = _number(payload.get(key), nonnegative=True)
+        if value is not None and value > 0:
+            return value
+    return None
+
+
+def resolve_india_lot_size(
+    underlying: str,
+    *,
+    as_of: date,
+    leg: Mapping[str, Any] | None = None,
+    records: Mapping[str, Any] | None = None,
+    lot_sizes: Mapping[str, float] | None = None,
+) -> float | None:
+    """Resolve NSE F&O lot size for one underlying at ``as_of``.
+
+    Precedence: embedded leg/record fields → caller ``lot_sizes`` map →
+    :func:`~screener.options.lot_history.historical_lot_sizes` →
+    :data:`DEFAULT_INDIA_LOT_SIZES`. Returns ``None`` only when no source has
+    the symbol (callers should warn rather than silently assume 1.0).
+    """
+    embedded = _lot_from_mapping(leg) or _lot_from_mapping(records)
+    if embedded is not None:
+        return embedded
+    symbol = underlying.strip().upper()
+    if lot_sizes is not None and symbol in lot_sizes:
+        lot = float(lot_sizes[symbol])
+        if lot > 0:
+            return lot
+    history = historical_lot_sizes(as_of)
+    if symbol in history:
+        return history[symbol]
+    return DEFAULT_INDIA_LOT_SIZES.get(symbol)
 
 
 def _timestamp(raw: object, now: datetime) -> datetime:
@@ -63,6 +124,8 @@ def _contracts_from_records(
     underlying: str,
     as_of: datetime,
     default_expiry: date,
+    records_meta: Mapping[str, Any] | None = None,
+    lot_sizes: Mapping[str, float] | None = None,
 ) -> list[OptionContract]:
     contracts: list[OptionContract] = []
     for raw_row in records:
@@ -89,6 +152,13 @@ def _contracts_from_records(
                 identifier = (
                     f"{underlying}-{contract_expiry.isoformat()}-{strike:g}-{key}"
                 )
+            lot_size = resolve_india_lot_size(
+                underlying,
+                as_of=as_of.date(),
+                leg=leg,
+                records=records_meta,
+                lot_sizes=lot_sizes,
+            )
             try:
                 contracts.append(
                     OptionContract(
@@ -105,6 +175,7 @@ def _contracts_from_records(
                         bid=bid,
                         ask=ask,
                         last=_number(leg.get("lastPrice"), nonnegative=True),
+                        lot_size=lot_size,
                         as_of=as_of,
                         source="nse_live",
                     )
@@ -115,11 +186,22 @@ def _contracts_from_records(
 
 
 def _filtered_contracts(
-    raw: dict[str, Any], underlying: str, as_of: datetime
+    raw: dict[str, Any],
+    underlying: str,
+    as_of: datetime,
+    *,
+    records_meta: Mapping[str, Any] | None = None,
+    lot_sizes: Mapping[str, float] | None = None,
 ) -> list[OptionContract]:
     filtered = raw.get("filtered")
     if not isinstance(filtered, dict):
         return []
+    lot_size = resolve_india_lot_size(
+        underlying,
+        as_of=as_of.date(),
+        records=records_meta,
+        lot_sizes=lot_sizes,
+    )
     contracts: list[OptionContract] = []
     legs: tuple[tuple[str, OptionRight], ...] = (("CE", "call"), ("PE", "put"))
     for key, right in legs:
@@ -137,6 +219,7 @@ def _filtered_contracts(
                 strike=0.0,
                 right=right,
                 oi=oi,
+                lot_size=lot_size,
                 as_of=as_of,
                 source="nse_live",
             )
@@ -150,6 +233,7 @@ def parse_nse_chain(
     symbol: str,
     expiry: date | None = None,
     now: datetime | None = None,
+    lot_sizes: Mapping[str, float] | None = None,
 ) -> OptionChain | None:
     """Normalize NSE's records/filtered option-chain payload."""
     current = now or datetime.now(timezone.utc)
@@ -173,9 +257,17 @@ def parse_nse_chain(
         underlying=underlying,
         as_of=as_of,
         default_expiry=default_expiry,
+        records_meta=records,
+        lot_sizes=lot_sizes,
     )
     if not contracts:
-        contracts = _filtered_contracts(raw, underlying, as_of)
+        contracts = _filtered_contracts(
+            raw,
+            underlying,
+            as_of,
+            records_meta=records,
+            lot_sizes=lot_sizes,
+        )
     if expiry is not None:
         contracts = [contract for contract in contracts if contract.expiry == expiry]
     if not contracts:
@@ -275,8 +367,10 @@ def fetch_option_chain(symbol: str, *, refresh: bool = False) -> dict[str, Any] 
 
 
 __all__ = [
+    "DEFAULT_INDIA_LOT_SIZES",
     "NSELiveOptionsProvider",
     "RawFetcher",
     "fetch_option_chain",
     "parse_nse_chain",
+    "resolve_india_lot_size",
 ]

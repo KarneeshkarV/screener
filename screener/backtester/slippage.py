@@ -25,6 +25,25 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Side = Literal["buy", "sell"]
 
+# Per-interval default adverse-fill assumption (bps), applied by the CLI when
+# ``--slippage-bps`` is not given. The quoted half-spread is a much larger
+# fraction of a fine bar's typical range than of a daily bar's, and intraday
+# strategies cross it far more often per day, so the default rises as bars get
+# finer. The ``1d`` default stays 0.0 so historical daily runs are unchanged.
+DEFAULT_SLIPPAGE_BPS_BY_INTERVAL: dict[str, float] = {
+    "1d": 0.0,
+    "1h": 2.0,
+    "30m": 3.0,
+    "15m": 5.0,
+    "5m": 7.0,
+    "1m": 10.0,
+}
+
+
+def default_slippage_bps(interval: str) -> float:
+    """Default per-fill slippage (bps) for ``interval`` (0.0 when unknown)."""
+    return DEFAULT_SLIPPAGE_BPS_BY_INTERVAL.get(interval, 0.0)
+
 
 @runtime_checkable
 class SlippageModel(Protocol):

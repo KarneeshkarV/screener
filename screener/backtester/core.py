@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Optional, Union, cast
 import numpy as np
 import pandas as pd
 
-from screener.backtester.costs import corwin_schultz_half_spread
+from screener.backtester.costs import corwin_schultz_half_spread, default_spread_window
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig, ExitReason, Trade
@@ -291,7 +291,9 @@ def _half_spread_at_signal(
         series = frame_cache.half_spread_s
     else:
         try:
-            series = corwin_schultz_half_spread(bars["high"], bars["low"])
+            series = corwin_schultz_half_spread(
+                bars["high"], bars["low"], window=default_spread_window(cfg.interval)
+            )
         except (TypeError, ValueError):
             return 0.0
         if frame_cache is not None:

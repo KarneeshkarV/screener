@@ -20,6 +20,8 @@ def cache_dirs(tmp_path) -> dict[str, Path]:
     dirs = {
         "prices": tmp_path / "prices",
         "fmp_prices": tmp_path / "fmp_prices",
+        "bars": tmp_path / "bars",
+        "contracts": tmp_path / "contracts",
         "universes": tmp_path / "universes",
         "scanner": tmp_path / "cache",
         "panels": tmp_path / "panels",
@@ -44,6 +46,42 @@ def _write(path: Path, content: bytes = b"x" * 10, age_days: float = 0.0) -> Non
 
 def test_known_cache_dirs_reflect_monkeypatched_modules(cache_dirs):
     assert known_cache_dirs() == cache_dirs
+
+
+def test_storage_status_flags_over_budget(cache_dirs):
+    from screener.commands.cache import storage_status
+
+    _write(cache_dirs["bars"] / "AAPL.parquet", b"x" * 2_000_000)  # ~2 MB
+    _write(cache_dirs["contracts"] / "us" / "SPY.parquet", b"y" * 1_000)
+    # 1 MB budget for bars → over; contracts left unbudgeted → never over.
+    statuses = {s.name: s for s in storage_status({"bars": 1.0, "contracts": None})}
+    assert statuses["bars"].over_budget is True
+    assert statuses["contracts"].over_budget is False
+    assert statuses["contracts"].budget_bytes is None
+
+
+def test_storage_status_reads_env_budget(cache_dirs, monkeypatch):
+    from screener.commands.cache import storage_status
+
+    _write(cache_dirs["contracts"] / "us" / "SPY.parquet", b"z" * 500_000)
+    monkeypatch.setenv("SCREENER_CONTRACTS_BUDGET_MB", "0.1")  # 100 KB < 500 KB
+    statuses = {s.name: s for s in storage_status()}
+    assert statuses["contracts"].over_budget is True
+
+
+def test_storage_watch_command_exits_nonzero_when_over(cache_dirs):
+    _write(cache_dirs["bars"] / "AAPL.parquet", b"x" * 2_000_000)
+    res = CliRunner().invoke(cli, ["cache", "storage-watch", "--bars-budget-mb", "1"])
+    assert res.exit_code != 0
+    assert "storage budget exceeded" in res.output
+    assert "bars" in res.output
+
+
+def test_storage_watch_command_ok_when_within_budget(cache_dirs):
+    _write(cache_dirs["bars"] / "AAPL.parquet", b"x" * 1_000)
+    res = CliRunner().invoke(cli, ["cache", "storage-watch", "--bars-budget-mb", "100"])
+    assert res.exit_code == 0
+    assert "ok" in res.output
 
 
 def test_cache_status_lists_every_dir_with_counts(cache_dirs):
@@ -89,6 +127,23 @@ def test_cache_clean_removes_only_old_files(cache_dirs):
     assert not old.exists()
     assert fresh.exists()
     assert f"Removed [panels] {old}" in res.output
+    assert "Reclaimed 10 B from 1 file(s)" in res.output
+
+
+def test_cache_clean_preserves_lock_sidecars(cache_dirs):
+    """``.lock`` files must never be deleted — they back cache mutual exclusion (M14)."""
+    data = cache_dirs["prices"] / "AAPL.parquet"
+    lock = cache_dirs["prices"] / "AAPL.parquet.lock"
+    stale_lock = cache_dirs["prices"] / "orphan.lock"
+    _write(data, b"d" * 10, age_days=40)
+    _write(lock, b"", age_days=40)
+    _write(stale_lock, b"", age_days=90)
+    res = CliRunner().invoke(cli, ["cache", "clean", "--older-than", "30"])
+    assert res.exit_code == 0, res.output
+    assert not data.exists()
+    assert lock.exists(), "active data.lock sidecar must survive clean"
+    assert stale_lock.exists(), "any *.lock must survive clean"
+    assert ".lock" not in res.output
     assert "Reclaimed 10 B from 1 file(s)" in res.output
 
 

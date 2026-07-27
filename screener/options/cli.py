@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
+from typing import cast
 
 import click
 import pandas as pd
@@ -12,8 +14,15 @@ from rich.table import Table
 from screener.cache import append_panel_snapshot
 from screener.earnings_backtest.metrics import compute_backtest_summary
 from screener.markets import get_price_fetcher, market_option
-from screener.options.bt_models import OptionPositionTrade, OptionsBacktestConfig
+from screener.options.bt_models import (
+    FillModel,
+    MarginModel,
+    OptionPositionTrade,
+    OptionsBacktestConfig,
+    Settlement,
+)
 from screener.options.criteria import OPTIONS_CRITERIA, run_options_criterion
+from screener.options.models import OptionsMarket
 from screener.options.panels import build_india_panel, show_symbol, snapshot_us
 from screener.options.participant import build_participant_panel
 from screener.options.position_backtest import run_options_position_backtest
@@ -255,6 +264,123 @@ def snapshot(
             f"Unavailable: {', '.join(result.missing)} (providers degraded cleanly).",
             err=True,
         )
+
+
+@options.command(name="record")
+@market_option(
+    default="us",
+    choices=("us", "india"),
+    help="Market whose watchlist chains are snapshotted.",
+    show_default=True,
+)
+@click.option(
+    "--every",
+    "every",
+    default=None,
+    help="Snapshot cadence (e.g. 15m) for a session-bounded loop; "
+    "omit for a single pass.",
+)
+@click.option(
+    "--once",
+    is_flag=True,
+    default=False,
+    help="Force a single pass even when --every is given (what a 15m cron calls).",
+)
+@click.option(
+    "--watchlist",
+    default=None,
+    help="Comma-separated underlyings to snapshot (default: index options).",
+)
+@click.option(
+    "--watchlist-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="File of underlyings (comma/newline separated; # comments allowed).",
+)
+@click.option(
+    "--max-underlyings",
+    type=click.IntRange(min=0),
+    default=0,
+    show_default=True,
+    help="Cap the number of underlyings (0 = no cap).",
+)
+@click.option("--refresh", is_flag=True, help="Bypass provider snapshot caches.")
+@click.pass_context
+def record(
+    ctx: click.Context,
+    market: str,
+    every: str | None,
+    once: bool,
+    watchlist: str | None,
+    watchlist_file: Path | None,
+    max_underlyings: int,
+    refresh: bool,
+) -> None:
+    """Snapshot delayed/live option chains into the contract store.
+
+    Forward-capture: each pass appends every watchlist underlying's chain as a
+    timestamped snapshot (idempotent). US uses delayed CBOE (yfinance
+    fallback); India uses the NSE live chain API. Run one pass per invocation
+    from a 15-minute cron (``--once``), or a session-bounded loop from a single
+    session-open cron (``--every 15m``).
+    """
+    from screener.cache import parse_ttl
+    from screener.options import recorder
+    from screener.options.contract_store import store_health
+
+    provider = None
+    root = None
+    obj = ctx.obj if ctx is not None else None
+    if isinstance(obj, dict):
+        provider = obj.get("provider")
+        root = obj.get("root")
+    if provider is None:
+        provider = recorder.default_provider(market)  # type: ignore[arg-type]
+
+    symbols = recorder.resolve_watchlist(
+        market,
+        watchlist=watchlist,
+        watchlist_file=watchlist_file,
+        max_underlyings=max_underlyings,
+    )
+    if not symbols:
+        raise click.UsageError("no underlyings resolved for the watchlist")
+
+    if every and not once:
+        seconds = parse_ttl(every)
+        if not seconds or seconds <= 0:
+            raise click.UsageError(f"invalid --every interval: {every!r}")
+        recorder.record_loop(
+            market,  # type: ignore[arg-type]
+            symbols,
+            provider=provider,
+            every_seconds=float(seconds),
+            root=root,
+            refresh=refresh,
+            echo=click.echo,
+        )
+    else:
+        result = recorder.run_pass(
+            market,  # type: ignore[arg-type]
+            symbols,
+            provider=provider,
+            root=root,
+            refresh=refresh,
+        )
+        for symbol, count in result.recorded:
+            click.echo(f"{symbol}: {count} contracts snapshotted")
+        click.echo(
+            f"{market.upper()} options record: "
+            f"{len(result.recorded)}/{len(symbols)} underlyings, "
+            f"{result.contract_count} contracts appended."
+        )
+        if result.missing:
+            click.echo(
+                f"Unavailable: {', '.join(result.missing)} "
+                "(providers degraded cleanly).",
+                err=True,
+            )
+    click.echo(store_health(market, root=root).summary(), err=True)
 
 
 @options.command(name="participants")
@@ -499,6 +625,85 @@ def regime(
     show_default=True,
     help="Flat commission per leg per side (rupees).",
 )
+@click.option(
+    "--fill-model",
+    type=click.Choice(["legacy", "mid", "cross"]),
+    default="legacy",
+    show_default=True,
+    help="Fill pricing: legacy (mid/last+settle), mid, or bid/ask cross.",
+)
+@click.option(
+    "--slippage-bps",
+    type=float,
+    default=0.0,
+    show_default=True,
+    help="Extra fill slippage in basis points (mid/cross models).",
+)
+@click.option(
+    "--slippage-ticks",
+    type=float,
+    default=0.0,
+    show_default=True,
+    help="Extra fill slippage in whole ticks (mid/cross models).",
+)
+@click.option(
+    "--tick-size",
+    type=float,
+    default=0.05,
+    show_default=True,
+    help="Tick size for --slippage-ticks.",
+)
+@click.option(
+    "--illiquid-spread-pct",
+    type=float,
+    default=0.0,
+    show_default=True,
+    help="Proxy spread (fraction of mark) for legs lacking quotes.",
+)
+@click.option(
+    "--margin-model",
+    type=click.Choice(["none", "span", "regt"]),
+    default="none",
+    show_default=True,
+    help="Short-option margin: none, SPAN-like (India), or Reg-T (US).",
+)
+@click.option(
+    "--margin-cap-pct",
+    type=float,
+    default=None,
+    help="Skip entries exceeding this fraction of initial capital in margin.",
+)
+@click.option(
+    "--settlement",
+    type=click.Choice(["intrinsic", "settle"]),
+    default="intrinsic",
+    show_default=True,
+    help="Expiry mark: intrinsic vs official per-contract settlement price.",
+)
+@click.option(
+    "--physical-settlement",
+    is_flag=True,
+    help="Record physical (stock) rather than cash (index) expiry settlement.",
+)
+@click.option(
+    "--roll-dte",
+    type=int,
+    default=None,
+    help="Roll (exit + re-enter) when days-to-expiry drops to this value.",
+)
+@click.option(
+    "--roll-delta",
+    type=float,
+    default=None,
+    help="Roll when the position's |net delta| reaches this value.",
+)
+@click.option(
+    "--roll-expiry",
+    "roll_expiry_rule",
+    default="next",
+    show_default=True,
+    help="Expiry rule for the re-entered structure when rolling.",
+)
 @click.option("--min-oi", type=float, default=0.0, show_default=True)
 @click.option("--min-volume", type=float, default=0.0, show_default=True)
 @click.option("--csv", "output_csv", is_flag=True, help="Emit trade ledger as CSV.")
@@ -524,6 +729,18 @@ def backtest(
     max_hold: int | None,
     slippage_pct: float,
     commission_per_order: float,
+    fill_model: str,
+    slippage_bps: float,
+    slippage_ticks: float,
+    tick_size: float,
+    illiquid_spread_pct: float,
+    margin_model: str,
+    margin_cap_pct: float | None,
+    settlement: str,
+    physical_settlement: bool,
+    roll_dte: int | None,
+    roll_delta: float | None,
+    roll_expiry_rule: str,
     min_oi: float,
     min_volume: float,
     output_csv: bool,
@@ -574,6 +791,20 @@ def backtest(
             max_hold=max_hold,
             slippage_pct=float(slippage_pct),
             commission_per_order=float(commission_per_order),
+            fill_model=cast(FillModel, fill_model),
+            slippage_bps=float(slippage_bps),
+            slippage_ticks=float(slippage_ticks),
+            tick_size=float(tick_size),
+            illiquid_spread_pct=float(illiquid_spread_pct),
+            margin_model=cast(MarginModel, margin_model),
+            margin_cap_pct=(
+                float(margin_cap_pct) if margin_cap_pct is not None else None
+            ),
+            settlement=cast(Settlement, settlement),
+            physical_settlement=bool(physical_settlement),
+            roll_dte=roll_dte,
+            roll_delta=roll_delta,
+            roll_expiry_rule=roll_expiry_rule,
             min_oi=float(min_oi),
             min_volume=float(min_volume),
             refresh=bool(refresh),
@@ -605,6 +836,129 @@ def backtest(
 
     summary = compute_backtest_summary(result.trades, strategy=structure)
     _print_options_summary(console, summary)
+    if margin_model != "none" and result.peak_margin > 0:
+        console.print(
+            f"[cyan]Peak margin used: {result.peak_margin:,.0f} "
+            f"({result.peak_margin_utilization * 100:.1f}% of capital)[/cyan]"
+        )
+    if result.trades:
+        _print_options_ledger(console, result.trades)
+    else:
+        console.print(
+            "[yellow]No option trades taken for the given parameters.[/yellow]"
+        )
+
+
+@options.command(name="intraday-backtest")
+@click.option("--tickers", required=True, help="Comma-separated underlyings.")
+@click.option("--start", "start_str", required=True, help="Session start (YYYY-MM-DD).")
+@click.option("--end", "end_str", required=True, help="Session end (YYYY-MM-DD).")
+@market_option(
+    default="us",
+    choices=("us", "india"),
+    help="Options market.",
+    show_default=True,
+)
+@click.option("--structure", default="long_call", show_default=True)
+@click.option("--strike", "strike_rule", default="atm", show_default=True)
+@click.option("--expiry", "expiry_rule", default="front", show_default=True)
+@click.option(
+    "--entry-time", default=None, help="Enter at first snapshot ≥ HH:MM (market-local)."
+)
+@click.option(
+    "--exit-time", default=None, help="Flatten at/after HH:MM (market-local)."
+)
+@click.option("--target-pct", type=float, default=None)
+@click.option("--stop-pct", type=float, default=None)
+@click.option("--lots", type=int, default=1, show_default=True)
+@click.option(
+    "--fill-model",
+    type=click.Choice(["legacy", "mid", "cross"]),
+    default="legacy",
+    show_default=True,
+)
+@click.option("--slippage-bps", type=float, default=0.0, show_default=True)
+@click.option(
+    "--margin-model",
+    type=click.Choice(["none", "span", "regt"]),
+    default="none",
+    show_default=True,
+)
+@click.option(
+    "--equity-hedge",
+    type=float,
+    default=0.0,
+    show_default=True,
+    help="Signed underlying units held alongside each option position (Phase 4.3).",
+)
+@click.pass_context
+def intraday_backtest(
+    ctx: click.Context,
+    tickers: str,
+    start_str: str,
+    end_str: str,
+    market: str,
+    structure: str,
+    strike_rule: str,
+    expiry_rule: str,
+    entry_time: str | None,
+    exit_time: str | None,
+    target_pct: float | None,
+    stop_pct: float | None,
+    lots: int,
+    fill_model: str,
+    slippage_bps: float,
+    margin_model: str,
+    equity_hedge: float,
+) -> None:
+    """Backtest an option structure over intraday contract-store snapshots.
+
+    Walks recorded intraday chains point-in-time (entry/mark/exit at snapshot
+    timestamps); positions flatten at each session's last snapshot.
+    """
+    from datetime import time as _time
+
+    from screener.options.intraday_backtest import (
+        IntradayOptionsBacktestConfig,
+        run_intraday_options_backtest,
+    )
+
+    def _hhmm(value: str | None) -> _time | None:
+        if not value:
+            return None
+        hh, mm = value.split(":")
+        return _time(int(hh), int(mm))
+
+    cfg = IntradayOptionsBacktestConfig(
+        tickers=tuple(t.strip() for t in tickers.split(",") if t.strip()),
+        start=date.fromisoformat(start_str),
+        end=date.fromisoformat(end_str),
+        market=cast(OptionsMarket, market),
+        structure=structure,
+        strike_rule=strike_rule,
+        expiry_rule=expiry_rule,
+        entry_time=_hhmm(entry_time),
+        exit_time=_hhmm(exit_time),
+        target_pct=target_pct,
+        stop_pct=stop_pct,
+        lots=lots,
+        fill_model=cast(FillModel, fill_model),
+        slippage_bps=float(slippage_bps),
+        margin_model=cast(MarginModel, margin_model),
+        equity_hedge_qty=float(equity_hedge),
+    )
+
+    obj = ctx.obj if ctx is not None else None
+    provider = obj.get("provider") if isinstance(obj, dict) else None
+    result = run_intraday_options_backtest(cfg, provider)
+
+    console = Console()
+    for warning in result.warnings[:20]:
+        console.print(f"[yellow]{warning}[/yellow]")
+    summary = compute_backtest_summary(result.trades, strategy=structure)
+    _print_options_summary(console, summary)
+    if margin_model != "none" and result.peak_margin > 0:
+        console.print(f"[cyan]Peak margin used: {result.peak_margin:,.0f}[/cyan]")
     if result.trades:
         _print_options_ledger(console, result.trades)
     else:
@@ -697,6 +1051,7 @@ __all__ = [
     "build_panel",
     "options",
     "participants",
+    "record",
     "regime",
     "show",
     "signals",

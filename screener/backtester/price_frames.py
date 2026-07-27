@@ -5,11 +5,20 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 CORPORATE_ACTION_COLUMNS = ["dividend", "split_factor", "stock_splits"]
+
+# Intraday intervals a stored 1m series can be downsampled into locally, with
+# the bucket width in minutes. Buckets are anchored at each session's first
+# bar (see ``resample_intraday_bars``), so the result matches how providers
+# label their native bars (US 1h: 09:30/10:30/... ET; India 30m: 09:15/09:45
+# IST) — a plain clock-aligned resample would land on :00/:30 boundaries
+# instead.
+RESAMPLE_MINUTES_FROM_1M = {"5m": 5, "15m": 15, "30m": 30, "1h": 60}
 
 
 def naive_normalized_index(index: pd.Index, interval: str = "1d") -> pd.DatetimeIndex:
@@ -136,15 +145,109 @@ def frame_has_range(
     end: pd.Timestamp,
     interval: str = "1d",
 ) -> bool:
-    del interval  # Range tolerance is identical for daily and intraday frames.
+    """Return whether ``frame`` covers ``[start, end]`` well enough to skip a fetch.
+
+    Daily (``1d``): boundary-only check — the first bar in range must fall
+    within 3 calendar days of ``start`` and the last within 3 calendar days of
+    ``end`` (weekends/holidays). Interior density is not inspected.
+
+    Intraday: the same ±3 calendar-day boundary tolerance, plus an interior-gap
+    check — any gap between consecutive bars inside the window larger than 4
+    calendar days rejects the frame (weekend + holiday is fine; a missing full
+    week of ~7 days fails). Without the interior check, an archive missing a
+    middle week would still pass on endpoints alone.
+    """
     if frame is None or frame.empty:
         return False
     in_range = frame.loc[(frame.index >= start) & (frame.index <= end)]
-    return (
-        not in_range.empty
-        and in_range.index.min() <= start + pd.Timedelta(days=3)
+    if in_range.empty:
+        return False
+    if not (
+        in_range.index.min() <= start + pd.Timedelta(days=3)
         and in_range.index.max() >= end - pd.Timedelta(days=3)
-    )
+    ):
+        return False
+    if interval == "1d":
+        return True
+    # Intraday: reject large interior holes (missing session week, etc.).
+    if len(in_range) < 2:
+        return True
+    gaps = in_range.index.to_series().diff().iloc[1:]
+    return bool(gaps.max() <= pd.Timedelta(days=4))
+
+
+def resample_intraday_bars(
+    frame: pd.DataFrame, interval: str, market_tz: str
+) -> pd.DataFrame:
+    """Downsample 1m bars to a coarser intraday interval, anchored per session.
+
+    Buckets are anchored at the first bar of each exchange session (session
+    labels come from :func:`screener.backtester.sessions.session_dates` on the
+    naive-UTC index), so US 1h bars land on 09:30/10:30/... ET and India 30m
+    bars on 09:15/09:45 IST — matching how providers label native bars.
+    Half-day sessions simply produce fewer buckets. Aggregation is the standard
+    OHLCV roll-up (open=first, high=max, low=min, close=last, volume=sum);
+    ``adj_close`` takes last and ``dividend``/``stock_splits`` take sum when
+    present.
+
+    When a session's first stored bar is late (partial archive), that session's
+    buckets anchor at the first *stored* bar instead of the true session open —
+    labels can drift by less than one bucket for that session only. Within a
+    session every bucket label is exactly ``anchor + k * interval`` (not the
+    timestamp of the first *observed* bar in that bucket), so a mid-session gap
+    does not de-align symbols in cross-sectional joins.
+
+    Unsorted input is sorted by index before bucketing.
+    """
+    minutes = RESAMPLE_MINUTES_FROM_1M.get(interval)
+    if minutes is None:
+        raise ValueError(
+            f"cannot resample to interval {interval!r}; expected one of "
+            f"{sorted(RESAMPLE_MINUTES_FROM_1M)}"
+        )
+    if frame is None or frame.empty:
+        return empty_ohlcv_frame()
+
+    from screener.backtester.sessions import session_dates
+
+    index = pd.DatetimeIndex(frame.index)
+    if not index.is_monotonic_increasing:
+        frame = frame.sort_index()
+        index = pd.DatetimeIndex(frame.index)
+    ts_ns = index.to_numpy().view("i8")
+    labels = session_dates(index, market_tz)
+    n = len(index)
+    session_change = np.empty(n, dtype=bool)
+    session_change[0] = True
+    session_change[1:] = labels[1:] != labels[:-1]
+    session_id = np.cumsum(session_change) - 1
+    session_first_ns = ts_ns[session_change][session_id]
+    bucket_ns = pd.Timedelta(minutes=minutes).value
+    bucket = (ts_ns - session_first_ns) // bucket_ns
+    # Unique per (session, bucket); non-decreasing because the index is sorted.
+    key = session_id.astype(np.int64) * (1 << 24) + bucket
+    first_in_bucket = np.empty(n, dtype=bool)
+    first_in_bucket[0] = True
+    first_in_bucket[1:] = key[1:] != key[:-1]
+
+    aggregations = {
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+        "adj_close": "last",
+        "dividend": "sum",
+        "stock_splits": "sum",
+        "split_factor": "last",
+    }
+    agg = {col: fn for col, fn in aggregations.items() if col in frame.columns}
+    out = frame.groupby(key, sort=False).agg(agg)
+    # Label each bucket at its computed boundary (anchor + k*interval), not the
+    # first observed bar — mid-session gaps must not shift labels.
+    label_ns = session_first_ns[first_in_bucket] + bucket[first_in_bucket] * bucket_ns
+    out.index = pd.DatetimeIndex(label_ns)
+    return out
 
 
 def split_yfinance_download(
@@ -176,6 +279,7 @@ def split_yfinance_download(
 __all__ = [
     "CORPORATE_ACTION_COLUMNS",
     "OHLCV_COLUMNS",
+    "RESAMPLE_MINUTES_FROM_1M",
     "apply_splits_only_adjustment",
     "empty_ohlcv_frame",
     "frame_has_range",
@@ -183,6 +287,7 @@ __all__ = [
     "merge_price_frames",
     "naive_normalized_index",
     "normalize_price_frame",
+    "resample_intraday_bars",
     "split_yfinance_download",
     "warn_unadjustable_fmp_frames",
 ]

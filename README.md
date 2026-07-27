@@ -258,8 +258,35 @@ Notes:
 
 - yfinance caps intraday history (1m ≈ last 30 days, 5m–30m ≈ 60 days, 1h ≈ 730 days); requests past the cap log a warning and return what is available.
 - With `FMP_API_KEY` set, FMP serves intraday bars (raw, unadjusted) via `historical-chart` — both as the automatic fallback and with `SCREENER_PRICE_PROVIDER=fmp`.
-- Intraday timestamps are canonical naive UTC across providers; intraday bars are cached under interval-namespaced keys so daily caches are never polluted.
+- Intraday timestamps are canonical naive UTC across providers; intraday bars live in the interval-partitioned bar store `~/.screener/bars/{market}/{interval}/{symbol}.parquet` (daily bars keep the legacy flat cache in `~/.screener/prices`).
+- One stored 1m series serves 5m/15m/30m/1h requests: when the 1m archive covers the window, bars are resampled locally (session-anchored, so US 1h bars land on 09:30 ET and India 30m bars on 09:15 IST) instead of downloading a separate per-interval series.
+- Without `--slippage-bps`, intraday runs default to interval-aware slippage (2/3/5/7/10 bps at 1h/30m/15m/5m/1m) because the quoted spread is a much larger fraction of a fine bar's range; the 1d default stays 0.
 - Long-warmup strategies (e.g. anything needing SMA200) usually cannot fill their lookback inside the capped intraday windows.
+
+#### Daily 1m bar recorder cron
+
+`scripts/daily_bars_record.sh` appends the trailing `--days` (default 2) of 1m bars for each market's active universe (default: sp500 / nifty50; override with `--universe` or `--tickers`) into the bar store, so the archive grows past the ~30-day free-history cap and increasingly serves coarser intervals from local resampling. Runs are idempotent (overlaps dedupe on write); keep the cron daily — a pause longer than the provider cap leaves a hole it cannot backfill.
+
+```cron
+# m h dom mon dow  command
+30 1 * * 2-6  /root/screneer_main/screener/scripts/daily_bars_record.sh >> "$HOME/.screener/bars-logs/cron.log" 2>&1
+```
+
+Tunables via environment: `MARKETS` (default `us india`), `DAYS` (default 2), `LOG_DIR`, `KEEP_DAYS` (log retention, default 30).
+
+#### Options snapshot recorder cron
+
+`screener options record` forward-captures option chains into the first-class contract store at `~/.screener/contracts/{market}/{date}/{underlying}.parquet` — delayed CBOE quotes (US, yfinance fallback) and the NSE live chain API (India). Each snapshot is enriched on ingest (missing IV inverted from the mark; missing greeks filled from IV) and appends idempotently (dedupe on contract + snapshot timestamp). `--every 15m` runs a session-bounded loop (no-op outside session hours, exits at the close), so one session-open cron per market covers the day; `--once` suits a plain 15-minute cron. Default watchlist is index options — extend with `--watchlist` / `--watchlist-file`. `scripts/daily_options_record.sh` wraps it, and `screener cache status` reports contract-store freshness and missing-session gaps.
+
+```cron
+# India session 09:15–15:30 IST, US session 09:30–16:00 ET (CRON_TZ per market)
+CRON_TZ=Asia/Kolkata
+10 9 * * 1-5  MARKETS=india /root/screneer_main/screener/scripts/daily_options_record.sh >> "$HOME/.screener/options-logs/cron.log" 2>&1
+CRON_TZ=America/New_York
+25 9 * * 1-5  MARKETS=us    /root/screneer_main/screener/scripts/daily_options_record.sh >> "$HOME/.screener/options-logs/cron.log" 2>&1
+```
+
+US intraday options history is capture-start-forward (deep history needs a paid Polygon/ThetaData adapter — a documented stub seam); India is capture-forward plus EOD bhavcopy.
 
 ### `backtest-lab`
 

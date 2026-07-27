@@ -16,6 +16,7 @@ from screener.backtester.cli_common import (
     intraday_options,
     parse_partial_exits,
     parse_ticker_list,
+    resolve_interval_cost_defaults,
     resolve_min_filters,
     resolve_report_path,
     resolve_strategy_exprs,
@@ -199,15 +200,23 @@ def backtest_historical(
                 f"{snapshot.market!r}, not {market!r}."
             )
         market = snapshot.market
-        as_of = snapshot.run_date
+        # Daily replays keep date truncation (byte-identical). Intraday
+        # intervals preserve the stored time-of-day so a 10:30 screen is not
+        # rewound to midnight (previous close).
+        as_of = snapshot.run_datetime if interval != "1d" else snapshot.run_date
         if not strategy_name and not entry_expr:
             # Pure replay: admit every stored ticker at the run date.
             entry_expr = "close > 0"
         if ctx.get_parameter_source("top") == click.core.ParameterSource.DEFAULT:
             top = len(snapshot.tickers)
+        as_of_label = (
+            as_of.isoformat(sep=" ", timespec="seconds")
+            if isinstance(as_of, datetime)
+            else as_of.isoformat()
+        )
         click.echo(
             f"Replaying screen run #{snapshot.run_id} "
-            f"({snapshot.market}/{snapshot.criteria} @ {snapshot.run_date.isoformat()}, "
+            f"({snapshot.market}/{snapshot.criteria} @ {as_of_label}, "
             f"{len(snapshot.tickers)} tickers)",
             err=True,
         )
@@ -215,12 +224,22 @@ def backtest_historical(
         raise click.UsageError("--as-of is required unless --from-run is used.")
 
     entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
+    slippage_bps, commission_bps = resolve_interval_cost_defaults(
+        interval, slippage_bps, commission_bps
+    )
     slip_model = build_slippage_model(
         slippage_model, slippage_bps, half_spread_bps, vol_impact_k
     )
     partial_exits = parse_partial_exits(partial_exit_args)
     bench = benchmark or get_market(market).benchmark
-    as_of_date: date = as_of.date() if isinstance(as_of, datetime) else as_of
+    # Keep full datetime when --from-run supplied an intraday time-of-day;
+    # otherwise normalize click DateTime / date inputs to a plain date.
+    if isinstance(as_of, datetime) and (
+        as_of.hour or as_of.minute or as_of.second or as_of.microsecond
+    ):
+        as_of_date: date | datetime = as_of
+    else:
+        as_of_date = as_of.date() if isinstance(as_of, datetime) else as_of
 
     ticker_tuple = None
     if snapshot is not None:
@@ -282,7 +301,7 @@ def backtest_historical(
     )
 
     fetcher = build_backtest_fetcher(
-        ctx.obj, price_adjustment=price_adjustment, interval=interval
+        ctx.obj, price_adjustment=price_adjustment, interval=interval, market=market
     )
     from screener.backtester import historical as historical_engine
 

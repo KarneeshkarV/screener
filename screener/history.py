@@ -63,8 +63,18 @@ def _to_float(val) -> Optional[float]:
     return f
 
 
-def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
-    run_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+def save_run(
+    market: str,
+    criteria: str,
+    total: int,
+    df: pd.DataFrame,
+    run_ts: Optional[str] = None,
+) -> int:
+    # ``run_ts`` defaults to now (byte-identical for the daily screen path); the
+    # intraday live loop passes each pass's own timestamp so successive passes
+    # land on distinct run rows instead of colliding within the same second.
+    if run_ts is None:
+        run_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     conn = _connect()
     try:
         # Two runs landing in the same second collide on UNIQUE(run_ts, market,
@@ -139,6 +149,19 @@ class RunSnapshot:
     @property
     def run_date(self) -> date:
         return datetime.fromisoformat(self.run_ts).date()
+
+    @property
+    def run_datetime(self) -> datetime:
+        """Full run timestamp as canonical naive UTC.
+
+        Daily replays still use :attr:`run_date` (date truncation). Intraday
+        ``--from-run`` replays need the stored time-of-day so a 10:30 ET screen
+        is not rewound to midnight (previous close).
+        """
+        parsed = datetime.fromisoformat(self.run_ts)
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
 
     @property
     def tickers(self) -> list[str]:

@@ -34,6 +34,7 @@ from screener.backtester.models import (
 from screener.backtester.historical_cli import backtest_historical
 from screener.backtester.pine import PineError, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.backtester.sessions import market_timezone
 from screener.backtester.sizing import entry_budget_for
 from screener.options.backtest import merge_referenced_options
 
@@ -393,7 +394,12 @@ def _run_event_driven_sim(
         warnings=warnings,
         caches=caches,
     )
-    run_day_loop(master_dates, day_loop, source)
+    run_day_loop(
+        master_dates,
+        day_loop,
+        source,
+        market_tz=market_timezone(cfg.market) if cfg.interval != "1d" else None,
+    )
 
     for slot_id, state in list(slot_states.items()):
         if state is None:

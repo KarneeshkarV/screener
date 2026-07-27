@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, time, timezone
 from types import NoneType
 from typing import get_args
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from screener.backtester.pine import Node, collect_names
+from screener.markets import get_market
 from screener.options.models import ChainMetrics
-from screener.options.panels import read_options_panel
+from screener.options.panels import INTRADAY_PANEL_FIELDS, read_options_panel
 from screener.symbols import tv_to_nse, tv_to_yf
+
+# Regular-session close (market-local). Daily panel rows are stamped at midnight;
+# on intraday targets they only become available at this clock (see H5).
+_SESSION_CLOSE_LOCAL: dict[str, time] = {
+    "us": time(16, 0),
+    "india": time(15, 30),
+}
 
 
 def _numeric_metrics_fields() -> frozenset[str]:
@@ -34,6 +44,9 @@ PANEL_DERIVED_EXPRESSION_FIELDS = frozenset(
         "options_volume_avg_20",
         "unusual_options_ratio",
         "history_days",
+        # Phase 3.4 intraday-derived columns (present on the panel schema, NaN
+        # until a store reduction fills them); expressions may reference them.
+        *INTRADAY_PANEL_FIELDS,
     }
 )
 OPTION_EXPRESSION_FIELDS = _numeric_metrics_fields() | PANEL_DERIVED_EXPRESSION_FIELDS
@@ -61,6 +74,52 @@ def _symbol_key(symbol: str, market: str) -> str:
     return tv_to_yf(symbol, market).upper().replace(".", "-")
 
 
+def _index_is_intraday(index: pd.DatetimeIndex) -> bool:
+    """True when any timestamp carries a non-midnight clock (intraday bars)."""
+    if len(index) == 0:
+        return False
+    return bool(
+        (index.hour != 0).any()
+        or (index.minute != 0).any()
+        or (index.second != 0).any()
+        or (index.microsecond != 0).any()
+    )
+
+
+def _session_close_availability(
+    as_of_index: pd.DatetimeIndex,
+    *,
+    market: str,
+    target_index: pd.DatetimeIndex,
+) -> pd.DatetimeIndex:
+    """Map midnight-stamped daily panel rows to session-close availability.
+
+    Daily option metrics are end-of-session observations stamped at midnight.
+    On an *intraday* target index they must only ffill onto bars at/after that
+    day's regular close (local), converted to the target's timezone convention
+    (naive UTC for the bar store, or the target's tz when it is aware).
+    Daily (midnight-normalized) targets keep the midnight stamp unchanged.
+    """
+    if not _index_is_intraday(target_index):
+        return as_of_index
+
+    close_local = _SESSION_CLOSE_LOCAL.get(market, time(16, 0))
+    market_tz = ZoneInfo(get_market(market).timezone)
+    target_tz = target_index.tz
+    shifted: list[pd.Timestamp] = []
+    for ts in as_of_index:
+        day: date = pd.Timestamp(ts).date()
+        local_close = datetime.combine(day, close_local, tzinfo=market_tz)
+        if target_tz is not None:
+            converted = local_close.astimezone(target_tz)
+            shifted.append(pd.Timestamp(converted))
+        else:
+            # Canonical bar store: naive UTC.
+            utc_naive = local_close.astimezone(timezone.utc).replace(tzinfo=None)
+            shifted.append(pd.Timestamp(utc_naive))
+    return pd.DatetimeIndex(shifted)
+
+
 def merge_options_into_bars(
     bars_by_tv: dict[str, pd.DataFrame],
     *,
@@ -74,6 +133,12 @@ def merge_options_into_bars(
     comparison evaluates false rather than aborting the entire backtest with an
     unknown-name error. Existing injected bar columns are retained where the
     canonical panel has no value.
+
+    Daily panel rows are midnight-stamped end-of-session observations. When the
+    target bar index is intraday, each row becomes available only at that day's
+    session close (no same-day lookahead of closing IV/OI onto morning bars).
+    Daily-bar targets keep midnight availability (byte-identical to prior
+    behavior).
     """
     requested = tuple(sorted(fields & OPTION_EXPRESSION_FIELDS))
     if not requested:
@@ -121,6 +186,11 @@ def merge_options_into_bars(
             series = series[~series.index.duplicated(keep="last")].sort_index()
             target_index = pd.DatetimeIndex(pd.to_datetime(bars.index))
             series.index = pd.DatetimeIndex(series.index)
+            # Shift midnight daily rows to session close on intraday targets
+            # before timezone alignment / ffill.
+            series.index = _session_close_availability(
+                series.index, market=market, target_index=target_index
+            )
             if target_index.tz is not None and series.index.tz is None:
                 series.index = series.index.tz_localize(target_index.tz)
             elif target_index.tz is None and series.index.tz is not None:

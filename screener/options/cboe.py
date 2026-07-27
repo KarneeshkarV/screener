@@ -27,6 +27,10 @@ CBOE_DELAYED_URL = (
 CBOE_INDEX_SYMBOLS = frozenset(
     {"SPX", "VIX", "XSP", "OEX", "RUT", "NDX", "DJX", "MRUT"}
 )
+# Standard US equity/ETF/index option contract multiplier (shares per contract).
+# CBOE delayed JSON does not carry a per-row multiplier; non-standard mini
+# contracts are rare on the default watchlist and would need an explicit table.
+US_OPTION_LOT_SIZE = 100.0
 _OCC_SYMBOL = re.compile(r"^(.+?)(\d{6})([CP])(\d{8})$")
 _CBOE_CACHE = CachedProvider(
     ProviderSpec(provider="cboe", namespace="options_cboe", ttl_seconds=900)
@@ -110,6 +114,7 @@ def parse_cboe_chain(
                     theta=_number(item.get("theta")),
                     vega=_number(item.get("vega")),
                     rho=_number(item.get("rho")),
+                    lot_size=US_OPTION_LOT_SIZE,
                     as_of=as_of,
                     source="cboe_delayed",
                 )
@@ -193,6 +198,7 @@ class CboeOptionsProvider:
 __all__ = [
     "CBOE_DELAYED_URL",
     "CBOE_INDEX_SYMBOLS",
+    "US_OPTION_LOT_SIZE",
     "CboeOptionsProvider",
     "cboe_symbol",
     "parse_cboe_chain",

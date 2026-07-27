@@ -16,6 +16,7 @@ from screener.backtester.lab import backtest_lab
 from screener.backtester.optimization.cli import optimize, research_report
 from screener.backtester.rolling import backtest_rolling
 from screener.backtester.vbt_sweep import vbt_sweep
+from screener.commands.bars import bars_group
 from screener.commands.cache import cache_group
 from screener.commands.conviction import conviction
 from screener.commands.filings import filings
@@ -175,6 +176,7 @@ _register_operator_cli(cli)
 cli.add_command(optimize)
 cli.add_command(research_report)
 cli.add_command(cache_group)
+cli.add_command(bars_group)
 cli.add_command(options)
 
 

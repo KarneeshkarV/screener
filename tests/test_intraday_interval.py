@@ -18,11 +18,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from screener.backtester.bar_store import save_bars
 from screener.backtester.data import (
     YFinancePriceFetcher,
     _naive_normalized_index,
     _normalize_frame,
-    _save_cache,
 )
 from screener.backtester.historical import _warmup_days_for_interval
 from screener.backtester.metrics import (
@@ -100,25 +100,36 @@ def test_normalize_frame_does_not_collapse_intraday_bars():
     assert len(daily) == 2  # one surviving bar per calendar day (keep last)
 
 
-def test_cache_key_namespaces_intraday_but_not_daily():
+def test_cache_key_stays_flat_for_daily_and_bar_store_covers_intraday(tmp_path):
     daily = YFinancePriceFetcher(interval="1d")
     assert daily._cache_key("AAPL") == "AAPL"
+    assert not daily._uses_bar_store()
 
     daily_raw = YFinancePriceFetcher(interval="1d", auto_adjust=False)
     assert daily_raw._cache_key("AAPL") == "AAPL__raw"
 
-    intraday = YFinancePriceFetcher(interval="15m")
-    assert intraday._cache_key("AAPL") == "AAPL__15m"
+    # Intraday intervals are served from the interval-partitioned bar store
+    # (~/.screener/bars/{market}/{interval}/{symbol}.parquet) instead of
+    # per-interval flat-cache keys.
+    intraday = YFinancePriceFetcher(interval="15m", bars_root=tmp_path)
+    assert intraday._uses_bar_store()
+    assert intraday._stored_path("AAPL", "") == tmp_path / "us" / "15m" / "AAPL.parquet"
 
-    intraday_raw = YFinancePriceFetcher(interval="15m", auto_adjust=False)
-    assert intraday_raw._cache_key("AAPL") == "AAPL__15m__raw"
+    intraday_raw = YFinancePriceFetcher(
+        interval="15m", auto_adjust=False, bars_root=tmp_path
+    )
+    assert intraday_raw._stored_path("AAPL", "") == (
+        tmp_path / "us" / "15m" / "AAPL__raw.parquet"
+    )
 
 
-def test_yfinance_intraday_fetch_includes_whole_end_date_from_cache(tmp_path):
-    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1h")
+def test_yfinance_intraday_fetch_includes_whole_end_date_from_bar_store(tmp_path):
+    fetcher = YFinancePriceFetcher(
+        cache_dir=tmp_path, interval="1h", bars_root=tmp_path
+    )
     index = pd.DatetimeIndex(["2026-07-01 13:30", "2026-07-01 14:30"])
     frame = _rising_frame(index, 100.0, 10_000.0)
-    _save_cache(fetcher._cache_key("AAPL"), frame, tmp_path)
+    save_bars("AAPL", frame, market="us", interval="1h", root=tmp_path)
 
     out = fetcher.fetch(["AAPL"], date(2026, 7, 1), date(2026, 7, 1))["AAPL"]
 
@@ -151,7 +162,9 @@ def test_yfinance_one_minute_downloads_are_chunked_and_stitched(tmp_path, monkey
         )
 
     monkeypatch.setattr(yf, "download", fake_download)
-    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1m", max_workers=1)
+    fetcher = YFinancePriceFetcher(
+        cache_dir=tmp_path, interval="1m", max_workers=1, bars_root=tmp_path
+    )
 
     out = fetcher.fetch(["AAA"], start, end)["AAA"]
 
@@ -189,6 +202,165 @@ def test_yfinance_daily_window_remains_one_download(tmp_path, monkeypatch):
     assert len(calls) == 1
     assert calls[0]["start"] == pd.Timestamp("2024-01-01")
     assert calls[0]["end"] == pd.Timestamp("2024-01-21")
+
+
+def test_intraday_gap_fill_normalizes_fetch_start_to_session_boundary(
+    tmp_path, monkeypatch
+):
+    """Intraday gap-fill must not start mid-session (C5).
+
+    Cached bars ending at 15:30 UTC + 1 day would land at 15:30 next day and
+    permanently hole the morning of that session. Fetch start must be
+    midnight of the next calendar day.
+    """
+    import yfinance as yf
+
+    # Cached: one session ending mid-afternoon UTC.
+    cached_index = pd.DatetimeIndex(
+        [
+            pd.Timestamp("2026-07-20 14:30"),
+            pd.Timestamp("2026-07-20 15:30"),
+            pd.Timestamp("2026-07-20 16:30"),
+        ]
+    )
+    save_bars(
+        "AAA",
+        _rising_frame(cached_index, 100.0, 1_000.0),
+        market="us",
+        interval="1h",
+        root=tmp_path,
+    )
+
+    calls: list[dict] = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append(kwargs)
+        # Return a couple of bars in the requested window so the merge succeeds.
+        start = pd.Timestamp(kwargs["start"])
+        idx = pd.DatetimeIndex([start + pd.Timedelta(hours=14, minutes=30)])
+        return pd.DataFrame(
+            {
+                "Open": [1.0],
+                "High": [2.0],
+                "Low": [0.5],
+                "Close": [1.5],
+                "Volume": [1000],
+            },
+            index=idx,
+        )
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    fetcher = YFinancePriceFetcher(
+        cache_dir=tmp_path,
+        interval="1h",
+        bars_root=tmp_path,
+        market="us",
+        max_workers=1,
+    )
+    # Request extends well past the cache (forward gap-fill).
+    fetcher.fetch(["AAA"], date(2026, 7, 20), date(2026, 7, 24))
+
+    assert calls, "expected a gap-fill download"
+    # Must start at midnight of the calendar day after max_cached, not mid-session.
+    assert pd.Timestamp(calls[0]["start"]) == pd.Timestamp("2026-07-21")
+    assert pd.Timestamp(calls[0]["start"]).hour == 0
+
+
+def test_intraday_gap_fill_normalizes_fetch_end_to_end_of_prior_day(
+    tmp_path, monkeypatch
+):
+    """Backward intraday gap-fill ends at end-of-day before min_cached (C5)."""
+    import yfinance as yf
+
+    cached_index = pd.DatetimeIndex(
+        [
+            pd.Timestamp("2026-07-22 14:30"),
+            pd.Timestamp("2026-07-22 15:30"),
+            pd.Timestamp("2026-07-23 14:30"),
+            pd.Timestamp("2026-07-23 15:30"),
+        ]
+    )
+    save_bars(
+        "AAA",
+        _rising_frame(cached_index, 100.0, 1_000.0),
+        market="us",
+        interval="1h",
+        root=tmp_path,
+    )
+
+    calls: list[dict] = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append(kwargs)
+        start = pd.Timestamp(kwargs["start"])
+        idx = pd.DatetimeIndex([start + pd.Timedelta(hours=14, minutes=30)])
+        return pd.DataFrame(
+            {
+                "Open": [1.0],
+                "High": [2.0],
+                "Low": [0.5],
+                "Close": [1.5],
+                "Volume": [1000],
+            },
+            index=idx,
+        )
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    fetcher = YFinancePriceFetcher(
+        cache_dir=tmp_path,
+        interval="1h",
+        bars_root=tmp_path,
+        market="us",
+        max_workers=1,
+    )
+    # Request starts well before the cache (backward gap-fill).
+    fetcher.fetch(["AAA"], date(2026, 7, 15), date(2026, 7, 23))
+
+    assert calls, "expected a backward gap-fill download"
+    # download end is exclusive (normalized + 1 day); the fetch_end bound
+    # itself is end-of-day 2026-07-21.
+    fetch_ends = [pd.Timestamp(c["end"]) for c in calls]
+    # At least one call's exclusive end should be 2026-07-22 (day after EOD 21).
+    assert any(end == pd.Timestamp("2026-07-22") for end in fetch_ends)
+
+
+def test_daily_gap_fill_start_stays_max_cached_plus_one_day(tmp_path, monkeypatch):
+    """Daily gap-fill remains byte-identical: max_cached + 1 day (C5)."""
+    import yfinance as yf
+
+    cached = pd.DataFrame(
+        {
+            "open": [1.0, 2.0, 3.0],
+            "high": [1.5, 2.5, 3.5],
+            "low": [0.5, 1.5, 2.5],
+            "close": [1.2, 2.2, 3.2],
+            "volume": [100.0, 100.0, 100.0],
+        },
+        index=pd.DatetimeIndex(["2024-01-02", "2024-01-03", "2024-01-04"]),
+    )
+    cached.to_parquet(tmp_path / "AAA.parquet")
+
+    calls: list[dict] = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame(
+            {
+                "Open": [4.0],
+                "High": [4.5],
+                "Low": [3.5],
+                "Close": [4.2],
+                "Volume": [1000],
+            },
+            index=pd.DatetimeIndex(["2024-01-05"]),
+        )
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1d")
+    fetcher.fetch(["AAA"], date(2024, 1, 2), date(2024, 1, 20))
+
+    assert calls
+    assert pd.Timestamp(calls[0]["start"]) == pd.Timestamp("2024-01-05")
 
 
 # --------------------------------------------------------------------------- #
