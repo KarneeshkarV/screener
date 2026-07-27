@@ -8,10 +8,11 @@ by ``SCREENER_LOG_JSON=1`` (env) or ``configure_logging(json=True)``.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sys
-from typing import Any
+from typing import Any, Iterator
 
 import structlog
 
@@ -61,6 +62,37 @@ def configure_logging(level: str = "INFO", *, json: bool | None = None) -> None:
     )
 
     _CONFIGURED = True
+
+
+@contextlib.contextmanager
+def suppressed_yfinance_errors() -> Iterator[None]:
+    """Silence yfinance's expected "possibly delisted" chatter.
+
+    yfinance reports empty downloads through ``logging.getLogger("yfinance")``
+    rather than by writing to stderr, so ``contextlib.redirect_stderr`` cannot
+    reach it: ``redirect_stderr`` only rebinds ``sys.stderr``, while the root
+    ``StreamHandler`` that ``configure_logging`` installs holds a reference to
+    the *original* stderr object and keeps writing there regardless.
+
+    Raising the level on the ``yfinance`` logger drops those records at the
+    source instead. Child loggers inherit the effective level, so one call
+    covers the package. The change is process-wide for the duration of the
+    block, which is what callers want: downloads run across a thread pool, and
+    per-thread scoping would race.
+
+    Debug logging opts out, so the messages stay reachable when someone is
+    actually diagnosing a fetch.
+    """
+    logger = logging.getLogger("yfinance")
+    if logging.getLogger().getEffectiveLevel() <= logging.DEBUG:
+        yield
+        return
+    previous = logger.level
+    logger.setLevel(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        logger.setLevel(previous)
 
 
 def get_logger(name: str | None = None) -> Any:

@@ -46,6 +46,7 @@ from screener.backtester.price_frames import (
     split_yfinance_download as _split_download,
     warn_unadjustable_fmp_frames as warn_unadjustable_fmp_frames,
 )
+from screener.logging_config import suppressed_yfinance_errors
 from screener.resilience import call_with_resilience
 
 # Re-exported for backward compatibility: several modules and the docs import
@@ -336,13 +337,15 @@ class YFinancePriceFetcher:
             )
             return batch, raw
 
-        # yfinance prints expected "possibly delisted" messages directly to
-        # stderr for empty pre-listing ranges. The empty frame is enough for
+        # yfinance reports expected "possibly delisted" messages for empty
+        # pre-listing ranges. The empty frame is enough for
         # FallbackPriceFetcher to call FMP, so keep the lab/CLI output focused
-        # on actionable diagnostics. A single process-wide redirect covers the
-        # worker threads too; per-batch redirects would race when batches
-        # download concurrently.
-        with contextlib.redirect_stderr(io.StringIO()):
+        # on actionable diagnostics. Those messages go through the ``yfinance``
+        # logger, which only ``suppressed_yfinance_errors`` can reach; the
+        # stderr redirect stays for anything the library prints directly.
+        # Both are process-wide, covering the worker threads: per-batch scoping
+        # would race when batches download concurrently.
+        with suppressed_yfinance_errors(), contextlib.redirect_stderr(io.StringIO()):
             if not jobs:
                 downloads = []
             elif len(jobs) == 1:
