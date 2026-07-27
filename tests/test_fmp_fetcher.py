@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from screener.backtester.data import (
+    ExchangeFallbackPriceFetcher,
     FallbackPriceFetcher,
     FMPPriceFetcher,
     build_price_fetcher,
@@ -308,9 +309,11 @@ def test_build_price_fetcher_intraday_includes_fmp_fallback(monkeypatch):
 
     fetcher = build_price_fetcher(interval="15m")
 
-    assert isinstance(fetcher, FallbackPriceFetcher)
-    assert isinstance(fetcher.fallback, FMPPriceFetcher)
-    assert fetcher.fallback.interval == "15m"
+    assert isinstance(fetcher, ExchangeFallbackPriceFetcher)
+    inner = fetcher.inner
+    assert isinstance(inner, FallbackPriceFetcher)
+    assert isinstance(inner.fallback, FMPPriceFetcher)
+    assert inner.fallback.interval == "15m"
 
 
 def test_build_price_fetcher_selects_fmp_from_env(monkeypatch):
@@ -319,7 +322,8 @@ def test_build_price_fetcher_selects_fmp_from_env(monkeypatch):
 
     fetcher = build_price_fetcher()
 
-    assert isinstance(fetcher, FMPPriceFetcher)
+    assert isinstance(fetcher, ExchangeFallbackPriceFetcher)
+    assert isinstance(fetcher.inner, FMPPriceFetcher)
 
 
 def test_build_price_fetcher_defaults_to_yfinance_with_fmp_fallback(monkeypatch):
@@ -328,7 +332,8 @@ def test_build_price_fetcher_defaults_to_yfinance_with_fmp_fallback(monkeypatch)
 
     fetcher = build_price_fetcher()
 
-    assert isinstance(fetcher, FallbackPriceFetcher)
+    assert isinstance(fetcher, ExchangeFallbackPriceFetcher)
+    assert isinstance(fetcher.inner, FallbackPriceFetcher)
 
 
 def test_build_price_fetcher_loads_fmp_key_from_dotenv(tmp_path, monkeypatch):
@@ -340,9 +345,11 @@ def test_build_price_fetcher_loads_fmp_key_from_dotenv(tmp_path, monkeypatch):
 
     fetcher = build_price_fetcher()
 
-    assert isinstance(fetcher, FallbackPriceFetcher)
-    assert isinstance(fetcher.fallback, FMPPriceFetcher)
-    assert fetcher.fallback.api_key == "dotenv-key"
+    assert isinstance(fetcher, ExchangeFallbackPriceFetcher)
+    inner = fetcher.inner
+    assert isinstance(inner, FallbackPriceFetcher)
+    assert isinstance(inner.fallback, FMPPriceFetcher)
+    assert inner.fallback.api_key == "dotenv-key"
 
 
 def test_fallback_fetcher_fills_empty_primary_results():
@@ -378,3 +385,77 @@ def test_fallback_fetcher_fills_empty_primary_results():
     assert fallback.calls == [["AAA"]]
     assert out["AAA"].equals(fallback_frame)
     assert out["BBB"].equals(fallback_frame)
+
+
+class _ExchangeStubFetcher:
+    """Records each fetch call and serves frames from a fixed table."""
+
+    def __init__(self, frames: dict[str, pd.DataFrame]) -> None:
+        self.frames = frames
+        self.calls: list[list[str]] = []
+
+    def fetch(self, tickers, start, end):
+        ticker_list = list(tickers)
+        self.calls.append(ticker_list)
+        return {
+            ticker: self.frames.get(ticker, pd.DataFrame()) for ticker in ticker_list
+        }
+
+
+def _bse_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "open": [10.0],
+            "high": [11.0],
+            "low": [9.0],
+            "close": [10.5],
+            "volume": [1000],
+        },
+        index=pd.to_datetime(["2024-01-02"]),
+    )
+
+
+def test_exchange_fallback_retries_empty_nse_symbol_on_bse():
+    frame = _bse_frame()
+    inner = _ExchangeStubFetcher({"ADVPETR-B.BO": frame, "RELIANCE.NS": frame})
+    fetcher = ExchangeFallbackPriceFetcher(inner)
+
+    out = fetcher.fetch(
+        ["RELIANCE.NS", "ADVPETR-B.NS"], date(2024, 1, 1), date(2024, 1, 5)
+    )
+
+    # Only the empty NSE symbol is retried, and only on the second call.
+    assert inner.calls == [["RELIANCE.NS", "ADVPETR-B.NS"], ["ADVPETR-B.BO"]]
+    # The BSE frame is keyed back to the requested .NS symbol.
+    assert out["ADVPETR-B.NS"].equals(frame)
+    assert out["RELIANCE.NS"].equals(frame)
+    assert "ADVPETR-B.BO" not in out
+
+
+def test_exchange_fallback_skips_retry_when_nse_has_data():
+    inner = _ExchangeStubFetcher({"RELIANCE.NS": _bse_frame()})
+    fetcher = ExchangeFallbackPriceFetcher(inner)
+
+    fetcher.fetch(["RELIANCE.NS"], date(2024, 1, 1), date(2024, 1, 5))
+
+    assert inner.calls == [["RELIANCE.NS"]]
+
+
+def test_exchange_fallback_ignores_non_nse_symbols():
+    # US tickers and caller-pinned .BO symbols are never retried.
+    inner = _ExchangeStubFetcher({})
+    fetcher = ExchangeFallbackPriceFetcher(inner)
+
+    fetcher.fetch(["AAPL", "TCS.BO"], date(2024, 1, 1), date(2024, 1, 5))
+
+    assert inner.calls == [["AAPL", "TCS.BO"]]
+
+
+def test_exchange_fallback_keeps_empty_frame_when_bse_also_empty():
+    inner = _ExchangeStubFetcher({})
+    fetcher = ExchangeFallbackPriceFetcher(inner)
+
+    out = fetcher.fetch(["GONE.NS"], date(2024, 1, 1), date(2024, 1, 5))
+
+    assert inner.calls == [["GONE.NS"], ["GONE.BO"]]
+    assert out["GONE.NS"].empty
