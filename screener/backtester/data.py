@@ -46,6 +46,7 @@ from screener.backtester.price_frames import (
     split_yfinance_download as _split_download,
     warn_unadjustable_fmp_frames as warn_unadjustable_fmp_frames,
 )
+from screener.logging_config import suppressed_yfinance_errors
 from screener.resilience import call_with_resilience
 
 # Re-exported for backward compatibility: several modules and the docs import
@@ -336,13 +337,16 @@ class YFinancePriceFetcher:
             )
             return batch, raw
 
-        # yfinance prints expected "possibly delisted" messages directly to
-        # stderr for empty pre-listing ranges. The empty frame is enough for
+        # yfinance reports expected "possibly delisted" messages for empty
+        # pre-listing ranges. The empty frame is enough for
         # FallbackPriceFetcher to call FMP, so keep the lab/CLI output focused
-        # on actionable diagnostics. A single process-wide redirect covers the
-        # worker threads too; per-batch redirects would race when batches
-        # download concurrently.
-        with contextlib.redirect_stderr(io.StringIO()):
+        # on actionable diagnostics. Those messages go through the ``yfinance``
+        # logger, which only ``suppressed_yfinance_errors`` can reach; it
+        # reports a count on the way out so a real outage still surfaces. The
+        # stderr redirect stays for anything the library prints directly.
+        # Both are process-wide, covering the worker threads: per-batch scoping
+        # would race when batches download concurrently.
+        with suppressed_yfinance_errors(), contextlib.redirect_stderr(io.StringIO()):
             if not jobs:
                 downloads = []
             elif len(jobs) == 1:
@@ -576,6 +580,46 @@ class FMPPriceFetcher:
         return dict(fetched)
 
 
+class ExchangeFallbackPriceFetcher:
+    """Retry Indian symbols on BSE when NSE returns nothing.
+
+    Some Indian tickers are not listed on NSE at all -- BSE B-group names in
+    particular -- so the ``.NS`` request comes back empty even though the
+    company trades. Retry just those on ``.BO``.
+
+    Results are keyed back to the requested ``.NS`` symbol so callers keep the
+    symbol identity they asked for; only the wire request changes exchange.
+    Symbols the caller already pinned to ``.BO`` are left alone, and the
+    ``.NS`` test makes this a no-op for US universes.
+    """
+
+    def __init__(self, inner: PriceFetcher) -> None:
+        self.inner = inner
+
+    def fetch(
+        self, tickers: Iterable[str], start: date, end: date
+    ) -> dict[str, pd.DataFrame]:
+        ticker_list = [ticker for ticker in tickers if ticker]
+        results = self.inner.fetch(ticker_list, start, end)
+
+        retry = {
+            ticker: f"{ticker[: -len('.NS')]}.BO"
+            for ticker in dict.fromkeys(ticker_list)
+            if ticker.endswith(".NS")
+            and (results.get(ticker) is None or results[ticker].empty)
+        }
+        if not retry:
+            return results
+
+        bse_results = self.inner.fetch(retry.values(), start, end)
+        merged = dict(results)
+        for ns_symbol, bo_symbol in retry.items():
+            frame = bse_results.get(bo_symbol)
+            if frame is not None and not frame.empty:
+                merged[ns_symbol] = frame
+        return merged
+
+
 class FallbackPriceFetcher:
     """Use a primary fetcher first and fill missing ticker frames from fallback."""
 
@@ -618,6 +662,8 @@ def build_price_fetcher(
 ) -> PriceFetcher:
     _load_env_file()
     resolved = (provider or os.environ.get("SCREENER_PRICE_PROVIDER") or "auto").lower()
+    # The BSE retry wraps the outermost fetcher so a symbol is only re-requested
+    # on ``.BO`` once every configured provider has come back empty for ``.NS``.
     if resolved in {"auto", "default"}:
         primary = YFinancePriceFetcher(
             auto_adjust=auto_adjust, refresh=refresh, interval=interval
@@ -626,15 +672,17 @@ def build_price_fetcher(
             fallback = FMPPriceFetcher(
                 auto_adjust=auto_adjust, refresh=refresh, interval=interval
             )
-            return FallbackPriceFetcher(primary, fallback)
-        return primary
+            return ExchangeFallbackPriceFetcher(FallbackPriceFetcher(primary, fallback))
+        return ExchangeFallbackPriceFetcher(primary)
     if resolved in {"yf", "yfinance"}:
-        return YFinancePriceFetcher(
-            auto_adjust=auto_adjust, refresh=refresh, interval=interval
+        return ExchangeFallbackPriceFetcher(
+            YFinancePriceFetcher(
+                auto_adjust=auto_adjust, refresh=refresh, interval=interval
+            )
         )
     if resolved in {"fmp", "financialmodelingprep"}:
-        return FMPPriceFetcher(
-            auto_adjust=auto_adjust, refresh=refresh, interval=interval
+        return ExchangeFallbackPriceFetcher(
+            FMPPriceFetcher(auto_adjust=auto_adjust, refresh=refresh, interval=interval)
         )
     raise ValueError(f"Unknown price provider: {provider}")
 

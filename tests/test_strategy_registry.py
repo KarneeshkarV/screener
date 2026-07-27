@@ -30,7 +30,14 @@ from screener.strategies.spec import (
 
 
 def test_strategy_registry_preserves_pine_runner_names():
-    expected = {
+    # Names ported from the pine runner are part of its public vocabulary:
+    # saved configs and CLI invocations reference them, so a rename or a
+    # dropped registration is a breaking change. Only their continued presence
+    # is pinned -- asserting set equality would additionally forbid registering
+    # any *new* callable strategy, which is ordinary growth rather than a
+    # regression. test_all_callable_strategy_plugins_smoke covers whatever else
+    # lands in the registry.
+    pine_runner_names = {
         "bb_breakout",
         "ma_cross",
         "ma_cross_regime",
@@ -49,7 +56,7 @@ def test_strategy_registry_preserves_pine_runner_names():
         "shooting_star",
     }
 
-    assert set(STRATEGIES) == expected
+    assert pine_runner_names <= set(STRATEGIES)
     assert dict(STRATEGIES.items()) == dict(STRATEGIES)
 
 
