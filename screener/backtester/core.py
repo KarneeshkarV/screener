@@ -108,7 +108,7 @@ class _FrameCache:
 
 
 def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
-    close_f = bars["close"].astype(float)
+    close_arr = bars["close"].to_numpy(dtype=float)
     index = bars.index
     index_i8: Optional[np.ndarray] = None
     if (
@@ -117,17 +117,22 @@ def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
         and index.is_unique
     ):
         index_i8 = index.to_numpy().view("i8")
+    rets = np.empty(close_arr.shape[0], dtype=float)
+    if rets.shape[0]:
+        rets[0] = np.nan
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rets[1:] = close_arr[1:] / close_arr[:-1] - 1.0
     return _FrameCache(
-        open_arr=bars["open"].astype(float).to_numpy(),
-        high_arr=bars["high"].astype(float).to_numpy(),
-        low_arr=bars["low"].astype(float).to_numpy(),
-        close_arr=close_f.to_numpy(),
+        open_arr=bars["open"].to_numpy(dtype=float),
+        high_arr=bars["high"].to_numpy(dtype=float),
+        low_arr=bars["low"].to_numpy(dtype=float),
+        close_arr=close_arr,
         dividend_arr=(
             bars["dividend"].to_numpy() if "dividend" in bars.columns else None
         ),
         index_i8=index_i8,
         volume_f=bars["volume"].astype(float),
-        rets_f=close_f / close_f.shift(1) - 1,
+        rets_f=pd.Series(rets, index=bars.index),
     )
 
 
