@@ -123,9 +123,13 @@ def _prepare_simulation(
         warn_unadjustable_fmp_frames(price_panel)
         price_panel = apply_splits_only_adjustment(price_panel)
 
-    bars_by_tv = {
-        tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tv_symbols
-    }
+    # dict.get's default is eager, so the dict-comprehension form built one
+    # throwaway DataFrame per symbol. Only materialise the empty frame for
+    # symbols the panel is actually missing.
+    bars_by_tv = {}
+    for tv in tv_symbols:
+        panel_bars = price_panel.get(yf_by_tv[tv])
+        bars_by_tv[tv] = pd.DataFrame() if panel_bars is None else panel_bars
     bars_by_tv, strategy_lookback = prepare_strategy_bars(
         cfg.strategy_name,
         bars_by_tv,
