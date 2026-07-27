@@ -667,7 +667,13 @@ def _group_key(bars: pd.DataFrame, names: Iterable[str]) -> tuple | None:
     if not _REQUIRED_COLUMNS <= columns:
         # evaluate() raises for these; let it do so per ticker.
         return None
-    return (index_key, frozenset(n for n in names if n in columns))
+    # The dtype is part of the identity, not decoration: every member of a group
+    # is handed ``frames[0].index`` back, so two frames may only share a key if
+    # their indexes are interchangeable *as labels*. Timestamps compare and hash
+    # by instant, so tz-aware indexes over the same moments in different zones
+    # (or the same instants at a different resolution) would otherwise group and
+    # silently return results relabelled into the first member's timezone.
+    return (str(index.dtype), index_key, frozenset(n for n in names if n in columns))
 
 
 def _build_panel(
