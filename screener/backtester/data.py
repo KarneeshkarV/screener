@@ -341,7 +341,8 @@ class YFinancePriceFetcher:
         # pre-listing ranges. The empty frame is enough for
         # FallbackPriceFetcher to call FMP, so keep the lab/CLI output focused
         # on actionable diagnostics. Those messages go through the ``yfinance``
-        # logger, which only ``suppressed_yfinance_errors`` can reach; the
+        # logger, which only ``suppressed_yfinance_errors`` can reach; it
+        # reports a count on the way out so a real outage still surfaces. The
         # stderr redirect stays for anything the library prints directly.
         # Both are process-wide, covering the worker threads: per-batch scoping
         # would race when batches download concurrently.
