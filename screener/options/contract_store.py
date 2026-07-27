@@ -5,14 +5,27 @@ one metrics row per underlying per day. This store instead persists *every*
 observed contract snapshot, timestamped, so intraday chains accumulate into a
 backtestable history. Partition:
 ``~/.screener/contracts/{market}/{YYYY-MM-DD}/{underlying}.parquet`` (one file
-per underlying per session date), where the date is the snapshot timestamp in
-the market's timezone.
+per underlying per session date), where the date is the **observed** snapshot
+timestamp (PIT) in the market's timezone.
+
+Two timestamps are stored per row:
+
+* ``snapshot_ts`` — when the chain was **observed/ingested** (wall clock at
+  record time). This is the point-in-time key used for partitioning, chain
+  reconstruction, and freshness.
+* ``quote_ts`` — the **venue quote** timestamp from the provider payload
+  (e.g. CBOE delayed feed stamp). Delayed feeds must not be replayed as if
+  actionable at the venue stamp.
+
+Dedupe keys are ``(underlying, expiry, strike, right, quote_ts)``: re-recording
+the same still-delayed venue quote is a no-op (first observation's
+``snapshot_ts`` is kept via ``keep="first"``), so a no-op leaves the file mtime
+intact. Older parquet files that lack ``quote_ts`` are loaded with
+``quote_ts = snapshot_ts`` (or NaT) for backward compatibility.
 
 Writes reuse the atomic temp-file + ``os.replace`` discipline and the POSIX
-advisory lock of :mod:`screener.cache`, and appends dedupe on
-``(underlying, expiry, strike, right, snapshot_ts)`` so re-running a recorder
-pass never duplicates a snapshot (idempotent, and a no-op leaves the file mtime
-intact for the freshness check ``screener cache status`` relies on).
+advisory lock of :mod:`screener.cache`. The temp file and parent directory are
+fsync'd for crash durability.
 
 Snapshots are enriched on ingest: any contract missing implied volatility has
 it inverted from its mark price, and missing greeks are filled from the IV —
@@ -69,16 +82,20 @@ CONTRACT_COLUMNS: tuple[str, ...] = (
     "rho",
     "spot",
     "snapshot_ts",
+    "quote_ts",
     "source",
     "contract_symbol",
 )
 
+# Dedupe on contract identity + venue quote time so a re-fetched delayed
+# payload (same quote_ts, new wall-clock observation) does not duplicate rows.
+# Prefer first observation so snapshot_ts (PIT) and mtime stay stable.
 DEDUPE_KEYS: tuple[str, ...] = (
     "underlying",
     "expiry",
     "strike",
     "right",
-    "snapshot_ts",
+    "quote_ts",
 )
 _GREEK_COLUMNS: tuple[str, ...] = ("delta", "gamma", "theta", "vega", "rho")
 
@@ -152,9 +169,41 @@ def _mark_price(row: pd.Series) -> float | None:
     return None
 
 
-def chain_to_frame(chain: OptionChain) -> pd.DataFrame:
-    """Flatten a normalized chain into one snapshot row per contract."""
-    snapshot_ts = _naive_utc(chain.as_of)
+def _normalize_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """Align a loaded frame to ``CONTRACT_COLUMNS``; backfill missing ``quote_ts``.
+
+    Pre-``quote_ts`` parquet files treated venue and observation time as one
+    column (``snapshot_ts``). Fill ``quote_ts`` from ``snapshot_ts`` so dedupe
+    and schema consumers keep working; true observed time cannot be recovered.
+    """
+    out = frame.copy()
+    if "quote_ts" not in out.columns:
+        if "snapshot_ts" in out.columns:
+            out["quote_ts"] = out["snapshot_ts"]
+        else:
+            out["quote_ts"] = pd.NaT
+    for column in CONTRACT_COLUMNS:
+        if column not in out.columns:
+            out[column] = pd.NA
+    return out.reindex(columns=list(CONTRACT_COLUMNS))
+
+
+def chain_to_frame(
+    chain: OptionChain,
+    *,
+    observed_at: datetime | None = None,
+) -> pd.DataFrame:
+    """Flatten a normalized chain into one snapshot row per contract.
+
+    ``chain.as_of`` is the venue quote timestamp (``quote_ts``). ``observed_at``
+    is the point-in-time observation wall clock (``snapshot_ts``). When
+    ``observed_at`` is omitted, both columns use ``chain.as_of`` — appropriate
+    for historical/EOD ingest where venue time equals observation time.
+    Live recorders should pass ``observed_at=datetime.now(timezone.utc)``
+    (or a test clock) so delayed venue stamps are not treated as actionable.
+    """
+    quote_ts = _naive_utc(chain.as_of)
+    snapshot_ts = _naive_utc(observed_at if observed_at is not None else chain.as_of)
     rows: list[dict[str, object]] = []
     for contract in chain.contracts:
         rows.append(
@@ -181,6 +230,7 @@ def chain_to_frame(chain: OptionChain) -> pd.DataFrame:
                 "rho": contract.rho,
                 "spot": chain.spot,
                 "snapshot_ts": snapshot_ts,
+                "quote_ts": quote_ts,
                 "source": contract.source,
                 "contract_symbol": contract.symbol,
             }
@@ -257,9 +307,10 @@ def load_contracts(
     if not path.exists():
         return None
     try:
-        return pd.read_parquet(path)
+        frame = pd.read_parquet(path)
     except (OSError, pd.errors.ParserError, ValueError):
         return None
+    return _normalize_frame(frame)
 
 
 def append_snapshot(
@@ -268,20 +319,29 @@ def append_snapshot(
     market: str,
     root: Optional[Path] = None,
     enrich: bool = True,
+    observed_at: datetime | None = None,
 ) -> pd.DataFrame:
     """Append one chain snapshot to the store (idempotent), return merged frame.
 
+    ``observed_at`` is the PIT wall-clock for ``snapshot_ts`` and session-date
+    partitioning. Live recorders must pass it (``record_pass`` stamps
+    ``datetime.now(timezone.utc)``); when omitted it falls back to
+    ``chain.as_of`` so historical/EOD ingest partitions under the chain's own
+    session. Venue time from ``chain.as_of`` is stored separately as
+    ``quote_ts``.
+
     Serialized with a POSIX file lock and written via a unique temp file plus
     atomic ``os.replace`` so concurrent recorders can't lose rows. Re-appending
-    the same snapshot is a no-op (deduped on ``DEDUPE_KEYS``) and leaves the
-    file mtime untouched.
+    the same venue quote is a no-op (deduped on ``DEDUPE_KEYS``, first
+    observation kept) and leaves the file mtime untouched.
     """
-    frame = chain_to_frame(chain)
+    observed = observed_at or chain.as_of
+    frame = chain_to_frame(chain, observed_at=observed)
     if frame.empty:
         return frame
     if enrich:
         frame = enrich_contracts(frame, market=market)
-    day = _session_date(chain.as_of, market)
+    day = _session_date(observed, market)
     path = contract_path(chain.underlying, market=market, day=day, root=root)
     with _file_lock(path):
         existing = load_contracts(chain.underlying, market=market, day=day, root=root)
@@ -290,7 +350,7 @@ def append_snapshot(
             if existing is not None and not existing.empty
             else frame.copy()
         )
-        merged = merged.drop_duplicates(subset=list(DEDUPE_KEYS), keep="last")
+        merged = merged.drop_duplicates(subset=list(DEDUPE_KEYS), keep="first")
         merged = merged.sort_values(list(DEDUPE_KEYS)).reset_index(drop=True)
         if existing is not None and merged.equals(existing):
             return merged
@@ -299,6 +359,7 @@ def append_snapshot(
 
 
 def _atomic_write(path: Path, frame: pd.DataFrame) -> None:
+    """Write parquet via temp file + replace, fsync'ing for crash durability."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
@@ -307,7 +368,18 @@ def _atomic_write(path: Path, frame: pd.DataFrame) -> None:
     tmp = Path(tmp_name)
     try:
         frame.to_parquet(tmp, compression="zstd")
+        # Ensure data hits stable storage before the rename becomes durable.
+        with open(tmp, "rb") as handle:
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
+        # Durably record the directory entry for the renamed file. Some
+        # filesystems (network mounts, etc.) disallow directory fsync.
+        with contextlib.suppress(OSError):
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink()
@@ -336,11 +408,16 @@ def load_range(
 
 
 def frame_to_chains(frame: pd.DataFrame, *, market: OptionsMarket) -> list[OptionChain]:
-    """Reconstruct one :class:`OptionChain` per distinct snapshot timestamp."""
+    """Reconstruct one :class:`OptionChain` per distinct PIT snapshot timestamp.
+
+    Groups by ``snapshot_ts`` (observed/ingest time), not venue ``quote_ts``, so
+    delayed quotes are replayed only as of when they were actually captured.
+    """
     if frame.empty:
         return []
+    normalized = _normalize_frame(frame) if "quote_ts" not in frame.columns else frame
     chains: list[OptionChain] = []
-    for (underlying, snapshot_ts), group in frame.groupby(
+    for (underlying, snapshot_ts), group in normalized.groupby(
         ["underlying", "snapshot_ts"], sort=True
     ):
         contracts = tuple(_row_to_contract(row) for _, row in group.iterrows())
@@ -454,6 +531,34 @@ class StoreHealth:
         )
 
 
+def _max_snapshot_ts_for_day(
+    market: str,
+    day: date,
+    *,
+    root: Optional[Path] = None,
+) -> Optional[pd.Timestamp]:
+    """Maximum stored ``snapshot_ts`` for one session partition (column-only read)."""
+    base = (Path(root) if root is not None else _default_root()) / market
+    day_dir = base / day.isoformat()
+    if not day_dir.is_dir():
+        return None
+    latest: Optional[pd.Timestamp] = None
+    for path in day_dir.glob("*.parquet"):
+        try:
+            frame = pd.read_parquet(path, columns=["snapshot_ts"])
+        except (OSError, pd.errors.ParserError, ValueError, KeyError):
+            continue
+        if frame.empty or "snapshot_ts" not in frame.columns:
+            continue
+        day_max = frame["snapshot_ts"].max()
+        if pd.isna(day_max):
+            continue
+        ts = pd.Timestamp(day_max)
+        if latest is None or ts > latest:
+            latest = ts
+    return latest
+
+
 def store_health(
     market: str,
     *,
@@ -462,6 +567,11 @@ def store_health(
 ) -> StoreHealth:
     """Report last-snapshot age and missing business days for one market.
 
+    Freshness uses the maximum stored ``snapshot_ts`` (PIT observation time),
+    not parquet file mtimes — rewriting an old partition must not make a dead
+    recorder look fresh. Only the newest session-date partitions are scanned
+    (newest-first until a timestamp is found) to keep the check cheap.
+
     Gap detection is a heuristic: it flags business days between the first and
     last recorded session that have no partition (it does not consult an
     exchange holiday calendar), which is enough to notice a silently dead cron.
@@ -469,15 +579,25 @@ def store_health(
     present = _present_session_dates(market, root=root)
     if not present:
         return StoreHealth(market=market, last_snapshot=None, age=None)
-    base = (Path(root) if root is not None else _default_root()) / market
-    latest_mtime = 0.0
-    for day in present:
-        day_dir = base / day.isoformat()
-        for path in day_dir.glob("*.parquet"):
-            latest_mtime = max(latest_mtime, path.stat().st_mtime)
-    last_snapshot = (
-        datetime.fromtimestamp(latest_mtime, tz=timezone.utc) if latest_mtime else None
-    )
+    latest_ts: Optional[pd.Timestamp] = None
+    # Newest session dates first: under normal partition-by-observation-date
+    # the global max snapshot_ts lives on the newest day with data.
+    for day in reversed(present):
+        day_max = _max_snapshot_ts_for_day(market, day, root=root)
+        if day_max is None:
+            continue
+        if latest_ts is None or day_max > latest_ts:
+            latest_ts = day_max
+        # Once we have a value from a day, older days cannot hold a newer
+        # observation under normal partitioning — stop scanning.
+        break
+    last_snapshot: Optional[datetime] = None
+    if latest_ts is not None:
+        ts = pd.Timestamp(latest_ts)
+        if ts.tzinfo is None:
+            last_snapshot = ts.to_pydatetime().replace(tzinfo=timezone.utc)
+        else:
+            last_snapshot = ts.tz_convert("UTC").to_pydatetime()
     reference = now or datetime.now(timezone.utc)
     age = (reference - last_snapshot) if last_snapshot else None
     expected = pd.bdate_range(present[0], present[-1]).date

@@ -119,14 +119,19 @@ def test_point_in_time_join_never_backfills_future_rows():
 
 
 def test_join_handles_india_symbols_timezone_and_missing_panel():
-    index = pd.date_range("2026-07-01 09:15", periods=3, freq="h", tz="Asia/Kolkata")
-    bars = make_bars(start="2026-07-01", n=3)
+    # 09:15 → 16:15 IST hourly bars: the daily panel row is an end-of-session
+    # observation, so on intraday bars it becomes available only at the 15:30
+    # IST close — earlier bars must NOT see it (no lookahead).
+    index = pd.date_range("2026-07-01 09:15", periods=8, freq="h", tz="Asia/Kolkata")
+    bars = make_bars(start="2026-07-01", n=8)
     bars.index = index
     panel = pd.DataFrame([{"as_of": "2026-07-01", "SYMBOL": "RELIANCE", "pcr": 1.1}])
     joined = merge_options_into_bars(
         {"NSE:RELIANCE": bars}, market="india", fields={"pcr"}, panel=panel
     )
-    assert joined.bars_by_tv["NSE:RELIANCE"]["pcr"].tolist() == [1.1, 1.1, 1.1]
+    merged_pcr = joined.bars_by_tv["NSE:RELIANCE"]["pcr"]
+    assert merged_pcr.iloc[:7].isna().all()  # 09:15..15:15 predate the close
+    assert merged_pcr.iloc[7] == 1.1  # 16:15 is past the 15:30 IST close
 
     missing = merge_options_into_bars(
         {"NSE:RELIANCE": bars},

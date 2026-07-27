@@ -14,6 +14,7 @@ ships before the rest of Phase 3/4.
 
 from __future__ import annotations
 
+import logging
 import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, time, timezone
@@ -25,6 +26,8 @@ from screener.markets import get_market
 from screener.options import contract_store
 from screener.options.models import OptionsMarket
 from screener.options.provider import OptionsProvider
+
+_LOG = logging.getLogger(__name__)
 
 # Index options are the priority line-item; extend per deployment with
 # ``--watchlist`` / ``--watchlist-file`` (chain snapshots at 15-min cadence are
@@ -115,12 +118,19 @@ def run_pass(
     root: Optional[Path] = None,
     refresh: bool = False,
     enrich: bool = True,
+    observed_at: Optional[datetime] = None,
 ) -> RecordPassResult:
     """Snapshot every watchlist underlying once, appending to the store.
 
     Degrades per symbol: a provider returning ``None`` or raising is recorded
     as missing, never aborting the pass.
+
+    ``observed_at`` is the PIT wall-clock stamped on each snapshot (defaults to
+    ``datetime.now(timezone.utc)`` here — the live recorder is the one caller
+    that must never trust the delayed venue stamp for PIT ordering). Venue
+    quote timestamps from the provider remain on ``chain.as_of`` / ``quote_ts``.
     """
+    observed_at = observed_at or datetime.now(timezone.utc)
     recorded: list[tuple[str, int]] = []
     missing: list[str] = []
     for symbol in symbols:
@@ -131,7 +141,25 @@ def run_pass(
         if chain is None or not chain.contracts:
             missing.append(symbol)
             continue
-        contract_store.append_snapshot(chain, market=market, root=root, enrich=enrich)
+        missing_lots = sum(
+            1 for contract in chain.contracts if contract.lot_size is None
+        )
+        if missing_lots:
+            _LOG.warning(
+                "%s %s: lot_size missing on %d/%d contracts; "
+                "downstream P&L will fall back to multiplier 1.0",
+                market,
+                symbol,
+                missing_lots,
+                len(chain.contracts),
+            )
+        contract_store.append_snapshot(
+            chain,
+            market=market,
+            root=root,
+            enrich=enrich,
+            observed_at=observed_at,
+        )
         recorded.append((symbol, len(chain.contracts)))
     return RecordPassResult(market=market, recorded=recorded, missing=missing)
 

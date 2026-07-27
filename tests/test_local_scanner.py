@@ -85,8 +85,26 @@ def test_compute_features_session_semantics() -> None:
     # change = last close (119) vs previous session close (100).
     assert features["close"] == pytest.approx(119.0)
     assert features["change"] == pytest.approx(19.0)
-    # price_52_week_high = max high over both sessions (119 + 0.5).
+    # price_52_week_high = max high over both sessions (119 + 0.5), all inside 52w.
     assert features["price_52_week_high"] == pytest.approx(119.5)
+
+
+def test_price_52_week_high_uses_trailing_window_only() -> None:
+    """A multi-year archive high outside the trailing 52 weeks must not win (M22)."""
+    # Old spike ~3 years before the last bar, then a mild recent high.
+    old_day = pd.Timestamp("2023-01-03 14:30:00")  # well outside 52 weeks of 2026-07
+    recent = _two_session_index(bars_per=5)
+    old_index = pd.DatetimeIndex([old_day + pd.Timedelta(minutes=i) for i in range(5)])
+    old = _frame(np.full(5, 500.0), 1000.0, old_index)  # high = 500.5
+    recent_frame = _rising_frame(recent, start=100.0, step=1.0, volume=1000.0)
+    frame = pd.concat([old, recent_frame])
+
+    features = compute_features(frame, US_TZ)
+
+    # Trailing 52w high is the recent series max (10 bars: 100..109 → high 109.5),
+    # not the 2023 spike of 500.5.
+    assert features["price_52_week_high"] == pytest.approx(109.5)
+    assert features["price_52_week_high"] < 200.0
 
 
 def test_compute_features_single_session_has_nan_change() -> None:

@@ -9,7 +9,7 @@ timestamps, the entrant/exit diff across passes, and the max-passes bound.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +19,7 @@ import pytest
 import screener.history as history_mod
 import screener.screen_live as live
 from screener.backtester.bar_store import save_bars
+from screener.history import load_run, save_run
 from screener.screen_live import LiveRequest, in_session, run_screen_live
 
 US_TZ = "America/New_York"
@@ -95,11 +96,14 @@ def test_run_screen_live_persists_passes_and_diffs(
 ) -> None:
     _write(tmp_path, "AAA")  # present from the start
 
-    # Clock advances one minute per read so passes get distinct run rows.
+    # Each pass calls now_fn twice: session-gate, then post-refresh run_ts.
+    # Persist timestamps are the *second* tick of each pair (after refresh).
     ticks = iter(
         [
-            datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc),
-            datetime(2026, 7, 20, 14, 1, tzinfo=timezone.utc),
+            datetime(2026, 7, 20, 14, 0, 0, tzinfo=timezone.utc),  # pass1 gate
+            datetime(2026, 7, 20, 14, 0, 30, tzinfo=timezone.utc),  # pass1 run_ts
+            datetime(2026, 7, 20, 14, 1, 0, tzinfo=timezone.utc),  # pass2 gate
+            datetime(2026, 7, 20, 14, 1, 30, tzinfo=timezone.utc),  # pass2 run_ts
         ]
     )
     monkeypatch.setattr(live, "now_fn", lambda: next(ticks))
@@ -136,19 +140,90 @@ def test_run_screen_live_persists_passes_and_diffs(
     assert first.first_pass is True
     assert first.df["name"].tolist() == ["AAA"]
     assert first.added == () and first.removed == ()
+    # run_ts is the post-refresh clock, not the pre-refresh gate tick.
+    assert first.run_ts == "2026-07-20T14:00:30+00:00"
 
     assert second.first_pass is False
     assert set(second.df["name"]) == {"AAA", "BBB"}
     assert second.added == ("BBB",)
     assert second.removed == ()
+    assert second.run_ts == "2026-07-20T14:01:30+00:00"
 
-    # Both passes persisted to the shared history schema with intraday timestamps.
+    # Both passes persisted to the shared history schema with post-refresh stamps.
     runs = history_mod.list_runs(market="us", criteria="ema")
     assert len(runs) == 2
     assert runs["run_ts"].tolist() == [
-        "2026-07-20T14:01:00+00:00",
-        "2026-07-20T14:00:00+00:00",
+        "2026-07-20T14:01:30+00:00",
+        "2026-07-20T14:00:30+00:00",
     ]
+
+
+def test_run_ts_is_taken_after_refresh(monkeypatch, tmp_path, tmp_history) -> None:
+    """Persisted run_ts must be the post-refresh clock (M21)."""
+    _write(tmp_path, "AAA")
+    order: list[str] = []
+
+    gate = datetime(2026, 7, 20, 14, 0, 0, tzinfo=timezone.utc)
+    after = datetime(2026, 7, 20, 14, 5, 0, tzinfo=timezone.utc)
+    ticks = iter([gate, after])
+
+    def tracking_now() -> datetime:
+        order.append("now")
+        return next(ticks)
+
+    def tracking_refresh(market: str, days: int, *, root=None) -> None:
+        order.append("refresh")
+
+    monkeypatch.setattr(live, "now_fn", tracking_now)
+    monkeypatch.setattr(live, "refresh_bars", tracking_refresh)
+    monkeypatch.setattr(live, "sleep_fn", lambda _s: None)
+
+    session = run_screen_live(
+        LiveRequest(
+            market="us",
+            criteria_names=("ema",),
+            max_passes=1,
+            bar_store_root=tmp_path,
+        )
+    )
+    assert order[:3] == ["now", "refresh", "now"]
+    assert session.passes[0].run_ts == after.isoformat(timespec="seconds")
+
+
+def test_run_datetime_preserves_time_of_day_for_intraday_replay(
+    tmp_history,
+) -> None:
+    """H9: RunSnapshot.run_datetime keeps TOD; run_date stays date-truncated."""
+    df = pd.DataFrame(
+        [
+            {
+                "name": "AAA",
+                "description": "AAA Inc",
+                "close": 10.0,
+                "change": 1.0,
+                "volume": 1000.0,
+                "market_cap_basic": 1e9,
+                "setup_score": 1.0,
+            }
+        ]
+    )
+    run_id = save_run(
+        "us",
+        "ema",
+        1,
+        df,
+        run_ts="2026-07-20T14:30:00+00:00",  # 10:30 ET
+    )
+    snap = load_run(run_id)
+    assert snap is not None
+    assert snap.run_date == date(2026, 7, 20)
+    assert snap.run_datetime == datetime(2026, 7, 20, 14, 30, 0)
+    assert snap.run_datetime.tzinfo is None  # canonical naive UTC
+    # Intraday --from-run wiring: non-1d intervals use the full timestamp.
+    as_of_intraday = snap.run_datetime if "5m" != "1d" else snap.run_date
+    as_of_daily = snap.run_datetime if "1d" != "1d" else snap.run_date
+    assert as_of_intraday == datetime(2026, 7, 20, 14, 30, 0)
+    assert as_of_daily == date(2026, 7, 20)
 
 
 def test_run_screen_live_stops_when_market_closed(

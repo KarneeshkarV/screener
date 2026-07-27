@@ -129,6 +129,8 @@ def run_screen_live(request: LiveRequest) -> LiveSession:
     session = LiveSession()
     count = 0
     while True:
+        # Session gate / loop pacing clock — taken before the (possibly slow)
+        # refresh so we still stop when the open session has already closed.
         moment = now_fn()
         if not in_session(moment, request.market):
             break
@@ -142,12 +144,16 @@ def run_screen_live(request: LiveRequest) -> LiveSession:
             order_by=request.order_by,
             root=request.bar_store_root,
         )
+        # Persist run_ts *after* refresh+scan so it is >= every bar used in the
+        # pass (refresh can take minutes and pull bars stamped after ``moment``).
+        run_ts_moment = now_fn()
+        run_ts = run_ts_moment.isoformat(timespec="seconds")
         run_id = save_run(
             request.market,
             selection.label,
             total,
             df,
-            run_ts=moment.isoformat(timespec="seconds"),
+            run_ts=run_ts,
         )
         prev = previous_run(request.market, selection.label, run_id)
         if prev is None:
@@ -161,7 +167,7 @@ def run_screen_live(request: LiveRequest) -> LiveSession:
         session.passes.append(
             LivePass(
                 run_id=run_id,
-                run_ts=moment.isoformat(timespec="seconds"),
+                run_ts=run_ts,
                 total=total,
                 df=df,
                 added=tuple(added),

@@ -12,14 +12,16 @@
 # option history barely exists — every session this does not run is history that
 # can never be recovered, so keep the cron running each session.
 #
-# Because each market's --every loop blocks until that session closes, run one
-# cron entry per market at (or just before) its open. Times are UTC; adjust for
-# DST on the US line.
+# IMPORTANT: each market's --every loop BLOCKS until that session closes and
+# markets run sequentially, so in --every mode the supported pattern is ONE cron
+# entry per market with MARKETS=<that market>; the multi-market default
+# (MARKETS="us india") only suits ONCE=1. Times are UTC; adjust for DST on the
+# US line.
 #
 # Cron example (also documented in README.md):
 #   # India: session 09:15–15:30 IST ≈ 03:45–10:00 UTC
 #   40 3 * * 1-5 MARKETS=india /root/screneer_main/screener/scripts/daily_options_record.sh >> "$HOME/.screener/options-logs/cron.log" 2>&1
-#   # US: session 09:30–16:00 ET ≈ 13:30–20:00 UTC (EST; 12:30–19:00 on EDT)
+#   # US: session 09:30–16:00 ET ≈ 13:30–20:00 UTC during EDT (summer); 14:30–21:00 UTC during EST (winter)
 #   25 13 * * 1-5 MARKETS=us    /root/screneer_main/screener/scripts/daily_options_record.sh >> "$HOME/.screener/options-logs/cron.log" 2>&1
 #
 # Alternatively drive a plain 15-minute cron with `options record --once` (set
@@ -34,7 +36,14 @@ LOG_DIR="${LOG_DIR:-$HOME/.screener/options-logs}"
 KEEP_DAYS="${KEEP_DAYS:-30}"
 
 mkdir -p "$LOG_DIR"
-cd "$REPO_DIR"
+# One run at a time: the --every loop blocks for a whole session, so a hung run
+# must not overlap the next day's cron.
+exec 9>"$LOG_DIR/.daily_options_record.lock"
+if ! flock -n 9; then
+  echo "another daily_options_record run is active; exiting"
+  exit 0
+fi
+cd "$REPO_DIR" || { echo "cannot cd to $REPO_DIR" >&2; exit 1; }
 # cron runs with a minimal PATH; make sure uv is reachable.
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"
 
@@ -47,12 +56,15 @@ else
   mode_args=(--every "$EVERY")
 fi
 
-for market in $MARKETS; do
+failed=0
+read -ra markets <<< "$MARKETS"
+for market in "${markets[@]}"; do
   log="$LOG_DIR/options-record-$market-$stamp.log"
   if uv run screener --log-level ERROR options record -m "$market" "${mode_args[@]}" >>"$log" 2>&1; then
     echo "[$stamp] record ok      $market: $(tail -n 1 "$log")"
   else
     echo "[$stamp] record FAILED  $market (see $log)"
+    failed=1
   fi
 done
 
@@ -62,5 +74,6 @@ if uv run screener cache storage-watch 2>&1 | sed "s/^/[$stamp] storage: /"; the
   echo "[$stamp] storage: OVER BUDGET — see line(s) above"
 fi
 
-find "$LOG_DIR" -type f -mtime "+$KEEP_DAYS" -delete
+find "$LOG_DIR" -type f -name 'options-record-*.log' -mtime "+$KEEP_DAYS" -delete
 echo "[$stamp] done"
+exit "$failed"

@@ -316,33 +316,43 @@ def build_india_panel(
         if not trading_day(cursor):
             cursor += timedelta(days=1)
             continue
+        # Merge per (day, underlying): prefer contract-store rows when present,
+        # then fill any requested underlyings the store did not cover from the
+        # bhavcopy. Skipping the bhavcopy entirely when *any* store row exists
+        # collapses the panel universe to the recorder watchlist for that day.
         store_rows = store_panel_rows("india", cursor, symbols=normalized_symbols)
-        if store_rows:
-            # Contract-store data exists for this session: derive the daily row
-            # per underlying by reducing the stored snapshots. Only days with no
-            # store coverage fall through to the legacy bhavcopy path below.
-            rows.extend(store_rows)
+        covered = {
+            str(row["SYMBOL"]).upper() for row in store_rows if row.get("SYMBOL")
+        }
+        day_rows: list[dict[str, object]] = list(store_rows)
+        store_covers_request = (
+            normalized_symbols is not None
+            and bool(normalized_symbols)
+            and normalized_symbols <= covered
+        )
+        if not store_covers_request:
+            try:
+                chains = load_bhavcopy_chains(
+                    cursor,
+                    symbols=normalized_symbols,
+                    refresh=refresh,
+                    fetcher=fetcher,
+                )
+            except Exception as exc:  # noqa: BLE001 - archive gaps degrade per day
+                LOG.warning("options bhavcopy unavailable for %s: %s", cursor, exc)
+                if on_error is not None:
+                    on_error(cursor, exc)
+            else:
+                for chain in chains.values():
+                    symbol = str(chain.underlying).upper()
+                    if symbol in covered:
+                        continue  # store row wins on conflict
+                    day_rows.append(metrics_row(chain))
+        if day_rows:
+            rows.extend(day_rows)
             loaded_days += 1
             if on_progress is not None:
-                on_progress(cursor, len(store_rows))
-            cursor += timedelta(days=1)
-            continue
-        try:
-            chains = load_bhavcopy_chains(
-                cursor,
-                symbols=normalized_symbols,
-                refresh=refresh,
-                fetcher=fetcher,
-            )
-        except Exception as exc:  # noqa: BLE001 - archive gaps degrade per day
-            LOG.warning("options bhavcopy unavailable for %s: %s", cursor, exc)
-            if on_error is not None:
-                on_error(cursor, exc)
-        else:
-            rows.extend(metrics_row(chain) for chain in chains.values())
-            loaded_days += 1
-            if on_progress is not None:
-                on_progress(cursor, len(chains))
+                on_progress(cursor, len(day_rows))
         cursor += timedelta(days=1)
     LOG.info("built India options rows from %d trading days", loaded_days)
     return append_metrics_rows(OPTIONS_PANEL_NAMES["india"], pd.DataFrame(rows))

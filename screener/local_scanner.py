@@ -23,8 +23,8 @@ Field conventions (documented so the backtester can reproduce them exactly):
 * ``average_volume_10d_calc`` — mean total session volume over the up-to-10
   sessions *before* the current one; ``relative_volume_10d_calc`` is the current
   session volume divided by it.
-* ``price_52_week_high`` — highest high in the loaded archive window (a proxy
-  bounded by archive depth).
+* ``price_52_week_high`` — highest high in the trailing 52 weeks ending at the
+  frame's last timestamp (not the entire archive).
 
 Criteria that reference fields the bar store cannot compute (fundamentals such
 as ``price_earnings_ttm``) raise :class:`LocalScanUnsupported` so the CLI can
@@ -97,6 +97,12 @@ def compute_features(frame: pd.DataFrame, market_tz: str) -> dict[str, float]:
     else:
         change = float("nan")
 
+    # Trailing 52-week high ending at the frame's last bar — not the entire
+    # archive (a multi-year store would otherwise poison the feature forever).
+    last_ts = index[-1]
+    high_52w = high.loc[high.index >= last_ts - pd.Timedelta(weeks=52)]
+    price_52_week_high = float(high_52w.max()) if len(high_52w) else float("nan")
+
     features: dict[str, float] = {
         "close": last_close,
         "volume": current_volume,
@@ -104,7 +110,7 @@ def compute_features(frame: pd.DataFrame, market_tz: str) -> dict[str, float]:
         "relative_volume_10d_calc": relative_volume,
         "average_volume_10d_calc": average_volume,
         "RSI": float(wilder_rsi(close, 14).iloc[-1]),
-        "price_52_week_high": float(high.max()),
+        "price_52_week_high": price_52_week_high,
     }
     for span in _EMA_SPANS:
         features[f"EMA{span}"] = float(

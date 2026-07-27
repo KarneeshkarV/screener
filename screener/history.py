@@ -151,6 +151,19 @@ class RunSnapshot:
         return datetime.fromisoformat(self.run_ts).date()
 
     @property
+    def run_datetime(self) -> datetime:
+        """Full run timestamp as canonical naive UTC.
+
+        Daily replays still use :attr:`run_date` (date truncation). Intraday
+        ``--from-run`` replays need the stored time-of-day so a 10:30 ET screen
+        is not rewound to midnight (previous close).
+        """
+        parsed = datetime.fromisoformat(self.run_ts)
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+
+    @property
     def tickers(self) -> list[str]:
         return [str(t) for t in self.rows["ticker"].dropna().tolist()]
 

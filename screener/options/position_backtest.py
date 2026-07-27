@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Any, cast
@@ -356,23 +356,37 @@ def compute_span_margin(
 
 
 def compute_regt_margin(
-    legs: list[LegFill], spot: float, cfg: OptionsBacktestConfig
+    legs: list[LegFill],
+    spot: float,
+    cfg: OptionsBacktestConfig,
+    marks: Sequence[float] | None = None,
 ) -> float:
-    """US Reg-T margin: premium + max(pct*underlying - OTM, min_pct*strike)."""
+    """US Reg-T margin: current premium + max(pct*underlying - OTM, min).
+
+    ``marks`` are per-leg current market prices (defaults to each leg's
+    ``entry_price`` when omitted or shorter than ``legs``). Naked-call
+    minimum is ``regt_min_pct * spot``; naked-put minimum is
+    ``regt_min_pct * strike`` (CBOE Reg-T convention).
+    """
     if spot <= 0:
         return 0.0
     total = 0.0
-    for leg in legs:
+    for i, leg in enumerate(legs):
         qty = leg.lots * leg.lot_size
-        premium = leg.entry_price * qty
+        px = (
+            float(marks[i]) if marks is not None and i < len(marks) else leg.entry_price
+        )
+        premium = px * qty
         if leg.side > 0:
             total += premium  # long options are paid for in full
             continue
         if leg.right == "call":
             otm = max(leg.strike - spot, 0.0)
+            min_basis = cfg.regt_min_pct * spot
         else:
             otm = max(spot - leg.strike, 0.0)
-        per_unit = max(cfg.regt_pct * spot - otm, cfg.regt_min_pct * leg.strike)
+            min_basis = cfg.regt_min_pct * leg.strike
+        per_unit = max(cfg.regt_pct * spot - otm, min_basis)
         total += per_unit * qty + premium
     return total
 
@@ -382,12 +396,13 @@ def _position_margin(
     spot: float | None,
     as_of: date,
     cfg: OptionsBacktestConfig,
+    marks: Sequence[float] | None = None,
 ) -> float:
     if cfg.margin_model == "none" or spot is None or spot <= 0:
         return 0.0
     if cfg.margin_model == "span":
         return compute_span_margin(legs, spot, as_of, cfg)
-    return compute_regt_margin(legs, spot, cfg)
+    return compute_regt_margin(legs, spot, cfg, marks=marks)
 
 
 def _net_delta(legs: list[LegFill], spot: float | None, as_of: date) -> float | None:
@@ -675,10 +690,14 @@ def _check_exit(
     nearest_expiry = min(leg.expiry for leg in pos.legs)
     dte = (nearest_expiry - day).days
 
+    # Entry day: no stop/target/roll/dte/time/exit_expr. hold_days is not
+    # advanced until the first post-entry session (see the day loop).
+    if day == pos.entry_date:
+        return None
+
     if dte <= 0:
-        # Force settle at intrinsic when we have a spot; marks already prefer settle.
-        if underlying_close is not None:
-            return "expiry", True
+        # Force settle; marks/close selection for post-expiry days is handled
+        # by the day loop (last session on or before expiry).
         return "expiry", True
 
     mark_premium = _mtm_premium(pos.legs, marks)
@@ -814,6 +833,8 @@ def run_options_position_backtest(
     peak_margin = 0.0
     cash_pnl = 0.0  # realized pnl accumulator
     last_chains: dict[str, OptionChain] = {}
+    # Once-per-symbol warnings for skipped roll re-entries.
+    roll_skip_warned: set[str] = set()
 
     def _underlying_close(sym: str, day: date) -> float | None:
         bars = bars_by_tv.get(sym)
@@ -828,6 +849,21 @@ def run_options_position_backtest(
         if day_rows.empty:
             return None
         return float(day_rows.iloc[-1]["close"])
+
+    def _underlying_close_on_or_before(sym: str, as_of: date) -> float | None:
+        """Last available underlying close on a session ≤ ``as_of``."""
+        exact = _underlying_close(sym, as_of)
+        if exact is not None:
+            return exact
+        bars = bars_by_tv.get(sym)
+        if bars is None or bars.empty:
+            return None
+        day_labels = cast(pd.DatetimeIndex, bars.index).normalize()
+        cutoff = pd.Timestamp(as_of).normalize()
+        eligible = bars[day_labels <= cutoff]
+        if eligible.empty:
+            return None
+        return float(eligible.iloc[-1]["close"])
 
     def _signal_on(sym: str, day: date, series_map: dict[str, pd.Series]) -> bool:
         series = series_map.get(sym)
@@ -938,35 +974,54 @@ def run_options_position_backtest(
                 underlying_close=u_close,
                 carry=carry_marks.get(sym, {}),
             )
-            pos.hold_days += 1
             pos.last_mark_premium = _mtm_premium(pos.legs, marks)
+            # Reg-T / SPAN requirement tracks current marks, not entry freeze.
+            if cfg.margin_model != "none":
+                pos.margin = _position_margin(pos.legs, u_close, day, cfg, marks=marks)
+            # Entry day: mark only — no hold_days tick, no exit evaluation.
+            if day == pos.entry_date:
+                continue
+            pos.hold_days += 1
 
             exit_sig = (
                 _signal_on(sym, day, exit_signals) if exit_ast is not None else False
             )
-            # Don't exit on the entry day via exit_expr/time before marks settle.
             decision = _check_exit(
                 pos,
                 marks,
                 day=day,
                 underlying_close=u_close,
-                exit_signal=exit_sig and day > pos.entry_date,
+                exit_signal=exit_sig,
                 cfg=cfg,
             )
             if decision is None:
                 continue
             reason, at_expiry = decision
+            exited_expiry = min(leg.expiry for leg in pos.legs)
             extra_details: dict[str, Any] | None = None
+            settle_close = u_close
             if at_expiry:
+                # If the loop day is past expiry (expiry was not a trading day
+                # in range), settle against the last session ≤ expiry.
+                if day > exited_expiry:
+                    hist_close = _underlying_close_on_or_before(sym, exited_expiry)
+                    if hist_close is not None:
+                        settle_close = hist_close
+                    else:
+                        warnings.append(
+                            f"{sym} {day}: no underlying close on or before "
+                            f"expiry {exited_expiry}; settling with {day} close"
+                        )
                 if cfg.settlement == "settle":
-                    marks = _settlement_marks(pos, chain, underlying_close=u_close)
-                elif u_close is not None:
+                    marks = _settlement_marks(pos, chain, underlying_close=settle_close)
+                elif settle_close is not None:
                     marks = [
-                        _intrinsic(leg.right, leg.strike, u_close) for leg in pos.legs
+                        _intrinsic(leg.right, leg.strike, settle_close)
+                        for leg in pos.legs
                     ]
                 if cfg.physical_settlement or cfg.settlement != "intrinsic":
                     extra_details = _expiry_details(
-                        pos, underlying_close=u_close, cfg=cfg
+                        pos, underlying_close=settle_close, cfg=cfg
                     )
             trade = _close_position(
                 pos,
@@ -983,7 +1038,42 @@ def run_options_position_backtest(
             del open_positions[sym]
             carry_marks.pop(sym, None)
             # Roll is a first-class exit-and-reenter within the same session.
+            # Re-enter only when the replacement actually clears the trigger.
             if reason == "roll" and chain is not None:
+                preview_warnings: list[str] = []
+                new_fills = _open_structure(
+                    chain,
+                    roll_structure,
+                    as_of=day,
+                    cfg=cfg,
+                    warnings=preview_warnings,
+                )
+                if new_fills is None:
+                    warnings.extend(preview_warnings)
+                    continue
+                new_expiry = min(leg.expiry for leg in new_fills)
+                if new_expiry == exited_expiry:
+                    if sym not in roll_skip_warned:
+                        warnings.append(
+                            f"{sym}: roll re-entry skipped — replacement "
+                            f"expiry {new_expiry} equals exited expiry"
+                        )
+                        roll_skip_warned.add(sym)
+                    continue
+                if cfg.roll_delta is not None:
+                    roll_spot = u_close
+                    if (roll_spot is None or roll_spot <= 0) and chain.spot:
+                        roll_spot = float(chain.spot)
+                    net = _net_delta(new_fills, roll_spot, day)
+                    if net is not None and abs(net) >= cfg.roll_delta:
+                        if sym not in roll_skip_warned:
+                            warnings.append(
+                                f"{sym}: roll re-entry skipped — replacement "
+                                f"|delta|={abs(net):.3f} still ≥ "
+                                f"roll_delta={cfg.roll_delta}"
+                            )
+                            roll_skip_warned.add(sym)
+                        continue
                 _enter(sym, chain, roll_structure, signal_date=day, entry_date=day)
 
         # 3) New signals (for D+1 entry) when flat.

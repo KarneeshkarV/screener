@@ -130,6 +130,23 @@ def test_cache_clean_removes_only_old_files(cache_dirs):
     assert "Reclaimed 10 B from 1 file(s)" in res.output
 
 
+def test_cache_clean_preserves_lock_sidecars(cache_dirs):
+    """``.lock`` files must never be deleted — they back cache mutual exclusion (M14)."""
+    data = cache_dirs["prices"] / "AAPL.parquet"
+    lock = cache_dirs["prices"] / "AAPL.parquet.lock"
+    stale_lock = cache_dirs["prices"] / "orphan.lock"
+    _write(data, b"d" * 10, age_days=40)
+    _write(lock, b"", age_days=40)
+    _write(stale_lock, b"", age_days=90)
+    res = CliRunner().invoke(cli, ["cache", "clean", "--older-than", "30"])
+    assert res.exit_code == 0, res.output
+    assert not data.exists()
+    assert lock.exists(), "active data.lock sidecar must survive clean"
+    assert stale_lock.exists(), "any *.lock must survive clean"
+    assert ".lock" not in res.output
+    assert "Reclaimed 10 B from 1 file(s)" in res.output
+
+
 def test_cache_clean_dir_option_scopes_to_one_dir(cache_dirs):
     panels_old = cache_dirs["panels"] / "old_panel.parquet"
     prices_old = cache_dirs["prices"] / "old_price.parquet"

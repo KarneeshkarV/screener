@@ -26,6 +26,7 @@ from requests.adapters import HTTPAdapter
 
 from screener.backtester.bar_store import (
     BARS_ROOT,
+    append_bars as _append_store_bars,
     bar_path as _bar_path,
     load_bars as _load_store_bars,
     save_bars as _save_store_bars,
@@ -384,11 +385,25 @@ class YFinancePriceFetcher:
                 if min_cached <= start_ts + pd.Timedelta(
                     days=3
                 ) and max_cached < end_ts - pd.Timedelta(days=3):
-                    fetch_start = max_cached + pd.Timedelta(days=1)
+                    # Daily bars are midnight-normalized, so +1 day is the next
+                    # session. Intraday stamps are mid-session; +1 day lands
+                    # inside the next session and permanently holes the archive
+                    # — normalize to the start of the next calendar day instead
+                    # (overlap is fine; merges dedupe).
+                    if self.interval == "1d":
+                        fetch_start = max_cached + pd.Timedelta(days=1)
+                    else:
+                        fetch_start = (max_cached + pd.Timedelta(days=1)).normalize()
                 elif max_cached >= end_ts - pd.Timedelta(
                     days=3
                 ) and min_cached > start_ts + pd.Timedelta(days=3):
-                    fetch_end = min_cached - pd.Timedelta(days=1)
+                    if self.interval == "1d":
+                        fetch_end = min_cached - pd.Timedelta(days=1)
+                    else:
+                        # End of the calendar day before min_cached's session.
+                        fetch_end = (min_cached - pd.Timedelta(days=1)).normalize() + (
+                            pd.Timedelta(days=1) - pd.Timedelta(1, "ns")
+                        )
             missing.setdefault((fetch_start, fetch_end), []).append(ticker)
 
         if not missing:
@@ -467,11 +482,42 @@ class YFinancePriceFetcher:
         for ticker in dict.fromkeys(t for group in missing.values() for t in group):
             cache_key = self._cache_key(ticker)
             norm = downloaded_by_ticker.get(ticker, _empty_ohlcv_frame())
-            merged = _merge_cached(cached_by_ticker.get(ticker), norm, self.interval)
-            if not merged.empty and (
-                not norm.empty or ticker not in tail_refresh_tickers
-            ):
-                self._save_stored(ticker, cache_key, merged)
+            if self._uses_bar_store():
+                # Locked append path: re-reads disk under flock so concurrent
+                # writers cannot lose rows. Prefer appending only the newly
+                # downloaded slice rather than an unlocked merge+overwrite.
+                if not norm.empty:
+                    merged = _append_store_bars(
+                        ticker,
+                        norm,
+                        market=self.market,
+                        interval=self.interval,
+                        raw=not self.auto_adjust,
+                        root=self.bars_root,
+                    )
+                elif ticker not in tail_refresh_tickers:
+                    # Empty download, non-tail path: leave store untouched.
+                    cached = cached_by_ticker.get(ticker)
+                    if cached is None:
+                        cached = _load_store_bars(
+                            ticker,
+                            market=self.market,
+                            interval=self.interval,
+                            raw=not self.auto_adjust,
+                            root=self.bars_root,
+                        )
+                    merged = cached if cached is not None else _empty_ohlcv_frame()
+                else:
+                    # Tail refresh returned nothing — keep the prior cache.
+                    merged = cached_by_ticker.get(ticker, _empty_ohlcv_frame())
+            else:
+                merged = _merge_cached(
+                    cached_by_ticker.get(ticker), norm, self.interval
+                )
+                if not merged.empty and (
+                    not norm.empty or ticker not in tail_refresh_tickers
+                ):
+                    self._save_stored(ticker, cache_key, merged)
             results[ticker] = merged.loc[
                 (merged.index >= start_ts) & (merged.index <= end_ts)
             ]

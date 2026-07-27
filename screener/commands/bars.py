@@ -99,20 +99,33 @@ def bars_record(
     fetcher = build_price_fetcher(interval="1m", market=market)
     frames = fetcher.fetch(yf_symbols, start, end)
     with_data = 0
+    write_failures = 0
     for symbol in yf_symbols:
         frame = frames.get(symbol)
         if frame is None or frame.empty:
             continue
+        try:
+            append_bars(symbol, frame, market=market, interval="1m")
+        except Exception as exc:  # noqa: BLE001 - surface any persistence failure
+            write_failures += 1
+            click.echo(f"failed to persist {symbol}: {exc}", err=True)
+            continue
         with_data += 1
-        append_bars(symbol, frame, market=market, interval="1m")
     store_dir = BARS_ROOT / market / "1m"
     click.echo(f"appended bars for {with_data}/{len(yf_symbols)} symbols → {store_dir}")
-    if with_data < len(yf_symbols):
-        missing = [
-            symbol for symbol, frame in frames.items() if frame is None or frame.empty
-        ]
+    if write_failures:
+        click.echo(
+            f"failed to write {write_failures} {market} symbol(s)",
+            err=True,
+        )
+    missing = [
+        symbol for symbol, frame in frames.items() if frame is None or frame.empty
+    ]
+    if missing:
         click.echo(
             f"no bars returned for {len(missing)} symbol(s): "
             f"{', '.join(missing[:10])}{' …' if len(missing) > 10 else ''}",
             err=True,
         )
+    if write_failures:
+        raise SystemExit(1)

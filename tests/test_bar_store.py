@@ -27,7 +27,7 @@ from screener.backtester.bar_store import (
     save_bars,
 )
 from screener.backtester.data import YFinancePriceFetcher
-from screener.backtester.price_frames import resample_intraday_bars
+from screener.backtester.price_frames import frame_has_range, resample_intraday_bars
 from screener.cli import cli
 from tests.conftest import StubPriceFetcher
 
@@ -68,6 +68,23 @@ def _ohlcv(index: pd.DatetimeIndex, start_px: float = 100.0) -> pd.DataFrame:
         },
         index=index,
     )
+
+
+def _concurrent_append_chunk(args: tuple[str, int, int, str]) -> int:
+    """Module-level worker for ProcessPoolExecutor (must be picklable)."""
+    from pathlib import Path
+
+    symbol, start_minute, n, root_str = args
+    root = Path(root_str)
+    index = pd.DatetimeIndex(
+        [
+            pd.Timestamp("2026-07-20 14:30") + pd.Timedelta(minutes=start_minute + i)
+            for i in range(n)
+        ]
+    )
+    frame = _ohlcv(index, start_px=float(start_minute))
+    append_bars(symbol, frame, market="us", interval="1m", root=root)
+    return n
 
 
 # --------------------------------------------------------------------------- #
@@ -145,6 +162,59 @@ def test_append_bars_empty_to_empty_store_stays_empty(tmp_path):
     assert not bar_path("AAPL", market="us", interval="1m", root=tmp_path).exists()
 
 
+def test_append_bars_concurrent_writers_preserve_all_rows(tmp_path):
+    """Two concurrent appends of disjoint ranges must not lose rows (C4)."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    n_each = 50
+    jobs = [
+        ("AAPL", 0, n_each, str(tmp_path)),
+        ("AAPL", n_each, n_each, str(tmp_path)),
+    ]
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        list(pool.map(_concurrent_append_chunk, jobs))
+
+    stored = load_bars("AAPL", market="us", interval="1m", root=tmp_path)
+    assert stored is not None
+    assert len(stored) == 2 * n_each
+
+
+def test_save_bars_propagates_write_failure(tmp_path, monkeypatch):
+    """Disk/write failures must not be swallowed as success (M15)."""
+    frame = _ohlcv(_us_1m_index(sessions=1, bars_per=3))
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", _boom)
+    with pytest.raises(OSError, match="disk full"):
+        save_bars("AAPL", frame, market="us", interval="1m", root=tmp_path)
+    # No partial/corrupt destination left behind.
+    assert not bar_path("AAPL", market="us", interval="1m", root=tmp_path).exists()
+
+
+def test_bars_record_exits_nonzero_on_write_failure(tmp_path, monkeypatch):
+    from screener.backtester import bar_store
+
+    monkeypatch.setattr(bar_store, "BARS_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "screener.backtester.data.build_price_fetcher",
+        lambda **kwargs: StubPriceFetcher(_recorded_1m_frames()),
+    )
+
+    def _fail_append(*args, **kwargs):
+        raise OSError("permission denied")
+
+    # Command imports append_bars from bar_store at call time.
+    monkeypatch.setattr(bar_store, "append_bars", _fail_append)
+
+    result = CliRunner().invoke(
+        cli, ["bars", "record", "-m", "us", "--tickers", "AAPL,MSFT", "--days", "2"]
+    )
+    assert result.exit_code != 0
+    assert "failed to write" in result.output
+
+
 # --------------------------------------------------------------------------- #
 # resample_intraday_bars
 # --------------------------------------------------------------------------- #
@@ -206,6 +276,90 @@ def test_resample_rejects_unsupported_interval():
 def test_resample_empty_frame_stays_empty():
     out = resample_intraday_bars(pd.DataFrame(), "15m", "America/New_York")
     assert out.empty
+
+
+def test_resample_gappy_input_bucket_labels_are_boundary_aligned():
+    """Mid-session 1m gap must not shift bucket labels (H12)."""
+    # Full first 10 minutes, then a 2-minute hole, then continue — so the
+    # second 5m bucket's first *observed* bar is at :07, but the label must
+    # stay at session_open + 5m (= 14:35 UTC).
+    stamps = [
+        pd.Timestamp("2026-07-20 14:30") + pd.Timedelta(minutes=m)
+        for m in list(range(5)) + list(range(7, 15))
+    ]
+    frame = _ohlcv(pd.DatetimeIndex(stamps))
+    out = resample_intraday_bars(frame, "5m", "America/New_York")
+    assert out.index.tolist() == [
+        pd.Timestamp("2026-07-20 14:30"),
+        pd.Timestamp("2026-07-20 14:35"),
+        pd.Timestamp("2026-07-20 14:40"),
+    ]
+
+
+def test_resample_unsorted_input_is_sorted():
+    index = _us_1m_index(sessions=1, bars_per=10)
+    frame = _ohlcv(index).iloc[::-1]  # reverse chronological
+    out = resample_intraday_bars(frame, "5m", "America/New_York")
+    assert len(out) == 2
+    assert out.index.is_monotonic_increasing
+    assert out.index[0] == pd.Timestamp("2026-07-20 14:30")
+
+
+def test_frame_has_range_daily_boundary_only():
+    """Daily behaviour is unchanged: endpoints ±3d, no interior check (C6)."""
+    index = pd.bdate_range("2024-01-02", periods=5)
+    frame = _ohlcv(index)
+    # Covers [Jan 2, Jan 8] with bars through Jan 8 — within 3d of end.
+    assert frame_has_range(
+        frame,
+        pd.Timestamp("2024-01-02"),
+        pd.Timestamp("2024-01-08"),
+        "1d",
+    )
+    # Missing an interior week but endpoints present would still pass daily
+    # (daily never checks interior density).
+    sparse = _ohlcv(pd.DatetimeIndex(["2024-01-02", "2024-01-15", "2024-01-30"]))
+    assert frame_has_range(
+        sparse,
+        pd.Timestamp("2024-01-02"),
+        pd.Timestamp("2024-01-30"),
+        "1d",
+    )
+
+
+def test_frame_has_range_intraday_rejects_interior_week_gap():
+    """Intraday: endpoints ok but a missing middle week must fail (C6/H11)."""
+    # Two sessions a week apart — gap > 4 calendar days.
+    early = pd.DatetimeIndex(
+        [pd.Timestamp("2026-07-20 14:30") + pd.Timedelta(minutes=b) for b in range(10)]
+    )
+    late = pd.DatetimeIndex(
+        [pd.Timestamp("2026-07-28 14:30") + pd.Timedelta(minutes=b) for b in range(10)]
+    )
+    frame = _ohlcv(early.append(late))
+    assert not frame_has_range(
+        frame,
+        pd.Timestamp("2026-07-20"),
+        pd.Timestamp("2026-07-28 20:00"),
+        "1m",
+    )
+
+
+def test_frame_has_range_intraday_allows_weekend_gap():
+    """A Fri→Mon gap (~3d) must still pass the 4-day interior threshold."""
+    fri = pd.DatetimeIndex(
+        [pd.Timestamp("2026-07-17 14:30") + pd.Timedelta(minutes=b) for b in range(10)]
+    )
+    mon = pd.DatetimeIndex(
+        [pd.Timestamp("2026-07-20 14:30") + pd.Timedelta(minutes=b) for b in range(10)]
+    )
+    frame = _ohlcv(fri.append(mon))
+    assert frame_has_range(
+        frame,
+        pd.Timestamp("2026-07-17"),
+        pd.Timestamp("2026-07-20 20:00"),
+        "1m",
+    )
 
 
 # --------------------------------------------------------------------------- #

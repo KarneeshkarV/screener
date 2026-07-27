@@ -145,15 +145,35 @@ def frame_has_range(
     end: pd.Timestamp,
     interval: str = "1d",
 ) -> bool:
-    del interval  # Range tolerance is identical for daily and intraday frames.
+    """Return whether ``frame`` covers ``[start, end]`` well enough to skip a fetch.
+
+    Daily (``1d``): boundary-only check — the first bar in range must fall
+    within 3 calendar days of ``start`` and the last within 3 calendar days of
+    ``end`` (weekends/holidays). Interior density is not inspected.
+
+    Intraday: the same ±3 calendar-day boundary tolerance, plus an interior-gap
+    check — any gap between consecutive bars inside the window larger than 4
+    calendar days rejects the frame (weekend + holiday is fine; a missing full
+    week of ~7 days fails). Without the interior check, an archive missing a
+    middle week would still pass on endpoints alone.
+    """
     if frame is None or frame.empty:
         return False
     in_range = frame.loc[(frame.index >= start) & (frame.index <= end)]
-    return (
-        not in_range.empty
-        and in_range.index.min() <= start + pd.Timedelta(days=3)
+    if in_range.empty:
+        return False
+    if not (
+        in_range.index.min() <= start + pd.Timedelta(days=3)
         and in_range.index.max() >= end - pd.Timedelta(days=3)
-    )
+    ):
+        return False
+    if interval == "1d":
+        return True
+    # Intraday: reject large interior holes (missing session week, etc.).
+    if len(in_range) < 2:
+        return True
+    gaps = in_range.index.to_series().diff().iloc[1:]
+    return bool(gaps.max() <= pd.Timedelta(days=4))
 
 
 def resample_intraday_bars(
@@ -172,7 +192,12 @@ def resample_intraday_bars(
 
     When a session's first stored bar is late (partial archive), that session's
     buckets anchor at the first *stored* bar instead of the true session open —
-    labels can drift by less than one bucket for that session only.
+    labels can drift by less than one bucket for that session only. Within a
+    session every bucket label is exactly ``anchor + k * interval`` (not the
+    timestamp of the first *observed* bar in that bucket), so a mid-session gap
+    does not de-align symbols in cross-sectional joins.
+
+    Unsorted input is sorted by index before bucketing.
     """
     minutes = RESAMPLE_MINUTES_FROM_1M.get(interval)
     if minutes is None:
@@ -186,6 +211,9 @@ def resample_intraday_bars(
     from screener.backtester.sessions import session_dates
 
     index = pd.DatetimeIndex(frame.index)
+    if not index.is_monotonic_increasing:
+        frame = frame.sort_index()
+        index = pd.DatetimeIndex(frame.index)
     ts_ns = index.to_numpy().view("i8")
     labels = session_dates(index, market_tz)
     n = len(index)
@@ -194,7 +222,8 @@ def resample_intraday_bars(
     session_change[1:] = labels[1:] != labels[:-1]
     session_id = np.cumsum(session_change) - 1
     session_first_ns = ts_ns[session_change][session_id]
-    bucket = (ts_ns - session_first_ns) // pd.Timedelta(minutes=minutes).value
+    bucket_ns = pd.Timedelta(minutes=minutes).value
+    bucket = (ts_ns - session_first_ns) // bucket_ns
     # Unique per (session, bucket); non-decreasing because the index is sorted.
     key = session_id.astype(np.int64) * (1 << 24) + bucket
     first_in_bucket = np.empty(n, dtype=bool)
@@ -214,7 +243,10 @@ def resample_intraday_bars(
     }
     agg = {col: fn for col, fn in aggregations.items() if col in frame.columns}
     out = frame.groupby(key, sort=False).agg(agg)
-    out.index = pd.DatetimeIndex(index[first_in_bucket])
+    # Label each bucket at its computed boundary (anchor + k*interval), not the
+    # first observed bar — mid-session gaps must not shift labels.
+    label_ns = session_first_ns[first_in_bucket] + bucket[first_in_bucket] * bucket_ns
+    out.index = pd.DatetimeIndex(label_ns)
     return out
 
 

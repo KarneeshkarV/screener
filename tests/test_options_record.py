@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -8,12 +10,15 @@ from click.testing import CliRunner
 from screener.cli import cli as _root_cli  # noqa: F401 - import-order guard
 from screener.options import cli as options_cli
 from screener.options import contract_store, recorder
+from screener.options.cboe import US_OPTION_LOT_SIZE, parse_cboe_chain
 from screener.options.models import OptionChain, OptionContract
+from screener.options.nse_live import DEFAULT_INDIA_LOT_SIZES, parse_nse_chain
 
 AS_OF = datetime(2026, 7, 10, 15, 0, tzinfo=timezone.utc)
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _chain(underlying: str) -> OptionChain:
+def _chain(underlying: str, *, lot_size: float | None = 10.0) -> OptionChain:
     contract = OptionContract(
         symbol=f"{underlying}C100",
         underlying=underlying,
@@ -26,7 +31,7 @@ def _chain(underlying: str) -> OptionChain:
         bid=4.0,
         ask=6.0,
         last=5.0,
-        lot_size=10.0,
+        lot_size=lot_size,
         as_of=AS_OF,
         source="stub",
     )
@@ -43,14 +48,15 @@ def _chain(underlying: str) -> OptionChain:
 class _StubProvider:
     """Returns a chain for known symbols, None otherwise; counts calls."""
 
-    def __init__(self, known: set[str]) -> None:
+    def __init__(self, known: set[str], *, lot_size: float | None = 10.0) -> None:
         self.known = known
         self.calls = 0
+        self.lot_size = lot_size
 
     def fetch_chain(self, symbol, market, expiry=None, *, refresh=False):
         self.calls += 1
         if symbol in self.known:
-            return _chain(symbol)
+            return _chain(symbol, lot_size=self.lot_size)
         return None
 
 
@@ -91,7 +97,12 @@ def test_within_session_boundaries():
 def test_run_pass_records_and_reports_missing(tmp_path: Path):
     provider = _StubProvider(known={"SPY"})
     result = recorder.run_pass(
-        "us", ["SPY", "NOPE"], provider=provider, root=tmp_path, enrich=False
+        "us",
+        ["SPY", "NOPE"],
+        provider=provider,
+        root=tmp_path,
+        enrich=False,
+        observed_at=AS_OF,
     )
     assert result.recorded == [("SPY", 1)]
     assert result.missing == ["NOPE"]
@@ -100,12 +111,37 @@ def test_run_pass_records_and_reports_missing(tmp_path: Path):
         "SPY", market="us", day=date(2026, 7, 10), root=tmp_path
     )
     assert stored is not None and len(stored) == 1
+    # Observed time stamped; venue quote preserved separately.
+    assert stored.iloc[0]["snapshot_ts"] == pd_timestamp(AS_OF)
+    assert stored.iloc[0]["quote_ts"] == pd_timestamp(AS_OF)
+
+
+def pd_timestamp(value: datetime):
+    import pandas as pd
+
+    return (
+        pd.Timestamp(value).tz_localize(None) if value.tzinfo else pd.Timestamp(value)
+    )
 
 
 def test_run_pass_is_idempotent(tmp_path: Path):
     provider = _StubProvider(known={"SPY"})
-    recorder.run_pass("us", ["SPY"], provider=provider, root=tmp_path, enrich=False)
-    recorder.run_pass("us", ["SPY"], provider=provider, root=tmp_path, enrich=False)
+    recorder.run_pass(
+        "us",
+        ["SPY"],
+        provider=provider,
+        root=tmp_path,
+        enrich=False,
+        observed_at=AS_OF,
+    )
+    recorder.run_pass(
+        "us",
+        ["SPY"],
+        provider=provider,
+        root=tmp_path,
+        enrich=False,
+        observed_at=AS_OF,
+    )
     stored = contract_store.load_contracts(
         "SPY", market="us", day=date(2026, 7, 10), root=tmp_path
     )
@@ -120,6 +156,156 @@ def test_run_pass_degrades_when_provider_raises(tmp_path: Path):
     result = recorder.run_pass("us", ["SPY"], provider=_Boom(), root=tmp_path)
     assert result.missing == ["SPY"]
     assert result.recorded == []
+
+
+def test_run_pass_warns_when_lot_size_missing(tmp_path: Path, caplog):
+    provider = _StubProvider(known={"SPY"}, lot_size=None)
+    with caplog.at_level(logging.WARNING, logger="screener.options.recorder"):
+        result = recorder.run_pass(
+            "us",
+            ["SPY"],
+            provider=provider,
+            root=tmp_path,
+            enrich=False,
+            observed_at=AS_OF,
+        )
+    assert result.recorded == [("SPY", 1)]
+    assert any("lot_size missing" in record.message for record in caplog.records)
+
+
+def test_cboe_parser_sets_standard_us_lot_size():
+    """C2: US equity/index options carry the 100-share multiplier at ingest."""
+    raw = json.loads((FIXTURES / "cboe_aapl_delayed_sample.json").read_text())
+    chain = parse_cboe_chain(raw, requested_symbol="AAPL")
+    assert chain is not None
+    assert chain.contracts
+    assert all(c.lot_size == US_OPTION_LOT_SIZE for c in chain.contracts)
+    assert US_OPTION_LOT_SIZE == 100.0
+
+
+def test_nse_parser_sets_index_lot_size_defaults():
+    """C2: India index options resolve lot_size (defaults when history absent)."""
+    raw = json.loads((FIXTURES / "nse_live_option_chain_sample.json").read_text())
+    # Sample fixture is RELIANCE equity — not in default table; inject map.
+    chain = parse_nse_chain(raw, symbol="RELIANCE", lot_sizes={"RELIANCE": 500.0})
+    assert chain is not None
+    assert chain.contracts
+    assert all(c.lot_size == 500.0 for c in chain.contracts)
+
+    nifty_raw = {
+        "records": {
+            "timestamp": "10-Jul-2026 15:30:00",
+            "expiryDates": ["31-Jul-2026"],
+            "data": [
+                {
+                    "strikePrice": 25000,
+                    "expiryDate": "31-Jul-2026",
+                    "CE": {
+                        "identifier": "NIFTY31JUL2525000CE",
+                        "openInterest": 100,
+                        "changeinOpenInterest": 1,
+                        "totalTradedVolume": 10,
+                        "impliedVolatility": 12.5,
+                        "bidprice": 100,
+                        "askPrice": 101,
+                        "lastPrice": 100.5,
+                        "underlyingValue": 25000,
+                    },
+                    "PE": {
+                        "identifier": "NIFTY31JUL2525000PE",
+                        "openInterest": 90,
+                        "changeinOpenInterest": -1,
+                        "totalTradedVolume": 8,
+                        "impliedVolatility": 13.0,
+                        "bidprice": 90,
+                        "askPrice": 91,
+                        "lastPrice": 90.5,
+                        "underlyingValue": 25000,
+                    },
+                }
+            ],
+        }
+    }
+    nifty = parse_nse_chain(nifty_raw, symbol="NIFTY")
+    assert nifty is not None
+    assert all(c.lot_size == DEFAULT_INDIA_LOT_SIZES["NIFTY"] for c in nifty.contracts)
+    assert DEFAULT_INDIA_LOT_SIZES["NIFTY"] == 75.0
+    assert DEFAULT_INDIA_LOT_SIZES["BANKNIFTY"] == 35.0
+    assert DEFAULT_INDIA_LOT_SIZES["FINNIFTY"] == 65.0
+
+
+def test_run_pass_records_lot_size_for_us_market(tmp_path: Path):
+    """C2 end-to-end: lot_size lands on stored contract rows."""
+    raw = json.loads((FIXTURES / "cboe_aapl_delayed_sample.json").read_text())
+    chain = parse_cboe_chain(raw, requested_symbol="AAPL")
+    assert chain is not None
+
+    class _CboeStub:
+        def fetch_chain(self, symbol, market, expiry=None, *, refresh=False):
+            return chain
+
+    result = recorder.run_pass(
+        "us",
+        ["AAPL"],
+        provider=_CboeStub(),
+        root=tmp_path,
+        enrich=False,
+        observed_at=AS_OF,
+    )
+    assert result.recorded == [("AAPL", len(chain.contracts))]
+    stored = contract_store.load_contracts(
+        "AAPL", market="us", day=date(2026, 7, 10), root=tmp_path
+    )
+    assert stored is not None
+    assert (stored["lot_size"] == US_OPTION_LOT_SIZE).all()
+
+
+def test_run_pass_records_lot_size_for_india_market(tmp_path: Path):
+    """C2 end-to-end: India default watchlist lots land on stored rows."""
+    nifty_raw = {
+        "records": {
+            "timestamp": "10-Jul-2026 15:30:00",
+            "expiryDates": ["31-Jul-2026"],
+            "data": [
+                {
+                    "strikePrice": 25000,
+                    "expiryDate": "31-Jul-2026",
+                    "CE": {
+                        "identifier": "NIFTY31JUL2525000CE",
+                        "openInterest": 100,
+                        "totalTradedVolume": 10,
+                        "impliedVolatility": 12.5,
+                        "bidprice": 100,
+                        "askPrice": 101,
+                        "lastPrice": 100.5,
+                        "underlyingValue": 25000,
+                    },
+                }
+            ],
+        }
+    }
+    chain = parse_nse_chain(nifty_raw, symbol="NIFTY")
+    assert chain is not None
+
+    class _NseStub:
+        def fetch_chain(self, symbol, market, expiry=None, *, refresh=False):
+            return chain
+
+    result = recorder.run_pass(
+        "india",
+        ["NIFTY"],
+        provider=_NseStub(),
+        root=tmp_path,
+        enrich=False,
+        observed_at=AS_OF,
+    )
+    assert result.recorded == [("NIFTY", 1)]
+    # Partition by observed_at in market TZ (Asia/Kolkata).
+    stored = contract_store.load_contracts(
+        "NIFTY", market="india", day=date(2026, 7, 10), root=tmp_path
+    )
+    assert stored is not None
+    assert (stored["lot_size"] == DEFAULT_INDIA_LOT_SIZES["NIFTY"]).all()
 
 
 def test_record_loop_runs_in_session_then_stops(tmp_path: Path):
@@ -149,6 +335,8 @@ def test_record_loop_runs_in_session_then_stops(tmp_path: Path):
 def test_cli_record_once_with_injected_provider(tmp_path: Path):
     provider = _StubProvider(known={"SPY"})
     runner = CliRunner()
+    # CLI uses wall-clock observed_at; pin store day via monkeypatched now is
+    # heavy — instead assert via store_health / present partitions.
     result = runner.invoke(
         options_cli.options,
         ["record", "-m", "us", "--once", "--watchlist", "SPY,NOPE"],
@@ -156,10 +344,12 @@ def test_cli_record_once_with_injected_provider(tmp_path: Path):
     )
     assert result.exit_code == 0, result.output
     assert "1/2 underlyings" in result.output
-    stored = contract_store.load_contracts(
-        "SPY", market="us", day=date(2026, 7, 10), root=tmp_path
-    )
-    assert stored is not None and len(stored) == 1
+    # Partition day follows wall-clock observation; locate the written file.
+    us_root = tmp_path / "us"
+    assert us_root.is_dir()
+    parquets = list(us_root.glob("*/*.parquet"))
+    assert len(parquets) == 1
+    assert parquets[0].stem == "SPY"
 
 
 def test_cli_record_rejects_empty_watchlist(tmp_path: Path):

@@ -23,19 +23,28 @@ LOG_DIR="${LOG_DIR:-$HOME/.screener/bars-logs}"
 KEEP_DAYS="${KEEP_DAYS:-30}"
 
 mkdir -p "$LOG_DIR"
-cd "$REPO_DIR"
+# One run at a time: a hung run must not overlap the next day's cron.
+exec 9>"$LOG_DIR/.daily_bars_record.lock"
+if ! flock -n 9; then
+  echo "another daily_bars_record run is active; exiting"
+  exit 0
+fi
+cd "$REPO_DIR" || { echo "cannot cd to $REPO_DIR" >&2; exit 1; }
 # cron runs with a minimal PATH; make sure uv is reachable.
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"
 
 stamp=$(date -u +%F)
 echo "[$stamp] markets: $MARKETS | days: $DAYS"
 
-for market in $MARKETS; do
+failed=0
+read -ra markets <<< "$MARKETS"
+for market in "${markets[@]}"; do
   log="$LOG_DIR/bars-record-$market-$stamp.log"
   if uv run screener --log-level ERROR bars record -m "$market" --days "$DAYS" >"$log" 2>&1; then
     echo "[$stamp] record ok      $market: $(tail -n 1 "$log")"
   else
     echo "[$stamp] record FAILED  $market (see $log)"
+    failed=1
   fi
 done
 
@@ -45,5 +54,6 @@ if uv run screener cache storage-watch 2>&1 | sed "s/^/[$stamp] storage: /"; the
   echo "[$stamp] storage: OVER BUDGET — see line(s) above"
 fi
 
-find "$LOG_DIR" -type f -mtime "+$KEEP_DAYS" -delete
+find "$LOG_DIR" -type f -name 'bars-record-*.log' -mtime "+$KEEP_DAYS" -delete
 echo "[$stamp] done"
+exit "$failed"

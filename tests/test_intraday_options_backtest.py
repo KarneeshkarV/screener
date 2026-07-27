@@ -25,10 +25,17 @@ def _utc(h: int, m: int) -> datetime:
     return datetime(2026, 7, 8, h, m, tzinfo=timezone.utc)
 
 
-def _call(as_of: datetime, *, last: float, strike: float = 100.0) -> OptionContract:
+def _call(
+    as_of: datetime,
+    *,
+    last: float,
+    strike: float = 100.0,
+    underlying: str = "SPY",
+) -> OptionContract:
+    half = min(0.5, last * 0.5)
     return OptionContract(
-        symbol=f"SPY{strike:g}C{as_of:%H%M}",
-        underlying="SPY",
+        symbol=f"{underlying}{strike:g}C{as_of:%H%M}",
+        underlying=underlying,
         expiry=EXPIRY,
         strike=strike,
         right="call",
@@ -36,8 +43,8 @@ def _call(as_of: datetime, *, last: float, strike: float = 100.0) -> OptionContr
         oi_change=0.0,
         volume=1_000.0,
         iv=0.25,
-        bid=last - 0.5,
-        ask=last + 0.5,
+        bid=max(0.0, last - half),
+        ask=last + half,
         last=last,
         previous_close=last,
         settle=last,
@@ -48,6 +55,7 @@ def _call(as_of: datetime, *, last: float, strike: float = 100.0) -> OptionContr
 
 
 def _put(as_of: datetime, *, last: float, strike: float = 100.0) -> OptionContract:
+    half = min(0.5, last * 0.5)
     return OptionContract(
         symbol=f"SPY{strike:g}P{as_of:%H%M}",
         underlying="SPY",
@@ -58,8 +66,8 @@ def _put(as_of: datetime, *, last: float, strike: float = 100.0) -> OptionContra
         oi_change=0.0,
         volume=1_000.0,
         iv=0.25,
-        bid=last - 0.5,
-        ask=last + 0.5,
+        bid=max(0.0, last - half),
+        ask=last + half,
         last=last,
         previous_close=last,
         settle=last,
@@ -69,9 +77,14 @@ def _put(as_of: datetime, *, last: float, strike: float = 100.0) -> OptionContra
     )
 
 
-def _chain(as_of: datetime, *contracts: OptionContract, spot: float) -> OptionChain:
+def _chain(
+    as_of: datetime,
+    *contracts: OptionContract,
+    spot: float,
+    underlying: str = "SPY",
+) -> OptionChain:
     return OptionChain(
-        underlying="SPY",
+        underlying=underlying,
         market="us",
         spot=spot,
         as_of=as_of,
@@ -102,11 +115,12 @@ def _cfg(**overrides: object) -> IntradayOptionsBacktestConfig:
 
 
 def _rising_call_session() -> _StubProvider:
-    # 09:30 / 10:30 / 11:30 ET (13:30 / 14:30 / 15:30 UTC), call last 10 → 12 → 15.
+    # 09:30 / 10:30 / 16:00 ET (13:30 / 14:30 / 20:00 UTC), call last 10 → 12 → 15.
+    # Final snapshot sits at scheduled US close so the flatten is session_end.
     chains = [
         _chain(_utc(13, 30), _call(_utc(13, 30), last=10.0), spot=100.0),
         _chain(_utc(14, 30), _call(_utc(14, 30), last=12.0), spot=102.0),
-        _chain(_utc(15, 30), _call(_utc(15, 30), last=15.0), spot=105.0),
+        _chain(_utc(20, 0), _call(_utc(20, 0), last=15.0), spot=105.0),
     ]
     return _StubProvider({("SPY", DAY): chains})
 
@@ -137,7 +151,7 @@ def test_stop_exits_intraday():
     chains = [
         _chain(_utc(13, 30), _call(_utc(13, 30), last=10.0), spot=100.0),
         _chain(_utc(14, 30), _call(_utc(14, 30), last=7.0), spot=97.0),
-        _chain(_utc(15, 30), _call(_utc(15, 30), last=6.0), spot=96.0),
+        _chain(_utc(20, 0), _call(_utc(20, 0), last=6.0), spot=96.0),
     ]
     provider = _StubProvider({("SPY", DAY): chains})
     result = run_intraday_options_backtest(_cfg(stop_pct=20.0), provider)
@@ -148,7 +162,7 @@ def test_stop_exits_intraday():
 
 def test_entry_time_and_exit_time_gate_the_session():
     # entry_time 10:30 ET → skip the 09:30 snapshot; exit_time 11:00 ET → the
-    # 11:30 snapshot trips "time".
+    # 16:00 snapshot (only bar after entry that is >= 11:00) trips "time".
     result = run_intraday_options_backtest(
         _cfg(entry_time=time(10, 30), exit_time=time(11, 0)),
         _rising_call_session(),
@@ -175,6 +189,7 @@ def test_margin_curve_tracked_for_short_put():
     chains = [
         _chain(_utc(13, 30), _put(_utc(13, 30), last=5.0), spot=100.0),
         _chain(_utc(14, 30), _put(_utc(14, 30), last=5.0), spot=100.0),
+        _chain(_utc(20, 0), _put(_utc(20, 0), last=5.0), spot=100.0),
     ]
     provider = _StubProvider({("SPY", DAY): chains})
     result = run_intraday_options_backtest(
@@ -184,13 +199,30 @@ def test_margin_curve_tracked_for_short_put():
     assert not result.margin_curve.empty
 
 
+def test_margin_sampled_at_entry_snapshot():
+    """Peak margin must include the entry bar, not only subsequent marks."""
+    chains = [
+        _chain(_utc(13, 30), _put(_utc(13, 30), last=5.0), spot=100.0),
+        _chain(_utc(14, 30), _put(_utc(14, 30), last=5.0), spot=100.0),
+        _chain(_utc(20, 0), _put(_utc(20, 0), last=5.0), spot=100.0),
+    ]
+    provider = _StubProvider({("SPY", DAY): chains})
+    result = run_intraday_options_backtest(
+        _cfg(structure="short_put", margin_model="regt"), provider
+    )
+    entry_ts = _utc(13, 30)
+    assert entry_ts in result.margin_curve.index
+    assert float(result.margin_curve.loc[entry_ts]) > 0.0
+    assert result.peak_margin >= float(result.margin_curve.loc[entry_ts])
+
+
 def _five_rising_snapshots() -> _StubProvider:
     chains = [
         _chain(_utc(13, 30), _call(_utc(13, 30), last=10.0), spot=100.0),
         _chain(_utc(14, 0), _call(_utc(14, 0), last=13.0), spot=103.0),
         _chain(_utc(14, 30), _call(_utc(14, 30), last=16.0), spot=106.0),
         _chain(_utc(15, 0), _call(_utc(15, 0), last=20.0), spot=110.0),
-        _chain(_utc(15, 30), _call(_utc(15, 30), last=25.0), spot=115.0),
+        _chain(_utc(20, 0), _call(_utc(20, 0), last=25.0), spot=115.0),
     ]
     return _StubProvider({("SPY", DAY): chains})
 
@@ -211,10 +243,114 @@ def test_allow_reentry_reopens_after_exit():
     assert len(result.trades) >= 2  # re-enters after each intraday target exit
 
 
+def test_reentry_blocked_after_exit_time():
+    """allow_reentry must not churn past exit_time (commission-bleed loop)."""
+    # entry 09:30, exit_time 10:00 ET → first exit at 10:30 (14:30 UTC); no re-entry.
+    result = run_intraday_options_backtest(
+        _cfg(
+            exit_time=time(10, 0),
+            allow_reentry=True,
+            commission_per_order=1.0,
+        ),
+        _five_rising_snapshots(),
+    )
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_reason == "time"
+    assert result.trades[0].details["exit_ts"] == _utc(14, 0).isoformat()
+
+
 def test_no_snapshots_yields_empty_result():
     result = run_intraday_options_backtest(_cfg(), _StubProvider({}))
     assert result.trades == []
     assert result.equity_curve.empty
+
+
+def test_missing_contract_uses_carried_mark_not_entry():
+    """C3: a leg that drops out of a later chain keeps last observed mark."""
+    # Enter at 10, mark down to 2, then drop the contract from the chain entirely.
+    # Without carried marks the exit would silently reprice at entry (0 P&L).
+    chains = [
+        _chain(_utc(13, 30), _call(_utc(13, 30), last=10.0), spot=100.0),
+        _chain(_utc(14, 30), _call(_utc(14, 30), last=2.0), spot=90.0),
+        # Empty of the struck call — only an unrelated far OTM strike remains.
+        _chain(_utc(20, 0), _call(_utc(20, 0), last=0.05, strike=150.0), spot=88.0),
+    ]
+    provider = _StubProvider({("SPY", DAY): chains})
+    result = run_intraday_options_backtest(_cfg(stop_pct=50.0), provider)
+    # Stop should fire at the 10:30 mark (2 vs 10 = -80%) before the dropout.
+    assert result.trades[0].exit_reason == "stop"
+    assert result.trades[0].legs[0].exit_price == 2.0
+
+    # Force hold through dropout (no stop) so exit uses the carried mark.
+    result2 = run_intraday_options_backtest(_cfg(), provider)
+    trade = result2.trades[0]
+    assert trade.exit_reason == "session_end"
+    assert trade.legs[0].exit_price == 2.0  # last observed, not entry 10
+    assert trade.details.get("carried_marks") == ["call:100"]
+    assert any("carried marks" in w for w in result2.warnings)
+    # Realized loss must reflect the 2.0 exit, not a silent zero.
+    assert trade.pnl == (2.0 - 10.0) * 100.0
+
+
+def test_early_data_end_not_labeled_session_end():
+    """H8: recorder that dies mid-session exits as data_end, not session_end."""
+    chains = [
+        _chain(_utc(13, 30), _call(_utc(13, 30), last=10.0), spot=100.0),
+        _chain(_utc(14, 30), _call(_utc(14, 30), last=12.0), spot=102.0),
+        # 11:30 ET — well before 16:00 close.
+        _chain(_utc(15, 30), _call(_utc(15, 30), last=15.0), spot=105.0),
+    ]
+    provider = _StubProvider({("SPY", DAY): chains})
+    result = run_intraday_options_backtest(_cfg(), provider)
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_reason == "data_end"
+    assert any("data_end" in w for w in result.warnings)
+
+
+def test_multi_ticker_equity_curve_has_unique_index():
+    """H13: portfolio curve is not a sawtooth interleave of per-symbol equities."""
+    spy_chains = [
+        _chain(_utc(13, 30), _call(_utc(13, 30), last=10.0), spot=100.0),
+        _chain(_utc(14, 30), _call(_utc(14, 30), last=11.0), spot=101.0),
+        _chain(_utc(20, 0), _call(_utc(20, 0), last=12.0), spot=102.0),
+    ]
+    qqq_chains = [
+        _chain(
+            _utc(13, 30),
+            _call(_utc(13, 30), last=20.0, underlying="QQQ"),
+            spot=200.0,
+            underlying="QQQ",
+        ),
+        _chain(
+            _utc(14, 30),
+            _call(_utc(14, 30), last=21.0, underlying="QQQ"),
+            spot=201.0,
+            underlying="QQQ",
+        ),
+        _chain(
+            _utc(20, 0),
+            _call(_utc(20, 0), last=22.0, underlying="QQQ"),
+            spot=202.0,
+            underlying="QQQ",
+        ),
+    ]
+    provider = _StubProvider(
+        {
+            ("SPY", DAY): spy_chains,
+            ("QQQ", DAY): qqq_chains,
+        }
+    )
+    result = run_intraday_options_backtest(_cfg(tickers=("SPY", "QQQ")), provider)
+    assert len(result.trades) == 2
+    idx = result.equity_curve.index
+    assert idx.is_unique
+    # Final equity = initial + sum of both symbols' trade P&Ls.
+    total_pnl = sum(t.pnl for t in result.trades)
+    assert result.equity_curve.iloc[-1] == 100_000.0 + total_pnl
+    # Mid-session mark: both open → equity reflects sum of unrealized overlays.
+    mid = result.equity_curve.loc[_utc(14, 30)]
+    # SPY unrealized (11-10)*100=100; QQQ (21-20)*100=100 → +200 on initial.
+    assert mid == 100_000.0 + 200.0
 
 
 def test_cli_intraday_backtest_smoke():
@@ -252,7 +388,7 @@ def test_defaults_to_contract_store_provider(tmp_path):
     try:
         for ts, last, spot in [
             (_utc(13, 30), 10.0, 100.0),
-            (_utc(15, 30), 15.0, 105.0),
+            (_utc(20, 0), 15.0, 105.0),
         ]:
             contract_store.append_snapshot(
                 _chain(ts, _call(ts, last=last), spot=spot), market="us"

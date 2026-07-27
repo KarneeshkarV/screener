@@ -119,6 +119,10 @@ class OptionsBacktestConfig(BaseModel):
     target_pct: float | None = None
     stop_pct: float | None = None
     exit_dte: int = 1
+    # Exit on the Nth trading day AFTER entry. Entry day is day 0: no
+    # stop/target/roll/dte/time/exit_expr is evaluated that session, and
+    # ``hold_days`` is not incremented until the first post-entry session.
+    # ``None`` disables the time stop.
     max_hold: int | None = None
     slippage_pct: float = 0.0
     commission_per_order: float = 0.0
@@ -150,8 +154,10 @@ class OptionsBacktestConfig(BaseModel):
     span_price_scan_pct: float = Field(default=0.05, gt=0)
     span_vol_scan: float = Field(default=0.10, ge=0)
     span_exposure_pct: float = Field(default=0.03, ge=0)
-    # Reg-T naked-option parameters (US): margin = premium +
-    # max(regt_pct*underlying - OTM, regt_min_pct*strike).
+    # Reg-T naked-option parameters (US): margin = current_premium +
+    # max(regt_pct*underlying - OTM, regt_min_pct*spot for calls /
+    # regt_min_pct*strike for puts). Premium uses the day's mark, not the
+    # frozen entry fill.
     regt_pct: float = Field(default=0.20, ge=0)
     regt_min_pct: float = Field(default=0.10, ge=0)
 

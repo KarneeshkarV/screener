@@ -13,8 +13,9 @@ snapshot time ``T`` only ever sees the chain observed at ``T`` (and state
 accumulated from earlier snapshots); a later snapshot is never used to price an
 earlier fill. Entries land at the first snapshot on/after ``entry_time`` and
 exits at the snapshot that trips a target/stop/``exit_time``, otherwise the
-position is flattened at the session's last snapshot (``session_end``). Times
-are compared in the market's local timezone (snapshots are stored naive UTC).
+position is flattened at session close (``session_end``) or at the last
+recorded snapshot when the series ends early (``data_end``). Times are compared
+in the market's local timezone (snapshots are stored naive UTC).
 
 Phase 4.3 (mixed portfolios): an optional signed ``equity_hedge_qty`` of the
 underlying is held for the life of each option position and marked from the
@@ -29,6 +30,7 @@ from the EOD engine, so realism knobs (``fill_model``, ``slippage_bps``,
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -65,6 +67,17 @@ __all__ = [
     "IntradayOptionsBacktestResult",
     "run_intraday_options_backtest",
 ]
+
+# Regular-session close (market-local). No shared helper exposes close alone on
+# OptionsMarket / Market, so pin the well-known equity-session closes here.
+_SESSION_CLOSE_LOCAL: dict[str, time] = {
+    "us": time(16, 0),
+    "india": time(15, 30),
+}
+# Snapshots at/after close minus this epsilon are last-tradable (session_end).
+_SESSION_END_EPSILON = timedelta(minutes=1)
+# Last recorded snapshot more than this before scheduled close → data_end warn.
+_DATA_END_EARLY_THRESHOLD = timedelta(minutes=30)
 
 
 @dataclass(frozen=True)
@@ -123,6 +136,9 @@ class _OpenIntradayPosition:
     entry_costs: float
     entry_spot: float | None
     hedge_qty: float
+    # Last *observed* mark per leg (not entry fallback). Updated whenever a
+    # real quote is found so missing-chain snapshots keep stops/targets honest.
+    last_marks: list[float]
 
 
 def _fill_cfg(cfg: IntradayOptionsBacktestConfig) -> OptionsBacktestConfig:
@@ -152,6 +168,34 @@ def _local_time(ts: datetime, tz: ZoneInfo) -> time:
     """Time-of-day of ``ts`` in the market timezone (naive ts assumed UTC)."""
     aware = ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts
     return aware.astimezone(tz).timetz().replace(tzinfo=None)
+
+
+def _session_close_local(market: str) -> time:
+    return _SESSION_CLOSE_LOCAL.get(market, time(16, 0))
+
+
+def _time_minus(t: time, delta: timedelta) -> time:
+    """Subtract ``delta`` from a clock time (wraps within the same day)."""
+    base = datetime(2000, 1, 1, t.hour, t.minute, t.second, t.microsecond)
+    return (base - delta).time()
+
+
+def _time_to_td(t: time) -> timedelta:
+    return timedelta(
+        hours=t.hour, minutes=t.minute, seconds=t.second, microseconds=t.microsecond
+    )
+
+
+def _is_session_end_by_clock(local_t: time, market: str) -> bool:
+    """True when local time is at/after scheduled close minus a small epsilon."""
+    close = _session_close_local(market)
+    threshold = _time_minus(close, _SESSION_END_EPSILON)
+    return local_t >= threshold
+
+
+def _minutes_before_close(local_t: time, market: str) -> float:
+    close = _session_close_local(market)
+    return (_time_to_td(close) - _time_to_td(local_t)).total_seconds() / 60.0
 
 
 def _trading_days(start: date, end: date) -> list[date]:
@@ -221,18 +265,33 @@ def _open_position(
         entry_costs=len(legs) * cfg.commission_per_order,
         entry_spot=chain.spot,
         hedge_qty=cfg.equity_hedge_qty,
+        last_marks=[float(leg.entry_price) for leg in legs],
     )
 
 
-def _mark_legs(pos: _OpenIntradayPosition, chain: OptionChain) -> list[float]:
+def _mark_legs(
+    pos: _OpenIntradayPosition, chain: OptionChain
+) -> tuple[list[float], list[str]]:
+    """Mark each leg; fall back to last *observed* mark (not entry).
+
+    Returns ``(marks, carried_labels)`` where ``carried_labels`` names legs
+    whose mark was not observed on this snapshot (``right:strike``).
+    """
     marks: list[float] = []
-    for leg in pos.legs:
+    carried: list[str] = []
+    for i, leg in enumerate(pos.legs):
         contract = _find_contract(
             chain, right=leg.right, strike=leg.strike, expiry=leg.expiry
         )
         px = _mark_price(contract)
-        marks.append(float(px) if px is not None else leg.entry_price)
-    return marks
+        if px is not None:
+            observed = float(px)
+            marks.append(observed)
+            pos.last_marks[i] = observed
+        else:
+            marks.append(pos.last_marks[i])
+            carried.append(f"{leg.right}:{leg.strike:g}")
+    return marks, carried
 
 
 def _hedge_pnl(pos: _OpenIntradayPosition, spot: float | None) -> float:
@@ -250,6 +309,7 @@ def _close_position(
     exit_ts: datetime,
     exit_reason: str,
     fill_cfg: OptionsBacktestConfig,
+    carried_marks: list[str] | None = None,
 ) -> OptionPositionTrade:
     from dataclasses import replace
 
@@ -267,7 +327,7 @@ def _close_position(
     hedge_pnl = _hedge_pnl(pos, chain.spot)
     pnl = (exit_premium - pos.entry_premium) - pos.entry_costs - exit_costs + hedge_pnl
     gross = pos.gross_premium if pos.gross_premium > 0 else 1.0
-    details = {
+    details: dict[str, object] = {
         "entry_ts": pos.entry_ts.isoformat(),
         "exit_ts": exit_ts.isoformat(),
         "entry_costs": pos.entry_costs,
@@ -276,6 +336,8 @@ def _close_position(
     if pos.hedge_qty:
         details["equity_hedge_qty"] = pos.hedge_qty
         details["equity_hedge_pnl"] = hedge_pnl
+    if carried_marks:
+        details["carried_marks"] = list(carried_marks)
     return OptionPositionTrade(
         symbol=pos.symbol,
         structure=pos.structure,
@@ -298,7 +360,7 @@ def _exit_reason(
     *,
     local_t: time,
     cfg: IntradayOptionsBacktestConfig,
-    is_last: bool,
+    is_last_recorded: bool,
 ) -> str | None:
     mark_premium = _mtm_premium(pos.legs, marks)
     gross = pos.gross_premium if pos.gross_premium > 0 else 1.0
@@ -309,9 +371,86 @@ def _exit_reason(
         return "target"
     if cfg.exit_time is not None and local_t >= cfg.exit_time:
         return "time"
-    if is_last:
+    # Clock-based session close first so a full day is not labeled data_end.
+    if _is_session_end_by_clock(local_t, cfg.market):
         return "session_end"
+    # Final recorded snapshot before scheduled close (dead/incomplete recorder).
+    if is_last_recorded:
+        return "data_end"
     return None
+
+
+def _record_margin(
+    result: IntradayOptionsBacktestResult,
+    margin_points: list[tuple[datetime, float]],
+    *,
+    legs: list[LegFill],
+    spot: float | None,
+    as_of: datetime,
+    fill_cfg: OptionsBacktestConfig,
+) -> None:
+    margin = _position_margin(legs, spot, as_of.date(), fill_cfg)
+    margin_points.append((as_of, margin))
+    result.peak_margin = max(result.peak_margin, margin)
+
+
+def _build_portfolio_equity_curve(
+    *,
+    initial_capital: float,
+    realized_events: list[tuple[datetime, float]],
+    unrealized_events: list[tuple[datetime, str, float]],
+    flat_events: list[tuple[datetime, str]],
+) -> pd.Series:
+    """Combine per-symbol realized deltas + unrealized overlays on a unique index.
+
+    Portfolio equity at ``T`` = ``initial + realized-through-T + sum of each
+    symbol's latest unrealized overlay at T``. Events at the same timestamp are
+    applied together before emitting the point so multi-ticker runs never leave
+    duplicate index labels.
+    """
+    if not realized_events and not unrealized_events and not flat_events:
+        return pd.Series(dtype=float)
+
+    # Event kinds: realized pnl credit, set-unrealized, clear-unrealized (flat/exit).
+    events: list[tuple[datetime, int, str, float]] = []
+    # Sort key priority within a timestamp: clear (0) / set unrealized (1) /
+    # realized (2) so an exit that clears then realizes orders cleanly; flat
+    # markers use clear with 0 unrealized.
+    for ts, pnl in realized_events:
+        events.append((ts, 2, "", pnl))
+    for ts, symbol, unrealized in unrealized_events:
+        events.append((ts, 1, symbol, unrealized))
+    for ts, symbol in flat_events:
+        events.append((ts, 0, symbol, 0.0))
+
+    events.sort(key=lambda e: (e[0], e[1], e[2]))
+
+    last_unrealized: dict[str, float] = defaultdict(float)
+    realized = 0.0
+    # Emit one equity value per distinct timestamp after applying all events at T.
+    by_ts: dict[datetime, float] = {}
+    i = 0
+    n = len(events)
+    while i < n:
+        ts = events[i][0]
+        while i < n and events[i][0] == ts:
+            _, kind, symbol, value = events[i]
+            if kind == 2:
+                realized += value
+            elif kind == 1:
+                last_unrealized[symbol] = value
+            else:  # clear / flat
+                last_unrealized[symbol] = 0.0
+            i += 1
+        by_ts[ts] = initial_capital + realized + sum(last_unrealized.values())
+
+    if not by_ts:
+        return pd.Series(dtype=float)
+    ordered = sorted(by_ts.items(), key=lambda kv: kv[0])
+    return pd.Series(
+        [v for _, v in ordered],
+        index=pd.DatetimeIndex([ts for ts, _ in ordered]),
+    )
 
 
 def run_intraday_options_backtest(
@@ -321,21 +460,24 @@ def run_intraday_options_backtest(
     """Walk intraday snapshots per session and enter/mark/exit point-in-time.
 
     ``provider`` defaults to the forward-capture contract store for ``market``.
-    Positions never carry overnight: whatever is open at a session's last
-    snapshot is flattened there (``session_end``). Each symbol is entered at most
-    once per session unless ``allow_reentry`` is set.
+    Positions never carry overnight: open risk is flattened at scheduled session
+    close (``session_end``) or at the last recorded snapshot when the series
+    ends early (``data_end``). Each symbol is entered at most once per session
+    unless ``allow_reentry`` is set.
 
-    Multi-ticker runs are evaluated sequentially against one running equity, not
-    as a concurrent shared-capital portfolio; true portfolio accounting is the
-    ``day_loop`` structure-slot follow-up noted in the roadmap.
+    Multi-ticker equity is a true portfolio curve: realized P&L is global and
+    unrealized marks are overlaid per symbol on the union timestamp index (no
+    duplicate labels / sawtooth interleave).
     """
     provider = provider or default_history_provider(cfg.market)
     fill_cfg = _fill_cfg(cfg)
     tz = ZoneInfo(get_market(cfg.market).timezone)
     result = IntradayOptionsBacktestResult()
 
-    equity = cfg.initial_capital
-    equity_points: list[tuple[datetime, float]] = []
+    # Equity construction inputs (combined after the walk — see H13).
+    realized_events: list[tuple[datetime, float]] = []
+    unrealized_events: list[tuple[datetime, str, float]] = []
+    flat_events: list[tuple[datetime, str]] = []
     margin_points: list[tuple[datetime, float]] = []
 
     for day in _trading_days(cfg.start, cfg.end):
@@ -345,32 +487,59 @@ def run_intraday_options_backtest(
                 continue
             pos: _OpenIntradayPosition | None = None
             entered_today = False
+            n_chains = len(chains)
             for idx, chain in enumerate(chains):
-                is_last = idx == len(chains) - 1
+                is_last_recorded = idx == n_chains - 1
                 local_t = _local_time(chain.as_of, tz)
+                at_session_end = _is_session_end_by_clock(local_t, cfg.market)
 
                 if pos is None:
                     entry_ok = cfg.entry_time is None or local_t >= cfg.entry_time
                     # One entry per session unless re-entry is opted in.
                     if entered_today and not cfg.allow_reentry:
                         entry_ok = False
-                    # Never open at the last snapshot (no bar left to exit on).
-                    if entry_ok and not is_last:
+                    # Do not re-enter at/after the configured exit clock (churn).
+                    if cfg.exit_time is not None and local_t >= cfg.exit_time:
+                        entry_ok = False
+                    # No new risk at/after scheduled close (clock, not list length).
+                    if at_session_end:
+                        entry_ok = False
+                    # Need a later snapshot to mark/exit — skip orphan single-bar entries.
+                    if is_last_recorded:
+                        entry_ok = False
+                    if entry_ok:
                         pos = _open_position(chain, cfg, fill_cfg, result.warnings)
                         entered_today = pos is not None
-                    equity_points.append((chain.as_of, equity))
+                        if pos is not None and cfg.margin_model != "none":
+                            # Sample margin at the entry snapshot (peak includes open).
+                            _record_margin(
+                                result,
+                                margin_points,
+                                legs=pos.legs,
+                                spot=chain.spot,
+                                as_of=chain.as_of,
+                                fill_cfg=fill_cfg,
+                            )
+                    flat_events.append((chain.as_of, symbol))
                     continue
 
-                marks = _mark_legs(pos, chain)
+                marks, carried = _mark_legs(pos, chain)
                 reason = _exit_reason(
-                    pos, marks, local_t=local_t, cfg=cfg, is_last=is_last
+                    pos,
+                    marks,
+                    local_t=local_t,
+                    cfg=cfg,
+                    is_last_recorded=is_last_recorded,
                 )
                 if cfg.margin_model != "none":
-                    margin = _position_margin(
-                        pos.legs, chain.spot, chain.as_of.date(), fill_cfg
+                    _record_margin(
+                        result,
+                        margin_points,
+                        legs=pos.legs,
+                        spot=chain.spot,
+                        as_of=chain.as_of,
+                        fill_cfg=fill_cfg,
                     )
-                    margin_points.append((chain.as_of, margin))
-                    result.peak_margin = max(result.peak_margin, margin)
 
                 if reason is None:
                     unrealized = (
@@ -378,8 +547,17 @@ def run_intraday_options_backtest(
                         - pos.entry_premium
                         + _hedge_pnl(pos, chain.spot)
                     )
-                    equity_points.append((chain.as_of, equity + unrealized))
+                    unrealized_events.append((chain.as_of, symbol, unrealized))
                     continue
+
+                if reason == "data_end":
+                    early_min = _minutes_before_close(local_t, cfg.market)
+                    if early_min > _DATA_END_EARLY_THRESHOLD.total_seconds() / 60.0:
+                        result.warnings.append(
+                            f"{symbol} {chain.as_of.date()}: data_end "
+                            f"{early_min:.0f}m before scheduled close "
+                            f"({_session_close_local(cfg.market).strftime('%H:%M')} local)"
+                        )
 
                 trade = _close_position(
                     pos,
@@ -388,22 +566,70 @@ def run_intraday_options_backtest(
                     exit_ts=chain.as_of,
                     exit_reason=reason,
                     fill_cfg=fill_cfg,
+                    carried_marks=carried,
                 )
+                if carried:
+                    result.warnings.append(
+                        f"{symbol} {chain.as_of}: exit used carried marks for "
+                        f"{', '.join(carried)} (not observed on exit snapshot)"
+                    )
                 result.trades.append(trade)
-                equity += trade.pnl
-                equity_points.append((chain.as_of, equity))
+                realized_events.append((chain.as_of, trade.pnl))
+                # Clear this symbol's unrealized overlay at the exit timestamp.
+                flat_events.append((chain.as_of, symbol))
                 pos = None
 
-    # Points are appended per symbol, so sort by timestamp for a chronological
-    # curve when more than one ticker is backtested.
-    if equity_points:
-        idx_e = pd.DatetimeIndex([ts for ts, _ in equity_points])
-        result.equity_curve = pd.Series(
-            [v for _, v in equity_points], index=idx_e
-        ).sort_index()
+            # Belt-and-suspenders: never leave a position open past the session.
+            if pos is not None:
+                chain = chains[-1]
+                local_t = _local_time(chain.as_of, tz)
+                marks, carried = _mark_legs(pos, chain)
+                reason = (
+                    "session_end"
+                    if _is_session_end_by_clock(local_t, cfg.market)
+                    else "data_end"
+                )
+                if reason == "data_end":
+                    early_min = _minutes_before_close(local_t, cfg.market)
+                    if early_min > _DATA_END_EARLY_THRESHOLD.total_seconds() / 60.0:
+                        result.warnings.append(
+                            f"{symbol} {chain.as_of.date()}: data_end "
+                            f"{early_min:.0f}m before scheduled close "
+                            f"({_session_close_local(cfg.market).strftime('%H:%M')} local)"
+                        )
+                trade = _close_position(
+                    pos,
+                    chain,
+                    marks,
+                    exit_ts=chain.as_of,
+                    exit_reason=reason,
+                    fill_cfg=fill_cfg,
+                    carried_marks=carried,
+                )
+                if carried:
+                    result.warnings.append(
+                        f"{symbol} {chain.as_of}: exit used carried marks for "
+                        f"{', '.join(carried)} (not observed on exit snapshot)"
+                    )
+                result.trades.append(trade)
+                realized_events.append((chain.as_of, trade.pnl))
+                flat_events.append((chain.as_of, symbol))
+                pos = None
+
+    result.equity_curve = _build_portfolio_equity_curve(
+        initial_capital=cfg.initial_capital,
+        realized_events=realized_events,
+        unrealized_events=unrealized_events,
+        flat_events=flat_events,
+    )
     if margin_points:
-        idx_m = pd.DatetimeIndex([ts for ts, _ in margin_points])
+        # Sum concurrent per-symbol margin requirements at the same timestamp.
+        margin_by_ts: dict[datetime, float] = defaultdict(float)
+        for ts, m in margin_points:
+            margin_by_ts[ts] += m
+        ordered_m = sorted(margin_by_ts.items(), key=lambda kv: kv[0])
         result.margin_curve = pd.Series(
-            [v for _, v in margin_points], index=idx_m
-        ).sort_index()
+            [v for _, v in ordered_m],
+            index=pd.DatetimeIndex([ts for ts, _ in ordered_m]),
+        )
     return result

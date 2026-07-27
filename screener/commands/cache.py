@@ -40,12 +40,19 @@ def known_cache_dirs() -> dict[str, Path]:
 
 
 def _iter_files(root: Path) -> Iterator[Path]:
-    """Yield regular files under ``root``, never escaping it via symlinks."""
+    """Yield regular files under ``root``, never escaping it via symlinks.
+
+    ``*.lock`` sidecars created by :func:`screener.cache._file_lock` are
+    excluded: their mtime is the first creation and they must never be deleted
+    while a writer may hold the lock (a fresh inode would break mutual exclusion).
+    """
     if not root.is_dir():
         return
     resolved_root = root.resolve()
     for path in sorted(root.rglob("*")):
         if not path.is_file():
+            continue
+        if path.suffix == ".lock" or path.name.endswith(".lock"):
             continue
         try:
             inside = path.resolve().is_relative_to(resolved_root)
@@ -234,6 +241,10 @@ def cache_clean(older_than: int, dir_name: str | None, dry_run: bool) -> None:
     reclaimed = 0
     for name, root in dirs.items():
         for path in _iter_files(root):
+            # Belt-and-suspenders: never delete lock sidecars even if a future
+            # change reintroduces them into ``_iter_files``.
+            if path.suffix == ".lock" or path.name.endswith(".lock"):
+                continue
             try:
                 stat = path.stat()
             except OSError:

@@ -36,6 +36,7 @@ from screener.backtester.price_frames import (
     merge_price_frames,
     naive_normalized_index,
 )
+from screener.cache import _file_lock
 
 
 BARS_ROOT = Path.home() / ".screener" / "bars"
@@ -112,7 +113,13 @@ def save_bars(
     raw: bool = False,
     root: Optional[Path] = None,
 ) -> None:
-    """Atomically replace one store file without exposing partial parquet."""
+    """Atomically replace one store file without exposing partial parquet.
+
+    Raises on write failure (disk full, permission, pyarrow errors) so callers
+    can report persistence failures rather than treating them as success.
+    Crash durability: the temp file is fsynced before ``os.replace``, then the
+    parent directory is fsynced (dir fsync OSError is suppressed).
+    """
     destination = bar_path(symbol, market=market, interval=interval, raw=raw, root=root)
     destination.parent.mkdir(parents=True, exist_ok=True)
     descriptor = -1
@@ -125,9 +132,18 @@ def save_bars(
         os.close(descriptor)
         descriptor = -1
         frame.to_parquet(temporary)
+        with open(temporary, "rb") as handle:
+            os.fsync(handle.fileno())
         os.replace(temporary, destination)
-    except (OSError, ValueError):
-        return
+        temporary = None  # moved into place; do not unlink destination
+        try:
+            dir_fd = os.open(str(destination.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -151,15 +167,22 @@ def append_bars(
     appends leave the store untouched (preserving the file mtime the tail-TTL
     freshness check relies on); revised bars (same timestamps, new values) are
     persisted because ``merge_price_frames`` keeps the last occurrence.
+
+    The full read-modify-write is serialized with a POSIX file lock so
+    concurrent writers (e.g. two ``bars record`` processes) cannot lose rows.
     """
-    existing = load_bars(symbol, market=market, interval=interval, raw=raw, root=root)
-    merged = merge_price_frames(existing, frame, interval)
-    if merged.empty:
+    path = bar_path(symbol, market=market, interval=interval, raw=raw, root=root)
+    with _file_lock(path):
+        existing = load_bars(
+            symbol, market=market, interval=interval, raw=raw, root=root
+        )
+        merged = merge_price_frames(existing, frame, interval)
+        if merged.empty:
+            return merged
+        if existing is not None and merged.equals(existing):
+            return merged
+        save_bars(symbol, merged, market=market, interval=interval, raw=raw, root=root)
         return merged
-    if existing is not None and merged.equals(existing):
-        return merged
-    save_bars(symbol, merged, market=market, interval=interval, raw=raw, root=root)
-    return merged
 
 
 __all__ = [
