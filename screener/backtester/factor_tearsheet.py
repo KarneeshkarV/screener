@@ -329,7 +329,11 @@ def load_factor_panels(
     yf_by_tv = {tv: tv_to_yf(tv, market) for tv in tickers}
     yf_symbols = list(dict.fromkeys(yf_by_tv.values()))
     price_panel = fetcher.fetch(yf_symbols, fetch_start, end)
-    bars_by_tv = {tv: price_panel.get(yf_by_tv[tv], pd.DataFrame()) for tv in tickers}
+    # See rolling_simulation: dict.get's default is eager.
+    bars_by_tv = {}
+    for tv in tickers:
+        panel_bars = price_panel.get(yf_by_tv[tv])
+        bars_by_tv[tv] = pd.DataFrame() if panel_bars is None else panel_bars
     benchmark = get_market(market).benchmark
     bars_by_tv, _ = prepare_strategy_bars(
         spec,
