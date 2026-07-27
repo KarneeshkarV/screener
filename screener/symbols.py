@@ -8,6 +8,46 @@ Single home for the symbol-conversion rules that were previously duplicated
 from __future__ import annotations
 
 
+# TradingView writes both ``&`` and ``-`` as ``_`` in Indian symbols, so the
+# underscore alone cannot say which separator the real ticker uses. yfinance,
+# FMP and the NSE bhavcopy all want the true separator (``M_M`` resolves
+# nowhere; ``M&M`` resolves everywhere), and leaving the underscore in place
+# silently drops the symbol from every screen.
+#
+# The ``&`` side is a small closed set, enumerated from NSE's EQUITY_L master
+# list; every other underscore is a ``-``. Refresh from
+# https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv if NSE lists a
+# new ``&`` name.
+_NSE_AMPERSAND_SYMBOLS = frozenset(
+    {
+        "ARE&M",
+        "GMRP&UI",
+        "GVT&D",
+        "IL&FSENGG",
+        "IL&FSTRANS",
+        "J&KBANK",
+        "M&M",
+        "M&MFIN",
+        "S&SPOWER",
+        "SURANAT&P",
+    }
+)
+
+
+def restore_india_separator(symbol: str) -> str:
+    """Turn a TradingView underscore back into NSE's ``&`` or ``-``.
+
+    ``M_M`` → ``M&M``, ``BAJAJ_AUTO`` → ``BAJAJ-AUTO``. Symbols without an
+    underscore are returned unchanged.
+    """
+    if "_" not in symbol:
+        return symbol
+    ampersand = symbol.replace("_", "&")
+    if ampersand in _NSE_AMPERSAND_SYMBOLS:
+        return ampersand
+    return symbol.replace("_", "-")
+
+
 def tv_to_yf(symbol: str, market: str) -> str:
     """Translate a TradingView-style symbol to a yfinance symbol.
 
@@ -17,17 +57,21 @@ def tv_to_yf(symbol: str, market: str) -> str:
       'NASDAQ:AAPL' + us    → 'AAPL'
       'AAPL'        + us    → 'AAPL'
       'RELIANCE'    + india → 'RELIANCE.NS'
+      'M_M'         + india → 'M&M.NS'
+      'BAJAJ_AUTO'  + india → 'BAJAJ-AUTO.NS'
     """
     sym = symbol.strip().upper()
     if ":" in sym:
         exch, rest = sym.split(":", 1)
         if exch == "NSE":
-            return f"{rest}.NS"
+            return f"{restore_india_separator(rest)}.NS"
         if exch == "BSE":
-            return f"{rest}.BO"
+            return f"{restore_india_separator(rest)}.BO"
         return rest
-    if market == "india" and "." not in sym:
-        return f"{sym}.NS"
+    if market == "india":
+        base, dot, suffix = sym.partition(".")
+        base = restore_india_separator(base)
+        return f"{base}{dot}{suffix}" if dot else f"{base}.NS"
     return sym
 
 
@@ -42,12 +86,20 @@ def tv_to_nse(symbol: str, *, strip_suffix: bool = False) -> str:
       suffix is preserved (``RELIANCE.NS`` → ``RELIANCE.NS``).
     - ``strip_suffix=True`` (rs_breakout): also strip a trailing ``.NS``/``.BO``
       suffix (``RELIANCE.NS`` → ``RELIANCE``).
+
+    Both variants restore the true NSE separator, since the bhavcopy spells the
+    symbols ``M&M`` and ``BAJAJ-AUTO`` rather than TradingView's ``M_M``.
     """
     if ":" in symbol:
-        return symbol.split(":", 1)[1].upper()
+        return restore_india_separator(symbol.split(":", 1)[1].upper())
     if strip_suffix:
-        return symbol.replace(".NS", "").replace(".BO", "").upper()
-    return symbol.upper()
+        return restore_india_separator(
+            symbol.replace(".NS", "").replace(".BO", "").upper()
+        )
+    # Keep the suffix, but translate only the base so the ``.NS``/``.BO`` tail
+    # never lands inside the ampersand lookup.
+    base, dot, suffix = symbol.upper().partition(".")
+    return f"{restore_india_separator(base)}{dot}{suffix}"
 
 
 def normalize_symbol(value: str) -> str:

@@ -31,6 +31,23 @@ from screener.unusual_volume.service import india_symbol as uv_india_symbol
         ("NASDAQ:TSLA", "india", "TSLA"),
         ("BSE:WIPRO", "us", "WIPRO.BO"),
         ("NSE:INFY", "us", "INFY.NS"),
+        # TradingView writes both '&' and '-' as '_'; restore the real one.
+        ("M_M", "india", "M&M.NS"),
+        ("NSE:M_M", "india", "M&M.NS"),
+        ("BSE:M_M", "india", "M&M.BO"),
+        ("M_MFIN", "india", "M&MFIN.NS"),
+        ("J_KBANK", "india", "J&KBANK.NS"),
+        ("GVT_D", "india", "GVT&D.NS"),
+        ("ARE_M", "india", "ARE&M.NS"),
+        ("BAJAJ_AUTO", "india", "BAJAJ-AUTO.NS"),
+        ("NAM_INDIA", "india", "NAM-INDIA.NS"),
+        ("BOSCH_HCIL", "india", "BOSCH-HCIL.NS"),
+        # Already-suffixed underscore symbols convert the base only, so the
+        # '.NS' tail never reaches the ampersand lookup.
+        ("M_M.NS", "india", "M&M.NS"),
+        ("BAJAJ_AUTO.NS", "india", "BAJAJ-AUTO.NS"),
+        # US symbols keep underscores untouched.
+        ("BRK_B", "us", "BRK_B"),
     ],
 )
 def test_tv_to_yf(symbol: str, market: str, expected: str) -> None:
@@ -69,6 +86,37 @@ def test_tv_to_nse_default_keeps_suffix(symbol: str, expected: str) -> None:
 )
 def test_tv_to_nse_strip_suffix(symbol: str, expected: str) -> None:
     assert tv_to_nse(symbol, strip_suffix=True) == expected
+
+
+@pytest.mark.parametrize(
+    ("symbol", "expected_default", "expected_stripped"),
+    [
+        ("M_M", "M&M", "M&M"),
+        ("M_M.NS", "M&M.NS", "M&M"),
+        ("NSE:M_M", "M&M", "M&M"),
+        ("BAJAJ_AUTO", "BAJAJ-AUTO", "BAJAJ-AUTO"),
+        ("BAJAJ_AUTO.NS", "BAJAJ-AUTO.NS", "BAJAJ-AUTO"),
+    ],
+)
+def test_tv_to_nse_restores_separator(
+    symbol: str, expected_default: str, expected_stripped: str
+) -> None:
+    # The bhavcopy spells these 'M&M' / 'BAJAJ-AUTO', never with an underscore.
+    assert tv_to_nse(symbol) == expected_default
+    assert tv_to_nse(symbol, strip_suffix=True) == expected_stripped
+
+
+def test_restore_india_separator_is_closed_over_nse_ampersand_list() -> None:
+    # Every enumerated '&' symbol must round-trip from its underscore form.
+    for real in symbols._NSE_AMPERSAND_SYMBOLS:
+        assert symbols.restore_india_separator(real.replace("&", "_")) == real
+
+
+@pytest.mark.parametrize("value", ["RELIANCE", "AAPL", "TCS.NS", ""])
+def test_restore_india_separator_passes_through_without_underscore(
+    value: str,
+) -> None:
+    assert symbols.restore_india_separator(value) == value
 
 
 def test_tv_to_nse_variants_diverge_only_on_bare_suffixed_symbol() -> None:
