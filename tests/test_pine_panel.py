@@ -15,6 +15,8 @@ import pytest
 from screener.backtester.pine import (
     PineError,
     PineNameError,
+    _group_key,
+    _panel_column_names,
     evaluate,
     evaluate_panel,
     parse,
@@ -197,6 +199,47 @@ def test_duplicate_index_labels_fall_back_to_solo():
     dup = dup.set_axis(dup.index[:19].append(dup.index[18:19]))
     bars_by_ticker = {"A": _bars(20, seed=1), "B": _bars(20, seed=2), "DUP": dup}
     _assert_matches_per_ticker("sma(close, 3) > 0", bars_by_ticker)
+
+
+@pytest.mark.parametrize(
+    "expr", ["sma(close, 5)", "crossover(close, sma(close, 3))", "atr(5) > 0"]
+)
+@pytest.mark.parametrize(
+    "variant",
+    ["tz_convert", "tz_naive", "resolution"],
+)
+def test_equal_instants_with_different_index_dtypes_do_not_group(expr, variant):
+    """Timestamps compare and hash by instant, not by label.
+
+    Two indexes over the same moments in different timezones (or at a different
+    resolution) are equal as tuples, so without the dtype in the group key they
+    would stack together — and every member is handed ``frames[0].index`` back,
+    silently relabelling the rest into the first member's timezone.
+    """
+    aware = pd.date_range("2024-01-01", periods=40, freq="D", tz="UTC")
+    other = {
+        "tz_convert": aware.tz_convert("Asia/Kolkata"),
+        "tz_naive": aware.tz_localize(None),
+        "resolution": aware.tz_localize(None).astype("datetime64[us]"),
+    }[variant]
+    base = _bars(40, seed=1)
+    bars_by_ticker = {
+        "AWARE": base.set_axis(aware),
+        "OTHER": _bars(40, seed=2).set_axis(other),
+    }
+    _assert_matches_per_ticker(expr, bars_by_ticker)
+    # Specifically: the index must survive, not just the values.
+    panel = evaluate_panel(parse(expr), bars_by_ticker)
+    assert panel["OTHER"].index.equals(other)
+    assert panel["AWARE"].index.equals(aware)
+
+
+def test_uniform_timezone_still_groups():
+    """The dtype guard must not stop a normal single-timezone universe."""
+    idx = pd.date_range("2024-01-01", periods=40, freq="D", tz="UTC")
+    names = _panel_column_names(parse("sma(close, 5)"))
+    keys = {_group_key(_bars(40, seed=i).set_axis(idx), names) for i in range(4)}
+    assert len(keys) == 1 and None not in keys
 
 
 def test_non_datetime_index_still_matches():
