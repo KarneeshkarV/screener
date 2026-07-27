@@ -336,8 +336,11 @@ class _DailyRankingSource:
         self.selection_rows = selection_rows
         self.warnings = warnings
         # Per-run memo: exit-AST evaluations and frame primitives are computed
-        # once per ticker instead of once per slot open.
+        # once per ticker instead of once per slot open. Exit signals are filled
+        # up front in one panel pass rather than one interpreted AST walk per
+        # first-traded ticker.
         self.caches = _RunCaches()
+        self.caches.prewarm_exit_signals(bars_by_tv, exit_ast)
 
     def before_exits(self, day: pd.Timestamp) -> None:
         return None
@@ -383,7 +386,10 @@ class _DailyRankingSource:
                     )
                 ):
                     continue
-                bars = self.bars_by_tv.get(ticker, pd.DataFrame())
+                # No default: dict.get evaluates its default eagerly, so passing
+                # pd.DataFrame() built and threw away a frame on every candidate
+                # popped. The guard below already treats missing as empty.
+                bars = self.bars_by_tv.get(ticker)
                 if (
                     bars is None or bars.empty
                 ):  # pragma: no cover - only valid tickers ranked

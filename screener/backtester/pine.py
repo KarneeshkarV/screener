@@ -3,6 +3,18 @@
 Parses a small subset of Pine Script into an AST and evaluates it against a
 pandas DataFrame of OHLCV bars. Does NOT use Python ``eval``.
 
+Two evaluation entry points:
+
+  :func:`evaluate`      one ticker's bars -> one Series.
+  :func:`evaluate_panel` many tickers at once -> ``{ticker: Series}``. Tickers
+                        that share a bar index and column set are stacked into
+                        column-per-ticker frames and the AST is walked **once**
+                        over the whole panel, so each node costs one pandas call
+                        instead of one per ticker. Because only exactly-aligned
+                        tickers are grouped, no reindex padding is introduced and
+                        the per-column values are identical to evaluating each
+                        ticker on its own.
+
 Supported:
   series: open, high, low, close, volume, adj_close, plus numeric columns
           joined onto the bars (for example options-panel fields such as pcr)
@@ -20,8 +32,9 @@ single ``.shift(1)`` and so compare only bars ``i`` and ``i-1``.
 
 from __future__ import annotations
 
-from typing import Literal, Union, cast
+from typing import Iterable, Literal, Union, cast
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
 
@@ -316,6 +329,88 @@ def parse(expr: str) -> Node:
 # ── evaluator ────────────────────────────────────────────────────────
 
 
+#: A resolved value inside the evaluator: a Series when evaluating one ticker's
+#: bars, a column-per-ticker DataFrame when evaluating a :class:`PanelBars`.
+#: Every operator the AST uses (``+ - * / > >= < <= == != & | ~``, ``.shift``,
+#: ``.rolling``, ``.ewm``, ``.fillna``, ``.astype``) has identical column-wise
+#: semantics on both, which is what lets one ``_eval`` serve both modes.
+Vector = Union[pd.Series, pd.DataFrame]
+
+
+class PanelBars:
+    """Column-per-ticker view over several bar frames that share one index.
+
+    Quacks like the bars ``DataFrame`` that :func:`_eval` expects — ``columns``,
+    ``index``, ``empty`` and ``__getitem__`` — except each ``__getitem__``
+    returns a *wide* frame (rows = bars, columns = tickers) instead of a Series.
+
+    Built only from tickers whose bar indexes and column sets are already
+    identical (see :func:`_panel_groups`), so stacking them never reindexes and
+    never pads with NaN: column ``t`` of every intermediate equals the Series
+    the single-ticker path would have produced for ``t``.
+    """
+
+    __slots__ = ("_frames", "columns", "index", "tickers")
+
+    def __init__(
+        self,
+        frames: dict[str, pd.DataFrame],
+        index: pd.Index,
+        tickers: tuple[str, ...],
+        columns: frozenset[str],
+    ) -> None:
+        self._frames = frames
+        self.index = index
+        self.tickers = tickers
+        self.columns = columns
+
+    @property
+    def empty(self) -> bool:
+        return len(self.index) == 0 or not self.tickers
+
+    def __getitem__(self, name: str) -> pd.DataFrame:
+        return self._frames[name]
+
+
+def _as_float(obj: Vector) -> Vector:
+    """``astype(float)``, skipped when the values are already ``float64``.
+
+    ``astype`` on an already-float column is a full copy plus a trip through
+    pandas' dtype machinery, and the AST hits it once per ``Name`` reference —
+    the dominant share of the profile's ``astype`` calls. Nothing in the
+    evaluator mutates its inputs, so reusing the object is safe (see
+    ``test_evaluate_does_not_mutate_or_alias_into_caller_state``).
+    """
+    if isinstance(obj, pd.DataFrame):
+        if all(dt == np.float64 for dt in obj.dtypes):
+            return obj
+        return obj.astype(float)
+    if obj.dtype == np.float64:
+        return obj
+    return obj.astype(float)
+
+
+def _to_numeric(obj: Vector) -> Vector:
+    """Coerce non-price columns to float, turning unparseable values into NaN."""
+    if isinstance(obj, pd.DataFrame):
+        if all(dt == np.float64 for dt in obj.dtypes):
+            return obj
+        coerced: pd.DataFrame = obj.apply(pd.to_numeric, errors="coerce")
+        return coerced.astype(float)
+    return _as_float(pd.to_numeric(obj, errors="coerce"))
+
+
+def _broadcast(value, bars: pd.DataFrame | PanelBars) -> Vector:
+    """Lift a Python scalar to the shape ``bars`` evaluates to."""
+    if isinstance(value, (pd.Series, pd.DataFrame)):
+        return value
+    if isinstance(bars, PanelBars):
+        return pd.DataFrame(
+            float(value), index=bars.index, columns=list(bars.tickers), dtype=float
+        )
+    return pd.Series(float(value), index=bars.index)
+
+
 def _as_series(value, index: pd.Index) -> pd.Series:
     if isinstance(value, pd.Series):
         return value
@@ -333,21 +428,31 @@ def _require_int_literal(node: Node, func: str, arg: str) -> int:
     return n
 
 
-def _rsi(source: pd.Series, length: int) -> pd.Series:
+def _rsi(source: Vector, length: int) -> Vector:
     return wilder_rsi(source, length, min_periods=length)
 
 
-def _atr(bars: pd.DataFrame, length: int) -> pd.Series:
+def _atr(bars: pd.DataFrame | PanelBars, length: int) -> Vector:
+    # wilder_atr/true_range are Series/DataFrame-overloaded, so the panel case
+    # needs no special handling beyond the wide frames __getitem__ returns.
+    if isinstance(bars, PanelBars):
+        return wilder_atr(
+            cast(pd.DataFrame, _as_float(bars["high"])),
+            cast(pd.DataFrame, _as_float(bars["low"])),
+            cast(pd.DataFrame, _as_float(bars["close"])),
+            length,
+            min_periods=length,
+        )
     return wilder_atr(
-        bars["high"],
-        bars["low"],
-        bars["close"],
+        cast(pd.Series, _as_float(bars["high"])),
+        cast(pd.Series, _as_float(bars["low"])),
+        cast(pd.Series, _as_float(bars["close"])),
         length,
         min_periods=length,
     )
 
 
-def _crossover(a: pd.Series, b: pd.Series) -> pd.Series:
+def _crossover(a: Vector, b: Vector) -> Vector:
     a_now = a
     b_now = b
     a_prev = a.shift(1)
@@ -356,7 +461,7 @@ def _crossover(a: pd.Series, b: pd.Series) -> pd.Series:
     return cond.fillna(False)
 
 
-def _crossunder(a: pd.Series, b: pd.Series) -> pd.Series:
+def _crossunder(a: Vector, b: Vector) -> Vector:
     a_now = a
     b_now = b
     a_prev = a.shift(1)
@@ -365,22 +470,29 @@ def _crossunder(a: pd.Series, b: pd.Series) -> pd.Series:
     return cond.fillna(False)
 
 
-def _series_from_name(name: str, bars: pd.DataFrame) -> pd.Series:
+def _series_from_name(name: str, bars: pd.DataFrame | PanelBars) -> Vector:
     if name == "adj_close":
         # with auto_adjust=True, close IS adjusted; alias them
         if "adj_close" in bars.columns:
-            return bars["adj_close"].astype(float)
-        return bars["close"].astype(float)
+            return _as_float(bars["adj_close"])
+        return _as_float(bars["close"])
     if name in SERIES_NAMES:
         if name not in bars.columns:
             raise PineNameError(f"Series {name!r} not available in bars DataFrame")
-        return bars[name].astype(float)
+        return _as_float(bars[name])
     if name in bars.columns:
-        return pd.to_numeric(bars[name], errors="coerce").astype(float)
+        return _to_numeric(bars[name])
     raise PineNameError(f"Unknown identifier: {name!r}")
 
 
-def _eval(node: Node, bars: pd.DataFrame):
+def _eval(node: Node, bars: pd.DataFrame | PanelBars):
+    """Walk the AST once against ``bars``.
+
+    ``bars`` is either a single ticker's OHLCV frame (intermediates are Series)
+    or a :class:`PanelBars` (intermediates are column-per-ticker DataFrames).
+    The operators below are column-wise on DataFrames, so the panel case walks
+    the identical code and pays one pandas call per node for *all* tickers.
+    """
     if isinstance(node, Num):
         return float(node.value)
     if isinstance(node, Name):
@@ -391,7 +503,7 @@ def _eval(node: Node, bars: pd.DataFrame):
             return -val
         return val
     if isinstance(node, Not):
-        val = _as_series(_eval(node.operand, bars), bars.index).astype(bool)
+        val = _broadcast(_eval(node.operand, bars), bars).astype(bool)
         return ~val
     if isinstance(node, BinOp):
         left = _eval(node.left, bars)
@@ -419,12 +531,12 @@ def _eval(node: Node, bars: pd.DataFrame):
             "!=": lambda a, b: a != b,
         }
         out = ops[node.op](left, right)
-        if isinstance(out, pd.Series):
+        if isinstance(out, (pd.Series, pd.DataFrame)):
             return out.fillna(False)
         return bool(out)
     if isinstance(node, BoolOp):
-        left = _as_series(_eval(node.left, bars), bars.index).astype(bool)
-        right = _as_series(_eval(node.right, bars), bars.index).astype(bool)
+        left = _broadcast(_eval(node.left, bars), bars).astype(bool)
+        right = _broadcast(_eval(node.right, bars), bars).astype(bool)
         if node.op == "and":
             return left & right
         return left | right
@@ -435,7 +547,7 @@ def _eval(node: Node, bars: pd.DataFrame):
     )
 
 
-def _eval_call(node: Call, bars: pd.DataFrame):
+def _eval_call(node: Call, bars: pd.DataFrame | PanelBars):
     name = node.name
     if name not in FUNC_NAMES:
         raise PineNameError(f"Unknown function: {name!r} at column {node.col}")
@@ -444,9 +556,7 @@ def _eval_call(node: Call, bars: pd.DataFrame):
             raise PineSyntaxError(
                 f"{name}() takes 2 arguments (source, length), got {len(node.args)}"
             )
-        source_val = _eval(node.args[0], bars)
-        if not isinstance(source_val, pd.Series):
-            source_val = _as_series(source_val, bars.index)
+        source_val = _broadcast(_eval(node.args[0], bars), bars)
         length = _require_int_literal(node.args[1], name, "length")
         if name == "sma":
             return source_val.rolling(length, min_periods=length).mean()
@@ -468,8 +578,8 @@ def _eval_call(node: Call, bars: pd.DataFrame):
     if name in {"crossover", "crossunder"}:
         if len(node.args) != 2:
             raise PineSyntaxError(f"{name}() takes 2 arguments, got {len(node.args)}")
-        a = _as_series(_eval(node.args[0], bars), bars.index)
-        b = _as_series(_eval(node.args[1], bars), bars.index)
+        a = _broadcast(_eval(node.args[0], bars), bars)
+        b = _broadcast(_eval(node.args[1], bars), bars)
         return _crossover(a, b) if name == "crossover" else _crossunder(a, b)
     raise PineNameError(  # pragma: no cover - name already validated in FUNC_NAMES
         f"Unknown function: {name!r}"
@@ -492,6 +602,160 @@ def evaluate(node: Node, bars: pd.DataFrame) -> pd.Series:
     if isinstance(result, pd.Series):
         return result
     return _as_series(result, bars.index)
+
+
+_REQUIRED_COLUMNS = frozenset({"open", "high", "low", "close", "volume"})
+
+
+def _call_names(node: Node) -> set[str]:
+    """Return every function name invoked in the expression."""
+    found: set[str] = set()
+
+    def visit(n: Node) -> None:
+        if isinstance(n, Call):
+            found.add(n.name)
+            for arg in n.args:
+                visit(arg)
+        elif isinstance(n, (BinOp, Compare, BoolOp)):
+            visit(n.left)
+            visit(n.right)
+        elif isinstance(n, (UnaryOp, Not)):
+            visit(n.operand)
+
+    visit(node)
+    return found
+
+
+def _panel_column_names(node: Node) -> set[str]:
+    """Columns the panel must materialise to evaluate ``node``.
+
+    Only the referenced ones: an unused column never has to be stacked, and —
+    more importantly — never splits a group. Fundamentals and options joins add
+    columns to just the tickers they cover, so keying groups on the *full*
+    column set would shatter the panel on exactly the strategies that need it.
+    """
+    names = set(collect_names(node))
+    if "adj_close" in names:
+        # _series_from_name falls back to close when adj_close is absent.
+        names.add("close")
+    if "atr" in _call_names(node):
+        names |= {"high", "low", "close"}
+    return names
+
+
+def _group_key(bars: pd.DataFrame, names: Iterable[str]) -> tuple | None:
+    """Identity of the panel ``bars`` may join, or None if it must go alone.
+
+    Two frames share a key only when their bar indexes are element-wise equal
+    and they agree on which referenced columns exist — the two things that make
+    stacking them a pure relabelling rather than an alignment.
+    """
+    index = bars.index
+    if not index.is_unique:
+        # concat would align on duplicate labels instead of stacking positionally.
+        return None
+    if isinstance(index, pd.DatetimeIndex) and index.dtype == np.dtype(
+        "datetime64[ns]"
+    ):
+        index_key: object = index.to_numpy().view("i8").tobytes()
+    else:
+        try:
+            index_key = tuple(index)
+        except TypeError:  # pragma: no cover - exotic unhashable index
+            return None
+    columns = frozenset(bars.columns)
+    if not _REQUIRED_COLUMNS <= columns:
+        # evaluate() raises for these; let it do so per ticker.
+        return None
+    return (index_key, frozenset(n for n in names if n in columns))
+
+
+def _build_panel(
+    tickers: tuple[str, ...],
+    frames: list[pd.DataFrame],
+    names: Iterable[str],
+) -> PanelBars:
+    index = frames[0].index
+    columns = frozenset(frames[0].columns)
+    labels = list(tickers)
+    wide: dict[str, pd.DataFrame] = {}
+    for name in names:
+        if name not in columns:
+            continue
+        # Stack through NumPy rather than pd.concat: the indexes are known equal
+        # (that is the group invariant), so there is nothing to align, and this
+        # skips concat's per-Series bookkeeping to land one contiguous float
+        # block. Dtype is normalised once per name for the whole group instead
+        # of once per ticker per AST reference.
+        if name in SERIES_NAMES:
+            columns_1d = [frame[name].to_numpy(dtype=float) for frame in frames]
+        else:
+            columns_1d = [
+                pd.to_numeric(frame[name], errors="coerce").to_numpy(dtype=float)
+                for frame in frames
+            ]
+        block = np.empty((len(index), len(labels)), dtype=float)
+        for position, values in enumerate(columns_1d):
+            block[:, position] = values
+        wide[name] = pd.DataFrame(block, index=index, columns=labels, copy=False)
+    return PanelBars(wide, index, tickers, columns)
+
+
+def evaluate_panel(
+    node: Node,
+    bars_by_ticker: dict[str, pd.DataFrame],
+) -> dict[str, pd.Series | PineError]:
+    """Evaluate ``node`` for many tickers, batching aligned ones into panels.
+
+    Returns one entry per ticker with non-empty bars: either the Series
+    :func:`evaluate` would have returned, or the :class:`PineError` it would
+    have raised. Results are identical to calling :func:`evaluate` per ticker —
+    tickers are only stacked when their indexes match exactly, so no value ever
+    sees a reindex-padded neighbour.
+    """
+    names = _panel_column_names(node)
+    groups: dict[tuple, list[str]] = {}
+    solo: list[str] = []
+    for ticker, bars in bars_by_ticker.items():
+        if bars is None or bars.empty:
+            continue
+        key = _group_key(bars, names)
+        if key is None:
+            solo.append(ticker)
+        else:
+            groups.setdefault(key, []).append(ticker)
+
+    out: dict[str, pd.Series | PineError] = {}
+
+    def eval_one(ticker: str) -> None:
+        try:
+            out[ticker] = evaluate(node, bars_by_ticker[ticker])
+        except PineError as exc:
+            out[ticker] = exc
+
+    for ticker in solo:
+        eval_one(ticker)
+
+    for members in groups.values():
+        if len(members) == 1:
+            eval_one(members[0])
+            continue
+        tickers = tuple(members)
+        frames = [bars_by_ticker[t] for t in tickers]
+        try:
+            panel = _build_panel(tickers, frames, names)
+            result = _broadcast(_eval(node, panel), panel)
+        except (PineError, TypeError, ValueError):
+            # Panel evaluation is all-or-nothing for the group, but errors are
+            # reported per ticker. Redo the group one at a time so each ticker
+            # gets the exact exception (and message) it would have raised alone.
+            for ticker in tickers:
+                eval_one(ticker)
+            continue
+        frame = cast(pd.DataFrame, result)
+        for position, ticker in enumerate(tickers):
+            out[ticker] = frame.iloc[:, position].rename(None)
+    return out
 
 
 def required_lookback(node: Node) -> int:
