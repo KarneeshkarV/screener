@@ -14,7 +14,7 @@ from screener.backtester.costs import corwin_schultz_half_spread
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig, ExitReason, Trade
-from screener.backtester.pine import PineError, evaluate
+from screener.backtester.pine import PineError, evaluate, evaluate_panel
 from screener.backtester.portfolio import Portfolio
 from screener.backtester.sessions import is_session_last, market_timezone
 
@@ -166,6 +166,30 @@ class _RunCaches:
                 cached = exc
             self.entry_signals[ticker] = cached
         return cached
+
+    def prewarm_exit_signals(
+        self, bars_by_ticker: dict[str, pd.DataFrame], exit_ast
+    ) -> None:
+        """Fill ``exit_signals`` for every ticker in one panel pass.
+
+        ``_make_slot_state`` otherwise evaluates the exit AST on the first slot
+        open per ticker — correct, but one interpreted walk each. Batching them
+        up front costs one walk per index-group for the whole universe, which is
+        cheaper even though not every ticker ends up being traded.
+
+        Entries are stored in exactly the form the lazy path stores: the
+        normalised boolean Series, or the warning string a failure produced, so
+        slot-open behaviour and warning text are unchanged.
+        """
+        if exit_ast is None:
+            return
+        for ticker, result in evaluate_panel(exit_ast, bars_by_ticker).items():
+            if ticker in self.exit_signals:
+                continue
+            if isinstance(result, PineError):
+                self.exit_signals[ticker] = f"exit eval failed: {result}"
+            else:
+                self.exit_signals[ticker] = result.fillna(False).astype(bool)
 
 
 def _cached_trailing_liquidity(
@@ -335,6 +359,7 @@ def _make_slot_state(
         adv_shares=adv_shares,
         sigma_daily=sigma_daily,
         half_spread=half_spread,
+        arrays=frame_cache,
     )
     if entry_idx is None or entry_fill is None:
         return None, entry_warn
@@ -810,14 +835,18 @@ def _precompute_entry_signals(
     entry_ast,
     warnings: list[str],
 ) -> dict[str, pd.Series]:
+    evaluated = evaluate_panel(entry_ast, bars_by_ticker)
     signals: dict[str, pd.Series] = {}
-    for ticker, bars in bars_by_ticker.items():
-        if bars is None or bars.empty:
+    # Iterate the input order, not the panel's grouping order, so signal and
+    # warning ordering stays byte-identical to the per-ticker loop.
+    for ticker in bars_by_ticker:
+        result = evaluated.get(ticker)
+        if result is None:
             continue
-        try:
-            signals[ticker] = evaluate(entry_ast, bars).fillna(False).astype(bool)
-        except PineError as exc:
-            warnings.append(f"entry eval failed: {ticker}: {exc}")
+        if isinstance(result, PineError):
+            warnings.append(f"entry eval failed: {ticker}: {result}")
+            continue
+        signals[ticker] = result.fillna(False).astype(bool)
     return signals
 
 

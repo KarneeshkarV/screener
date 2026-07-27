@@ -26,34 +26,67 @@ is a single implementation of each primitive.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Protocol
 
+import numpy as np
 import pandas as pd
 
 from screener.backtester.models import BacktestConfig
 from screener.backtester.slippage import Side, apply_slippage, needs_liquidity_inputs
 
 
+class PriceArrays(Protocol):
+    """The float OHLC columns of a bars frame, already extracted to NumPy.
+
+    Structural so ``fills`` stays free of a ``core`` import (``core`` imports
+    ``fills``); ``core._FrameCache`` satisfies it.
+    """
+
+    open_arr: np.ndarray
+    low_arr: np.ndarray
+    close_arr: np.ndarray
+
+
 def _resolve_entry_fill(
     bars: pd.DataFrame,
     signal_idx: int,
     cfg: BacktestConfig,
+    arrays: Optional[PriceArrays] = None,
 ) -> tuple[Optional[int], Optional[float], Optional[str]]:
-    """Resolve entry bar index and reference fill price from order settings."""
+    """Resolve entry bar index and reference fill price from order settings.
+
+    When ``arrays`` is supplied the prices are read from the caller's cached
+    NumPy columns instead of ``bars.iloc[i][col]``, which builds a throwaway
+    row Series per lookup. Same values, same order — the exit path already
+    reads the identical arrays.
+    """
     if signal_idx + 1 >= len(bars):
         return None, None, "no post-signal entry bar"
     order = cfg.entry_order_type
     if order == "moo":
         entry_idx = signal_idx + 1
+        if arrays is not None:
+            return entry_idx, float(arrays.open_arr[entry_idx]), None
         return entry_idx, float(bars.iloc[entry_idx]["open"]), None
     if order == "moc":
         entry_idx = signal_idx + 1
+        if arrays is not None:
+            return entry_idx, float(arrays.close_arr[entry_idx]), None
         return entry_idx, float(bars.iloc[entry_idx]["close"]), None
     if order == "limit":
         if cfg.entry_limit_bps is None:
             return None, None, "limit order requires entry_limit_bps"
-        signal_close = float(bars.iloc[signal_idx]["close"])
+        if arrays is not None:
+            signal_close = float(arrays.close_arr[signal_idx])
+        else:
+            signal_close = float(bars.iloc[signal_idx]["close"])
         limit_price = signal_close * (1.0 - cfg.entry_limit_bps / 10_000.0)
+        if arrays is not None:
+            for i in range(signal_idx + 1, len(bars)):
+                if float(arrays.low_arr[i]) <= limit_price:
+                    ref = min(float(arrays.open_arr[i]), limit_price)
+                    return i, ref, None
+            return None, None, "limit order never filled in available window"
         for i in range(signal_idx + 1, len(bars)):
             bar = bars.iloc[i]
             low = float(bar["low"])
@@ -130,15 +163,19 @@ class FillModel:
         adv_shares: float = 0.0,
         sigma_daily: float = 0.0,
         half_spread: float = 0.0,
+        arrays: Optional[PriceArrays] = None,
     ) -> tuple[Optional[int], Optional[float], Optional[str]]:
         """Resolve the entry bar index and the slipped (buy-side) fill price.
 
         Returns ``(entry_idx, entry_fill, warning)``. On failure the index and
         price are ``None`` and ``warning`` explains why, mirroring the original
         ``_resolve_entry_fill`` contract — slippage is applied to the resolved
-        reference before returning.
+        reference before returning. ``arrays``, when given, supplies the cached
+        NumPy OHLC columns to read prices from instead of ``bars.iloc``.
         """
-        entry_idx, entry_ref, warn = _resolve_entry_fill(bars, signal_idx, self.cfg)
+        entry_idx, entry_ref, warn = _resolve_entry_fill(
+            bars, signal_idx, self.cfg, arrays
+        )
         if entry_idx is None or entry_ref is None:
             return None, None, warn
         # Entry price and acquired shares are circular when impact depends on
