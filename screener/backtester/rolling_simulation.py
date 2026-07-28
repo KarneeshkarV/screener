@@ -11,6 +11,7 @@ import pandas as pd
 
 from screener.backtester.core import (
     _active_or_pending_tickers,
+    _FrameCache,
     _RunCaches,
     _SlotState,
     _bar_label,
@@ -40,7 +41,7 @@ from screener.backtester.models import (
     BacktestConfig,
     BacktestResult,
 )
-from screener.backtester.pine import parse, required_lookback
+from screener.backtester.pine import evaluate_panel_many, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.backtester.sizing import entry_budget_for
 from screener.regime import classify_regimes
@@ -67,12 +68,92 @@ class _RollingSimulationSetup:
     bars_by_tv: dict[str, pd.DataFrame]
     benchmark: pd.Series
     exit_ast: object
+    exit_signals: dict[str, pd.Series | str]
     portfolio: Portfolio | None
     slot_states: dict[int, _SlotState | None]
     slot_bars: dict[int, pd.DataFrame]
     selection_rows: list[dict]
     fill_model: FillModel | None
     day_loop: DayLoop | None
+
+
+_PREPARATION_CONFIG_FIELDS = {
+    "market",
+    "as_of",
+    "benchmark",
+    "tickers",
+    "universe_file",
+    "membership_added",
+    "membership_windows",
+    "dynamic_universe_size",
+    "dynamic_universe_lookback",
+    "dynamic_universe_rebalance",
+    "max_universe",
+    "entry_expr",
+    "exit_expr",
+    "strategy_name",
+    "regime_filter",
+    "earnings_blackout_days",
+    "fundamentals_provider",
+    "fundamental_fields",
+    "fundamental_lag_days",
+    "sector_neutral",
+    "interval",
+    "price_adjustment",
+    "min_price",
+    "min_avg_dollar_volume",
+    "avg_dollar_volume_window",
+}
+
+
+def _preparation_fingerprint(cfg: BacktestConfig) -> dict:
+    return cfg.model_dump(mode="json", include=_PREPARATION_CONFIG_FIELDS)
+
+
+@dataclass(frozen=True)
+class PreparedRollingBacktest:
+    """Reusable data, signals and memoized frame primitives for simulations.
+
+    Runtime-only settings such as hold period, stops, sizing, costs, top-N and
+    initial capital may change between simulations. Any setting that affects
+    fetched/prepared bars, signals, filters or eligibility matrices is guarded
+    by ``config_fingerprint``. The internal frame-cache dictionary is populated
+    lazily by sequential runs; callers should not mutate it directly.
+    """
+
+    config_fingerprint: dict
+    start_ts: pd.Timestamp
+    end_ts: pd.Timestamp
+    master_dates: tuple[pd.Timestamp, ...]
+    candidate_matrices: _RollingCandidateMatrices | None
+    bars_by_tv: dict[str, pd.DataFrame]
+    benchmark: pd.Series
+    exit_ast: object
+    exit_signals: dict[str, pd.Series | str]
+    frame_caches: dict[str, _FrameCache]
+    warnings: tuple[str, ...]
+    early_result: BacktestResult | None = None
+
+    def supports(self, cfg: BacktestConfig) -> bool:
+        """Whether ``cfg`` can reuse these prepared bars and signals."""
+        return _preparation_fingerprint(cfg) == self.config_fingerprint
+
+
+def _window_bounds(
+    cfg: BacktestConfig, start_date: date, end_date: date
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    start_ts = pd.Timestamp(start_date).normalize()
+    if cfg.interval == "1d":
+        end_ts = pd.Timestamp(end_date).normalize()
+    else:
+        end_ts = (
+            pd.Timestamp(end_date).normalize()
+            + pd.Timedelta(days=1)
+            - pd.Timedelta(1, "ns")
+        )
+    if end_ts < start_ts:
+        raise ValueError("end_date must be >= start_date")
+    return start_ts, end_ts
 
 
 def _prepare_simulation(
@@ -166,7 +247,26 @@ def _prepare_simulation(
         warnings=warnings,
     )
 
-    entry_signals_by_tv = _precompute_entry_signals(bars_by_tv, entry_ast, warnings)
+    exit_signals_by_tv: dict[str, pd.Series | str] = {}
+    if exit_ast is None:
+        entry_signals_by_tv = _precompute_entry_signals(bars_by_tv, entry_ast, warnings)
+    else:
+        evaluated_entry, evaluated_exit = evaluate_panel_many(
+            (entry_ast, exit_ast), bars_by_tv
+        )
+        entry_signals_by_tv = _precompute_entry_signals(
+            bars_by_tv,
+            entry_ast,
+            warnings,
+            evaluated=evaluated_entry,
+        )
+        signal_cache = _RunCaches()
+        signal_cache.prewarm_exit_signals(
+            bars_by_tv,
+            exit_ast,
+            evaluated=evaluated_exit,
+        )
+        exit_signals_by_tv = signal_cache.exit_signals
     filter_signals_by_tv = _precompute_filter_signals(bars_by_tv, cfg)
 
     # Reuse the benchmark already fetched into ``price_panel`` (it is included in
@@ -214,6 +314,7 @@ def _prepare_simulation(
             bars_by_tv=bars_by_tv,
             benchmark=benchmark,
             exit_ast=exit_ast,
+            exit_signals={},
             portfolio=None,
             slot_states={},
             slot_bars={},
@@ -294,6 +395,7 @@ def _prepare_simulation(
         bars_by_tv=bars_by_tv,
         benchmark=benchmark,
         exit_ast=exit_ast,
+        exit_signals=exit_signals_by_tv,
         portfolio=portfolio,
         slot_states=slot_states,
         slot_bars=slot_bars,
@@ -327,6 +429,8 @@ class _DailyRankingSource:
         end_ts: pd.Timestamp,
         selection_rows: list[dict],
         warnings: list[str],
+        exit_signals: dict[str, pd.Series | str],
+        frame_caches: dict[str, _FrameCache],
     ) -> None:
         self.candidate_matrices = candidate_matrices
         self.bars_by_tv = bars_by_tv
@@ -343,8 +447,10 @@ class _DailyRankingSource:
         # once per ticker instead of once per slot open. Exit signals are filled
         # up front in one panel pass rather than one interpreted AST walk per
         # first-traded ticker.
-        self.caches = _RunCaches()
-        self.caches.prewarm_exit_signals(bars_by_tv, exit_ast)
+        self.caches = _RunCaches(
+            exit_signals=dict(exit_signals),
+            frames=frame_caches,
+        )
 
     def before_exits(self, day: pd.Timestamp) -> None:
         return None
@@ -458,17 +564,11 @@ def _assemble_results(
     """Assemble the trade ledger, equity curve, metrics and selection frame."""
     trades = portfolio.closed_trades()
 
-    date_set: set[pd.Timestamp] = set(master_dates)
-    for trade in trades:
-        frame = bars_by_tv.get(trade.ticker)
-        if frame is None or frame.empty:  # pragma: no cover - traded ticker has bars
-            continue
-        # frame.index is a sorted DatetimeIndex; slice by position instead of
-        # building two boolean masks per trade.
-        lo = frame.index.searchsorted(pd.Timestamp(trade.entry_date), side="left")
-        hi = frame.index.searchsorted(pd.Timestamp(trade.exit_date), side="right")
-        date_set.update(frame.index[lo:hi].tolist())
-    calendar = pd.DatetimeIndex(sorted(date_set))
+    # ``master_dates`` was built as the sorted union of every ticker's bars in
+    # the simulation window. Every entry, exit and held bar is therefore
+    # already present; rebuilding the same union once per trade only repeats
+    # thousands of Index.searchsorted/slice/tolist operations.
+    calendar = pd.DatetimeIndex(master_dates)
     equity = build_equity_curve(
         calendar,
         trades,
@@ -517,38 +617,22 @@ def _assemble_results(
     )
 
 
-def run_rolling_backtest(
+def prepare_rolling_backtest(
     cfg: BacktestConfig,
     fetcher: PriceFetcher,
     *,
     start_date: date,
     end_date: date,
     earnings_blackout: dict[str, list[date]] | None = None,
-) -> BacktestResult:
-    """Run a daily rolling simulation over ``[start_date, end_date]``.
+) -> PreparedRollingBacktest:
+    """Fetch and precompute the immutable half of a rolling backtest.
 
-    ``earnings_blackout`` is an optional pre-built ``TV-symbol -> earnings
-    dates`` map for tests / offline runs. When omitted and
-    ``cfg.earnings_blackout_days`` is set, dates are collected via the
-    market-aware earnings collectors.
+    The returned object can drive many simulations whose changes are confined
+    to execution/portfolio settings (for example hold, stops, sizing, costs,
+    top-N or initial capital).
     """
     warnings: list[str] = []
-    start_ts = pd.Timestamp(start_date).normalize()
-    # For daily bars the window upper bound is midnight of end_date (bar
-    # timestamps are midnight-normalized). Intraday bars carry a time-of-day, so
-    # midnight would exclude every bar on the final session — extend the bound to
-    # the last instant of end_date so the closing session is included.
-    if cfg.interval == "1d":
-        end_ts = pd.Timestamp(end_date).normalize()
-    else:
-        end_ts = (
-            pd.Timestamp(end_date).normalize()
-            + pd.Timedelta(days=1)
-            - pd.Timedelta(1, "ns")
-        )
-    if end_ts < start_ts:
-        raise ValueError("end_date must be >= start_date")
-
+    start_ts, end_ts = _window_bounds(cfg, start_date, end_date)
     setup = _prepare_simulation(
         cfg,
         fetcher,
@@ -557,44 +641,133 @@ def run_rolling_backtest(
         warnings=warnings,
         earnings_blackout=earnings_blackout,
     )
-    if setup.early_result is not None:
-        return setup.early_result
-
-    assert setup.candidate_matrices is not None
-    assert setup.portfolio is not None
-    assert setup.fill_model is not None
-    assert setup.day_loop is not None
-
-    source = _DailyRankingSource(
+    prepared_warnings = (
+        tuple(setup.early_result.warnings)
+        if setup.early_result is not None
+        else tuple(warnings)
+    )
+    return PreparedRollingBacktest(
+        config_fingerprint=_preparation_fingerprint(cfg),
+        start_ts=start_ts,
+        end_ts=end_ts,
+        master_dates=tuple(setup.master_dates),
         candidate_matrices=setup.candidate_matrices,
         bars_by_tv=setup.bars_by_tv,
-        cfg=cfg,
+        benchmark=setup.benchmark,
         exit_ast=setup.exit_ast,
-        fill_model=setup.fill_model,
-        portfolio=setup.portfolio,
-        slot_states=setup.slot_states,
-        slot_bars=setup.slot_bars,
-        end_ts=end_ts,
-        selection_rows=setup.selection_rows,
-        warnings=warnings,
+        exit_signals=setup.exit_signals,
+        frame_caches={},
+        warnings=prepared_warnings,
+        early_result=setup.early_result,
     )
-    run_day_loop(setup.master_dates, setup.day_loop, source)
+
+
+def run_prepared_rolling_backtest(
+    prepared: PreparedRollingBacktest,
+    cfg: BacktestConfig,
+) -> BacktestResult:
+    """Run one mutable portfolio simulation over reusable prepared data."""
+    if not prepared.supports(cfg):
+        raise ValueError(
+            "configuration changes prepared-data fields; build a new "
+            "PreparedRollingBacktest"
+        )
+    warnings = list(prepared.warnings)
+    if prepared.early_result is not None:
+        calendar = prepared.early_result.equity_curve.index
+        equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
+        benchmark_aligned = prepared.benchmark.reindex(
+            calendar, method="ffill"
+        ).dropna()
+        metrics = compute_metrics(
+            equity,
+            benchmark_aligned,
+            [],
+            max(cfg.top, 1),
+            periods_per_year=periods_per_year_for_interval(cfg.interval),
+        )
+        metrics["unique_tickers"] = 0
+        return BacktestResult(
+            config=cfg,
+            trades=[],
+            equity_curve=equity,
+            benchmark_curve=benchmark_aligned,
+            metrics=metrics,
+            warnings=warnings,
+            selection=pd.DataFrame(),
+        )
+
+    assert prepared.candidate_matrices is not None
+    portfolio = Portfolio(
+        cfg.initial_capital,
+        max(cfg.top, 1),
+        cost_model=cost_model_from_config(cfg),
+    )
+    slot_states: dict[int, _SlotState | None] = {
+        slot_id: None for slot_id in range(max(cfg.top, 1))
+    }
+    slot_bars: dict[int, pd.DataFrame] = {}
+    selection_rows: list[dict] = []
+    fill_model = FillModel(cfg)
+    day_loop = DayLoop(
+        portfolio=portfolio,
+        cfg=cfg,
+        slot_states=slot_states,
+        slot_bars=slot_bars,
+        fill_model=fill_model,
+    )
+
+    source = _DailyRankingSource(
+        candidate_matrices=prepared.candidate_matrices,
+        bars_by_tv=prepared.bars_by_tv,
+        cfg=cfg,
+        exit_ast=prepared.exit_ast,
+        fill_model=fill_model,
+        portfolio=portfolio,
+        slot_states=slot_states,
+        slot_bars=slot_bars,
+        end_ts=prepared.end_ts,
+        selection_rows=selection_rows,
+        warnings=warnings,
+        exit_signals=prepared.exit_signals,
+        frame_caches=prepared.frame_caches,
+    )
+    run_day_loop(prepared.master_dates, day_loop, source)
 
     _force_close_open_slots(
-        slot_states=setup.slot_states,
-        slot_bars=setup.slot_bars,
+        slot_states=slot_states,
+        slot_bars=slot_bars,
         cfg=cfg,
-        portfolio=setup.portfolio,
-        end_ts=end_ts,
-        fill_model=setup.fill_model,
+        portfolio=portfolio,
+        end_ts=prepared.end_ts,
+        fill_model=fill_model,
     )
 
     return _assemble_results(
-        portfolio=setup.portfolio,
-        master_dates=setup.master_dates,
-        bars_by_tv=setup.bars_by_tv,
+        portfolio=portfolio,
+        master_dates=list(prepared.master_dates),
+        bars_by_tv=prepared.bars_by_tv,
         cfg=cfg,
-        benchmark=setup.benchmark,
-        selection_rows=setup.selection_rows,
+        benchmark=prepared.benchmark,
+        selection_rows=selection_rows,
         warnings=warnings,
     )
+
+
+def run_rolling_backtest(
+    cfg: BacktestConfig,
+    fetcher: PriceFetcher,
+    *,
+    start_date: date,
+    end_date: date,
+    earnings_blackout: dict[str, list[date]] | None = None,
+) -> BacktestResult:
+    """Run a daily rolling simulation over ``[start_date, end_date]``."""
+    prepared = prepare_rolling_backtest(
+        cfg,
+        fetcher,
+        start_date=start_date,
+        end_date=end_date,
+        earnings_blackout=earnings_blackout,
+    )
+    return run_prepared_rolling_backtest(prepared, cfg)

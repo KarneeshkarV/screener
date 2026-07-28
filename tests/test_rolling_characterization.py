@@ -24,7 +24,11 @@ import pandas as pd
 import pytest
 
 from screener.backtester.models import BacktestConfig
-from screener.backtester.rolling_simulation import run_rolling_backtest
+from screener.backtester.rolling_simulation import (
+    prepare_rolling_backtest,
+    run_prepared_rolling_backtest,
+    run_rolling_backtest,
+)
 from tests.conftest import StubPriceFetcher
 
 _START = "2024-01-01"
@@ -159,3 +163,42 @@ def test_rolling_backtest_exercises_all_exit_reasons():
     )
     reasons = {str(t.exit_reason) for t in result.trades}
     assert {"stop", "time", "eod"} <= reasons
+
+
+def test_prepared_backtest_reuses_signals_for_runtime_only_changes():
+    fetcher = StubPriceFetcher(_DATA)
+    cfg = _cfg()
+    prepared = prepare_rolling_backtest(
+        cfg,
+        fetcher,
+        start_date=_INDEX[0].date(),
+        end_date=_INDEX[-1].date(),
+    )
+    changed = cfg.model_copy(update={"hold": 8, "top": 3, "initial_capital": 125_000.0})
+
+    reused = run_prepared_rolling_backtest(prepared, changed)
+    fresh = run_rolling_backtest(
+        changed,
+        StubPriceFetcher(_DATA),
+        start_date=_INDEX[0].date(),
+        end_date=_INDEX[-1].date(),
+    )
+
+    assert reused.trades == fresh.trades
+    pd.testing.assert_series_equal(reused.equity_curve, fresh.equity_curve)
+    assert reused.metrics == fresh.metrics
+    pd.testing.assert_frame_equal(reused.selection, fresh.selection)
+
+
+def test_prepared_backtest_rejects_signal_changes():
+    cfg = _cfg()
+    prepared = prepare_rolling_backtest(
+        cfg,
+        StubPriceFetcher(_DATA),
+        start_date=_INDEX[0].date(),
+        end_date=_INDEX[-1].date(),
+    )
+    changed = cfg.model_copy(update={"entry_expr": "close > sma(close, 10)"})
+
+    with pytest.raises(ValueError, match="prepared-data fields"):
+        run_prepared_rolling_backtest(prepared, changed)

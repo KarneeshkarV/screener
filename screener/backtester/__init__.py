@@ -19,6 +19,7 @@ from screener.backtester.models import (
 
 if TYPE_CHECKING:
     from screener.backtester.data import PriceFetcher
+    from screener.backtester.rolling_simulation import PreparedRollingBacktest
 
 
 def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
@@ -39,11 +40,38 @@ def run_rolling_backtest(
     return run(cfg, fetcher, start_date=start_date, end_date=end_date)
 
 
+def prepare_rolling_backtest(
+    cfg: BacktestConfig,
+    fetcher: PriceFetcher,
+    *,
+    start_date: date,
+    end_date: date,
+) -> PreparedRollingBacktest:
+    from screener.backtester.rolling_simulation import (
+        prepare_rolling_backtest as prepare,
+    )
+
+    return prepare(cfg, fetcher, start_date=start_date, end_date=end_date)
+
+
+def run_prepared_rolling_backtest(
+    prepared: PreparedRollingBacktest,
+    cfg: BacktestConfig,
+) -> BacktestResult:
+    from screener.backtester.rolling_simulation import (
+        run_prepared_rolling_backtest as run,
+    )
+
+    return run(prepared, cfg)
+
+
 __all__ = [
     "BacktestConfig",
     "BacktestResult",
     "Position",
     "Trade",
     "run_backtest",
+    "prepare_rolling_backtest",
+    "run_prepared_rolling_backtest",
     "run_rolling_backtest",
 ]

@@ -178,7 +178,11 @@ class _RunCaches:
         return cached
 
     def prewarm_exit_signals(
-        self, bars_by_ticker: dict[str, pd.DataFrame], exit_ast
+        self,
+        bars_by_ticker: dict[str, pd.DataFrame],
+        exit_ast,
+        *,
+        evaluated: dict[str, pd.Series | PineError] | None = None,
     ) -> None:
         """Fill ``exit_signals`` for every ticker in one panel pass.
 
@@ -193,7 +197,12 @@ class _RunCaches:
         """
         if exit_ast is None:
             return
-        for ticker, result in evaluate_panel(exit_ast, bars_by_ticker).items():
+        results = (
+            evaluated
+            if evaluated is not None
+            else evaluate_panel(exit_ast, bars_by_ticker)
+        )
+        for ticker, result in results.items():
             if ticker in self.exit_signals:
                 continue
             if isinstance(result, PineError):
@@ -844,13 +853,19 @@ def _precompute_entry_signals(
     bars_by_ticker: dict[str, pd.DataFrame],
     entry_ast,
     warnings: list[str],
+    *,
+    evaluated: dict[str, pd.Series | PineError] | None = None,
 ) -> dict[str, pd.Series]:
-    evaluated = evaluate_panel(entry_ast, bars_by_ticker)
+    results = (
+        evaluated
+        if evaluated is not None
+        else evaluate_panel(entry_ast, bars_by_ticker)
+    )
     signals: dict[str, pd.Series] = {}
     # Iterate the input order, not the panel's grouping order, so signal and
     # warning ordering stays byte-identical to the per-ticker loop.
     for ticker in bars_by_ticker:
-        result = evaluated.get(ticker)
+        result = results.get(ticker)
         if result is None:
             continue
         if isinstance(result, PineError):
@@ -976,17 +991,17 @@ def _close_slot_at_day(
         return False
     _maybe_credit_dividends(portfolio, state, bars, i, cfg)
     _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio, fill_model)
-    if portfolio.get_position(state.ticker) is None:
+    position = portfolio.get_position(state.ticker)
+    if position is None:
         slot_states[slot_id] = None
         return True
-    position = portfolio.get_position(state.ticker)
     exit_ = _check_exit_at_bar(
         state,
         bars,
         i,
         cfg,
         fill_model,
-        shares=position.shares if position is not None else 0.0,
+        shares=position.shares,
     )
     if exit_ is None:
         return False

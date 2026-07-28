@@ -485,43 +485,89 @@ def _series_from_name(name: str, bars: pd.DataFrame | PanelBars) -> Vector:
     raise PineNameError(f"Unknown identifier: {name!r}")
 
 
-def _eval(node: Node, bars: pd.DataFrame | PanelBars):
+def _node_key(node: Node) -> tuple:
+    """Return a location-independent structural key for an expression node.
+
+    Parser column offsets are deliberately excluded: two identical subexpressions
+    at different source locations have identical evaluation semantics and should
+    share their computed vector.
+    """
+    if isinstance(node, Num):
+        return ("num", float(node.value))
+    if isinstance(node, Name):
+        return ("name", node.name)
+    if isinstance(node, UnaryOp):
+        return ("unary", node.op, _node_key(node.operand))
+    if isinstance(node, Not):
+        return ("not", _node_key(node.operand))
+    if isinstance(node, BinOp):
+        return ("bin", node.op, _node_key(node.left), _node_key(node.right))
+    if isinstance(node, Compare):
+        return ("compare", node.op, _node_key(node.left), _node_key(node.right))
+    if isinstance(node, BoolOp):
+        return ("bool", node.op, _node_key(node.left), _node_key(node.right))
+    if isinstance(node, Call):
+        return ("call", node.name, tuple(_node_key(arg) for arg in node.args))
+    raise PineSyntaxError(  # pragma: no cover - all Node variants handled above
+        f"Unknown AST node: {type(node).__name__}"
+    )
+
+
+def _eval(
+    node: Node,
+    bars: pd.DataFrame | PanelBars,
+    cache: dict[tuple, object] | None = None,
+):
     """Walk the AST once against ``bars``.
 
     ``bars`` is either a single ticker's OHLCV frame (intermediates are Series)
     or a :class:`PanelBars` (intermediates are column-per-ticker DataFrames).
     The operators below are column-wise on DataFrames, so the panel case walks
     the identical code and pays one pandas call per node for *all* tickers.
+
+    Structurally identical subexpressions share their vector within one
+    evaluation. This matters for strategy expressions such as Minervini's,
+    where the same SMA is referenced several times.
     """
+    if cache is None:
+        cache = {}
+    key = _node_key(node)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
+    result: object
     if isinstance(node, Num):
-        return float(node.value)
-    if isinstance(node, Name):
-        return _series_from_name(node.name, bars)
-    if isinstance(node, UnaryOp):
-        val = _eval(node.operand, bars)
+        result = float(node.value)
+    elif isinstance(node, Name):
+        result = _series_from_name(node.name, bars)
+    elif isinstance(node, UnaryOp):
+        val = _eval(node.operand, bars, cache)
         if node.op == "-":
-            return -val
-        return val
-    if isinstance(node, Not):
-        val = _broadcast(_eval(node.operand, bars), bars).astype(bool)
-        return ~val
-    if isinstance(node, BinOp):
-        left = _eval(node.left, bars)
-        right = _eval(node.right, bars)
+            result = -val
+        else:
+            result = val
+    elif isinstance(node, Not):
+        val = _broadcast(_eval(node.operand, bars, cache), bars).astype(bool)
+        result = ~val
+    elif isinstance(node, BinOp):
+        left = _eval(node.left, bars, cache)
+        right = _eval(node.right, bars, cache)
         if node.op == "+":
-            return left + right
-        if node.op == "-":
-            return left - right
-        if node.op == "*":
-            return left * right
-        if node.op == "/":
-            return left / right
-        raise PineSyntaxError(  # pragma: no cover - op is a validated Literal
-            f"Unknown operator: {node.op!r}"
-        )
-    if isinstance(node, Compare):
-        left = _eval(node.left, bars)
-        right = _eval(node.right, bars)
+            result = left + right
+        elif node.op == "-":
+            result = left - right
+        elif node.op == "*":
+            result = left * right
+        elif node.op == "/":
+            result = left / right
+        else:
+            raise PineSyntaxError(  # pragma: no cover - op is a validated Literal
+                f"Unknown operator: {node.op!r}"
+            )
+    elif isinstance(node, Compare):
+        left = _eval(node.left, bars, cache)
+        right = _eval(node.right, bars, cache)
         ops = {
             ">": lambda a, b: a > b,
             ">=": lambda a, b: a >= b,
@@ -532,22 +578,31 @@ def _eval(node: Node, bars: pd.DataFrame | PanelBars):
         }
         out = ops[node.op](left, right)
         if isinstance(out, (pd.Series, pd.DataFrame)):
-            return out.fillna(False)
-        return bool(out)
-    if isinstance(node, BoolOp):
-        left = _broadcast(_eval(node.left, bars), bars).astype(bool)
-        right = _broadcast(_eval(node.right, bars), bars).astype(bool)
+            result = out.fillna(False)
+        else:
+            result = bool(out)
+    elif isinstance(node, BoolOp):
+        left = _broadcast(_eval(node.left, bars, cache), bars).astype(bool)
+        right = _broadcast(_eval(node.right, bars, cache), bars).astype(bool)
         if node.op == "and":
-            return left & right
-        return left | right
-    if isinstance(node, Call):
-        return _eval_call(node, bars)
-    raise PineSyntaxError(  # pragma: no cover - all Node variants handled above
-        f"Unknown AST node: {type(node).__name__}"
-    )
+            result = left & right
+        else:
+            result = left | right
+    elif isinstance(node, Call):
+        result = _eval_call(node, bars, cache)
+    else:
+        raise PineSyntaxError(  # pragma: no cover - all Node variants handled above
+            f"Unknown AST node: {type(node).__name__}"
+        )
+    cache[key] = result
+    return result
 
 
-def _eval_call(node: Call, bars: pd.DataFrame | PanelBars):
+def _eval_call(
+    node: Call,
+    bars: pd.DataFrame | PanelBars,
+    cache: dict[tuple, object],
+):
     name = node.name
     if name not in FUNC_NAMES:
         raise PineNameError(f"Unknown function: {name!r} at column {node.col}")
@@ -556,7 +611,7 @@ def _eval_call(node: Call, bars: pd.DataFrame | PanelBars):
             raise PineSyntaxError(
                 f"{name}() takes 2 arguments (source, length), got {len(node.args)}"
             )
-        source_val = _broadcast(_eval(node.args[0], bars), bars)
+        source_val = _broadcast(_eval(node.args[0], bars, cache), bars)
         length = _require_int_literal(node.args[1], name, "length")
         if name == "sma":
             return source_val.rolling(length, min_periods=length).mean()
@@ -578,8 +633,8 @@ def _eval_call(node: Call, bars: pd.DataFrame | PanelBars):
     if name in {"crossover", "crossunder"}:
         if len(node.args) != 2:
             raise PineSyntaxError(f"{name}() takes 2 arguments, got {len(node.args)}")
-        a = _broadcast(_eval(node.args[0], bars), bars)
-        b = _broadcast(_eval(node.args[1], bars), bars)
+        a = _broadcast(_eval(node.args[0], bars, cache), bars)
+        b = _broadcast(_eval(node.args[1], bars, cache), bars)
         return _crossover(a, b) if name == "crossover" else _crossunder(a, b)
     raise PineNameError(  # pragma: no cover - name already validated in FUNC_NAMES
         f"Unknown function: {name!r}"
@@ -602,6 +657,25 @@ def evaluate(node: Node, bars: pd.DataFrame) -> pd.Series:
     if isinstance(result, pd.Series):
         return result
     return _as_series(result, bars.index)
+
+
+def evaluate_many(nodes: Iterable[Node], bars: pd.DataFrame) -> list[pd.Series]:
+    """Evaluate several expressions against one frame with a shared AST cache."""
+    nodes = list(nodes)
+    if bars.empty:
+        return [pd.Series(dtype=float) for _node in nodes]
+    required = {"open", "high", "low", "close", "volume"}
+    missing = required - set(bars.columns)
+    if missing:
+        raise PineError(f"bars DataFrame missing columns: {sorted(missing)}")
+    cache: dict[tuple, object] = {}
+    out: list[pd.Series] = []
+    for node in nodes:
+        result = _eval(node, bars, cache)
+        out.append(
+            result if isinstance(result, pd.Series) else _as_series(result, bars.index)
+        )
+    return out
 
 
 _REQUIRED_COLUMNS = frozenset({"open", "high", "low", "close", "volume"})
@@ -734,7 +808,25 @@ def evaluate_panel(
     tickers are only stacked when their indexes match exactly, so no value ever
     sees a reindex-padded neighbour.
     """
-    names = _panel_column_names(node)
+    return evaluate_panel_many((node,), bars_by_ticker)[0]
+
+
+def evaluate_panel_many(
+    nodes: Iterable[Node],
+    bars_by_ticker: dict[str, pd.DataFrame],
+) -> list[dict[str, pd.Series | PineError]]:
+    """Evaluate multiple expressions over one set of compatible ticker panels.
+
+    Panel construction and structurally identical subexpressions are shared
+    across the expressions. Results retain the same per-expression/per-ticker
+    error isolation as repeated :func:`evaluate_panel` calls.
+    """
+    nodes = list(nodes)
+    if not nodes:
+        return []
+    names: set[str] = set()
+    for node in nodes:
+        names.update(_panel_column_names(node))
     groups: dict[tuple, list[str]] = {}
     solo: list[str] = []
     for ticker, bars in bars_by_ticker.items():
@@ -746,13 +838,22 @@ def evaluate_panel(
         else:
             groups.setdefault(key, []).append(ticker)
 
-    out: dict[str, pd.Series | PineError] = {}
+    outputs: list[dict[str, pd.Series | PineError]] = [{} for _node in nodes]
 
     def eval_one(ticker: str) -> None:
         try:
-            out[ticker] = evaluate(node, bars_by_ticker[ticker])
-        except PineError as exc:
-            out[ticker] = exc
+            results = evaluate_many(nodes, bars_by_ticker[ticker])
+        except PineError:
+            # Find the exact failing expression/message without hiding results
+            # from independent expressions.
+            for position, node in enumerate(nodes):
+                try:
+                    outputs[position][ticker] = evaluate(node, bars_by_ticker[ticker])
+                except PineError as node_exc:
+                    outputs[position][ticker] = node_exc
+        else:
+            for position, result in enumerate(results):
+                outputs[position][ticker] = result
 
     for ticker in solo:
         eval_one(ticker)
@@ -765,18 +866,32 @@ def evaluate_panel(
         frames = [bars_by_ticker[t] for t in tickers]
         try:
             panel = _build_panel(tickers, frames, names)
-            result = _broadcast(_eval(node, panel), panel)
         except (PineError, TypeError, ValueError):
-            # Panel evaluation is all-or-nothing for the group, but errors are
-            # reported per ticker. Redo the group one at a time so each ticker
-            # gets the exact exception (and message) it would have raised alone.
             for ticker in tickers:
                 eval_one(ticker)
             continue
-        frame = cast(pd.DataFrame, result)
-        for position, ticker in enumerate(tickers):
-            out[ticker] = frame.iloc[:, position].rename(None)
-    return out
+        cache: dict[tuple, object] = {}
+        for node_position, node in enumerate(nodes):
+            try:
+                result = _broadcast(_eval(node, panel, cache), panel)
+            except (PineError, TypeError, ValueError):
+                # Redo only the failing expression one ticker at a time so its
+                # exact exception is preserved without discarding other panel
+                # results.
+                for ticker in tickers:
+                    try:
+                        outputs[node_position][ticker] = evaluate(
+                            node, bars_by_ticker[ticker]
+                        )
+                    except PineError as exc:
+                        outputs[node_position][ticker] = exc
+                continue
+            frame = cast(pd.DataFrame, result)
+            for ticker_position, ticker in enumerate(tickers):
+                outputs[node_position][ticker] = frame.iloc[:, ticker_position].rename(
+                    None
+                )
+    return outputs
 
 
 def required_lookback(node: Node) -> int:
