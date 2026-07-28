@@ -63,9 +63,25 @@
 <header>
   <div class="back"><a href="index.html">&larr; back</a></div>
   <h1>Rolling backtester &mdash; flamegraph bottleneck &amp; GPU offload analysis</h1>
-  <div class="sub">Rolling engine · 300 synthetic symbols · 3&nbsp;yr / 756 sessions · SMA-crossover, stop&nbsp;0.08, top&nbsp;10 · cProfile <code>rolling.prof</code> · 2026-07-25</div>
+  <div class="sub">Rolling engine · 300 synthetic symbols · 3&nbsp;yr / 756 sessions · SMA-crossover, stop&nbsp;0.08, top&nbsp;10 · cProfile <code>rolling_pre_vectorization.prof</code> · 2026-07-25</div>
 </header>
 <main>
+
+<section style="border:1px solid #f0b429;border-radius:10px;padding:14px 18px;background:rgba(240,180,41,0.08)">
+  <h2 style="margin-top:0">⚠️ Superseded — describes the engine before PRs #114–#117</h2>
+  <p>The central finding below (<strong>F-04</strong>, whole-panel Pine evaluation) has since
+  shipped. Pine evaluation is no longer the top bottleneck: it fell from <strong>32.9% to
+  12.9%</strong> of the profile, and <code>_precompute_filter_signals</code> now leads at 21.4%.
+  End-to-end the engine went <strong>4.14&nbsp;s → 2.40&nbsp;s per run (≈1.73×)</strong> on this
+  harness, with identical output (709 trades).</p>
+  <p>This page is kept as the record of the analysis that motivated that work. The profile it
+  was written against is preserved as <code>rolling_pre_vectorization.prof</code>; the
+  <code>rolling.prof</code> and flamegraphs now served from this directory were regenerated on
+  2026-07-28 and no longer match the numbers below. Note also that this run was taken under
+  heavy CPU contention (§1), so its absolute seconds are inflated and are not comparable to the
+  re-run.</p>
+  <p><a href="../flamegraph_analysis_2026_07_28.md">Read the 2026-07-28 re-run &rarr;</a></p>
+</section>
 
 <section>
   <h2>1 · Environment &amp; method</h2>
