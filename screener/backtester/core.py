@@ -14,7 +14,12 @@ from screener.backtester.costs import corwin_schultz_half_spread
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig, ExitReason, Trade
-from screener.backtester.pine import PineError, evaluate, evaluate_panel
+from screener.backtester.pine import (
+    PineError,
+    evaluate,
+    evaluate_panel,
+    panel_index_key,
+)
 from screener.backtester.portfolio import Portfolio
 from screener.backtester.sessions import is_session_last, market_timezone
 
@@ -868,25 +873,77 @@ def _precompute_filter_signals(
     if cfg.min_price is None and cfg.min_avg_dollar_volume is None:
         return {}
     window = max(int(cfg.avg_dollar_volume_window), 1)
-    out: dict[str, pd.Series] = {}
+
+    # Group tickers whose bar indexes are interchangeable, then run the filter
+    # once per group over a (bars x tickers) block instead of once per ticker.
+    # The arithmetic is identical either way — what this removes is paying
+    # pandas' fixed per-call cost (astype, Series construction, operator
+    # dispatch, rolling setup) once per name. Same trick, and the same grouping
+    # rule, as pine.evaluate_panel.
+    groups: dict[object, list[str]] = {}
+    solo: list[str] = []
     for ticker, bars in bars_by_ticker.items():
         if bars is None or bars.empty:
             continue
-        close = bars["close"].astype(float)
-        passes = pd.Series(True, index=bars.index)
-        if cfg.min_price is not None:
-            passes &= close >= float(cfg.min_price)
-        if cfg.min_avg_dollar_volume is not None:
-            volume = bars["volume"].astype(float)
-            dollar_vol = close * volume
-            adv = dollar_vol.rolling(window=window, min_periods=1).mean()
-            # NaN (or +-inf) ADV must fail the filter.
-            adv_ok = np.isfinite(adv.values) & (
-                adv.values >= float(cfg.min_avg_dollar_volume)
-            )
-            passes &= pd.Series(adv_ok, index=bars.index)
-        out[ticker] = passes.astype(bool)
-    return out
+        key = panel_index_key(bars.index)
+        if key is None:
+            solo.append(ticker)
+            continue
+        groups.setdefault(key, []).append(ticker)
+
+    out: dict[str, pd.Series] = {}
+    for tickers in groups.values():
+        out.update(_filter_signals_for_group(tickers, bars_by_ticker, cfg, window))
+    for ticker in solo:
+        out[ticker] = _filter_signals_for_group([ticker], bars_by_ticker, cfg, window)[
+            ticker
+        ]
+    # Restore insertion order: callers build DataFrames straight from this dict,
+    # and grouping visits tickers out of order.
+    return {t: out[t] for t in bars_by_ticker if t in out}
+
+
+def _filter_signals_for_group(
+    tickers: list[str],
+    bars_by_ticker: dict[str, pd.DataFrame],
+    cfg: BacktestConfig,
+    window: int,
+) -> dict[str, pd.Series]:
+    """Evaluate the price/ADV filters for one index-compatible group of tickers."""
+    frames = [bars_by_ticker[t] for t in tickers]
+    index = frames[0].index
+    n_bars, n_tickers = len(index), len(tickers)
+
+    # ``astype(float)`` rather than ``to_numpy(dtype=float)``: it is the exact
+    # expression the per-ticker path used, and it yields a private copy, so the
+    # block can never alias a caller's frame.
+    close_block = np.empty((n_bars, n_tickers), dtype=float)
+    for position, frame in enumerate(frames):
+        close_block[:, position] = frame["close"].astype(float).to_numpy()
+
+    passes = np.ones((n_bars, n_tickers), dtype=bool)
+    if cfg.min_price is not None:
+        passes &= close_block >= float(cfg.min_price)
+    if cfg.min_avg_dollar_volume is not None:
+        dollar_vol = np.empty((n_bars, n_tickers), dtype=float)
+        for position, frame in enumerate(frames):
+            dollar_vol[:, position] = frame["volume"].astype(float).to_numpy()
+        dollar_vol *= close_block
+        # One columnwise rolling pass for the whole group; pandas applies it
+        # per column, so each ticker sees exactly its own Series' result.
+        adv = (
+            pd.DataFrame(dollar_vol, index=index, columns=tickers, copy=False)
+            .rolling(window=window, min_periods=1)
+            .mean()
+            .to_numpy()
+        )
+        # NaN (or +-inf) ADV must fail the filter.
+        passes &= np.isfinite(adv) & (adv >= float(cfg.min_avg_dollar_volume))
+
+    return {
+        ticker: pd.Series(passes[:, position], index=index)
+        for position, ticker in enumerate(tickers)
+    }
 
 
 def _close_slot_at_day(
