@@ -19,6 +19,7 @@ from screener.backtester.pine import (
     _panel_column_names,
     evaluate,
     evaluate_panel,
+    evaluate_panel_many,
     parse,
 )
 
@@ -103,6 +104,26 @@ def test_panel_matches_per_ticker_for_ragged_bars(expr):
         ),
     }
     _assert_matches_per_ticker(expr, bars_by_ticker)
+
+
+def test_panel_many_matches_repeated_panel_evaluation():
+    bars_by_ticker = {f"T{i}": _bars(seed=i) for i in range(6)}
+    nodes = [
+        parse("close > sma(close, 5)"),
+        parse("crossunder(close, sma(close, 5))"),
+    ]
+
+    together = evaluate_panel_many(nodes, bars_by_ticker)
+
+    assert len(together) == len(nodes)
+    for position, node in enumerate(nodes):
+        separate = evaluate_panel(node, bars_by_ticker)
+        assert list(together[position]) == list(separate)
+        for ticker, expected in separate.items():
+            actual = together[position][ticker]
+            assert not isinstance(actual, PineError)
+            assert not isinstance(expected, PineError)
+            pd.testing.assert_series_equal(actual, expected)
 
 
 def test_ragged_ticker_is_not_contaminated_by_its_neighbours():

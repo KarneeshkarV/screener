@@ -15,7 +15,12 @@ from pydantic import BaseModel, ConfigDict
 
 from screener.backtester.data import PriceFetcher
 from screener.backtester.historical import run_backtest
-from screener.backtester.rolling_simulation import run_rolling_backtest
+from screener.backtester.rolling_simulation import (
+    PreparedRollingBacktest,
+    prepare_rolling_backtest,
+    run_prepared_rolling_backtest,
+    run_rolling_backtest,
+)
 from screener.backtester.models import BacktestConfig
 from screener.backtester.optimization.metrics import optimization_metrics, score_result
 
@@ -156,6 +161,26 @@ def _run_one(
     )
 
 
+def _run_one_prepared(
+    cfg: BacktestConfig,
+    params: dict[str, Any],
+    prepared: PreparedRollingBacktest,
+    metric: str,
+    min_trades: int,
+) -> GridSearchResult:
+    test_cfg = cfg.model_copy(update=params)
+    result = run_prepared_rolling_backtest(prepared, test_cfg)
+    metrics = optimization_metrics(result)
+    trade_count = len(result.trades)
+    score = score_result(result, metric) if trade_count >= min_trades else float("-inf")
+    return GridSearchResult(
+        params=params,
+        score=score,
+        metrics=metrics,
+        trade_count=trade_count,
+    )
+
+
 def _run_one_safe(args: tuple[Any, ...]) -> GridSearchResult:
     cfg, params, fetcher, runner, start_date, end_date, metric, min_trades = args
     try:
@@ -172,6 +197,81 @@ def _run_one_safe(args: tuple[Any, ...]) -> GridSearchResult:
             trade_count=0,
             error=str(exc),
         )
+
+
+def _run_chunk_safe(args: tuple[Any, ...]) -> list[GridSearchResult]:
+    """Run a worker-sized parameter chunk, preparing rolling data only once."""
+    (
+        cfg,
+        params_chunk,
+        fetcher,
+        runner,
+        start_date,
+        end_date,
+        metric,
+        min_trades,
+    ) = args
+    prepared: PreparedRollingBacktest | None = None
+    if runner == "rolling" and params_chunk:
+        if start_date is None or end_date is None:
+            return [
+                GridSearchResult(
+                    params=params,
+                    score=float("-inf"),
+                    metrics={},
+                    trade_count=0,
+                    error="rolling grid search requires start_date and end_date",
+                )
+                for params in params_chunk
+            ]
+        try:
+            prepared = prepare_rolling_backtest(
+                cfg.model_copy(update=params_chunk[0]),
+                fetcher,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except KeyboardInterrupt:
+            raise
+        except Exception:  # noqa: BLE001 - individual runs preserve error details
+            prepared = None
+
+    results: list[GridSearchResult] = []
+    for params in params_chunk:
+        test_cfg = cfg.model_copy(update=params)
+        if prepared is not None and prepared.supports(test_cfg):
+            try:
+                results.append(
+                    _run_one_prepared(cfg, params, prepared, metric, min_trades)
+                )
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 - preserve grid result contract
+                results.append(
+                    GridSearchResult(
+                        params=params,
+                        score=float("-inf"),
+                        metrics={},
+                        trade_count=0,
+                        error=str(exc),
+                    )
+                )
+        else:
+            results.append(
+                _run_one_safe(
+                    (
+                        cfg,
+                        params,
+                        fetcher,
+                        runner,
+                        start_date,
+                        end_date,
+                        metric,
+                        min_trades,
+                    )
+                )
+            )
+    return results
 
 
 def _from_cache(record: dict[str, Any]) -> GridSearchResult:
@@ -227,24 +327,78 @@ def grid_search(
     try:
         if args and (max_workers or 1) != 1:
             with ProcessPoolExecutor(max_workers=max_workers) as pool:
-                futures = {pool.submit(_run_one_safe, arg): arg[1] for arg in args}
+                worker_count = min(int(max_workers or 1), len(pending))
+                chunks = [pending[i::worker_count] for i in range(worker_count)]
+                futures = {
+                    pool.submit(
+                        _run_chunk_safe,
+                        (
+                            cfg,
+                            chunk,
+                            fetcher,
+                            runner,
+                            start_date,
+                            end_date,
+                            metric,
+                            min_trades,
+                        ),
+                    ): chunk
+                    for chunk in chunks
+                    if chunk
+                }
                 for future in as_completed(futures):
-                    result = future.result()
-                    results.append(result)
-                    key = _cache_key(
-                        cfg,
-                        result.params,
-                        runner=runner,
+                    for result in future.result():
+                        results.append(result)
+                        key = _cache_key(
+                            cfg,
+                            result.params,
+                            runner=runner,
+                            start_date=start_date,
+                            end_date=end_date,
+                            metric=metric,
+                            min_trades=min_trades,
+                        )
+                        cache[key] = result.model_dump()
+                        _save_cache(cache_file, cache)
+        else:
+            prepared: PreparedRollingBacktest | None = None
+            if args and runner == "rolling":
+                if start_date is None or end_date is None:
+                    raise ValueError(
+                        "rolling grid search requires start_date and end_date"
+                    )
+                first_cfg = cfg.model_copy(update=pending[0])
+                try:
+                    prepared = prepare_rolling_backtest(
+                        first_cfg,
+                        fetcher,
                         start_date=start_date,
                         end_date=end_date,
-                        metric=metric,
-                        min_trades=min_trades,
                     )
-                    cache[key] = result.model_dump()
-                    _save_cache(cache_file, cache)
-        else:
+                except KeyboardInterrupt:
+                    raise
+                except Exception:  # noqa: BLE001 - per-run fallback preserves errors
+                    prepared = None
             for arg in args:
-                result = _run_one_safe(arg)
+                params = arg[1]
+                test_cfg = cfg.model_copy(update=params)
+                if prepared is not None and prepared.supports(test_cfg):
+                    try:
+                        result = _run_one_prepared(
+                            cfg, params, prepared, metric, min_trades
+                        )
+                    except KeyboardInterrupt:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - preserve grid result contract
+                        result = GridSearchResult(
+                            params=params,
+                            score=float("-inf"),
+                            metrics={},
+                            trade_count=0,
+                            error=str(exc),
+                        )
+                else:
+                    result = _run_one_safe(arg)
                 results.append(result)
                 key = _cache_key(
                     cfg,

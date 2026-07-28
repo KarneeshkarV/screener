@@ -174,6 +174,35 @@ def test_grid_cache_key_includes_slippage_model():
     assert base_key != half_spread_key
 
 
+def test_rolling_grid_reuses_prepared_data_for_runtime_parameters():
+    class CountingFetcher(StubPriceFetcher):
+        def __init__(self, data):
+            super().__init__(data)
+            self.calls = 0
+
+        def fetch(self, tickers, start, end):
+            self.calls += 1
+            return super().fetch(tickers, start, end)
+
+    bars = make_bars(n=80, drift=0.4)
+    fetcher = CountingFetcher({"AAA": bars, "SPY": bars})
+    cfg = _config(tickers=("AAA",), min_price=None, min_avg_dollar_volume=None)
+
+    results = grid_search(
+        cfg,
+        fetcher,
+        {"hold": [3, 5, 8], "top": [1, 2]},
+        runner="rolling",
+        start_date=bars.index[0].date(),
+        end_date=bars.index[-1].date(),
+        top_n=6,
+        max_workers=1,
+    )
+
+    assert len(results) == 6
+    assert fetcher.calls == 1
+
+
 def test_optimization_metrics_preserve_canonical_values():
     equity = pd.Series([100.0, 110.0, 105.0, 120.0])
     trades = [_trade(10.0, 0.10), _trade(-5.0, -0.05)]

@@ -201,17 +201,23 @@ def _build_rolling_candidate_matrices(
     else:
         filter_mat = None
 
-    bar_cols: dict[str, np.ndarray] = {}
-    lookback_cols: dict[str, np.ndarray] = {}
-    close_cols: dict[str, np.ndarray] = {}
-    volume_cols: dict[str, np.ndarray] = {}
+    n_days = len(master_ix)
+    n_tickers = len(valid_tickers)
+    bar_idx_np = np.empty((n_days, n_tickers), dtype=np.int64)
+    lookback_ok_np = np.empty((n_days, n_tickers), dtype=bool)
+    close_np = np.empty((n_days, n_tickers), dtype=float)
+    volume_np = np.empty((n_days, n_tickers), dtype=float)
     # Cross-sectional factor scores (as-of the signal bar), only populated for
     # tickers whose prepared bars carry a ``rank_score`` column.
-    score_cols: dict[str, np.ndarray] = {}
-    dynamic_score_cols: dict[str, np.ndarray] = {}
+    rank_score_np = np.full((n_days, n_tickers), np.nan, dtype=float)
+    dynamic_score_np = (
+        np.full((n_days, n_tickers), np.nan, dtype=float)
+        if dynamic_universe_size is not None
+        else None
+    )
     any_score = False
     missing_score: list[str] = []
-    for tv in valid_tickers:
+    for column, tv in enumerate(valid_tickers):
         bars = bars_by_tv[tv]
         close = bars["close"].astype(float).to_numpy()
         volume = bars["volume"].astype(float).to_numpy()
@@ -219,10 +225,12 @@ def _build_rolling_candidate_matrices(
         pos = np.where(pos < 0, -1, pos)
         n = len(bars)
         has_bar = pos >= 0
-        bar_cols[tv] = pos
-        lookback_cols[tv] = (pos + 1 >= lookback_required + 1) & (pos + 1 < n) & has_bar
-        close_cols[tv] = np.where(has_bar, close[pos], np.nan)
-        volume_cols[tv] = np.where(has_bar, volume[pos], np.nan)
+        bar_idx_np[:, column] = pos
+        lookback_ok_np[:, column] = (
+            (pos + 1 >= lookback_required + 1) & (pos + 1 < n) & has_bar
+        )
+        close_np[:, column] = np.where(has_bar, close[pos], np.nan)
+        volume_np[:, column] = np.where(has_bar, volume[pos], np.nan)
         if dynamic_universe_size is not None:
             lagged_adv = (
                 (bars["close"].astype(float) * bars["volume"].astype(float))
@@ -233,14 +241,14 @@ def _build_rolling_candidate_matrices(
                 .mean()
                 .to_numpy()
             )
-            dynamic_score_cols[tv] = np.where(has_bar, lagged_adv[pos], np.nan)
+            assert dynamic_score_np is not None
+            dynamic_score_np[:, column] = np.where(has_bar, lagged_adv[pos], np.nan)
         if "rank_score" in bars.columns:
             any_score = True
             score = bars["rank_score"].astype(float).to_numpy()
-            score_cols[tv] = np.where(has_bar, score[pos], np.nan)
+            rank_score_np[:, column] = np.where(has_bar, score[pos], np.nan)
         else:
             missing_score.append(tv)
-            score_cols[tv] = np.full(len(master_ix), np.nan)
 
     # Mixed universe: a factor strategy is ranking by ``rank_score`` but some
     # tickers never received the column (e.g. a partial/heterogeneous prepare).
@@ -255,19 +263,37 @@ def _build_rolling_candidate_matrices(
             )
         )
 
-    bar_idx_mat = pd.DataFrame(bar_cols, index=master_ix)
-    lookback_ok_mat = pd.DataFrame(lookback_cols, index=master_ix).astype(bool)
-    close_mat = pd.DataFrame(close_cols, index=master_ix)
-    volume_mat = pd.DataFrame(volume_cols, index=master_ix)
-    dollar_vol_mat = close_mat * volume_mat
+    bar_idx_mat = pd.DataFrame(
+        bar_idx_np, index=master_ix, columns=valid_tickers, copy=False
+    )
+    lookback_ok_mat = pd.DataFrame(
+        lookback_ok_np, index=master_ix, columns=valid_tickers, copy=False
+    )
+    close_mat = pd.DataFrame(
+        close_np, index=master_ix, columns=valid_tickers, copy=False
+    )
+    volume_mat = pd.DataFrame(
+        volume_np, index=master_ix, columns=valid_tickers, copy=False
+    )
+    dollar_vol_np = close_np * volume_np
+    dollar_vol_mat = pd.DataFrame(
+        dollar_vol_np, index=master_ix, columns=valid_tickers, copy=False
+    )
     if dynamic_universe_size is not None:
-        dynamic_score_mat = pd.DataFrame(dynamic_score_cols, index=master_ix)
+        assert dynamic_score_np is not None
+        dynamic_score_mat = pd.DataFrame(
+            dynamic_score_np, index=master_ix, columns=valid_tickers, copy=False
+        )
         signal_mat &= _dynamic_eligibility_mask(
             dynamic_score_mat,
             size=dynamic_universe_size,
             rebalance=dynamic_universe_rebalance,
         )
-    rank_score_mat = pd.DataFrame(score_cols, index=master_ix) if any_score else None
+    rank_score_mat = (
+        pd.DataFrame(rank_score_np, index=master_ix, columns=valid_tickers, copy=False)
+        if any_score
+        else None
+    )
     # Sector neutralization is a no-op when ranking is inactive (no rank_score)
     # or the flag is off. When active, z-score within each sector per day.
     if sector_neutral and rank_score_mat is not None:
@@ -286,6 +312,11 @@ def _build_rolling_candidate_matrices(
                 )
             )
         rank_score_mat = _sector_neutralize_scores(rank_score_mat, sector_map)
+    final_rank_score_np = (
+        rank_score_mat.to_numpy()
+        if sector_neutral and rank_score_mat is not None
+        else (rank_score_np if rank_score_mat is not None else None)
+    )
     return _RollingCandidateMatrices(
         signal_mat=signal_mat,
         lookback_ok_mat=lookback_ok_mat,
@@ -299,13 +330,13 @@ def _build_rolling_candidate_matrices(
         row_by_day={ts: i for i, ts in enumerate(master_ix)},
         col_by_ticker={tv: j for j, tv in enumerate(valid_tickers)},
         signal_np=signal_mat.to_numpy(),
-        lookback_ok_np=lookback_ok_mat.to_numpy(),
+        lookback_ok_np=lookback_ok_np,
         filter_np=filter_mat.to_numpy() if filter_mat is not None else None,
-        dollar_vol_np=dollar_vol_mat.to_numpy(),
-        close_np=close_mat.to_numpy(),
-        volume_np=volume_mat.to_numpy(),
-        bar_idx_np=bar_idx_mat.to_numpy(),
-        rank_score_np=rank_score_mat.to_numpy() if rank_score_mat is not None else None,
+        dollar_vol_np=dollar_vol_np,
+        close_np=close_np,
+        volume_np=volume_np,
+        bar_idx_np=bar_idx_np,
+        rank_score_np=final_rank_score_np,
     )
 
 

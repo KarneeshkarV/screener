@@ -407,7 +407,16 @@ def build_equity_curve(
             if valid is None or valid.empty:
                 arr = np.full(len(calendar), np.nan)
             else:
-                arr = valid.reindex(calendar, method="ffill").to_numpy(dtype=float)
+                # Equivalent to ``valid.reindex(calendar, method="ffill")``
+                # without constructing a pandas Series and indexer result for
+                # every traded ticker.
+                valid_index = valid.index
+                positions = valid_index.searchsorted(calendar, side="right") - 1
+                arr = np.full(len(calendar), np.nan)
+                has_value = positions >= 0
+                if has_value.any():
+                    values = valid.to_numpy(dtype=float)
+                    arr[has_value] = values[positions[has_value]]
             aligned_close[trade.ticker] = arr
         entry_ts = pd.Timestamp(trade.entry_date)
         exit_ts = pd.Timestamp(trade.exit_date)
@@ -431,6 +440,8 @@ def build_equity_curve(
     cash = float(initial_capital)
     values = np.empty(len(calendar), dtype=float)
     ev_idx = 0
+    dividend_events = sorted(dividend_cash_by_day.items())
+    dividend_idx = 0
 
     for day_idx, day in enumerate(calendar):
         while ev_idx < len(events) and events[ev_idx][0] <= day:
@@ -441,13 +452,15 @@ def build_equity_curve(
                 cash += trade.exit_value
             ev_idx += 1
 
-        if dividend_cash_by_day:
-            # Credit every ex-date dividend whose date has been reached. Using
-            # ``<= day`` rather than an exact match means an ex-date that is not
-            # itself a calendar point (rare: a held lot whose ticker lacks that
-            # bar) is still credited on the next curve point rather than lost.
-            for ex_ts in [d for d in dividend_cash_by_day if d <= day]:
-                cash += dividend_cash_by_day.pop(ex_ts)
+        # Credit every ex-date dividend whose date has been reached. A sorted
+        # cursor avoids scanning all remaining dividend dates on every calendar
+        # row while preserving the "credit on the next curve point" behaviour.
+        while (
+            dividend_idx < len(dividend_events)
+            and dividend_events[dividend_idx][0] <= day
+        ):
+            cash += dividend_events[dividend_idx][1]
+            dividend_idx += 1
 
         values[day_idx] = cash + mtm[day_idx]
     return pd.Series(values, index=calendar, dtype=float)
