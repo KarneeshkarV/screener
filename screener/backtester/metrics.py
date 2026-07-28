@@ -346,6 +346,8 @@ def compute_metrics(
     bench_daily = (
         _daily_returns(benchmark) if not benchmark.empty else pd.Series(dtype=float)
     )
+    starting_equity = float(equity.iloc[0]) if not equity.empty else 0.0
+    final_equity = float(equity.iloc[-1]) if not equity.empty else 0.0
     total_return = (
         float(equity.iloc[-1] / equity.iloc[0] - 1.0)
         if len(equity) >= 2 and equity.iloc[0] > 0
@@ -361,6 +363,8 @@ def compute_metrics(
         else 0.0
     )
     metrics = {
+        "starting_equity": starting_equity,
+        "final_equity": final_equity,
         "total_return": total_return,
         "cagr": _cagr(equity, periods_per_year),
         "vol_annual": _vol_annual(daily, periods_per_year),

@@ -15,6 +15,8 @@ console = Console()
 
 
 _METRIC_LABELS = {
+    "starting_equity": "Starting Capital",
+    "final_equity": "Final Equity",
     "total_return": "Total Return",
     "invested_return": "Invested Return",
     "cagr": "CAGR",
@@ -56,11 +58,16 @@ _PCT_METRICS = {
 }
 
 
+_MONEY_METRICS = {"starting_equity", "final_equity"}
+
+
 _REGIME_LABELS = ("bull", "pullback", "bear", "unknown")
 
 
 def _format_metric(key: str, value) -> str:
     if isinstance(value, float):
+        if key in _MONEY_METRICS:
+            return f"{value:,.2f}"
         if key in _PCT_METRICS:
             return fmt_pct(value * 100)
         return f"{value:+.3f}"

@@ -70,6 +70,8 @@ def print_grid_table(
         "Rank",
         "Score",
         "Trades",
+        "Total Return",
+        "CAGR",
         "Sharpe",
         "Profit Factor",
         "Max DD",
@@ -81,6 +83,8 @@ def print_grid_table(
             str(rank),
             f"{result.score:.4f}",
             str(result.trade_count),
+            f"{float(result.metrics.get('total_return', 0.0)) * 100:+.2f}%",
+            f"{float(result.metrics.get('cagr', 0.0)) * 100:+.2f}%",
             f"{float(result.metrics.get('sharpe', 0.0)):.3f}",
             f"{float(result.metrics.get('profit_factor', 0.0)):.3f}",
             f"{float(result.metrics.get('max_drawdown', 0.0)) * 100:.2f}%",
@@ -100,7 +104,15 @@ def print_walk_forward_table(
 ) -> None:
     console = console or Console()
     table = Table(title="Walk-Forward Results", show_header=True, header_style="bold")
-    for col in ["Window", "Train Score", "Test Sharpe", "Test Trades", "Params"]:
+    for col in [
+        "Window",
+        "Train Score",
+        "Test Return",
+        "Test CAGR",
+        "Test Sharpe",
+        "Test Trades",
+        "Params",
+    ]:
         table.add_column(
             col, justify="right" if col != "Params" and col != "Window" else "left"
         )
@@ -109,6 +121,8 @@ def print_walk_forward_table(
         table.add_row(
             f"{w.train_start}..{w.test_end}",
             f"{result.best_train.score:.4f}",
+            f"{float(result.test_metrics.get('total_return', 0.0)) * 100:+.2f}%",
+            f"{float(result.test_metrics.get('cagr', 0.0)) * 100:+.2f}%",
             f"{float(result.test_metrics.get('sharpe', 0.0)):.3f}",
             str(result.test_trade_count),
             json.dumps(result.best_train.params, sort_keys=True),
@@ -163,6 +177,12 @@ def _fmt(value: Any, digits: int = 4) -> str:
             return "nan"
         return f"{value:.{digits}f}"
     return str(value)
+
+
+def _fmt_pct(value: Any) -> str:
+    if not isinstance(value, (int, float)) or value != value:
+        return "—"
+    return f"{float(value) * 100:+.2f}%"
 
 
 def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> None:
@@ -222,6 +242,8 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
                 rank,
                 _fmt(result.get("score")),
                 result.get("trade_count"),
+                _fmt_pct(metrics.get("total_return")),
+                _fmt_pct(metrics.get("cagr")),
                 _fmt(metrics.get("sharpe"), 3),
                 _fmt(metrics.get("profit_factor"), 3),
                 _fmt(
@@ -237,7 +259,17 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
             ]
         )
     grid_table = _html_table(
-        ["Rank", "Score", "Trades", "Sharpe", "Profit Factor", "Max DD", "Params"],
+        [
+            "Rank",
+            "Score",
+            "Trades",
+            "Total Return",
+            "CAGR",
+            "Sharpe",
+            "Profit Factor",
+            "Max DD",
+            "Params",
+        ],
         grid_rows,
     )
 
@@ -280,6 +312,8 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
                 f"{window.get('train_start')}..{window.get('test_end')}",
                 _fmt(best_train.get("score")),
                 _fmt(test_metrics.get(metric), 3),
+                _fmt_pct(test_metrics.get("total_return")),
+                _fmt_pct(test_metrics.get("cagr")),
                 _fmt(test_metrics.get("sharpe"), 3),
                 item.get("test_trade_count"),
                 json.dumps(best_train.get("params") or {}, sort_keys=True),
@@ -290,6 +324,8 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
             "Window",
             "Train score",
             f"Test {metric}",
+            "Test return",
+            "Test CAGR",
             "Test Sharpe",
             "Test trades",
             "Params",
