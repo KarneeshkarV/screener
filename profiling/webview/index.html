@@ -27,9 +27,16 @@
 <body>
 <header>
   <h1>Screener backtester — flamegraph &amp; GPU offload analysis</h1>
-  <div class="sub">Rolling engine · 300 synthetic symbols · 3yr / 756 sessions · 709 trades · generated 2026-07-25</div>
+  <div class="sub">Rolling engine · 300 synthetic symbols · 3yr / 756 sessions · 709 trades · profile re-run 2026-07-28 (post #114–#117)</div>
 </header>
 <main>
+  <div class="card">
+    <h2>Profile re-run — after the vectorization work</h2>
+    <p>Every artifact on this page was regenerated on <strong>2026-07-28</strong> against <code>main@d2382eb</code>, so it reflects the engine <em>after</em> PRs #114–#117. Interleaved A/B vs. the merge-base: <strong>4.14 s → 2.40 s per run (≈1.73×)</strong>, identical 709 trades. Pine evaluation fell from 32.9% of the profile to 12.9%; <code>_precompute_filter_signals</code> is now the top bottleneck at 21.4%.</p>
+    <a class="btn" href="../flamegraph_analysis_2026_07_28.md">Re-run write-up (2026-07-28) →</a>
+    <a class="btn alt" href="../flamegraph_gpu_analysis_2026_07_25.md">Original, superseded (2026-07-25) →</a>
+  </div>
+
   <div class="card">
     <h2>Hold-time curve sweep (448 backtests)</h2>
     <p>Sharpe / return / drawdown vs. hold cap {5,10,20,30,40,60,100,∞}, US + India, 7 strategies × top{5,10,20,40}. US peaks at ~20d; India lets winners run. Now also charts <strong>repeat-trade churn</strong> — a 5-day cap re-buys the same leaders 5.3× (93% re-entries) vs ~2× at ∞.</p>
@@ -37,9 +44,9 @@
   </div>
 
   <div class="card">
-    <h2>Analysis write-up (Kimi via opencode)</h2>
-    <p id="analysis-status" class="note">Analysis in progress — the Kimi subagent is writing the bottleneck + GPU-offload report. This box updates when it lands.</p>
-    <a class="btn" href="analysis.html">Open analysis →</a>
+    <h2>Analysis write-up</h2>
+    <p>Bottleneck ranking and GPU-offload assessment, rendered. <span class="note">Note: this page renders the 2026-07-25 analysis and is kept for the record — its numbers describe the pre-vectorization engine. The current ranking is in the 2026-07-28 re-run above.</span></p>
+    <a class="btn" href="analysis.html">Open analysis (2026-07-25) →</a>
   </div>
 
   <div class="card">
@@ -50,14 +57,14 @@
 
   <div class="card">
     <h2>Flamegraph — cProfile (deterministic)</h2>
-    <p>Instrumented call-time flamegraph. Bottleneck <em>ranking</em> is reliable even under the concurrent sweep load; absolute times are inflated.</p>
+    <p>Instrumented call-time flamegraph — 4,332,144 calls in 10.839 s instrumented (was 7,171,842 / 16.577 s before the vectorization work). Taken on a near-idle box with BLAS threads pinned to 1, so unlike the 07-25 run the absolute times are not contention-inflated.</p>
     <a class="btn alt" href="flamegraph_cprofile.svg" target="_blank">Full screen ↗</a>
     <iframe src="flamegraph_cprofile.svg" title="cProfile flamegraph"></iframe>
   </div>
 
   <div class="card">
-    <h2>Flamegraph — py-spy (sampling, 6,427 samples @200Hz)</h2>
-    <p>Native sampling profiler — includes C-extension frames the deterministic profiler can't see. Noisier under CPU contention.</p>
+    <h2>Flamegraph — py-spy (sampling, 2,647 samples @250Hz)</h2>
+    <p>Native sampling profiler — includes C-extension frames the deterministic profiler can't see. Fewer samples than the 07-25 run because the run itself is shorter. <span class="note">≈15.8% of samples are <code>importlib</code> process start-up (up from 6.8% — the fixed import cost didn't change, engine time halved around it); discount it when reading shares.</span></p>
     <a class="btn alt" href="flamegraph_pyspy.svg" target="_blank">Full screen ↗</a>
     <iframe src="flamegraph_pyspy.svg" title="py-spy flamegraph"></iframe>
   </div>
@@ -67,7 +74,8 @@
     <ul>
       <li><a href="pstats_tottime.txt">pstats — top 40 by internal time</a></li>
       <li><a href="pstats_cumulative.txt">pstats — top 40 by cumulative time</a></li>
-      <li><a href="rolling.prof">rolling.prof</a> (cProfile binary, open in snakeviz)</li>
+      <li><a href="rolling.prof">rolling.prof</a> (cProfile binary, open in snakeviz) — current, post-#117</li>
+      <li><a href="rolling_pre_vectorization.prof">rolling_pre_vectorization.prof</a> — the merge-base (<code>98f8ea8</code>) profiled under the same conditions, so the before/after delta is reproducible</li>
     </ul>
   </div>
 </main>

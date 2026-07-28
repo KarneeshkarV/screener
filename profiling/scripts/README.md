@@ -38,6 +38,39 @@ python profiling/scripts/gen_repeat_section.py
 The sweeps are race-safe, resumable (skip combos with a valid result row), and cap
 concurrency at 4 with a 900s per-run timeout.
 
+## Reproducing the profiling artifacts
+
+The profile in `../webview/` comes from the offline harness (no network, no parquet),
+not from the sweeps above. Regenerate it with:
+
+```bash
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+H="profiling/harness.py --path rolling --tickers 300 --years 3 --top 10 --repeat 2"
+
+python $H                                                    # wall clock
+python $H --cprofile-out profiling/webview/rolling.prof      # deterministic profile
+py-spy record --rate 250 --format flamegraph \
+  --output profiling/webview/flamegraph_pyspy.svg -- python $H
+flameprof --format=svg profiling/webview/rolling.prof \
+  > profiling/webview/flamegraph_cprofile.svg
+python - <<'PY'
+import pstats
+for sort, out in [("cumulative", "profiling/webview/pstats_cumulative.txt"),
+                  ("tottime",    "profiling/webview/pstats_tottime.txt")]:
+    with open(out, "w") as fh:
+        pstats.Stats("profiling/webview/rolling.prof", stream=fh).sort_stats(sort).print_stats(40)
+PY
+```
+
+Pin the BLAS thread counts and run on an idle box — the 2026-07-25 profile was taken
+while a 448-run sweep was running, which inflated every absolute number in it.
+
+To reproduce a **before/after** delta, profile a second checkout the same way and pass
+`--cprofile-out` to a different path. Beware: this repo is installed editable via a
+`.pth` that hardcodes the primary checkout, so a second worktree will silently import
+the primary tree's code unless you set `PYTHONPATH=<worktree>` and verify
+`screener.__file__` points where you expect.
+
 ## Headline findings
 
 - **Hold-time curve.** US Sharpe peaks at a ~20-day cap (0.99) and decays to 0.69 at ∞
@@ -50,7 +83,10 @@ concurrency at 4 with a 900s per-run timeout.
   a 5-day cap re-buys each unique name ~5.3× (93% of trades are re-entries) vs ~2.0× / ~70%
   at ∞. This is by design (`allow_reentry`) — the screen re-selecting the same momentum
   leaders (US: NVDA/AVGO/ANET…; India: BSE/BEL/INDHOTEL…), not a bug.
-- **Profiling.** See `../flamegraph_gpu_analysis_2026_07_25.md` and the flamegraphs /
-  snakeviz profile in `../webview/` for the bottleneck ranking + GPU-offload assessment.
+- **Profiling.** Current ranking is in `../flamegraph_analysis_2026_07_28.md` (re-run after
+  PRs #114–#117 shipped: **4.14 s → 2.40 s per run, ≈1.73×**, identical output; Pine
+  evaluation 32.9% → 12.9%, `_precompute_filter_signals` now the top bottleneck at 21.4%).
+  `../flamegraph_gpu_analysis_2026_07_25.md` is the superseded original that motivated that
+  work, and is profiled by `../webview/rolling_pre_vectorization.prof`.
 
 Benchmarks (5yr): US +79.27%, India +50.19%.
