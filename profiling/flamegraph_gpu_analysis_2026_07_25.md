@@ -1,6 +1,19 @@
 # Flamegraph-driven bottleneck analysis and GPU offload feasibility
 
-**Date:** 2026-07-25 · **Engine:** rolling backtester · **Source of truth:** `profiling/webview/rolling.prof`
+> **⚠️ Superseded — this describes the engine *before* PRs #114–#117.**
+> Its central finding (F-04, whole-panel Pine evaluation) has since shipped, and Pine
+> evaluation is no longer the top bottleneck. See
+> [`flamegraph_analysis_2026_07_28.md`](flamegraph_analysis_2026_07_28.md) for the
+> re-run and the current ranking.
+>
+> The artifacts in `profiling/webview/` (`rolling.prof`, both flamegraphs, both
+> `pstats_*.txt`) were **regenerated on 2026-07-28** and now reflect the post-#117
+> engine, so they no longer match the numbers below. The profile this document was
+> written against is preserved as `profiling/webview/rolling_pre_vectorization.prof`.
+> Note also that the run below was taken under heavy CPU contention (§1), so its
+> absolute seconds are inflated and not comparable to the 07-28 figures.
+
+**Date:** 2026-07-25 · **Engine:** rolling backtester · **Source of truth:** `profiling/webview/rolling_pre_vectorization.prof`
 
 ## 1. Environment and method
 
