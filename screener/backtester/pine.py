@@ -643,16 +643,24 @@ def _panel_column_names(node: Node) -> set[str]:
     return names
 
 
-def _group_key(bars: pd.DataFrame, names: Iterable[str]) -> tuple | None:
-    """Identity of the panel ``bars`` may join, or None if it must go alone.
+def panel_index_key(index: pd.Index) -> tuple[str, object] | None:
+    """Identity of ``index`` for stacking frames positionally, or None if unsafe.
 
-    Two frames share a key only when their bar indexes are element-wise equal
-    and they agree on which referenced columns exist — the two things that make
-    stacking them a pure relabelling rather than an alignment.
+    Two frames may be stacked into one panel only when this key matches: their
+    indexes are then element-wise equal *and* interchangeable as labels, so the
+    stack is a pure relabelling rather than an alignment.
+
+    The dtype is part of the identity, not decoration: every member of a group is
+    handed the first member's index back. Timestamps compare and hash by instant,
+    so tz-aware indexes over the same moments in different zones (or the same
+    instants at a different resolution) would otherwise group and silently return
+    results relabelled into the first member's timezone.
+
+    Shared with ``core._precompute_filter_signals`` so the two panel paths cannot
+    drift on this rule.
     """
-    index = bars.index
     if not index.is_unique:
-        # concat would align on duplicate labels instead of stacking positionally.
+        # Stacking would align on duplicate labels instead of stacking positionally.
         return None
     if isinstance(index, pd.DatetimeIndex) and index.dtype == np.dtype(
         "datetime64[ns]"
@@ -663,17 +671,24 @@ def _group_key(bars: pd.DataFrame, names: Iterable[str]) -> tuple | None:
             index_key = tuple(index)
         except TypeError:  # pragma: no cover - exotic unhashable index
             return None
+    return (str(index.dtype), index_key)
+
+
+def _group_key(bars: pd.DataFrame, names: Iterable[str]) -> tuple | None:
+    """Identity of the panel ``bars`` may join, or None if it must go alone.
+
+    Two frames share a key only when their bar indexes are element-wise equal
+    and they agree on which referenced columns exist — the two things that make
+    stacking them a pure relabelling rather than an alignment.
+    """
+    index_key = panel_index_key(bars.index)
+    if index_key is None:
+        return None
     columns = frozenset(bars.columns)
     if not _REQUIRED_COLUMNS <= columns:
         # evaluate() raises for these; let it do so per ticker.
         return None
-    # The dtype is part of the identity, not decoration: every member of a group
-    # is handed ``frames[0].index`` back, so two frames may only share a key if
-    # their indexes are interchangeable *as labels*. Timestamps compare and hash
-    # by instant, so tz-aware indexes over the same moments in different zones
-    # (or the same instants at a different resolution) would otherwise group and
-    # silently return results relabelled into the first member's timezone.
-    return (str(index.dtype), index_key, frozenset(n for n in names if n in columns))
+    return (*index_key, frozenset(n for n in names if n in columns))
 
 
 def _build_panel(
