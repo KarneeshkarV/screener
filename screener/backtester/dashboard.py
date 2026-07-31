@@ -160,6 +160,7 @@ def _metric_cards(result: BacktestResult) -> str:
     }
     labels = {
         "total_return": "Total Return",
+        "cagr": "CAGR",
         "benchmark_return": "Benchmark",
         "max_drawdown": "Max DD",
         "sharpe": "Sharpe",
@@ -173,6 +174,7 @@ def _metric_cards(result: BacktestResult) -> str:
     cards: list[str] = []
     for key in [
         "total_return",
+        "cagr",
         "benchmark_return",
         "max_drawdown",
         "sharpe",
