@@ -6,8 +6,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import click
-from rich.console import Console
 
+from screener import agentio
 from screener.backtester.cli_common import (
     CommonBacktestParams,
     backtest_options,
@@ -506,7 +506,7 @@ def backtest_rolling(
         print_ledger_csv(result)
         return
 
-    console = Console()
+    console = agentio.get_console()
     console.print(
         f"[dim]Rolling window: {start_date.isoformat()} to {end_date.isoformat()}[/dim]"
     )

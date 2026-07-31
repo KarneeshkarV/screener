@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 from rich.console import Console, JustifyMethod
 from rich.panel import Panel
 from rich.table import Table
 
+from screener import agentio
 from screener.backtester.models import BacktestResult
 from screener.format import fmt_pct
 
@@ -141,7 +144,158 @@ def _print_regime_metrics(metrics: dict) -> None:
     console.print(table)
 
 
+#: Metrics worth spending digest tokens on. The full table has 23 rows;
+#: these are the ones a decision actually turns on, and they cost one line
+#: per four instead of one line plus box drawing per metric.
+_AGENT_HEADLINE_METRICS = (
+    "total_return",
+    "cagr",
+    "sharpe",
+    "max_drawdown",
+    "hit_rate",
+    "profit_factor",
+    "expectancy",
+    "trade_count",
+    "avg_trade_return",
+    "exposure",
+    "alpha_annual",
+    "beta",
+    "benchmark_return",
+    "unique_tickers",
+)
+
+
+def _agent_cell(column: str, value: Any) -> str:
+    """Round trade-ledger cells for the digest.
+
+    ``trades_dataframe`` carries full float precision for the CSV; inlining
+    ``173.85844036702034`` costs tokens and tells an agent nothing that
+    ``173.86`` does not.
+    """
+    if column.endswith("_price"):
+        return f"{float(value):.2f}"
+    if column == "return_pct":
+        return f"{float(value) * 100:+.2f}%"
+    return str(value)
+
+
+#: Tickers shown per side in the attribution block when the universe is
+#: large. Keeps the digest bounded: a 500-name universe still costs 10 lines.
+_ATTRIBUTION_SIDE = 5
+
+
+def _print_ticker_attribution(trades: pd.DataFrame, out) -> None:
+    """Per-ticker PnL, trade count, and win rate.
+
+    Measured need: asked which ticker lost the most, agents reading only the
+    metrics digest -- or even the full inline ledger, which carries no ``pnl``
+    column -- answered by eyeballing the worst *single* trade and named the
+    wrong ticker, quoting invented totals. Aggregating 69 rows in-head is not
+    something to ask of a model when three lines of arithmetic here settle it.
+    """
+    if "pnl" not in trades.columns or trades.empty:
+        return
+    grouped = (
+        trades.assign(_win=trades["return_pct"] > 0)
+        .groupby("ticker")
+        .agg(trades=("pnl", "size"), pnl=("pnl", "sum"), win=("_win", "mean"))
+        .sort_values("pnl")
+    )
+    if len(grouped) > _ATTRIBUTION_SIDE * 2:
+        shown = pd.concat(
+            [grouped.head(_ATTRIBUTION_SIDE), grouped.tail(_ATTRIBUTION_SIDE)]
+        )
+        note = f" (worst/best {_ATTRIBUTION_SIDE} of {len(grouped)})"
+    else:
+        shown, note = grouped, ""
+    out.print(f"pnl_by_ticker{note}: ticker trades win% pnl")
+    for ticker, row in shown.iterrows():
+        out.print(
+            f"  {ticker} {int(row['trades'])} {row['win'] * 100:.1f} {row['pnl']:+,.2f}"
+        )
+
+
+def _print_backtest_agent(result: BacktestResult) -> None:
+    """Bounded digest for agent mode: headline metrics, regimes, spill path.
+
+    Size is independent of trade count -- the ledger goes to a CSV and only
+    its path (plus a sample at higher detail levels) reaches stdout.
+    """
+    cfg = result.config
+    out = agentio.get_console()
+    detail = agentio.detail_level()
+
+    out.print(
+        f"backtest {cfg.market} as-of={cfg.as_of} hold={cfg.hold} "
+        f"top={cfg.top} benchmark={cfg.benchmark}"
+    )
+    for warning in result.warnings:
+        out.print(f"warning: {warning}")
+
+    pairs = [
+        (key, _format_metric(key, result.metrics[key]))
+        for key in _AGENT_HEADLINE_METRICS
+        if key in result.metrics
+    ]
+    for line in agentio.kv_line(pairs):
+        out.print(line)
+
+    if "total_fees" in result.metrics:
+        out.print(
+            f"costs total={float(result.metrics['total_fees']):,.2f} "
+            f"pct_capital={result.metrics.get('fees_pct_capital', 0.0) * 100:.3f}% "
+            f"pct_net_pnl={result.metrics.get('fees_pct_net_pnl', 0.0) * 100:.2f}%"
+        )
+
+    regimes = [
+        label for label in _REGIME_LABELS if f"regime_{label}_trades" in result.metrics
+    ]
+    if regimes:
+        out.print("regime trades win% avg%")
+        for label in regimes:
+            out.print(
+                f"{label} {result.metrics[f'regime_{label}_trades']} "
+                f"{result.metrics[f'regime_{label}_win_rate'] * 100:.1f} "
+                f"{result.metrics[f'regime_{label}_avg_return'] * 100:+.2f}"
+            )
+
+    if not result.trades:
+        out.print("trades: none")
+        return
+
+    trades = trades_dataframe(result)
+    path = agentio.spill(trades, f"backtest-{cfg.market}")
+    _print_ticker_attribution(trades, out)
+    limit = (
+        len(trades)
+        if detail == "full"
+        else (0 if detail == "summary" else agentio.HEAD_ROWS)
+    )
+    out.print(f"trades: {len(trades)} rows -> {path}")
+    if limit:
+        columns = [
+            "ticker",
+            "entry_date",
+            "exit_date",
+            "entry_price",
+            "exit_price",
+            "return_pct",
+            "exit_reason",
+        ]
+        columns = [col for col in columns if col in trades.columns]
+        head = trades.head(limit)
+        out.print("  " + " ".join(columns))
+        for _, row in head.iterrows():
+            out.print("  " + " ".join(_agent_cell(col, row[col]) for col in columns))
+        if len(trades) > limit:
+            out.print(f"  ... {len(trades) - limit} more rows in the CSV above")
+
+
 def print_backtest(result: BacktestResult) -> None:
+    if agentio.is_agent_mode():
+        _print_backtest_agent(result)
+        return
+
     cfg = result.config
     console.print(
         Panel.fit(

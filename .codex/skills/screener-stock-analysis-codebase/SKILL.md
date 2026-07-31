@@ -1,16 +1,17 @@
 ---
 name: screener-stock-analysis-codebase
-description: Use when analyzing stocks, portfolios, screens, backtests, or strategy ideas with this workspace. Covers how to use the Python screener CLI, Telegram bot support code, together without inventing data or bypassing existing providers.
+description: Use when analyzing stocks, portfolios, screens, backtests, or strategy ideas with this workspace. Covers how to use the Python screener CLI, Telegram bot support code together without inventing data or bypassing existing providers.
 ---
 
 # Screener Stock Analysis Codebase
 
-Use this skill for codebase-backed stock analysis, portfolio reviews, signal checks, strategy research, and comparisons between the Python implementations in this workspace.
+Use this skill for codebase-backed stock analysis, portfolio reviews, signal checks, strategy research, and comparisons between the Python  implementations in this workspace.
 
 ## Workspace Map
 
 - `screener/`: primary Python CLI and research code. Use `uv` from this directory.
 - `screener_bot/`: Telegram bot that wraps the Python `screener` package for portfolio checks, alerts, charts, and scheduled screen diffs.
+
 If repo guidance conflicts, follow `screener/AGENTS.md`: use `uv`; bot code lives in `../screener_bot/`.
 
 ## First Choice Tooling
@@ -33,14 +34,6 @@ uv run screener conviction AAPL -m us
 uv run screener research-report -m us --years 1 --strategy rs_breakout --top 10
 ```
 
-
-```bash
-cd screener-rs
-cargo run -- screen -m us -c ema -n 30
-cargo run -- rs-breakout -m india -n 50
-cargo run -- backtest-rolling -m us --years 2 --strategy rs_breakout --top 10
-cargo test
-```
 
 Use the bot project when the task involves Telegram command behavior, portfolio alerting, scheduled screener messages, chart rendering, authorization, or Turso-backed portfolio state:
 
@@ -132,6 +125,7 @@ but remember `screener_bot` normally depends on bot config and portfolio objects
 - Keep data loading separate from signal math so tests can use stub price fetchers.
 - Avoid lookahead. For volume averages and rolling highs/lows, use prior-bar baselines when the code already does so.
 - Prefer CSV/JSON/Markdown output flags for repeatable analysis artifacts.
+- Agent output mode is automatic (see `screener/AGENTS.md`). The digest on stdout carries headline metrics and a path to the full-data CSV in `~/tmp`. Answer portfolio-level questions from the digest; **read the CSV for any per-trade question** — which ticker lost money, exit-reason mix, and per-ticker attribution are not derivable from the digest, and guessing from the worst single trade gives the wrong ticker. Raise detail with `--agent-detail head|full` only when a sample genuinely helps.
 - Use `--refresh` only when cache freshness matters; otherwise respect cache TTLs.
 - Use global Click options before subcommands: `uv run screener --log-level ERROR screen ...`.
 - For India analysis, distinguish NSE cash delivery, F&O OI, promoter shareholding, and yfinance data; they answer different questions.
@@ -159,6 +153,7 @@ uv run pytest
 uv run ruff check $(git ls-files '*.py')
 uv run mypy
 ```
+
 
 ## Output Standard
 

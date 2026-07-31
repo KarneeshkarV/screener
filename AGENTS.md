@@ -2,6 +2,32 @@ use uv
 
 the bot code is in /home/karneeshkar/Desktop/personal/screener_main/screener_bot/
 
+## Agent output mode
+
+The CLI detects when an agent is driving it and switches to token-lean output
+automatically. Verified to auto-engage under Claude Code, codex, opencode, and
+pi; a plain terminal is unaffected.
+
+- **What changes**: instead of rich tables (a 3-ticker backtest costs 113 lines
+  / 11.5 KB, with every wide column ellipsis-truncated to fit 80 chars), you get
+  a bounded digest plus a full-data CSV path. Digest size does not grow with the
+  result set.
+- **Read the CSV when the digest is not enough.** The digest answers "is this
+  strategy any good"; per-trade questions (which ticker lost money, which exits
+  were not time-based) need the CSV. Its path is printed on the `trades:` line.
+- **Detail levels**: `--agent-detail head` (default: metrics, per-ticker PnL,
+  the first 5 trades, and the CSV path), `summary` (drops the sample rows),
+  `full` (every row inline, still writes the CSV). Prefer `head`; `full` is 4x
+  the bytes and tends to stop agents from reading the CSV they still need,
+  because an inline ledger looks complete while omitting the `pnl` column.
+- **Overrides**: `--agent` / `--no-agent`, or `SCREENER_AGENT=1` / `=0`.
+  Spill directory is `~/tmp`, overridable with `SCREENER_AGENT_DIR`.
+- **Explicit output flags always win.** `--csv` still writes the complete CSV to
+  stdout; agent mode only governs the default table path. Use it deliberately —
+  it is unbounded.
+- Agent mode never activates during `pytest`, so the suite behaves the same
+  locally and in CI.
+
 ## Cursor Cloud specific instructions
 
 - **Python version**: 3.11 (pinned in `.python-version`). `uv` handles this automatically.
