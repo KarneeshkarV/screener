@@ -10,6 +10,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from screener import agentio
 from screener.backtester.factor_tearsheet import factor_tearsheet
 from screener.backtester.historical import backtest_historical
 from screener.backtester.lab import backtest_lab
@@ -127,11 +128,36 @@ class UsageTrackedGroup(click.Group):
     default=False,
     help="Emit one JSON event per line on stderr instead of human-readable logs.",
 )
+@click.option(
+    "--agent/--no-agent",
+    "agent_mode",
+    default=None,
+    help=(
+        "Token-lean output for AI agents: a bounded digest on stdout plus a "
+        "full-data CSV in ~/tmp. Auto-enabled under a known agent harness; "
+        "override with SCREENER_AGENT=0/1."
+    ),
+)
+@click.option(
+    "--agent-detail",
+    type=click.Choice(agentio.DETAIL_LEVELS),
+    default=None,
+    help=(
+        "How much of the result to inline in agent mode. "
+        f"[default: {agentio.DEFAULT_DETAIL}]"
+    ),
+)
 @click.pass_context
 def cli(
-    ctx: click.Context, config_path: str | None, log_level: str, log_json: bool
+    ctx: click.Context,
+    config_path: str | None,
+    log_level: str,
+    log_json: bool,
+    agent_mode: bool | None,
+    agent_detail: str | None,
 ) -> None:
     """Stock screener for US and Indian markets."""
+    agentio.configure(agent_mode, agent_detail)  # type: ignore[arg-type]
     if config_path:
         config = load_config(config_path)
         ctx.default_map = config
