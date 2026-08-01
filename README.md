@@ -261,6 +261,21 @@ Notes:
 - Intraday timestamps are canonical naive UTC across providers; intraday bars are cached under interval-namespaced keys so daily caches are never polluted.
 - Long-warmup strategies (e.g. anything needing SMA200) usually cannot fill their lookback inside the capped intraday windows.
 
+### Backtest delta harness (`scripts/backtest_delta.py`)
+
+Fully offline, deterministic matrix that pins backtest numbers across engines, cost models, sizing rules, and intervals.
+Use it as a baseline before refactors that deliberately change fills, costs, force-close windows, or indicator seeding.
+Unlike `just backtest-smoke-us`, it never hits the network and does not depend on cache state.
+
+```bash
+uv run python scripts/backtest_delta.py --out /tmp/baseline.json
+uv run python scripts/backtest_delta.py --compare /tmp/baseline.json
+```
+
+`--out` writes sorted JSON (metrics + full trade ledgers per cell).
+`--compare` reruns the matrix, prints a per-cell diff, and exits non-zero if anything moved.
+Bar factories and the price-fetcher stub live inside the script so a later `tests/` refactor cannot silently move the baseline.
+
 ### `backtest-lab`
 
 Launches a local browser UI for comparing rolling backtest strategies.
