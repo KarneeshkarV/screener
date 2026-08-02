@@ -31,6 +31,7 @@ from typing import Optional, Protocol
 import numpy as np
 import pandas as pd
 
+from screener.backtester.costs import CostModel, FlatCommission, bps_fraction
 from screener.backtester.models import BacktestConfig
 from screener.backtester.slippage import Side, apply_slippage, needs_liquidity_inputs
 
@@ -80,7 +81,7 @@ def _resolve_entry_fill(
             signal_close = float(arrays.close_arr[signal_idx])
         else:
             signal_close = float(bars.iloc[signal_idx]["close"])
-        limit_price = signal_close * (1.0 - cfg.entry_limit_bps / 10_000.0)
+        limit_price = signal_close * (1.0 - bps_fraction(cfg.entry_limit_bps))
         if arrays is not None:
             for i in range(signal_idx + 1, len(bars)):
                 if float(arrays.low_arr[i]) <= limit_price:
@@ -120,8 +121,18 @@ class FillModel:
     for every fill of the run.
     """
 
-    def __init__(self, cfg: BacktestConfig) -> None:
+    def __init__(
+        self,
+        cfg: BacktestConfig,
+        *,
+        cost_model: CostModel | None = None,
+    ) -> None:
         self.cfg = cfg
+        self.cost_model = (
+            cost_model
+            if cost_model is not None
+            else FlatCommission(bps=cfg.commission_bps)
+        )
 
     @property
     def needs_liquidity_inputs(self) -> bool:
@@ -184,7 +195,7 @@ class FillModel:
         # the actual shares from the impacted fill without a hidden iteration.
         if budget is None:
             budget = self.cfg.initial_capital / max(self.cfg.top, 1)
-        commission = self.cfg.commission_bps / 10_000.0
+        commission = self.cost_model.side_cost_fraction("buy", budget)
         gross_reference = entry_ref * (1.0 + commission)
         shares = budget / gross_reference if gross_reference > 0.0 else 0.0
         fill = self._apply_slip(

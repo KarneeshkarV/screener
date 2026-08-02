@@ -41,9 +41,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Protocol
 
+import numpy as np
 import pandas as pd
 
-from screener.backtester.core import _SlotState, _close_slot_at_day
+from screener.backtester.core import (
+    _SlotState,
+    _bar_label,
+    _check_exit_at_bar,
+    _fire_partial_exits_at_bar,
+    _maybe_credit_dividends,
+)
 from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig
 from screener.backtester.portfolio import Portfolio
@@ -60,6 +67,101 @@ class FreedSlot:
 
     slot_id: int
     state: _SlotState
+
+
+def _close_slot_at_day(
+    *,
+    slot_id: int,
+    state: _SlotState,
+    bars: pd.DataFrame,
+    day: pd.Timestamp,
+    cfg: BacktestConfig,
+    portfolio: Portfolio,
+    slot_states: dict[int, _SlotState | None],
+    fill_model: FillModel,
+) -> bool:
+    """Process one slot for a day. Returns True when the slot becomes free."""
+    frame_cache = state.frame_cache
+    if frame_cache is not None and frame_cache.index_i8 is not None:
+        index_i8 = frame_cache.index_i8
+        pos = int(np.searchsorted(index_i8, day.value))
+        if pos >= index_i8.size or index_i8[pos] != day.value:
+            return False
+        i: int = pos
+    else:
+        if day not in bars.index:
+            return False
+        loc = bars.index.get_loc(day)
+        if isinstance(loc, slice) or not isinstance(loc, int):
+            return False
+        i = loc
+    if i < state.entry_idx + 1:
+        return False
+    _maybe_credit_dividends(portfolio, state, bars, i, cfg)
+    _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio, fill_model)
+    position = portfolio.get_position(state.ticker)
+    if position is None:
+        slot_states[slot_id] = None
+        return True
+    exit_ = _check_exit_at_bar(
+        state,
+        bars,
+        i,
+        cfg,
+        fill_model,
+        shares=position.shares,
+    )
+    if exit_ is None:
+        return False
+    fill, reason = exit_
+    portfolio.close(
+        ticker=state.ticker,
+        exit_date=_bar_label(day, cfg),
+        exit_price=fill,
+        reason=reason,
+    )
+    slot_states[slot_id] = None
+    return True
+
+
+def _force_close_open_slots(
+    *,
+    slot_states: dict[int, _SlotState | None],
+    slot_bars: dict[int, pd.DataFrame],
+    cfg: BacktestConfig,
+    portfolio: Portfolio,
+    end_ts: pd.Timestamp,
+    fill_model: FillModel,
+) -> None:
+    for slot_id, state in list(slot_states.items()):
+        if state is None:
+            continue
+        bars = slot_bars[slot_id]
+        tail = bars.loc[
+            (bars.index >= pd.Timestamp(state.entry_date)) & (bars.index <= end_ts)
+        ]
+        if tail.empty:
+            continue
+        last_bar = tail.iloc[-1]
+        fill = fill_model.exit_price(
+            reason="eod",
+            close=float(last_bar["close"]),
+            shares=(
+                position.shares
+                if (position := portfolio.get_position(state.ticker)) is not None
+                else 0.0
+            ),
+            adv_shares=state.adv_shares,
+            sigma_daily=state.sigma_daily,
+            half_spread=state.half_spread,
+        )
+        portfolio.close(
+            ticker=state.ticker,
+            exit_date=_bar_label(tail.index[-1], cfg),
+            exit_price=fill,
+            reason="eod",
+        )
+        slot_states[slot_id] = None
 
 
 class DayLoop:

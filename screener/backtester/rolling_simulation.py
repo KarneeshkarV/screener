@@ -16,7 +16,6 @@ from screener.backtester.core import (
     _SlotState,
     _bar_label,
     _benchmark_series_from_panel,
-    _force_close_open_slots,
     _make_slot_state,
     _precompute_entry_signals,
     _precompute_filter_signals,
@@ -24,7 +23,12 @@ from screener.backtester.core import (
     _resolve_universe,
 )
 from screener.backtester.costs import cost_model_from_config
-from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
+from screener.backtester.day_loop import (
+    DayLoop,
+    FreedSlot,
+    _force_close_open_slots,
+    run_day_loop,
+)
 from screener.backtester.fills import FillModel
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fundamentals import (
@@ -44,6 +48,7 @@ from screener.backtester.models import (
 from screener.backtester.pine import evaluate_panel_many, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.backtester.sizing import entry_budget_for
+from screener.backtester.warmup import _warmup_days_for_interval
 from screener.regime import classify_regimes
 from screener.options.backtest import merge_referenced_options
 from screener.backtester.rolling_candidates import (
@@ -185,12 +190,11 @@ def _prepare_simulation(
     # via bars-per-session (with slack for weekends/holidays) so we don't request
     # ~365 days of minute data — which both blows past yfinance's intraday cap
     # and is unnecessary. Chunking longer intraday windows is Phase 2.
-    warmup_bars = lookback * 3 + 30
-    if cfg.interval == "1d":
-        warmup_days = max(warmup_bars, 365)
-    else:
-        bars_per_day = max(periods_per_year_for_interval(cfg.interval) // 252, 1)
-        warmup_days = int(np.ceil(warmup_bars / bars_per_day) * 1.6) + 5
+    warmup_days = _warmup_days_for_interval(
+        lookback,
+        cfg.interval,
+        multiplier=3,
+    )
     fetch_start = (start_ts - pd.Timedelta(days=warmup_days)).date()
     fetch_end = end_ts.date()
     price_panel = fetcher.fetch(yf_symbols, fetch_start, fetch_end)

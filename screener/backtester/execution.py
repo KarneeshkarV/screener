@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-from screener.backtester.costs import CostModel
+from screener.backtester.costs import CostModel, bps_fraction
 from screener.backtester.slippage import (
     FixedBpsSlippage,
     Side,
     apply_slippage,
 )
-
-
-def bps_fraction(bps: float) -> float:
-    """Convert basis points to a decimal rate."""
-    return float(bps) / 10_000.0
 
 
 def fixed_bps_fill(reference_price: float, side: Side, bps: float) -> float:

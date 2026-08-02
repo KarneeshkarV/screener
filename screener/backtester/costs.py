@@ -38,8 +38,9 @@ class CostModel(Protocol):
         """
 
 
-def _bps_fraction(bps: float) -> float:
-    return bps / 10_000.0
+def bps_fraction(bps: float) -> float:
+    """Convert basis points to a decimal rate."""
+    return float(bps) / 10_000.0
 
 
 class FlatCommission(BaseModel):
@@ -50,12 +51,12 @@ class FlatCommission(BaseModel):
     bps: float = 0.0
 
     def side_cost_fraction(self, side: Side, notional: float) -> float:
-        return _bps_fraction(self.bps)
+        return bps_fraction(self.bps)
 
     def side_cost_breakdown(
         self, side: Side, notional: float, shares: float | None = None
     ) -> dict[str, float]:
-        return {"commission": abs(float(notional)) * _bps_fraction(self.bps)}
+        return {"commission": abs(float(notional)) * bps_fraction(self.bps)}
 
 
 class IndiaDeliveryCosts(BaseModel):
@@ -91,7 +92,7 @@ class IndiaDeliveryCosts(BaseModel):
     ipft_rate: float = 0.000001
 
     def side_cost_fraction(self, side: Side, notional: float) -> float:
-        brokerage = _bps_fraction(self.brokerage_bps)
+        brokerage = bps_fraction(self.brokerage_bps)
         exchange = self.exchange_txn_rate
         sebi = self.sebi_turnover_rate
         gst = self.gst_rate * (brokerage + exchange + sebi)
@@ -104,7 +105,7 @@ class IndiaDeliveryCosts(BaseModel):
         self, side: Side, notional: float, shares: float | None = None
     ) -> dict[str, float]:
         notional = abs(float(notional))
-        brokerage_frac = _bps_fraction(self.brokerage_bps)
+        brokerage_frac = bps_fraction(self.brokerage_bps)
         gst_frac = self.gst_rate * (
             brokerage_frac + self.exchange_txn_rate + self.sebi_turnover_rate
         )
