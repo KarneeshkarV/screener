@@ -16,7 +16,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from screener.backtester.core import simulate_ticker
+from tests.backtest_helpers import simulate_single_ticker
 from screener.backtester.historical import run_backtest, select_candidates
 from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.models import BacktestConfig
@@ -159,11 +159,11 @@ class TestT1SelectCandidates:
 
 
 # ---------------------------------------------------------------------------
-# T2 – simulate_ticker: entry_date / entry_price invariant after entry bar
+# T2 – simulate_single_ticker: entry_date / entry_price invariant after entry bar
 # ---------------------------------------------------------------------------
 
 
-class TestT2SimulateTicker:
+class TestT2SingleTickerDayLoop:
     """Entry fill depends only on bars up to entry_idx; later bars are irrelevant."""
 
     def _make_cfg(self) -> BacktestConfig:
@@ -175,7 +175,7 @@ class TestT2SimulateTicker:
         signal_idx = 5
         cfg = self._make_cfg()
 
-        outcome_base = simulate_ticker(bars, signal_idx=signal_idx, cfg=cfg)
+        outcome_base = simulate_single_ticker(bars, signal_idx=signal_idx, cfg=cfg)
         assert outcome_base.trade is not None, (
             "baseline trade is None; check signal_idx"
         )
@@ -184,7 +184,7 @@ class TestT2SimulateTicker:
         entry_ts = pd.Timestamp(outcome_base.trade.entry_date)
         perturbed = _perturb_after(bars, entry_ts)
 
-        outcome_pert = simulate_ticker(perturbed, signal_idx=signal_idx, cfg=cfg)
+        outcome_pert = simulate_single_ticker(perturbed, signal_idx=signal_idx, cfg=cfg)
         assert outcome_pert.trade is not None
 
         assert outcome_base.trade.entry_date == outcome_pert.trade.entry_date, (
@@ -199,13 +199,13 @@ class TestT2SimulateTicker:
         signal_idx = 4
         cfg = self._make_cfg()
 
-        outcome_base = simulate_ticker(bars, signal_idx=signal_idx, cfg=cfg)
+        outcome_base = simulate_single_ticker(bars, signal_idx=signal_idx, cfg=cfg)
         assert outcome_base.trade is not None
 
         entry_ts = pd.Timestamp(outcome_base.trade.entry_date)
         perturbed = _perturb_after(bars, entry_ts)
 
-        outcome_pert = simulate_ticker(perturbed, signal_idx=signal_idx, cfg=cfg)
+        outcome_pert = simulate_single_ticker(perturbed, signal_idx=signal_idx, cfg=cfg)
         assert outcome_pert.trade is not None
 
         assert outcome_base.trade.entry_price == pytest.approx(
@@ -222,13 +222,13 @@ class TestT2SimulateTicker:
         signal_idx = 6
         cfg = self._make_cfg()
 
-        outcome_base = simulate_ticker(bars, signal_idx=signal_idx, cfg=cfg)
+        outcome_base = simulate_single_ticker(bars, signal_idx=signal_idx, cfg=cfg)
         assert outcome_base.trade is not None
 
         entry_ts = pd.Timestamp(outcome_base.trade.entry_date)
         perturbed = _perturb_after(bars, entry_ts)
 
-        outcome_pert = simulate_ticker(perturbed, signal_idx=signal_idx, cfg=cfg)
+        outcome_pert = simulate_single_ticker(perturbed, signal_idx=signal_idx, cfg=cfg)
         assert outcome_pert.trade is not None
 
         assert outcome_base.trade.signal_date == outcome_pert.trade.signal_date, (

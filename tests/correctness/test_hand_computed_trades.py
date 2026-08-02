@@ -36,11 +36,10 @@ from datetime import date
 
 import pytest
 
-from screener.backtester.core import simulate_ticker
-from screener.backtester.costs import FlatCommission
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
-from screener.backtester.portfolio import Portfolio
+
+from tests.backtest_helpers import simulate_single_ticker
 
 from tests.conftest import StubPriceFetcher
 from tests.correctness.fixtures.explicit_bars import (
@@ -88,40 +87,6 @@ def _cfg(**overrides) -> BacktestConfig:
     return BacktestConfig(**defaults)
 
 
-# ---------------------------------------------------------------------------
-# Helper: drive a Portfolio for a single simulate_ticker outcome
-# ---------------------------------------------------------------------------
-
-
-def _drive_portfolio(
-    trade_outcome,
-    entry_price: float,
-    exit_price: float,
-    commission_bps: float = 0.0,
-    initial_capital: float = 100_000.0,
-) -> Portfolio:
-    """Open and immediately close a single position using the trade outcome dates."""
-    t = trade_outcome.trade
-    port = Portfolio(
-        initial_capital,
-        slot_count=1,
-        cost_model=FlatCommission(bps=commission_bps),
-    )
-    port.assign(t.ticker if t.ticker else "TEST", 1, t.signal_date)
-    port.open(
-        ticker="TEST",
-        entry_date=t.entry_date,
-        entry_price=entry_price,
-    )
-    port.close(
-        ticker="TEST",
-        exit_date=t.exit_date,
-        exit_price=exit_price,
-        reason=t.exit_reason,
-    )
-    return port
-
-
 # ===========================================================================
 # Scenario 1 — Buy-and-hold to EOD (force-close at last bar)
 # ===========================================================================
@@ -154,7 +119,7 @@ class TestS1BuyAndHold:
         self.cfg = _cfg(hold=100, slippage_bps=0.0)
 
     def test_layer_a_entry_exit_dates(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         assert t is not None
         assert t.entry_date == self.bars.index[4].date(), "signal+1 = entry bar 4"
@@ -162,22 +127,21 @@ class TestS1BuyAndHold:
         assert t.exit_reason == "eod"
 
     def test_layer_a_fill_prices(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         assert t.entry_price == pytest.approx(100.0, abs=TOL)
         assert t.exit_price == pytest.approx(115.0, abs=TOL)
 
     def test_layer_b_portfolio_mechanics(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
-        port = Portfolio(100_000.0, slot_count=1)
-        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
-        tr = port.close("TEST", out.trade.exit_date, out.trade.exit_price, "eod")
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        tr = out.trade
+        assert tr is not None
         assert tr.shares == pytest.approx(1000.0, abs=TOL)
         assert tr.entry_cost == pytest.approx(100_000.0, abs=TOL)
         assert tr.exit_value == pytest.approx(115_000.0, abs=TOL)
         assert tr.pnl == pytest.approx(15_000.0, abs=TOL)
         assert tr.return_pct == pytest.approx(0.15, abs=TOL)
-        assert port.cash() == pytest.approx(115_000.0, abs=TOL)
+        assert out.cash == pytest.approx(115_000.0, abs=TOL)
 
 
 # ===========================================================================
@@ -199,28 +163,22 @@ class TestS2StopIntrabar:
         self.cfg = _cfg(hold=100, stop_loss=0.05, slippage_bps=0.0)
 
     def test_layer_a_exit_reason_and_date(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         assert t is not None
         assert t.exit_reason == "stop"
         assert t.exit_date == self.bars.index[5].date()
 
     def test_layer_a_fill_prices(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         assert t.entry_price == pytest.approx(100.0, abs=TOL)
         assert t.exit_price == pytest.approx(95.0, abs=TOL)
 
     def test_layer_b_portfolio_mechanics(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
-        port = Portfolio(100_000.0, slot_count=1)
-        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
-        tr = port.close(
-            "TEST",
-            out.trade.exit_date,
-            out.trade.exit_price,
-            "stop",
-        )
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        tr = out.trade
+        assert tr is not None
         assert tr.shares == pytest.approx(1000.0, abs=TOL)
         assert tr.entry_cost == pytest.approx(100_000.0, abs=TOL)
         assert tr.exit_value == pytest.approx(95_000.0, abs=TOL)
@@ -246,28 +204,22 @@ class TestS3TargetIntrabar:
         self.cfg = _cfg(hold=100, take_profit=0.10, slippage_bps=0.0)
 
     def test_layer_a_exit_reason_and_date(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         assert t is not None
         assert t.exit_reason == "target"
         assert t.exit_date == self.bars.index[5].date()
 
     def test_layer_a_fill_prices(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         assert t.entry_price == pytest.approx(100.0, abs=TOL)
         assert t.exit_price == pytest.approx(110.0, abs=TOL)
 
     def test_layer_b_portfolio_mechanics(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
-        port = Portfolio(100_000.0, slot_count=1)
-        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
-        tr = port.close(
-            "TEST",
-            out.trade.exit_date,
-            out.trade.exit_price,
-            "target",
-        )
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        tr = out.trade
+        assert tr is not None
         assert tr.shares == pytest.approx(1000.0, abs=TOL)
         assert tr.pnl == pytest.approx(10_000.0, abs=TOL)
         assert tr.return_pct == pytest.approx(0.10, abs=TOL)
@@ -292,7 +244,7 @@ class TestS4GapDown:
 
     def test_gap_fills_true_fill_at_open(self):
         cfg = _cfg(hold=100, stop_loss=0.05, gap_fills=True, slippage_bps=0.0)
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=cfg)
         t = out.trade
         assert t is not None
         assert t.exit_reason == "stop"
@@ -302,7 +254,7 @@ class TestS4GapDown:
 
     def test_gap_fills_false_fill_at_stop_ref(self):
         cfg = _cfg(hold=100, stop_loss=0.05, gap_fills=False, slippage_bps=0.0)
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=cfg)
         t = out.trade
         assert t is not None
         assert t.exit_reason == "stop"
@@ -311,29 +263,17 @@ class TestS4GapDown:
 
     def test_layer_b_gap_fills_true(self):
         cfg = _cfg(hold=100, stop_loss=0.05, gap_fills=True, slippage_bps=0.0)
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=cfg)
-        port = Portfolio(100_000.0, slot_count=1)
-        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
-        tr = port.close(
-            "TEST",
-            out.trade.exit_date,
-            out.trade.exit_price,
-            "stop",
-        )
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=cfg)
+        tr = out.trade
+        assert tr is not None
         assert tr.pnl == pytest.approx(-10_000.0, abs=TOL)
         assert tr.return_pct == pytest.approx(-0.10, abs=TOL)
 
     def test_layer_b_gap_fills_false(self):
         cfg = _cfg(hold=100, stop_loss=0.05, gap_fills=False, slippage_bps=0.0)
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=cfg)
-        port = Portfolio(100_000.0, slot_count=1)
-        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
-        tr = port.close(
-            "TEST",
-            out.trade.exit_date,
-            out.trade.exit_price,
-            "stop",
-        )
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=cfg)
+        tr = out.trade
+        assert tr is not None
         assert tr.pnl == pytest.approx(-5_000.0, abs=TOL)
         assert tr.return_pct == pytest.approx(-0.05, abs=TOL)
 
@@ -354,7 +294,7 @@ class TestS5GapUp:
         self.cfg = _cfg(hold=100, take_profit=0.10, gap_fills=True, slippage_bps=0.0)
 
     def test_layer_a_fill_at_open(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         assert t is not None
         assert t.exit_reason == "target"
@@ -363,15 +303,9 @@ class TestS5GapUp:
         assert t.exit_price == pytest.approx(115.0, abs=TOL)
 
     def test_layer_b_portfolio_mechanics(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
-        port = Portfolio(100_000.0, slot_count=1)
-        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
-        tr = port.close(
-            "TEST",
-            out.trade.exit_date,
-            out.trade.exit_price,
-            "target",
-        )
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        tr = out.trade
+        assert tr is not None
         assert tr.pnl == pytest.approx(15_000.0, abs=TOL)
         assert tr.return_pct == pytest.approx(0.15, abs=TOL)
 
@@ -403,29 +337,23 @@ class TestS6TrailingStop:
         self.cfg = _cfg(hold=100, trailing_stop=0.10, slippage_bps=0.0)
 
     def test_layer_a_peak_and_exit(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         assert t is not None
         assert t.exit_reason == "trail"
         assert t.exit_date == self.bars.index[6].date()
 
     def test_layer_a_fill_at_trail_ref(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         # peak lifted to 120 at bar5; trail_ref = 120*0.9 = 108.0
         # bar6 open=119 > trail_ref=108 → fill at trail_ref, not gap
         assert t.exit_price == pytest.approx(108.0, abs=TOL)
 
     def test_layer_b_portfolio_mechanics(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
-        port = Portfolio(100_000.0, slot_count=1)
-        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
-        tr = port.close(
-            "TEST",
-            out.trade.exit_date,
-            out.trade.exit_price,
-            "trail",
-        )
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        tr = out.trade
+        assert tr is not None
         assert tr.shares == pytest.approx(1000.0, abs=TOL)
         assert tr.pnl == pytest.approx(8_000.0, abs=TOL)
         assert tr.return_pct == pytest.approx(0.08, abs=TOL)
@@ -534,26 +462,20 @@ class TestS8TimeExit:
         self.cfg = _cfg(hold=3, slippage_bps=0.0)
 
     def test_layer_a_exit_reason_and_date(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         assert t is not None
         assert t.exit_reason == "time"
         assert t.exit_date == self.bars.index[7].date()
 
     def test_layer_a_fill_price(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         assert out.trade.exit_price == pytest.approx(105.0, abs=TOL)
 
     def test_layer_b_portfolio_mechanics(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
-        port = Portfolio(100_000.0, slot_count=1)
-        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
-        tr = port.close(
-            "TEST",
-            out.trade.exit_date,
-            out.trade.exit_price,
-            "time",
-        )
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        tr = out.trade
+        assert tr is not None
         assert tr.shares == pytest.approx(1000.0, abs=TOL)
         assert tr.entry_cost == pytest.approx(100_000.0, abs=TOL)
         assert tr.exit_value == pytest.approx(105_000.0, abs=TOL)
@@ -619,14 +541,14 @@ class TestS9CommissionSlippage:
         )
 
     def test_layer_a_entry_fill_with_slippage(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         assert t is not None
         # entry_fill = 100.5 * 1.001 = 100.6005
         assert t.entry_price == pytest.approx(self.ENTRY_FILL, abs=TOL)
 
     def test_layer_a_gap_fill_target(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
         t = out.trade
         assert t.exit_reason == "target"
         assert t.exit_date == self.bars.index[5].date()
@@ -635,41 +557,27 @@ class TestS9CommissionSlippage:
 
     def test_layer_b_shares_match_plan(self):
         """Verify shares = 100_000 / (100.5 * 1.001) ≈ 994.0308 as plan states."""
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
-        port = Portfolio(100_000.0, slot_count=1)
-        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
-        pos = port.get_position("TEST")
-        assert pos is not None
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        tr = out.trade
+        assert tr is not None
         # Plan's claimed value is 994.0308; our exact value is 994.030844...
-        assert pos.shares == pytest.approx(self.SHARES, abs=TOL)
+        assert tr.shares == pytest.approx(self.SHARES, abs=TOL)
         # Confirm it's approximately 994.0308 (matches plan's claim to 4dp)
-        assert abs(pos.shares - 994.0308) < 0.0001
+        assert abs(tr.shares - 994.0308) < 0.0001
 
     def test_layer_b_pnl_match_plan(self):
         """Verify pnl ≈ 18568.5956 as stated in the plan."""
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
-        port = Portfolio(100_000.0, slot_count=1)
-        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
-        tr = port.close(
-            "TEST",
-            out.trade.exit_date,
-            out.trade.exit_price,
-            "target",
-        )
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        tr = out.trade
+        assert tr is not None
         # Exact derived value
         assert tr.pnl == pytest.approx(self.PNL, abs=TOL)
         # Plan's claim: 18568.5956 — verify within 4 decimal places
         assert abs(tr.pnl - 18568.5956) < 0.001
 
     def test_layer_b_entry_cost_exact(self):
-        out = simulate_ticker(self.bars, signal_idx=3, cfg=self.cfg)
-        port = Portfolio(100_000.0, slot_count=1)
-        port.open("TEST", out.trade.entry_date, out.trade.entry_price)
-        tr = port.close(
-            "TEST",
-            out.trade.exit_date,
-            out.trade.exit_price,
-            "target",
-        )
+        out = simulate_single_ticker(self.bars, signal_idx=3, cfg=self.cfg)
+        tr = out.trade
+        assert tr is not None
         # entry_cost = budget = 100_000 (no commission)
         assert tr.entry_cost == pytest.approx(100_000.0, abs=TOL)
