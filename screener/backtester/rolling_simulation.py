@@ -32,7 +32,7 @@ from screener.backtester.day_loop import (
 from screener.backtester.fills import FillModel
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fundamentals import (
-    build_fundamental_fetcher,
+    FundamentalFetcher,
     merge_fundamentals_into_bars,
 )
 from screener.backtester.metrics import (
@@ -169,6 +169,7 @@ def _prepare_simulation(
     end_ts: pd.Timestamp,
     warnings: list[str],
     earnings_blackout: dict[str, list[date]] | None = None,
+    fundamental_fetcher: FundamentalFetcher | None = None,
 ) -> _RollingSimulationSetup:
     """Fetch data, precompute signals/matrices and build the slot/portfolio state."""
     entry_ast = parse(cfg.entry_expr)
@@ -225,19 +226,11 @@ def _prepare_simulation(
     )
     lookback = max(lookback, strategy_lookback)
 
-    if cfg.fundamentals_provider:
-        fundamental_fetcher = build_fundamental_fetcher(
-            cfg.fundamentals_provider,
-            fields=cfg.fundamental_fields or None,
-            lag_days=cfg.fundamental_lag_days,
+    if fundamental_fetcher is not None:
+        fundamentals = fundamental_fetcher.fetch(
+            yf_by_tv.values(), fetch_start, fetch_end
         )
-        if fundamental_fetcher is not None:
-            fundamentals = fundamental_fetcher.fetch(
-                yf_by_tv.values(), fetch_start, fetch_end, cfg.market
-            )
-            bars_by_tv = merge_fundamentals_into_bars(
-                bars_by_tv, fundamentals, yf_by_tv
-            )
+        bars_by_tv = merge_fundamentals_into_bars(bars_by_tv, fundamentals, yf_by_tv)
 
     bars_by_tv = merge_referenced_options(
         bars_by_tv,
@@ -625,6 +618,7 @@ def prepare_rolling_backtest(
     start_date: date,
     end_date: date,
     earnings_blackout: dict[str, list[date]] | None = None,
+    fundamental_fetcher: FundamentalFetcher | None = None,
 ) -> PreparedRollingBacktest:
     """Fetch and precompute the immutable half of a rolling backtest.
 
@@ -632,6 +626,8 @@ def prepare_rolling_backtest(
     to execution/portfolio settings (for example hold, stops, sizing, costs,
     top-N or initial capital).
     """
+    if cfg.fundamentals_provider and fundamental_fetcher is None:
+        raise ValueError("fundamentals_provider requires a resolved FundamentalFetcher")
     warnings: list[str] = []
     start_ts, end_ts = _window_bounds(cfg, start_date, end_date)
     setup = _prepare_simulation(
@@ -641,6 +637,7 @@ def prepare_rolling_backtest(
         end_ts=end_ts,
         warnings=warnings,
         earnings_blackout=earnings_blackout,
+        fundamental_fetcher=fundamental_fetcher,
     )
     prepared_warnings = (
         tuple(setup.early_result.warnings)
@@ -762,6 +759,7 @@ def run_rolling_backtest(
     start_date: date,
     end_date: date,
     earnings_blackout: dict[str, list[date]] | None = None,
+    fundamental_fetcher: FundamentalFetcher | None = None,
 ) -> BacktestResult:
     """Run a daily rolling simulation over ``[start_date, end_date]``."""
     prepared = prepare_rolling_backtest(
@@ -770,5 +768,6 @@ def run_rolling_backtest(
         start_date=start_date,
         end_date=end_date,
         earnings_blackout=earnings_blackout,
+        fundamental_fetcher=fundamental_fetcher,
     )
     return run_prepared_rolling_backtest(prepared, cfg)

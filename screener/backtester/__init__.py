@@ -19,6 +19,7 @@ from screener.backtester.models import (
 
 if TYPE_CHECKING:
     from screener.backtester.data import PriceFetcher
+    from screener.backtester.fundamentals import FundamentalFetcher
     from screener.backtester.rolling_simulation import PreparedRollingBacktest
 
 
@@ -34,10 +35,17 @@ def run_rolling_backtest(
     *,
     start_date: date,
     end_date: date,
+    fundamental_fetcher: FundamentalFetcher | None = None,
 ) -> BacktestResult:
     from screener.backtester.rolling_simulation import run_rolling_backtest as run
 
-    return run(cfg, fetcher, start_date=start_date, end_date=end_date)
+    return run(
+        cfg,
+        fetcher,
+        start_date=start_date,
+        end_date=end_date,
+        fundamental_fetcher=fundamental_fetcher,
+    )
 
 
 def prepare_rolling_backtest(
@@ -46,12 +54,19 @@ def prepare_rolling_backtest(
     *,
     start_date: date,
     end_date: date,
+    fundamental_fetcher: FundamentalFetcher | None = None,
 ) -> PreparedRollingBacktest:
     from screener.backtester.rolling_simulation import (
         prepare_rolling_backtest as prepare,
     )
 
-    return prepare(cfg, fetcher, start_date=start_date, end_date=end_date)
+    return prepare(
+        cfg,
+        fetcher,
+        start_date=start_date,
+        end_date=end_date,
+        fundamental_fetcher=fundamental_fetcher,
+    )
 
 
 def run_prepared_rolling_backtest(
