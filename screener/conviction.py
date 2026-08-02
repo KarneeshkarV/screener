@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, timedelta
-from typing import Any, Literal, Optional, cast
+from typing import Any, Literal, Optional
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
@@ -45,7 +45,9 @@ from screener.backtester.data import PriceFetcher
 from screener.garp import (
     GarpThresholds,
     INDIA_THRESHOLDS,
+    MissingMetricPolicy,
     US_THRESHOLDS,
+    evaluate_garp,
     load_garp_row,
 )
 from screener.financials import to_number
@@ -56,12 +58,16 @@ from screener.fmp import resolve_api_key
 from screener.markets import get_market
 from screener.pledge import resolve_pledge_pct
 from screener.providers import CachedProvider, ProviderSpec
+from screener.relative_strength import (
+    RS_SPREAD_WINDOW,
+    relative_strength_ratio,
+    relative_strength_spread,
+)
 from screener.rs_breakout import (
     delivery_lookup,
     india_symbol,
     normalize_bars,
     previous_completed_week_high,
-    relative_strength_55,
     required_history_bars,
     supertrend,
 )
@@ -87,8 +93,7 @@ PILLAR_WEIGHTS: dict[str, float] = {
 # 252-bar high / the 90-bar volume z-score all have a full window.
 HISTORY_DAYS = 420
 # Trend needs the 63-day relative-strength lookback plus RSI(14) warm-up.
-TREND_MIN_BARS = 64
-RS_TREND_WINDOW = 63
+TREND_MIN_BARS = RS_SPREAD_WINDOW + 1
 
 # Indian quarterly results are published ~45 days after the fiscal period-end,
 # so a shareholding/result row dated "Mar 2024" is not public until ~mid-May.
@@ -227,21 +232,7 @@ def score_trend(bars: pd.DataFrame, benchmark_close: pd.Series) -> PillarResult:
     rsi_value = float(rsi(close, 14)[-1])
     rsi_pts = _rsi_points(rsi_value)
 
-    rel: Optional[float] = None
-    if benchmark_close is not None and not benchmark_close.empty:
-        aligned = pd.concat(
-            [bars["close"].astype(float), benchmark_close.astype(float)],
-            axis=1,
-            join="inner",
-        ).dropna()
-        if len(aligned) > RS_TREND_WINDOW:
-            stock_ret = (
-                aligned.iloc[-1, 0] / aligned.iloc[-1 - RS_TREND_WINDOW, 0] - 1.0
-            ) * 100.0
-            bench_ret = (
-                aligned.iloc[-1, 1] / aligned.iloc[-1 - RS_TREND_WINDOW, 1] - 1.0
-            ) * 100.0
-            rel = float(cast(Any, stock_ret - bench_ret))
+    rel = relative_strength_spread(bars["close"], benchmark_close)
 
     stack_count = int(stack // 10)
     if rel is None:
@@ -301,7 +292,7 @@ def score_breakout(
     rs_pts: Optional[float] = None
     rs_note = "RS55 n/a"
     if benchmark_close is not None and not benchmark_close.empty:
-        rs = relative_strength_55(df["close"], benchmark_close)
+        rs = relative_strength_ratio(df["close"], benchmark_close)
         if not rs.empty and not pd.isna(rs.iloc[-1]):
             rs_last = float(rs.iloc[-1])
             rs_pts = 20.0 if rs_last > 0 else 0.0
@@ -490,60 +481,34 @@ def _smart_money_pillar(
 
 # ── fundamentals (GARP) ──────────────────────────────────────────────────────
 
-# (label, row key, comparator vs GarpThresholds) — same criteria the GARP
-# screen gates on, minus the absolute size floors (size is not conviction).
+# The same criteria the GARP screen gates on, minus the absolute size floors
+# (size is not conviction), and read under the opposite missing-value policy:
+# a metric the provider did not return leaves the denominator instead of
+# failing the name outright.
 _GARP_MIN_METRICS = 3
-
-
-def _garp_checks(
-    row: dict[str, Any], thresholds: GarpThresholds
-) -> list[tuple[str, Optional[bool]]]:
-    def check(key: str, predicate: Any) -> Optional[bool]:
-        value = to_number(row.get(key))
-        if value is None:
-            return None
-        return bool(predicate(value))
-
-    return [
-        ("PEG", check("peg", lambda v: 0 < v < thresholds.peg_max)),
-        (
-            "sales5y",
-            check("sales_growth_5y", lambda v: v > thresholds.sales_growth_5y_min),
-        ),
-        (
-            "opg",
-            check(
-                "operating_profit_growth",
-                lambda v: v > thresholds.operating_profit_growth_min,
-            ),
-        ),
-        ("eps5y", check("eps_growth_5y", lambda v: v > thresholds.eps_growth_5y_min)),
-        ("roe5y", check("roe_5y", lambda v: v > thresholds.roe_5y_min)),
-        (
-            "roce/roic",
-            check("roce_or_roic", lambda v: v > thresholds.roce_or_roic_min),
-        ),
-        ("qtr-profit", check("quarterly_profit_growth", lambda v: v > 0)),
-    ]
 
 
 def score_fundamentals(row: dict[str, Any], thresholds: GarpThresholds) -> PillarResult:
     """Fraction of evaluable GARP criteria passed, scaled to 0-100."""
     name = "fundamentals"
-    checks = _garp_checks(row, thresholds)
-    evaluated = [(label, passed) for label, passed in checks if passed is not None]
-    if len(evaluated) < _GARP_MIN_METRICS:
+    evaluation = evaluate_garp(
+        row,
+        thresholds,
+        policy=MissingMetricPolicy.SKIPPED,
+        include_size_floors=False,
+    )
+    evaluated = evaluation.evaluated
+    fraction = evaluation.passed_fraction
+    if len(evaluated) < _GARP_MIN_METRICS or fraction is None:
         return _skipped(
             name,
-            f"insufficient fundamental data ({len(evaluated)}/{len(checks)} metrics)",
+            "insufficient fundamental data "
+            f"({len(evaluated)}/{len(evaluation.checks)} metrics)",
         )
-    passed = [label for label, ok in evaluated if ok]
-    failed = [label for label, ok in evaluated if not ok]
-    score = len(passed) / len(evaluated) * 100.0
-    evidence = f"GARP {len(passed)}/{len(evaluated)} checks"
-    if failed:
-        evidence += f" (missed: {', '.join(failed)})"
-    return _ok(name, score, evidence)
+    evidence = f"GARP {len(evaluation.passed)}/{len(evaluated)} checks"
+    if evaluation.failed:
+        evidence += f" (missed: {', '.join(evaluation.failed)})"
+    return _ok(name, fraction * 100.0, evidence)
 
 
 def _load_fundamentals(

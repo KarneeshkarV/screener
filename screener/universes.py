@@ -219,6 +219,44 @@ def resolve_universe(
     )
 
 
+def load_tv_liquidity_universe(
+    market: str,
+    universe_limit: int,
+    *,
+    cache_ttl: float | None = 900,
+    refresh: bool = False,
+) -> list[str]:
+    """Fetch the most liquid tradable names for ``market`` from TradingView.
+
+    This is the fetch behind :attr:`UniverseSource.TV_LIQUIDITY`: common stocks
+    above the market's minimum close, ordered by volume. ``universe_limit`` of
+    ``0`` means "broad market" and fetches the scanner's 5000-row ceiling.
+
+    Lives here rather than in a screen's Click adapter so that domain modules
+    can ask for a universe without importing a command module.
+    """
+    # Lazy: TradingView and the scanner's provider seam are only needed on the
+    # fetch path, and importing them at module scope would pull the scan stack
+    # into every consumer of this registry.
+    from tradingview_screener import col
+
+    from screener.markets import get_market
+    from screener.scanner import scan
+
+    price_floor = get_market(market).rs_breakout_min_close
+    requested_limit = 5000 if universe_limit == 0 else universe_limit
+    filters = [col("type") == "stock", col("close") >= price_floor]
+    _total, df = scan(
+        market=market,
+        filters=filters,
+        limit=requested_limit,
+        order_by="volume",
+        cache_ttl=cache_ttl,
+        refresh=refresh,
+    )
+    return [str(t) for t in df["name"].dropna().tolist()]
+
+
 class Universe(BaseModel):
     name: UniverseName
     symbols: tuple[str, ...]

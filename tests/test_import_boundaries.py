@@ -1,10 +1,12 @@
 """Regression checks for the repo's neutral-layer dependency directions.
 
-Two directions are pinned here:
+Three directions are pinned here:
 
 * the neutral trade ledger and the per-feature contracts built on it;
 * the transport/provider seam, which every feature calls into and which must
-  therefore never call back out into one.
+  therefore never call back out into one;
+* the screens' domain modules, which sit below their Click adapters and must
+  therefore never import one.
 """
 
 from __future__ import annotations
@@ -50,6 +52,19 @@ _SEAM_MODULES = (
     "screener/providers.py",
 )
 
+# The screens' domain modules. ``screener/commands/`` holds their Click
+# adapters, which sit *above* them, so an import pointing at one is an
+# inversion. ``screener/minervini.py`` is the one that regressed: it reached
+# into ``screener.commands.rs_breakout`` for a TradingView universe loader, so
+# one screen's domain module depended on another screen's CLI. The loader now
+# lives in ``screener/universes.py``.
+_SCREEN_MODULES = (
+    "screener/conviction.py",
+    "screener/garp.py",
+    "screener/minervini.py",
+    "screener/rs_breakout.py",
+)
+
 
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(), filename=str(path))
@@ -88,6 +103,15 @@ def test_seam_modules_do_not_import_feature_packages(relative_path: str) -> None
         if module.startswith(feature)
     }
     assert not feature_imports
+
+
+@pytest.mark.parametrize("relative_path", _SCREEN_MODULES)
+def test_screen_domain_modules_do_not_import_click_adapters(
+    relative_path: str,
+) -> None:
+    """A screen's signal math never depends on another screen's command layer."""
+    imports = _imports(_ROOT / relative_path)
+    assert not {module for module in imports if module.startswith("screener.commands")}
 
 
 def test_fmp_transport_owns_api_key_resolution() -> None:

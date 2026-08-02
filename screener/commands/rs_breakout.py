@@ -29,7 +29,6 @@ from screener.rs_breakout import (
     write_json,
     write_markdown,
 )
-from screener.scanner import scan
 
 
 class RsBreakoutRequest(BaseModel):
@@ -71,6 +70,7 @@ def resolve_universe(
     from screener.universes import (
         UniverseRequest,
         UniverseSource,
+        load_tv_liquidity_universe,
         parse_ticker_csv,
         resolve_universe as resolve_universe_request,
     )
@@ -84,35 +84,12 @@ def resolve_universe(
     try:
         return resolve_universe_request(
             request,
-            tv_loader=lambda: load_universe(
+            tv_loader=lambda: load_tv_liquidity_universe(
                 market, int(universe_limit), cache_ttl=cache_ttl, refresh=refresh
             ),
         )
     except FileNotFoundError as exc:
         raise click.UsageError(f"--universe-file not found: {universe_file}") from exc
-
-
-def load_universe(
-    market: str,
-    universe_limit: int,
-    *,
-    cache_ttl: float | None = 900,
-    refresh: bool = False,
-) -> list[str]:
-    from tradingview_screener import col
-
-    price_floor = get_market(market).rs_breakout_min_close
-    requested_limit = 5000 if universe_limit == 0 else universe_limit
-    filters = [col("type") == "stock", col("close") >= price_floor]
-    _total, df = scan(
-        market=market,
-        filters=filters,
-        limit=requested_limit,
-        order_by="volume",
-        cache_ttl=cache_ttl,
-        refresh=refresh,
-    )
-    return [str(t) for t in df["name"].dropna().tolist()]
 
 
 def run_rs_breakout_scan(

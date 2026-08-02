@@ -11,8 +11,9 @@ from rich.table import Table
 
 from screener.backtester.data import PriceFetcher, build_price_fetcher
 from screener.cache import parse_ttl
-from screener.commands.rs_breakout import load_universe
+from screener.relative_strength import RS_RANK_WINDOW, relative_strength_rank
 from screener.symbols import tv_to_yf
+from screener.universes import load_tv_liquidity_universe
 
 
 MINERVINI_ENTRY_EXPR = (
@@ -53,17 +54,17 @@ def add_rs_rank_column(
     bars_by_symbol: dict[str, pd.DataFrame],
 ) -> dict[str, pd.DataFrame]:
     """Add 12-month relative-strength percentile, 0-100, across the universe."""
-    returns: dict[str, pd.Series] = {}
-    for symbol, bars in bars_by_symbol.items():
-        if bars is None or bars.empty or "close" not in bars:
-            continue
-        close = bars["close"].astype(float)
-        returns[symbol] = close / close.shift(252) - 1.0
-    if not returns:
+    ranks = relative_strength_rank(
+        {
+            symbol: bars["close"]
+            for symbol, bars in bars_by_symbol.items()
+            if bars is not None and not bars.empty and "close" in bars
+        },
+        window=RS_RANK_WINDOW,
+    )
+    if ranks.empty:
         return bars_by_symbol
 
-    rs_frame = pd.DataFrame(returns)
-    ranks = rs_frame.rank(axis=1, pct=True) * 100.0
     out: dict[str, pd.DataFrame] = {}
     for symbol, bars in bars_by_symbol.items():
         frame = bars.copy()
@@ -158,7 +159,7 @@ def scan_minervini(
     refresh: bool,
     fetcher: PriceFetcher | None = None,
 ) -> list[MinerviniRow]:
-    universe = load_universe(
+    universe = load_tv_liquidity_universe(
         market,
         universe_limit=max(int(limit) * 20, 500),
         cache_ttl=parse_ttl(cache_ttl, default=900),

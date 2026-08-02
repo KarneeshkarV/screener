@@ -26,13 +26,14 @@ from screener.format import fmt_float as _fmt_float
 from screener.indicators.frames import wilder_atr
 from screener.markets import get_market
 from screener.parallel import parallel_map
+from screener.relative_strength import RS_RATIO_WINDOW, relative_strength_ratio
 from screener.reporting import dump_json_file, markdown_row
 from screener.symbols import normalize_symbol, tv_to_nse
 from screener.unusual_volume.delivery import load_delivery_panel
 
 
 logger = logging.getLogger(__name__)
-RS_WINDOW = 55
+RS_WINDOW = RS_RATIO_WINDOW
 SUPERTREND_PERIOD = 10
 SUPERTREND_MULTIPLIER = 3.0
 VOLUME_WINDOW = 20
@@ -96,22 +97,6 @@ def normalize_bars(bars: pd.DataFrame, as_of: date) -> pd.DataFrame:
     if not needed.issubset(df.columns):
         return pd.DataFrame()
     return df[list(needed)].astype(float)
-
-
-def relative_strength_55(
-    stock_close: pd.Series, benchmark_close: pd.Series
-) -> pd.Series:
-    aligned = pd.concat(
-        [stock_close.astype(float), benchmark_close.astype(float)],
-        axis=1,
-        join="inner",
-    ).dropna()
-    aligned.columns = ["stock", "benchmark"]
-    stock_ret = aligned["stock"] / aligned["stock"].shift(RS_WINDOW)
-    bench_ret = aligned["benchmark"] / aligned["benchmark"].shift(RS_WINDOW)
-    rs = ((stock_ret / bench_ret) - 1.0) * 100.0
-    rs.name = "rs_55"
-    return rs
 
 
 def supertrend(
@@ -211,6 +196,63 @@ def delivery_lookup(
     return out
 
 
+def rs_breakout_signals(frame: pd.DataFrame, *, require_delivery: bool) -> pd.DataFrame:
+    """Evaluate the RS-breakout entry rule over a prepared signal frame.
+
+    This is the one place the rule is written. Both consumers go through it:
+    :func:`build_signal_frame` evaluates it across the whole history for the
+    backtest plugin, and :func:`evaluate_symbol` evaluates it over the one-bar
+    frame it assembles for the live scan, so the two paths cannot drift apart.
+
+    ``frame`` must carry ``close``, ``rs_55``, ``supertrend_value``,
+    ``volume_ratio``, ``previous_week_high``, ``delivery_pct`` and
+    ``previous_delivery_pct``. The returned frame carries the three component
+    verdicts plus the composed entry flag.
+    """
+    close = frame["close"].astype(float)
+    base_pass = (
+        (frame["rs_55"] > 0)
+        & (close > frame["supertrend_value"])
+        & (frame["volume_ratio"] >= VOLUME_MULTIPLIER)
+    )
+    price_pass = frame["previous_week_high"].notna() & (
+        close > frame["previous_week_high"]
+    )
+    delivery_pass = (
+        frame["delivery_pct"].notna()
+        & frame["previous_delivery_pct"].notna()
+        & (frame["delivery_pct"] > frame["previous_delivery_pct"])
+    )
+    return pd.DataFrame(
+        {
+            "base_pass": base_pass,
+            "price_pass": price_pass,
+            "delivery_pass": delivery_pass,
+            "rs_breakout_entry": base_pass
+            & price_pass
+            & (delivery_pass if require_delivery else True),
+        },
+        index=frame.index,
+    )
+
+
+def _one_bar_signal_frame(
+    index: pd.DatetimeIndex, **values: Optional[float]
+) -> pd.DataFrame:
+    """Assemble a one-row frame in the shape :func:`rs_breakout_signals` reads."""
+    return pd.DataFrame(
+        {
+            name: pd.Series(
+                [float("nan") if value is None else float(value)],
+                index=index,
+                dtype=float,
+            )
+            for name, value in values.items()
+        },
+        index=index,
+    )
+
+
 def evaluate_symbol(
     symbol: str,
     bars: pd.DataFrame,
@@ -223,7 +265,7 @@ def evaluate_symbol(
     if len(df) < max(RS_WINDOW + 1, VOLUME_WINDOW + 1, SUPERTREND_PERIOD + 1):
         return None
 
-    rs = relative_strength_55(df["close"], benchmark_close)
+    rs = relative_strength_ratio(df["close"], benchmark_close)
     st = supertrend(df)
     vol_avg = (
         df["volume"].rolling(VOLUME_WINDOW, min_periods=VOLUME_WINDOW).mean().shift(1)
@@ -252,18 +294,28 @@ def evaluate_symbol(
     volume_ratio = volume / avg20
     delivery_pct, previous_delivery_pct = delivery or (None, None)
 
-    base_pass = (
-        rs_55 > 0 and close > supertrend_value and volume_ratio >= VOLUME_MULTIPLIER
-    )
-    if not base_pass:
+    # The live scan's verdict is the vectorized rule applied to one bar, so it
+    # cannot disagree with the backtest plugin's. ``require_delivery`` only
+    # composes the entry flag, which the caller derives itself from the three
+    # component verdicts below.
+    verdict = rs_breakout_signals(
+        _one_bar_signal_frame(
+            cast(pd.DatetimeIndex, df.index[-1:]),
+            close=close,
+            rs_55=rs_55,
+            supertrend_value=supertrend_value,
+            volume_ratio=volume_ratio,
+            previous_week_high=prev_week_high,
+            delivery_pct=delivery_pct,
+            previous_delivery_pct=previous_delivery_pct,
+        ),
+        require_delivery=False,
+    ).iloc[-1]
+    if not bool(verdict["base_pass"]):
         return None
 
-    price_pass = prev_week_high is not None and close > prev_week_high
-    delivery_pass = (
-        delivery_pct is not None
-        and previous_delivery_pct is not None
-        and delivery_pct > previous_delivery_pct
-    )
+    price_pass = bool(verdict["price_pass"])
+    delivery_pass = bool(verdict["delivery_pass"])
     row = RsBreakoutRow(
         symbol=symbol,
         date=last_idx.date(),
@@ -448,7 +500,7 @@ def build_signal_frame(
     if bars is None or bars.empty:
         return pd.DataFrame()
     df = bars.copy().sort_index()
-    rs = relative_strength_55(df["close"], benchmark_close)
+    rs = relative_strength_ratio(df["close"], benchmark_close)
     st = supertrend(df)
     avg_volume = (
         df["volume"]
@@ -472,22 +524,8 @@ def build_signal_frame(
     out["delivery_pct_last"] = delivery["delivery_pct_last"]
     out["delivery_trend"] = delivery["delivery_trend"]
     out["delivery_spike"] = delivery["delivery_spike"]
-    base_pass = (
-        (out["rs_55"] > 0)
-        & (out["close"].astype(float) > out["supertrend_value"])
-        & (out["volume_ratio"] >= VOLUME_MULTIPLIER)
-    )
-    price_pass = out["previous_week_high"].notna() & (
-        out["close"].astype(float) > out["previous_week_high"]
-    )
-    delivery_pass = (
-        out["delivery_pct"].notna()
-        & out["previous_delivery_pct"].notna()
-        & (out["delivery_pct"] > out["previous_delivery_pct"])
-    )
-    out["rs_breakout_entry"] = (
-        base_pass & price_pass & (delivery_pass if require_delivery else True)
-    ).astype(float)
+    signals = rs_breakout_signals(out, require_delivery=require_delivery)
+    out["rs_breakout_entry"] = signals["rs_breakout_entry"].astype(float)
     return out
 
 
