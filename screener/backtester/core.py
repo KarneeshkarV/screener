@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Optional, Union, cast
+from typing import TYPE_CHECKING, Optional, Protocol, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,43 @@ from screener.backtester.sessions import is_session_last, market_timezone
 
 if TYPE_CHECKING:
     from screener.strategies.spec import StrategySpec
+
+
+class UniverseSpec(Protocol):
+    """The config values universe resolution reads, and nothing else.
+
+    Structural so both ``BacktestConfig`` and the panel-scoped input records in
+    :mod:`screener.backtester.price_panel` satisfy it without either module
+    having to know about the other.
+    """
+
+    @property
+    def tickers(self) -> Optional[tuple[str, ...]]: ...
+
+    @property
+    def universe_file(self) -> Optional[str]: ...
+
+    @property
+    def membership_windows(self) -> tuple[tuple[str, date, date | None], ...]: ...
+
+    @property
+    def dynamic_universe_size(self) -> int | None: ...
+
+    @property
+    def max_universe(self) -> int: ...
+
+
+class LiquidityFilterSpec(Protocol):
+    """The config values the min-price/ADV entry filters read, and nothing else."""
+
+    @property
+    def min_price(self) -> Optional[float]: ...
+
+    @property
+    def min_avg_dollar_volume(self) -> Optional[float]: ...
+
+    @property
+    def avg_dollar_volume_window(self) -> int: ...
 
 
 def _bar_label(ts, cfg: BacktestConfig) -> Union[date, datetime]:
@@ -606,7 +643,7 @@ _NO_UNIVERSE_MSG = (
 )
 
 
-def _resolve_universe(cfg: BacktestConfig) -> tuple[list[str], list[str]]:
+def _resolve_universe(cfg: UniverseSpec) -> tuple[list[str], list[str]]:
     """Return ``(tv_symbols, warnings)`` for the configured universe."""
     warnings: list[str] = []
     # Dynamic ADV ranking and snapshot membership windows do the real
@@ -794,7 +831,7 @@ def _precompute_entry_signals(
 
 def _precompute_filter_signals(
     bars_by_ticker: dict[str, pd.DataFrame],
-    cfg: BacktestConfig,
+    cfg: LiquidityFilterSpec,
 ) -> dict[str, pd.Series]:
     """Per-ticker boolean Series: True when min-price + ADV filters pass on that bar.
 
@@ -838,7 +875,7 @@ def _precompute_filter_signals(
 def _filter_signals_for_group(
     tickers: list[str],
     bars_by_ticker: dict[str, pd.DataFrame],
-    cfg: BacktestConfig,
+    cfg: LiquidityFilterSpec,
     window: int,
 ) -> dict[str, pd.Series]:
     """Evaluate the price/ADV filters for one index-compatible group of tickers."""
