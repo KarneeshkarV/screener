@@ -13,7 +13,7 @@ import pandas as pd
 from screener.backtester.costs import corwin_schultz_half_spread
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fills import FillModel
-from screener.backtester.models import BacktestConfig, ExitReason, Trade
+from screener.backtester.models import BacktestConfig, ExitReason
 from screener.backtester.pine import (
     PineError,
     evaluate,
@@ -25,12 +25,6 @@ from screener.backtester.sessions import is_session_last, market_timezone
 
 if TYPE_CHECKING:
     from screener.strategies.spec import StrategySpec
-
-
-@dataclass(frozen=True)
-class _SimOutcome:
-    trade: Optional[Trade]
-    warning: Optional[str]
 
 
 def _bar_label(ts, cfg: BacktestConfig) -> Union[date, datetime]:
@@ -587,98 +581,6 @@ def _check_exit_at_bar(
     if i >= state.hold_limit_idx:
         return _sell("time"), "time"
     return None
-
-
-def simulate_ticker(
-    bars: pd.DataFrame,
-    signal_idx: int,
-    cfg: BacktestConfig,
-    exit_ast=None,
-) -> _SimOutcome:
-    """Simulate a single long-only trade starting from the bar after ``signal_idx``."""
-    fill_model = FillModel(cfg)
-    state, warning = _make_slot_state(
-        ticker="",
-        bars=bars,
-        signal_idx=signal_idx,
-        cfg=cfg,
-        exit_ast=exit_ast,
-        rank=0,
-        fill_model=fill_model,
-        entry_budget=cfg.initial_capital / max(cfg.top, 1),
-    )
-    if state is None:
-        return _SimOutcome(trade=None, warning=warning)
-
-    for i in range(state.entry_idx + 1, len(bars)):
-        exit_ = _check_exit_at_bar(
-            state,
-            bars,
-            i,
-            cfg,
-            fill_model,
-            shares=(cfg.initial_capital / max(cfg.top, 1)) / state.entry_fill,
-        )
-        if exit_ is not None:
-            fill, reason = exit_
-            return _SimOutcome(
-                trade=_make_exit(
-                    state.entry_date,
-                    state.entry_fill,
-                    _bar_label(bars.index[i], cfg),
-                    fill,
-                    reason,
-                    signal_idx_bar=state.signal_date,
-                ),
-                warning=None,
-            )
-
-    last_bar = bars.iloc[-1]
-    fill = fill_model.exit_price(
-        reason="eod",
-        close=float(last_bar["close"]),
-        shares=(cfg.initial_capital / max(cfg.top, 1)) / state.entry_fill,
-        adv_shares=state.adv_shares,
-        sigma_daily=state.sigma_daily,
-        half_spread=state.half_spread,
-    )
-    return _SimOutcome(
-        trade=_make_exit(
-            state.entry_date,
-            state.entry_fill,
-            _bar_label(bars.index[-1], cfg),
-            fill,
-            "eod",
-            signal_idx_bar=state.signal_date,
-        ),
-        warning=None,
-    )
-
-
-def _make_exit(
-    entry_date: Union[date, datetime],
-    entry_fill: float,
-    exit_date: Union[date, datetime],
-    exit_fill: float,
-    reason: ExitReason,
-    signal_idx_bar: Union[date, datetime],
-) -> Trade:
-    """Return a partial Trade with only price/date/reason fields set."""
-    return Trade(
-        ticker="",
-        rank=0,
-        signal_date=signal_idx_bar,
-        entry_date=entry_date,
-        entry_price=entry_fill,
-        exit_date=exit_date,
-        exit_price=exit_fill,
-        exit_reason=reason,
-        shares=0.0,
-        entry_cost=0.0,
-        exit_value=0.0,
-        pnl=0.0,
-        return_pct=0.0,
-    )
 
 
 _NO_UNIVERSE_MSG = (

@@ -19,7 +19,7 @@ import pandas as pd
 import pytest
 
 from screener.backtester.data import _normalize_frame
-from screener.backtester.core import simulate_ticker
+from tests.backtest_helpers import simulate_single_ticker
 from screener.backtester.fills import _resolve_stop_fill, _resolve_target_fill
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
@@ -118,13 +118,13 @@ def test_custom_slippage_model_overrides_bps_via_engine(monkeypatch):
     # the explicit model — slippage_bps should not also apply.
     bars = make_bars(n=20, seed=11)
     cfg_legacy = _cfg(hold=5, slippage_bps=50.0)
-    o_legacy = simulate_ticker(bars, signal_idx=3, cfg=cfg_legacy)
+    o_legacy = simulate_single_ticker(bars, signal_idx=3, cfg=cfg_legacy)
     cfg_halfspread = _cfg(
         hold=5,
         slippage_bps=50.0,
         slippage_model=HalfSpreadSlippage(half_spread_bps=5.0),
     )
-    o_half = simulate_ticker(bars, signal_idx=3, cfg=cfg_halfspread)
+    o_half = simulate_single_ticker(bars, signal_idx=3, cfg=cfg_halfspread)
     assert o_legacy.trade is not None and o_half.trade is not None
     # 5 bps half-spread is less adverse than 50 bps fixed
     assert o_half.trade.entry_price < o_legacy.trade.entry_price
@@ -134,12 +134,12 @@ def test_custom_slippage_model_overrides_bps_via_engine(monkeypatch):
 def test_volume_impact_changes_engine_entry_and_exit_fills():
     bars = make_bars(n=20, seed=11)
     bars["volume"] = 1_000.0
-    zero = simulate_ticker(
+    zero = simulate_single_ticker(
         bars,
         signal_idx=5,
         cfg=_cfg(hold=5, top=1, slippage_model=VolumeImpactSlippage(k=0.0)),
     )
-    impacted = simulate_ticker(
+    impacted = simulate_single_ticker(
         bars,
         signal_idx=5,
         cfg=_cfg(hold=5, top=1, slippage_model=VolumeImpactSlippage(k=5.0)),
@@ -151,13 +151,15 @@ def test_volume_impact_changes_engine_entry_and_exit_fills():
 
 def test_zero_volume_impact_preserves_zero_slippage_numbers_exactly():
     bars = make_bars(n=20, seed=11)
-    fixed = simulate_ticker(bars, signal_idx=5, cfg=_cfg(hold=5, slippage_bps=0.0))
-    impact = simulate_ticker(
+    fixed = simulate_single_ticker(
+        bars, signal_idx=5, cfg=_cfg(hold=5, slippage_bps=0.0)
+    )
+    impact = simulate_single_ticker(
         bars,
         signal_idx=5,
         cfg=_cfg(hold=5, slippage_model=VolumeImpactSlippage(k=0.0)),
     )
-    assert fixed == impact
+    assert fixed.trade == impact.trade
 
 
 def test_fixed_slippage_skips_unused_liquidity_work(monkeypatch):
@@ -165,7 +167,7 @@ def test_fixed_slippage_skips_unused_liquidity_work(monkeypatch):
         raise AssertionError("fixed slippage must not prepare ADV/sigma")
 
     monkeypatch.setattr("screener.backtester.core._trailing_liquidity", fail_if_called)
-    outcome = simulate_ticker(
+    outcome = simulate_single_ticker(
         make_bars(n=20, seed=11), signal_idx=5, cfg=_cfg(hold=5, slippage_bps=10.0)
     )
     assert outcome.trade is not None
@@ -210,7 +212,7 @@ def test_engine_gap_down_stop_uses_bar_open():
         },
     )
     cfg = _cfg(hold=10, stop_loss=0.05, gap_fills=True)
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "stop"
     assert outcome.trade.exit_price == pytest.approx(88.0)
@@ -226,7 +228,7 @@ def test_engine_gap_up_target_uses_bar_open():
         },
     )
     cfg = _cfg(hold=10, take_profit=0.10, gap_fills=True)
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "target"
     assert outcome.trade.exit_price == pytest.approx(120.0)
@@ -241,7 +243,7 @@ def test_gap_fills_false_engine_reproduces_legacy():
         },
     )
     cfg = _cfg(hold=10, stop_loss=0.05, gap_fills=False)
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     # Legacy: fills at stop_ref=95 even though bar gapped to 88.
     assert outcome.trade.exit_price == pytest.approx(95.0)
@@ -257,7 +259,7 @@ def test_limit_entry_fills_at_limit_when_low_touches():
         },
     )
     cfg = _cfg(hold=5, entry_order_type="limit", entry_limit_bps=500.0)
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     # Bar 4 opens at 99 > limit 95, so fill at min(99, 95) = 95.
     assert outcome.trade.entry_price == pytest.approx(95.0)
@@ -274,7 +276,7 @@ def test_limit_entry_fills_at_bar_open_when_gap_through_limit():
         },
     )
     cfg = _cfg(hold=5, entry_order_type="limit", entry_limit_bps=500.0)  # limit=95
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.entry_price == pytest.approx(92.0)
 
@@ -289,7 +291,7 @@ def test_limit_entry_unfilled_when_price_never_touches():
         bars.iat[i, bars.columns.get_loc("close")] = 108.0
     bars.iat[3, bars.columns.get_loc("close")] = 100.0
     cfg = _cfg(hold=5, entry_order_type="limit", entry_limit_bps=500.0)
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is None
     assert outcome.warning and "limit order never filled" in outcome.warning
 
@@ -304,7 +306,7 @@ def test_moc_entry_fills_at_close():
         },
     )
     cfg = _cfg(hold=5, entry_order_type="moc")
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.entry_price == pytest.approx(101.7)
     assert outcome.trade.entry_date == bars.index[4].date()
