@@ -35,6 +35,7 @@ from screener.backtester.historical_cli import backtest_historical
 from screener.backtester.pine import PineError, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.backtester.sizing import entry_budget_for
+from screener.backtester.warmup import _warmup_days_for_interval
 from screener.options.backtest import merge_referenced_options
 
 
@@ -426,14 +427,6 @@ def _run_event_driven_sim(
     return master_dates
 
 
-def _warmup_days_for_interval(lookback: int, interval: str) -> int:
-    warmup_bars = lookback * 2 + 30
-    if interval == "1d":
-        return max(warmup_bars, 365)
-    bars_per_day = max(periods_per_year_for_interval(interval) // 252, 1)
-    return int(np.ceil(warmup_bars / bars_per_day) * 1.6) + 5
-
-
 def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     warnings: list[str] = []
     as_of_ts = pd.Timestamp(cfg.as_of)
@@ -453,7 +446,10 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     yf_symbols = list(dict.fromkeys(list(yf_by_tv.values()) + [cfg.benchmark]))
 
     start = (
-        as_of_ts - pd.Timedelta(days=_warmup_days_for_interval(lookback, cfg.interval))
+        as_of_ts
+        - pd.Timedelta(
+            days=_warmup_days_for_interval(lookback, cfg.interval, multiplier=2)
+        )
     ).date()
     end = (as_of_ts + pd.Timedelta(days=cfg.hold * 2 + 30)).date()
     price_panel = fetcher.fetch(yf_symbols, start, end)

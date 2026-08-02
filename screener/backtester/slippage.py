@@ -22,6 +22,8 @@ from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from screener.backtester.costs import bps_fraction
+
 
 Side = Literal["buy", "sell"]
 
@@ -74,10 +76,6 @@ def apply_slippage(
     return reference_price * (1.0 - frac)
 
 
-def _bps_fraction(bps: float) -> float:
-    return bps / 10_000.0
-
-
 class FixedBpsSlippage(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -91,7 +89,7 @@ class FixedBpsSlippage(BaseModel):
         sigma_daily: float,
         half_spread: float = 0.0,
     ) -> float:
-        return _bps_fraction(self.bps)
+        return bps_fraction(self.bps)
 
 
 class HalfSpreadSlippage(FixedBpsSlippage):
@@ -107,7 +105,7 @@ class HalfSpreadSlippage(FixedBpsSlippage):
         sigma_daily: float,
         half_spread: float = 0.0,
     ) -> float:
-        return _bps_fraction(self.half_spread_bps)
+        return bps_fraction(self.half_spread_bps)
 
 
 class EstimatedHalfSpreadSlippage(BaseModel):
