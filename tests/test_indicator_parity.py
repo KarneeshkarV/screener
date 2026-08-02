@@ -10,11 +10,22 @@ module feeds a deterministic OHLCV frame through both and asserts parity.
 
 Convergence notes:
   * SMA / EMA / highest / lowest: seeded identically; exact match (1e-9).
-  * RSI and ATR use Wilder smoothing (alpha = 1/n). The engine seeds via
-    pandas' ewm (adjust=False), which initializes from the first value; the
-    pine-port seeds Wilder's RMA from the arithmetic mean of the first n
-    values. The two converge asymptotically but differ during warm-up — so
-    the test asserts tight parity only AFTER a long warm-up (>= 200 bars).
+  * RSI and ATR use Wilder smoothing (alpha = 1/n) with two different seeds,
+    and the difference is deliberate rather than accidental. The pandas path
+    (screener/indicators/frames.py, used by the AST evaluator and by
+    unusual_volume) seeds via ewm(adjust=False), which initializes from the
+    first value. The numpy plugin path seeds from the arithmetic mean of the
+    first n values, because screener/indicators/plugins/rma.py exists
+    specifically to match Pine's ``ta.rma`` so strategies ported from
+    TradingView reproduce their published numbers.
+
+    Measured on a 300-bar frame: the two differ by ~2e-2 at bar 13, ~1e-3 at
+    bar 50, and ~1e-11 by bar 299. So the test asserts tight parity only AFTER
+    a long warm-up (>= 200 bars).
+
+    Collapsing them onto one seed is therefore not a cleanup: choosing ewm
+    breaks Pine fidelity for ported strategies, and choosing rma moves the
+    engine's warm-up numbers. Leave both, and pick the right one per caller.
 """
 
 from __future__ import annotations
