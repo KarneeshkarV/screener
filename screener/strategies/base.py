@@ -6,7 +6,7 @@ from typing import Callable
 
 import pandas as pd
 
-from screener.strategies.trades import Trade
+from screener.strategies.trades import ResearchTrade
 
 
-StrategyFn = Callable[[pd.DataFrame], list[Trade]]
+StrategyFn = Callable[[pd.DataFrame], list[ResearchTrade]]

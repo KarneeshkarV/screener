@@ -12,7 +12,7 @@ from screener.parallel import parallel_map
 from screener.research.pine_runner.constants import BENCHMARKS
 from screener.research.pine_runner.data import fetch_ohlcv, load_universe
 from screener.strategies.registry import STRATEGIES
-from screener.strategies.trades import Trade
+from screener.strategies.trades import ResearchTrade
 
 log = get_logger("pine_runner")
 
@@ -37,7 +37,7 @@ class MarketRun(BaseModel):
         return normalized
 
 
-def _compound(trades: list[Trade]) -> float:
+def _compound(trades: list[ResearchTrade]) -> float:
     r = 1.0
     for t in trades:
         r *= 1 + t.ret

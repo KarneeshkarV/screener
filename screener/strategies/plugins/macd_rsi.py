@@ -8,11 +8,11 @@ import pandas as pd
 from screener.indicators.plugins.ema import ema as _ema
 from screener.indicators.plugins.rsi import rsi as _rsi
 from screener.strategies.spec import strategy
-from screener.strategies.trades import Trade, _walk
+from screener.strategies.trades import ResearchTrade, _walk
 
 
 @strategy("macd_rsi")
-def strat_macd_rsi(df: pd.DataFrame) -> list[Trade]:
+def strat_macd_rsi(df: pd.DataFrame) -> list[ResearchTrade]:
     """entry: MACD crosses over signal AND RSI was <= 30 in last 5 bars
     exit:  MACD crosses under signal AND RSI was >= 70 in last 5 bars
     """

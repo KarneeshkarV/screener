@@ -4,7 +4,7 @@ Expected values are RE-DERIVED here with plain arithmetic in comments —
 NOT copied from the implementation output.  A mismatch is a real defect.
 
 Convention reminders (all population std, ddof=0):
-  * _sharpe / _sortino / _vol_annual work on DAILY-RETURNS Series.
+  * equity_curve_sharpe / _sortino / _vol_annual work on DAILY-RETURNS Series.
   * _cagr / _max_drawdown / _calmar work on an EQUITY-CURVE Series.
 """
 
@@ -20,18 +20,18 @@ from screener.backtester.metrics import (
     _cagr,
     _daily_returns,
     _max_drawdown,
-    _sharpe,
+    equity_curve_sharpe,
     _sortino,
     _vol_annual,
 )
 
 # ---------------------------------------------------------------------------
-# _sharpe golden
+# equity_curve_sharpe golden
 # ---------------------------------------------------------------------------
 
 
-def test_sharpe_five_bar_golden():
-    """_sharpe([0.01, 0.02, -0.01, 0.00, 0.03])
+def test_equity_curve_sharpe_five_bar_golden():
+    """equity_curve_sharpe([0.01, 0.02, -0.01, 0.00, 0.03])
 
     Derivation (rf=0):
         mean   = (0.01+0.02-0.01+0.00+0.03) / 5 = 0.05/5 = 0.01
@@ -49,15 +49,15 @@ def test_sharpe_five_bar_golden():
     std_pop = math.sqrt(var_pop)  # = sqrt(2)/100
     expected = mean / std_pop * math.sqrt(252)
 
-    assert abs(_sharpe(returns) - expected) < 1e-7
+    assert abs(equity_curve_sharpe(returns) - expected) < 1e-7
 
 
-def test_sharpe_matches_numpy_formula_directly():
-    """_sharpe matches the population-std formula applied via numpy."""
+def test_equity_curve_sharpe_matches_numpy_formula_directly():
+    """equity_curve_sharpe matches the population-std formula applied via numpy."""
     rng = np.random.default_rng(0)
     returns = pd.Series(rng.normal(0.0005, 0.01, 252))
     expected = float(returns.mean() / returns.std(ddof=0) * math.sqrt(252))
-    assert abs(_sharpe(returns) - expected) < 1e-12
+    assert abs(equity_curve_sharpe(returns) - expected) < 1e-12
 
 
 # ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ from screener.backtester.metrics import (
     _dsr,
     _max_drawdown,
     _psr,
-    _sharpe,
+    equity_curve_sharpe,
     _sortino,
     _vol_annual,
 )
@@ -31,9 +31,9 @@ from screener.backtester.metrics import (
 # ---------------------------------------------------------------------------
 
 
-def test_sharpe_empty_returns_zero():
+def test_equity_curve_sharpe_empty_returns_zero():
     """Guard: `if daily.empty or daily.std(ddof=0) == 0: return 0.0`"""
-    assert _sharpe(pd.Series(dtype=float)) == 0.0
+    assert equity_curve_sharpe(pd.Series(dtype=float)) == 0.0
 
 
 def test_sortino_empty_returns_zero():
@@ -121,10 +121,10 @@ def test_alpha_beta_single_aligned_row_returns_zeros():
 # ---------------------------------------------------------------------------
 
 
-def test_sharpe_all_zero_returns_zero():
+def test_equity_curve_sharpe_all_zero_returns_zero():
     """std(ddof=0) == 0 for zero returns → guard fires → 0.0."""
     zeros = pd.Series([0.0] * 10)
-    assert _sharpe(zeros) == 0.0
+    assert equity_curve_sharpe(zeros) == 0.0
 
 
 def test_sortino_all_zero_no_downside_returns_zero():
@@ -145,7 +145,7 @@ def test_psr_all_zero_short_returns_zero():
 
 
 def test_psr_all_zero_long():
-    """All-zero series of length ≥ 30: std == 0 → _sharpe returns 0 → sr_per = 0.
+    """All-zero series of length ≥ 30: std == 0 → equity_curve_sharpe returns 0 → sr_per = 0.
 
     The PSR formula with sr_per=0 and sr_bench_per=0: z=0 → phi(0)=0.5.
     (No guard fires for std=0 inside _psr; it proceeds to phi(0).)

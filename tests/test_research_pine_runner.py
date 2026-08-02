@@ -8,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from screener.research.pine_runner import cli, data, output, run
-from screener.strategies.trades import Trade
+from screener.strategies.trades import ResearchTrade
 
 
 def test_fetch_ohlcv_normalizes_index_and_adj_close(monkeypatch):
@@ -283,12 +283,13 @@ def _bars(n: int) -> pd.DataFrame:
 
 def _trade(
     entry_idx: int, exit_idx: int, entry_px: float, exit_px: float, entry_date: str
-) -> Trade:
-    return Trade(
+) -> ResearchTrade:
+    return ResearchTrade(
         entry_idx=entry_idx,
         exit_idx=exit_idx,
         entry_px=entry_px,
         exit_px=exit_px,
         entry_date=pd.Timestamp(entry_date),
         exit_date=pd.Timestamp(entry_date) + pd.Timedelta(days=1),
+        return_pct=exit_px / entry_px - 1.0 if entry_px > 0 else 0.0,
     )

@@ -81,16 +81,12 @@ Prefer the qualified name in new code.
 **run** means two things.
 A backtest execution, and a persisted screen result row addressed by `run_id` and replayable via `--from-run`.
 
-**trade** names four types.
-`backtester.models.Trade` is an accounting ledger with shares, fees and pnl.
-`strategies.trades.Trade` is an index-based research round trip.
-`EarningsTrade` and `PeadTrade` are event dataclasses.
-`OptionPositionTrade` is multi-leg with its own exit vocabulary.
+**trade** has one neutral lifecycle base in `screener.ledger.Trade`.
+`EquityLedgerTrade`, `ResearchTrade`, `ExecutedEventTrade`, and `OptionPositionTrade` extend it with their accounting, research, event, and multi-leg fields.
+The extensions keep their distinct persisted schemas and return units.
 
-**ExitReason** is two different literal sets.
-The equity engines use `stop, target, trail, time, exit_expr, eod, session`.
-The options engine uses `expiry, target, stop, dte, exit_expr, time, end`.
-Four values overlap and three diverge on each side.
+**ExitReason** is one neutral literal set in `screener.ledger`.
+It preserves every existing equity and options serialized value.
 
 **tearsheet** means two things with zero shared code.
 An HTML equity and trade report for a backtest result, and the factor IC and quantile report.
@@ -104,9 +100,9 @@ Callable specs, expression specs, earnings scorers, vbt signal builders, and a v
 **screen** means the `screen` command, the standalone feature commands that are not that command, an operator labeller, and an options criterion.
 
 **sharpe** is computed two incomparable ways.
-The equity engines annualise a daily equity curve.
-The earnings engine annualises per-trade returns by average holding period.
-The two numbers are not comparable and currently share a name.
+`equity_curve_sharpe` annualises a daily equity curve.
+`trade_return_sharpe_by_holding_period` annualises per-trade returns by average holding period.
+The two numbers are not comparable.
 
 ## Conventions
 

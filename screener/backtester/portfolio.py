@@ -29,7 +29,8 @@ import numpy as np
 import pandas as pd
 
 from screener.backtester.costs import CostModel, FlatCommission, Side
-from screener.backtester.models import ExitReason, Position, Trade
+from screener.backtester.models import Position, Trade
+from screener.ledger import ExitReason
 
 # Trade/position stamps are date-only for daily runs and full datetimes for
 # intraday runs (see ``screener.backtester.core._bar_label``).

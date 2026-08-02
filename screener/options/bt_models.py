@@ -1,24 +1,23 @@
 """Typed contracts for the options position-P&L backtester.
 
-``OptionPositionTrade`` satisfies the ``EventTradeSummary`` protocol used by
-``screener.earnings_backtest.metrics.compute_backtest_summary`` so summary
-stats come for free. ``return_pct`` is premium-relative
-(``pnl / gross_entry_premium``), not margin-relative.
+``OptionPositionTrade`` satisfies the neutral ``EventTradeSummary`` protocol
+used by ``screener.ledger.compute_event_trade_summary``. ``return_pct`` is
+premium-relative (``pnl / gross_entry_premium``), not margin-relative.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from screener.ledger import ExitReason, Trade
 from screener.options.models import OptionRight
 
 StrikeRule = str  # "atm" | "moneyness:<±pct>" | "delta:<abs>"
 ExpiryRule = str  # "front" | "next" | "dte:<n>"
-ExitReason = Literal["expiry", "target", "stop", "dte", "exit_expr", "time", "end"]
 
 
 @dataclass(frozen=True)
@@ -55,13 +54,12 @@ class LegFill:
     entry_iv: float | None = None
 
 
-@dataclass(frozen=True)
-class OptionPositionTrade:
-    """One completed multi-leg option trade.
+class OptionPositionTrade(Trade):
+    """One completed multi-leg option extension of the neutral lifecycle.
 
     ``return_pct`` is premium-relative (``pnl / gross entry premium * 100``),
     not margin-relative. ``passed_filter`` is always True for taken trades so
-    ``compute_backtest_summary`` includes them.
+    event-trade aggregation includes them.
     """
 
     symbol: str
@@ -75,7 +73,7 @@ class OptionPositionTrade:
     return_pct: float
     exit_reason: ExitReason
     passed_filter: bool = True
-    details: dict[str, Any] = field(default_factory=dict)
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class OptionsBacktestConfig(BaseModel):
