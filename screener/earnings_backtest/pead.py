@@ -14,11 +14,13 @@ from typing import Any, Optional, cast
 
 import pandas as pd
 
-from screener.backtester.data import PriceFetcher
-from screener.backtester.execution import (
-    fixed_bps_round_trip,
-    net_round_trip_return,
+from screener.backtester.costs import (
+    CostModel,
+    apply_round_trip_costs,
+    build_cost_model,
 )
+from screener.backtester.data import PriceFetcher
+from screener.backtester.slippage import fixed_bps_round_trip
 from screener.earnings_backtest.data import (
     fetch_price_data,
     load_universe,
@@ -40,6 +42,7 @@ def run_pead_backtest(
     min_surprise: float = 5.0,
     hold_days: int = 40,
     commission_bps: float = 10.0,
+    cost_model: str = "flat",
     slippage_bps: float = 5.0,
     batch_size: int = 50,
     tickers: Optional[list[str]] = None,
@@ -113,14 +116,16 @@ def run_pead_backtest(
         logger.warning("no_pead_events_found")
         return []
 
-    # 4. Simulate per the requested exit mode.
+    # 4. Simulate per the requested exit mode. commission_bps is per fill for
+    # the flat schedule, the same contract used by every backtest engine.
+    costs = build_cost_model(cost_model, commission_bps=float(commission_bps))
     if exit_mode == "dynamic":
         trades = _simulate_dynamic_hold(
-            events_df, price_data, min_surprise, commission_bps, slippage_bps
+            events_df, price_data, min_surprise, costs, slippage_bps
         )
     else:
         trades = _simulate_fixed_hold(
-            events_df, price_data, hold_days, commission_bps, slippage_bps
+            events_df, price_data, hold_days, costs, slippage_bps
         )
 
     logger.info("pead_backtest_complete", extra={"trades": len(trades)})
@@ -151,7 +156,7 @@ def _simulate_fixed_hold(
     events_df: pd.DataFrame,
     price_data: dict[str, pd.DataFrame],
     hold_days: int,
-    commission_bps: float,
+    costs: CostModel,
     slippage_bps: float,
 ) -> list[PeadTrade]:
     """Fixed next-open entry -> ``hold_days``-session hold -> close exit."""
@@ -183,8 +188,8 @@ def _simulate_fixed_hold(
             entry_price, exit_price, slippage_bps
         )
 
-        ret_raw, ret_net = net_round_trip_return(
-            entry_price, exit_price, commission_bps
+        ret_raw, ret_net, trade_fees = apply_round_trip_costs(
+            entry_price, exit_price, costs
         )
 
         entry_ts = bars.index[entry_idx]
@@ -200,7 +205,10 @@ def _simulate_fixed_hold(
                 return_pct=round(ret_net * 100, 4),
                 surprise_pct=round(float(event["surprise_pct"]), 4),
                 holding_days=hold_days,
-                details={"raw_return_pct": round(ret_raw * 100, 4)},
+                details={
+                    "raw_return_pct": round(ret_raw * 100, 4),
+                    "fees": trade_fees,
+                },
             )
         )
     return trades
@@ -212,7 +220,7 @@ def _dynamic_trade(
     exit_ts: Any,
     exit_price: float,
     bars: pd.DataFrame,
-    commission_bps: float,
+    costs: CostModel,
     slippage_bps: float,
     exit_reason: str,
 ) -> PeadTrade:
@@ -221,7 +229,7 @@ def _dynamic_trade(
     entry_fill, exit_fill = fixed_bps_round_trip(
         position["entry_price"], exit_price, slippage_bps
     )
-    ret_raw, ret_net = net_round_trip_return(entry_fill, exit_fill, commission_bps)
+    ret_raw, ret_net, trade_fees = apply_round_trip_costs(entry_fill, exit_fill, costs)
     # Actual trading-day holding period: bars inclusive of entry and exit.
     holding_days = int(len(bars[(bars.index >= entry_ts) & (bars.index <= exit_ts)]))
     return PeadTrade(
@@ -237,6 +245,7 @@ def _dynamic_trade(
         details={
             "raw_return_pct": round(ret_raw * 100, 4),
             "exit_reason": exit_reason,
+            "fees": trade_fees,
         },
     )
 
@@ -245,7 +254,7 @@ def _simulate_dynamic_hold(
     events_df: pd.DataFrame,
     price_data: dict[str, pd.DataFrame],
     min_surprise: float,
-    commission_bps: float,
+    costs: CostModel,
     slippage_bps: float,
 ) -> list[PeadTrade]:
     """Chronological per-ticker hold: enter on a beat, exit when a report fails.
@@ -299,7 +308,7 @@ def _simulate_dynamic_hold(
                         exit_ts,
                         exit_price,
                         bars,
-                        commission_bps,
+                        costs,
                         slippage_bps,
                         exit_reason="criteria_failed",
                     )
@@ -315,7 +324,7 @@ def _simulate_dynamic_hold(
                     bars.index[-1],
                     float(bars.iloc[-1]["close"]),
                     bars,
-                    commission_bps,
+                    costs,
                     slippage_bps,
                     exit_reason="end_of_data",
                 )

@@ -34,6 +34,7 @@ from pydantic import ValidationError
 
 from screener.backtester import run_backtest, run_rolling_backtest
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
+from screener.backtester.slippage import FixedBpsSlippage, VolumeImpactSlippage
 
 # --------------------------------------------------------------------------- #
 # Pinned inputs - every free variable is fixed so the baseline is stable for
@@ -82,6 +83,11 @@ INTRADAY_ROLL_END = date(2024, 5, 17)
 ENGINES: tuple[str, ...] = ("rolling", "historical")
 COST_MODELS: tuple[str, ...] = ("flat", "india", "us_vested")
 SIZING_RULES: tuple[str, ...] = ("equal_slot", "atr_risk")
+# fixed_bps ignores order size; volume_impact does not. Only the latter lets the
+# entry budget and the configured cost model influence the fill price, so it is
+# the only cell that can detect a regression in the shared cost authority.
+SLIPPAGE_MODELS: tuple[str, ...] = ("fixed_bps", "volume_impact")
+IMPACT_K = 0.3
 INTERVALS: tuple[str, ...] = ("1d", "15m")
 
 FLOAT_DECIMALS = 9
@@ -225,8 +231,14 @@ class StubPriceFetcher:
 EngineName = Literal["rolling", "historical"]
 
 
-def _cell_key(engine: str, cost_model: str, sizing_rule: str, interval: str) -> str:
-    return f"{engine}|{cost_model}|{sizing_rule}|{interval}"
+def _cell_key(
+    engine: str,
+    cost_model: str,
+    sizing_rule: str,
+    interval: str,
+    slippage_model: str = "fixed_bps",
+) -> str:
+    return f"{engine}|{cost_model}|{sizing_rule}|{interval}|{slippage_model}"
 
 
 def _build_panels() -> dict[str, dict[str, pd.DataFrame]]:
@@ -249,6 +261,7 @@ def _make_config(
     cost_model: str,
     sizing_rule: str,
     interval: str,
+    slippage_model: str = "fixed_bps",
 ) -> BacktestConfig:
     if interval == "1d":
         as_of: date | datetime = DAILY_AS_OF
@@ -268,6 +281,14 @@ def _make_config(
         take_profit=None,
         trailing_stop=None,
         slippage_bps=SLIPPAGE_BPS,
+        # Size-dependent impact is the ONLY path where the entry budget and the
+        # configured cost model reach the fill price. Without a volume_impact
+        # cell the harness cannot see a cost-model regression at all.
+        slippage_model=(
+            VolumeImpactSlippage(k=IMPACT_K)
+            if slippage_model == "volume_impact"
+            else FixedBpsSlippage(bps=SLIPPAGE_BPS)
+        ),
         commission_bps=COMMISSION_BPS,
         cost_model=cost_model,  # type: ignore[arg-type]
         top=TOP,
@@ -290,6 +311,7 @@ def _run_cell(
     sizing_rule: str,
     interval: str,
     panels: dict[str, dict[str, pd.DataFrame]],
+    slippage_model: str = "fixed_bps",
 ) -> tuple[BacktestResult | None, str | None]:
     """Run one matrix cell. Returns (result, skip_reason)."""
     try:
@@ -298,6 +320,7 @@ def _run_cell(
             cost_model=cost_model,
             sizing_rule=sizing_rule,
             interval=interval,
+            slippage_model=slippage_model,
         )
     except (ValidationError, ValueError) as exc:
         return None, f"config rejected: {exc}"
@@ -416,38 +439,43 @@ def run_matrix() -> dict[str, Any]:
         for cost_model in COST_MODELS:
             for sizing_rule in SIZING_RULES:
                 for interval in INTERVALS:
-                    key = _cell_key(engine, cost_model, sizing_rule, interval)
-                    result, reason = _run_cell(
-                        engine=engine,
-                        cost_model=cost_model,
-                        sizing_rule=sizing_rule,
-                        interval=interval,
-                        panels=panels,
-                    )
-                    if reason is not None:
-                        skipped.append({"key": key, "reason": reason})
-                        continue
-                    assert result is not None
-                    trades = list(result.trades)
-                    if not trades:
-                        raise RuntimeError(
-                            f"cell {key!r} produced an empty trade ledger; "
-                            "extend the synthetic panel or relax the entry "
-                            "expression so atr_risk / rolling paths actually "
-                            "trade (an empty ledger is a broken cell, not a "
-                            "stable baseline)"
+                    for slippage_model in SLIPPAGE_MODELS:
+                        key = _cell_key(
+                            engine, cost_model, sizing_rule, interval, slippage_model
                         )
-                    cells[key] = {
-                        "key": {
-                            "engine": engine,
-                            "cost_model": cost_model,
-                            "sizing_rule": sizing_rule,
-                            "interval": interval,
-                        },
-                        "metrics": _metrics_record(result.metrics),
-                        "trades": _trade_records(trades),
-                        "trade_count": len(trades),
-                    }
+                        result, reason = _run_cell(
+                            engine=engine,
+                            cost_model=cost_model,
+                            sizing_rule=sizing_rule,
+                            interval=interval,
+                            panels=panels,
+                            slippage_model=slippage_model,
+                        )
+                        if reason is not None:
+                            skipped.append({"key": key, "reason": reason})
+                            continue
+                        assert result is not None
+                        trades = list(result.trades)
+                        if not trades:
+                            raise RuntimeError(
+                                f"cell {key!r} produced an empty trade ledger; "
+                                "extend the synthetic panel or relax the entry "
+                                "expression so atr_risk / rolling paths actually "
+                                "trade (an empty ledger is a broken cell, not a "
+                                "stable baseline)"
+                            )
+                        cells[key] = {
+                            "key": {
+                                "engine": engine,
+                                "cost_model": cost_model,
+                                "sizing_rule": sizing_rule,
+                                "interval": interval,
+                                "slippage_model": slippage_model,
+                            },
+                            "metrics": _metrics_record(result.metrics),
+                            "trades": _trade_records(trades),
+                            "trade_count": len(trades),
+                        }
 
     atr_share_diffs = _assert_atr_risk_binds(cells)
 

@@ -22,6 +22,7 @@ class SingleTickerResult:
     trades: tuple[Trade, ...]
     warning: str | None
     cash: float
+    fees_paid: dict[str, float]
 
     @property
     def trade(self) -> Trade | None:
@@ -57,7 +58,12 @@ def simulate_single_ticker(
         entry_budget=entry_budget,
     )
     if state is None:
-        return SingleTickerResult(trades=(), warning=warning, cash=portfolio.cash())
+        return SingleTickerResult(
+            trades=(),
+            warning=warning,
+            cash=portfolio.cash(),
+            fees_paid=dict(portfolio.fees_paid),
+        )
 
     portfolio.assign(ticker, state.rank, state.signal_date)
     portfolio.open(
@@ -65,6 +71,7 @@ def simulate_single_ticker(
         entry_date=state.entry_date,
         entry_price=state.entry_fill,
         budget=entry_budget,
+        shares=state.entry_shares,
     )
     slot_states = {0: state}
     slot_bars = {0: bars}
@@ -86,4 +93,9 @@ def simulate_single_ticker(
         fill_model=fill_model,
     )
     trades = tuple(portfolio.closed_trades())
-    return SingleTickerResult(trades=trades, warning=None, cash=portfolio.cash())
+    return SingleTickerResult(
+        trades=trades,
+        warning=None,
+        cash=portfolio.cash(),
+        fees_paid=dict(portfolio.fees_paid),
+    )

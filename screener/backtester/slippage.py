@@ -76,6 +76,23 @@ def apply_slippage(
     return reference_price * (1.0 - frac)
 
 
+def fixed_bps_fill(reference_price: float, side: Side, bps: float) -> float:
+    """Apply the canonical fixed-bps slippage model to one reference price."""
+    return apply_slippage(FixedBpsSlippage(bps=bps), reference_price, side)
+
+
+def fixed_bps_round_trip(
+    entry_reference: float,
+    exit_reference: float,
+    slippage_bps: float,
+) -> tuple[float, float]:
+    """Return adverse buy and sell fills for a fixed-bps round trip."""
+    return (
+        fixed_bps_fill(entry_reference, "buy", slippage_bps),
+        fixed_bps_fill(exit_reference, "sell", slippage_bps),
+    )
+
+
 class FixedBpsSlippage(BaseModel):
     model_config = ConfigDict(frozen=True)
 

@@ -190,11 +190,7 @@ def _prepare_simulation(
     # via bars-per-session (with slack for weekends/holidays) so we don't request
     # ~365 days of minute data — which both blows past yfinance's intraday cap
     # and is unnecessary. Chunking longer intraday windows is Phase 2.
-    warmup_days = _warmup_days_for_interval(
-        lookback,
-        cfg.interval,
-        multiplier=3,
-    )
+    warmup_days = _warmup_days_for_interval(lookback, cfg.interval)
     fetch_start = (start_ts - pd.Timedelta(days=warmup_days)).date()
     fetch_end = end_ts.date()
     price_panel = fetcher.fetch(yf_symbols, fetch_start, fetch_end)
@@ -384,7 +380,7 @@ def _prepare_simulation(
     slot_bars: dict[int, pd.DataFrame] = {}
     selection_rows: list[dict] = []
 
-    fill_model = FillModel(cfg)
+    fill_model = FillModel(cfg, cost_model=portfolio.cost_model)
     day_loop = DayLoop(
         portfolio=portfolio,
         cfg=cfg,
@@ -538,6 +534,7 @@ class _DailyRankingSource:
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
                     budget=entry_budget,
+                    shares=state.entry_shares,
                 )
                 slot_states[slot_id] = state
                 self.slot_bars[slot_id] = bars
@@ -712,7 +709,7 @@ def run_prepared_rolling_backtest(
     }
     slot_bars: dict[int, pd.DataFrame] = {}
     selection_rows: list[dict] = []
-    fill_model = FillModel(cfg)
+    fill_model = FillModel(cfg, cost_model=portfolio.cost_model)
     day_loop = DayLoop(
         portfolio=portfolio,
         cfg=cfg,
