@@ -23,10 +23,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal, TypeVar, cast
 
 from screener.cache import (
+    FrameWithMeta as FrameWithMeta,  # re-exported: the "frame_meta" payload type
     cache_path,
     cached_frame_call,
+    cached_frame_meta_call,
     cached_json_call,
     read_frame,
+    read_frame_meta,
     read_json,
     stable_key,
 )
@@ -39,7 +42,7 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 LOG = logging.getLogger(__name__)
 
-Kind = Literal["json", "frame"]
+Kind = Literal["json", "frame", "frame_meta"]
 
 
 class _Unset:
@@ -48,6 +51,8 @@ class _Unset:
 
 _UNSET = _Unset()
 _FETCH_FAILED = object()
+# Distinguishes "no cache entry" from a cached ``null``/empty payload.
+_MISSING = object()
 
 
 class _ProviderFetchFailed(RuntimeError):
@@ -61,7 +66,9 @@ class ProviderSpec:
     ``provider`` is the resilience circuit-breaker name ("fmp", "yfinance",
     "nse", "tradingview", "openscreener", ...). ``namespace`` is the on-disk
     cache namespace. ``ttl_seconds`` is the default cache TTL (overridable
-    per-call). ``kind`` selects the JSON vs parquet cache backend.
+    per-call). ``kind`` selects the cache backend: ``"json"``, ``"frame"``
+    (parquet), or ``"frame_meta"`` (parquet plus a JSON sidecar, for payloads
+    that are a frame *and* a scalar the frame cannot carry).
     """
 
     provider: str
@@ -108,6 +115,19 @@ class CachedProvider:
             return cast(T, result)
 
         try:
+            if self.spec.kind == "frame_meta":
+                # kind == "frame_meta" callers bind T to (DataFrame, dict);
+                # cached_frame_meta_call works in that pair, so cast its types.
+                return cast(
+                    T,
+                    cached_frame_meta_call(
+                        self.spec.namespace,
+                        key_parts,
+                        ttl_seconds=ttl,
+                        refresh=refresh,
+                        fetch=cast("Callable[[], FrameWithMeta]", resilient),
+                    ),
+                )
             if self.spec.kind == "frame":
                 # kind == "frame" callers bind T to pd.DataFrame;
                 # cached_frame_call works in DataFrames, so cast its types.
@@ -129,21 +149,8 @@ class CachedProvider:
                 fetch=resilient,
             )
         except _ProviderFetchFailed:
-            path = cache_path(
-                self.spec.namespace,
-                stable_key(key_parts),
-                "parquet" if self.spec.kind == "frame" else "json",
-            )
-            missing = object()
-            stale = (
-                read_frame(path)
-                if self.spec.kind == "frame"
-                else read_json(path, default=missing)
-            )
-            stale_exists = (
-                stale is not None if self.spec.kind == "frame" else stale is not missing
-            )
-            if stale_exists:
+            stale = self._read_stale(key_parts)
+            if stale is not _MISSING:
                 LOG.warning(
                     "Serving stale %s cache data due to %s provider failure",
                     self.spec.namespace,
@@ -151,6 +158,21 @@ class CachedProvider:
                 )
                 return cast(T, stale)
             return fallback
+
+    def _read_stale(self, key_parts: Any) -> Any:
+        """Return the cached value ignoring TTL, or ``_MISSING`` if there is none."""
+        if self.spec.kind == "frame_meta":
+            entry = read_frame_meta(self.spec.namespace, key_parts)
+            return _MISSING if entry is None else entry
+        path = cache_path(
+            self.spec.namespace,
+            stable_key(key_parts),
+            "parquet" if self.spec.kind == "frame" else "json",
+        )
+        if self.spec.kind == "frame":
+            frame = read_frame(path)
+            return _MISSING if frame is None else frame
+        return read_json(path, default=_MISSING)
 
 
 class FakeProvider:
@@ -183,4 +205,4 @@ class FakeProvider:
             return fallback
 
 
-__all__ = ["ProviderSpec", "CachedProvider", "FakeProvider"]
+__all__ = ["ProviderSpec", "CachedProvider", "FakeProvider", "FrameWithMeta"]

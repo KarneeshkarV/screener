@@ -1,4 +1,11 @@
-"""Regression checks for neutral trade-ledger dependency direction."""
+"""Regression checks for the repo's neutral-layer dependency directions.
+
+Two directions are pinned here:
+
+* the neutral trade ledger and the per-feature contracts built on it;
+* the transport/provider seam, which every feature calls into and which must
+  therefore never call back out into one.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +29,25 @@ _FEATURE_PACKAGES = (
     "screener.strategies",
     "screener.earnings_backtest",
     "screener.options",
+)
+
+# Modules every feature calls *into* for configuration, transport, caching and
+# resilience. They sit below the features, so an import pointing back up is an
+# inversion. ``screener/fmp.py`` is the one that regressed: the module whose
+# docstring claims to own "the single transport" for every FMP call imported
+# ``load_env_file`` from ``screener/backtester/data.py`` just to resolve an API
+# key, so the transport depended on one of its own callers. The loader now
+# lives in ``screener/config.py``.
+#
+# ``screener/cache.py`` is deliberately absent: it resolves cache-area
+# directories by importing the modules that own them (``price_cache``,
+# ``universes``, ``operator.fetch``) lazily inside functions, which is a
+# registry lookup rather than a layering inversion.
+_SEAM_MODULES = (
+    "screener/config.py",
+    "screener/fmp.py",
+    "screener/resilience.py",
+    "screener/providers.py",
 )
 
 
@@ -49,6 +75,26 @@ def test_trade_extension_modules_do_not_depend_on_other_features(
         if module.startswith(feature) and not module.startswith(own_package)
     }
     assert not cross_feature_imports
+
+
+@pytest.mark.parametrize("relative_path", _SEAM_MODULES)
+def test_seam_modules_do_not_import_feature_packages(relative_path: str) -> None:
+    """Config/transport/cache/resilience are called into, never out of."""
+    imports = _imports(_ROOT / relative_path)
+    feature_imports = {
+        module
+        for module in imports
+        for feature in _FEATURE_PACKAGES
+        if module.startswith(feature)
+    }
+    assert not feature_imports
+
+
+def test_fmp_transport_owns_api_key_resolution() -> None:
+    """The FMP key comes from neutral config, not from a data-fetch module."""
+    imports = _imports(_ROOT / "screener/fmp.py")
+    assert "screener.config" in imports
+    assert not any(module.startswith("screener.backtester") for module in imports)
 
 
 def test_neutral_ledger_has_no_feature_dependency() -> None:

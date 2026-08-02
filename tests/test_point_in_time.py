@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import date
+import logging
+import os
+import time
 from types import SimpleNamespace
 
 import pandas as pd
@@ -59,6 +62,44 @@ def test_sp500_membership_uses_cache(tmp_path, monkeypatch):
 
     universes.load_sp500_membership(as_of=as_of, use_cache=False)
     assert counter["fetches"] == 2
+
+
+def test_sp500_membership_cache_for_today_expires(tmp_path, monkeypatch):
+    counter = {"fetches": 0}
+    _patch_sp500_page(monkeypatch, tmp_path, counter)
+    today = date.today()
+
+    universes.load_sp500_membership(as_of=today)
+    path = universes._membership_cache_path("sp500", today)
+    stale_mtime = time.time() - universes._UNIVERSE_CACHE_TTL_SECONDS - 60
+    os.utime(path, (stale_mtime, stale_mtime))
+
+    universes.load_sp500_membership(as_of=today)
+    assert counter["fetches"] == 2
+
+
+def test_sp500_membership_serves_stale_cache_when_wikipedia_is_down(
+    tmp_path, monkeypatch, caplog
+):
+    counter = {"fetches": 0}
+    _patch_sp500_page(monkeypatch, tmp_path, counter)
+    today = date.today()
+
+    expected = universes.load_sp500_membership(as_of=today)
+    path = universes._membership_cache_path("sp500", today)
+    stale_mtime = time.time() - universes._UNIVERSE_CACHE_TTL_SECONDS - 60
+    os.utime(path, (stale_mtime, stale_mtime))
+
+    def boom(url, **kwargs):
+        raise RuntimeError("wikipedia is down")
+
+    monkeypatch.setattr(universes, "requests", SimpleNamespace(get=boom))
+
+    with caplog.at_level(logging.WARNING, logger=universes.LOG.name):
+        served = universes.load_sp500_membership(as_of=today)
+
+    assert served == expected
+    assert "Serving stale sp500 membership cache" in caplog.text
 
 
 def _trend_bars(start: str = "2024-01-01", n: int = 60) -> pd.DataFrame:

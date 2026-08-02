@@ -1,8 +1,20 @@
-"""Configuration file loading for the screener CLI."""
+"""Configuration loading for the screener CLI: config files and the ``.env``.
+
+Two kinds of configuration live here. :func:`load_config` reads the YAML/JSON
+Click default map. :func:`load_env_file` loads the project ``.env`` so
+credentials such as ``FMP_API_KEY`` are available to every layer.
+
+``load_env_file`` used to live in ``screener.backtester.data``, which forced
+``screener.fmp`` -- the single FMP transport -- to import from the backtester
+to resolve an API key. Credential loading is neutral configuration, not a
+backtester concern, so it lives in this leaf module instead and the transport
+now depends downward only. ``tests/test_import_boundaries.py`` pins that.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +30,33 @@ import yaml  # type: ignore[import-untyped]
 
 
 ConfigMap = dict[str, Any]
+
+_DOTENV_LOADED = False
+
+
+def load_env_file() -> None:
+    """Load simple ``KEY=VALUE`` pairs from the project ``.env`` if not exported.
+
+    Idempotent: the file is read at most once per process. Already-exported
+    variables always win, so a real environment overrides the file.
+    """
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED:
+        return
+    _DOTENV_LOADED = True
+    env_path = Path.cwd() / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip().strip('"').strip("'")
+        os.environ[key] = value
 
 
 class CliConfig(BaseModel):

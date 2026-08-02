@@ -7,20 +7,24 @@ from typing import Any
 from tradingview_screener import Query
 import pandas as pd
 
-from screener.cache import (
-    all_fresh,
-    cache_path,
-    read_frame,
-    read_json,
-    stable_key,
-    write_frame,
-    write_json,
-)
 from screener.markets import TV_MARKETS
-from screener.resilience import call_with_resilience
+from screener.providers import CachedProvider, FrameWithMeta, ProviderSpec
 
 
 LOG = logging.getLogger(__name__)
+
+# The scan payload is a frame plus TradingView's total match count, which the
+# frame cannot carry, so the entry is a parquet plus a JSON sidecar that expire
+# together. Routing it through the seam (instead of hand-wiring cache lookup +
+# resilience here) is what gives the scanner stale-serve on a provider outage.
+SCANNER_PROVIDER: CachedProvider = CachedProvider(
+    ProviderSpec(
+        provider="tradingview",
+        namespace="tradingview_scanner",
+        ttl_seconds=900,
+        kind="frame_meta",
+    )
+)
 
 
 MARKETS = TV_MARKETS
@@ -141,32 +145,29 @@ def get_scanner_data_cached(
     cache_ttl: float | None = 900,
     refresh: bool = False,
 ) -> tuple[int, pd.DataFrame]:
-    key = stable_key(key_parts)
-    frame_path = cache_path("tradingview_scanner", key, "parquet")
-    meta_path = cache_path("tradingview_scanner", key, "json")
-    if not refresh and all_fresh((frame_path, meta_path), cache_ttl):
-        cached = read_frame(frame_path)
-        meta: dict[str, Any] = read_json(meta_path, default={}) or {}
-        if cached is not None:
-            return int(meta.get("count", 0)), cached
+    def fetch() -> FrameWithMeta:
+        count, df = query.get_scanner_data()
+        return df, {"count": int(count)}
 
-    result: tuple[int, pd.DataFrame] | None = call_with_resilience(
-        "tradingview",
-        operation,
-        query.get_scanner_data,
+    result: FrameWithMeta | None = SCANNER_PROVIDER.fetch(
+        key_parts,
+        fetch,
+        refresh=refresh,
         fallback=None,
+        ttl_seconds=cache_ttl,
+        operation=operation,
     )
     if result is None:
+        # No live data and no cache entry to fall back on. A stale entry would
+        # already have been served (with its own warning) by the provider.
         LOG.warning(
             "tradingview scan failed for %s; returning empty results "
-            "(not cached) — rerun with --refresh once connectivity is back",
+            "(not cached) - rerun with --refresh once connectivity is back",
             operation,
         )
         return 0, pd.DataFrame(columns=columns)
-    count, df = result
-    write_frame(frame_path, df)
-    write_json(meta_path, {"count": int(count)})
-    return count, df
+    frame, meta = result
+    return int(meta.get("count", 0)), frame
 
 
 def _percentile(series: pd.Series) -> pd.Series:

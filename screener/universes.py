@@ -27,7 +27,34 @@ LOG = logging.getLogger(__name__)
 
 CACHE_DIR = Path.home() / ".screener" / "universes"
 _SP500_CHANGES_CACHE_TTL_SECONDS = 24 * 60 * 60
+
+# Constituent and membership caches are keyed by ``as_of``, so freshness
+# depends on which day the entry describes rather than on one flat TTL:
+#
+# * A past ``as_of`` describes a day that is over. Nothing upstream can make
+#   that entry more correct -- for the non-reconstructable indices a refetch
+#   would just return *today's* list, which is exactly the survivorship bias
+#   the loader already warns about. Such entries are pinned. (S&P 500
+#   point-in-time entries have a second, sharper check against the change log
+#   in ``_sp500_pit_cache_matches_change_log``.)
+# * A today-dated entry is a live snapshot, so it expires and is refetched -
+#   an index add/remove takes effect intraday, and a long-running process must
+#   not serve this morning's list all day.
+#
+# ``is_fresh`` reads a negative TTL as "always fresh, if the file exists", which
+# is what pins the past-dated entries. This replaces a bare ``path.exists()``:
+# the policy is now stated once, in the cache layer's own vocabulary.
+_UNIVERSE_CACHE_TTL_SECONDS = 12 * 60 * 60
+_UNIVERSE_CACHE_PINNED_TTL_SECONDS = -1.0
+
 UniverseName = str
+
+
+def _universe_cache_ttl(as_of: date) -> float:
+    """TTL for a universe cache entry describing ``as_of``."""
+    if as_of < date.today():
+        return _UNIVERSE_CACHE_PINNED_TTL_SECONDS
+    return _UNIVERSE_CACHE_TTL_SECONDS
 
 
 @dataclass(frozen=True)
@@ -248,10 +275,19 @@ def _write_cache(
     return path
 
 
+def _universe_cache_is_fresh(name: UniverseName, as_of: date) -> bool:
+    """True when the constituent cache for ``as_of`` is still within policy."""
+    return is_fresh(_cache_path(name, as_of), _universe_cache_ttl(as_of))
+
+
 def _read_cache(
     name: UniverseName, as_of: date
 ) -> tuple[Universe, bool, dict[str, str]] | None:
-    """Return ``(universe, point_in_time, metadata)`` or ``None`` to refetch.
+    """Return ``(universe, point_in_time, metadata)``, or ``None`` when absent.
+
+    Freshness is *not* checked here: ``_universe_cache_is_fresh`` decides
+    whether the entry may be served directly, while this reader also backs the
+    stale-serve path taken when the upstream fetch fails.
 
     A cache file missing the ``point_in_time`` header was not written by the
     PIT-aware writer (or is corrupt) and is treated as a miss so we never serve
@@ -312,34 +348,55 @@ def load_current_universe(
     name = name.strip().lower()
     as_of = as_of or date.today()
     is_past = as_of < date.today()
-    if use_cache:
-        cached = _read_cache(name, as_of)
-        if cached is not None:
-            universe, point_in_time, metadata = cached
-            if (
-                name == "sp500"
-                and is_past
-                and not _sp500_pit_cache_matches_change_log(metadata)
-            ):
-                LOG.debug(
-                    "%s cache for as_of=%s is stale relative to S&P change log",
-                    name,
-                    as_of.isoformat(),
-                )
-            else:
-                # Warn on cache hits too — otherwise a second load of a past-date
-                # universe written earlier this run (or a prior run) would silently
-                # return the survivorship-biased set with no warning.
-                if is_past and not point_in_time:
-                    _warn_not_point_in_time(name, as_of)
-                return universe
+    # Read the entry even when ``use_cache`` is off: a forced refresh still
+    # prefers a stale list over no list at all if the provider is down, which
+    # is how ``CachedProvider`` treats ``refresh=True``.
+    cached = _read_cache(name, as_of)
+    if use_cache and cached is not None and _universe_cache_is_fresh(name, as_of):
+        universe, point_in_time, metadata = cached
+        if (
+            name == "sp500"
+            and is_past
+            and not _sp500_pit_cache_matches_change_log(metadata)
+        ):
+            LOG.debug(
+                "%s cache for as_of=%s is stale relative to S&P change log",
+                name,
+                as_of.isoformat(),
+            )
+        else:
+            # Warn on cache hits too - otherwise a second load of a past-date
+            # universe written earlier this run (or a prior run) would silently
+            # return the survivorship-biased set with no warning.
+            if is_past and not point_in_time:
+                _warn_not_point_in_time(name, as_of)
+            return universe
     normalized_name = name.strip().lower()
-    if normalized_name == "sp500":
-        symbols, source, point_in_time = _fetch_sp500_pit(as_of, use_cache=use_cache)
-    else:
-        definition = get_universe_definition(normalized_name)
-        symbols, source = definition.loader()
-        point_in_time = not is_past
+    definition = (
+        None if normalized_name == "sp500" else get_universe_definition(normalized_name)
+    )
+    try:
+        if definition is None:
+            symbols, source, point_in_time = _fetch_sp500_pit(
+                as_of, use_cache=use_cache
+            )
+        else:
+            symbols, source = definition.loader()
+            point_in_time = not is_past
+    except Exception as exc:  # noqa: BLE001 - any upstream failure degrades to cache
+        if cached is None:
+            raise
+        universe, cached_point_in_time, _ = cached
+        LOG.warning(
+            "Serving stale %s universe cache from %s due to constituent "
+            "fetch failure: %r",
+            name,
+            universe.cached_path,
+            exc,
+        )
+        if is_past and not cached_point_in_time:
+            _warn_not_point_in_time(name, as_of)
+        return universe
     if is_past and not point_in_time:
         _warn_not_point_in_time(name, as_of)
     write_metadata = (
@@ -683,6 +740,21 @@ def _membership_cache_path(name: UniverseName, as_of: date) -> Path:
     return CACHE_DIR / f"{name}_membership_{as_of.isoformat()}.json"
 
 
+def _read_membership_cache(path: Path) -> dict[str, date | None] | None:
+    """Read a membership cache entry ignoring freshness, or ``None``."""
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+        return {
+            symbol: date.fromisoformat(added) if added else None
+            for symbol, added in payload.items()
+        }
+    except (ValueError, OSError, AttributeError):
+        LOG.debug("sp500 membership cache at %s unreadable; refetching", path)
+        return None
+
+
 def load_sp500_membership(
     *,
     as_of: date | None = None,
@@ -698,17 +770,24 @@ def load_sp500_membership(
     """
     as_of = as_of or date.today()
     path = _membership_cache_path("sp500", as_of)
-    if use_cache and path.exists():
-        try:
-            payload = json.loads(path.read_text())
-            return {
-                symbol: date.fromisoformat(added) if added else None
-                for symbol, added in payload.items()
-            }
-        except (ValueError, OSError):
-            LOG.debug("sp500 membership cache at %s unreadable; refetching", path)
+    # Same policy as the constituent cache: a past-date entry is pinned, a
+    # today-dated one expires, and a stale entry still beats no data when the
+    # upstream table is unreachable.
+    cached = _read_membership_cache(path)
+    if use_cache and cached is not None and is_fresh(path, _universe_cache_ttl(as_of)):
+        return cached
 
-    df = _fetch_sp500_table()
+    try:
+        df = _fetch_sp500_table()
+    except Exception as exc:  # noqa: BLE001 - any upstream failure degrades to cache
+        if cached is None:
+            raise
+        LOG.warning(
+            "Serving stale sp500 membership cache from %s due to fetch failure: %r",
+            path,
+            exc,
+        )
+        return cached
     if "Date added" not in df.columns:
         raise RuntimeError("S&P 500 constituents table missing 'Date added' column")
     symbols = _normalize_sp500_symbols(df["Symbol"].astype(str))

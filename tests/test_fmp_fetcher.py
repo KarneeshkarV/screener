@@ -3,10 +3,13 @@ from __future__ import annotations
 from datetime import date
 import os
 import time
+import urllib.parse
 
 import pandas as pd
 import pytest
 
+from screener import config as config_module
+from screener import fmp as fmp_module
 from screener.backtester.data import (
     ExchangeFallbackPriceFetcher,
     FallbackPriceFetcher,
@@ -28,12 +31,32 @@ class DummyResponse:
 
 
 class DummySession:
+    """A ``requests``-style session matching ``fmp.HttpSession``.
+
+    ``FMPPriceFetcher`` requests through :class:`screener.fmp.FmpClient`, so
+    query parameters arrive encoded in the URL rather than as a ``params``
+    kwarg. Calls are recorded split back into ``(path, params)`` so assertions
+    read the same way regardless of how the transport spells the request.
+    """
+
     def __init__(self, payload: object) -> None:
         self.payload = payload
         self.calls: list[tuple[str, dict]] = []
 
-    def get(self, url: str, *, params: dict, timeout: int) -> DummyResponse:
-        self.calls.append((url, {"params": params, "timeout": timeout}))
+    def get(
+        self, url: str, *, headers: dict[str, str], timeout: float
+    ) -> DummyResponse:
+        parsed = urllib.parse.urlparse(url)
+        self.calls.append(
+            (
+                parsed.path,
+                {
+                    "params": dict(urllib.parse.parse_qsl(parsed.query)),
+                    "timeout": timeout,
+                    "headers": headers,
+                },
+            )
+        )
         return DummyResponse(self.payload)
 
 
@@ -73,8 +96,11 @@ def test_fmp_fetcher_uses_api_key_and_normalizes_adjusted_prices(tmp_path):
 
     out = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 5))
 
-    assert session.calls[0][0].endswith("/AAA")
+    assert session.calls[0][0].endswith("/historical-price-full/AAA")
     assert session.calls[0][1]["params"]["apikey"] == "test-key"
+    # The shared transport supplies its unified headers and this path's timeout.
+    assert session.calls[0][1]["headers"] == dict(fmp_module.DEFAULT_HEADERS)
+    assert session.calls[0][1]["timeout"] == FMPPriceFetcher.PRICE_TIMEOUT_SECONDS
     frame = out["AAA"]
     assert list(frame.columns) == [
         "open",
@@ -340,7 +366,7 @@ def test_build_price_fetcher_loads_fmp_key_from_dotenv(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("SCREENER_PRICE_PROVIDER", raising=False)
     monkeypatch.delenv("FMP_API_KEY", raising=False)
-    monkeypatch.setattr(data_module, "_DOTENV_LOADED", False)
+    monkeypatch.setattr(config_module, "_DOTENV_LOADED", False)
     (tmp_path / ".env").write_text('FMP_API_KEY="dotenv-key"\n')
 
     fetcher = build_price_fetcher()
