@@ -5,11 +5,11 @@ import numpy as np
 import pandas as pd
 from screener.indicators.plugins.sar import sar as _sar
 from screener.strategies.spec import strategy
-from screener.strategies.trades import Trade, _walk
+from screener.strategies.trades import ResearchTrade, _walk
 
 
 @strategy("parabolic_sar")
-def strat_parabolic_sar(df: pd.DataFrame) -> list[Trade]:
+def strat_parabolic_sar(df: pd.DataFrame) -> list[ResearchTrade]:
     hi = df["high"].to_numpy(dtype=float)
     lo = df["low"].to_numpy(dtype=float)
     cl = df["close"].to_numpy(dtype=float)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal, Optional, cast
+from typing import Any, Literal, Optional, TypeAlias, cast
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -12,9 +12,8 @@ from screener.backtester.slippage import (
     FixedBpsSlippage,
     SlippageModel,
 )
+from screener.ledger import ExitReason, Trade as LifecycleTrade
 
-
-ExitReason = Literal["stop", "target", "trail", "time", "exit_expr", "eod", "session"]
 
 # Supported bar intervals. "1d" is the default daily bar; the rest are intraday
 # bars sourced from yfinance. A ``date | datetime`` union is used on all the
@@ -181,15 +180,13 @@ class Position(BaseModel):
     dividend_income: float = 0.0
 
 
-class Trade(BaseModel):
-    model_config = ConfigDict(frozen=True)
+class EquityLedgerTrade(LifecycleTrade):
+    """Equity accounting extension of the neutral trade lifecycle."""
 
     ticker: str
     rank: int
     signal_date: date | datetime
-    entry_date: date | datetime
     entry_price: float
-    exit_date: date | datetime
     exit_price: float
     exit_reason: ExitReason
     shares: float
@@ -202,6 +199,12 @@ class Trade(BaseModel):
     # exposed as a separate field so total-return can be computed when the
     # ``splits_only`` price-adjustment regime is in use.
     dividend_income: float = 0.0
+
+
+# Public compatibility alias. The implementation lives in neutral ledger
+# vocabulary as ``EquityLedgerTrade`` so it does not collide with research
+# round trips.
+Trade: TypeAlias = EquityLedgerTrade
 
 
 class BacktestResult(BaseModel):

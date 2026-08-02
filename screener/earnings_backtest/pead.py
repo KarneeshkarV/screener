@@ -26,7 +26,7 @@ from screener.earnings_backtest.data import (
     load_universe,
 )
 from screener.earnings_backtest.earnings_dates import collect_earnings_events
-from screener.earnings_backtest.metrics import compute_backtest_summary
+from screener.ledger import compute_event_trade_summary
 from screener.earnings_backtest.models import PeadTrade
 from screener.earnings_backtest.prepare import prepare_earnings_run
 
@@ -338,7 +338,9 @@ def compute_pead_summary(
     hold_days: int,
 ) -> dict:
     """Aggregate PEAD drift statistics plus a by-surprise-quintile breakdown."""
-    summary: dict[str, object] = dict(compute_backtest_summary(trades, strategy="pead"))
+    summary: dict[str, object] = dict(
+        compute_event_trade_summary(trades, strategy="pead")
+    )
     summary["min_surprise_pct"] = min_surprise
     summary["hold_days"] = hold_days
     summary["surprise_quintiles"] = surprise_quintiles(trades)

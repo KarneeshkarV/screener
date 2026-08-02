@@ -136,30 +136,35 @@ def print_backtest(result: BacktestResult) -> None:
     console.print(_ledger_table(result))
 
 
+_SERIALIZED_EQUITY_TRADE_COLUMNS = [
+    "ticker",
+    "rank",
+    "signal_date",
+    "entry_date",
+    "entry_price",
+    "exit_date",
+    "exit_price",
+    "exit_reason",
+    "shares",
+    "entry_cost",
+    "exit_value",
+    "pnl",
+    "return_pct",
+    "dividend_income",
+]
+
+
 def trades_dataframe(result: BacktestResult) -> pd.DataFrame:
     if not result.trades:
-        return pd.DataFrame(
-            columns=[
-                "ticker",
-                "rank",
-                "signal_date",
-                "entry_date",
-                "entry_price",
-                "exit_date",
-                "exit_price",
-                "exit_reason",
-                "shares",
-                "entry_cost",
-                "exit_value",
-                "pnl",
-                "return_pct",
-            ]
-        )
+        # Preserve the legacy no-trade ledger shape, which predates dividends.
+        return pd.DataFrame(columns=_SERIALIZED_EQUITY_TRADE_COLUMNS[:-1])
     rows = [
         trade.model_dump()
         for trade in sorted(result.trades, key=lambda item: item.rank)
     ]
-    return pd.DataFrame(rows)
+    # Trade lifecycle inheritance orders base fields first. Reindex explicitly
+    # so established CSV and Lab JSON field ordering remains byte-for-byte stable.
+    return pd.DataFrame(rows).reindex(columns=_SERIALIZED_EQUITY_TRADE_COLUMNS)
 
 
 def print_ledger_csv(result: BacktestResult) -> None:

@@ -33,12 +33,12 @@ from screener.options.backtest import (
     referenced_options_fields,
 )
 from screener.options.bt_models import (
-    ExitReason,
     LegFill,
     OptionPositionTrade,
     OptionsBacktestConfig,
     StructureSpec,
 )
+from screener.ledger import ExitReason
 from screener.options.metrics import _quote_price
 from screener.options.models import OptionChain, OptionContract
 from screener.options.nse_bhavcopy import load_bhavcopy_chains

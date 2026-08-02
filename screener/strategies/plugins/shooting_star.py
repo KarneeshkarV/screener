@@ -4,11 +4,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from screener.strategies.spec import strategy
-from screener.strategies.trades import Trade, _walk
+from screener.strategies.trades import ResearchTrade, _walk
 
 
 @strategy("shooting_star")
-def strat_shooting_star(df: pd.DataFrame) -> list[Trade]:
+def strat_shooting_star(df: pd.DataFrame) -> list[ResearchTrade]:
     op = df["open"].to_numpy(dtype=float)
     hi = df["high"].to_numpy(dtype=float)
     lo = df["low"].to_numpy(dtype=float)

@@ -8,11 +8,11 @@ import pandas as pd
 from screener.indicators.plugins.ema import ema as _ema
 from screener.indicators.plugins.supertrend import supertrend_dir as _supertrend_dir
 from screener.strategies.spec import strategy
-from screener.strategies.trades import Trade, _walk
+from screener.strategies.trades import ResearchTrade, _walk
 
 
 @strategy("ma_cross_st_entry")
-def strat_ma_cross_st_entry(df: pd.DataFrame) -> list[Trade]:
+def strat_ma_cross_st_entry(df: pd.DataFrame) -> list[ResearchTrade]:
     """Entry = ma_cross AND supertrend bullish; exit = ma_cross bearish."""
     close = df["close"].to_numpy(dtype=float)
     high = df["high"].to_numpy(dtype=float)

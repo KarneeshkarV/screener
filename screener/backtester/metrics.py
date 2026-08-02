@@ -209,7 +209,7 @@ def _max_drawdown(equity: pd.Series) -> float:
     return float(dd.min()) if not dd.empty else 0.0
 
 
-def _sharpe(
+def equity_curve_sharpe(
     daily: pd.Series,
     rf: float = 0.0,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
@@ -338,7 +338,7 @@ def _psr(
     if daily.empty or len(daily) < 30:
         return 0.0
     T = len(daily)
-    sr_per = _sharpe(daily, periods_per_year=periods_per_year) / math.sqrt(
+    sr_per = equity_curve_sharpe(daily, periods_per_year=periods_per_year) / math.sqrt(
         periods_per_year
     )
     sr_bench_per = sr_benchmark_annual / math.sqrt(periods_per_year)
@@ -390,6 +390,16 @@ def _invested_return(trades: Iterable[Trade]) -> float:
     if total_cost <= 0:
         return 0.0
     return total_pnl / total_cost
+
+
+def positive_pnl_rate(trades: Iterable[Trade]) -> float:
+    """Return the fractional share of accounting trades with positive cash PnL."""
+    trades = list(trades)
+    return (
+        float(sum(1 for trade in trades if trade.pnl > 0) / len(trades))
+        if trades
+        else 0.0
+    )
 
 
 def _trade_return_stats(trades: Iterable[Trade]) -> dict[str, float | int]:
@@ -497,9 +507,7 @@ def compute_metrics(
         else 0.0
     )
     alpha, beta = _alpha_beta(daily, bench_daily, periods_per_year)
-    hit_rate = (
-        float(sum(1 for t in trades if t.pnl > 0) / len(trades)) if trades else 0.0
-    )
+    hit_rate = positive_pnl_rate(trades)
     bench_return = (
         float(benchmark.iloc[-1] / benchmark.iloc[0] - 1.0)
         if len(benchmark) >= 2 and benchmark.iloc[0] > 0
@@ -511,7 +519,7 @@ def compute_metrics(
         "total_return": total_return,
         "cagr": _cagr(equity, periods_per_year),
         "vol_annual": _vol_annual(daily, periods_per_year),
-        "sharpe": _sharpe(daily, periods_per_year=periods_per_year),
+        "sharpe": equity_curve_sharpe(daily, periods_per_year=periods_per_year),
         "sortino": _sortino(daily, periods_per_year=periods_per_year),
         "calmar": _calmar(equity, periods_per_year),
         "psr": _psr(daily, sr_benchmark_annual=0.0, periods_per_year=periods_per_year),

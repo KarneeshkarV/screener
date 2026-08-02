@@ -7,11 +7,11 @@ import pandas as pd
 
 from screener.indicators.plugins.ema import ema as _ema
 from screener.strategies.spec import strategy
-from screener.strategies.trades import Trade, _walk
+from screener.strategies.trades import ResearchTrade, _walk
 
 
 @strategy("ma_cross_regime")
-def strat_ma_cross_regime(df: pd.DataFrame) -> list[Trade]:
+def strat_ma_cross_regime(df: pd.DataFrame) -> list[ResearchTrade]:
     close = df["close"].to_numpy(dtype=float)
     mf = _ema(close, 10)
     ms = _ema(close, 20)

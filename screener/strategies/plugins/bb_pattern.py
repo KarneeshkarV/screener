@@ -6,11 +6,11 @@ import pandas as pd
 from screener.indicators.plugins.bollinger_bands import bollinger_bands as _bb
 from screener.indicators.plugins.stdev import stdev as _stdev
 from screener.strategies.spec import strategy
-from screener.strategies.trades import Trade, _walk
+from screener.strategies.trades import ResearchTrade, _walk
 
 
 @strategy("bb_pattern")
-def strat_bb_pattern(df: pd.DataFrame) -> list[Trade]:
+def strat_bb_pattern(df: pd.DataFrame) -> list[ResearchTrade]:
     cl = df["close"].to_numpy(dtype=float)
     lower, middle, upper = _bb(cl, 20, 2.0)
     stds = _stdev(cl, 20)

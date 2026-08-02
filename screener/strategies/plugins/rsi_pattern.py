@@ -5,11 +5,11 @@ import numpy as np
 import pandas as pd
 from screener.indicators.plugins.rsi import rsi as _rsi
 from screener.strategies.spec import strategy
-from screener.strategies.trades import Trade, _walk
+from screener.strategies.trades import ResearchTrade, _walk
 
 
 @strategy("rsi_pattern")
-def strat_rsi_pattern(df: pd.DataFrame) -> list[Trade]:
+def strat_rsi_pattern(df: pd.DataFrame) -> list[ResearchTrade]:
     cl = df["close"].to_numpy(dtype=float)
     lag = 14
     rsi_vals = _rsi(cl, lag)

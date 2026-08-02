@@ -13,7 +13,8 @@ import pandas as pd
 from screener.backtester.costs import corwin_schultz_half_spread
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fills import FillModel
-from screener.backtester.models import BacktestConfig, ExitReason
+from screener.backtester.models import BacktestConfig
+from screener.ledger import ExitReason
 from screener.backtester.pine import (
     PineError,
     evaluate,

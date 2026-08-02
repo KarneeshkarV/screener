@@ -9,7 +9,7 @@ comments for the derivation):
 
 1. SHARPE  — screener uses population std (ddof=0); empyrical uses sample std
    (ddof=1).  std is in the DENOMINATOR, so screener > empyrical:
-       screener_sharpe = empyrical_sharpe * sqrt(N / (N-1))
+       screener_equity_curve_sharpe = empyrical_equity_curve_sharpe * sqrt(N / (N-1))
 
 2. VOL_ANNUAL — same ddof difference.  std is in the NUMERATOR, so screener
    < empyrical:
@@ -47,7 +47,7 @@ from screener.backtester.metrics import (
     _alpha_beta,
     _cagr,
     _max_drawdown,
-    _sharpe,
+    equity_curve_sharpe,
     _sortino,
     _vol_annual,
 )
@@ -88,17 +88,19 @@ def sample_bench(sample_returns: pd.Series) -> pd.Series:
 # ---------------------------------------------------------------------------
 
 
-def test_sharpe_exceeds_empyrical_by_sqrt_n_over_n_minus_1(sample_returns: pd.Series):
+def test_equity_curve_sharpe_exceeds_empyrical_by_sqrt_n_over_n_minus_1(
+    sample_returns: pd.Series,
+):
     """Screener Sharpe is larger than empyrical by exactly sqrt(N/(N-1)).
 
     Derivation:
         screener  uses std(ddof=0) = sqrt(sum(xi^2)/N)
         empyrical uses std(ddof=1) = sqrt(sum(xi^2)/(N-1))
         ratio of denominators (ddof=0 / ddof=1) = sqrt((N-1)/N)
-        therefore screener_sharpe / empyrical_sharpe = ddof1 / ddof0 = sqrt(N/(N-1))
+        therefore screener_equity_curve_sharpe / empyrical_equity_curve_sharpe = ddof1 / ddof0 = sqrt(N/(N-1))
     """
     N = len(sample_returns)
-    screener = _sharpe(sample_returns)
+    screener = equity_curve_sharpe(sample_returns)
     emp = empyrical.sharpe_ratio(sample_returns, period="daily")
     expected_ratio = math.sqrt(N / (N - 1))
 
@@ -108,12 +110,12 @@ def test_sharpe_exceeds_empyrical_by_sqrt_n_over_n_minus_1(sample_returns: pd.Se
     )
 
 
-def test_sharpe_reconciliation_is_exact_across_sizes():
+def test_equity_curve_sharpe_reconciliation_is_exact_across_sizes():
     """The sqrt(N/(N-1)) rescaling holds for different sample sizes."""
     rng = np.random.default_rng(0)
     for N in (50, 126, 252, 504):
         rets = pd.Series(rng.normal(0.0005, 0.01, N))
-        screener = _sharpe(rets)
+        screener = equity_curve_sharpe(rets)
         emp = empyrical.sharpe_ratio(rets, period="daily")
         if emp == 0:
             continue

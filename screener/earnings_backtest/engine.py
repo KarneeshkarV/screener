@@ -28,7 +28,7 @@ from screener.earnings_backtest.strategies import (
     STRATEGY_FUNCS,
     combined_score,
 )
-from screener.earnings_backtest.metrics import compute_backtest_summary
+from screener.ledger import compute_event_trade_summary as compute_backtest_summary
 from screener.earnings_backtest.models import EarningsTrade
 
 logger = logging.getLogger(__name__)

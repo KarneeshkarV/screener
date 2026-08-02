@@ -8,11 +8,11 @@ import pandas as pd
 from screener.indicators.plugins.rsi import rsi as _rsi
 from screener.indicators.plugins.supertrend import supertrend_dir as _supertrend_dir
 from screener.strategies.spec import strategy
-from screener.strategies.trades import Trade, _walk
+from screener.strategies.trades import ResearchTrade, _walk
 
 
 @strategy("supertrend_rsi")
-def strat_supertrend_rsi(df: pd.DataFrame) -> list[Trade]:
+def strat_supertrend_rsi(df: pd.DataFrame) -> list[ResearchTrade]:
     close = df["close"].to_numpy(dtype=float)
     high = df["high"].to_numpy(dtype=float)
     low = df["low"].to_numpy(dtype=float)

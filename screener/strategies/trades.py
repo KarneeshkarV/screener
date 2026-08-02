@@ -4,29 +4,29 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ConfigDict
+from screener.ledger import Trade
 
 
-class Trade(BaseModel):
+class ResearchTrade(Trade):
+    """Index-based research extension of the neutral trade lifecycle."""
+
     entry_idx: int
     exit_idx: int
     entry_px: float
     exit_px: float
-    entry_date: pd.Timestamp
-    exit_date: pd.Timestamp
-
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    return_pct: float
 
     @property
     def ret(self) -> float:
-        return self.exit_px / self.entry_px - 1.0 if self.entry_px > 0 else 0.0
+        """Fractional research return kept for strategy-runner compatibility."""
+        return self.return_pct
 
 
 def _walk(
     entries: np.ndarray, exits: np.ndarray, close: np.ndarray, dates
-) -> list[Trade]:
+) -> list[ResearchTrade]:
     """Long-only round-trip walker with close-based entries and exits."""
-    trades: list[Trade] = []
+    trades: list[ResearchTrade] = []
     in_pos = False
     entry_i = -1
     entry_px = 0.0
@@ -39,25 +39,29 @@ def _walk(
                 entry_px = float(close[i])
         elif exits[i]:
             trades.append(
-                Trade(
+                ResearchTrade(
                     entry_idx=entry_i,
                     exit_idx=i,
                     entry_px=entry_px,
                     exit_px=float(close[i]),
                     entry_date=pd.Timestamp(dates[entry_i]),
                     exit_date=pd.Timestamp(dates[i]),
+                    return_pct=float(close[i]) / entry_px - 1.0
+                    if entry_px > 0
+                    else 0.0,
                 )
             )
             in_pos = False
     if in_pos:
         trades.append(
-            Trade(
+            ResearchTrade(
                 entry_idx=entry_i,
                 exit_idx=n - 1,
                 entry_px=entry_px,
                 exit_px=float(close[-1]),
                 entry_date=pd.Timestamp(dates[entry_i]),
                 exit_date=pd.Timestamp(dates[-1]),
+                return_pct=float(close[-1]) / entry_px - 1.0 if entry_px > 0 else 0.0,
             )
         )
     return trades
