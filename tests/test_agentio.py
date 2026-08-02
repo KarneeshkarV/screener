@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
+from rich.console import Console
 
 from screener import agentio
 
@@ -129,6 +132,33 @@ def _attribution_output(trades: pd.DataFrame) -> str:
     console = Console(width=200, no_color=True, record=True)
     _print_ticker_attribution(trades, console)
     return console.export_text()
+
+
+def test_agent_digest_includes_every_shared_metric(monkeypatch):
+    from screener.backtester.display import print_backtest
+    from screener.backtester.models import BacktestResult
+
+    output = Console(width=200, no_color=True, record=True)
+    monkeypatch.setattr(agentio, "get_console", lambda: output)
+    agentio.configure(enabled=True)
+    result = BacktestResult.model_construct(
+        config=SimpleNamespace(
+            market="us",
+            as_of="2024-03-01",
+            hold=5,
+            top=2,
+            benchmark="SPY",
+        ),
+        trades=[],
+        metrics={"starting_equity": 100_000.0, "final_equity": 110_000.0},
+        warnings=[],
+    )
+
+    print_backtest(result)
+
+    text = output.export_text()
+    assert "Starting Capital" in text
+    assert "Final Equity" in text
 
 
 def test_attribution_ranks_worst_ticker_first():

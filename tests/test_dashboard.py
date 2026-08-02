@@ -85,6 +85,8 @@ def _result() -> BacktestResult:
         equity_curve=equity,
         benchmark_curve=benchmark,
         metrics={
+            "starting_equity": 100_000.0,
+            "final_equity": 117_600.0,
             "total_return": 0.176,
             "benchmark_return": 0.088,
             "max_drawdown": -0.02,
@@ -114,6 +116,8 @@ def test_render_dashboard_writes_expected_sections(tmp_path):
     html = path.read_text(encoding="utf-8")
     assert path.exists()
     assert 'id="summary-metrics"' in html
+    assert "Starting Capital" in html
+    assert "Final Equity" in html
     assert 'id="performance-chart"' in html
     assert 'id="drawdown-chart"' in html
     assert 'id="monthly-returns"' in html

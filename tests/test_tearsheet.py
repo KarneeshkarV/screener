@@ -91,6 +91,8 @@ def test_render_tearsheet_from_engine_result(tmp_path, stub_fetcher_factory):
     assert "survivorship bias: today&#x27;s members applied" in html
     assert "close &gt; sma(close, 3)" in html
     assert "Median Trade" in html
+    assert "Starting Capital" in html
+    assert "Final Equity" in html
     assert "--paper: #07090d" in html
     assert '"plot_bgcolor":"#0d1117"' in html
 

@@ -26,7 +26,13 @@ def _capture_grid_report() -> str:
         GridSearchResult(
             params={"foo": 1},
             score=1.2345,
-            metrics={"sharpe": 1.5, "profit_factor": 2.0, "max_drawdown": -0.1},
+            metrics={
+                "starting_equity": 100_000.0,
+                "final_equity": 110_000.0,
+                "sharpe": 1.5,
+                "profit_factor": 2.0,
+                "max_drawdown": -0.1,
+            },
             trade_count=42,
         ),
         GridSearchResult(
@@ -44,6 +50,8 @@ def _capture_grid_report() -> str:
 
 def test_grid_report_contains_in_sample_warning():
     text = _capture_grid_report().lower()
+    assert "starting capital" in text
+    assert "final equity" in text
     assert "in-sample" in text
     assert "selection bias" in text
 
