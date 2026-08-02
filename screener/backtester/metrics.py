@@ -14,7 +14,7 @@ from typing import Any, Iterable, Literal, cast, overload
 import numpy as np
 import pandas as pd
 
-from screener.backtester.models import Trade
+from screener.backtester.models import BacktestConfig, BacktestResult, Trade
 from screener.format import fmt_money, fmt_pct, is_missing
 from screener.regime import classify_regimes
 
@@ -535,3 +535,40 @@ def compute_metrics(
     }
     metrics.update(_trade_return_stats(trades))
     return metrics
+
+
+def no_trades_result(
+    cfg: BacktestConfig,
+    *,
+    calendar: pd.Index,
+    benchmark: pd.Series,
+    warnings: list[str],
+    selection: pd.DataFrame | None = None,
+) -> BacktestResult:
+    """Build the flat, no-trade result every engine falls back to.
+
+    Reached whenever a run never opens a position: no candidate survived
+    selection, or the rolling window contained no bars at all. Equity is
+    initial capital held flat across ``calendar`` and the benchmark is
+    forward-filled onto the same index, so the result still renders and
+    compares like any other.
+    """
+    equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
+    benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
+    metrics = compute_metrics(
+        equity,
+        benchmark_aligned,
+        [],
+        max(cfg.top, 1),
+        periods_per_year=periods_per_year_for_interval(cfg.interval),
+    )
+    metrics["unique_tickers"] = 0
+    return BacktestResult(
+        config=cfg,
+        trades=[],
+        equity_curve=equity,
+        benchmark_curve=benchmark_aligned,
+        metrics=metrics,
+        warnings=warnings,
+        selection=pd.DataFrame() if selection is None else selection,
+    )

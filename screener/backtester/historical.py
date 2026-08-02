@@ -30,6 +30,7 @@ from screener.backtester.metrics import (
     compute_cost_metrics,
     compute_metrics,
     compute_regime_metrics,
+    no_trades_result,
     periods_per_year_for_interval,
 )
 from screener.backtester.models import (
@@ -483,25 +484,12 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     warnings.extend(sel_warnings)
 
     if selection.empty:
-        calendar = pd.date_range(
-            as_of_ts, as_of_ts + pd.Timedelta(days=cfg.hold * 2), freq="B"
-        )
-        equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
-        benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
-        benchmark = benchmark.reindex(calendar, method="ffill").dropna()
-        metrics = compute_metrics(
-            equity,
-            benchmark,
-            [],
-            max(cfg.top, 1),
-            periods_per_year=periods_per_year_for_interval(cfg.interval),
-        )
-        return BacktestResult(
-            config=cfg,
-            trades=[],
-            equity_curve=equity,
-            benchmark_curve=benchmark,
-            metrics=metrics,
+        return no_trades_result(
+            cfg,
+            calendar=pd.date_range(
+                as_of_ts, as_of_ts + pd.Timedelta(days=cfg.hold * 2), freq="B"
+            ),
+            benchmark=_benchmark_series_from_panel(price_panel, cfg.benchmark),
             warnings=warnings,
             selection=selection,
         )
