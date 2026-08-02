@@ -87,8 +87,8 @@ def test_earnings_backtest_skips_current_snapshot_signals_for_historical_entries
     )
 
 
-def test_earnings_flat_cost_model_parity_with_legacy_round_trip(monkeypatch) -> None:
-    """cost_model='flat' must match the legacy single round-trip commission drag."""
+def test_earnings_flat_cost_model_uses_per_fill_commission(monkeypatch) -> None:
+    """Flat commission is charged once at entry and once at exit."""
     _patch_single_event(monkeypatch)
 
     trades = run_earnings_backtest(
@@ -111,7 +111,7 @@ def test_earnings_flat_cost_model_parity_with_legacy_round_trip(monkeypatch) -> 
     assert trade.return_pct == pytest.approx(net * 100, abs=1e-4)
     assert "commission" in trade.details["fees"]
     assert trade.details["fees"]["commission"] == pytest.approx(
-        entry * 0.0005 + exit_ * 0.0005, abs=1e-6
+        entry * 0.001 + exit_ * 0.001, abs=1e-6
     )
 
 

@@ -266,8 +266,17 @@ def _passes_entry_filters(
         return False, "no history"
     last = bars.iloc[pos - 1]
     close = float(last["close"])
-    if cfg.min_price is not None and close < cfg.min_price:
-        return False, f"price {close:.4f} < {cfg.min_price}"
+    # A non-finite close never passes the price filter, and cannot be rescued
+    # by an ADV mean that would otherwise skip its missing value.
+    if not np.isfinite(close):
+        return False, f"price filter requires a finite close (close={close:.4f})"
+    if cfg.min_price is not None:
+        min_price = float(cfg.min_price)
+        if not np.isfinite(min_price) or close < min_price:
+            return False, (
+                "price filter requires finite close and min_price "
+                f"(close={close:.4f}, min_price={min_price})"
+            )
     if cfg.min_avg_dollar_volume is not None:
         window = max(int(cfg.avg_dollar_volume_window), 1)
         start = max(0, pos - window)
@@ -308,6 +317,10 @@ class _SlotState:
     exit_signal_values: Optional[np.ndarray] = None
     # Session-last mask aligned to ``bars.index`` when ``cfg.intraday_only``.
     session_last: Optional[np.ndarray] = None
+    # Size used by a liquidity-sensitive FillModel and passed unchanged to
+    # Portfolio.open. Fixed-price models retain legacy portfolio sizing.
+    # See docs/adr/0001-pre-impact-entry-sizing.md.
+    entry_shares: float | None = None
 
 
 def _half_spread_at_signal(
@@ -365,7 +378,7 @@ def _make_slot_state(
     else:
         adv_shares, sigma_daily = 0.0, 0.0
     half_spread = _half_spread_at_signal(bars, signal_idx, cfg, frame_cache)
-    entry_idx, entry_fill, entry_warn = fills.entry_price(
+    entry_idx, entry_fill, entry_shares, entry_warn = fills.entry_quote(
         bars,
         signal_idx,
         budget=entry_budget,
@@ -435,6 +448,7 @@ def _make_slot_state(
                 exit_signal.to_numpy() if exit_signal is not None else None
             ),
             session_last=session_last,
+            entry_shares=(entry_shares if fills.needs_liquidity_inputs else None),
         ),
         None,
     )
@@ -838,9 +852,16 @@ def _filter_signals_for_group(
     for position, frame in enumerate(frames):
         close_block[:, position] = frame["close"].astype(float).to_numpy()
 
-    passes = np.ones((n_bars, n_tickers), dtype=bool)
+    # A non-finite close never passes either entry filter, including ADV-only.
+    passes = np.isfinite(close_block)
     if cfg.min_price is not None:
-        passes &= close_block >= float(cfg.min_price)
+        min_price = float(cfg.min_price)
+        # A non-finite close never passes the price filter.
+        passes &= (
+            np.isfinite(close_block)
+            & np.isfinite(min_price)
+            & (close_block >= min_price)
+        )
     if cfg.min_avg_dollar_volume is not None:
         dollar_vol = np.empty((n_bars, n_tickers), dtype=float)
         for position, frame in enumerate(frames):

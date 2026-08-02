@@ -160,9 +160,24 @@ def test_pead_applies_slippage_and_commission(monkeypatch):
 
     entry = 110.0 * (1 + 5 / 10_000)
     exit_ = 115.0 * (1 - 5 / 10_000)
-    expected = ((exit_ / entry - 1.0) - 10 / 10_000) * 100
+    # commission_bps is per fill: 10 bps at entry plus 10 bps at exit.
+    expected = ((exit_ / entry - 1.0) - 2 * 10 / 10_000) * 100
     assert trades[0].return_pct == pytest.approx(expected, abs=1e-3)
     assert trades[0].details["raw_return_pct"] > trades[0].return_pct
+
+
+def test_pead_uses_shared_statutory_cost_model(monkeypatch):
+    ed = IDX[9].date()
+    events = _events([_event("AAA", ed, 10.0)])
+    kwargs = dict(hold_days=5, commission_bps=0.0, slippage_bps=0.0)
+    flat = _run(monkeypatch, events, {"AAA": _frame(IDX)}, **kwargs)
+    india = _run(
+        monkeypatch, events, {"AAA": _frame(IDX)}, cost_model="india", **kwargs
+    )
+
+    assert len(flat) == len(india) == 1
+    assert india[0].return_pct < flat[0].return_pct
+    assert "stt" in india[0].details["fees"]
 
 
 def test_pead_ignores_events_outside_lookback(monkeypatch):
@@ -377,7 +392,8 @@ def test_pead_dynamic_applies_slippage_and_commission(monkeypatch):
 
     entry = 110.0 * (1 + 5 / 10_000)
     exit_ = 121.0 * (1 - 5 / 10_000)
-    expected = ((exit_ / entry - 1.0) - 10 / 10_000) * 100
+    # commission_bps is per fill: 10 bps at entry plus 10 bps at exit.
+    expected = ((exit_ / entry - 1.0) - 2 * 10 / 10_000) * 100
     assert trades[0].return_pct == pytest.approx(expected, abs=1e-3)
     assert trades[0].details["raw_return_pct"] > trades[0].return_pct
 

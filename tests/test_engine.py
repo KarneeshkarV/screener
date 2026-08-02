@@ -422,6 +422,34 @@ def test_rolling_backtest_refills_freed_slot_from_same_day_signal(stub_fetcher_f
     assert by_ticker["RESERVE"].entry_date == reserve.index[8].date()
 
 
+def test_historical_backtest_force_closes_entry_on_last_available_bar(
+    stub_fetcher_factory,
+):
+    bars = make_bars(n=7, seed=10, open_base=100.0)
+    spy = make_bars(n=7, seed=11, open_base=400.0)
+    bars["entry_signal"] = 0.0
+    bars.iat[5, bars.columns.get_loc("entry_signal")] = 1.0
+    fetcher = stub_fetcher_factory({"AAA": bars, "SPY": spy})
+
+    result = run_backtest(
+        _cfg(
+            as_of=bars.index[5].date(),
+            hold=20,
+            top=1,
+            entry_expr="entry_signal > 0",
+            tickers=("AAA",),
+        ),
+        fetcher,
+    )
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.entry_date == bars.index[6].date()
+    assert trade.exit_date == bars.index[6].date()
+    assert trade.exit_reason == "eod"
+    assert result.equity_curve.index[-1].date() == bars.index[6].date()
+
+
 def test_rolling_backtest_force_closes_entry_on_window_end(stub_fetcher_factory):
     bars = make_bars(n=12, seed=11, open_base=100.0)
     spy = make_bars(n=12, seed=12, open_base=400.0)

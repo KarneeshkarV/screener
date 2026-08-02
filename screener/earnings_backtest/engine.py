@@ -12,11 +12,8 @@ from typing import Optional
 
 import pandas as pd
 
-from screener.backtester.costs import build_cost_model
-from screener.backtester.execution import (
-    apply_round_trip_costs,
-    fixed_bps_round_trip,
-)
+from screener.backtester.costs import apply_round_trip_costs, build_cost_model
+from screener.backtester.slippage import fixed_bps_round_trip
 from screener.earnings_backtest.data import (
     fetch_price_data,
     load_universe,
@@ -63,19 +60,10 @@ def run_earnings_backtest(
       7. Return list of EarningsTrade objects.
 
     Fees use the shared :func:`~screener.backtester.costs.build_cost_model`
-    stack (``flat`` / ``india`` / ``us_vested``). For ``cost_model="flat"``,
-    ``commission_bps`` remains a **round-trip** total (legacy earnings CLI
-    semantics); it is split evenly across buy and sell so
-    :class:`~screener.backtester.costs.FlatCommission` per-side rates sum to
-    the same drag as the previous single subtraction — bit-identical for flat.
+    stack (``flat`` / ``india`` / ``us_vested``). ``commission_bps`` is the
+    flat model's **per-fill** rate, matching the equity and PEAD engines.
     """
-    # FlatCommission is per-fill; earnings historically treated commission_bps
-    # as a single round-trip total. Split so buy+sell fractions match legacy.
-    model_name = (cost_model or "flat").strip().lower()
-    flat_bps = (
-        float(commission_bps) / 2.0 if model_name == "flat" else float(commission_bps)
-    )
-    costs = build_cost_model(model_name, commission_bps=flat_bps)
+    costs = build_cost_model(cost_model, commission_bps=float(commission_bps))
     fees_paid: dict[str, float] = {}
 
     # Steps 1-6 (universe -> events -> price panels) are shared acquisition;

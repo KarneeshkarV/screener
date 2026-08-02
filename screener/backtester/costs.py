@@ -200,6 +200,57 @@ def cost_model_from_config(cfg: object) -> CostModel:
     return build_cost_model(str(name), commission_bps=commission_bps)
 
 
+def apply_round_trip_costs(
+    entry_price: float,
+    exit_price: float,
+    cost_model: CostModel,
+    *,
+    shares: float | None = None,
+) -> tuple[float, float, dict[str, float]]:
+    """Apply one shared per-fill cost model to a long round trip.
+
+    Returns ``(raw_return, net_return, fees_breakdown)`` for a unit trade unless
+    ``shares`` is supplied. ``FlatCommission.bps`` is a per-side rate, so its
+    round-trip drag is two fills. This is deliberately the same fee path used
+    by the portfolio, earnings, and PEAD engines.
+    """
+    raw = (exit_price / entry_price) - 1.0 if entry_price else 0.0
+    share_count = 1.0 if shares is None else float(shares)
+    buy_notional = abs(float(entry_price) * share_count)
+    sell_notional = abs(float(exit_price) * share_count)
+    buy_bd = cost_model.side_cost_breakdown("buy", buy_notional, share_count)
+    sell_bd = cost_model.side_cost_breakdown("sell", sell_notional, share_count)
+
+    fees: dict[str, float] = {}
+    for breakdown in (buy_bd, sell_bd):
+        for name, amount in breakdown.items():
+            amt = float(amount)
+            if amt > 0.0:
+                fees[name] = fees.get(name, 0.0) + amt
+
+    buy_frac = (
+        sum(float(v) for v in buy_bd.values()) / buy_notional if buy_notional else 0.0
+    )
+    sell_frac = (
+        sum(float(v) for v in sell_bd.values()) / sell_notional
+        if sell_notional
+        else 0.0
+    )
+    return raw, raw - max(buy_frac, 0.0) - max(sell_frac, 0.0), fees
+
+
+def net_round_trip_return(
+    entry_fill: float,
+    exit_fill: float,
+    commission_bps: float,
+) -> tuple[float, float]:
+    """Compatibility helper using per-side flat ``commission_bps``."""
+    raw, net, _fees = apply_round_trip_costs(
+        entry_fill, exit_fill, FlatCommission(bps=commission_bps)
+    )
+    return raw, net
+
+
 def corwin_schultz_half_spread(
     high: pd.Series,
     low: pd.Series,

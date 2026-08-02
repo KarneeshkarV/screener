@@ -187,10 +187,7 @@ def _render_trade_table(
     type=float,
     default=10.0,
     show_default=True,
-    help=(
-        "Round-trip commission in basis points when --cost-model=flat "
-        "(split evenly across buy and sell)."
-    ),
+    help="Commission per fill in basis points when --cost-model=flat.",
 )
 @click.option(
     "--cost-model",
@@ -198,9 +195,9 @@ def _render_trade_table(
     default="flat",
     show_default=True,
     help=(
-        "Statutory fee model. 'flat' applies --commission-bps as a round-trip "
-        "total (legacy). 'india' applies NSE equity delivery fees. "
-        "'us_vested' applies the Vested/DriveWealth US equity fee stack."
+        "Statutory fee model. 'flat' applies --commission-bps on each fill. "
+        "'india' applies NSE equity delivery fees. 'us_vested' applies the "
+        "Vested/DriveWealth US equity fee stack."
     ),
 )
 def earnings_backtest(
@@ -392,7 +389,14 @@ def _print_csv(trades: list[EarningsTrade]) -> None:
     type=float,
     default=10.0,
     show_default=True,
-    help="Round-trip commission in basis points.",
+    help="Commission per fill in basis points when --cost-model=flat.",
+)
+@click.option(
+    "--cost-model",
+    type=click.Choice(["flat", "india", "us_vested"]),
+    default="flat",
+    show_default=True,
+    help="Statutory fee model shared with the equity and earnings backtests.",
 )
 def earnings_pead(
     market: str,
@@ -401,6 +405,7 @@ def earnings_pead(
     hold_days: int,
     exit_mode: str,
     commission_bps: float,
+    cost_model: str,
     slippage_bps: float,
     batch_size: int,
     tickers: str | None,
@@ -420,6 +425,7 @@ def earnings_pead(
             min_surprise=min_surprise,
             hold_days=hold_days,
             commission_bps=commission_bps,
+            cost_model=cost_model,
             slippage_bps=slippage_bps,
             batch_size=batch_size,
             tickers=ticker_list,
