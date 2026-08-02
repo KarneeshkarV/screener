@@ -316,7 +316,7 @@ def test_cli_help_lists_research_report():
 
 def test_research_report_helper_edge_cases():
     import screener.backtester.optimization.research_report as rr
-    from screener.backtester.optimization.reporting import _fmt
+    from screener.backtester.metrics import format_result_value
 
     assert not rr._param_equal(None, 1)
     assert not rr._param_equal("not-a-number", 1.0)
@@ -350,7 +350,7 @@ def test_research_report_helper_edge_cases():
         mc_return_p05=1.0,
         oos_metric=1.0,
     ).startswith("PASS")
-    assert _fmt(float("nan")) == "nan"
+    assert format_result_value(float("nan"), "ratio") == "-"
 
 
 def test_run_research_report_fallback_ledger_and_empty_grid(tmp_path, monkeypatch):

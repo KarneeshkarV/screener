@@ -18,6 +18,7 @@ from rich.console import Console
 from screener.backtester.cli_common import resolve_min_filters
 from screener.backtester.data import build_price_fetcher
 from screener.backtester.display import trades_dataframe
+from screener.backtester.metrics import result_view
 from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.strategies.expressions import (
@@ -67,6 +68,7 @@ def _result_payload(name: str, result: BacktestResult) -> dict[str, Any]:
         "strategy": name,
         "base_strategy": result.config.strategy_name or name,
         "metrics": result.metrics,
+        "result_view": [row.as_dict() for row in result_view(result.metrics)],
         "curves": curves,
         "trades": trade_rows,
         "warnings": result.warnings,
@@ -356,7 +358,6 @@ def _lab_html() -> str:
     const compareUniverseEl = document.getElementById("compare-universe");
     const tickersEl = document.getElementById("tickers");
     const pct = value => value == null || Number.isNaN(value) ? "" : `${{(value * 100).toFixed(2)}}%`;
-    const num = value => value == null || Number.isNaN(value) ? "" : Number(value).toFixed(3);
 
     function selectedStrategies() {{
       return [...document.querySelectorAll('input[name="strategy"]:checked')].map(el => el.value);
@@ -374,18 +375,9 @@ def _lab_html() -> str:
     syncUniverseMode();
 
     function renderMetrics(results) {{
-      const keys = [
-        ["total_return", "Total Return", pct],
-        ["benchmark_return", "Benchmark", pct],
-        ["max_drawdown", "Max DD", pct],
-        ["sharpe", "Sharpe", num],
-        ["trade_count", "Trades", value => value ?? ""],
-        ["exposure", "Exposure", pct],
-        ["hit_rate", "Hit Rate", pct],
-      ];
       document.getElementById("metrics").innerHTML = results.flatMap(result =>
-        keys.map(([key, label, fmt]) =>
-          `<article class="metric"><span>${{result.strategy}} · ${{label}}</span><strong>${{fmt(result.metrics[key])}}</strong></article>`
+        result.result_view.map(row =>
+          `<article class="metric"><span>${{result.strategy}} · ${{row.label}}</span><strong>${{row.formatted}}</strong></article>`
         )
       ).join("");
     }}

@@ -7,12 +7,15 @@ Alpha/beta use a simple OLS fit via ``numpy.polyfit`` — no sklearn.
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable, cast
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Iterable, Literal, cast, overload
 
 import numpy as np
 import pandas as pd
 
 from screener.backtester.models import Trade
+from screener.format import fmt_money, fmt_pct, is_missing
 from screener.regime import classify_regimes
 
 
@@ -26,6 +29,146 @@ _EULER_MASCHERONI = 0.5772156649015329
 # shorter (~6.25h), so India intraday annualization is slightly off; no behavior
 # change intended.
 _BARS_PER_SESSION = {"1d": 1, "1h": 7, "30m": 13, "15m": 26, "5m": 78, "1m": 390}
+
+
+MetricKind = Literal["pct", "money", "ratio", "count", "int"]
+
+
+@dataclass(frozen=True)
+class ResultViewRow:
+    """One display-ready metric from a backtest result."""
+
+    key: str
+    label: str
+    kind: MetricKind
+    value: Any
+    formatted: str
+
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-safe representation used by browser renderers."""
+        return {
+            "key": self.key,
+            "label": self.label,
+            "kind": self.kind,
+            "value": self.value,
+            "formatted": self.formatted,
+        }
+
+
+@dataclass(frozen=True)
+class ResultView(Sequence[ResultViewRow]):
+    """Ordered display model shared by every backtest result renderer."""
+
+    rows: tuple[ResultViewRow, ...]
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    @overload
+    def __getitem__(self, index: int) -> ResultViewRow: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[ResultViewRow, ...]: ...
+
+    def __getitem__(
+        self, index: int | slice
+    ) -> ResultViewRow | tuple[ResultViewRow, ...]:
+        return self.rows[index]
+
+
+# The only ordered metric schema. Unknown metrics are deliberately appended by
+# ``result_view`` so adding a computed metric needs no renderer change.
+_RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
+    ("starting_equity", "Starting Capital", "money"),
+    ("final_equity", "Final Equity", "money"),
+    ("total_return", "Total Return", "pct"),
+    ("invested_return", "Invested Return", "pct"),
+    ("cagr", "CAGR", "pct"),
+    ("vol_annual", "Volatility (ann.)", "pct"),
+    ("sharpe", "Sharpe", "ratio"),
+    ("sortino", "Sortino", "ratio"),
+    ("calmar", "Calmar", "ratio"),
+    ("psr", "Probabilistic Sharpe", "pct"),
+    ("dsr", "Deflated Sharpe", "pct"),
+    ("max_drawdown", "Max Drawdown", "pct"),
+    ("hit_rate", "Hit Rate", "pct"),
+    ("alpha_annual", "Alpha (ann.)", "pct"),
+    ("beta", "Beta", "ratio"),
+    ("exposure", "Avg Exposure", "pct"),
+    ("benchmark_return", "Benchmark Return", "pct"),
+    ("trade_count", "Trades", "count"),
+    ("unique_tickers", "Unique Tickers", "count"),
+    ("median_trade_return", "Median Trade Return", "pct"),
+    ("avg_trade_return", "Avg Trade Return", "pct"),
+    ("best_trade_return", "Best Trade", "pct"),
+    ("worst_trade_return", "Worst Trade", "pct"),
+    ("profit_factor", "Profit Factor", "ratio"),
+    ("expectancy", "Expectancy", "pct"),
+    ("winning_trades", "Winning Trades", "count"),
+    ("losing_trades", "Losing Trades", "count"),
+)
+_RESULT_VIEW_SPECS = {key: (label, kind) for key, label, kind in _RESULT_VIEW_ORDER}
+
+
+def format_result_value(value: Any, kind: MetricKind) -> str:
+    """Format a result metric once, independently of its output surface."""
+    if is_missing(value):
+        return "-"
+    if kind == "pct":
+        return fmt_pct(float(value) * 100)
+    if kind == "money":
+        return fmt_money(value)
+    if kind == "count":
+        return f"{int(value):,}"
+    if kind == "int":
+        return str(int(value))
+    if isinstance(value, (float, int)):
+        return f"{float(value):+.3f}"
+    return str(value)
+
+
+def _default_metric_spec(key: str, value: Any) -> tuple[str, MetricKind]:
+    """Give newly-computed metrics a useful view without renderer edits."""
+    label = key.replace("_", " ").title()
+    if key == "risk_adjusted_return":
+        return label, "ratio"
+    if (
+        key.endswith("_return")
+        or key.endswith("_rate")
+        or key.endswith("_pct")
+        or "_pct_" in key
+        or key in {"cagr", "vol_annual", "max_drawdown", "exposure"}
+    ):
+        return label, "pct"
+    if key.endswith("_equity") or key == "total_fees" or key.startswith("fee_"):
+        return label, "money"
+    if key.endswith("_count") or key.endswith("_trades") or key.endswith("_tickers"):
+        return label, "count"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return label, "int"
+    return label, "ratio"
+
+
+def result_view(metrics: Mapping[str, Any]) -> ResultView:
+    """Return every metric in a stable order with labels, kinds, and formatting."""
+    ordered_keys = [key for key, _, _ in _RESULT_VIEW_ORDER if key in metrics]
+    ordered_keys.extend(key for key in metrics if key not in _RESULT_VIEW_SPECS)
+    rows = []
+    for key in ordered_keys:
+        value = metrics[key]
+        label, kind = _RESULT_VIEW_SPECS.get(key, _default_metric_spec(key, value))
+        rows.append(
+            ResultViewRow(key, label, kind, value, format_result_value(value, kind))
+        )
+    return ResultView(tuple(rows))
+
+
+def result_view_columns(metric_sets: Iterable[Mapping[str, Any]]) -> ResultView:
+    """Return the ordered union of metrics for column-oriented result tables."""
+    keys: dict[str, None] = {}
+    for metrics in metric_sets:
+        keys.update(dict.fromkeys(metrics))
+    return result_view({key: 0 for key in keys})
 
 
 def periods_per_year_for_interval(interval: str) -> int:

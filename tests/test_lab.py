@@ -138,6 +138,12 @@ def test_compare_payload_runs_multiple_named_strategies(monkeypatch):
     ]
     assert payload["request"]["tickers"] == ("AAA", "BBB")
     assert all("metrics" in item for item in payload["results"])
+    assert all("result_view" in item for item in payload["results"])
+    assert all(
+        {"starting_equity", "final_equity"}
+        <= {row["key"] for row in item["result_view"]}
+        for item in payload["results"]
+    )
     assert all("curves" in item for item in payload["results"])
 
 

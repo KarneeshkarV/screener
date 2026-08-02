@@ -6,8 +6,6 @@ import html
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
-
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -15,24 +13,13 @@ from plotly.io import to_html
 from plotly.offline import get_plotlyjs
 
 from screener.backtester.display import trades_dataframe
+from screener.backtester.metrics import result_view
 from screener.backtester.models import BacktestResult
 from screener.html_report import html_page
 
 
 class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
-
-
-def _pct(value: Any) -> str:
-    if not isinstance(value, (float, int)):
-        return str(value)
-    return f"{float(value) * 100:+.2f}%"
-
-
-def _num(value: Any) -> str:
-    if isinstance(value, float):
-        return f"{value:+.3f}"
-    return str(value)
 
 
 def _normalise_curve(curve: pd.Series, name: str) -> pd.DataFrame:
@@ -96,7 +83,7 @@ def dashboard_frames(result: BacktestResult) -> dict[str, pd.DataFrame]:
     }
 
 
-def _figure_html(fig: go.Figure, div_id: str) -> str:
+def figure_html(fig: go.Figure, div_id: str) -> str:
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="#07090d",
@@ -130,7 +117,7 @@ def _empty_panel(panel_id: str, title: str, message: str) -> str:
     )
 
 
-def _table_html(df: pd.DataFrame, table_id: str, limit: int = 250) -> str:
+def table_html(df: pd.DataFrame, table_id: str, limit: int = 250) -> str:
     if df.empty:
         return '<p class="empty">No rows.</p>'
     table = df.head(limit).copy()
@@ -146,53 +133,13 @@ def _table_html(df: pd.DataFrame, table_id: str, limit: int = 250) -> str:
     )
 
 
-def _metric_cards(result: BacktestResult) -> str:
-    pct_keys = {
-        "total_return",
-        "invested_return",
-        "cagr",
-        "vol_annual",
-        "max_drawdown",
-        "hit_rate",
-        "alpha_annual",
-        "exposure",
-        "benchmark_return",
-    }
-    labels = {
-        "total_return": "Total Return",
-        "cagr": "CAGR",
-        "benchmark_return": "Benchmark",
-        "max_drawdown": "Max DD",
-        "sharpe": "Sharpe",
-        "median_trade_return": "Median Trade",
-        "profit_factor": "Profit Factor",
-        "trade_count": "Trades",
-        "unique_tickers": "Tickers",
-        "exposure": "Exposure",
-        "hit_rate": "Hit Rate",
-    }
-    cards: list[str] = []
-    for key in [
-        "total_return",
-        "cagr",
-        "benchmark_return",
-        "max_drawdown",
-        "sharpe",
-        "median_trade_return",
-        "profit_factor",
-        "trade_count",
-        "unique_tickers",
-        "exposure",
-        "hit_rate",
-    ]:
-        if key not in result.metrics:
-            continue
-        value = result.metrics[key]
-        formatted = _pct(value) if key in pct_keys else _num(value)
-        cards.append(
-            f'<article class="metric"><span>{labels[key]}</span><strong>{formatted}</strong></article>'
-        )
-    return "".join(cards)
+def metric_cards(result: BacktestResult) -> str:
+    """Render every shared result-view row as an HTML metric card."""
+    return "".join(
+        f'<article class="metric"><span>{html.escape(row.label)}</span>'
+        f"<strong>{html.escape(row.formatted)}</strong></article>"
+        for row in result_view(result.metrics)
+    )
 
 
 def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
@@ -238,7 +185,7 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
         perf.update_yaxes(tickformat=".0%")
         sections.append(
             '<section class="panel" id="performance-chart"><h2>Performance</h2>'
-            + _figure_html(perf, "equity-vs-benchmark")
+            + figure_html(perf, "equity-vs-benchmark")
             + "</section>"
         )
 
@@ -247,7 +194,7 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
         dd.update_yaxes(tickformat=".0%")
         sections.append(
             '<section class="panel" id="drawdown-chart"><h2>Drawdown</h2>'
-            + _figure_html(dd, "drawdown-curve")
+            + figure_html(dd, "drawdown-curve")
             + "</section>"
         )
 
@@ -267,7 +214,7 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
         monthly_fig.update_yaxes(tickformat=".0%")
         sections.append(
             '<section class="panel" id="monthly-returns"><h2>Monthly Returns</h2>'
-            + _figure_html(monthly_fig, "monthly-return-bars")
+            + figure_html(monthly_fig, "monthly-return-bars")
             + "</section>"
         )
 
@@ -312,10 +259,10 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
         sections.append(
             '<section class="panel wide" id="trade-diagnostics"><h2>Trade Diagnostics</h2>'
             '<div class="chart-grid">'
-            + _figure_html(ret_fig, "return-distribution")
-            + _figure_html(exit_fig, "exit-reason-breakdown")
-            + _figure_html(hold_fig, "holding-period-distribution")
-            + _figure_html(contrib_fig, "ticker-contribution")
+            + figure_html(ret_fig, "return-distribution")
+            + figure_html(exit_fig, "exit-reason-breakdown")
+            + figure_html(hold_fig, "holding-period-distribution")
+            + figure_html(contrib_fig, "ticker-contribution")
             + "</div></section>"
         )
 
@@ -342,8 +289,8 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
         sections.append(
             '<section class="panel wide" id="selection-diagnostics"><h2>Selection Diagnostics</h2>'
             '<div class="chart-grid two">'
-            + _figure_html(signal_fig, "signal-count-by-day")
-            + _figure_html(rank_fig, "rank-distribution")
+            + figure_html(signal_fig, "signal-count-by-day")
+            + figure_html(rank_fig, "rank-distribution")
             + "</div></section>"
         )
 
@@ -469,12 +416,12 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
     </div>
   </header>
   <main>
-    <section class="metrics" id="summary-metrics">{_metric_cards(result)}</section>
+    <section class="metrics" id="summary-metrics">{metric_cards(result)}</section>
     {"".join(sections)}
     <section class="panel wide" id="warnings"><h2>Warnings</h2><ul class="warnings">{warnings}</ul></section>
     <section class="tables">
-      <article class="panel" id="trade-ledger"><h2>Trade Ledger</h2><div class="table-wrap">{_table_html(trades, "trade-ledger-table")}</div></article>
-      <article class="panel" id="selection-table"><h2>Selections</h2><div class="table-wrap">{_table_html(selection, "selection-table-data")}</div></article>
+      <article class="panel" id="trade-ledger"><h2>Trade Ledger</h2><div class="table-wrap">{table_html(trades, "trade-ledger-table")}</div></article>
+      <article class="panel" id="selection-table"><h2>Selections</h2><div class="table-wrap">{table_html(selection, "selection-table-data")}</div></article>
     </section>
   </main>""",
         head_extra=f"<script>{plotly_js}</script>",

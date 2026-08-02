@@ -12,6 +12,12 @@ from pydantic import BaseModel
 from rich.console import Console
 from rich.table import Table
 
+from screener import agentio
+from screener.backtester.metrics import (
+    format_result_value,
+    result_view,
+    result_view_columns,
+)
 from screener.backtester.optimization.grid import GridSearchResult
 from screener.backtester.optimization.walk_forward import WalkForwardSummary
 from screener.html_report import html_page
@@ -61,36 +67,39 @@ def write_json_report(data: Any, path: Path | str) -> None:
     target.write_text(json.dumps(data, indent=2, default=_json_default))
 
 
+def _print_table(table: Table, console: Console) -> None:
+    """Use the shared bounded table primitive when an agent drives the CLI."""
+    if agentio.is_agent_mode():
+        agentio.render_table(table, console)
+    else:
+        console.print(table)
+
+
+def _view_cells(metrics: Mapping[str, Any]) -> dict[str, str]:
+    return {row.key: row.formatted for row in result_view(metrics)}
+
+
 def print_grid_table(
     results: Iterable[GridSearchResult], console: Console | None = None
 ) -> None:
     console = console or Console()
+    rows = list(results)
+    columns = result_view_columns(result.metrics for result in rows)
     table = Table(title="Grid Search Results", show_header=True, header_style="bold")
-    for col in [
-        "Rank",
-        "Score",
-        "Trades",
-        "Total Return",
-        "CAGR",
-        "Sharpe",
-        "Profit Factor",
-        "Max DD",
-        "Params",
-    ]:
-        table.add_column(col, justify="right" if col != "Params" else "left")
-    for rank, result in enumerate(results, start=1):
+    table.add_column("Rank", justify="right")
+    table.add_column("Score", justify="right")
+    for column in columns:
+        table.add_column(column.label, justify="right")
+    table.add_column("Params")
+    for rank, result in enumerate(rows, start=1):
+        cells = _view_cells(result.metrics)
         table.add_row(
             str(rank),
-            f"{result.score:.4f}",
-            str(result.trade_count),
-            f"{float(result.metrics.get('total_return', 0.0)) * 100:+.2f}%",
-            f"{float(result.metrics.get('cagr', 0.0)) * 100:+.2f}%",
-            f"{float(result.metrics.get('sharpe', 0.0)):.3f}",
-            f"{float(result.metrics.get('profit_factor', 0.0)):.3f}",
-            f"{float(result.metrics.get('max_drawdown', 0.0)) * 100:.2f}%",
+            format_result_value(result.score, "ratio"),
+            *(cells.get(column.key, "-") for column in columns),
             json.dumps(result.params, sort_keys=True),
         )
-    console.print(table)
+    _print_table(table, console)
     console.print(
         GRID_IN_SAMPLE_DISCLAIMER.replace(
             "IN-SAMPLE / SELECTION BIAS WARNING:",
@@ -103,34 +112,28 @@ def print_walk_forward_table(
     summary: WalkForwardSummary, console: Console | None = None
 ) -> None:
     console = console or Console()
+    columns = result_view_columns(result.test_metrics for result in summary.windows)
     table = Table(title="Walk-Forward Results", show_header=True, header_style="bold")
-    for col in [
-        "Window",
-        "Train Score",
-        "Test Return",
-        "Test CAGR",
-        "Test Sharpe",
-        "Test Trades",
-        "Params",
-    ]:
-        table.add_column(
-            col, justify="right" if col != "Params" and col != "Window" else "left"
-        )
+    table.add_column("Window")
+    table.add_column("Train Score", justify="right")
+    for column in columns:
+        table.add_column(f"Test {column.label}", justify="right")
+    table.add_column("Params")
     for result in summary.windows:
-        w = result.window
+        window = result.window
+        cells = _view_cells(result.test_metrics)
         table.add_row(
-            f"{w.train_start}..{w.test_end}",
-            f"{result.best_train.score:.4f}",
-            f"{float(result.test_metrics.get('total_return', 0.0)) * 100:+.2f}%",
-            f"{float(result.test_metrics.get('cagr', 0.0)) * 100:+.2f}%",
-            f"{float(result.test_metrics.get('sharpe', 0.0)):.3f}",
-            str(result.test_trade_count),
+            f"{window.train_start}..{window.test_end}",
+            format_result_value(result.best_train.score, "ratio"),
+            *(cells.get(column.key, "-") for column in columns),
             json.dumps(result.best_train.params, sort_keys=True),
         )
-    console.print(table)
+    _print_table(table, console)
     console.print(
-        f"Stability: {summary.stability_score:.3f}  "
-        f"Train/Test score ratio: {summary.train_test_score_ratio:.3f}  "
+        "Stability: "
+        f"{format_result_value(summary.stability_score, 'ratio')}  "
+        "Train/Test score ratio: "
+        f"{format_result_value(summary.train_test_score_ratio, 'ratio')}  "
         f"Overfit flag: {summary.overfit_flag}"
     )
 
@@ -167,22 +170,6 @@ def _html_table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
         cells = "".join(f"<td>{html_lib.escape(str(c))}</td>" for c in row)
         body_rows.append(f"<tr>{cells}</tr>")
     return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
-
-
-def _fmt(value: Any, digits: int = 4) -> str:
-    if value is None:
-        return "—"
-    if isinstance(value, float):
-        if value != value:  # NaN
-            return "nan"
-        return f"{value:.{digits}f}"
-    return str(value)
-
-
-def _fmt_pct(value: Any) -> str:
-    if not isinstance(value, (int, float)) or value != value:
-        return "—"
-    return f"{float(value) * 100:+.2f}%"
 
 
 def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> None:
@@ -230,46 +217,34 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
     ]
     config_table = _html_table(
         ["Field", "Value"],
-        [(k, _fmt(v) if not isinstance(v, str) else v) for k, v in config_rows],
+        [
+            (
+                key,
+                value
+                if isinstance(value, str)
+                else format_result_value(value, "ratio"),
+            )
+            for key, value in config_rows
+        ],
     )
 
     grid_results = grid.get("results") or []
+    grid_columns = result_view_columns(
+        (result.get("metrics") or {}) for result in grid_results
+    )
     grid_rows = []
     for rank, result in enumerate(grid_results, start=1):
-        metrics = result.get("metrics") or {}
+        cells = _view_cells(result.get("metrics") or {})
         grid_rows.append(
             [
                 rank,
-                _fmt(result.get("score")),
-                result.get("trade_count"),
-                _fmt_pct(metrics.get("total_return")),
-                _fmt_pct(metrics.get("cagr")),
-                _fmt(metrics.get("sharpe"), 3),
-                _fmt(metrics.get("profit_factor"), 3),
-                _fmt(
-                    (metrics.get("max_drawdown") or 0.0) * 100
-                    if isinstance(metrics.get("max_drawdown"), (int, float))
-                    else metrics.get("max_drawdown"),
-                    2,
-                )
-                + (
-                    "%" if isinstance(metrics.get("max_drawdown"), (int, float)) else ""
-                ),
+                format_result_value(result.get("score"), "ratio"),
+                *(cells.get(column.key, "-") for column in grid_columns),
                 json.dumps(result.get("params") or {}, sort_keys=True),
             ]
         )
     grid_table = _html_table(
-        [
-            "Rank",
-            "Score",
-            "Trades",
-            "Total Return",
-            "CAGR",
-            "Sharpe",
-            "Profit Factor",
-            "Max DD",
-            "Params",
-        ],
+        ["Rank", "Score", *(column.label for column in grid_columns), "Params"],
         grid_rows,
     )
 
@@ -279,11 +254,11 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
             row.get("parameter"),
             row.get("shape"),
             row.get("best_value"),
-            _fmt(row.get("best_score")),
-            _fmt(row.get("score_min")),
-            _fmt(row.get("score_max")),
-            _fmt(row.get("score_range")),
-            _fmt(row.get("score_std")),
+            format_result_value(row.get("best_score"), "ratio"),
+            format_result_value(row.get("score_min"), "ratio"),
+            format_result_value(row.get("score_max"), "ratio"),
+            format_result_value(row.get("score_range"), "ratio"),
+            format_result_value(row.get("score_std"), "ratio"),
         ]
         for row in stability
     ]
@@ -302,20 +277,19 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
     )
 
     windows = walk_forward.get("windows") or []
+    wf_columns = result_view_columns(
+        (item.get("test_metrics") or {}) for item in windows
+    )
     wf_rows = []
     for item in windows:
         window = item.get("window") or {}
         best_train = item.get("best_train") or {}
-        test_metrics = item.get("test_metrics") or {}
+        cells = _view_cells(item.get("test_metrics") or {})
         wf_rows.append(
             [
                 f"{window.get('train_start')}..{window.get('test_end')}",
-                _fmt(best_train.get("score")),
-                _fmt(test_metrics.get(metric), 3),
-                _fmt_pct(test_metrics.get("total_return")),
-                _fmt_pct(test_metrics.get("cagr")),
-                _fmt(test_metrics.get("sharpe"), 3),
-                item.get("test_trade_count"),
+                format_result_value(best_train.get("score"), "ratio"),
+                *(cells.get(column.key, "-") for column in wf_columns),
                 json.dumps(best_train.get("params") or {}, sort_keys=True),
             ]
         )
@@ -323,11 +297,7 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         [
             "Window",
             "Train score",
-            f"Test {metric}",
-            "Test return",
-            "Test CAGR",
-            "Test Sharpe",
-            "Test trades",
+            *(f"Test {column.label}" for column in wf_columns),
             "Params",
         ],
         wf_rows,
@@ -337,25 +307,43 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         ("Iterations", monte_carlo.get("iterations")),
         ("Trade count", monte_carlo.get("trade_count")),
         ("Trade source", monte_carlo.get("trade_source")),
-        ("Median return", _fmt(monte_carlo.get("median_return"))),
-        ("Return p05", _fmt(monte_carlo.get("return_p05"))),
-        ("Return p95", _fmt(monte_carlo.get("return_p95"))),
-        ("Median drawdown", _fmt(monte_carlo.get("median_drawdown"))),
-        ("Drawdown p05", _fmt(monte_carlo.get("drawdown_p05"))),
-        ("Worst drawdown", _fmt(monte_carlo.get("worst_drawdown"))),
-        ("P(profit)", _fmt(monte_carlo.get("probability_of_profit"), 3)),
-        ("Risk of ruin", _fmt(monte_carlo.get("risk_of_ruin"), 3)),
+        (
+            "Median return",
+            format_result_value(monte_carlo.get("median_return"), "ratio"),
+        ),
+        ("Return p05", format_result_value(monte_carlo.get("return_p05"), "ratio")),
+        ("Return p95", format_result_value(monte_carlo.get("return_p95"), "ratio")),
+        (
+            "Median drawdown",
+            format_result_value(monte_carlo.get("median_drawdown"), "ratio"),
+        ),
+        ("Drawdown p05", format_result_value(monte_carlo.get("drawdown_p05"), "ratio")),
+        (
+            "Worst drawdown",
+            format_result_value(monte_carlo.get("worst_drawdown"), "ratio"),
+        ),
+        (
+            "P(profit)",
+            format_result_value(monte_carlo.get("probability_of_profit"), "ratio"),
+        ),
+        ("Risk of ruin", format_result_value(monte_carlo.get("risk_of_ruin"), "ratio")),
     ]
     mc_table = _html_table(["Metric", "Value"], mc_rows)
 
     summary_rows = [
         ("Best params", json.dumps(summary.get("best_params") or {}, sort_keys=True)),
-        (f"IS {metric}", _fmt(summary.get("is_metric"))),
-        (f"OOS {metric}", _fmt(summary.get("oos_metric"))),
-        ("Degradation", _fmt(summary.get("degradation"), 3)),
-        ("Train/test score ratio", _fmt(summary.get("train_test_score_ratio"), 3)),
+        (f"IS {metric}", format_result_value(summary.get("is_metric"), "ratio")),
+        (f"OOS {metric}", format_result_value(summary.get("oos_metric"), "ratio")),
+        ("Degradation", format_result_value(summary.get("degradation"), "ratio")),
+        (
+            "Train/test score ratio",
+            format_result_value(summary.get("train_test_score_ratio"), "ratio"),
+        ),
         ("Overfit flag", summary.get("overfit_flag")),
-        ("MC 5th-pct return", _fmt(summary.get("mc_return_p05"))),
+        (
+            "MC 5th-pct return",
+            format_result_value(summary.get("mc_return_p05"), "ratio"),
+        ),
         ("Verdict", verdict),
     ]
     summary_table = _html_table(["Field", "Value"], summary_rows)
@@ -370,17 +358,17 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
   <h2>Grid search</h2>
   <p class="banner">{html_lib.escape(str(disclaimer))}</p>
   <p class="meta">Best params: {html_lib.escape(json.dumps(grid.get("best_params") or {}, sort_keys=True))}
-  &nbsp;|&nbsp; Best score: {html_lib.escape(_fmt(grid.get("best_score")))}</p>
+  &nbsp;|&nbsp; Best score: {html_lib.escape(format_result_value(grid.get("best_score"), "ratio"))}</p>
   {grid_table}
 
   <h2>Parameter stability</h2>
   {stability_table}
 
   <h2>Walk-forward</h2>
-  <p class="meta">Stability score: {html_lib.escape(_fmt(walk_forward.get("stability_score"), 3))}
-  &nbsp;|&nbsp; Train/test ratio: {html_lib.escape(_fmt(walk_forward.get("train_test_score_ratio"), 3))}
+  <p class="meta">Stability score: {html_lib.escape(format_result_value(walk_forward.get("stability_score"), "ratio"))}
+  &nbsp;|&nbsp; Train/test ratio: {html_lib.escape(format_result_value(walk_forward.get("train_test_score_ratio"), "ratio"))}
   &nbsp;|&nbsp; Overfit flag: {html_lib.escape(str(walk_forward.get("overfit_flag")))}
-  &nbsp;|&nbsp; Degradation: {html_lib.escape(_fmt(summary.get("degradation"), 3))}</p>
+  &nbsp;|&nbsp; Degradation: {html_lib.escape(format_result_value(summary.get("degradation"), "ratio"))}</p>
   {wf_table}
 
   <h2>Monte Carlo</h2>

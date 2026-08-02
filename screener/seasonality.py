@@ -23,6 +23,8 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
+from screener.format import fmt_pct
+
 TURN_OF_MONTH_WINDOW = 3
 TURN_OF_MONTH_LABEL = "Turn of month"
 OTHER_DAYS_LABEL = "Other days"
@@ -141,10 +143,6 @@ _SECTIONS: list[tuple[str, str, str]] = [
 ]
 
 
-def _pct(value: float) -> str:
-    return f"{value * 100:+.2f}%"
-
-
 def render_report(report: SeasonalityReport, console: Console) -> None:
     console.print(
         f"[bold]Seasonality — {report.ticker}[/bold]  ({report.start} → {report.end})"
@@ -164,11 +162,11 @@ def render_report(report: SeasonalityReport, console: Console) -> None:
             table.add_row(
                 stats.label,
                 str(stats.count),
-                f"[{mean_style}]{_pct(stats.mean)}[/{mean_style}]",
-                _pct(stats.median),
+                f"[{mean_style}]{fmt_pct(stats.mean * 100)}[/{mean_style}]",
+                fmt_pct(stats.median * 100),
                 f"{stats.win_rate * 100:.1f}%",
-                _pct(stats.best),
-                _pct(stats.worst),
+                fmt_pct(stats.best * 100),
+                fmt_pct(stats.worst * 100),
             )
         console.print(table)
 

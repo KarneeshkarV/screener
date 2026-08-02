@@ -12,12 +12,12 @@ import plotly.graph_objects as go
 from plotly.offline import get_plotlyjs
 
 from screener.backtester.dashboard import (
-    _figure_html,
-    _metric_cards,
-    _pct,
-    _table_html,
     dashboard_frames,
+    figure_html,
+    metric_cards,
+    table_html,
 )
+from screener.backtester.metrics import format_result_value
 from screener.backtester.models import BacktestResult
 from screener.html_report import html_page
 
@@ -100,7 +100,9 @@ def _winners_losers_frames(trades: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataF
     losers = ranked.tail(10).iloc[::-1].copy()
     for frame in (winners, losers):
         if "return_pct" in frame.columns:
-            frame["return_pct"] = frame["return_pct"].map(_pct)
+            frame["return_pct"] = frame["return_pct"].map(
+                lambda value: format_result_value(value, "pct")
+            )
         if "pnl" in frame.columns:
             frame["pnl"] = frame["pnl"].map(lambda v: f"{float(v):,.2f}")
     return winners, losers
@@ -113,7 +115,9 @@ def _trade_ledger_frame(trades: pd.DataFrame) -> pd.DataFrame:
         return ledger
     for col in ["return_pct"]:
         if col in ledger.columns:
-            ledger[col] = ledger[col].map(_pct)
+            ledger[col] = ledger[col].map(
+                lambda value: format_result_value(value, "pct")
+            )
     for col in ["entry_price", "exit_price", "shares", "pnl"]:
         if col in ledger.columns:
             ledger[col] = ledger[col].map(lambda v: f"{float(v):,.2f}")
@@ -125,7 +129,9 @@ def _trade_timeline_html(trades: pd.DataFrame) -> str:
         return '<p class="empty">No trades.</p>'
     frame = trades.copy().sort_values(["entry_date", "exit_date", "ticker"])
     frame["label"] = frame["ticker"].astype(str) + " #" + frame["rank"].astype(str)
-    frame["return_label"] = frame["return_pct"].map(_pct)
+    frame["return_label"] = frame["return_pct"].map(
+        lambda value: format_result_value(value, "pct")
+    )
     frame["pnl_label"] = frame["pnl"].map(lambda v: f"{float(v):,.2f}")
     frame["holding_days"] = (
         pd.to_datetime(frame["exit_date"]) - pd.to_datetime(frame["entry_date"])
@@ -150,7 +156,7 @@ def _trade_timeline_html(trades: pd.DataFrame) -> str:
         labels={"label": "Trade", "return_pct": "Return"},
     )
     fig.update_yaxes(autorange="reversed")
-    return _figure_html(fig, "tearsheet-trade-timeline")
+    return figure_html(fig, "tearsheet-trade-timeline")
 
 
 def _config_rows(result: BacktestResult) -> str:
@@ -189,7 +195,7 @@ def render_tearsheet(
     ledger_html = (
         '<p class="empty">No trades.</p>'
         if trades.empty
-        else _table_html(_trade_ledger_frame(trades), "trade-ledger-table", limit=5000)
+        else table_html(_trade_ledger_frame(trades), "trade-ledger-table", limit=5000)
     )
 
     if curves.empty:
@@ -224,7 +230,7 @@ def render_tearsheet(
         perf.update_yaxes(tickformat=".0%")
         sections.append(
             '<section class="panel wide" id="equity-vs-benchmark"><h2>Equity vs Benchmark</h2>'
-            + _figure_html(perf, "tearsheet-equity-vs-benchmark")
+            + figure_html(perf, "tearsheet-equity-vs-benchmark")
             + "</section>"
         )
 
@@ -233,7 +239,7 @@ def render_tearsheet(
         dd.update_yaxes(tickformat=".0%")
         sections.append(
             '<section class="panel wide" id="drawdown-curve"><h2>Drawdown</h2>'
-            + _figure_html(dd, "tearsheet-drawdown-curve")
+            + figure_html(dd, "tearsheet-drawdown-curve")
             + "</section>"
         )
 
@@ -267,7 +273,7 @@ def render_tearsheet(
         hist.update_xaxes(tickformat=".0%")
         sections.append(
             '<section class="panel" id="trade-histogram"><h2>Trade Return Distribution</h2>'
-            + _figure_html(hist, "tearsheet-trade-histogram")
+            + figure_html(hist, "tearsheet-trade-histogram")
             + "</section>"
         )
         winners, losers = _winners_losers_frames(trades)
@@ -275,9 +281,9 @@ def render_tearsheet(
             '<section class="panel wide" id="winners-losers"><h2>Top Winners &amp; Losers</h2>'
             '<div class="chart-grid two">'
             '<div class="table-wrap"><h3>Top 10 Winners</h3>'
-            + _table_html(winners, "top-winners-table")
+            + table_html(winners, "top-winners-table")
             + '</div><div class="table-wrap"><h3>Top 10 Losers</h3>'
-            + _table_html(losers, "top-losers-table")
+            + table_html(losers, "top-losers-table")
             + "</div></div></section>"
         )
 
@@ -425,7 +431,7 @@ def render_tearsheet(
       <label for="tab-ledger">Trade Ledger</label>
     </nav>
     <section class="tab-panel" id="overview-panel">
-      <section class="metrics" id="metrics-summary">{_metric_cards(result)}</section>
+      <section class="metrics" id="metrics-summary">{metric_cards(result)}</section>
       {"".join(sections)}
       <section class="panel" id="config"><h2>Config</h2><div class="table-wrap"><table class="data-table" id="config-table">{_config_rows(result)}</table></div></section>
       <section class="panel" id="warnings"><h2>Warnings</h2><ul class="warnings">{warnings_html}</ul></section>

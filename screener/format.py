@@ -29,6 +29,13 @@ def fmt_pct(v) -> str:
     return f"{v:+.2f}%"
 
 
+def fmt_money(v) -> str:
+    """Currency-like value with two decimals and thousands separators."""
+    if is_missing(v):
+        return "-"
+    return f"{v:,.2f}"
+
+
 def fmt_volume(v) -> str:
     """Compact volume: B / M / K tiers, ``-`` for missing values."""
     if is_missing(v):
