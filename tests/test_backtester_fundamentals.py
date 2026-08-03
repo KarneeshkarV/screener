@@ -9,7 +9,7 @@ from click.testing import CliRunner
 
 from screener.cli import cli
 
-from screener.backtester import fundamentals, rolling, rolling_simulation
+from screener.backtester import fundamentals
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling_simulation import run_rolling_backtest
 
@@ -115,16 +115,9 @@ def test_openscreener_payload_normalizes_revenue_up_3q_with_india_lag():
     assert frame.loc[pd.Timestamp("2024-11-29"), "revenue_up_3q"] == 0.0
 
 
-def test_openscreener_fetcher_falls_back_to_yfinance(monkeypatch, fake_provider):
-    empty_provider = fake_provider()
-    monkeypatch.setattr(fundamentals, "_OPENSCREENER_PROVIDER", empty_provider)
+def test_yfinance_fetcher_fetches_quarterly_revenue(monkeypatch, fake_provider):
     monkeypatch.setattr(
         fundamentals, "_YFINANCE_FUNDAMENTALS_PROVIDER", fake_provider()
-    )
-    monkeypatch.setattr(
-        fundamentals,
-        "_fetch_openscreener_quarterly",
-        lambda symbol: {},
     )
     monkeypatch.setattr(
         fundamentals,
@@ -138,14 +131,13 @@ def test_openscreener_fetcher_falls_back_to_yfinance(monkeypatch, fake_provider)
         },
     )
 
-    fetcher = fundamentals.OpenScreenerFundamentalFetcher(
+    fetcher = fundamentals.YFinanceFundamentalFetcher(
         fields=("revenue_up_3q",), lag_days=60
     )
     out = fetcher.fetch(
         ["RELIANCE.NS"],
         date(2024, 1, 1),
         date(2025, 12, 31),
-        "india",
     )
 
     assert out["RELIANCE.NS"].loc[pd.Timestamp("2025-03-01"), "revenue_up_3q"] == 1.0
@@ -178,7 +170,6 @@ class _StubFundamentalFetcher:
         tickers: Iterable[str],
         start: date,
         end: date,
-        market: str,
     ) -> dict[str, pd.DataFrame]:
         return {
             ticker: self.frame.copy() if self.frame is not None else pd.DataFrame()
@@ -186,7 +177,7 @@ class _StubFundamentalFetcher:
         }
 
 
-def test_rolling_backtest_uses_fundamental_columns_in_entry(monkeypatch):
+def test_rolling_backtest_uses_fundamental_columns_in_entry():
     idx = pd.bdate_range("2024-01-01", periods=50)
     aaa = make_bars(n=50, start="2024-01-01", open_base=100.0)
     aaa.index = idx
@@ -198,43 +189,31 @@ def test_rolling_backtest_uses_fundamental_columns_in_entry(monkeypatch):
         index=pd.DatetimeIndex([pd.Timestamp("2024-01-22")]),
     )
 
-    monkeypatch.setattr(
-        rolling_simulation,
-        "build_fundamental_fetcher",
-        lambda *args, **kwargs: _StubFundamentalFetcher(fundamental_frame),
-    )
-
     result = run_rolling_backtest(
         _cfg(fundamentals_provider="fmp", fundamental_fields=("roe_ttm",)),
         StubPriceFetcher({"AAA": aaa, "SPY": spy}),
         start_date=date(2024, 1, 2),
         end_date=date(2024, 2, 29),
+        fundamental_fetcher=_StubFundamentalFetcher(fundamental_frame),
     )
 
     assert not result.selection.empty
     assert result.selection["signal_date"].min() >= date(2024, 1, 22)
 
 
-def test_rolling_backtest_missing_fundamentals_does_not_break_price_only_entry(
-    monkeypatch,
-):
+def test_rolling_backtest_missing_fundamentals_does_not_break_price_only_entry():
     fetcher = StubPriceFetcher(
         {
             "AAA": make_bars(n=40, start="2024-01-01", open_base=100.0),
             "SPY": make_bars(n=40, start="2024-01-01", open_base=400.0),
         }
     )
-    monkeypatch.setattr(
-        rolling_simulation,
-        "build_fundamental_fetcher",
-        lambda *args, **kwargs: _StubFundamentalFetcher(),
-    )
-
     result = run_rolling_backtest(
         _cfg(entry_expr="close > 0", fundamentals_provider="fmp"),
         fetcher,
         start_date=date(2024, 1, 2),
         end_date=date(2024, 2, 20),
+        fundamental_fetcher=_StubFundamentalFetcher(),
     )
 
     assert isinstance(result.trades, list)
@@ -296,85 +275,94 @@ def test_referenced_fundamental_fields_detects_known_fields():
     assert referenced_fundamental_fields("close > 0", "pe_ttm > 30") == {"pe_ttm"}
 
 
-class _StopSimulation(Exception):
-    """Sentinel to short-circuit the CLI after config assembly."""
+def _rolling_request(**overrides):
+    from screener.backtester.workflow import BacktestRequest
+
+    values = dict(
+        mode="rolling",
+        context_obj=StubPriceFetcher({}),
+        market="us",
+        hold=20,
+        top=10,
+        entry_expr="close > 0",
+        exit_expr=None,
+        strategy_name=None,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        cost_model="flat",
+        initial_capital=100_000.0,
+        benchmark=None,
+        tickers="AAPL",
+        universe_file=None,
+        max_universe=0,
+        min_price=None,
+        min_avg_dollar_volume=None,
+        adv_window=20,
+        slippage_model="fixed",
+        half_spread_bps=0.0,
+        vol_impact_k=0.1,
+        no_gap_fills=False,
+        entry_order="moo",
+        entry_limit_bps=None,
+        partial_exit_args=(),
+        price_adjustment="full",
+        interval="1d",
+        output_csv=False,
+        report_path=None,
+        open_report=False,
+        sizing_rule="equal_slot",
+        sizing_risk_pct=0.01,
+        sizing_position_pct=0.1,
+        sizing_atr_window=14,
+        sizing_atr_multiple=2.0,
+        sizing_vol_window=20,
+        intraday_only=False,
+    )
+    values.update(overrides)
+    return BacktestRequest(**values)
 
 
-def _capture_cfg(monkeypatch) -> dict:
-    captured: dict = {}
+def test_rolling_auto_enables_fundamentals_for_fundamental_expr(monkeypatch):
+    from screener.backtester.workflow import resolve_backtest_run
 
-    def _capture(cfg, fetcher, *, start_date, end_date):
-        captured["cfg"] = cfg
-        raise _StopSimulation
-
-    monkeypatch.setattr(rolling, "run_rolling_backtest", _capture)
-    return captured
-
-
-def test_rolling_cli_auto_enables_fundamentals_for_fundamental_expr(monkeypatch):
-    captured = _capture_cfg(monkeypatch)
-    res = CliRunner().invoke(
-        cli,
-        [
-            "backtest-rolling",
-            "-m",
-            "us",
-            "--tickers",
-            "AAPL",
-            "--strategy",
-            "ema150_200_revenue_up_3q",
-        ],
-        obj=StubPriceFetcher({}),
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    monkeypatch.setenv("FMP_API_KEY", "x")
+    run = resolve_backtest_run(
+        _rolling_request(strategy_name="ema150_200_revenue_up_3q", entry_expr=None)
     )
 
-    assert isinstance(res.exception, _StopSimulation)
-    # Provider auto-enabled for the market so revenue_up_3q resolves; empty field
-    # list falls back to provider defaults, which include revenue_up_3q.
-    assert captured["cfg"].fundamentals_provider == "fmp"
+    assert run.config.fundamentals_provider == "fmp"
+    assert isinstance(run.fundamental_fetcher, fundamentals.FMPFundamentalFetcher)
 
 
-def test_rolling_cli_does_not_enable_fundamentals_for_price_only_expr(monkeypatch):
-    captured = _capture_cfg(monkeypatch)
-    res = CliRunner().invoke(
-        cli,
-        [
-            "backtest-rolling",
-            "-m",
-            "us",
-            "--tickers",
-            "AAPL",
-            "--entry",
-            "ema(close, 150) > ema(close, 200)",
-        ],
-        obj=StubPriceFetcher({}),
+def test_rolling_does_not_enable_fundamentals_for_price_only_expr():
+    from screener.backtester.workflow import resolve_backtest_run
+
+    run = resolve_backtest_run(
+        _rolling_request(entry_expr="ema(close, 150) > ema(close, 200)")
     )
 
-    assert isinstance(res.exception, _StopSimulation)
-    assert captured["cfg"].fundamentals_provider is None
+    assert run.config.fundamentals_provider is None
+    assert run.fundamental_fetcher is None
 
 
-def test_rolling_cli_unions_referenced_field_into_explicit_field_list(monkeypatch):
-    captured = _capture_cfg(monkeypatch)
-    res = CliRunner().invoke(
-        cli,
-        [
-            "backtest-rolling",
-            "-m",
-            "us",
-            "--tickers",
-            "AAPL",
-            "--entry",
-            "revenue_up_3q > 0",
-            "--fundamental-field",
-            "roe_ttm",
-        ],
-        obj=StubPriceFetcher({}),
+def test_rolling_unions_referenced_field_into_explicit_field_list(monkeypatch):
+    from screener.backtester.workflow import resolve_backtest_run
+
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    monkeypatch.setenv("FMP_API_KEY", "x")
+    run = resolve_backtest_run(
+        _rolling_request(
+            entry_expr="revenue_up_3q > 0",
+            fundamental_field_args=("roe_ttm",),
+        )
     )
 
-    assert isinstance(res.exception, _StopSimulation)
-    assert captured["cfg"].fundamentals_provider == "fmp"
-    # The pinned field is kept and the referenced field is added.
-    assert set(captured["cfg"].fundamental_fields) == {"roe_ttm", "revenue_up_3q"}
+    assert run.config.fundamentals_provider == "fmp"
+    assert set(run.config.fundamental_fields) == {"roe_ttm", "revenue_up_3q"}
 
 
 # --------------------------------------------------------------------------- #
@@ -476,10 +464,10 @@ def test_fmp_fetcher_init_normalizes_config():
     assert fetcher.refresh is False
 
 
-def test_fmp_fetcher_fetch_rejects_non_us_market():
-    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x")
-    with pytest.raises(ValueError):
-        fetcher.fetch(["AAPL"], date(2024, 1, 1), date(2024, 12, 31), "india")
+def test_fundamental_fetchers_declare_supported_markets():
+    assert fundamentals.FMPFundamentalFetcher.markets == frozenset({"us"})
+    assert fundamentals.OpenScreenerFundamentalFetcher.markets == frozenset({"india"})
+    assert fundamentals.YFinanceFundamentalFetcher.markets == frozenset({"india"})
 
 
 def test_fmp_fetcher_fetch_single_ticker(monkeypatch, fake_provider):
@@ -489,7 +477,7 @@ def test_fmp_fetcher_fetch_single_ticker(monkeypatch, fake_provider):
     )
     fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=1)
 
-    out = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 12, 31), "us")
+    out = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 12, 31))
 
     assert "AAA" in out
     assert pd.Timestamp("2024-02-06") in out["AAA"].index
@@ -502,7 +490,7 @@ def test_fmp_fetcher_fetch_threaded(monkeypatch, fake_provider):
     )
     fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=4)
 
-    out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 1), date(2024, 12, 31), "us")
+    out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 1), date(2024, 12, 31))
 
     assert set(out) == {"AAA", "BBB"}
     assert not out["AAA"].empty
@@ -512,17 +500,15 @@ def test_fmp_fetcher_fetch_threaded_handles_provider_failures(monkeypatch):
     monkeypatch.setattr(fundamentals, "_FMP_PROVIDER", _RaisingProvider())
     fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=4)
 
-    out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 1), date(2024, 12, 31), "us")
+    out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 1), date(2024, 12, 31))
 
     assert set(out) == {"AAA", "BBB"}
     assert out["AAA"].empty
     assert out["BBB"].empty
 
 
-def test_openscreener_fetcher_rejects_non_india_market():
-    fetcher = fundamentals.OpenScreenerFundamentalFetcher()
-    with pytest.raises(ValueError):
-        fetcher.fetch(["RELIANCE"], date(2024, 1, 1), date(2024, 12, 31), "us")
+def test_fundamental_fetcher_protocol_has_no_market_argument():
+    assert "market" not in fundamentals.FundamentalFetcher.fetch.__annotations__
 
 
 def test_openscreener_fetcher_fetch_threaded(monkeypatch, fake_provider):
@@ -543,9 +529,7 @@ def test_openscreener_fetcher_fetch_threaded(monkeypatch, fake_provider):
     )
     fetcher = fundamentals.OpenScreenerFundamentalFetcher(max_workers=4)
 
-    out = fetcher.fetch(
-        ["RELIANCE.NS", "TCS.NS"], date(2024, 1, 1), date(2025, 12, 31), "india"
-    )
+    out = fetcher.fetch(["RELIANCE.NS", "TCS.NS"], date(2024, 1, 1), date(2025, 12, 31))
 
     assert set(out) == {"RELIANCE.NS", "TCS.NS"}
     assert pd.Timestamp("2025-03-01") in out["RELIANCE.NS"].index
@@ -558,9 +542,7 @@ def test_openscreener_fetcher_fetch_threaded_handles_failures(monkeypatch):
     )
     fetcher = fundamentals.OpenScreenerFundamentalFetcher(max_workers=4)
 
-    out = fetcher.fetch(
-        ["RELIANCE.NS", "TCS.NS"], date(2024, 1, 1), date(2025, 12, 31), "india"
-    )
+    out = fetcher.fetch(["RELIANCE.NS", "TCS.NS"], date(2024, 1, 1), date(2025, 12, 31))
 
     assert set(out) == {"RELIANCE.NS", "TCS.NS"}
     assert out["RELIANCE.NS"].empty
@@ -571,32 +553,34 @@ def test_build_fundamental_fetcher_resolves_providers(monkeypatch):
     monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
     monkeypatch.setenv("FMP_API_KEY", "x")
 
-    assert fundamentals.build_fundamental_fetcher(None) is None
-    assert fundamentals.build_fundamental_fetcher("   ") is None
+    assert fundamentals.build_fundamental_fetcher(None, market="us") is None
+    assert fundamentals.build_fundamental_fetcher("   ", market="us") is None
 
     assert isinstance(
-        fundamentals.build_fundamental_fetcher("fmp"),
+        fundamentals.build_fundamental_fetcher("fmp", market="us"),
         fundamentals.FMPFundamentalFetcher,
     )
     assert isinstance(
-        fundamentals.build_fundamental_fetcher("FMP"),
+        fundamentals.build_fundamental_fetcher("FMP", market="us"),
         fundamentals.FMPFundamentalFetcher,
     )
     assert isinstance(
-        fundamentals.build_fundamental_fetcher("openscreener"),
+        fundamentals.build_fundamental_fetcher("openscreener", market="india"),
         fundamentals.OpenScreenerFundamentalFetcher,
     )
     assert isinstance(
-        fundamentals.build_fundamental_fetcher("open-screener"),
+        fundamentals.build_fundamental_fetcher("open-screener", market="india"),
         fundamentals.OpenScreenerFundamentalFetcher,
     )
 
-    yf_fetcher = fundamentals.build_fundamental_fetcher("yfinance")
-    assert isinstance(yf_fetcher, fundamentals.OpenScreenerFundamentalFetcher)
-    assert yf_fetcher.use_openscreener is False
-
+    assert isinstance(
+        fundamentals.build_fundamental_fetcher("yfinance", market="india"),
+        fundamentals.YFinanceFundamentalFetcher,
+    )
+    with pytest.raises(ValueError, match="supports only -m us"):
+        fundamentals.build_fundamental_fetcher("fmp", market="india")
     with pytest.raises(ValueError):
-        fundamentals.build_fundamental_fetcher("garbage")
+        fundamentals.build_fundamental_fetcher("garbage", market="us")
 
 
 def test_merge_fundamentals_skips_empty_or_none_bars():

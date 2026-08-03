@@ -46,6 +46,13 @@ from screener.backtester.price_frames import (
     split_yfinance_download as _split_download,
     warn_unadjustable_fmp_frames as warn_unadjustable_fmp_frames,
 )
+
+# Re-exported for backward compatibility: ``backtester.fundamentals`` and the
+# docs import ``load_env_file`` from here. The definition now lives in the
+# neutral ``screener.config`` so the FMP transport need not import the
+# backtester to resolve a credential.
+from screener.config import load_env_file as load_env_file
+from screener.fmp import FMP_V3_BASE_URL, FmpClient, resolve_api_key
 from screener.logging_config import suppressed_yfinance_errors
 from screener.resilience import call_with_resilience
 
@@ -57,7 +64,6 @@ from screener.symbols import tv_to_yf as tv_to_yf
 
 _naive_normalized_index = naive_normalized_index
 _normalize_frame = normalize_price_frame
-_DOTENV_LOADED = False
 _YFINANCE_CONFIGURED = False
 T = TypeVar("T")
 
@@ -108,32 +114,6 @@ def _configure_yfinance() -> None:
         )
     finally:
         _YFINANCE_CONFIGURED = True
-
-
-def _load_env_file() -> None:
-    """Load simple KEY=VALUE pairs from the project .env if not exported."""
-    global _DOTENV_LOADED
-    if _DOTENV_LOADED:
-        return
-    _DOTENV_LOADED = True
-    env_path = Path.cwd() / ".env"
-    if not env_path.exists():
-        return
-    for raw_line in env_path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        if not key or key in os.environ:
-            continue
-        value = value.strip().strip('"').strip("'")
-        os.environ[key] = value
-
-
-def load_env_file() -> None:
-    """Load simple KEY=VALUE pairs from the project .env if not exported."""
-    _load_env_file()
 
 
 class PriceFetcher(Protocol):
@@ -465,11 +445,23 @@ class FMPPriceFetcher:
     adjusted intraday prices, which is acceptable inside the short history
     windows intraday backtests use.
 
-    The API key is read from ``FMP_API_KEY`` unless passed explicitly.
+    HTTP goes through the shared :class:`screener.fmp.FmpClient` transport, so
+    base URL, header policy, API-key resolution, query shape (``apikey`` last)
+    and JSON decoding are the same ones every other FMP call site uses. The
+    connection-pooling ``requests`` session is handed to the client rather than
+    driven directly, which is why the request timeout is declared here as
+    :data:`PRICE_TIMEOUT_SECONDS` instead of inline.
+
+    The API key is resolved by :func:`screener.fmp.resolve_api_key` (env, then
+    the project ``.env``) unless passed explicitly.
     """
 
-    base_url = "https://financialmodelingprep.com/api/v3/historical-price-full"
-    intraday_base_url = "https://financialmodelingprep.com/api/v3/historical-chart"
+    # FMP price history responses are much larger than the metric endpoints, so
+    # this path keeps its own longer deadline instead of ``fmp.DEFAULT_TIMEOUT``.
+    PRICE_TIMEOUT_SECONDS = 30.0
+
+    daily_path = "historical-price-full"
+    intraday_path = "historical-chart"
 
     def __init__(
         self,
@@ -487,7 +479,7 @@ class FMPPriceFetcher:
                 f"{sorted(_FMP_INTRADAY_INTERVALS)}; got {interval!r}"
             )
         self.interval = interval
-        self.api_key = api_key or os.environ.get("FMP_API_KEY")
+        self.api_key = api_key or resolve_api_key()
         if not self.api_key:
             raise ValueError("FMP_API_KEY is required to use the FMP price fetcher")
         self.cache_dir = cache_dir or FMP_CACHE_DIR
@@ -501,6 +493,12 @@ class FMPPriceFetcher:
             )
             self.session.mount("http://", adapter)
             self.session.mount("https://", adapter)
+        self.client = FmpClient(
+            self.api_key,
+            base_url=FMP_V3_BASE_URL,
+            timeout=self.PRICE_TIMEOUT_SECONDS,
+            session=self.session,
+        )
 
     def fetch(
         self, tickers: Iterable[str], start: date, end: date
@@ -535,23 +533,19 @@ class FMPPriceFetcher:
                 is_tail_refresh = False
 
             if self.interval == "1d":
-                url = f"{self.base_url}/{ticker}"
+                path = f"{self.daily_path}/{ticker}"
             else:
                 fmp_interval = _FMP_INTRADAY_INTERVALS[self.interval]
-                url = f"{self.intraday_base_url}/{fmp_interval}/{ticker}"
+                path = f"{self.intraday_path}/{fmp_interval}/{ticker}"
 
-            def request_payload(url: str = url) -> object:
-                response = self.session.get(
-                    url,
-                    params={
+            def request_payload(path: str = path) -> object:
+                return self.client.get(
+                    path,
+                    {
                         "from": fetch_start.date().isoformat(),
                         "to": end_ts.date().isoformat(),
-                        "apikey": self.api_key,
                     },
-                    timeout=30,
                 )
-                response.raise_for_status()
-                return response.json()
 
             empty_payload: object = {}
             payload: object = call_with_resilience(
@@ -660,7 +654,7 @@ def build_price_fetcher(
     refresh: bool = False,
     interval: str = "1d",
 ) -> PriceFetcher:
-    _load_env_file()
+    load_env_file()
     resolved = (provider or os.environ.get("SCREENER_PRICE_PROVIDER") or "auto").lower()
     # The BSE retry wraps the outermost fetcher so a symbol is only re-requested
     # on ``.BO`` once every configured provider has come back empty for ``.NS``.

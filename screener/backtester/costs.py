@@ -38,8 +38,9 @@ class CostModel(Protocol):
         """
 
 
-def _bps_fraction(bps: float) -> float:
-    return bps / 10_000.0
+def bps_fraction(bps: float) -> float:
+    """Convert basis points to a decimal rate."""
+    return float(bps) / 10_000.0
 
 
 class FlatCommission(BaseModel):
@@ -50,12 +51,12 @@ class FlatCommission(BaseModel):
     bps: float = 0.0
 
     def side_cost_fraction(self, side: Side, notional: float) -> float:
-        return _bps_fraction(self.bps)
+        return bps_fraction(self.bps)
 
     def side_cost_breakdown(
         self, side: Side, notional: float, shares: float | None = None
     ) -> dict[str, float]:
-        return {"commission": abs(float(notional)) * _bps_fraction(self.bps)}
+        return {"commission": abs(float(notional)) * bps_fraction(self.bps)}
 
 
 class IndiaDeliveryCosts(BaseModel):
@@ -91,7 +92,7 @@ class IndiaDeliveryCosts(BaseModel):
     ipft_rate: float = 0.000001
 
     def side_cost_fraction(self, side: Side, notional: float) -> float:
-        brokerage = _bps_fraction(self.brokerage_bps)
+        brokerage = bps_fraction(self.brokerage_bps)
         exchange = self.exchange_txn_rate
         sebi = self.sebi_turnover_rate
         gst = self.gst_rate * (brokerage + exchange + sebi)
@@ -104,7 +105,7 @@ class IndiaDeliveryCosts(BaseModel):
         self, side: Side, notional: float, shares: float | None = None
     ) -> dict[str, float]:
         notional = abs(float(notional))
-        brokerage_frac = _bps_fraction(self.brokerage_bps)
+        brokerage_frac = bps_fraction(self.brokerage_bps)
         gst_frac = self.gst_rate * (
             brokerage_frac + self.exchange_txn_rate + self.sebi_turnover_rate
         )
@@ -197,6 +198,57 @@ def cost_model_from_config(cfg: object) -> CostModel:
     name = getattr(cfg, "cost_model", "flat") or "flat"
     commission_bps = float(getattr(cfg, "commission_bps", 0.0) or 0.0)
     return build_cost_model(str(name), commission_bps=commission_bps)
+
+
+def apply_round_trip_costs(
+    entry_price: float,
+    exit_price: float,
+    cost_model: CostModel,
+    *,
+    shares: float | None = None,
+) -> tuple[float, float, dict[str, float]]:
+    """Apply one shared per-fill cost model to a long round trip.
+
+    Returns ``(raw_return, net_return, fees_breakdown)`` for a unit trade unless
+    ``shares`` is supplied. ``FlatCommission.bps`` is a per-side rate, so its
+    round-trip drag is two fills. This is deliberately the same fee path used
+    by the portfolio, earnings, and PEAD engines.
+    """
+    raw = (exit_price / entry_price) - 1.0 if entry_price else 0.0
+    share_count = 1.0 if shares is None else float(shares)
+    buy_notional = abs(float(entry_price) * share_count)
+    sell_notional = abs(float(exit_price) * share_count)
+    buy_bd = cost_model.side_cost_breakdown("buy", buy_notional, share_count)
+    sell_bd = cost_model.side_cost_breakdown("sell", sell_notional, share_count)
+
+    fees: dict[str, float] = {}
+    for breakdown in (buy_bd, sell_bd):
+        for name, amount in breakdown.items():
+            amt = float(amount)
+            if amt > 0.0:
+                fees[name] = fees.get(name, 0.0) + amt
+
+    buy_frac = (
+        sum(float(v) for v in buy_bd.values()) / buy_notional if buy_notional else 0.0
+    )
+    sell_frac = (
+        sum(float(v) for v in sell_bd.values()) / sell_notional
+        if sell_notional
+        else 0.0
+    )
+    return raw, raw - max(buy_frac, 0.0) - max(sell_frac, 0.0), fees
+
+
+def net_round_trip_return(
+    entry_fill: float,
+    exit_fill: float,
+    commission_bps: float,
+) -> tuple[float, float]:
+    """Compatibility helper using per-side flat ``commission_bps``."""
+    raw, net, _fees = apply_round_trip_costs(
+        entry_fill, exit_fill, FlatCommission(bps=commission_bps)
+    )
+    return raw, net
 
 
 def corwin_schultz_half_spread(

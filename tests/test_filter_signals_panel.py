@@ -40,9 +40,10 @@ def _reference(bars_by_ticker: dict, cfg: _Cfg) -> dict[str, pd.Series]:
         if bars is None or bars.empty:
             continue
         close = bars["close"].astype(float)
-        passes = pd.Series(True, index=bars.index)
+        passes = pd.Series(np.isfinite(close), index=bars.index, name=None)
         if cfg.min_price is not None:
-            passes &= close >= float(cfg.min_price)
+            min_price = float(cfg.min_price)
+            passes &= np.isfinite(close) & np.isfinite(min_price) & (close >= min_price)
         if cfg.min_avg_dollar_volume is not None:
             volume = bars["volume"].astype(float)
             dollar_vol = close * volume
@@ -51,7 +52,7 @@ def _reference(bars_by_ticker: dict, cfg: _Cfg) -> dict[str, pd.Series]:
                 adv.values >= float(cfg.min_avg_dollar_volume)
             )
             passes &= pd.Series(adv_ok, index=bars.index)
-        out[ticker] = passes.astype(bool)
+        out[ticker] = passes.astype(bool).rename(None)
     return out
 
 

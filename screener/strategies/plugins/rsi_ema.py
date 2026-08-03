@@ -7,11 +7,11 @@ import pandas as pd
 from screener.indicators.plugins.ema import ema as _ema
 from screener.indicators.plugins.rsi import rsi as _rsi
 from screener.strategies.spec import strategy
-from screener.strategies.trades import Trade, _walk
+from screener.strategies.trades import ResearchTrade, _walk
 
 
 @strategy("rsi_ema")
-def strat_rsi_ema(df: pd.DataFrame) -> list[Trade]:
+def strat_rsi_ema(df: pd.DataFrame) -> list[ResearchTrade]:
     close = df["close"].to_numpy(dtype=float)
     rsi = _rsi(close, 14)
     regime = _ema(close, 150) > _ema(close, 600)

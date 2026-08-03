@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Optional, Union, cast
+from typing import TYPE_CHECKING, Optional, Protocol, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -13,7 +13,8 @@ import pandas as pd
 from screener.backtester.costs import corwin_schultz_half_spread
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fills import FillModel
-from screener.backtester.models import BacktestConfig, ExitReason, Trade
+from screener.backtester.models import BacktestConfig
+from screener.ledger import ExitReason
 from screener.backtester.pine import (
     PineError,
     evaluate,
@@ -27,10 +28,41 @@ if TYPE_CHECKING:
     from screener.strategies.spec import StrategySpec
 
 
-@dataclass(frozen=True)
-class _SimOutcome:
-    trade: Optional[Trade]
-    warning: Optional[str]
+class UniverseSpec(Protocol):
+    """The config values universe resolution reads, and nothing else.
+
+    Structural so both ``BacktestConfig`` and the panel-scoped input records in
+    :mod:`screener.backtester.price_panel` satisfy it without either module
+    having to know about the other.
+    """
+
+    @property
+    def tickers(self) -> Optional[tuple[str, ...]]: ...
+
+    @property
+    def universe_file(self) -> Optional[str]: ...
+
+    @property
+    def membership_windows(self) -> tuple[tuple[str, date, date | None], ...]: ...
+
+    @property
+    def dynamic_universe_size(self) -> int | None: ...
+
+    @property
+    def max_universe(self) -> int: ...
+
+
+class LiquidityFilterSpec(Protocol):
+    """The config values the min-price/ADV entry filters read, and nothing else."""
+
+    @property
+    def min_price(self) -> Optional[float]: ...
+
+    @property
+    def min_avg_dollar_volume(self) -> Optional[float]: ...
+
+    @property
+    def avg_dollar_volume_window(self) -> int: ...
 
 
 def _bar_label(ts, cfg: BacktestConfig) -> Union[date, datetime]:
@@ -272,8 +304,17 @@ def _passes_entry_filters(
         return False, "no history"
     last = bars.iloc[pos - 1]
     close = float(last["close"])
-    if cfg.min_price is not None and close < cfg.min_price:
-        return False, f"price {close:.4f} < {cfg.min_price}"
+    # A non-finite close never passes the price filter, and cannot be rescued
+    # by an ADV mean that would otherwise skip its missing value.
+    if not np.isfinite(close):
+        return False, f"price filter requires a finite close (close={close:.4f})"
+    if cfg.min_price is not None:
+        min_price = float(cfg.min_price)
+        if not np.isfinite(min_price) or close < min_price:
+            return False, (
+                "price filter requires finite close and min_price "
+                f"(close={close:.4f}, min_price={min_price})"
+            )
     if cfg.min_avg_dollar_volume is not None:
         window = max(int(cfg.avg_dollar_volume_window), 1)
         start = max(0, pos - window)
@@ -314,6 +355,10 @@ class _SlotState:
     exit_signal_values: Optional[np.ndarray] = None
     # Session-last mask aligned to ``bars.index`` when ``cfg.intraday_only``.
     session_last: Optional[np.ndarray] = None
+    # Size used by a liquidity-sensitive FillModel and passed unchanged to
+    # Portfolio.open. Fixed-price models retain legacy portfolio sizing.
+    # See docs/adr/0001-pre-impact-entry-sizing.md.
+    entry_shares: float | None = None
 
 
 def _half_spread_at_signal(
@@ -371,7 +416,7 @@ def _make_slot_state(
     else:
         adv_shares, sigma_daily = 0.0, 0.0
     half_spread = _half_spread_at_signal(bars, signal_idx, cfg, frame_cache)
-    entry_idx, entry_fill, entry_warn = fills.entry_price(
+    entry_idx, entry_fill, entry_shares, entry_warn = fills.entry_quote(
         bars,
         signal_idx,
         budget=entry_budget,
@@ -441,6 +486,7 @@ def _make_slot_state(
                 exit_signal.to_numpy() if exit_signal is not None else None
             ),
             session_last=session_last,
+            entry_shares=(entry_shares if fills.needs_liquidity_inputs else None),
         ),
         None,
     )
@@ -589,98 +635,6 @@ def _check_exit_at_bar(
     return None
 
 
-def simulate_ticker(
-    bars: pd.DataFrame,
-    signal_idx: int,
-    cfg: BacktestConfig,
-    exit_ast=None,
-) -> _SimOutcome:
-    """Simulate a single long-only trade starting from the bar after ``signal_idx``."""
-    fill_model = FillModel(cfg)
-    state, warning = _make_slot_state(
-        ticker="",
-        bars=bars,
-        signal_idx=signal_idx,
-        cfg=cfg,
-        exit_ast=exit_ast,
-        rank=0,
-        fill_model=fill_model,
-        entry_budget=cfg.initial_capital / max(cfg.top, 1),
-    )
-    if state is None:
-        return _SimOutcome(trade=None, warning=warning)
-
-    for i in range(state.entry_idx + 1, len(bars)):
-        exit_ = _check_exit_at_bar(
-            state,
-            bars,
-            i,
-            cfg,
-            fill_model,
-            shares=(cfg.initial_capital / max(cfg.top, 1)) / state.entry_fill,
-        )
-        if exit_ is not None:
-            fill, reason = exit_
-            return _SimOutcome(
-                trade=_make_exit(
-                    state.entry_date,
-                    state.entry_fill,
-                    _bar_label(bars.index[i], cfg),
-                    fill,
-                    reason,
-                    signal_idx_bar=state.signal_date,
-                ),
-                warning=None,
-            )
-
-    last_bar = bars.iloc[-1]
-    fill = fill_model.exit_price(
-        reason="eod",
-        close=float(last_bar["close"]),
-        shares=(cfg.initial_capital / max(cfg.top, 1)) / state.entry_fill,
-        adv_shares=state.adv_shares,
-        sigma_daily=state.sigma_daily,
-        half_spread=state.half_spread,
-    )
-    return _SimOutcome(
-        trade=_make_exit(
-            state.entry_date,
-            state.entry_fill,
-            _bar_label(bars.index[-1], cfg),
-            fill,
-            "eod",
-            signal_idx_bar=state.signal_date,
-        ),
-        warning=None,
-    )
-
-
-def _make_exit(
-    entry_date: Union[date, datetime],
-    entry_fill: float,
-    exit_date: Union[date, datetime],
-    exit_fill: float,
-    reason: ExitReason,
-    signal_idx_bar: Union[date, datetime],
-) -> Trade:
-    """Return a partial Trade with only price/date/reason fields set."""
-    return Trade(
-        ticker="",
-        rank=0,
-        signal_date=signal_idx_bar,
-        entry_date=entry_date,
-        entry_price=entry_fill,
-        exit_date=exit_date,
-        exit_price=exit_fill,
-        exit_reason=reason,
-        shares=0.0,
-        entry_cost=0.0,
-        exit_value=0.0,
-        pnl=0.0,
-        return_pct=0.0,
-    )
-
-
 _NO_UNIVERSE_MSG = (
     "No universe provided: pass --tickers or --universe-file. The TradingView "
     "current-screener fallback was removed because it injects survivorship bias "
@@ -689,7 +643,7 @@ _NO_UNIVERSE_MSG = (
 )
 
 
-def _resolve_universe(cfg: BacktestConfig) -> tuple[list[str], list[str]]:
+def _resolve_universe(cfg: UniverseSpec) -> tuple[list[str], list[str]]:
     """Return ``(tv_symbols, warnings)`` for the configured universe."""
     warnings: list[str] = []
     # Dynamic ADV ranking and snapshot membership windows do the real
@@ -877,7 +831,7 @@ def _precompute_entry_signals(
 
 def _precompute_filter_signals(
     bars_by_ticker: dict[str, pd.DataFrame],
-    cfg: BacktestConfig,
+    cfg: LiquidityFilterSpec,
 ) -> dict[str, pd.Series]:
     """Per-ticker boolean Series: True when min-price + ADV filters pass on that bar.
 
@@ -921,7 +875,7 @@ def _precompute_filter_signals(
 def _filter_signals_for_group(
     tickers: list[str],
     bars_by_ticker: dict[str, pd.DataFrame],
-    cfg: BacktestConfig,
+    cfg: LiquidityFilterSpec,
     window: int,
 ) -> dict[str, pd.Series]:
     """Evaluate the price/ADV filters for one index-compatible group of tickers."""
@@ -936,9 +890,16 @@ def _filter_signals_for_group(
     for position, frame in enumerate(frames):
         close_block[:, position] = frame["close"].astype(float).to_numpy()
 
-    passes = np.ones((n_bars, n_tickers), dtype=bool)
+    # A non-finite close never passes either entry filter, including ADV-only.
+    passes = np.isfinite(close_block)
     if cfg.min_price is not None:
-        passes &= close_block >= float(cfg.min_price)
+        min_price = float(cfg.min_price)
+        # A non-finite close never passes the price filter.
+        passes &= (
+            np.isfinite(close_block)
+            & np.isfinite(min_price)
+            & (close_block >= min_price)
+        )
     if cfg.min_avg_dollar_volume is not None:
         dollar_vol = np.empty((n_bars, n_tickers), dtype=float)
         for position, frame in enumerate(frames):
@@ -959,98 +920,3 @@ def _filter_signals_for_group(
         ticker: pd.Series(passes[:, position], index=index)
         for position, ticker in enumerate(tickers)
     }
-
-
-def _close_slot_at_day(
-    *,
-    slot_id: int,
-    state: _SlotState,
-    bars: pd.DataFrame,
-    day: pd.Timestamp,
-    cfg: BacktestConfig,
-    portfolio: Portfolio,
-    slot_states: dict[int, Optional[_SlotState]],
-    fill_model: FillModel,
-) -> bool:
-    """Process one slot for a day. Returns True when the slot becomes free."""
-    frame_cache = state.frame_cache
-    if frame_cache is not None and frame_cache.index_i8 is not None:
-        index_i8 = frame_cache.index_i8
-        pos = int(np.searchsorted(index_i8, day.value))
-        if pos >= index_i8.size or index_i8[pos] != day.value:
-            return False
-        i: int = pos
-    else:
-        if day not in bars.index:
-            return False
-        loc = bars.index.get_loc(day)
-        if isinstance(loc, slice) or not isinstance(loc, int):
-            return False
-        i = loc
-    if i < state.entry_idx + 1:
-        return False
-    _maybe_credit_dividends(portfolio, state, bars, i, cfg)
-    _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio, fill_model)
-    position = portfolio.get_position(state.ticker)
-    if position is None:
-        slot_states[slot_id] = None
-        return True
-    exit_ = _check_exit_at_bar(
-        state,
-        bars,
-        i,
-        cfg,
-        fill_model,
-        shares=position.shares,
-    )
-    if exit_ is None:
-        return False
-    fill, reason = exit_
-    portfolio.close(
-        ticker=state.ticker,
-        exit_date=_bar_label(day, cfg),
-        exit_price=fill,
-        reason=reason,
-    )
-    slot_states[slot_id] = None
-    return True
-
-
-def _force_close_open_slots(
-    *,
-    slot_states: dict[int, Optional[_SlotState]],
-    slot_bars: dict[int, pd.DataFrame],
-    cfg: BacktestConfig,
-    portfolio: Portfolio,
-    end_ts: pd.Timestamp,
-    fill_model: FillModel,
-) -> None:
-    for slot_id, state in list(slot_states.items()):
-        if state is None:
-            continue
-        bars = slot_bars[slot_id]
-        tail = bars.loc[
-            (bars.index >= pd.Timestamp(state.entry_date)) & (bars.index <= end_ts)
-        ]
-        if tail.empty:
-            continue
-        last_bar = tail.iloc[-1]
-        fill = fill_model.exit_price(
-            reason="eod",
-            close=float(last_bar["close"]),
-            shares=(
-                position.shares
-                if (position := portfolio.get_position(state.ticker)) is not None
-                else 0.0
-            ),
-            adv_shares=state.adv_shares,
-            sigma_daily=state.sigma_daily,
-            half_spread=state.half_spread,
-        )
-        portfolio.close(
-            ticker=state.ticker,
-            exit_date=_bar_label(tail.index[-1], cfg),
-            exit_price=fill,
-            reason="eod",
-        )
-        slot_states[slot_id] = None

@@ -159,6 +159,48 @@ def test_failed_scan_is_not_cached(tmp_path, monkeypatch, caplog):
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
+def test_stale_scan_cache_is_served_when_tradingview_is_down(
+    tmp_path, monkeypatch, caplog
+):
+    """An expired entry beats an empty result when the provider is unreachable."""
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    kwargs = dict(
+        key_parts=("market", "filters", 100),
+        columns=["name", "volume"],
+        refresh=False,
+    )
+
+    healthy = FakeQuery()
+    get_scanner_data_cached(healthy, cache_ttl=60, **kwargs)
+
+    # ttl_seconds=None makes every entry stale, so the next scan must refetch.
+    down = RaisingQuery()
+    with caplog.at_level(logging.WARNING, logger="screener.providers"):
+        count, df = get_scanner_data_cached(down, cache_ttl=None, **kwargs)
+
+    assert down.calls > 0  # the live fetch really was attempted
+    assert count == 2
+    assert list(df["name"]) == ["AAA", "BBB"]
+    assert "Serving stale tradingview_scanner cache data" in caplog.text
+
+
+def test_scan_without_cache_entry_still_returns_empty_on_failure(tmp_path, monkeypatch):
+    """Stale-serve must not mask a cold outage: no entry still means empty."""
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+
+    count, df = get_scanner_data_cached(
+        RaisingQuery(),
+        key_parts=("market", "filters", 100),
+        columns=["name", "volume"],
+        cache_ttl=60,
+        refresh=False,
+    )
+
+    assert count == 0
+    assert df.empty
+    assert list(df.columns) == ["name", "volume"]
+
+
 def test_successful_empty_scan_is_cached(tmp_path, monkeypatch):
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
     query = EmptySuccessQuery()
@@ -234,17 +276,20 @@ class FakeScanQuery:
         )
 
 
-def test_scan_cache_key_ignores_filter_order(tmp_path, monkeypatch):
-    # Query.where() ANDs its filters, so reordering them must hit the same
-    # cache entry instead of refetching.
-    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+def test_scan_cache_key_ignores_filter_order(monkeypatch, fake_provider):
+    # Query.where() ANDs its filters, so reordering them must derive the same
+    # cache key. Now that the scan goes through the provider seam the key parts
+    # can be asserted directly off ``FakeProvider``, instead of inferring them
+    # from a cache hit against a monkeypatched ``CACHE_ROOT``.
+    provider = fake_provider()
+    monkeypatch.setattr(scanner_module, "SCANNER_PROVIDER", provider)
     monkeypatch.setattr(scanner_module, "Query", FakeScanQuery)
-    monkeypatch.setattr(FakeScanQuery, "calls", 0)
 
     scanner_module.scan("us", ["filter_a", "filter_b"], cache_ttl=60)
     scanner_module.scan("us", ["filter_b", "filter_a"], cache_ttl=60)
 
-    assert FakeScanQuery.calls == 1
+    assert len(provider.calls) == 2
+    assert provider.calls[0][0] == provider.calls[1][0]
 
 
 def _shape_frame() -> pd.DataFrame:

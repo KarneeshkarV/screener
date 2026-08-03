@@ -10,7 +10,7 @@ from rich.console import Console
 from rich.table import Table
 
 from screener.cache import append_panel_snapshot
-from screener.earnings_backtest.metrics import compute_backtest_summary
+from screener.ledger import compute_event_trade_summary
 from screener.markets import get_price_fetcher, market_option
 from screener.options.bt_models import OptionPositionTrade, OptionsBacktestConfig
 from screener.options.criteria import OPTIONS_CRITERIA, run_options_criterion
@@ -603,7 +603,7 @@ def backtest(
                 f"[yellow]…and {len(result.warnings) - 20} more warnings[/yellow]"
             )
 
-    summary = compute_backtest_summary(result.trades, strategy=structure)
+    summary = compute_event_trade_summary(result.trades, strategy=structure)
     _print_options_summary(console, summary)
     if result.trades:
         _print_options_ledger(console, result.trades)

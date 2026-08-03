@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -12,10 +11,8 @@ from screener.backtester.models import SUPPORTED_INTERVALS
 from screener.markets import MARKETS
 
 if TYPE_CHECKING:
-    from datetime import date
     from pathlib import Path
 
-    from screener.backtester.models import BacktestConfig
     from screener.backtester.slippage import SlippageModel
 
 DEFAULT_BENCHMARK = {name: market.benchmark for name, market in MARKETS.items()}
@@ -582,52 +579,6 @@ def backtest_options(mode: str, *names: str) -> OptionDecorator:
     return decorator
 
 
-@dataclass(frozen=True)
-class CommonBacktestParams:
-    """Parsed values for the options shared by both backtest commands.
-
-    Instances are built from the raw Click values (tickers already split,
-    slippage model already constructed, partial exits already parsed, min
-    filters already resolved) so ``build_backtest_config`` can assemble the
-    five policy models identically for both modes.
-    """
-
-    market: str
-    benchmark: str
-    hold: int
-    top: int
-    entry_expr: str
-    exit_expr: str | None
-    strategy_name: str | None
-    stop_loss: float | None
-    take_profit: float | None
-    trailing_stop: float | None
-    slippage_bps: float
-    commission_bps: float
-    cost_model: Literal["flat", "india", "us_vested"]
-    slippage_model: SlippageModel
-    initial_capital: float
-    tickers: tuple[str, ...] | None
-    universe_file: str | None
-    max_universe: int
-    min_price: float | None
-    min_avg_dollar_volume: float | None
-    adv_window: int
-    gap_fills: bool
-    entry_order_type: Literal["moo", "moc", "limit"]
-    entry_limit_bps: float | None
-    partial_exits: tuple[tuple[float, float], ...]
-    price_adjustment: str
-    interval: str
-    intraday_only: bool
-    sizing_rule: str
-    sizing_risk_pct: float
-    sizing_position_pct: float
-    sizing_atr_window: int
-    sizing_atr_multiple: float
-    sizing_vol_window: int
-
-
 def parse_ticker_list(tickers: str | None) -> tuple[str, ...] | None:
     """Split a comma-separated ``--tickers`` value into a tuple (or ``None``)."""
     if not tickers:
@@ -668,87 +619,3 @@ def write_tearsheet(
     from screener.backtester.tearsheet import render_tearsheet
 
     render_tearsheet(result, path, title=title, extra_notes=list(extra_notes))
-
-
-def build_backtest_config(
-    common: CommonBacktestParams,
-    *,
-    as_of: date,
-    membership_added: tuple[tuple[str, date], ...] = (),
-    membership_windows: tuple[tuple[str, date, date | None], ...] = (),
-    dynamic_universe_size: int | None = None,
-    dynamic_universe_lookback: int = 60,
-    dynamic_universe_rebalance: str = "monthly",
-    signal_extra: dict[str, Any] | None = None,
-    spread_proxy: bool = False,
-    reserve_multiple: int = 3,
-    reinvest: bool = True,
-    allow_reentry: bool = False,
-    max_reentries: int = 0,
-) -> BacktestConfig:
-    """Assemble a ``BacktestConfig`` from shared params plus mode-specific extras.
-
-    ``signal_extra`` carries the rolling-only signal fields (regime filter,
-    earnings blackout, fundamentals, sector neutralization), and the portfolio
-    keyword arguments cover the historical-only reserve/re-entry knobs. Pydantic
-    validation errors (e.g. an invalid interval) map to a Click usage error.
-    """
-    from pydantic import ValidationError
-
-    from screener.backtester.models import BacktestConfig
-
-    signal_extra = signal_extra or {}
-    try:
-        return BacktestConfig(
-            market=common.market,
-            as_of=as_of,
-            benchmark=common.benchmark,
-            tickers=common.tickers,
-            universe_file=common.universe_file,
-            membership_added=membership_added,
-            membership_windows=membership_windows,
-            dynamic_universe_size=dynamic_universe_size,
-            dynamic_universe_lookback=dynamic_universe_lookback,
-            dynamic_universe_rebalance=cast(
-                Literal["daily", "weekly", "monthly", "quarterly"],
-                dynamic_universe_rebalance,
-            ),
-            max_universe=int(common.max_universe),
-            strategy_name=common.strategy_name,
-            entry_expr=common.entry_expr,
-            exit_expr=common.exit_expr,
-            **signal_extra,
-            interval=common.interval,
-            price_adjustment=common.price_adjustment,  # type: ignore[arg-type]
-            intraday_only=bool(common.intraday_only),
-            hold=int(common.hold),
-            stop_loss=common.stop_loss,
-            take_profit=common.take_profit,
-            trailing_stop=common.trailing_stop,
-            slippage_bps=float(common.slippage_bps),
-            commission_bps=float(common.commission_bps),
-            slippage_model=common.slippage_model,
-            cost_model=common.cost_model,
-            spread_proxy=bool(spread_proxy),
-            gap_fills=common.gap_fills,
-            entry_order_type=common.entry_order_type,
-            entry_limit_bps=common.entry_limit_bps,
-            partial_exits=common.partial_exits,
-            top=int(common.top),
-            initial_capital=float(common.initial_capital),
-            min_price=common.min_price,
-            min_avg_dollar_volume=common.min_avg_dollar_volume,
-            avg_dollar_volume_window=int(common.adv_window),
-            reserve_multiple=int(reserve_multiple),
-            reinvest=reinvest,
-            allow_reentry=bool(allow_reentry),
-            max_reentries=int(max_reentries),
-            sizing_rule=common.sizing_rule,
-            sizing_risk_pct=float(common.sizing_risk_pct),
-            sizing_position_pct=float(common.sizing_position_pct),
-            sizing_atr_window=int(common.sizing_atr_window),
-            sizing_atr_multiple=float(common.sizing_atr_multiple),
-            sizing_vol_window=int(common.sizing_vol_window),
-        )
-    except ValidationError as exc:
-        raise click.UsageError(str(exc)) from exc

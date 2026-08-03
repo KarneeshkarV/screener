@@ -2,38 +2,25 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import click
 
 from screener import agentio
 from screener.backtester.cli_common import (
-    CommonBacktestParams,
     backtest_options,
-    build_backtest_config,
-    build_backtest_fetcher,
-    build_slippage_model,
     intraday_options,
-    parse_partial_exits,
-    parse_ticker_list,
-    referenced_fundamental_fields,
-    resolve_min_filters,
     resolve_report_path,
-    resolve_strategy_exprs,
     sizing_options,
-    validate_sizing,
     write_tearsheet,
 )
 from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.rolling_simulation import run_rolling_backtest
-from screener.markets import get_market, market_option
+from screener.backtester.workflow import BacktestRequest, resolve_backtest_run
+from screener.markets import market_option
 from screener.regime import TREND_LABELS
-from screener.universes import (
-    available_universes,
-    load_universe_selection,
-    load_sp500_membership,
-)
+from screener.universes import available_universes
 
 __all__ = ["backtest_rolling"]
 
@@ -225,307 +212,59 @@ __all__ = ["backtest_rolling"]
     show_default=True,
     help="Directory for generated dashboard HTML files.",
 )
-@intraday_options
-@sizing_options
-def backtest_rolling(
-    market,
-    start_arg,
-    end_arg,
-    years,
-    hold,
-    top,
-    entry_expr,
-    exit_expr,
-    strategy_name,
-    universe,
-    universe_config,
-    dynamic_base,
-    universe_size,
-    universe_lookback,
-    universe_rebalance,
-    no_universe_cache,
-    point_in_time,
-    tickers,
-    universe_file,
-    max_universe,
-    stop_loss,
-    take_profit,
-    trailing_stop,
-    slippage_bps,
-    commission_bps,
-    cost_model,
-    spread_proxy,
-    initial_capital,
-    benchmark,
-    min_price,
-    min_avg_dollar_volume,
-    adv_window,
-    slippage_model,
-    half_spread_bps,
-    vol_impact_k,
-    no_gap_fills,
-    entry_order,
-    entry_limit_bps,
-    partial_exit_args,
-    price_adjustment,
-    interval,
-    regime_filter_args,
-    sector_neutral,
-    earnings_blackout_days,
-    fundamentals_provider,
-    fundamental_field_args,
-    fundamental_lag_days,
-    output_csv,
-    report_path,
-    open_report,
-    dashboard,
-    dashboard_port,
-    dashboard_dir,
-    sizing_rule,
-    sizing_risk_pct,
-    sizing_position_pct,
-    sizing_atr_window,
-    sizing_atr_multiple,
-    sizing_vol_window,
-    intraday_only,
-):
+@intraday_options  # type: ignore[untyped-decorator]
+@sizing_options  # type: ignore[untyped-decorator]
+def backtest_rolling(**params: Any) -> None:
     """Run a true daily rolling backtest over a date window."""
-    if output_csv and dashboard:
-        raise click.UsageError("--csv and --dashboard cannot be used together.")
-    validate_sizing(sizing_rule, stop_loss)
-    if earnings_blackout_days is not None and earnings_blackout_days < 0:
-        raise click.UsageError("--earnings-blackout must be >= 0.")
-    if fundamentals_provider == "fmp" and market != "us":
-        raise click.UsageError(
-            "--fundamentals-provider fmp currently supports only -m us."
-        )
-    if fundamentals_provider in {"openscreener", "yfinance"} and market != "india":
-        raise click.UsageError(
-            f"--fundamentals-provider {fundamentals_provider} currently supports only -m india."
-        )
-
-    entry_expr, exit_expr = resolve_strategy_exprs(strategy_name, entry_expr, exit_expr)
-
-    # A strategy/expression may reference dated fundamental fields (e.g.
-    # revenue_up_3q). Those columns only exist once a fundamentals provider is
-    # merged into the bars, so auto-enable the market's default provider when the
-    # expressions need fundamentals and none was requested explicitly. Otherwise
-    # the entry evaluator fails with "Unknown identifier".
-    needed_fundamentals = referenced_fundamental_fields(entry_expr, exit_expr)
-    if needed_fundamentals and fundamentals_provider is None:
-        fundamentals_provider = "fmp" if market == "us" else "openscreener"
-
-    slip_model = build_slippage_model(
-        slippage_model,
-        slippage_bps,
-        half_spread_bps,
-        vol_impact_k,
-        spread_proxy=bool(spread_proxy),
+    ctx = click.get_current_context()
+    request = BacktestRequest(
+        mode="rolling",
+        context_obj=ctx.obj,
+        **params,
     )
-    partial_exits = parse_partial_exits(partial_exit_args)
-    resolved_min_price, resolved_min_adv = resolve_min_filters(
-        market, min_price, min_avg_dollar_volume
-    )
-
-    end_date = (
-        end_arg.date() if isinstance(end_arg, datetime) else (end_arg or date.today())
-    )
-    start_date = (
-        start_arg.date()
-        if isinstance(start_arg, datetime)
-        else (start_arg or (end_date - timedelta(days=365 * int(years))))
-    )
-    market_meta = get_market(market)
-    bench = benchmark or market_meta.benchmark
-    resolved_fundamental_lag_days = (
-        int(fundamental_lag_days)
-        if fundamental_lag_days is not None
-        else (60 if fundamentals_provider in {"openscreener", "yfinance"} else 1)
-    )
-    # When the user pins an explicit field list, make sure the fields the
-    # expressions actually reference are fetched too; an empty list falls back to
-    # the provider defaults, which already cover every known fundamental field.
-    resolved_fundamental_fields = tuple(dict.fromkeys(fundamental_field_args))
-    if resolved_fundamental_fields:
-        resolved_fundamental_fields = tuple(
-            dict.fromkeys((*resolved_fundamental_fields, *sorted(needed_fundamentals)))
-        )
-
-    ticker_tuple = None
-    universe_note = None
-    membership_added: tuple[tuple[str, date], ...] = ()
-    membership_windows: tuple[tuple[str, date, date | None], ...] = ()
-    dynamic_universe_size: int | None = None
-    dynamic_universe_lookback = int(universe_lookback)
-    dynamic_universe_rebalance = str(universe_rebalance)
-    if tickers:
-        ticker_tuple = parse_ticker_list(tickers)
-    elif not universe_file:
-        resolved_universe = str(universe or market_meta.default_universe).lower()
-        try:
-            selection = load_universe_selection(
-                resolved_universe,
-                market=market,
-                as_of=end_date,
-                config_path=universe_config,
-                use_cache=not no_universe_cache,
-                dynamic_base=dynamic_base,
-                dynamic_size=int(universe_size),
-                dynamic_lookback=int(universe_lookback),
-                dynamic_rebalance=str(universe_rebalance),
-            )
-        except (OSError, ValueError, RuntimeError) as exc:
-            raise click.UsageError(str(exc)) from exc
-        ticker_tuple = selection.symbols
-        membership_windows = selection.membership_windows
-        dynamic_universe_size = selection.dynamic_size
-        dynamic_universe_lookback = selection.dynamic_lookback
-        dynamic_universe_rebalance = selection.dynamic_rebalance
-        if benchmark is None and selection.benchmark:
-            bench = selection.benchmark
-        universe_note = (
-            f"{selection.name}: {len(selection.symbols)} candidate symbols from "
-            f"{selection.source}"
-        )
-        if membership_windows:
-            universe_note += f"; point-in-time snapshots ({len(membership_windows)} membership windows)"
-        if dynamic_universe_size is not None:
-            universe_note += (
-                f"; top {dynamic_universe_size} by prior {dynamic_universe_lookback}-bar "
-                f"ADV, rebalanced {dynamic_universe_rebalance}; candidate base is an "
-                "as-of-end snapshot and may retain survivorship bias"
-            )
-        if point_in_time:
-            if membership_windows or dynamic_universe_size is not None:
-                pass
-            elif resolved_universe != "sp500":
-                raise click.UsageError(
-                    "--point-in-time requires snapshot history or the sp500 universe."
-                )
-            else:
-                added_by_symbol = load_sp500_membership(
-                    as_of=end_date, use_cache=not no_universe_cache
-                )
-                membership_added = tuple(
-                    (symbol, added)
-                    for symbol, added in added_by_symbol.items()
-                    if added is not None
-                )
-                universe_note += (
-                    f"; point-in-time entries via 'date added' "
-                    f"({len(membership_added)} dated symbols; removed ex-members not reconstructed)"
-                )
-        elif not membership_windows and dynamic_universe_size is None:
-            universe_note += (
-                "; survivorship bias: today's members applied to history "
-                "(pass --point-in-time to filter by 'date added')"
-            )
-    if (
-        point_in_time
-        and not membership_added
-        and not membership_windows
-        and dynamic_universe_size is None
-    ):
-        raise click.UsageError(
-            "--point-in-time requires an index universe; it cannot be used with "
-            "--tickers or --universe-file."
-        )
-
-    common = CommonBacktestParams(
-        market=market,
-        benchmark=bench,
-        hold=hold,
-        top=top,
-        entry_expr=entry_expr,
-        exit_expr=exit_expr,
-        strategy_name=strategy_name,
-        stop_loss=stop_loss,
-        take_profit=take_profit,
-        trailing_stop=trailing_stop,
-        slippage_bps=slippage_bps,
-        commission_bps=commission_bps,
-        cost_model=cost_model,
-        slippage_model=slip_model,
-        initial_capital=initial_capital,
-        tickers=ticker_tuple,
-        universe_file=universe_file,
-        max_universe=max_universe,
-        min_price=resolved_min_price,
-        min_avg_dollar_volume=resolved_min_adv,
-        adv_window=adv_window,
-        gap_fills=not no_gap_fills,
-        entry_order_type=entry_order,
-        entry_limit_bps=entry_limit_bps,
-        partial_exits=partial_exits,
-        price_adjustment=price_adjustment,
-        interval=interval,
-        intraday_only=bool(intraday_only),
-        sizing_rule=sizing_rule,
-        sizing_risk_pct=sizing_risk_pct,
-        sizing_position_pct=sizing_position_pct,
-        sizing_atr_window=sizing_atr_window,
-        sizing_atr_multiple=sizing_atr_multiple,
-        sizing_vol_window=sizing_vol_window,
-    )
-    cfg = build_backtest_config(
-        common,
-        as_of=end_date,
-        membership_added=membership_added,
-        membership_windows=membership_windows,
-        dynamic_universe_size=dynamic_universe_size,
-        dynamic_universe_lookback=dynamic_universe_lookback,
-        dynamic_universe_rebalance=dynamic_universe_rebalance,
-        spread_proxy=bool(spread_proxy),
-        signal_extra={
-            "regime_filter": tuple(dict.fromkeys(regime_filter_args)),
-            "earnings_blackout_days": earnings_blackout_days,
-            "fundamentals_provider": fundamentals_provider,
-            "fundamental_fields": resolved_fundamental_fields,
-            "fundamental_lag_days": max(resolved_fundamental_lag_days, 0),
-            "sector_neutral": bool(sector_neutral),
-        },
-    )
-
-    fetcher = build_backtest_fetcher(
-        click.get_current_context().obj,
-        price_adjustment=price_adjustment,
-        interval=interval,
-    )
+    run = resolve_backtest_run(request)
+    assert run.start_date is not None and run.end_date is not None
     result = run_rolling_backtest(
-        cfg, fetcher, start_date=start_date, end_date=end_date
+        run.config,
+        run.price_fetcher,
+        start_date=run.start_date,
+        end_date=run.end_date,
+        fundamental_fetcher=run.fundamental_fetcher,
     )
-    generated_report = resolve_report_path(report_path, output_csv, "backtest-rolling")
+    generated_report = resolve_report_path(
+        params["report_path"], params["output_csv"], "backtest-rolling"
+    )
     if generated_report:
         write_tearsheet(
             result,
             generated_report,
             title="Rolling Backtest Tear Sheet",
-            extra_notes=[universe_note] if universe_note else [],
+            extra_notes=[run.universe_note] if run.universe_note else [],
         )
-    if output_csv:
+    if params["output_csv"]:
         print_ledger_csv(result)
         return
 
     console = agentio.get_console()
     console.print(
-        f"[dim]Rolling window: {start_date.isoformat()} to {end_date.isoformat()}[/dim]"
+        f"[dim]Rolling window: {run.start_date.isoformat()} to {run.end_date.isoformat()}[/dim]"
     )
-    if universe_note:
-        console.print(f"[dim]Universe: {universe_note}[/dim]")
+    if run.universe_note:
+        console.print(f"[dim]Universe: {run.universe_note}[/dim]")
     print_backtest(result)
     if generated_report:
         console.print(f"[green]Report:[/green] {generated_report}")
-        if open_report:
+        if params["open_report"]:
             from screener.reporting import open_report as open_report_file
 
             open_report_file(generated_report)
-    if dashboard:
+    if params["dashboard"]:
         from screener.backtester.dashboard import render_dashboard, serve_dashboard
 
-        dashboard_path = render_dashboard(result, dashboard_dir)
+        dashboard_path = render_dashboard(result, params["dashboard_dir"])
         console.print(f"[green]Dashboard:[/green] {dashboard_path}")
         console.print(
-            f"[green]Serving:[/green] http://127.0.0.1:{dashboard_port}/{dashboard_path.name}"
+            f"[green]Serving:[/green] http://127.0.0.1:{params['dashboard_port']}/{dashboard_path.name}"
         )
         console.print("[dim]Press Ctrl+C to stop the dashboard server.[/dim]")
-        serve_dashboard(dashboard_path.parent, int(dashboard_port))
+        serve_dashboard(dashboard_path.parent, int(params["dashboard_port"]))

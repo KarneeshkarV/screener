@@ -332,3 +332,55 @@ def cached_frame_call(
     frame = fetch()
     write_frame(path, frame)
     return frame
+
+
+FrameWithMeta = tuple[pd.DataFrame, dict[str, Any]]
+
+
+def frame_meta_paths(namespace: str, key_parts: Any) -> tuple[Path, Path]:
+    """``(parquet, json)`` pair backing one frame-plus-metadata cache entry."""
+    key = stable_key(key_parts)
+    return cache_path(namespace, key, "parquet"), cache_path(namespace, key, "json")
+
+
+def read_frame_meta(namespace: str, key_parts: Any) -> FrameWithMeta | None:
+    """Read a frame-plus-metadata entry ignoring freshness, or ``None``.
+
+    Both files must be readable: a lone parquet has lost the metadata that
+    describes it, so a half-written entry is a miss rather than a partial hit.
+    """
+    frame_path, meta_path = frame_meta_paths(namespace, key_parts)
+    frame = read_frame(frame_path)
+    if frame is None:
+        return None
+    missing = object()
+    meta = read_json(meta_path, default=missing)
+    if meta is missing or not isinstance(meta, dict):
+        return None
+    return frame, cast(dict[str, Any], meta)
+
+
+def cached_frame_meta_call(
+    namespace: str,
+    key_parts: Any,
+    *,
+    ttl_seconds: float | None,
+    refresh: bool,
+    fetch: Callable[[], FrameWithMeta],
+) -> FrameWithMeta:
+    """TTL cache for a DataFrame plus a small JSON metadata sidecar.
+
+    Sources whose payload is a frame *and* a scalar the frame cannot carry
+    (the TradingView scanner's total match count, say) need both halves to
+    expire together, so freshness is evaluated across the pair with
+    :func:`all_fresh`.
+    """
+    frame_path, meta_path = frame_meta_paths(namespace, key_parts)
+    if not refresh and all_fresh((frame_path, meta_path), ttl_seconds):
+        cached = read_frame_meta(namespace, key_parts)
+        if cached is not None:
+            return cached
+    frame, meta = fetch()
+    write_frame(frame_path, frame)
+    write_json(meta_path, meta)
+    return frame, meta

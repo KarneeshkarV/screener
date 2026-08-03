@@ -19,12 +19,18 @@ from screener.backtester.core import (
 )
 from screener.backtester.costs import cost_model_from_config
 from screener.backtester.data import PriceFetcher
-from screener.backtester.day_loop import DayLoop, FreedSlot, run_day_loop
+from screener.backtester.day_loop import (
+    DayLoop,
+    FreedSlot,
+    _force_close_open_slots,
+    run_day_loop,
+)
 from screener.backtester.fills import FillModel
 from screener.backtester.metrics import (
     compute_cost_metrics,
     compute_metrics,
     compute_regime_metrics,
+    no_trades_result,
     periods_per_year_for_interval,
 )
 from screener.backtester.models import (
@@ -35,6 +41,7 @@ from screener.backtester.historical_cli import backtest_historical
 from screener.backtester.pine import PineError, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.backtester.sizing import entry_budget_for
+from screener.backtester.warmup import _warmup_days_for_interval
 from screener.options.backtest import merge_referenced_options
 
 
@@ -215,6 +222,7 @@ class _ReserveRotationSource:
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
                     budget=entry_budget,
+                    shares=state.entry_shares,
                 )
                 self.slot_states[slot_id] = state
                 del self.pending_reentry[slot_id]
@@ -279,6 +287,7 @@ class _ReserveRotationSource:
                     entry_date=state.entry_date,
                     entry_price=state.entry_fill,
                     budget=entry_budget,
+                    shares=state.entry_shares,
                 )
                 self.slot_states[slot_id] = state
                 self.slot_bars[slot_id] = reserve_bars
@@ -308,7 +317,7 @@ def _run_event_driven_sim(
     """
     if caches is None:
         caches = _RunCaches()
-    fill_model = FillModel(cfg)
+    fill_model = FillModel(cfg, cost_model=portfolio.cost_model)
     slot_states: dict[int, _SlotState | None] = {}
     slot_bars: dict[int, pd.DataFrame] = {}
     reentries_left: dict[int, int] = {}
@@ -351,6 +360,7 @@ def _run_event_driven_sim(
             entry_date=state.entry_date,
             entry_price=state.entry_fill,
             budget=entry_budget,
+            shares=state.entry_shares,
         )
         slot_states[slot_id] = state
         slot_bars[slot_id] = bars
@@ -395,43 +405,16 @@ def _run_event_driven_sim(
     )
     run_day_loop(master_dates, day_loop, source)
 
-    for slot_id, state in list(slot_states.items()):
-        if state is None:
-            continue
-        bars = slot_bars[slot_id]
-        tail = bars.loc[bars.index > pd.Timestamp(state.entry_date)]
-        if tail.empty:
-            continue
-        last_bar = tail.iloc[-1]
-        fill = fill_model.exit_price(
-            reason="eod",
-            close=float(last_bar["close"]),
-            shares=(
-                position.shares
-                if (position := portfolio.get_position(state.ticker)) is not None
-                else 0.0
-            ),
-            adv_shares=state.adv_shares,
-            sigma_daily=state.sigma_daily,
-            half_spread=state.half_spread,
-        )
-        portfolio.close(
-            ticker=state.ticker,
-            exit_date=_bar_label(tail.index[-1], cfg),
-            exit_price=fill,
-            reason="eod",
-        )
-        slot_states[slot_id] = None
+    _force_close_open_slots(
+        slot_states=slot_states,
+        slot_bars=slot_bars,
+        cfg=cfg,
+        portfolio=portfolio,
+        end_ts=horizon_end,
+        fill_model=fill_model,
+    )
 
     return master_dates
-
-
-def _warmup_days_for_interval(lookback: int, interval: str) -> int:
-    warmup_bars = lookback * 2 + 30
-    if interval == "1d":
-        return max(warmup_bars, 365)
-    bars_per_day = max(periods_per_year_for_interval(interval) // 252, 1)
-    return int(np.ceil(warmup_bars / bars_per_day) * 1.6) + 5
 
 
 def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
@@ -501,25 +484,12 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     warnings.extend(sel_warnings)
 
     if selection.empty:
-        calendar = pd.date_range(
-            as_of_ts, as_of_ts + pd.Timedelta(days=cfg.hold * 2), freq="B"
-        )
-        equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
-        benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
-        benchmark = benchmark.reindex(calendar, method="ffill").dropna()
-        metrics = compute_metrics(
-            equity,
-            benchmark,
-            [],
-            max(cfg.top, 1),
-            periods_per_year=periods_per_year_for_interval(cfg.interval),
-        )
-        return BacktestResult(
-            config=cfg,
-            trades=[],
-            equity_curve=equity,
-            benchmark_curve=benchmark,
-            metrics=metrics,
+        return no_trades_result(
+            cfg,
+            calendar=pd.date_range(
+                as_of_ts, as_of_ts + pd.Timedelta(days=cfg.hold * 2), freq="B"
+            ),
+            benchmark=_benchmark_series_from_panel(price_panel, cfg.benchmark),
             warnings=warnings,
             selection=selection,
         )

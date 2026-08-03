@@ -7,12 +7,15 @@ Alpha/beta use a simple OLS fit via ``numpy.polyfit`` — no sklearn.
 from __future__ import annotations
 
 import math
-from typing import Any, Iterable, cast
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Iterable, Literal, cast, overload
 
 import numpy as np
 import pandas as pd
 
-from screener.backtester.models import Trade
+from screener.backtester.models import BacktestConfig, BacktestResult, Trade
+from screener.format import fmt_money, fmt_pct, is_missing
 from screener.regime import classify_regimes
 
 
@@ -26,6 +29,146 @@ _EULER_MASCHERONI = 0.5772156649015329
 # shorter (~6.25h), so India intraday annualization is slightly off; no behavior
 # change intended.
 _BARS_PER_SESSION = {"1d": 1, "1h": 7, "30m": 13, "15m": 26, "5m": 78, "1m": 390}
+
+
+MetricKind = Literal["pct", "money", "ratio", "count", "int"]
+
+
+@dataclass(frozen=True)
+class ResultViewRow:
+    """One display-ready metric from a backtest result."""
+
+    key: str
+    label: str
+    kind: MetricKind
+    value: Any
+    formatted: str
+
+    def as_dict(self) -> dict[str, Any]:
+        """JSON-safe representation used by browser renderers."""
+        return {
+            "key": self.key,
+            "label": self.label,
+            "kind": self.kind,
+            "value": self.value,
+            "formatted": self.formatted,
+        }
+
+
+@dataclass(frozen=True)
+class ResultView(Sequence[ResultViewRow]):
+    """Ordered display model shared by every backtest result renderer."""
+
+    rows: tuple[ResultViewRow, ...]
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    @overload
+    def __getitem__(self, index: int) -> ResultViewRow: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> tuple[ResultViewRow, ...]: ...
+
+    def __getitem__(
+        self, index: int | slice
+    ) -> ResultViewRow | tuple[ResultViewRow, ...]:
+        return self.rows[index]
+
+
+# The only ordered metric schema. Unknown metrics are deliberately appended by
+# ``result_view`` so adding a computed metric needs no renderer change.
+_RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
+    ("starting_equity", "Starting Capital", "money"),
+    ("final_equity", "Final Equity", "money"),
+    ("total_return", "Total Return", "pct"),
+    ("invested_return", "Invested Return", "pct"),
+    ("cagr", "CAGR", "pct"),
+    ("vol_annual", "Volatility (ann.)", "pct"),
+    ("sharpe", "Sharpe", "ratio"),
+    ("sortino", "Sortino", "ratio"),
+    ("calmar", "Calmar", "ratio"),
+    ("psr", "Probabilistic Sharpe", "pct"),
+    ("dsr", "Deflated Sharpe", "pct"),
+    ("max_drawdown", "Max Drawdown", "pct"),
+    ("hit_rate", "Hit Rate", "pct"),
+    ("alpha_annual", "Alpha (ann.)", "pct"),
+    ("beta", "Beta", "ratio"),
+    ("exposure", "Avg Exposure", "pct"),
+    ("benchmark_return", "Benchmark Return", "pct"),
+    ("trade_count", "Trades", "count"),
+    ("unique_tickers", "Unique Tickers", "count"),
+    ("median_trade_return", "Median Trade Return", "pct"),
+    ("avg_trade_return", "Avg Trade Return", "pct"),
+    ("best_trade_return", "Best Trade", "pct"),
+    ("worst_trade_return", "Worst Trade", "pct"),
+    ("profit_factor", "Profit Factor", "ratio"),
+    ("expectancy", "Expectancy", "pct"),
+    ("winning_trades", "Winning Trades", "count"),
+    ("losing_trades", "Losing Trades", "count"),
+)
+_RESULT_VIEW_SPECS = {key: (label, kind) for key, label, kind in _RESULT_VIEW_ORDER}
+
+
+def format_result_value(value: Any, kind: MetricKind) -> str:
+    """Format a result metric once, independently of its output surface."""
+    if is_missing(value):
+        return "-"
+    if kind == "pct":
+        return fmt_pct(float(value) * 100)
+    if kind == "money":
+        return fmt_money(value)
+    if kind == "count":
+        return f"{int(value):,}"
+    if kind == "int":
+        return str(int(value))
+    if isinstance(value, (float, int)):
+        return f"{float(value):+.3f}"
+    return str(value)
+
+
+def _default_metric_spec(key: str, value: Any) -> tuple[str, MetricKind]:
+    """Give newly-computed metrics a useful view without renderer edits."""
+    label = key.replace("_", " ").title()
+    if key == "risk_adjusted_return":
+        return label, "ratio"
+    if (
+        key.endswith("_return")
+        or key.endswith("_rate")
+        or key.endswith("_pct")
+        or "_pct_" in key
+        or key in {"cagr", "vol_annual", "max_drawdown", "exposure"}
+    ):
+        return label, "pct"
+    if key.endswith("_equity") or key == "total_fees" or key.startswith("fee_"):
+        return label, "money"
+    if key.endswith("_count") or key.endswith("_trades") or key.endswith("_tickers"):
+        return label, "count"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return label, "int"
+    return label, "ratio"
+
+
+def result_view(metrics: Mapping[str, Any]) -> ResultView:
+    """Return every metric in a stable order with labels, kinds, and formatting."""
+    ordered_keys = [key for key, _, _ in _RESULT_VIEW_ORDER if key in metrics]
+    ordered_keys.extend(key for key in metrics if key not in _RESULT_VIEW_SPECS)
+    rows = []
+    for key in ordered_keys:
+        value = metrics[key]
+        label, kind = _RESULT_VIEW_SPECS.get(key, _default_metric_spec(key, value))
+        rows.append(
+            ResultViewRow(key, label, kind, value, format_result_value(value, kind))
+        )
+    return ResultView(tuple(rows))
+
+
+def result_view_columns(metric_sets: Iterable[Mapping[str, Any]]) -> ResultView:
+    """Return the ordered union of metrics for column-oriented result tables."""
+    keys: dict[str, None] = {}
+    for metrics in metric_sets:
+        keys.update(dict.fromkeys(metrics))
+    return result_view({key: 0 for key in keys})
 
 
 def periods_per_year_for_interval(interval: str) -> int:
@@ -66,7 +209,7 @@ def _max_drawdown(equity: pd.Series) -> float:
     return float(dd.min()) if not dd.empty else 0.0
 
 
-def _sharpe(
+def equity_curve_sharpe(
     daily: pd.Series,
     rf: float = 0.0,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
@@ -195,7 +338,7 @@ def _psr(
     if daily.empty or len(daily) < 30:
         return 0.0
     T = len(daily)
-    sr_per = _sharpe(daily, periods_per_year=periods_per_year) / math.sqrt(
+    sr_per = equity_curve_sharpe(daily, periods_per_year=periods_per_year) / math.sqrt(
         periods_per_year
     )
     sr_bench_per = sr_benchmark_annual / math.sqrt(periods_per_year)
@@ -247,6 +390,16 @@ def _invested_return(trades: Iterable[Trade]) -> float:
     if total_cost <= 0:
         return 0.0
     return total_pnl / total_cost
+
+
+def positive_pnl_rate(trades: Iterable[Trade]) -> float:
+    """Return the fractional share of accounting trades with positive cash PnL."""
+    trades = list(trades)
+    return (
+        float(sum(1 for trade in trades if trade.pnl > 0) / len(trades))
+        if trades
+        else 0.0
+    )
 
 
 def _trade_return_stats(trades: Iterable[Trade]) -> dict[str, float | int]:
@@ -354,9 +507,7 @@ def compute_metrics(
         else 0.0
     )
     alpha, beta = _alpha_beta(daily, bench_daily, periods_per_year)
-    hit_rate = (
-        float(sum(1 for t in trades if t.pnl > 0) / len(trades)) if trades else 0.0
-    )
+    hit_rate = positive_pnl_rate(trades)
     bench_return = (
         float(benchmark.iloc[-1] / benchmark.iloc[0] - 1.0)
         if len(benchmark) >= 2 and benchmark.iloc[0] > 0
@@ -368,7 +519,7 @@ def compute_metrics(
         "total_return": total_return,
         "cagr": _cagr(equity, periods_per_year),
         "vol_annual": _vol_annual(daily, periods_per_year),
-        "sharpe": _sharpe(daily, periods_per_year=periods_per_year),
+        "sharpe": equity_curve_sharpe(daily, periods_per_year=periods_per_year),
         "sortino": _sortino(daily, periods_per_year=periods_per_year),
         "calmar": _calmar(equity, periods_per_year),
         "psr": _psr(daily, sr_benchmark_annual=0.0, periods_per_year=periods_per_year),
@@ -384,3 +535,40 @@ def compute_metrics(
     }
     metrics.update(_trade_return_stats(trades))
     return metrics
+
+
+def no_trades_result(
+    cfg: BacktestConfig,
+    *,
+    calendar: pd.Index,
+    benchmark: pd.Series,
+    warnings: list[str],
+    selection: pd.DataFrame | None = None,
+) -> BacktestResult:
+    """Build the flat, no-trade result every engine falls back to.
+
+    Reached whenever a run never opens a position: no candidate survived
+    selection, or the rolling window contained no bars at all. Equity is
+    initial capital held flat across ``calendar`` and the benchmark is
+    forward-filled onto the same index, so the result still renders and
+    compares like any other.
+    """
+    equity = pd.Series(cfg.initial_capital, index=calendar, dtype=float)
+    benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
+    metrics = compute_metrics(
+        equity,
+        benchmark_aligned,
+        [],
+        max(cfg.top, 1),
+        periods_per_year=periods_per_year_for_interval(cfg.interval),
+    )
+    metrics["unique_tickers"] = 0
+    return BacktestResult(
+        config=cfg,
+        trades=[],
+        equity_curve=equity,
+        benchmark_curve=benchmark_aligned,
+        metrics=metrics,
+        warnings=warnings,
+        selection=pd.DataFrame() if selection is None else selection,
+    )

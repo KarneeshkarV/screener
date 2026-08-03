@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
+import logging
+import os
+import time
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from screener import universes
 from screener.backtester.core import _resolve_universe
@@ -232,3 +236,97 @@ def test_resolve_universe_does_not_cap_dynamic_or_snapshot_pools() -> None:
     symbols, warnings = _resolve_universe(plain_cfg)
     assert len(symbols) == 200
     assert warnings == ["capped universe from 500 to 200 tickers"]
+
+
+def _register_probe_universe(monkeypatch, tmp_path, loader) -> str:
+    """Register a throwaway universe backed by ``loader`` in an isolated cache."""
+    monkeypatch.setattr(universes, "CACHE_DIR", tmp_path)
+    name = "probe_universe"
+    definition = universes.UniverseDefinition(
+        name=name, market="us", benchmark="SPY", loader=loader
+    )
+    registry = dict(universes._UNIVERSE_REGISTRY)
+    registry[name] = definition
+    monkeypatch.setattr(universes, "_UNIVERSE_REGISTRY", registry)
+    return name
+
+
+def test_universe_cache_for_today_expires_and_refetches(monkeypatch, tmp_path) -> None:
+    calls = {"n": 0}
+
+    def loader() -> tuple[list[str], str]:
+        calls["n"] += 1
+        return [f"AAA{calls['n']}"], "probe"
+
+    name = _register_probe_universe(monkeypatch, tmp_path, loader)
+    today = date.today()
+
+    first = universes.load_current_universe(name, as_of=today)
+    assert calls["n"] == 1
+    # Age the entry past the today-dated TTL: the snapshot is live data, so it
+    # must be refetched rather than served for the rest of the process's life.
+    stale_mtime = time.time() - universes._UNIVERSE_CACHE_TTL_SECONDS - 60
+    os.utime(first.cached_path, (stale_mtime, stale_mtime))
+
+    second = universes.load_current_universe(name, as_of=today)
+    assert calls["n"] == 2
+    assert second.symbols == ("AAA2",)
+
+
+def test_universe_cache_for_a_past_date_is_pinned(monkeypatch, tmp_path) -> None:
+    calls = {"n": 0}
+
+    def loader() -> tuple[list[str], str]:
+        calls["n"] += 1
+        return ["AAA"], "probe"
+
+    name = _register_probe_universe(monkeypatch, tmp_path, loader)
+    as_of = date.today() - timedelta(days=30)
+
+    with pytest.warns(UserWarning):
+        first = universes.load_current_universe(name, as_of=as_of)
+    ancient = time.time() - 400 * 86400
+    os.utime(first.cached_path, (ancient, ancient))
+
+    # A finished day cannot be re-derived more accurately, so age never expires
+    # the entry.
+    with pytest.warns(UserWarning):
+        universes.load_current_universe(name, as_of=as_of)
+    assert calls["n"] == 1
+
+
+def test_universe_fetch_failure_serves_the_stale_cache(
+    monkeypatch, tmp_path, caplog
+) -> None:
+    state = {"fail": False}
+
+    def loader() -> tuple[list[str], str]:
+        if state["fail"]:
+            raise RuntimeError("constituents unavailable")
+        return ["AAA", "BBB"], "probe"
+
+    name = _register_probe_universe(monkeypatch, tmp_path, loader)
+    today = date.today()
+
+    first = universes.load_current_universe(name, as_of=today)
+    stale_mtime = time.time() - universes._UNIVERSE_CACHE_TTL_SECONDS - 60
+    os.utime(first.cached_path, (stale_mtime, stale_mtime))
+    state["fail"] = True
+
+    with caplog.at_level(logging.WARNING, logger=universes.LOG.name):
+        served = universes.load_current_universe(name, as_of=today)
+
+    assert served.symbols == ("AAA", "BBB")
+    assert "Serving stale probe_universe universe cache" in caplog.text
+
+
+def test_universe_fetch_failure_without_cache_still_raises(
+    monkeypatch, tmp_path
+) -> None:
+    def loader() -> tuple[list[str], str]:
+        raise RuntimeError("constituents unavailable")
+
+    name = _register_probe_universe(monkeypatch, tmp_path, loader)
+
+    with pytest.raises(RuntimeError, match="constituents unavailable"):
+        universes.load_current_universe(name, as_of=date.today())

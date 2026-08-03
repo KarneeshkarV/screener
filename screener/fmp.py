@@ -1,11 +1,16 @@
 """One Financial Modeling Prep (FMP) HTTP client for every call site.
 
-FMP access was reimplemented in ``garp``, ``insiders``, ``institutional`` and
-``backtester.fundamentals`` with divergent libraries (urllib vs. requests),
-timeouts, headers and error handling. This module owns the single transport:
-base URLs, API-key resolution, the one HTTP mechanism, a per-call timeout, the
-error mode and JSON decoding. Call sites route their FMP requests through
-:class:`FmpClient` / :func:`request_json` instead of hand-wiring HTTP.
+FMP access was reimplemented in ``garp``, ``insiders``, ``institutional``,
+``backtester.fundamentals`` and ``backtester.data``'s ``FMPPriceFetcher`` with
+divergent libraries (urllib vs. requests), timeouts, headers and error
+handling. This module owns the single transport: base URLs, API-key
+resolution, the one HTTP mechanism, a per-call timeout, the error mode and
+JSON decoding. Call sites route their FMP requests through :class:`FmpClient`
+/ :func:`request_json` instead of hand-wiring HTTP.
+
+``resolve_api_key`` reads the project ``.env`` through the neutral
+:mod:`screener.config`; this module must not import a feature package (see
+``tests/test_import_boundaries.py``).
 
 Caching (``screener.cache``) and retry/circuit-breaker (``screener.resilience``)
 stay in ``screener.providers``; this module is only the transport used inside a
@@ -33,6 +38,8 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from typing import Any, Protocol
+
+from screener.config import load_env_file
 
 
 class HttpResponse(Protocol):
@@ -73,10 +80,6 @@ def resolve_api_key() -> str | None:
     key = os.environ.get("FMP_API_KEY")
     if key:
         return key
-    try:
-        from screener.backtester.data import load_env_file
-    except Exception:
-        return None
     load_env_file()
     return os.environ.get("FMP_API_KEY")
 

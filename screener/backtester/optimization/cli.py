@@ -11,7 +11,8 @@ from typing import cast as type_cast
 
 import click
 
-from screener.backtester.models import BacktestConfig, ExitReason, Trade
+from screener.backtester.models import BacktestConfig, Trade
+from screener.ledger import ExitReason
 from screener.backtester.optimization.grid import grid_search
 from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
 from screener.backtester.optimization.reporting import (

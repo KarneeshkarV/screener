@@ -10,7 +10,7 @@ import pytest
 from click.testing import CliRunner
 from pydantic import ValidationError
 
-from screener.backtester.core import simulate_ticker
+from tests.backtest_helpers import simulate_single_ticker
 from screener.backtester.models import BacktestConfig
 from screener.backtester.sessions import is_session_last, market_timezone, session_dates
 from screener.cli import cli
@@ -120,21 +120,21 @@ def test_data_policy_rejects_intraday_only_on_daily():
     assert ok.intraday_only is True
 
 
-def test_simulate_ticker_session_exit():
+def test_simulate_single_ticker_session_exit():
     bars = _rising_frame(_us_5m_index(sessions=2, bars_per=6))
     # MOC/MOO enter at signal_idx+1. Signal at bar 1 → entry bar 2; session-last
     # of session 1 is bar 5.
     cfg = _cfg(intraday_only=True, hold=100, entry_order_type="moc")
-    outcome = simulate_ticker(bars, signal_idx=1, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=1, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "session"
     assert outcome.trade.exit_date == bars.index[5].to_pydatetime()
 
 
-def test_simulate_ticker_without_flag_holds_past_session():
+def test_simulate_single_ticker_without_flag_holds_past_session():
     bars = _rising_frame(_us_5m_index(sessions=2, bars_per=6))
     cfg = _cfg(intraday_only=False, hold=100, entry_order_type="moc")
-    outcome = simulate_ticker(bars, signal_idx=1, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=1, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "eod"
     assert outcome.trade.exit_date == bars.index[-1].to_pydatetime()
@@ -144,7 +144,7 @@ def test_entry_guard_skips_session_last_bar():
     bars = _rising_frame(_us_5m_index(sessions=2, bars_per=6))
     # Session-last of session 1 is bar 5. signal_idx=4 → entry on bar 5 → skip.
     cfg = _cfg(intraday_only=True, hold=100, entry_order_type="moc")
-    outcome = simulate_ticker(bars, signal_idx=4, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=4, cfg=cfg)
     assert outcome.trade is None
     assert outcome.warning is not None
     assert "session-last" in outcome.warning

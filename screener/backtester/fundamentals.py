@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import date
 import os
 from typing import Any, Protocol, cast
@@ -58,12 +59,13 @@ _YFINANCE_FUNDAMENTALS_PROVIDER = CachedProvider(
 
 
 class FundamentalFetcher(Protocol):
+    markets: frozenset[str]
+
     def fetch(
         self,
         tickers: Iterable[str],
         start: date,
         end: date,
-        market: str,
     ) -> dict[str, pd.DataFrame]:
         """Return yf-style ticker -> dated fundamental frame indexed by date."""
 
@@ -267,6 +269,8 @@ def _normalize_fmp_payload(
 class FMPFundamentalFetcher:
     """Fetch dated US fundamentals from FMP and normalize expression columns."""
 
+    markets = frozenset({"us"})
+
     def __init__(
         self,
         *,
@@ -296,11 +300,7 @@ class FMPFundamentalFetcher:
         tickers: Iterable[str],
         start: date,
         end: date,
-        market: str,
     ) -> dict[str, pd.DataFrame]:
-        if market != "us":
-            raise ValueError("FMP fundamentals currently support only the US market")
-
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
         ticker_list = [t for t in dict.fromkeys(tickers) if t]
@@ -453,6 +453,8 @@ def _normalize_openscreener_payload(
 class OpenScreenerFundamentalFetcher:
     """Fetch India quarterly fundamentals from openscreener/screener.in."""
 
+    markets = frozenset({"india"})
+
     def __init__(
         self,
         *,
@@ -461,25 +463,19 @@ class OpenScreenerFundamentalFetcher:
         refresh: bool = False,
         cache_ttl: float | None = 86400,
         max_workers: int = 8,
-        use_openscreener: bool = True,
     ) -> None:
         self.fields = tuple(dict.fromkeys(fields or ("revenue_up_3q",)))
         self.lag_days = max(int(lag_days), 0)
         self.refresh = bool(refresh)
         self.cache_ttl = cache_ttl
         self.max_workers = max(int(max_workers), 1)
-        self.use_openscreener = bool(use_openscreener)
 
     def fetch(
         self,
         tickers: Iterable[str],
         start: date,
         end: date,
-        market: str,
     ) -> dict[str, pd.DataFrame]:
-        if market != "india":
-            raise ValueError("openscreener fundamentals currently support only India")
-
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
         ticker_list = [t for t in dict.fromkeys(tickers) if t]
@@ -488,25 +484,23 @@ class OpenScreenerFundamentalFetcher:
             symbol = ticker.replace(".NS", "").replace(".BO", "").upper()
 
             fallback: dict[str, Any] = {}
-            frame = pd.DataFrame(columns=list(self.fields))
-            if self.use_openscreener:
 
-                def fetch_payload(symbol: str = symbol) -> dict[str, Any]:
-                    return _fetch_openscreener_quarterly(symbol)
+            def fetch_payload(symbol: str = symbol) -> dict[str, Any]:
+                return _fetch_openscreener_quarterly(symbol)
 
-                payload: dict[str, Any] = _OPENSCREENER_PROVIDER.fetch(
-                    ("india", symbol),
-                    fetch_payload,
-                    refresh=self.refresh,
-                    fallback=fallback,
-                    ttl_seconds=self.cache_ttl,
-                    operation=f"backtest fundamentals {symbol}",
-                )
-                frame = _normalize_openscreener_payload(
-                    payload,
-                    fields=self.fields,
-                    lag_days=self.lag_days,
-                )
+            payload: dict[str, Any] = _OPENSCREENER_PROVIDER.fetch(
+                ("india", symbol),
+                fetch_payload,
+                refresh=self.refresh,
+                fallback=fallback,
+                ttl_seconds=self.cache_ttl,
+                operation=f"backtest fundamentals {symbol}",
+            )
+            frame = _normalize_openscreener_payload(
+                payload,
+                fields=self.fields,
+                lag_days=self.lag_days,
+            )
             if frame.empty:
 
                 def fetch_yf_payload(ticker: str = ticker) -> dict[str, Any]:
@@ -553,36 +547,140 @@ class OpenScreenerFundamentalFetcher:
         return out
 
 
+class YFinanceFundamentalFetcher:
+    """Fetch India quarterly revenue fundamentals from yfinance."""
+
+    markets = frozenset({"india"})
+
+    def __init__(
+        self,
+        *,
+        fields: Iterable[str] | None = None,
+        lag_days: int = INDIA_FUNDAMENTAL_FILING_LAG_DAYS,
+        refresh: bool = False,
+        cache_ttl: float | None = 86400,
+        max_workers: int = 8,
+    ) -> None:
+        self.fields = tuple(dict.fromkeys(fields or ("revenue_up_3q",)))
+        self.lag_days = max(int(lag_days), 0)
+        self.refresh = bool(refresh)
+        self.cache_ttl = cache_ttl
+        self.max_workers = max(int(max_workers), 1)
+
+    def fetch(
+        self,
+        tickers: Iterable[str],
+        start: date,
+        end: date,
+    ) -> dict[str, pd.DataFrame]:
+        start_ts = pd.Timestamp(start).normalize()
+        end_ts = pd.Timestamp(end).normalize()
+        ticker_list = [t for t in dict.fromkeys(tickers) if t]
+
+        def fetch_one(ticker: str) -> tuple[str, pd.DataFrame]:
+            fallback: dict[str, Any] = {}
+
+            def fetch_payload(ticker: str = ticker) -> dict[str, Any]:
+                return _fetch_yfinance_quarterly_revenue(ticker)
+
+            payload: dict[str, Any] = _YFINANCE_FUNDAMENTALS_PROVIDER.fetch(
+                ("india", ticker),
+                fetch_payload,
+                refresh=self.refresh,
+                fallback=fallback,
+                ttl_seconds=self.cache_ttl,
+                operation=f"backtest yfinance fundamentals {ticker}",
+            )
+            frame = _normalize_openscreener_payload(
+                payload,
+                fields=self.fields,
+                lag_days=self.lag_days,
+            )
+            if not frame.empty:
+                frame = frame.loc[(frame.index >= start_ts) & (frame.index <= end_ts)]
+            return ticker, frame
+
+        out: dict[str, pd.DataFrame] = {}
+        if len(ticker_list) <= 1 or self.max_workers == 1:
+            for ticker in ticker_list:
+                key, frame = fetch_one(ticker)
+                out[key] = frame
+            return out
+
+        with ThreadPoolExecutor(
+            max_workers=min(self.max_workers, len(ticker_list))
+        ) as pool:
+            future_to_ticker = {
+                pool.submit(fetch_one, ticker): ticker for ticker in ticker_list
+            }
+            for future in as_completed(future_to_ticker):
+                ticker = future_to_ticker[future]
+                try:
+                    key, frame = future.result()
+                except Exception:
+                    out[ticker] = pd.DataFrame(columns=list(self.fields))
+                else:
+                    out[key] = frame
+        return out
+
+
+@dataclass(frozen=True)
+class _FundamentalProvider:
+    fetcher_type: type[Any]
+    default_lag_days: int
+
+
+_FUNDAMENTAL_PROVIDERS = {
+    "fmp": _FundamentalProvider(FMPFundamentalFetcher, 1),
+    "openscreener": _FundamentalProvider(
+        OpenScreenerFundamentalFetcher, INDIA_FUNDAMENTAL_FILING_LAG_DAYS
+    ),
+    "yfinance": _FundamentalProvider(
+        YFinanceFundamentalFetcher, INDIA_FUNDAMENTAL_FILING_LAG_DAYS
+    ),
+}
+_FUNDAMENTAL_PROVIDER_ALIASES = {"open-screener": "openscreener", "yf": "yfinance"}
+
+
+def resolve_fundamental_provider(provider: str | None) -> str | None:
+    """Normalize a provider name without constructing its adapter."""
+    resolved = (provider or "").strip().lower()
+    if not resolved:
+        return None
+    resolved = _FUNDAMENTAL_PROVIDER_ALIASES.get(resolved, resolved)
+    if resolved not in _FUNDAMENTAL_PROVIDERS:
+        raise ValueError(f"Unknown fundamentals provider: {provider}")
+    return resolved
+
+
+def fundamental_filing_lag_days(provider: str | None) -> int:
+    """Return the default reporting lag for a normalized provider."""
+    resolved = resolve_fundamental_provider(provider)
+    return _FUNDAMENTAL_PROVIDERS[resolved].default_lag_days if resolved else 1
+
+
 def build_fundamental_fetcher(
     provider: str | None,
     *,
+    market: str,
     fields: Iterable[str] | None = None,
     lag_days: int = 1,
     refresh: bool = False,
 ) -> FundamentalFetcher | None:
-    resolved = (provider or "").strip().lower()
-    if not resolved:
+    """Construct the one market-compatible adapter for a provider."""
+    resolved = resolve_fundamental_provider(provider)
+    if resolved is None:
         return None
-    if resolved == "fmp":
-        return FMPFundamentalFetcher(
-            fields=fields,
-            lag_days=lag_days,
-            refresh=refresh,
+    definition = _FUNDAMENTAL_PROVIDERS[resolved]
+    if market not in definition.fetcher_type.markets:
+        supported = ", ".join(sorted(definition.fetcher_type.markets))
+        raise ValueError(
+            f"--fundamentals-provider {resolved} currently supports only -m {supported}."
         )
-    if resolved in {"openscreener", "open-screener"}:
-        return OpenScreenerFundamentalFetcher(
-            fields=fields,
-            lag_days=lag_days or INDIA_FUNDAMENTAL_FILING_LAG_DAYS,
-            refresh=refresh,
-        )
-    if resolved in {"yf", "yfinance"}:
-        return OpenScreenerFundamentalFetcher(
-            fields=fields,
-            lag_days=lag_days or INDIA_FUNDAMENTAL_FILING_LAG_DAYS,
-            refresh=refresh,
-            use_openscreener=False,
-        )
-    raise ValueError(f"Unknown fundamentals provider: {provider}")
+    return cast(
+        FundamentalFetcher,
+        definition.fetcher_type(fields=fields, lag_days=lag_days, refresh=refresh),
+    )
 
 
 def merge_fundamentals_into_bars(

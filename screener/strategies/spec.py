@@ -2,7 +2,7 @@
 
 A strategy comes in one of two flavors:
 
-- **callable** (`fn(df) -> list[Trade]`) — the pine-port style used by
+- **callable** (`fn(df) -> list[ResearchTrade]`) — the pine-port style used by
   `screener.research.pine_runner`. Register with ``@strategy("name") def fn(df)``.
 - **expression** (entry/exit Pine strings) — used by the historical/rolling
   backtester. Register with ``register_expression_strategy(...)``.
@@ -23,10 +23,10 @@ from pydantic import BaseModel, ConfigDict, SkipValidation, field_validator
 
 from screener._registry import Registry
 from screener.backtester.data import PriceFetcher
-from screener.strategies.trades import Trade
+from screener.strategies.trades import ResearchTrade
 
 
-StrategyFn = Callable[[pd.DataFrame], list[Trade]]
+StrategyFn = Callable[[pd.DataFrame], list[ResearchTrade]]
 F = TypeVar("F", bound=Callable[..., Any])
 V = TypeVar("V")
 

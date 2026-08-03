@@ -10,6 +10,7 @@ import pytest
 
 from screener.backtester.cli_common import build_slippage_model
 from screener.backtester import core as backtester_core
+from screener.backtester.core import _passes_entry_filters
 from screener.backtester.costs import (
     FlatCommission,
     IndiaDeliveryCosts,
@@ -395,6 +396,23 @@ def test_backtest_config_rejects_unsupported_interval():
 
 
 # ── Flat cost_model regression (byte-identical legacy path) ──────────
+
+
+@pytest.mark.parametrize("field", ["close", "min_price"])
+def test_scalar_price_filter_rejects_non_finite_values(field):
+    bars = make_bars(n=5, seed=1)
+    cfg = _cfg(min_price=1.0)
+    if field == "close":
+        bars.iat[-1, bars.columns.get_loc("close")] = np.nan
+    else:
+        cfg = cfg.model_copy(update={"min_price": np.nan})
+
+    passes, reason = _passes_entry_filters(bars, bars.index[-1], cfg)
+
+    assert not passes
+    assert reason is not None
+    assert "requires" in reason
+    assert "finite" in reason
 
 
 def test_flat_cost_model_backtest_parity_with_legacy_commission():

@@ -29,7 +29,8 @@ import numpy as np
 import pandas as pd
 
 from screener.backtester.costs import CostModel, FlatCommission, Side
-from screener.backtester.models import ExitReason, Position, Trade
+from screener.backtester.models import Position, Trade
+from screener.ledger import ExitReason
 
 # Trade/position stamps are date-only for daily runs and full datetimes for
 # intraday runs (see ``screener.backtester.core._bar_label``).
@@ -125,6 +126,7 @@ class Portfolio:
         *,
         raise_if_exists: bool = True,
         budget: float | None = None,
+        shares: float | None = None,
     ) -> Position:
         """Open a position for ``ticker``. By default raises if the ticker is
         already active (legacy invariant). Pass ``raise_if_exists=False`` to
@@ -133,7 +135,9 @@ class Portfolio:
 
         ``budget`` lets a sizing rule spend less than the slot budget; it is
         always clamped to ``entry_budget()`` so a rule can never exceed the
-        slot ceiling or overdraw cash.
+        slot ceiling or overdraw cash. When ``shares`` is supplied, it is the
+        pre-impact count quoted by ``FillModel`` and is used unchanged. The
+        portfolio remains the authority for the applicable fees and cash debit.
 
         Fees come from the cost model owned by this portfolio.
         """
@@ -146,14 +150,17 @@ class Portfolio:
         # stable reference for any future notional-dependent schedules.
         cap = self.entry_budget()
         budget = cap if budget is None else min(max(float(budget), 0.0), cap)
-        c = float(self.cost_model.side_cost_fraction("buy", budget))
-        if c < 0.0:
-            c = 0.0
-        gross_per_share = entry_price * (1.0 + c)
-        shares = budget / gross_per_share if gross_per_share > 0 else 0.0
+        if shares is None:
+            c = float(self.cost_model.side_cost_fraction("buy", budget))
+            if c < 0.0:
+                c = 0.0
+            gross_per_share = entry_price * (1.0 + c)
+            shares = budget / gross_per_share if gross_per_share > 0 else 0.0
+        else:
+            shares = max(float(shares), 0.0)
         notional = shares * entry_price
         commission = self._charge_fees("buy", notional, shares)
-        entry_cost = notional + commission  # <= budget by construction for c>=0
+        entry_cost = notional + commission
         self._cash -= entry_cost
         position = Position(
             ticker=ticker,

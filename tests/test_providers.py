@@ -157,6 +157,70 @@ def test_frame_kind_round_trips_dataframe(tmp_path, monkeypatch):
     assert list(first.columns) == ["a", "b"]
 
 
+def _frame_meta_provider(ttl: float | None = 60) -> CachedProvider:
+    return CachedProvider(
+        ProviderSpec(
+            provider="test",
+            namespace="provider_frame_meta",
+            ttl_seconds=ttl,
+            kind="frame_meta",
+        )
+    )
+
+
+def test_frame_meta_kind_round_trips_frame_and_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    provider = _frame_meta_provider()
+    calls = {"n": 0}
+
+    def fetch() -> tuple[pd.DataFrame, dict]:
+        calls["n"] += 1
+        return pd.DataFrame({"a": [1, 2]}), {"count": 7}
+
+    first_frame, first_meta = provider.fetch(("k",), fetch)
+    second_frame, second_meta = provider.fetch(("k",), fetch)
+
+    assert calls["n"] == 1  # second served from the parquet + sidecar pair
+    assert first_frame.equals(second_frame)
+    assert first_meta == second_meta == {"count": 7}
+
+
+def test_frame_meta_missing_sidecar_forces_a_refetch(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    provider = _frame_meta_provider()
+    calls = {"n": 0}
+
+    def fetch() -> tuple[pd.DataFrame, dict]:
+        calls["n"] += 1
+        return pd.DataFrame({"a": [1]}), {"count": calls["n"]}
+
+    provider.fetch(("k",), fetch)
+    for meta_file in (tmp_path / "provider_frame_meta").glob("*.json"):
+        meta_file.unlink()
+
+    _, meta = provider.fetch(("k",), fetch)
+    assert calls["n"] == 2
+    assert meta == {"count": 2}
+
+
+def test_stale_frame_meta_cache_is_served_on_failure(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    provider = _frame_meta_provider(ttl=None)
+    retry = resilience.RetryConfig(attempts=1, base_delay=0.0, jitter=0.0)
+
+    provider.fetch(("k",), lambda: (pd.DataFrame({"a": [1]}), {"count": 3}))
+
+    def boom() -> tuple[pd.DataFrame, dict]:
+        raise RuntimeError("provider down")
+
+    with caplog.at_level("WARNING", logger="screener.providers"):
+        frame, meta = provider.fetch(("k",), boom, fallback=None, retry=retry)
+
+    assert meta == {"count": 3}
+    assert frame["a"].tolist() == [1]
+    assert "Serving stale provider_frame_meta cache data" in caplog.text
+
+
 def test_fake_provider_runs_fetch_without_cache():
     fake = FakeProvider()
     calls = {"n": 0}

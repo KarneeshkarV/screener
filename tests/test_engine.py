@@ -8,14 +8,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from screener.backtester.core import simulate_ticker
-from screener.backtester.costs import FlatCommission
+from tests.backtest_helpers import simulate_single_ticker
 from screener.backtester.historical import run_backtest
 from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.metrics import _exposure, compute_metrics
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.pine import parse
-from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.backtester.portfolio import build_equity_curve
 
 from tests.conftest import StubPriceFetcher, make_bars
 
@@ -108,7 +107,7 @@ def test_exposure_difference_array_matches_inclusive_trade_masks():
 def test_entry_fills_next_day_open():
     bars = make_bars(n=10)
     # signal on bar index 3 → entry on bar 4
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=_cfg(hold=2))
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=_cfg(hold=2))
     assert outcome.trade is not None
     assert outcome.trade.entry_date == bars.index[4].date()
     assert outcome.trade.entry_price == pytest.approx(float(bars.iloc[4]["open"]))
@@ -116,7 +115,7 @@ def test_entry_fills_next_day_open():
 
 def test_no_post_signal_bar_emits_warning_and_no_trade():
     bars = make_bars(n=5)
-    outcome = simulate_ticker(bars, signal_idx=4, cfg=_cfg(hold=2))
+    outcome = simulate_single_ticker(bars, signal_idx=4, cfg=_cfg(hold=2))
     assert outcome.trade is None
     assert outcome.warning and "no post-signal" in outcome.warning
 
@@ -130,7 +129,7 @@ def test_stop_loss_triggers_from_low():
         },
     )
     cfg = _cfg(hold=10, stop_loss=0.05)  # 5% stop → stop_price = 95.0
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "stop"
     expected_stop = 100.0 * (1 - 0.05)
@@ -147,7 +146,7 @@ def test_take_profit_triggers_from_high():
         },
     )
     cfg = _cfg(hold=10, take_profit=0.10)
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "target"
     assert outcome.trade.exit_price == pytest.approx(100.0 * 1.10)
@@ -162,7 +161,7 @@ def test_same_bar_stop_and_target_stop_wins():
         },
     )
     cfg = _cfg(hold=10, stop_loss=0.05, take_profit=0.10)
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "stop"
 
@@ -180,7 +179,7 @@ def test_same_bar_trail_and_target_trail_wins():
         },
     )
     cfg = _cfg(hold=10, trailing_stop=0.10, take_profit=0.10)
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "trail"
     assert outcome.trade.exit_price == pytest.approx(109.0 * 0.9)
@@ -197,7 +196,7 @@ def test_trailing_stop_tracks_peak():
         },
     )
     cfg = _cfg(hold=10, trailing_stop=0.10)
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "trail"
     assert outcome.trade.exit_price == pytest.approx(120.0 * 0.9)
@@ -215,7 +214,7 @@ def test_exit_expression_triggers_at_close():
         float(bars.iat[7, bars.columns.get_loc("open")]) - 2.0
     )
     cfg = _cfg(hold=20)
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg, exit_ast=exit_ast)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg, exit_ast=exit_ast)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "exit_expr"
     assert outcome.trade.exit_date == bars.index[7].date()
@@ -225,7 +224,7 @@ def test_exit_expression_triggers_at_close():
 def test_time_exit_after_N_bars():
     bars = make_bars(n=20)
     cfg = _cfg(hold=5)
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=cfg)
+    outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "time"
     # entry at bar 4, hold=5 → exit at close of bar 4+5=9
@@ -238,8 +237,8 @@ def test_time_exit_after_N_bars():
 def test_slippage_reduces_return_vs_zero_slip():
     bars = make_bars(n=20)
     # find a reliable entry bar and run with 0 and 50 bps slip
-    o0 = simulate_ticker(bars, signal_idx=3, cfg=_cfg(hold=5, slippage_bps=0.0))
-    o1 = simulate_ticker(bars, signal_idx=3, cfg=_cfg(hold=5, slippage_bps=50.0))
+    o0 = simulate_single_ticker(bars, signal_idx=3, cfg=_cfg(hold=5, slippage_bps=0.0))
+    o1 = simulate_single_ticker(bars, signal_idx=3, cfg=_cfg(hold=5, slippage_bps=50.0))
     assert o0.trade is not None and o1.trade is not None
     # slipped entry > zero-slip entry and slipped exit < zero-slip exit
     assert o1.trade.entry_price > o0.trade.entry_price
@@ -248,23 +247,16 @@ def test_slippage_reduces_return_vs_zero_slip():
 
 def test_commission_reduces_realized_return():
     bars = make_bars(n=20, drift=0.2, seed=7)
-    portfolio_a = Portfolio(100_000, slot_count=1)
-    portfolio_a.assign("AAA", 1, bars.index[3].date())
-    outcome = simulate_ticker(bars, signal_idx=3, cfg=_cfg(hold=5))
-    assert outcome.trade is not None
-    portfolio_a.open("AAA", outcome.trade.entry_date, outcome.trade.entry_price)
-    trade_a = portfolio_a.close(
-        "AAA", outcome.trade.exit_date, outcome.trade.exit_price, "time"
+    zero_commission = simulate_single_ticker(
+        bars, signal_idx=3, cfg=_cfg(hold=5, commission_bps=0.0)
+    )
+    commission = simulate_single_ticker(
+        bars, signal_idx=3, cfg=_cfg(hold=5, commission_bps=50.0)
     )
 
-    portfolio_b = Portfolio(100_000, slot_count=1, cost_model=FlatCommission(bps=50.0))
-    portfolio_b.assign("AAA", 1, bars.index[3].date())
-    portfolio_b.open("AAA", outcome.trade.entry_date, outcome.trade.entry_price)
-    trade_b = portfolio_b.close(
-        "AAA", outcome.trade.exit_date, outcome.trade.exit_price, "time"
-    )
-
-    assert trade_b.pnl < trade_a.pnl
+    assert zero_commission.trade is not None
+    assert commission.trade is not None
+    assert commission.trade.pnl < zero_commission.trade.pnl
 
 
 def test_run_backtest_rs_breakout_us_selects_relative_strength_breakout():
@@ -430,6 +422,34 @@ def test_rolling_backtest_refills_freed_slot_from_same_day_signal(stub_fetcher_f
     assert by_ticker["RESERVE"].entry_date == reserve.index[8].date()
 
 
+def test_historical_backtest_force_closes_entry_on_last_available_bar(
+    stub_fetcher_factory,
+):
+    bars = make_bars(n=7, seed=10, open_base=100.0)
+    spy = make_bars(n=7, seed=11, open_base=400.0)
+    bars["entry_signal"] = 0.0
+    bars.iat[5, bars.columns.get_loc("entry_signal")] = 1.0
+    fetcher = stub_fetcher_factory({"AAA": bars, "SPY": spy})
+
+    result = run_backtest(
+        _cfg(
+            as_of=bars.index[5].date(),
+            hold=20,
+            top=1,
+            entry_expr="entry_signal > 0",
+            tickers=("AAA",),
+        ),
+        fetcher,
+    )
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.entry_date == bars.index[6].date()
+    assert trade.exit_date == bars.index[6].date()
+    assert trade.exit_reason == "eod"
+    assert result.equity_curve.index[-1].date() == bars.index[6].date()
+
+
 def test_rolling_backtest_force_closes_entry_on_window_end(stub_fetcher_factory):
     bars = make_bars(n=12, seed=11, open_base=100.0)
     spy = make_bars(n=12, seed=12, open_base=400.0)
@@ -591,18 +611,16 @@ def _simulate_and_record(
     initial: float,
     slot: int,
 ) -> Trade:
-    """Helper: simulate one ticker and push into a fresh 1-slot portfolio."""
-    outcome = simulate_ticker(bars, signal_idx=as_of_idx, cfg=_cfg(hold=hold))
-    assert outcome.trade is not None
-    p = Portfolio(initial, slot_count=slot)
-    p.assign(ticker, rank, bars.index[as_of_idx].date())
-    p.open(ticker, outcome.trade.entry_date, outcome.trade.entry_price)
-    return p.close(
-        ticker,
-        outcome.trade.exit_date,
-        outcome.trade.exit_price,
-        outcome.trade.exit_reason,
+    """Run one ticker through a fresh production portfolio slot."""
+    outcome = simulate_single_ticker(
+        bars,
+        signal_idx=as_of_idx,
+        cfg=_cfg(hold=hold, initial_capital=initial, top=slot),
+        ticker=ticker,
+        rank=rank,
     )
+    assert outcome.trade is not None
+    return outcome.trade
 
 
 # ── selection + ranking ──────────────────────────────────────────────

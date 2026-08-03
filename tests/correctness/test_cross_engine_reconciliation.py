@@ -77,7 +77,7 @@ import pytest
 # Guard: skip the entire module if vectorbt is not installed.
 pytest.importorskip("vectorbt")
 
-from screener.backtester.core import simulate_ticker
+from tests.backtest_helpers import simulate_single_ticker
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
 
@@ -427,11 +427,11 @@ def test_terminal_eod_trim_is_zero() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_simulate_ticker_matches_vbt_per_trade() -> None:
-    """For each vbt trade, simulate_ticker with the same signal index reproduces
+def test_simulate_single_ticker_matches_vbt_per_trade() -> None:
+    """For each vbt trade, simulate_single_ticker with the same signal index reproduces
     an identical entry/exit price to rtol=1e-9.
 
-    This test drives the lowest-level event-engine primitive (simulate_ticker)
+    This test drives the lowest-level event-engine primitive (simulate_single_ticker)
     independently of run_backtest's portfolio accounting, ensuring the match is
     not a coincidence of equity-curve construction.
     """
@@ -454,8 +454,12 @@ def test_simulate_ticker_matches_vbt_per_trade() -> None:
 
     for i, (sig_idx, vb) in enumerate(zip(signal_indices, vbt_trades)):
         vb_entry_date, _vb_exit_date, vb_entry_px, vb_exit_px = vb
-        outcome = simulate_ticker(bars, signal_idx=sig_idx, cfg=cfg, exit_ast=exit_ast)
-        assert outcome.trade is not None, f"Trade {i}: simulate_ticker returned None"
+        outcome = simulate_single_ticker(
+            bars, signal_idx=sig_idx, cfg=cfg, exit_ast=exit_ast
+        )
+        assert outcome.trade is not None, (
+            f"Trade {i}: simulate_single_ticker returned None"
+        )
         tr = outcome.trade
 
         # Entry date: both engines fill at signal+1 open.

@@ -22,6 +22,8 @@ from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from screener.backtester.costs import bps_fraction
+
 
 Side = Literal["buy", "sell"]
 
@@ -74,8 +76,21 @@ def apply_slippage(
     return reference_price * (1.0 - frac)
 
 
-def _bps_fraction(bps: float) -> float:
-    return bps / 10_000.0
+def fixed_bps_fill(reference_price: float, side: Side, bps: float) -> float:
+    """Apply the canonical fixed-bps slippage model to one reference price."""
+    return apply_slippage(FixedBpsSlippage(bps=bps), reference_price, side)
+
+
+def fixed_bps_round_trip(
+    entry_reference: float,
+    exit_reference: float,
+    slippage_bps: float,
+) -> tuple[float, float]:
+    """Return adverse buy and sell fills for a fixed-bps round trip."""
+    return (
+        fixed_bps_fill(entry_reference, "buy", slippage_bps),
+        fixed_bps_fill(exit_reference, "sell", slippage_bps),
+    )
 
 
 class FixedBpsSlippage(BaseModel):
@@ -91,7 +106,7 @@ class FixedBpsSlippage(BaseModel):
         sigma_daily: float,
         half_spread: float = 0.0,
     ) -> float:
-        return _bps_fraction(self.bps)
+        return bps_fraction(self.bps)
 
 
 class HalfSpreadSlippage(FixedBpsSlippage):
@@ -107,7 +122,7 @@ class HalfSpreadSlippage(FixedBpsSlippage):
         sigma_daily: float,
         half_spread: float = 0.0,
     ) -> float:
-        return _bps_fraction(self.half_spread_bps)
+        return bps_fraction(self.half_spread_bps)
 
 
 class EstimatedHalfSpreadSlippage(BaseModel):

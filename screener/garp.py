@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Protocol, cast
 
 import pandas as pd
@@ -146,45 +147,133 @@ def _coerce_garp_fundamentals(
         return None
 
 
+class MissingMetricPolicy(str, Enum):
+    """What an unknown (``None``) fundamental means to the GARP predicate.
+
+    The two consumers disagree on purpose, so the policy is an argument rather
+    than a hardcoded choice: the GARP *screen* is a gate and refuses to buy a
+    claim it cannot evidence, while the conviction card is a *score* over the
+    evidence that does exist and must not punish a missing provider field.
+    """
+
+    FAILS = "fails"  # unknown metric is a failed check (the GARP screen gate)
+    SKIPPED = "skipped"  # unknown metric leaves the denominator (conviction)
+
+
+# One tri-state criterion: label, and pass/fail/unknown.
+GarpCheck = tuple[str, bool | None]
+
+
+@dataclass(frozen=True)
+class GarpEvaluation:
+    """The GARP criteria evaluated for one row under one missing-value policy."""
+
+    checks: tuple[GarpCheck, ...]
+    policy: MissingMetricPolicy
+
+    @property
+    def evaluated(self) -> tuple[tuple[str, bool], ...]:
+        """Checks that count, with the policy applied to the unknown ones."""
+        if self.policy is MissingMetricPolicy.SKIPPED:
+            return tuple(
+                (label, bool(passed))
+                for label, passed in self.checks
+                if passed is not None
+            )
+        return tuple((label, passed is True) for label, passed in self.checks)
+
+    @property
+    def passed(self) -> tuple[str, ...]:
+        return tuple(label for label, passed in self.evaluated if passed)
+
+    @property
+    def failed(self) -> tuple[str, ...]:
+        return tuple(label for label, passed in self.evaluated if not passed)
+
+    @property
+    def passed_fraction(self) -> float | None:
+        """Share of counted checks that passed, or ``None`` when none count."""
+        evaluated = self.evaluated
+        if not evaluated:
+            return None
+        return len(self.passed) / len(evaluated)
+
+    @property
+    def passes(self) -> bool:
+        """All counted checks passed (and at least one check counted)."""
+        return self.passed_fraction == 1.0
+
+
+def _metric(row: GarpFundamentals | Mapping[str, object], key: str) -> float | None:
+    value = row[key] if isinstance(row, GarpFundamentals) else row.get(key)
+    return to_number(value)
+
+
+def evaluate_garp(
+    row: GarpFundamentals | Mapping[str, object],
+    thresholds: GarpThresholds,
+    *,
+    policy: MissingMetricPolicy,
+    include_size_floors: bool = True,
+) -> GarpEvaluation:
+    """Evaluate the GARP criteria for ``row`` against ``thresholds``.
+
+    ``include_size_floors`` adds the absolute market-cap and sales minimums.
+    They gate the screen's investable universe but say nothing about a single
+    name's quality, so the conviction card leaves them out.
+    """
+
+    def check(key: str, predicate: Callable[[float], bool]) -> bool | None:
+        value = _metric(row, key)
+        if value is None:
+            return None
+        return bool(predicate(value))
+
+    checks: list[GarpCheck] = []
+    if include_size_floors:
+        checks.append(
+            ("market cap", check("market_cap", lambda v: v > thresholds.market_cap_min))
+        )
+        checks.append(("sales", check("sales", lambda v: v > thresholds.sales_min)))
+    checks.extend(
+        [
+            ("PEG", check("peg", lambda v: 0 < v < thresholds.peg_max)),
+            (
+                "sales5y",
+                check("sales_growth_5y", lambda v: v > thresholds.sales_growth_5y_min),
+            ),
+            (
+                "opg",
+                check(
+                    "operating_profit_growth",
+                    lambda v: v > thresholds.operating_profit_growth_min,
+                ),
+            ),
+            (
+                "eps5y",
+                check("eps_growth_5y", lambda v: v > thresholds.eps_growth_5y_min),
+            ),
+            ("roe5y", check("roe_5y", lambda v: v > thresholds.roe_5y_min)),
+            (
+                "roce/roic",
+                check("roce_or_roic", lambda v: v > thresholds.roce_or_roic_min),
+            ),
+            ("qtr-profit", check("quarterly_profit_growth", lambda v: v > 0)),
+        ]
+    )
+    return GarpEvaluation(checks=tuple(checks), policy=policy)
+
+
 def _passes_garp(
     row: GarpFundamentals | Mapping[str, object], thresholds: GarpThresholds
 ) -> bool:
+    """The screen's gate: every criterion must pass, and unknown is not a pass."""
     fundamentals = _coerce_garp_fundamentals(row)
     if fundamentals is None:
         return False
-    market_cap = fundamentals.market_cap
-    sales = fundamentals.sales
-    peg = fundamentals.peg
-    sales_growth = fundamentals.sales_growth_5y
-    operating_growth = fundamentals.operating_profit_growth
-    eps_growth = fundamentals.eps_growth_5y
-    roe = fundamentals.roe_5y
-    capital_return = fundamentals.roce_or_roic
-    quarterly_growth = fundamentals.quarterly_profit_growth
-    required = (
-        market_cap,
-        sales,
-        peg,
-        sales_growth,
-        operating_growth,
-        eps_growth,
-        roe,
-        capital_return,
-        quarterly_growth,
-    )
-    if any(value is None for value in required):
-        return False
-    return (
-        market_cap > thresholds.market_cap_min
-        and sales > thresholds.sales_min
-        and 0 < peg < thresholds.peg_max
-        and sales_growth > thresholds.sales_growth_5y_min
-        and operating_growth > thresholds.operating_profit_growth_min
-        and eps_growth > thresholds.eps_growth_5y_min
-        and roe > thresholds.roe_5y_min
-        and capital_return > thresholds.roce_or_roic_min
-        and quarterly_growth > 0
-    )
+    return evaluate_garp(
+        fundamentals, thresholds, policy=MissingMetricPolicy.FAILS
+    ).passes
 
 
 def add_garp_score(df: pd.DataFrame) -> pd.DataFrame:

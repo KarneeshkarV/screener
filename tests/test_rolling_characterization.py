@@ -23,12 +23,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from screener.backtester.book import BOOK_CONFIG_FIELDS
 from screener.backtester.models import BacktestConfig
+from screener.backtester.price_panel import PRICE_PANEL_CONFIG_FIELDS
 from screener.backtester.rolling_simulation import (
+    _preparation_fingerprint,
     prepare_rolling_backtest,
     run_prepared_rolling_backtest,
     run_rolling_backtest,
 )
+from screener.backtester.signal_panel import SIGNAL_PANEL_CONFIG_FIELDS
 from tests.conftest import StubPriceFetcher
 
 _START = "2024-01-01"
@@ -202,3 +206,133 @@ def test_prepared_backtest_rejects_signal_changes():
 
     with pytest.raises(ValueError, match="prepared-data fields"):
         run_prepared_rolling_backtest(prepared, changed)
+
+
+# ---------------------------------------------------------------------------
+# The reuse fingerprint must not have a silent failure mode.
+# ---------------------------------------------------------------------------
+
+# The hand-maintained allowlist this stage deleted, kept verbatim so the test
+# below can show what it would have done with a config field nobody added to
+# it. Do not extend it: it exists only as the "before" side of the comparison.
+_LEGACY_PREPARATION_CONFIG_FIELDS = {
+    "market",
+    "as_of",
+    "benchmark",
+    "tickers",
+    "universe_file",
+    "membership_added",
+    "membership_windows",
+    "dynamic_universe_size",
+    "dynamic_universe_lookback",
+    "dynamic_universe_rebalance",
+    "max_universe",
+    "entry_expr",
+    "exit_expr",
+    "strategy_name",
+    "regime_filter",
+    "earnings_blackout_days",
+    "fundamentals_provider",
+    "fundamental_fields",
+    "fundamental_lag_days",
+    "sector_neutral",
+    "interval",
+    "price_adjustment",
+    "min_price",
+    "min_avg_dollar_volume",
+    "avg_dollar_volume_window",
+}
+
+
+class _TruncatingConfig(BacktestConfig):
+    """A config carrying a bars-affecting knob added after the allowlist was written.
+
+    ``truncate_leading_bars`` stands in for the next data setting somebody adds
+    (an extended-hours toggle, a stale-bar policy, another adjustment regime):
+    it changes which bars the fetcher returns, exactly as ``interval`` and
+    ``price_adjustment`` already do, and nobody remembered to register it
+    anywhere.
+    """
+
+    truncate_leading_bars: int = 0
+
+
+class _TruncatingStubFetcher:
+    """Stub fetcher configured from the config, as the real fetchers are."""
+
+    def __init__(self, data: dict[str, pd.DataFrame], cfg: _TruncatingConfig) -> None:
+        self._inner = StubPriceFetcher(data)
+        self._truncate = cfg.truncate_leading_bars
+
+    def fetch(self, tickers, start, end) -> dict[str, pd.DataFrame]:
+        panel = self._inner.fetch(tickers, start, end)
+        return {t: frame.iloc[self._truncate :] for t, frame in panel.items()}
+
+
+def _truncating_cfg(truncate_leading_bars: int) -> _TruncatingConfig:
+    return _TruncatingConfig(
+        **_cfg().model_dump(exclude={"slippage_model"}),
+        truncate_leading_bars=truncate_leading_bars,
+    )
+
+
+def test_unregistered_bars_affecting_field_invalidates_reuse():
+    """A config field the fingerprint was never told about must still block reuse.
+
+    This is the hole the derived fingerprint closes. Under the old allowlist the
+    sweep would have reused panels built from different bars and reported wrong
+    numbers with no error.
+    """
+    base = _truncating_cfg(0)
+    changed = base.model_copy(update={"truncate_leading_bars": 5})
+    window = {"start_date": _INDEX[0].date(), "end_date": _INDEX[-1].date()}
+
+    prepared = prepare_rolling_backtest(
+        base, _TruncatingStubFetcher(_DATA, base), **window
+    )
+    rebuilt = prepare_rolling_backtest(
+        changed, _TruncatingStubFetcher(_DATA, changed), **window
+    )
+
+    # The field really does change the bars, so reusing ``prepared`` for
+    # ``changed`` would be a stale-panel bug and not merely a missed cache hit.
+    assert not prepared.bars_by_tv["AAA"].equals(rebuilt.bars_by_tv["AAA"])
+
+    # The deleted allowlist could not see the field, so it declared the two
+    # configs interchangeable.
+    assert "truncate_leading_bars" not in _LEGACY_PREPARATION_CONFIG_FIELDS
+    assert base.model_dump(
+        mode="json", include=_LEGACY_PREPARATION_CONFIG_FIELDS
+    ) == changed.model_dump(mode="json", include=_LEGACY_PREPARATION_CONFIG_FIELDS)
+
+    # The derived fingerprint claims every field no module declared as
+    # runtime-only, so the unregistered field lands in the key by default.
+    assert "truncate_leading_bars" in prepared.config_fingerprint
+    assert not prepared.supports(changed)
+    with pytest.raises(ValueError, match="prepared-data fields"):
+        run_prepared_rolling_backtest(prepared, changed)
+
+    # Rebuilt panels still run, so the guard costs a rebuild, not a failure.
+    assert run_prepared_rolling_backtest(rebuilt, changed).trades
+
+
+def test_every_config_field_is_claimed_by_a_knowledge_module():
+    """Each config field belongs to a panel or to the book; nothing is unowned.
+
+    An unowned field is not a correctness bug (the fingerprint treats unknown
+    fields as panel-affecting), but it does mean a sweep silently stops reusing
+    prepared data, so make the classification explicit instead.
+    """
+    claimed = (
+        PRICE_PANEL_CONFIG_FIELDS | SIGNAL_PANEL_CONFIG_FIELDS | BOOK_CONFIG_FIELDS
+    )
+    assert set(BacktestConfig.model_fields) == claimed
+
+
+def test_book_fields_are_the_only_ones_left_out_of_the_reuse_key():
+    """Runtime-only settings stay out of the key; everything else stays in."""
+    fingerprint = _preparation_fingerprint(_cfg())
+    panel_fields = PRICE_PANEL_CONFIG_FIELDS | SIGNAL_PANEL_CONFIG_FIELDS
+
+    assert panel_fields <= set(fingerprint)
+    assert set(fingerprint) & (BOOK_CONFIG_FIELDS - panel_fields) == set()

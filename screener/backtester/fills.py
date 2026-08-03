@@ -31,6 +31,7 @@ from typing import Optional, Protocol
 import numpy as np
 import pandas as pd
 
+from screener.backtester.costs import CostModel, bps_fraction, cost_model_from_config
 from screener.backtester.models import BacktestConfig
 from screener.backtester.slippage import Side, apply_slippage, needs_liquidity_inputs
 
@@ -80,7 +81,7 @@ def _resolve_entry_fill(
             signal_close = float(arrays.close_arr[signal_idx])
         else:
             signal_close = float(bars.iloc[signal_idx]["close"])
-        limit_price = signal_close * (1.0 - cfg.entry_limit_bps / 10_000.0)
+        limit_price = signal_close * (1.0 - bps_fraction(cfg.entry_limit_bps))
         if arrays is not None:
             for i in range(signal_idx + 1, len(bars)):
                 if float(arrays.low_arr[i]) <= limit_price:
@@ -120,8 +121,16 @@ class FillModel:
     for every fill of the run.
     """
 
-    def __init__(self, cfg: BacktestConfig) -> None:
+    def __init__(
+        self,
+        cfg: BacktestConfig,
+        *,
+        cost_model: CostModel | None = None,
+    ) -> None:
         self.cfg = cfg
+        self.cost_model = (
+            cost_model if cost_model is not None else cost_model_from_config(cfg)
+        )
 
     @property
     def needs_liquidity_inputs(self) -> bool:
@@ -173,20 +182,57 @@ class FillModel:
         reference before returning. ``arrays``, when given, supplies the cached
         NumPy OHLC columns to read prices from instead of ``bars.iloc``.
         """
+        _entry_idx, fill, _shares, quote_warn = self.entry_quote(
+            bars,
+            signal_idx,
+            budget=budget,
+            adv_shares=adv_shares,
+            sigma_daily=sigma_daily,
+            half_spread=half_spread,
+            arrays=arrays,
+        )
+        return _entry_idx, fill, quote_warn
+
+    def entry_quote(
+        self,
+        bars: pd.DataFrame,
+        signal_idx: int,
+        *,
+        budget: Optional[float] = None,
+        adv_shares: float = 0.0,
+        sigma_daily: float = 0.0,
+        half_spread: float = 0.0,
+        arrays: Optional[PriceArrays] = None,
+    ) -> tuple[Optional[int], Optional[float], float, Optional[str]]:
+        """Return entry index, slipped fill, pre-impact shares, and warning.
+
+        Shares are deliberately sized from the pre-slippage reference and the
+        configured buy-side cost model. This breaks the impact/size cycle at a
+        documented, deterministic point. For liquidity-sensitive slippage, the
+        resulting count is carried into ``Portfolio.open`` unchanged; it is not
+        recomputed from ``fill``.
+        """
         entry_idx, entry_ref, warn = _resolve_entry_fill(
             bars, signal_idx, self.cfg, arrays
         )
         if entry_idx is None or entry_ref is None:
-            return None, None, warn
-        # Entry price and acquired shares are circular when impact depends on
-        # order size. Use the pre-slippage reference (including commission) as
-        # the deterministic sizing convention; Portfolio.open then computes
-        # the actual shares from the impacted fill without a hidden iteration.
+            return None, None, 0.0, warn
         if budget is None:
             budget = self.cfg.initial_capital / max(self.cfg.top, 1)
-        commission = self.cfg.commission_bps / 10_000.0
-        gross_reference = entry_ref * (1.0 + commission)
+        commission = self.cost_model.side_cost_fraction("buy", budget)
+        gross_reference = entry_ref * (1.0 + max(float(commission), 0.0))
         shares = budget / gross_reference if gross_reference > 0.0 else 0.0
+        # The fraction API is necessarily approximate for a capped schedule.
+        # Reprice fees once at the fixed reference so the quoted pre-impact
+        # order respects the budget. This is not a joint impact/size solve.
+        breakdown_fn = getattr(self.cost_model, "side_cost_breakdown", None)
+        if callable(breakdown_fn) and shares > 0.0 and entry_ref > 0.0:
+            fees = sum(
+                max(float(amount), 0.0)
+                for amount in breakdown_fn("buy", shares * entry_ref, shares).values()
+            )
+            if shares * entry_ref + fees > budget:
+                shares = max((budget - fees) / entry_ref, 0.0)
         fill = self._apply_slip(
             entry_ref,
             "buy",
@@ -195,7 +241,7 @@ class FillModel:
             sigma_daily=sigma_daily,
             half_spread=half_spread,
         )
-        return entry_idx, fill, None
+        return entry_idx, fill, shares, None
 
     # ── exit side ────────────────────────────────────────────────────
     def exit_price(

@@ -11,7 +11,7 @@ import pandas as pd
 import plotly.express as px
 from plotly.offline import get_plotlyjs
 
-from screener.backtester.dashboard import _figure_html, _table_html
+from screener.backtester.dashboard import figure_html, table_html
 from screener.display import COLUMN_LABELS
 from screener.html_report import html_page
 
@@ -111,7 +111,7 @@ def render_screen_report(
         sections.append(
             '<section class="panel" id="setup-score-distribution">'
             "<h2>Setup Score Distribution</h2>"
-            + _figure_html(fig, "screen-setup-score-distribution")
+            + figure_html(fig, "screen-setup-score-distribution")
             + "</section>"
         )
     if not df.empty and "change" in df.columns:
@@ -128,7 +128,7 @@ def render_screen_report(
             sections.append(
                 '<section class="panel" id="top-change">'
                 "<h2>Top Change</h2>"
-                + _figure_html(fig, "screen-top-change")
+                + figure_html(fig, "screen-top-change")
                 + "</section>"
             )
 
@@ -244,10 +244,10 @@ def render_screen_report(
   <main>
     <section class="metrics" id="screen-summary">{_summary_cards(market=market, criteria_name=criteria_name, total=total, shown=len(df), added=added, removed=removed)}</section>
     {"".join(sections)}
-    <section class="panel" id="numeric-summary"><h2>Important Metrics</h2><div class="table-wrap">{_table_html(numeric_summary, "screen-numeric-summary")}</div></section>
+    <section class="panel" id="numeric-summary"><h2>Important Metrics</h2><div class="table-wrap">{table_html(numeric_summary, "screen-numeric-summary")}</div></section>
     {_ticker_list("Added Since Previous Run", added, "added-tickers")}
     {_ticker_list("Removed Since Previous Run", removed, "removed-tickers")}
-    <section class="panel wide" id="screen-results"><h2>Results</h2><div class="table-wrap">{_table_html(df, "screen-results-table", limit=500)}</div></section>
+    <section class="panel wide" id="screen-results"><h2>Results</h2><div class="table-wrap">{table_html(df, "screen-results-table", limit=500)}</div></section>
     <section class="panel wide" id="report-notes"><h2>Notes</h2><ul class="notes">{note_items}</ul></section>
   </main>""",
         head_extra=f"<script>{plotly_js}</script>",

@@ -3,16 +3,20 @@ from __future__ import annotations
 from datetime import date
 import json
 
+import numpy as np
 import pandas as pd
+import pytest
 from click.testing import CliRunner
 
 from screener.cli import cli
 from screener.commands import rs_breakout as rs_breakout_cli
+from screener.relative_strength import relative_strength_ratio
 from screener.rs_breakout import (
+    build_signal_frame,
     delivery_lookup,
     evaluate_symbol,
+    normalize_bars,
     previous_completed_week_high,
-    relative_strength_55,
     scan_rs_breakouts,
     supertrend,
     write_json,
@@ -71,8 +75,8 @@ def test_relative_strength_positive_and_negative():
     weak = pd.Series(100.0, index=idx)
     weak.iloc[-1] = 105.0
 
-    assert relative_strength_55(strong, benchmark).iloc[-1] > 0
-    assert relative_strength_55(weak, benchmark).iloc[-1] < 0
+    assert relative_strength_ratio(strong, benchmark).iloc[-1] > 0
+    assert relative_strength_ratio(weak, benchmark).iloc[-1] < 0
 
 
 def test_supertrend_bullish_and_bearish_states():
@@ -223,3 +227,92 @@ def test_write_json_serializes_result_dates(tmp_path) -> None:
     payload = json.loads(path.read_text())
     assert payload["as_of"] == "2026-04-30"
     assert payload["full"][0]["date"] == "2026-04-30"
+
+
+def _equivalence_dataset() -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
+    """Noisy bars, benchmark and a per-bar delivery panel for one symbol.
+
+    Deliberately choppy, with occasional volume spikes, so the entry rule flips
+    on and off inside the compared window: a monotone trend would let both
+    paths agree by always saying yes.
+    """
+    rng = np.random.default_rng(11)
+    periods = 220
+    index = pd.bdate_range(end="2026-04-30", periods=periods)
+    close = pd.Series(
+        100.0 * np.cumprod(1.0 + rng.normal(0.0015, 0.02, periods)),
+        index=index,
+        dtype=float,
+    )
+    openp = close.shift(1).fillna(100.0)
+    volume = rng.uniform(80_000.0, 200_000.0, periods)
+    volume = np.where(rng.random(periods) < 0.35, volume * 2.5, volume)
+    bars = pd.DataFrame(
+        {
+            "open": openp,
+            "high": pd.concat([openp, close], axis=1).max(axis=1) * 1.01,
+            "low": pd.concat([openp, close], axis=1).min(axis=1) * 0.99,
+            "close": close,
+            "volume": pd.Series(volume, index=index, dtype=float),
+        }
+    )
+    benchmark_close = pd.Series(
+        100.0 * np.cumprod(1.0 + rng.normal(0.0005, 0.01, periods)),
+        index=index,
+        dtype=float,
+    )
+    delivery = pd.DataFrame(
+        {
+            "SYMBOL": ["AAA"] * periods,
+            "date": index,
+            "DELIV_PER": rng.uniform(20.0, 80.0, periods),
+        }
+    )
+    return bars, benchmark_close, delivery
+
+
+@pytest.mark.parametrize("require_delivery", [True, False])
+def test_scalar_scan_and_vectorized_backtest_entries_agree(require_delivery: bool):
+    """The live scan's verdict must equal the backtest plugin's entry flag.
+
+    ``evaluate_symbol`` (the scan, one bar at a time) and ``build_signal_frame``
+    (the backtest plugin, the whole history at once) now share one expression of
+    the rule. Nothing pinned them equivalent while it was written twice, so walk
+    the last 120 bars and require the same answer on every one, for both the
+    India variant (delivery increase required) and the US variant (not).
+    """
+    bars, benchmark_close, delivery = _equivalence_dataset()
+    as_of = bars.index[-1].date()
+    vectorized = build_signal_frame(
+        normalize_bars(bars, as_of),
+        benchmark_close,
+        delivery_panel=delivery,
+        symbol="AAA",
+        require_delivery=require_delivery,
+    )
+
+    entries: list[bool] = []
+    for timestamp in bars.index[-120:]:
+        evaluated = evaluate_symbol(
+            "AAA",
+            bars.loc[bars.index <= timestamp],
+            benchmark_close.loc[benchmark_close.index <= timestamp],
+            timestamp.date(),
+            delivery=delivery_lookup(delivery[delivery["date"] <= timestamp]).get(
+                "AAA"
+            ),
+        )
+        if evaluated is None:
+            # No row at all means the base filters failed, which is the scan's
+            # way of saying "no entry".
+            scalar_entry = False
+        else:
+            _row, price_pass, delivery_pass = evaluated
+            scalar_entry = price_pass and (delivery_pass or not require_delivery)
+        assert scalar_entry == bool(vectorized.loc[timestamp, "rs_breakout_entry"]), (
+            f"scalar/vectorized RS-breakout entry disagree on {timestamp.date()}"
+        )
+        entries.append(scalar_entry)
+
+    # Guard the guard: an all-False window would agree vacuously.
+    assert 0 < sum(entries) < len(entries)

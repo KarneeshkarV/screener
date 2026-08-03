@@ -7,11 +7,11 @@ import pandas as pd
 
 from screener.indicators.plugins.bollinger_bands import bollinger_bands as _bb
 from screener.strategies.spec import strategy
-from screener.strategies.trades import Trade, _walk
+from screener.strategies.trades import ResearchTrade, _walk
 
 
 @strategy("bb_breakout")
-def strat_bb_breakout(df: pd.DataFrame) -> list[Trade]:
+def strat_bb_breakout(df: pd.DataFrame) -> list[ResearchTrade]:
     close = df["close"].to_numpy(dtype=float)
     _, s, upper = _bb(close, 350, 2.5)
     cp = np.concatenate(([close[0]], close[:-1]))
