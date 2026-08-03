@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import pandas as pd
 
@@ -26,9 +26,9 @@ from screener.earnings_backtest.data import (
     load_universe,
 )
 from screener.earnings_backtest.earnings_dates import collect_earnings_events
-from screener.ledger import compute_event_trade_summary
 from screener.earnings_backtest.models import PeadTrade
 from screener.earnings_backtest.prepare import prepare_earnings_run
+from screener.ledger import compute_event_trade_summary
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +45,8 @@ def run_pead_backtest(
     cost_model: str = "flat",
     slippage_bps: float = 5.0,
     batch_size: int = 50,
-    tickers: Optional[list[str]] = None,
-    fetcher: Optional[PriceFetcher] = None,
+    tickers: list[str] | None = None,
+    fetcher: PriceFetcher | None = None,
     exit_mode: str = "fixed",
 ) -> list[PeadTrade]:
     """Run the PEAD backtest and return the trade ledger.
@@ -231,7 +231,7 @@ def _dynamic_trade(
     )
     ret_raw, ret_net, trade_fees = apply_round_trip_costs(entry_fill, exit_fill, costs)
     # Actual trading-day holding period: bars inclusive of entry and exit.
-    holding_days = int(len(bars[(bars.index >= entry_ts) & (bars.index <= exit_ts)]))
+    holding_days = len(bars[(bars.index >= entry_ts) & (bars.index <= exit_ts)])
     return PeadTrade(
         ticker=ticker,
         earnings_date=position["earnings_date"].date(),
@@ -273,7 +273,7 @@ def _simulate_dynamic_hold(
             continue
 
         group = group.sort_values("earnings_date")
-        position: Optional[dict[str, Any]] = None
+        position: dict[str, Any] | None = None
 
         for _, event in group.iterrows():
             ed = pd.Timestamp(event["earnings_date"]).normalize()
@@ -371,7 +371,7 @@ def surprise_quintiles(trades: list[PeadTrade]) -> dict[str, dict[str, float]]:
     out: dict[str, dict[str, float]] = {}
     for bin_id, grp in df.groupby("bin"):
         out[f"Q{int(cast(Any, bin_id)) + 1}"] = {
-            "trades": int(len(grp)),
+            "trades": len(grp),
             "avg_surprise_pct": round(float(grp["surprise"].mean()), 4),
             "avg_return_pct": round(float(grp["ret"].mean()), 4),
             "median_return_pct": round(float(grp["ret"].median()), 4),

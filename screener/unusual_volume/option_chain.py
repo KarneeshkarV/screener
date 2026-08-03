@@ -9,7 +9,6 @@ backtestable history accumulates over time.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Optional
 
 from screener.options.metrics import compute_chain_metrics
 
@@ -26,7 +25,7 @@ from .detector import Event
 EVENT_FIELDS = ("call_put_oi_ratio", "pcr")
 
 
-def _safe_ratio(num: float | None, denom: float | None) -> Optional[float]:
+def _safe_ratio(num: float | None, denom: float | None) -> float | None:
     if num is None or denom is None or denom == 0:
         return None
     return round(float(num) / float(denom), 4)
@@ -42,7 +41,7 @@ def overlay_option_chain(
 
     provider = NSELiveOptionsProvider(raw_fetcher=fetch_option_chain)
 
-    def _one(sym: str) -> tuple[str, Optional[dict]]:
+    def _one(sym: str) -> tuple[str, dict | None]:
         chain = provider.fetch_chain(sym, "india", refresh=refresh)
         if chain is None:
             return sym, None

@@ -6,13 +6,12 @@ import logging
 import random
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from threading import Lock
-from typing import Mapping, TypeVar, cast
+from typing import TypeVar, cast
 from urllib.error import HTTPError
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 LOG = logging.getLogger(__name__)
 T = TypeVar("T")

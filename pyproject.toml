@@ -22,11 +22,6 @@ dependencies = [
     "pydantic>=2.13.4",
 ]
 
-[project.optional-dependencies]
-vectorbt = [
-    "vectorbt[rust]>=1.0,<2",
-]
-
 [project.scripts]
 screener = "screener.cli:cli"
 
@@ -121,7 +116,6 @@ module = [
     "openscreener.*",
     "plotly.*",
     "tradingview_screener.*",
-    "vectorbt.*",
     "yfinance.*",
 ]
 ignore_missing_imports = true

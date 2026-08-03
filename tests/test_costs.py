@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from screener.backtester.cli_common import build_slippage_model
 from screener.backtester import core as backtester_core
+from screener.backtester.cli_common import build_slippage_model
 from screener.backtester.core import _passes_entry_filters
 from screener.backtester.costs import (
     FlatCommission,

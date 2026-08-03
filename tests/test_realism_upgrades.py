@@ -19,7 +19,6 @@ import pandas as pd
 import pytest
 
 from screener.backtester.data import _normalize_frame
-from tests.backtest_helpers import simulate_single_ticker
 from screener.backtester.fills import _resolve_stop_fill, _resolve_target_fill
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
@@ -31,7 +30,7 @@ from screener.backtester.slippage import (
     VolumeImpactSlippage,
     apply_slippage,
 )
-
+from tests.backtest_helpers import simulate_single_ticker
 from tests.conftest import make_bars
 
 

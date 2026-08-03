@@ -11,7 +11,7 @@ import os
 import pytest
 
 
-def pytest_collection_modifyitems(config, items):  # noqa: ANN001
+def pytest_collection_modifyitems(config, items):
     """Skip ``@pytest.mark.network`` tests unless explicitly opted in."""
     if os.environ.get("SCREENER_LIVE_TESTS") == "1":
         return

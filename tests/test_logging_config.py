@@ -138,9 +138,8 @@ def test_removes_its_filter_afterwards(yfinance_logger: logging.Logger) -> None:
 
 
 def test_removes_its_filter_on_exception(yfinance_logger: logging.Logger) -> None:
-    with pytest.raises(RuntimeError):
-        with suppressed_yfinance_errors():
-            raise RuntimeError("download blew up")
+    with pytest.raises(RuntimeError), suppressed_yfinance_errors():
+        raise RuntimeError("download blew up")
     assert yfinance_logger.filters == []
 
 
@@ -210,8 +209,7 @@ def test_counts_are_not_lost_across_threads(
         for _ in range(200):
             yfinance_logger.error("possibly delisted")
 
-    with suppressed_yfinance_errors():
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(lambda _: emit(), range(8)))
+    with suppressed_yfinance_errors(), ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _: emit(), range(8)))
 
     assert "1600" in captured_root.stream.getvalue()

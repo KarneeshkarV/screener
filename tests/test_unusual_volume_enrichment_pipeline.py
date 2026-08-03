@@ -1,5 +1,5 @@
-from datetime import date
 import threading
+from datetime import date
 
 from screener import pledge
 from screener.unusual_volume import fii_dii, option_chain
@@ -60,7 +60,6 @@ def test_independent_microstructure_stages_run_concurrently(monkeypatch) -> None
 
     def fii_stage(events, snapshot_date, refresh=False):
         barrier.wait()
-        return None
 
     monkeypatch.setattr(option_chain, "overlay_option_chain", option_stage)
     monkeypatch.setattr(fii_dii, "overlay_fii_dii", fii_stage)

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import date
 
-from click.testing import CliRunner
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 
 from screener.cli import cli
 from screener.options import criteria as options_criteria

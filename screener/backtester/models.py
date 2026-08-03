@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal, Optional, TypeAlias, cast
+from typing import Any, Literal, TypeAlias, cast
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -12,8 +12,8 @@ from screener.backtester.slippage import (
     FixedBpsSlippage,
     SlippageModel,
 )
-from screener.ledger import ExitReason, Trade as LifecycleTrade
-
+from screener.ledger import ExitReason
+from screener.ledger import Trade as LifecycleTrade
 
 # Supported bar intervals. "1d" is the default daily bar; the rest are intraday
 # bars sourced from yfinance. A ``date | datetime`` union is used on all the
@@ -38,8 +38,8 @@ class BacktestConfig(BaseModel):
     benchmark: str
 
     # Universe
-    tickers: Optional[tuple[str, ...]] = None
-    universe_file: Optional[str] = None
+    tickers: tuple[str, ...] | None = None
+    universe_file: str | None = None
     membership_added: tuple[tuple[str, date], ...] = ()
     membership_windows: tuple[tuple[str, date, date | None], ...] = ()
     dynamic_universe_size: int | None = None
@@ -51,15 +51,15 @@ class BacktestConfig(BaseModel):
 
     # Signals
     entry_expr: str
-    exit_expr: Optional[str]
-    strategy_name: Optional[str] = None
+    exit_expr: str | None
+    strategy_name: str | None = None
     regime_filter: tuple[str, ...] = ()
     # Earnings blackout entry gate (rolling backtest): when set to N, suppress
     # entry signals on any calendar day within N days BEFORE (and including) a
     # known earnings date for that ticker. ``None`` disables the gate. Tickers
     # with no known earnings dates remain eligible (a warning is recorded).
     earnings_blackout_days: int | None = None
-    fundamentals_provider: Optional[str] = None
+    fundamentals_provider: str | None = None
     fundamental_fields: tuple[str, ...] = ()
     fundamental_lag_days: int = 1
     # Cross-sectional sector neutralization of ``rank_score`` inside the rolling
@@ -76,12 +76,12 @@ class BacktestConfig(BaseModel):
 
     # Execution
     hold: int
-    stop_loss: Optional[float]
-    take_profit: Optional[float]
-    trailing_stop: Optional[float]
+    stop_loss: float | None
+    take_profit: float | None
+    trailing_stop: float | None
     slippage_bps: float
     commission_bps: float
-    slippage_model: Optional[SlippageModel] = None
+    slippage_model: SlippageModel | None = None
     # Statutory fee model name (cash impact, not fill-price). ``flat`` uses
     # ``commission_bps`` exactly as before; ``india`` applies NSE delivery fees;
     # ``us_vested`` applies the Vested/DriveWealth US equity fee stack.
@@ -91,14 +91,14 @@ class BacktestConfig(BaseModel):
     spread_proxy: bool = False
     gap_fills: bool = True
     entry_order_type: Literal["moo", "moc", "limit"] = "moo"
-    entry_limit_bps: Optional[float] = None
+    entry_limit_bps: float | None = None
     partial_exits: tuple[tuple[float, float], ...] = ()
 
     # Portfolio
     top: int
     initial_capital: float
-    min_price: Optional[float] = None
-    min_avg_dollar_volume: Optional[float] = None
+    min_price: float | None = None
+    min_avg_dollar_volume: float | None = None
     avg_dollar_volume_window: int = 20
     reserve_multiple: int = 3
     reinvest: bool = True

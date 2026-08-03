@@ -21,9 +21,9 @@ from screener.backtester.metrics import (
     _dsr,
     _max_drawdown,
     _psr,
-    equity_curve_sharpe,
     _sortino,
     _vol_annual,
+    equity_curve_sharpe,
 )
 
 # ---------------------------------------------------------------------------

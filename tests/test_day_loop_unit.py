@@ -27,9 +27,9 @@ import pandas as pd
 import pytest
 
 from screener.backtester.core import (
-    _SlotState,
     _check_exit_at_bar,
     _fire_partial_exits_at_bar,
+    _SlotState,
 )
 from screener.backtester.day_loop import DayLoop, FreedSlot
 from screener.backtester.fills import FillModel

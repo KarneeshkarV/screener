@@ -19,9 +19,10 @@ seams (monkeypatched in tests) remain the authoritative ones.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Callable, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -58,14 +59,14 @@ def prepare_earnings_run(
     market: str,
     years: int,
     batch_size: int,
-    tickers: Optional[list[str]],
+    tickers: list[str] | None,
     load_universe: Callable[[str], list[str]],
     collect_events: CollectEvents,
     fetch_prices: FetchPrices,
     price_window: PriceWindow,
-    collect_kwargs: Optional[dict[str, Any]] = None,
-    refine_events: Optional[RefineEvents] = None,
-    fetcher: Optional[PriceFetcher] = None,
+    collect_kwargs: dict[str, Any] | None = None,
+    refine_events: RefineEvents | None = None,
+    fetcher: PriceFetcher | None = None,
 ) -> EventsAndPrices:
     """Resolve events and price panels shared by both earnings engines.
 

@@ -13,8 +13,6 @@ with an ``@strategy(...)`` decorator. No edits to this file are needed.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from screener.strategies.base import StrategyFn
 from screener.strategies.spec import (
     CallableStrategySpec,
@@ -26,7 +24,7 @@ from screener.strategies.spec import (
 discover_plugins()
 
 
-def _callable_of(spec: StrategySpec) -> Optional[StrategyFn]:
+def _callable_of(spec: StrategySpec) -> StrategyFn | None:
     if not isinstance(spec, CallableStrategySpec):
         return None
     return spec.callable_fn

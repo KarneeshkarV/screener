@@ -23,9 +23,10 @@ from __future__ import annotations
 import json
 import math
 import sys
+from collections.abc import Iterable, Iterator
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Literal
+from typing import Any, Literal
 
 import click
 import numpy as np

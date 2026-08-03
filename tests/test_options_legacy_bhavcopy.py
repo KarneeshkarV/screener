@@ -4,7 +4,6 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
-
 import pytest
 
 from screener.options.greeks import black_scholes_price

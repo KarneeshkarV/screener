@@ -16,13 +16,13 @@ import numpy as np
 import pandas as pd
 
 from screener.backtester.metrics import (
-    _calmar,
     _cagr,
+    _calmar,
     _daily_returns,
     _max_drawdown,
-    equity_curve_sharpe,
     _sortino,
     _vol_annual,
+    equity_curve_sharpe,
 )
 
 # ---------------------------------------------------------------------------

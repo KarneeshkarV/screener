@@ -6,7 +6,6 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from screener.cli import cli
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
 from screener.backtester.optimization import grid as grid_module
 from screener.backtester.optimization.grid import (
@@ -18,6 +17,7 @@ from screener.backtester.optimization.metrics import optimization_metrics
 from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
 from screener.backtester.optimization.walk_forward import generate_walk_forward_windows
 from screener.backtester.slippage import FixedBpsSlippage, HalfSpreadSlippage
+from screener.cli import cli
 from tests.conftest import StubPriceFetcher, make_bars
 
 

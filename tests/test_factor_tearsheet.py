@@ -294,7 +294,7 @@ def test_load_factor_panels_prepares_and_trims(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(
         ft, "get_market", lambda market: SimpleNamespace(benchmark="SPY")
     )
-    import screener.strategies.spec as spec
+    from screener.strategies import spec
 
     monkeypatch.setattr(spec, "discover_plugins", lambda: None)
     resolved = SimpleNamespace(

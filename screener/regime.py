@@ -19,7 +19,6 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-
 TREND_FAST_WINDOW = 50
 TREND_SLOW_WINDOW = 200
 VOL_WINDOW = 20

@@ -23,7 +23,6 @@ from screener.earnings_backtest import data as ebd
 from screener.earnings_backtest import earnings_dates, sentiment
 from screener.earnings_backtest.common import jsonable as _jsonable
 
-
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
@@ -277,7 +276,7 @@ def test_fetch_earnings_dates_nse_success(monkeypatch, no_disk_cache):
 
 
 def test_fetch_earnings_dates_nse_no_announcements(monkeypatch, no_disk_cache):
-    nse = types.SimpleNamespace(corporate_announcements=lambda: [])
+    nse = types.SimpleNamespace(corporate_announcements=list)
     _inject_nselive(monkeypatch, nse)
     assert earnings_dates.fetch_earnings_dates_nse() is None
 
@@ -1137,7 +1136,7 @@ def test_iv_dispatch_us(monkeypatch):
 
 
 def test_fetch_price_data_with_fetcher():
-    from tests.conftest import make_bars, StubPriceFetcher
+    from tests.conftest import StubPriceFetcher, make_bars
 
     bars = make_bars(n=10)
     fetcher = StubPriceFetcher({"AAA": bars, "EMPTY": pd.DataFrame()})

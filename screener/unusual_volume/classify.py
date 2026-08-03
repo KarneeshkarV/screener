@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Literal
 
-
 Direction = Literal[
     "BUYING", "SELLING", "CHURN", "REVERSAL", "QUIET_ACCUMULATION", "BUILDUP"
 ]

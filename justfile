@@ -23,10 +23,6 @@ help-backtest:
 help-backtest-rolling:
     @{{screener}} backtest-rolling --help
 
-# Show backtest lab command help.
-help-backtest-lab:
-    @{{screener}} backtest-lab --help
-
 # Show GARP command help.
 help-garp:
     @{{screener}} garp --help
@@ -93,15 +89,11 @@ help-options:
 
 # Show research report command help.
 help-research-report:
-    @{{screener}} research-report --help
+    @{{screener}} optimize research-report --help
 
 # Show seasonality command help.
 help-seasonality:
     @{{screener}} seasonality --help
-
-# Show vectorbt sweep command help.
-help-vbt-sweep:
-    @{{screener}} vbt-sweep --help
 
 # Show standalone Pine strategy runner help.
 help-pine:
@@ -126,10 +118,6 @@ backtest *args:
 # Run a true daily rolling backtest over a date window.
 backtest-rolling *args:
     @{{screener}} backtest-rolling "$@"
-
-# Launch a browser UI for comparing rolling backtest strategies.
-backtest-lab *args:
-    @{{screener}} backtest-lab "$@"
 
 # Live US historical backtest smoke run.
 backtest-smoke-us:
@@ -234,15 +222,11 @@ options-backfill-context start end:
 
 # One-command research report: grid -> walk-forward -> Monte Carlo.
 research-report *args:
-    @{{screener}} research-report "$@"
+    @{{screener}} optimize research-report "$@"
 
 # Show monthly, turn-of-month and day-of-week seasonality for TICKER.
 seasonality *args:
     @{{screener}} seasonality "$@"
-
-# Fast vectorbt grid search for exploration (not validation).
-vbt-sweep *args:
-    @{{screener}} vbt-sweep "$@"
 
 # Show unusual-volume command help.
 help-unusual-volume:

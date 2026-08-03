@@ -9,9 +9,7 @@ Convention (verified from core.py):
 
 from __future__ import annotations
 
-
 import pandas as pd
-
 
 # ---------------------------------------------------------------------------
 # Bar builder helpers

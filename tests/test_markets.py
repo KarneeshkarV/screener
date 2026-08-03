@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date, datetime
-from typing import Iterable
 
-from click.testing import CliRunner
 import click
 import pandas as pd
+from click.testing import CliRunner
 
 from screener.backtester.data import PriceFetcher
 from screener.markets import (

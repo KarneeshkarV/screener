@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import logging
 import urllib.request
-from typing import Optional
 
 import pandas as pd
 import yfinance as yf
@@ -32,7 +31,6 @@ from screener.parallel import parallel_map
 from screener.providers import CachedProvider, ProviderSpec
 from screener.resilience import call_with_resilience
 from screener.symbols import tv_to_yf
-
 
 logger = logging.getLogger(__name__)
 _SCREENER_URL = "https://www.screener.in/company/{symbol}/"
@@ -66,7 +64,7 @@ _OPENSCREENER_PROVIDER = CachedProvider(
 # ── yfinance insider purchases ─────────────────────────────────────────────
 
 
-def _row_value(df: pd.DataFrame, label: str, column: str) -> Optional[float]:
+def _row_value(df: pd.DataFrame, label: str, column: str) -> float | None:
     if df is None or df.empty:
         return None
     if "Insider Purchases Last 6m" not in df.columns:
@@ -93,8 +91,8 @@ def _fetch_yf_one(
     *,
     cache_ttl: float | None,
     refresh: bool,
-) -> Optional[dict]:
-    def _fetch() -> Optional[dict]:
+) -> dict | None:
+    def _fetch() -> dict | None:
         purchases = yf.Ticker(yf_symbol).insider_purchases
         if purchases is None or purchases.empty:
             return None
@@ -152,7 +150,7 @@ def fetch_yfinance_insiders(
 
 def _aggregate_fmp_transactions(
     transactions: list[dict], window_days: int = _FMP_WINDOW_DAYS
-) -> Optional[dict]:
+) -> dict | None:
     """Aggregate FMP insider rows into 6-month net buy/sell share counts.
 
     On SEC Form 4 the ``acquistionOrDisposition`` flag (FMP's spelling) only
@@ -214,8 +212,8 @@ def _fetch_fmp_insider_one(
     api_key: str,
     cache_ttl: float | None,
     refresh: bool,
-) -> Optional[dict]:
-    def _fetch() -> Optional[dict]:
+) -> dict | None:
+    def _fetch() -> dict | None:
         cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=_FMP_WINDOW_DAYS)
         truncated = False
         client = fmp.FmpClient(
@@ -225,7 +223,7 @@ def _fetch_fmp_insider_one(
             timeout=20,
         )
 
-        def _request_page(page: int) -> Optional[list]:
+        def _request_page(page: int) -> list | None:
             payload = client.get("insider-trading", {"symbol": symbol, "page": page})
             return payload if isinstance(payload, list) else None
 
@@ -285,7 +283,7 @@ def load_insider_aggregate(
     api_key: str,
     cache_ttl: float | None,
     refresh: bool,
-) -> Optional[dict]:
+) -> dict | None:
     """Load the trailing 6-month FMP Form 4 net buy/sell aggregate for one symbol.
 
     Public per-symbol seam over :func:`_fetch_fmp_insider_one`: single-ticker
@@ -374,8 +372,8 @@ def _fetch_openscreener_one(
     *,
     cache_ttl: float | None,
     refresh: bool,
-) -> Optional[dict]:
-    def _fetch() -> Optional[dict]:
+) -> dict | None:
+    def _fetch() -> dict | None:
         try:
             from openscreener import Stock
         except ImportError:
@@ -442,7 +440,7 @@ def filter_promoter_increased(
     insiders: pd.DataFrame,
     market: str,
     min_promoter_change_pct: float = 0.0,
-    min_yf_net_pct: Optional[float] = None,
+    min_yf_net_pct: float | None = None,
     require_both: bool = False,
 ) -> pd.DataFrame:
     """Keep tickers where holdings increased.

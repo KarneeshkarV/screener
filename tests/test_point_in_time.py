@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import date
 import logging
 import os
 import time
+from datetime import date
 from types import SimpleNamespace
 
 import pandas as pd
@@ -13,7 +13,6 @@ from screener import universes
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling import backtest_rolling
 from screener.backtester.rolling_simulation import run_rolling_backtest
-
 
 _SP500_HTML = """
 <html><body>

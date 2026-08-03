@@ -7,9 +7,9 @@ These tests inject synthetic raw tables (a current-members table plus a
 
 from __future__ import annotations
 
-from datetime import date
 import os
 import time
+from datetime import date
 from types import SimpleNamespace
 
 import pandas as pd

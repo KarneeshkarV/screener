@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Iterable, Optional, cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -31,7 +31,6 @@ from screener.reporting import dump_json_file, markdown_row
 from screener.symbols import normalize_symbol, tv_to_nse
 from screener.unusual_volume.delivery import load_delivery_panel
 
-
 logger = logging.getLogger(__name__)
 RS_WINDOW = RS_RATIO_WINDOW
 SUPERTREND_PERIOD = 10
@@ -46,12 +45,12 @@ class RsBreakoutRow(BaseModel):
     close: float
     rs_55: float
     supertrend: float
-    previous_week_high: Optional[float]
+    previous_week_high: float | None
     volume: float
     avg_volume_20d: float
     volume_ratio: float
-    delivery_pct: Optional[float]
-    previous_delivery_pct: Optional[float]
+    delivery_pct: float | None
+    previous_delivery_pct: float | None
 
     model_config = ConfigDict(frozen=True)
 
@@ -162,7 +161,7 @@ def supertrend(
     return st
 
 
-def previous_completed_week_high(bars: pd.DataFrame, as_of: date) -> Optional[float]:
+def previous_completed_week_high(bars: pd.DataFrame, as_of: date) -> float | None:
     """High of the last fully completed Monday-Friday week before as_of."""
     if bars.empty:
         return None
@@ -178,11 +177,11 @@ def previous_completed_week_high(bars: pd.DataFrame, as_of: date) -> Optional[fl
 
 def delivery_lookup(
     panel: pd.DataFrame,
-) -> dict[str, tuple[Optional[float], Optional[float]]]:
+) -> dict[str, tuple[float | None, float | None]]:
     """Return symbol -> (latest DELIV_PER, previous DELIV_PER)."""
     if panel is None or panel.empty:
         return {}
-    out: dict[str, tuple[Optional[float], Optional[float]]] = {}
+    out: dict[str, tuple[float | None, float | None]] = {}
     df = panel.copy()
     df["SYMBOL"] = df["SYMBOL"].astype(str).str.upper()
     df = df.sort_values(["SYMBOL", "date"])
@@ -237,7 +236,7 @@ def rs_breakout_signals(frame: pd.DataFrame, *, require_delivery: bool) -> pd.Da
 
 
 def _one_bar_signal_frame(
-    index: pd.DatetimeIndex, **values: Optional[float]
+    index: pd.DatetimeIndex, **values: float | None
 ) -> pd.DataFrame:
     """Assemble a one-row frame in the shape :func:`rs_breakout_signals` reads."""
     return pd.DataFrame(
@@ -258,8 +257,8 @@ def evaluate_symbol(
     bars: pd.DataFrame,
     benchmark_close: pd.Series,
     as_of: date,
-    delivery: tuple[Optional[float], Optional[float]] | None = None,
-) -> Optional[tuple[RsBreakoutRow, bool, bool]]:
+    delivery: tuple[float | None, float | None] | None = None,
+) -> tuple[RsBreakoutRow, bool, bool] | None:
     """Return row plus price/delivery pass booleans when base filters pass."""
     df = normalize_bars(bars, as_of)
     if len(df) < max(RS_WINDOW + 1, VOLUME_WINDOW + 1, SUPERTREND_PERIOD + 1):
@@ -338,7 +337,7 @@ def scan_rs_breakouts(
     bars_by_symbol: dict[str, pd.DataFrame],
     benchmark_bars: pd.DataFrame,
     as_of: date,
-    delivery_panel: Optional[pd.DataFrame] = None,
+    delivery_panel: pd.DataFrame | None = None,
     benchmark_symbol: str | None = None,
     require_delivery: bool = True,
 ) -> RsBreakoutResult:
@@ -447,7 +446,7 @@ def previous_completed_week_high_series(bars: pd.DataFrame) -> pd.Series:
 
 
 def _delivery_series_for_symbol(
-    panel: Optional[pd.DataFrame],
+    panel: pd.DataFrame | None,
     symbol: str,
     index: pd.DatetimeIndex,
 ) -> pd.DataFrame:
@@ -493,7 +492,7 @@ def build_signal_frame(
     bars: pd.DataFrame,
     benchmark_close: pd.Series,
     *,
-    delivery_panel: Optional[pd.DataFrame] = None,
+    delivery_panel: pd.DataFrame | None = None,
     symbol: str = "",
     require_delivery: bool = False,
 ) -> pd.DataFrame:
@@ -534,7 +533,7 @@ def prepare_backtest_frames(
     benchmark_bars: pd.DataFrame,
     *,
     market: str,
-    delivery_panel: Optional[pd.DataFrame] = None,
+    delivery_panel: pd.DataFrame | None = None,
 ) -> dict[str, pd.DataFrame]:
     benchmark = benchmark_bars.copy()
     if benchmark is None or benchmark.empty:

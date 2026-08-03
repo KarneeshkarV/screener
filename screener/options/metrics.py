@@ -8,9 +8,9 @@ exercise with offline fixtures.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from datetime import date
 from statistics import median
-from typing import Iterable
 
 from screener.options.models import ChainMetrics, OptionChain, OptionContract
 

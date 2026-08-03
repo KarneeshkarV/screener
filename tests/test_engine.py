@@ -8,14 +8,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.backtest_helpers import simulate_single_ticker
 from screener.backtester.historical import run_backtest
-from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.metrics import _exposure, compute_metrics
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.pine import parse
 from screener.backtester.portfolio import build_equity_curve
-
+from screener.backtester.rolling_simulation import run_rolling_backtest
+from tests.backtest_helpers import simulate_single_ticker
 from tests.conftest import StubPriceFetcher, make_bars
 
 

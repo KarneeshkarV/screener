@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
 import json
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from click.testing import CliRunner
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 
 from screener import cache
 from screener.cli import cli as _root_cli
@@ -138,7 +138,7 @@ def test_cboe_parser_bad_rows_quotes_and_symbols(cboe_raw):
     raw["data"]["options"][0]["bid"] = 10
     raw["data"]["options"][0]["ask"] = 1
     raw["data"]["options"].extend([{"option": "bad"}, "not-an-object"])
-    now = datetime(2026, 7, 11, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 11, tzinfo=UTC)
     chain = parse_cboe_chain(raw, requested_symbol="AAPL", now=now)
     assert chain is not None
     assert chain.as_of == now
@@ -182,7 +182,7 @@ def test_cboe_provider_cache_seam_and_validation(cboe_raw):
     provider = CboeOptionsProvider(
         session=session,
         cache_provider=fake_cache,  # type: ignore[arg-type]
-        now=lambda: datetime(2026, 7, 10, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 7, 10, tzinfo=UTC),
     )
     chain = provider.fetch_chain("aapl", "us", refresh=True)
     assert chain is not None and len(chain.contracts) == 4
@@ -220,7 +220,7 @@ def test_yfinance_fixture_normalization_and_computed_greeks(yf_raw):
         ticker,
         "aapl",
         [yf_raw["expiry"]],
-        now=datetime(2026, 7, 10, tzinfo=timezone.utc),
+        now=datetime(2026, 7, 10, tzinfo=UTC),
     )
     assert chain is not None
     assert chain.spot == 200
@@ -252,7 +252,7 @@ def test_yfinance_provider_fetch_and_validation(yf_raw):
         ticker_factory=lambda _symbol: ticker,
         configure=lambda: None,
         cache_provider=FakeProvider(),
-        now=lambda: datetime(2026, 7, 10, tzinfo=timezone.utc),
+        now=lambda: datetime(2026, 7, 10, tzinfo=UTC),
     )
     chain = provider.fetch_chain("AAPL", "us", refresh=True)
     assert chain is not None and len(chain.contracts) == 2
@@ -318,7 +318,7 @@ def _simple_chain(symbol="AAPL"):
         right="call",
         oi=10,
         volume=5,
-        as_of=datetime(2026, 7, 10, tzinfo=timezone.utc),
+        as_of=datetime(2026, 7, 10, tzinfo=UTC),
         source="stub",
     )
     return OptionChain(
@@ -404,7 +404,7 @@ def test_snapshot_cli_paths(monkeypatch, panel_root: Path):
     )
     assert both.exit_code == 2
 
-    import screener.universes as universes
+    from screener import universes
 
     monkeypatch.setattr(
         universes,

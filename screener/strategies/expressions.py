@@ -12,8 +12,6 @@ Add a new entry/exit Pine strategy by dropping a plugin file in
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from screener.strategies.spec import (
@@ -28,7 +26,7 @@ discover_plugins()
 
 class NamedStrategy(BaseModel):
     entry: str
-    exit: Optional[str]
+    exit: str | None
 
     model_config = ConfigDict(frozen=True)
 
@@ -41,7 +39,7 @@ class NamedStrategy(BaseModel):
         return normalized
 
 
-def _named_of(spec: StrategySpec) -> Optional[NamedStrategy]:
+def _named_of(spec: StrategySpec) -> NamedStrategy | None:
     if not isinstance(spec, ExpressionStrategySpec):
         return None
     return NamedStrategy(entry=spec.entry, exit=spec.exit)

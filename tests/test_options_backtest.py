@@ -19,8 +19,8 @@ from screener.options.backtest import (
     referenced_options_fields,
 )
 from screener.options.panels import enrich_panel_history, metrics_row
-from tests.test_options_panels import _chain, _contract
 from tests.conftest import StubPriceFetcher, make_bars
+from tests.test_options_panels import _chain, _contract
 
 
 @pytest.fixture

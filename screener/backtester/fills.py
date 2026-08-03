@@ -26,7 +26,7 @@ is a single implementation of each primitive.
 
 from __future__ import annotations
 
-from typing import Optional, Protocol
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
@@ -52,8 +52,8 @@ def _resolve_entry_fill(
     bars: pd.DataFrame,
     signal_idx: int,
     cfg: BacktestConfig,
-    arrays: Optional[PriceArrays] = None,
-) -> tuple[Optional[int], Optional[float], Optional[str]]:
+    arrays: PriceArrays | None = None,
+) -> tuple[int | None, float | None, str | None]:
     """Resolve entry bar index and reference fill price from order settings.
 
     When ``arrays`` is supplied the prices are read from the caller's cached
@@ -168,12 +168,12 @@ class FillModel:
         bars: pd.DataFrame,
         signal_idx: int,
         *,
-        budget: Optional[float] = None,
+        budget: float | None = None,
         adv_shares: float = 0.0,
         sigma_daily: float = 0.0,
         half_spread: float = 0.0,
-        arrays: Optional[PriceArrays] = None,
-    ) -> tuple[Optional[int], Optional[float], Optional[str]]:
+        arrays: PriceArrays | None = None,
+    ) -> tuple[int | None, float | None, str | None]:
         """Resolve the entry bar index and the slipped (buy-side) fill price.
 
         Returns ``(entry_idx, entry_fill, warning)``. On failure the index and
@@ -198,12 +198,12 @@ class FillModel:
         bars: pd.DataFrame,
         signal_idx: int,
         *,
-        budget: Optional[float] = None,
+        budget: float | None = None,
         adv_shares: float = 0.0,
         sigma_daily: float = 0.0,
         half_spread: float = 0.0,
-        arrays: Optional[PriceArrays] = None,
-    ) -> tuple[Optional[int], Optional[float], float, Optional[str]]:
+        arrays: PriceArrays | None = None,
+    ) -> tuple[int | None, float | None, float, str | None]:
         """Return entry index, slipped fill, pre-impact shares, and warning.
 
         Shares are deliberately sized from the pre-slippage reference and the
@@ -249,7 +249,7 @@ class FillModel:
         *,
         reason: str,
         bar_open: float = 0.0,
-        level: Optional[float] = None,
+        level: float | None = None,
         close: float = 0.0,
         side: Side = "sell",
         shares: float = 0.0,

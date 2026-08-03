@@ -15,7 +15,6 @@ from screener.filings import VALID_PERIODS
 from screener.fmp import resolve_api_key
 from screener.markets import market_option
 
-
 if TYPE_CHECKING:
     from screener.filings import Filing, FinancialReport, ReportSection
 

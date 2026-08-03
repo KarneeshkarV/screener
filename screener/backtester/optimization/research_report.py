@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import statistics
 import time
+from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from rich.console import Console
 from rich.table import Table

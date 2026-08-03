@@ -4,19 +4,19 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any, cast
 
 import pandas as pd
 
-from screener.options.greeks import black_scholes_greeks, implied_volatility
-from screener.options.lot_history import historical_lot_sizes
-from screener.options.models import OptionChain, OptionContract, OptionRight
+from screener.operator.fetch import CACHE_ROOT, FO_ARCHIVE_URL
 from screener.options._parse import nonnegative_or_zero
 from screener.options._parse import number as _as_number
 from screener.options._parse import positive as _positive
-from screener.operator.fetch import CACHE_ROOT, FO_ARCHIVE_URL
+from screener.options.greeks import black_scholes_greeks, implied_volatility
+from screener.options.lot_history import historical_lot_sizes
+from screener.options.models import OptionChain, OptionContract, OptionRight
 from screener.resilience import call_with_resilience
 from screener.unusual_volume.nse_client import (
     FO_UDIFF_START,
@@ -206,9 +206,7 @@ def normalize_bhavcopy_options(
                     previous_close=_positive(row.get("PrvsClsgPric")),
                     settle=settle,
                     lot_size=embedded_lot or mapped_lot,
-                    as_of=datetime.combine(
-                        contract_as_of, time.min, tzinfo=timezone.utc
-                    ),
+                    as_of=datetime.combine(contract_as_of, time.min, tzinfo=UTC),
                     source="nse_bhavcopy",
                     **greek_kwargs,
                 )
@@ -306,9 +304,9 @@ def load_bhavcopy_chains(
 
 
 __all__ = [
-    "BhavcopyFetcher",
     "OPTION_INSTRUMENT_TYPES",
     "REQUIRED_COLUMNS",
+    "BhavcopyFetcher",
     "load_bhavcopy_chains",
     "normalize_bhavcopy_options",
 ]

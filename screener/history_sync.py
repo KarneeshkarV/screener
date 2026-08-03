@@ -15,7 +15,6 @@ from typing import Any, Protocol, cast
 
 from screener import history, usage
 
-
 REMOTE_RUNS_TABLE = "screen_runs"
 REMOTE_ROWS_TABLE = "screen_run_rows"
 

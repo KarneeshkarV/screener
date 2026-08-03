@@ -10,13 +10,11 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from screener import agentio
+from screener import agentio, usage
 from screener.backtester.factor_tearsheet import factor_tearsheet
 from screener.backtester.historical import backtest_historical
-from screener.backtester.lab import backtest_lab
-from screener.backtester.optimization.cli import optimize, research_report
+from screener.backtester.optimization.cli import optimize
 from screener.backtester.rolling import backtest_rolling
-from screener.backtester.vbt_sweep import vbt_sweep
 from screener.commands.cache import cache_group
 from screener.commands.conviction import conviction
 from screener.commands.filings import filings
@@ -37,7 +35,6 @@ from screener.earnings_backtest.cli import earnings_backtest, earnings_pead
 from screener.logging_config import configure_logging
 from screener.operator.cli import register as _register_operator_cli
 from screener.options.cli import options
-from screener import usage
 from screener.unusual_volume.cli import unusual_volume
 
 
@@ -195,11 +192,8 @@ cli.add_command(earnings_pead)
 cli.add_command(backtest_historical)
 cli.add_command(backtest_rolling)
 cli.add_command(factor_tearsheet)
-cli.add_command(vbt_sweep)
-cli.add_command(backtest_lab)
 _register_operator_cli(cli)
 cli.add_command(optimize)
-cli.add_command(research_report)
 cli.add_command(cache_group)
 cli.add_command(options)
 
@@ -248,7 +242,8 @@ def usage_report() -> None:
 
 # usage-report reads the usage tables; exempt it from tracking itself by
 # pre-marking its callback so UsageTrackedGroup.add_command skips it.
-setattr(usage_report.callback, "_usage_tracked", True)
+if usage_report.callback is not None:
+    usage_report.callback._usage_tracked = True  # type: ignore[attr-defined]
 cli.add_command(usage_report)
 
 

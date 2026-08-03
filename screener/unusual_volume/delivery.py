@@ -13,9 +13,10 @@ the SMA window.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Iterable, Optional, cast
+from typing import cast
 
 import pandas as pd
 
@@ -23,7 +24,6 @@ from screener.resilience import call_with_resilience
 
 from .detector import Event, bars_on_or_before_as_of
 from .nse_client import is_trading_day, load_delivery_bhavcopy_csv
-
 
 CACHE_DIR = Path.home() / ".screener" / "bhavcopy"
 CASH_SERIES = {"EQ", "BE", "BZ"}
@@ -34,7 +34,7 @@ LOW_DELIVERY_PCT = 25.0
 LONG_HOLDER_DELIVERY_PCT = 60.0
 
 
-def _load_one_day(dt: date) -> Optional[pd.DataFrame]:
+def _load_one_day(dt: date) -> pd.DataFrame | None:
     """Return a (date, symbol)-indexed DataFrame for one trading day.
 
     Returns ``None`` on any failure (404 = market holiday, network glitch,
@@ -129,7 +129,7 @@ def compute_delivery_metrics(panel: pd.DataFrame) -> pd.DataFrame:
     return panel
 
 
-def _delivery_notes(rvol: float, delivery_pct: Optional[float], direction: str) -> str:
+def _delivery_notes(rvol: float, delivery_pct: float | None, direction: str) -> str:
     if delivery_pct is None or pd.isna(delivery_pct):
         return ""
     notes: list[str] = []
@@ -163,7 +163,7 @@ def overlay_events(events: list[Event], panel: pd.DataFrame) -> list[Event]:
         if isinstance(selected, pd.DataFrame):  # pragma: no cover - keys deduped
             row = cast(pd.Series, selected.iloc[0])
         else:
-            row = cast(pd.Series, selected)
+            row = selected
         ev.delivery_qty = (
             float(row["DELIV_QTY"]) if not pd.isna(row["DELIV_QTY"]) else None
         )
@@ -193,7 +193,7 @@ def quiet_accumulation_events(
     panel: pd.DataFrame,
     as_of: date,
     min_rvol_skip: float,
-    existing_events: Optional[Iterable[Event]] = None,
+    existing_events: Iterable[Event] | None = None,
 ) -> list[Event]:
     """Surface 'quiet accumulation' bars: delivery RVOL >= 2 even though
     raw volume RVOL is below the unusual-volume threshold.

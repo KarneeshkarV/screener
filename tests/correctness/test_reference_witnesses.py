@@ -24,8 +24,8 @@ import math
 
 import numpy as np
 import pandas as pd
-import scipy.stats
 import pytest
+import scipy.stats
 
 from screener.backtester.metrics import (
     _dsr,

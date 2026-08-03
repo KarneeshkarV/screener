@@ -7,9 +7,9 @@ Alpha/beta use a simple OLS fit via ``numpy.polyfit`` — no sklearn.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal, cast, overload
+from typing import Any, Literal, cast, overload
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,6 @@ import pandas as pd
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
 from screener.format import fmt_money, fmt_pct, is_missing
 from screener.regime import classify_regimes
-
 
 TRADING_DAYS_PER_YEAR = 252
 _EULER_MASCHERONI = 0.5772156649015329

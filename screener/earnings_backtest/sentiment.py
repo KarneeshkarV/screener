@@ -10,8 +10,8 @@ module; this module never imports the facade back.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time, timezone
-from typing import Any, Optional, cast
+from datetime import UTC, date, datetime, time
+from typing import Any, cast
 
 import pandas as pd
 import yfinance as yf
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # ── Analyst upgrades/downgrades ────────────────────────────────────────
 
 
-def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
+def fetch_analyst_sentiment(ticker: str, market: str = "us") -> dict | None:
     """Compute analyst sentiment.
 
     For US: uses yfinance upgrades_downgrades.
@@ -40,10 +40,10 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
     if market == "india":
         return None
 
-    def _fetch() -> Optional[dict]:
+    def _fetch() -> dict | None:
         _configure_yfinance()
 
-        def _request() -> Optional[dict]:
+        def _request() -> dict | None:
             t = yf.Ticker(ticker)
             ud = t.upgrades_downgrades
             if ud is None or ud.empty:
@@ -90,13 +90,13 @@ def fetch_analyst_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
 # ── Options / IV sentiment ──────────────────────────────────────────────
 
 
-def fetch_iv_sentiment_yf(ticker: str) -> Optional[dict]:
+def fetch_iv_sentiment_yf(ticker: str) -> dict | None:
     """Compute put/call ratio and IV percentile from yfinance (US only)."""
 
-    def _fetch() -> Optional[dict]:
+    def _fetch() -> dict | None:
         _configure_yfinance()
 
-        def _request() -> Optional[dict]:
+        def _request() -> dict | None:
             t = yf.Ticker(ticker)
             dates = t.options
             if not dates:
@@ -109,7 +109,7 @@ def fetch_iv_sentiment_yf(ticker: str) -> Optional[dict]:
                 t,
                 ticker,
                 [target_expiry],
-                now=datetime.combine(date.today(), time.min, tzinfo=timezone.utc),
+                now=datetime.combine(date.today(), time.min, tzinfo=UTC),
                 missing_volume_as_count=True,
             )
             if normalized is None:
@@ -153,7 +153,7 @@ def fetch_iv_sentiment_yf(ticker: str) -> Optional[dict]:
     )
 
 
-def fetch_iv_sentiment_nse(symbol: str) -> Optional[dict]:
+def fetch_iv_sentiment_nse(symbol: str) -> dict | None:
     """Compute put/call ratio and IV from the NSE option chain.
 
     *symbol* is the NSE symbol (e.g. 'RELIANCE'), NOT the yfinance ticker.
@@ -166,7 +166,7 @@ def fetch_iv_sentiment_nse(symbol: str) -> Optional[dict]:
     source-agnostic.
     """
 
-    def _fetch() -> Optional[dict]:
+    def _fetch() -> dict | None:
         try:
             raw = fetch_option_chain(symbol)
             if not raw or "records" not in raw:
@@ -212,7 +212,7 @@ def fetch_iv_sentiment_nse(symbol: str) -> Optional[dict]:
     )
 
 
-def fetch_iv_sentiment(ticker: str, market: str = "us") -> Optional[dict]:
+def fetch_iv_sentiment(ticker: str, market: str = "us") -> dict | None:
     """Dispatch IV sentiment to the appropriate source."""
     if market == "india":
         # Strip .NS suffix for the NSE symbol.

@@ -7,10 +7,10 @@ import json
 import pandas as pd
 from click.testing import CliRunner
 
+import screener.commands.institutional as institutional_cmd
 from screener import cache
 from screener import institutional as institutional_module
 from screener.cli import cli
-import screener.commands.institutional as institutional_cmd
 from screener.institutional import (
     _aggregate_institutional_holders,
     _fetch_fmp_institutional_one,

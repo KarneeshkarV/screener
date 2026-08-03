@@ -295,15 +295,6 @@ uv run screener factor-tearsheet -m us --strategy momentum_12_1 --years 3
 just factor-tearsheet -m india --strategy momentum_12_1 --universe nifty50
 ```
 
-### `vbt-sweep`
-
-Fast vectorbt grid search for exploration only — fills, sizing, and liquidity are not modeled, so always validate promising combinations with `backtest-rolling`.
-
-```bash
-uv run screener vbt-sweep -m us --years 2 --strategy rs_breakout
-just vbt-sweep -m us --years 2 --strategy rs_breakout
-```
-
 ### `earnings-backtest`
 
 Backtests sentiment-scored earnings entries: buy one or two sessions before a
@@ -379,12 +370,12 @@ uv run screener optimize validate --trades trades.csv --iterations 5000 --json v
 just optimize validate --trades trades.csv --iterations 5000 --json validation.json
 ```
 
-### `research-report`
+### `optimize research-report`
 
 One-command research pipeline: grid search → walk-forward → Monte Carlo, reusing a single price fetcher across stages. Writes `<out>.json` and `<out>.html` plus a stdout summary.
 
 ```bash
-uv run screener research-report -m us --years 1 --strategy rs_breakout --top 10
+uv run screener optimize research-report -m us --years 1 --strategy rs_breakout --top 10
 just research-report -m us --years 1 --strategy rs_breakout
 ```
 
@@ -492,18 +483,17 @@ Current `justfile` recipes:
 just
 just help
 just help-<command>          # per-command help: screen, backtest, backtest-rolling,
-                             # backtest-lab, cache, conviction, earnings-backtest,
+                             # cache, conviction, earnings-backtest,
                              # earnings-pead, factor-tearsheet, filings, garp, history,
                              # history-backup, index-inclusion, institutional,
                              # operator-scan, optimize, options, pine, promoter-buys,
                              # research-report, rs-breakout, seasonality,
-                             # unusual-volume, vbt-sweep
+                             # unusual-volume
 just screen ...
 just screen-us ...
 just screen-india ...
 just backtest ...
 just backtest-rolling ...
-just backtest-lab ...
 just backtest-smoke-us
 just backtest-smoke-india
 just cache ...
@@ -522,7 +512,6 @@ just pine-india ...
 just research-report ...
 just seasonality ...
 just unusual-volume ...
-just vbt-sweep ...
 just garp ...
 just promoter-buys ...
 just rs-breakout ...

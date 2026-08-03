@@ -6,10 +6,10 @@ import numpy as np
 import pandas as pd
 from click.testing import CliRunner
 
-from screener.cli import cli
 from screener import minervini
-from screener.commands import minervini as minervini_command
 from screener.backtester.pine import evaluate, parse
+from screener.cli import cli
+from screener.commands import minervini as minervini_command
 from screener.minervini import (
     MINERVINI_ENTRY_EXPR,
     add_rs_rank_column,

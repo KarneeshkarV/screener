@@ -1,8 +1,10 @@
 """Shooting Star candlestick pattern strategy."""
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
+
 from screener.strategies.spec import strategy
 from screener.strategies.trades import ResearchTrade, _walk
 

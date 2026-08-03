@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import html as html_lib
 import json
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from pydantic import BaseModel
 from rich.console import Console

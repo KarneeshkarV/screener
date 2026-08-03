@@ -1,12 +1,10 @@
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
-
 
 _DEFAULT_DB_PATH = Path.home() / ".screener" / "history.db"
 # Overridable via SCREENER_HISTORY_DB; tests may also monkeypatch this directly.
@@ -51,7 +49,7 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _to_float(val) -> Optional[float]:
+def _to_float(val) -> float | None:
     if val is None:
         return None
     try:
@@ -64,7 +62,7 @@ def _to_float(val) -> Optional[float]:
 
 
 def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
-    run_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    run_ts = datetime.now(UTC).isoformat(timespec="seconds")
     conn = _connect()
     try:
         # Two runs landing in the same second collide on UNIQUE(run_ts, market,
@@ -145,7 +143,7 @@ class RunSnapshot:
         return [str(t) for t in self.rows["ticker"].dropna().tolist()]
 
 
-def load_run(run_id: int) -> Optional[RunSnapshot]:
+def load_run(run_id: int) -> RunSnapshot | None:
     """Load one persisted run with its ranked rows, or ``None`` if absent."""
     conn = _connect()
     try:
@@ -174,8 +172,8 @@ def load_run(run_id: int) -> Optional[RunSnapshot]:
 
 
 def find_run(
-    market: str, criteria: str, on_or_before: Optional[date] = None
-) -> Optional[int]:
+    market: str, criteria: str, on_or_before: date | None = None
+) -> int | None:
     """Return the id of the most recent run for ``market``/``criteria``.
 
     With ``on_or_before``, only runs whose date is on or before it qualify —
@@ -201,8 +199,8 @@ def find_run(
 
 
 def list_runs(
-    market: Optional[str] = None,
-    criteria: Optional[str] = None,
+    market: str | None = None,
+    criteria: str | None = None,
     limit: int = 20,
 ) -> pd.DataFrame:
     """List persisted runs (newest first) with the count of saved rows."""
@@ -274,7 +272,7 @@ def resolve_replay_run(spec: str, min_age_days: int = 0) -> RunSnapshot:
     return snap
 
 
-def previous_run(market: str, criteria: str, before_id: int) -> Optional[pd.DataFrame]:
+def previous_run(market: str, criteria: str, before_id: int) -> pd.DataFrame | None:
     conn = _connect()
     try:
         prev = conn.execute(

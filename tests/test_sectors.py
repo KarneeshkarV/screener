@@ -9,11 +9,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from screener import sectors
 from screener.backtester.rolling_candidates import (
     _build_rolling_candidate_matrices,
     _sector_neutralize_scores,
 )
-import screener.sectors as sectors
 from screener.sectors import UNKNOWN_SECTOR, sector_by_ticker
 
 

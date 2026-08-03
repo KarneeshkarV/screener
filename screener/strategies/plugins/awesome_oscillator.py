@@ -1,8 +1,10 @@
 """Awesome Oscillator strategy: trades momentum based on 5 and 34 SMA of (High+Low)/2."""
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
+
 from screener.indicators.plugins.sma import sma as _sma
 from screener.strategies.spec import strategy
 from screener.strategies.trades import ResearchTrade, _walk

@@ -27,11 +27,10 @@ import logging
 import urllib.parse
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any
 
 from screener import fmp
 from screener.providers import CachedProvider, ProviderSpec
-
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +60,8 @@ class Filing:
 
     symbol: str
     type: str
-    filing_date: Optional[date]
-    accepted_date: Optional[date]
+    filing_date: date | None
+    accepted_date: date | None
     link: str
     final_link: str
 
@@ -93,7 +92,7 @@ class FinancialReport:
 
     symbol: str
     period: str
-    year: Optional[int]
+    year: int | None
     sections: list[ReportSection]
 
     def section_names(self) -> list[str]:
@@ -103,7 +102,7 @@ class FinancialReport:
 # ── pure parsing ─────────────────────────────────────────────────────────────
 
 
-def parse_date(value: Any) -> Optional[date]:
+def parse_date(value: Any) -> date | None:
     """Parse FMP's ``"2025-10-31 00:00:00"`` / ``"2025-10-31"`` into a ``date``.
 
     Returns ``None`` for missing, blank or unparseable values rather than
@@ -170,7 +169,7 @@ def _parse_section(name: str, value: Any) -> ReportSection:
     return ReportSection(name=str(name), rows=rows)
 
 
-def parse_report(payload: Any) -> Optional[FinancialReport]:
+def parse_report(payload: Any) -> FinancialReport | None:
     """Parse a ``financial-reports-json`` object into a :class:`FinancialReport`.
 
     Returns ``None`` when the payload is not a dict or carries no report
@@ -220,7 +219,7 @@ def _fetch_filings_raw(
     symbol: str,
     *,
     api_key: str,
-    filing_type: Optional[str],
+    filing_type: str | None,
     limit: int,
     cache_ttl: float | None,
     refresh: bool,
@@ -263,7 +262,7 @@ def load_filings(
     symbol: str,
     *,
     api_key: str,
-    filing_type: Optional[str] = None,
+    filing_type: str | None = None,
     limit: int = 20,
     cache_ttl: float | None = 86400,
     refresh: bool = False,
@@ -316,7 +315,7 @@ def load_report(
     period: str = "FY",
     cache_ttl: float | None = 7 * 86400,
     refresh: bool = False,
-) -> Optional[FinancialReport]:
+) -> FinancialReport | None:
     """Load and parse a 10-K/10-Q section report for one US ``symbol``."""
     payload = _fetch_report_raw(
         symbol,
@@ -330,15 +329,15 @@ def load_report(
 
 
 __all__ = [
-    "Filing",
-    "SectionRow",
-    "ReportSection",
-    "FinancialReport",
     "VALID_PERIODS",
+    "Filing",
+    "FinancialReport",
+    "ReportSection",
+    "SectionRow",
+    "load_filings",
+    "load_report",
+    "match_sections",
     "parse_date",
     "parse_filings",
     "parse_report",
-    "match_sections",
-    "load_filings",
-    "load_report",
 ]

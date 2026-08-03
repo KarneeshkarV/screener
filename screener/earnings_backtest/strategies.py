@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -170,7 +169,7 @@ def volume_surge(
 def analyst_sentiment(
     ticker: str,
     earnings_date: pd.Timestamp,
-    sentiment_data: Optional[dict],
+    sentiment_data: dict | None,
     threshold: float = 0.5,
 ) -> SignalResult:
     """Long if yfinance net upgrades > 0.
@@ -211,7 +210,7 @@ def analyst_sentiment(
 def iv_sentiment(
     ticker: str,
     earnings_date: pd.Timestamp,
-    iv_data: Optional[dict],
+    iv_data: dict | None,
     threshold: float = 0.5,
 ) -> SignalResult:
     """P/C ratio < 0.7 is bullish; median IV as confidence.
@@ -287,7 +286,7 @@ STRATEGY_WEIGHTS = {
 
 def combined_score(
     scores: dict[str, float],
-    weights: Optional[dict[str, float]] = None,
+    weights: dict[str, float] | None = None,
 ) -> float:
     """Weighted average of individual strategy scores.
 

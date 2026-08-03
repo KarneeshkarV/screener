@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import time
 import os
+import time
 
 import pandas as pd
 

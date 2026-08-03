@@ -3,7 +3,7 @@ from __future__ import annotations
 import builtins
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 
@@ -170,15 +170,15 @@ def test_history_save_previous_and_diff(tmp_path, monkeypatch):
     monkeypatch.setattr(history, "DB_PATH", tmp_path / "history.db")
     timestamps = iter(
         [
-            datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            datetime(2024, 1, 1, 12, 0, 1, tzinfo=timezone.utc),
+            datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC),
         ]
     )
 
     class FakeDateTime:
         @staticmethod
         def now(tz):
-            assert tz is timezone.utc
+            assert tz is UTC
             return next(timestamps)
 
     monkeypatch.setattr(history, "datetime", FakeDateTime)

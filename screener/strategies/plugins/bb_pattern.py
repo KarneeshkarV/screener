@@ -1,8 +1,10 @@
 """Bollinger Bands Double Bottom Pattern Recognition strategy."""
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
+
 from screener.indicators.plugins.bollinger_bands import bollinger_bands as _bb
 from screener.indicators.plugins.stdev import stdev as _stdev
 from screener.strategies.spec import strategy

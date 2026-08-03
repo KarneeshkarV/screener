@@ -25,7 +25,6 @@ from screener.backtester.data import (
 )
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
-
 from tests.conftest import StubPriceFetcher, make_bars
 
 

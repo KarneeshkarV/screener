@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from datetime import date
-from typing import Literal, Optional
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -50,15 +50,15 @@ class PricePanelInputs:
 
     market: str
     benchmark: str
-    tickers: Optional[tuple[str, ...]]
-    universe_file: Optional[str]
+    tickers: tuple[str, ...] | None
+    universe_file: str | None
     membership_windows: tuple[tuple[str, date, date | None], ...]
     dynamic_universe_size: int | None
     max_universe: int
     interval: str
     price_adjustment: Literal["full", "splits_only", "none"]
-    strategy_name: Optional[str]
-    fundamentals_provider: Optional[str]
+    strategy_name: str | None
+    fundamentals_provider: str | None
 
     @classmethod
     def from_config(cls, cfg: BacktestConfig) -> PricePanelInputs:

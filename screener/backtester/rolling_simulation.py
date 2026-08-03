@@ -12,19 +12,19 @@ import pandas as pd
 from screener.backtester.book import BOOK_CONFIG_FIELDS, open_book
 from screener.backtester.core import (
     _active_or_pending_tickers,
+    _bar_label,
     _FrameCache,
+    _make_slot_state,
     _RunCaches,
     _SlotState,
-    _bar_label,
-    _make_slot_state,
 )
+from screener.backtester.data import PriceFetcher
 from screener.backtester.day_loop import (
     FreedSlot,
     _force_close_open_slots,
     run_day_loop,
 )
 from screener.backtester.fills import FillModel
-from screener.backtester.data import PriceFetcher
 from screener.backtester.fundamentals import FundamentalFetcher
 from screener.backtester.metrics import (
     compute_cost_metrics,
@@ -43,6 +43,10 @@ from screener.backtester.price_panel import (
     PricePanelInputs,
     build_price_panel,
 )
+from screener.backtester.rolling_candidates import (
+    _candidate_rows_for_day,
+    _RollingCandidateMatrices,
+)
 from screener.backtester.signal_panel import (
     SIGNAL_PANEL_CONFIG_FIELDS,
     SignalPanelInputs,
@@ -50,10 +54,6 @@ from screener.backtester.signal_panel import (
     parse_signal_program,
 )
 from screener.backtester.sizing import entry_budget_for
-from screener.backtester.rolling_candidates import (
-    _RollingCandidateMatrices,
-    _candidate_rows_for_day,
-)
 
 # The reuse key is derived, not curated: every field either module declares as
 # an input is in it, plus every field no module claims at all. The old

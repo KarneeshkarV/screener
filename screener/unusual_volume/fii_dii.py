@@ -15,7 +15,6 @@ metrics are partial/None until enough daily runs accumulate (≥5 rows for the
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
 import pandas as pd
 
@@ -29,7 +28,7 @@ _PANEL = "fii_dii"
 EVENT_FIELDS = ("fii_5d_net", "fii_trend", "dii_5d_net")
 
 
-def fetch_fii_dii_today(*, refresh: bool = False) -> Optional[list]:
+def fetch_fii_dii_today(*, refresh: bool = False) -> list | None:
     raw = nse_cached_json(
         "nse_fii_dii",
         ("fiidii", str(date.today())),
@@ -40,7 +39,7 @@ def fetch_fii_dii_today(*, refresh: bool = False) -> Optional[list]:
     return raw if isinstance(raw, list) else None
 
 
-def _as_float(value: object) -> Optional[float]:
+def _as_float(value: object) -> float | None:
     try:
         if value is None:
             return None
@@ -49,12 +48,12 @@ def _as_float(value: object) -> Optional[float]:
         return None
 
 
-def parse_fii_dii(raw: list, as_of: date) -> Optional[dict]:
+def parse_fii_dii(raw: list, as_of: date) -> dict | None:
     """Reduce the 2-row NSE payload to {date, fii_net, dii_net}."""
     if not raw:
         return None
-    fii_net: Optional[float] = None
-    dii_net: Optional[float] = None
+    fii_net: float | None = None
+    dii_net: float | None = None
     for row in raw:
         if not isinstance(row, dict):
             continue
@@ -96,7 +95,7 @@ def fii_dii_metric_series(panel: pd.DataFrame) -> pd.DataFrame:
         dii = pd.to_numeric(hist["dii_net"], errors="coerce").dropna()
         fii_5d = float(fii.tail(5).sum()) if not fii.empty else None
         dii_5d = float(dii.tail(5).sum()) if not dii.empty else None
-        fii_trend: Optional[float] = None
+        fii_trend: float | None = None
         if len(fii) >= 5:
             baseline = float(fii.tail(20).mean())
             today = float(fii.iloc[-1])
@@ -134,7 +133,7 @@ def compute_fii_dii_metrics(panel: pd.DataFrame, as_of: date) -> dict:
 
 def overlay_fii_dii(
     events: list[Event], as_of: date, *, refresh: bool = False
-) -> Optional[dict]:
+) -> dict | None:
     """Fetch + persist today's FII/DII, broadcast metrics onto every event."""
     raw = fetch_fii_dii_today(refresh=refresh)
     record = parse_fii_dii(raw, as_of) if raw else None

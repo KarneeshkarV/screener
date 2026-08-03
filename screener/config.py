@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+import yaml  # type: ignore[import-untyped]
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -26,8 +27,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-import yaml  # type: ignore[import-untyped]
-
 
 ConfigMap = dict[str, Any]
 

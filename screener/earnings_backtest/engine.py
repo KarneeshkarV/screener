@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
-from typing import Optional
 
 import pandas as pd
 
@@ -19,6 +18,7 @@ from screener.earnings_backtest.data import (
     load_universe,
 )
 from screener.earnings_backtest.earnings_dates import collect_earnings_events
+from screener.earnings_backtest.models import EarningsTrade
 from screener.earnings_backtest.prepare import prepare_earnings_run
 from screener.earnings_backtest.sentiment import (
     fetch_analyst_sentiment,
@@ -29,7 +29,6 @@ from screener.earnings_backtest.strategies import (
     combined_score,
 )
 from screener.ledger import compute_event_trade_summary as compute_backtest_summary
-from screener.earnings_backtest.models import EarningsTrade
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +45,7 @@ def run_earnings_backtest(
     cost_model: str = "flat",
     slippage_bps: float = 5.0,
     batch_size: int = 50,
-    tickers: Optional[list[str]] = None,
+    tickers: list[str] | None = None,
 ) -> list[EarningsTrade]:
     """Run the earnings-drift backtest.
 
@@ -92,8 +91,8 @@ def run_earnings_backtest(
 
     # These live providers expose current snapshots only. Cache by entry/as-of
     # date and only use them when the snapshot is point-in-time safe.
-    analyst_cache: dict[tuple[str, date], Optional[dict]] = {}
-    iv_cache: dict[tuple[str, date], Optional[dict]] = {}
+    analyst_cache: dict[tuple[str, date], dict | None] = {}
+    iv_cache: dict[tuple[str, date], dict | None] = {}
 
     # Process each earnings event
     for _, event in events_df.iterrows():
@@ -131,15 +130,7 @@ def run_earnings_backtest(
 
         for strat_name in analyzed_strategies:
             func = STRATEGY_FUNCS[strat_name]
-            if strat_name == "price_momentum":
-                result = func(
-                    ticker,
-                    ed,
-                    bars,
-                    threshold=0.0,
-                    as_of_date=pd.Timestamp(entry_date),
-                )
-            elif strat_name == "volume_surge":
+            if strat_name == "price_momentum" or strat_name == "volume_surge":
                 result = func(
                     ticker,
                     ed,
@@ -260,7 +251,7 @@ def _find_entry_exit(
     bars: pd.DataFrame,
     earnings_date: pd.Timestamp,
     days_before: int,
-) -> tuple[Optional[date], Optional[date]]:
+) -> tuple[date | None, date | None]:
     """Find the entry date (E-days_before) and exit date (E) from price bars.
 
     E is the earnings day: we use the bar ON or JUST BEFORE the earnings date.

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from screener.strategies.spec import register_expression_strategy
 
-
 register_expression_strategy(
     "ema_trend",
     entry="close > ema(close, 20) and ema(close, 20) > ema(close, 200)",

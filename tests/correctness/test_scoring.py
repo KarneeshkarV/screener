@@ -19,13 +19,11 @@ garp.py formulas (verified from source):
 
 from __future__ import annotations
 
-
 import pandas as pd
 import pytest
 
+from screener.garp import INDIA_THRESHOLDS, US_THRESHOLDS, _passes_garp, add_garp_score
 from screener.scanner import _add_setup_score, _log_percentile
-from screener.garp import add_garp_score, _passes_garp, INDIA_THRESHOLDS, US_THRESHOLDS
-
 
 # ---------------------------------------------------------------------------
 # Helpers to build minimal DataFrames with neutral column values

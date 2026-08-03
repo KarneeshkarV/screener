@@ -30,7 +30,7 @@ class EnrichmentDiagnostic(BaseModel):
 
 
 __all__ = [
+    "MICROSTRUCTURE_ENRICHMENTS",
     "Enrichment",
     "EnrichmentDiagnostic",
-    "MICROSTRUCTURE_ENRICHMENTS",
 ]

@@ -36,7 +36,6 @@ import pytest
 
 from screener.backtester.pine import _atr as pine_atr
 from screener.backtester.pine import _rsi as pine_rsi
-
 from screener.indicators.plugins.atr import atr as pp_atr
 from screener.indicators.plugins.ema import ema as pp_ema
 from screener.indicators.plugins.rsi import rsi as pp_rsi

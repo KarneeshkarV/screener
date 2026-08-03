@@ -6,7 +6,7 @@ import importlib
 import sqlite3
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -70,11 +70,11 @@ def test_connect_enables_pragmas(history_db):
 
 
 def test_save_run_collision_reuses_id_and_replaces_rows(history_db, monkeypatch):
-    frozen = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    frozen = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
 
     class _FrozenDatetime(datetime):
         @classmethod
-        def now(cls, tz=None):  # noqa: D401 - mimic datetime.now signature
+        def now(cls, tz=None):
             return frozen if tz is None else frozen.astimezone(tz)
 
     monkeypatch.setattr(history_mod, "datetime", _FrozenDatetime)

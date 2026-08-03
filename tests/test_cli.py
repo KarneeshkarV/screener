@@ -9,14 +9,13 @@ from datetime import date
 import pandas as pd
 from click.testing import CliRunner
 
-from screener.cli import cli
+from screener import history as history_mod
+from screener import screen_workflow as workflow_mod
 from screener.backtester import historical as historical_cli
 from screener.backtester.models import BacktestResult
 from screener.backtester.optimization import cli as optimize_cli
-from screener import history as history_mod
-from screener import screen_workflow as workflow_mod
+from screener.cli import cli
 from screener.cli import cli as package_cli
-
 from tests.conftest import StubPriceFetcher, make_bars
 
 
@@ -44,7 +43,6 @@ def test_package_cli_matches_main_wrapper():
         "unusual-volume",
         "backtest-historical",
         "backtest-rolling",
-        "backtest-lab",
         "operator-scan",
         "optimize",
     ]:
@@ -218,14 +216,6 @@ def test_rolling_backtest_unknown_strategy_is_usage_error():
 
     assert res.exit_code != 0
     assert "Unknown strategy 'sma_cross'" in res.output
-
-
-def test_backtest_lab_help_lists_server_flags():
-    res = CliRunner().invoke(cli, ["backtest-lab", "--help"])
-
-    assert res.exit_code == 0
-    assert "--host" in res.output
-    assert "--port" in res.output
 
 
 def _stub_env():

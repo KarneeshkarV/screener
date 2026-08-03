@@ -34,7 +34,6 @@ from screener.operator.fetch import (
     near_month_oi,
 )
 
-
 # ─── helpers ────────────────────────────────────────────────────────────────
 
 

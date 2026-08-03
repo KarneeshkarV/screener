@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date
 import logging
+from datetime import date
 from typing import Protocol
 
 from screener.options.models import OptionChain, OptionsMarket

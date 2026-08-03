@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import re
 import urllib.parse
-from typing import Optional
 
 import pandas as pd
 
@@ -41,14 +40,14 @@ _OSC_PLEDGE_PROVIDER = CachedProvider(
 )
 
 
-def _as_pct(value: object) -> Optional[float]:
+def _as_pct(value: object) -> float | None:
     num = _as_float(value)
     if num is None or num < 0.0 or num > 100.0:
         return None
     return num
 
 
-def fetch_nse_pledge(symbol: str, *, refresh: bool = False) -> Optional[float]:
+def fetch_nse_pledge(symbol: str, *, refresh: bool = False) -> float | None:
     """Latest promoter-pledged % from NSE Corporate Filings, or None."""
     url = _NSE_PLEDGE_URL.format(sym=urllib.parse.quote(symbol.upper()))
     raw = nse_cached_json(
@@ -84,10 +83,10 @@ def fetch_nse_pledge(symbol: str, *, refresh: bool = False) -> Optional[float]:
     return None
 
 
-def fetch_openscreener_pledge(name: str, *, refresh: bool = False) -> Optional[float]:
+def fetch_openscreener_pledge(name: str, *, refresh: bool = False) -> float | None:
     """Promoter-pledged % scraped from the screener.in shareholding section."""
 
-    def _fetch() -> Optional[float]:
+    def _fetch() -> float | None:
         html = _HttpScraper().fetch_page(name)
         if not html:
             return None
@@ -105,7 +104,7 @@ def fetch_openscreener_pledge(name: str, *, refresh: bool = False) -> Optional[f
 
 def resolve_pledge_pct(
     symbol: str, name: str, *, refresh: bool = False
-) -> Optional[float]:
+) -> float | None:
     """Preferred = NSE filings; fallback = openscreener when NSE has no row."""
     nse = fetch_nse_pledge(symbol, refresh=refresh)
     if nse is not None:
@@ -121,10 +120,10 @@ def overlay_pledge(
         return
     symbols = sorted({ev.symbol.upper() for ev in events})
 
-    def _one(sym: str) -> tuple[str, Optional[float]]:
+    def _one(sym: str) -> tuple[str, float | None]:
         return sym, resolve_pledge_pct(sym, sym, refresh=refresh)
 
-    by_symbol: dict[str, Optional[float]] = {}
+    by_symbol: dict[str, float | None] = {}
     for sym, val in parallel_map(_one, symbols, max_workers=max_workers):
         by_symbol[sym] = val
     for ev in events:

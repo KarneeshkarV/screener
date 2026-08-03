@@ -9,9 +9,9 @@ from screener import garp as garp_module
 from screener.cli import cli
 from screener.garp import (
     INDIA_THRESHOLDS,
-    add_garp_score,
     _fmp_us_row,
     _passes_garp,
+    add_garp_score,
     screen_us_garp,
 )
 

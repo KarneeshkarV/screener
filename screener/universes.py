@@ -2,26 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import tomllib
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
-import json
-import hashlib
-import logging
 from pathlib import Path
-import tomllib
-from typing import Any, Optional, cast
-import warnings
+from typing import Any, cast
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, field_validator
 import requests
 import yaml  # type: ignore[import-untyped]
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from screener.cache import is_fresh
 from screener.resilience import call_with_resilience
-
 
 LOG = logging.getLogger(__name__)
 
@@ -145,12 +144,12 @@ class UniverseRequest(BaseModel):
 
     source: UniverseSource
     market: str = ""
-    tickers: Optional[tuple[str, ...]] = None
-    file: Optional[str] = None
+    tickers: tuple[str, ...] | None = None
+    file: str | None = None
     comment_prefixes: tuple[str, ...] = ()
     limit: int = 0
-    as_of: Optional[date] = None
-    index_name: Optional[UniverseName] = None
+    as_of: date | None = None
+    index_name: UniverseName | None = None
 
 
 def parse_ticker_csv(raw: str | None) -> list[str]:
@@ -421,7 +420,7 @@ def load_current_universe(
         else:
             symbols, source = definition.loader()
             point_in_time = not is_past
-    except Exception as exc:  # noqa: BLE001 - any upstream failure degrades to cache
+    except Exception as exc:
         if cached is None:
             raise
         universe, cached_point_in_time, _ = cached
@@ -817,7 +816,7 @@ def load_sp500_membership(
 
     try:
         df = _fetch_sp500_table()
-    except Exception as exc:  # noqa: BLE001 - any upstream failure degrades to cache
+    except Exception as exc:
         if cached is None:
             raise
         LOG.warning(

@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Sequence, cast
+from typing import Any, cast
 
 import click
 import numpy as np
@@ -27,7 +28,6 @@ from rich.table import Table
 from screener.backtester.data import build_price_fetcher, tv_to_yf
 from screener.markets import get_market, get_price_fetcher, market_option
 from screener.universes import available_universes, load_current_universe
-
 
 # ── pure computation ────────────────────────────────────────────────
 
@@ -78,7 +78,7 @@ class ICSummary:
 def summarize_ic(ic: pd.Series, *, horizon: int) -> ICSummary:
     """Summary stats over a daily IC series (NaNs dropped)."""
     clean = ic.dropna().astype(float)
-    n = int(len(clean))
+    n = len(clean)
     if n == 0:
         return ICSummary(
             horizon=horizon,
@@ -159,7 +159,7 @@ def quantile_mean_returns(
     for q in range(1, n_quantiles + 1):
         mask = labels == q
         vals = aligned_fwd.where(mask)
-        flat = vals.stack(future_stack=True).dropna()
+        flat = cast(pd.Series, vals.stack(future_stack=True)).dropna()
         means[q] = float(flat.mean()) if not flat.empty else float("nan")
     top = means.get(n_quantiles, float("nan"))
     bottom = means.get(1, float("nan"))

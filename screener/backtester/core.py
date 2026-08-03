@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Optional, Protocol, Union, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,6 @@ from screener.backtester.costs import corwin_schultz_half_spread
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig
-from screener.ledger import ExitReason
 from screener.backtester.pine import (
     PineError,
     evaluate,
@@ -23,6 +22,7 @@ from screener.backtester.pine import (
 )
 from screener.backtester.portfolio import Portfolio
 from screener.backtester.sessions import is_session_last, market_timezone
+from screener.ledger import ExitReason
 
 if TYPE_CHECKING:
     from screener.strategies.spec import StrategySpec
@@ -37,10 +37,10 @@ class UniverseSpec(Protocol):
     """
 
     @property
-    def tickers(self) -> Optional[tuple[str, ...]]: ...
+    def tickers(self) -> tuple[str, ...] | None: ...
 
     @property
-    def universe_file(self) -> Optional[str]: ...
+    def universe_file(self) -> str | None: ...
 
     @property
     def membership_windows(self) -> tuple[tuple[str, date, date | None], ...]: ...
@@ -56,16 +56,16 @@ class LiquidityFilterSpec(Protocol):
     """The config values the min-price/ADV entry filters read, and nothing else."""
 
     @property
-    def min_price(self) -> Optional[float]: ...
+    def min_price(self) -> float | None: ...
 
     @property
-    def min_avg_dollar_volume(self) -> Optional[float]: ...
+    def min_avg_dollar_volume(self) -> float | None: ...
 
     @property
     def avg_dollar_volume_window(self) -> int: ...
 
 
-def _bar_label(ts, cfg: BacktestConfig) -> Union[date, datetime]:
+def _bar_label(ts, cfg: BacktestConfig) -> date | datetime:
     """Return the trade/position stamp for a bar timestamp.
 
     Daily bars are midnight-normalized, so a plain ``date`` is returned — this
@@ -124,11 +124,11 @@ class _FrameCache:
     high_arr: np.ndarray
     low_arr: np.ndarray
     close_arr: np.ndarray
-    dividend_arr: Optional[np.ndarray]
+    dividend_arr: np.ndarray | None
     # int64 epoch-nanosecond view of a unique, naive datetime64[ns] index for
     # O(log n) day->position lookups; None otherwise, and callers then keep
     # the original ``Index.get_loc`` semantics (duplicates, exotic dtypes).
-    index_i8: Optional[np.ndarray]
+    index_i8: np.ndarray | None
     volume_f: pd.Series
     # close[i] / close[i-1] - 1: the exact ``pct_change`` arithmetic for
     # NaN-free windows (NaN-containing windows fall back to the original).
@@ -138,16 +138,16 @@ class _FrameCache:
     )
     # Lazily filled Corwin-Schultz half-spread series (fraction), aligned to
     # ``bars.index``. None until first ``spread_proxy`` lookup for this frame.
-    half_spread_s: Optional[pd.Series] = None
+    half_spread_s: pd.Series | None = None
     # Lazily filled session-last mask (see ``sessions.is_session_last``); None
     # until the first ``intraday_only`` slot open on this frame.
-    session_last: Optional[np.ndarray] = None
+    session_last: np.ndarray | None = None
 
 
 def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
     close_arr = bars["close"].to_numpy(dtype=float)
     index = bars.index
-    index_i8: Optional[np.ndarray] = None
+    index_i8: np.ndarray | None = None
     if (
         isinstance(index, pd.DatetimeIndex)
         and index.dtype == np.dtype("datetime64[ns]")
@@ -294,7 +294,7 @@ def _passes_entry_filters(
     bars: pd.DataFrame,
     as_of_ts: pd.Timestamp,
     cfg: BacktestConfig,
-) -> tuple[bool, Optional[str]]:
+) -> tuple[bool, str | None]:
     """Check min-price and liquidity filters against history up to ``as_of_ts``."""
     if cfg.min_price is None and cfg.min_avg_dollar_volume is None:
         return True, None
@@ -333,15 +333,15 @@ class _SlotState:
 
     ticker: str
     entry_idx: int
-    entry_date: Union[date, datetime]
+    entry_date: date | datetime
     entry_fill: float
-    signal_date: Union[date, datetime]
+    signal_date: date | datetime
     rank: int
-    stop_ref: Optional[float]
-    target_ref: Optional[float]
+    stop_ref: float | None
+    target_ref: float | None
     hold_limit_idx: int
     peak: float
-    exit_signal: Optional[pd.Series]
+    exit_signal: pd.Series | None
     adv_shares: float = 0.0
     sigma_daily: float = 0.0
     half_spread: float = 0.0
@@ -351,10 +351,10 @@ class _SlotState:
     # Optional hot-loop accelerators set by _make_slot_state when a _RunCaches
     # is threaded through; direct constructors (tests) leave them None and the
     # per-bar helpers fall back to the original pandas access paths.
-    frame_cache: Optional[_FrameCache] = None
-    exit_signal_values: Optional[np.ndarray] = None
+    frame_cache: _FrameCache | None = None
+    exit_signal_values: np.ndarray | None = None
     # Session-last mask aligned to ``bars.index`` when ``cfg.intraday_only``.
-    session_last: Optional[np.ndarray] = None
+    session_last: np.ndarray | None = None
     # Size used by a liquidity-sensitive FillModel and passed unchanged to
     # Portfolio.open. Fixed-price models retain legacy portfolio sizing.
     # See docs/adr/0001-pre-impact-entry-sizing.md.
@@ -365,7 +365,7 @@ def _half_spread_at_signal(
     bars: pd.DataFrame,
     signal_idx: int,
     cfg: BacktestConfig,
-    frame_cache: Optional[_FrameCache] = None,
+    frame_cache: _FrameCache | None = None,
 ) -> float:
     """Corwin-Schultz half-spread at ``signal_idx`` when ``spread_proxy`` is on."""
     if not cfg.spread_proxy:
@@ -374,7 +374,7 @@ def _half_spread_at_signal(
         return 0.0
     if "high" not in bars.columns or "low" not in bars.columns:
         return 0.0
-    series: Optional[pd.Series] = None
+    series: pd.Series | None = None
     if frame_cache is not None and frame_cache.half_spread_s is not None:
         series = frame_cache.half_spread_s
     else:
@@ -400,10 +400,10 @@ def _make_slot_state(
     cfg: BacktestConfig,
     exit_ast,
     rank: int,
-    fill_model: Optional[FillModel] = None,
-    caches: Optional[_RunCaches] = None,
-    entry_budget: Optional[float] = None,
-) -> tuple[Optional[_SlotState], Optional[str]]:
+    fill_model: FillModel | None = None,
+    caches: _RunCaches | None = None,
+    entry_budget: float | None = None,
+) -> tuple[_SlotState | None, str | None]:
     """Build the per-slot state used by both historical and rolling flows."""
     fills = fill_model if fill_model is not None else FillModel(cfg)
     frame_cache = caches.frame(ticker, bars) if caches is not None else None
@@ -576,7 +576,7 @@ def _check_exit_at_bar(
     cfg: BacktestConfig,
     fill_model: FillModel,
     shares: float = 0.0,
-) -> Optional[tuple[float, ExitReason]]:
+) -> tuple[float, ExitReason] | None:
     """Evaluate exit rules for ``state`` at ``bars[i]``."""
     frame_cache = state.frame_cache
     if frame_cache is not None:
@@ -596,7 +596,7 @@ def _check_exit_at_bar(
     target_hit = state.target_ref is not None and high >= state.target_ref
     trail_hit = trail_ref is not None and low <= trail_ref
 
-    def _sell(reason: ExitReason, level: Optional[float] = None) -> float:
+    def _sell(reason: ExitReason, level: float | None = None) -> float:
         return fill_model.exit_price(
             reason=reason,
             bar_open=bar_open,
@@ -617,8 +617,7 @@ def _check_exit_at_bar(
     if target_hit:
         return _sell("target", state.target_ref), "target"
 
-    if high > state.peak:
-        state.peak = high
+    state.peak = max(state.peak, high)
 
     if state.exit_signal is not None:
         fired = (
@@ -749,9 +748,9 @@ def _eligible_reserve_signal_idx(
     entry_ast,
     lookback: int,
     *,
-    ticker: Optional[str] = None,
-    caches: Optional[_RunCaches] = None,
-) -> Optional[int]:
+    ticker: str | None = None,
+    caches: _RunCaches | None = None,
+) -> int | None:
     """Return signal index if a reserve passes filters and entry AST on ``exit_day``.
 
     When ``ticker`` and ``caches`` are given, the entry AST is evaluated once
@@ -789,7 +788,7 @@ def _eligible_reserve_signal_idx(
     return pos
 
 
-def _bar_index_on_or_before(bars: pd.DataFrame, day: pd.Timestamp) -> Optional[int]:
+def _bar_index_on_or_before(bars: pd.DataFrame, day: pd.Timestamp) -> int | None:
     # ``bars.index`` is a sorted DatetimeIndex; searchsorted is O(log n).
     pos = bars.index.searchsorted(day, side="right")
     if pos <= 0:
@@ -798,7 +797,7 @@ def _bar_index_on_or_before(bars: pd.DataFrame, day: pd.Timestamp) -> Optional[i
 
 
 def _active_or_pending_tickers(
-    slot_states: dict[int, Optional[_SlotState]],
+    slot_states: dict[int, _SlotState | None],
 ) -> set[str]:
     return {state.ticker for state in slot_states.values() if state is not None}
 

@@ -6,7 +6,6 @@ from typing import Any
 
 import numpy as np
 
-
 EARNINGS_CACHE_DAYS = 30
 SENTIMENT_CACHE_DAYS = 1
 MAX_WORKERS = 12

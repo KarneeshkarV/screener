@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any, Protocol, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from screener.options._parse import number as _number
+from screener.options._parse import quote_pair
 from screener.options.models import (
     OptionChain,
     OptionContract,
     OptionRight,
     OptionsMarket,
 )
-from screener.options._parse import number as _number
-from screener.options._parse import quote_pair
 from screener.unusual_volume.nse_client import nse_cached_json
 
 
@@ -29,11 +29,11 @@ class RawFetcher(Protocol):
 def _timestamp(raw: object, now: datetime) -> datetime:
     parsed = pd.to_datetime(cast(Any, raw), dayfirst=True, errors="coerce")
     if pd.isna(parsed):
-        return now.astimezone(timezone.utc)
+        return now.astimezone(UTC)
     ts = pd.Timestamp(parsed)
     if ts.tzinfo is None:
         ts = ts.tz_localize(ZoneInfo("Asia/Kolkata"))
-    return ts.tz_convert(timezone.utc).to_pydatetime()
+    return ts.tz_convert(UTC).to_pydatetime()
 
 
 def _expiry(
@@ -152,7 +152,7 @@ def parse_nse_chain(
     now: datetime | None = None,
 ) -> OptionChain | None:
     """Normalize NSE's records/filtered option-chain payload."""
-    current = now or datetime.now(timezone.utc)
+    current = now or datetime.now(UTC)
     records_obj = raw.get("records")
     records = records_obj if isinstance(records_obj, dict) else {}
     as_of = _timestamp(records.get("timestamp"), current)
@@ -217,7 +217,7 @@ class NSELiveOptionsProvider:
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self.raw_fetcher = raw_fetcher
-        self.now = now or (lambda: datetime.now(timezone.utc))
+        self.now = now or (lambda: datetime.now(UTC))
 
     def fetch_chain(
         self,
