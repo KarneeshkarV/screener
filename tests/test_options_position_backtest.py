@@ -20,6 +20,7 @@ from tests.conftest import StubPriceFetcher
 
 FIXTURE = Path(__file__).parent / "fixtures" / "nse_fo_bhavcopy_options_sample.csv"
 
+
 # Offline weekday calendar — avoid NSE holiday network fetch in tests.
 def _WEEKDAY(d):
     return d.weekday() < 5

@@ -410,10 +410,8 @@ def main() -> None:
             all_trade_rows.append(
                 {
                     "window_years": years,
-                    
-                        **trade.__dict__,
-                        "ticker": config.display_names.get(trade.ticker, trade.ticker)
-                    ,
+                    **trade.__dict__,
+                    "ticker": config.display_names.get(trade.ticker, trade.ticker),
                 }
             )
 

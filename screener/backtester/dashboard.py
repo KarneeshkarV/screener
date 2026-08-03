@@ -434,10 +434,10 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
 def serve_dashboard(path: str | Path, port: int) -> None:
     """Serve the dashboard directory until interrupted."""
     dashboard_path = Path(path).resolve()
+
     def handler(*args, **kwargs):
-        return SimpleHTTPRequestHandler(
-            *args, directory=str(dashboard_path), **kwargs
-        )
+        return SimpleHTTPRequestHandler(*args, directory=str(dashboard_path), **kwargs)
+
     with _ReusableThreadingHTTPServer(("127.0.0.1", int(port)), handler) as httpd:
         try:
             httpd.serve_forever()

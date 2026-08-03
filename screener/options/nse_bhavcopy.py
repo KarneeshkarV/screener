@@ -206,9 +206,7 @@ def normalize_bhavcopy_options(
                     previous_close=_positive(row.get("PrvsClsgPric")),
                     settle=settle,
                     lot_size=embedded_lot or mapped_lot,
-                    as_of=datetime.combine(
-                        contract_as_of, time.min, tzinfo=UTC
-                    ),
+                    as_of=datetime.combine(contract_as_of, time.min, tzinfo=UTC),
                     source="nse_bhavcopy",
                     **greek_kwargs,
                 )
