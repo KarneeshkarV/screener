@@ -159,7 +159,7 @@ def quantile_mean_returns(
     for q in range(1, n_quantiles + 1):
         mask = labels == q
         vals = aligned_fwd.where(mask)
-        flat = vals.stack(future_stack=True).dropna()
+        flat = cast(pd.Series, vals.stack(future_stack=True)).dropna()
         means[q] = float(flat.mean()) if not flat.empty else float("nan")
     top = means.get(n_quantiles, float("nan"))
     bottom = means.get(1, float("nan"))

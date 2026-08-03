@@ -163,7 +163,7 @@ def overlay_events(events: list[Event], panel: pd.DataFrame) -> list[Event]:
         if isinstance(selected, pd.DataFrame):  # pragma: no cover - keys deduped
             row = cast(pd.Series, selected.iloc[0])
         else:
-            row = cast(pd.Series, selected)
+            row = selected
         ev.delivery_qty = (
             float(row["DELIV_QTY"]) if not pd.isna(row["DELIV_QTY"]) else None
         )

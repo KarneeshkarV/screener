@@ -276,7 +276,9 @@ def read_cash_bhavcopy_raw(
     df = pd.read_csv(path)
     df.columns = [str(c).strip() for c in df.columns]
     for c in df.columns:
-        if df[c].dtype == object:
+        # pandas >= 3 infers a dedicated string dtype for text columns, so an
+        # ``== object`` check alone would silently skip stripping there.
+        if df[c].dtype == object or pd.api.types.is_string_dtype(df[c]):
             df[c] = df[c].astype(str).str.strip()
     return df
 
