@@ -27,13 +27,14 @@
 <body>
 <header>
   <h1>Screener backtester — flamegraph &amp; GPU offload analysis</h1>
-  <div class="sub">Rolling engine · 300 synthetic symbols · 3yr / 756 sessions · 709 trades · profile re-run 2026-07-28 (post #114–#117)</div>
+  <div class="sub">Rolling engine · 300 synthetic symbols · 3yr / 756 sessions · 709 trades · profile re-run 2026-08-03 (post #114–#119)</div>
 </header>
 <main>
   <div class="card">
-    <h2>Profile re-run — after the vectorization work</h2>
-    <p>Every artifact on this page was regenerated on <strong>2026-07-28</strong> against <code>main@d2382eb</code>, so it reflects the engine <em>after</em> PRs #114–#117. Interleaved A/B vs. the merge-base: <strong>4.14 s → 2.40 s per run (≈1.73×)</strong>, identical 709 trades. Pine evaluation fell from 32.9% of the profile to 12.9%; <code>_precompute_filter_signals</code> is now the top bottleneck at 21.4%.</p>
-    <a class="btn" href="../flamegraph_analysis_2026_07_28.md">Re-run write-up (2026-07-28) →</a>
+    <h2>Profile re-run — after the rolling-backtest acceleration</h2>
+    <p>Every artifact on this page was regenerated on <strong>2026-08-03</strong> against <code>main@572d47b</code>, so it reflects the engine <em>after</em> PRs #114–#119. Interleaved A/B vs. the merge-base: <strong>0.61 s → 0.32 s per run (≈1.92×)</strong>, identical 709 trades. Preparation (<code>_prepare_simulation</code>) is now 61.2% of the engine; the old top bottleneck <code>_precompute_filter_signals</code> fell to 9.9%.</p>
+    <a class="btn" href="../flamegraph_analysis_2026_08_03.md">Re-run write-up (2026-08-03) →</a>
+    <a class="btn alt" href="../flamegraph_analysis_2026_07_28.md">Previous re-run (2026-07-28) →</a>
     <a class="btn alt" href="../flamegraph_gpu_analysis_2026_07_25.md">Original, superseded (2026-07-25) →</a>
   </div>
 
@@ -45,7 +46,7 @@
 
   <div class="card">
     <h2>Analysis write-up</h2>
-    <p>Bottleneck ranking and GPU-offload assessment, rendered. <span class="note">Note: this page renders the 2026-07-25 analysis and is kept for the record — its numbers describe the pre-vectorization engine. The current ranking is in the 2026-07-28 re-run above.</span></p>
+    <p>Bottleneck ranking and GPU-offload assessment, rendered. <span class="note">Note: this page renders the 2026-07-25 analysis and is kept for the record — its numbers describe the pre-vectorization engine. The current ranking is in the 2026-08-03 re-run above.</span></p>
     <a class="btn" href="analysis.html">Open analysis (2026-07-25) →</a>
   </div>
 
@@ -57,14 +58,14 @@
 
   <div class="card">
     <h2>Flamegraph — cProfile (deterministic)</h2>
-    <p>Instrumented call-time flamegraph — 4,332,144 calls in 10.839 s instrumented (was 7,171,842 / 16.577 s before the vectorization work). Taken on a near-idle box with BLAS threads pinned to 1, so unlike the 07-25 run the absolute times are not contention-inflated.</p>
+    <p>Instrumented call-time flamegraph — 2,948,939 calls in 1.291 s instrumented (was 7,171,738 / 3.070 s before the vectorization work). Taken on a 16-core box with BLAS threads pinned to 1; absolute seconds are not comparable to the 07-25/07-28 runs.</p>
     <a class="btn alt" href="flamegraph_cprofile.svg" target="_blank">Full screen ↗</a>
     <iframe src="flamegraph_cprofile.svg" title="cProfile flamegraph"></iframe>
   </div>
 
   <div class="card">
-    <h2>Flamegraph — py-spy (sampling, 2,647 samples @250Hz)</h2>
-    <p>Native sampling profiler — includes C-extension frames the deterministic profiler can't see. Fewer samples than the 07-25 run because the run itself is shorter. <span class="note">≈15.8% of samples are <code>importlib</code> process start-up (up from 6.8% — the fixed import cost didn't change, engine time halved around it); discount it when reading shares.</span></p>
+    <h2>Flamegraph — py-spy (sampling, 285 samples @250Hz)</h2>
+    <p>Native sampling profiler — includes C-extension frames the deterministic profiler can't see. The run is much shorter than the prior profile, so start-up dominates the small sample. <span class="note">≈48.2% of samples are <code>importlib</code> process start-up; the fixed import cost did not change, while engine time fell. Discount it when reading shares.</span></p>
     <a class="btn alt" href="flamegraph_pyspy.svg" target="_blank">Full screen ↗</a>
     <iframe src="flamegraph_pyspy.svg" title="py-spy flamegraph"></iframe>
   </div>
@@ -74,7 +75,7 @@
     <ul>
       <li><a href="pstats_tottime.txt">pstats — top 40 by internal time</a></li>
       <li><a href="pstats_cumulative.txt">pstats — top 40 by cumulative time</a></li>
-      <li><a href="rolling.prof">rolling.prof</a> (cProfile binary, open in snakeviz) — current, post-#117</li>
+      <li><a href="rolling.prof">rolling.prof</a> (cProfile binary, open in snakeviz) — current, post-#119</li>
       <li><a href="rolling_pre_vectorization.prof">rolling_pre_vectorization.prof</a> — the merge-base (<code>98f8ea8</code>) profiled under the same conditions, so the before/after delta is reproducible</li>
     </ul>
   </div>

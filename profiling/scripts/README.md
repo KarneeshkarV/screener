@@ -83,9 +83,10 @@ the primary tree's code unless you set `PYTHONPATH=<worktree>` and verify
   a 5-day cap re-buys each unique name ~5.3× (93% of trades are re-entries) vs ~2.0× / ~70%
   at ∞. This is by design (`allow_reentry`) — the screen re-selecting the same momentum
   leaders (US: NVDA/AVGO/ANET…; India: BSE/BEL/INDHOTEL…), not a bug.
-- **Profiling.** Current ranking is in `../flamegraph_analysis_2026_07_28.md` (re-run after
-  PRs #114–#117 shipped: **4.14 s → 2.40 s per run, ≈1.73×**, identical output; Pine
-  evaluation 32.9% → 12.9%, `_precompute_filter_signals` now the top bottleneck at 21.4%).
+- **Profiling.** Current ranking is in `../flamegraph_analysis_2026_08_03.md` (re-run after
+  PRs #114–#119 shipped: **0.61 s → 0.32 s per run, ≈1.92×**, identical output;
+  `_prepare_simulation` is now the top phase at 61.2%, while `_precompute_filter_signals`
+  fell to 9.9%).
   `../flamegraph_gpu_analysis_2026_07_25.md` is the superseded original that motivated that
   work, and is profiled by `../webview/rolling_pre_vectorization.prof`.
 
