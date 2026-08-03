@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import statistics
 from dataclasses import dataclass
 from datetime import date, timedelta
 from math import erf, exp, log, sqrt
-import statistics
 
 import numpy as np
 import pandas as pd
@@ -410,10 +410,10 @@ def main() -> None:
             all_trade_rows.append(
                 {
                     "window_years": years,
-                    **{
+                    
                         **trade.__dict__,
-                        "ticker": config.display_names.get(trade.ticker, trade.ticker),
-                    },
+                        "ticker": config.display_names.get(trade.ticker, trade.ticker)
+                    ,
                 }
             )
 

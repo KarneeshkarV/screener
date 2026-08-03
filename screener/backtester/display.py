@@ -11,7 +11,6 @@ from screener import agentio
 from screener.backtester.metrics import ResultView, result_view
 from screener.backtester.models import BacktestResult
 
-
 console = Console()
 
 

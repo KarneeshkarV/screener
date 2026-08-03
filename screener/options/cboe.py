@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import date, datetime, timezone
 import re
+from collections.abc import Callable
+from datetime import UTC, date, datetime
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 
+from screener.options._parse import number as _number
+from screener.options._parse import quote_pair as _quote_pair
 from screener.options.models import (
     OptionChain,
     OptionContract,
     OptionRight,
     OptionsMarket,
 )
-from screener.options._parse import number as _number
-from screener.options._parse import quote_pair as _quote_pair
 from screener.providers import CachedProvider, ProviderSpec
 
 CBOE_DELAYED_URL = (
@@ -36,11 +36,11 @@ _CBOE_CACHE = CachedProvider(
 def _venue_timestamp(value: object, fallback: datetime) -> datetime:
     parsed = pd.to_datetime(cast(Any, value), errors="coerce")
     if pd.isna(parsed):
-        return fallback.astimezone(timezone.utc)
+        return fallback.astimezone(UTC)
     ts = pd.Timestamp(parsed)
     if ts.tzinfo is None:
         ts = ts.tz_localize(ZoneInfo("America/Chicago"))
-    return ts.tz_convert(timezone.utc).to_pydatetime()
+    return ts.tz_convert(UTC).to_pydatetime()
 
 
 def _contract_parts(symbol: str) -> tuple[str, date, OptionRight, float] | None:
@@ -70,7 +70,7 @@ def parse_cboe_chain(
     option_rows = payload.get("options")
     if not isinstance(option_rows, list):
         return None
-    fallback = now or datetime.now(timezone.utc)
+    fallback = now or datetime.now(UTC)
     as_of = _venue_timestamp(raw.get("timestamp"), fallback)
     underlying = str(payload.get("symbol") or requested_symbol).lstrip("_").upper()
     spot = _number(payload.get("current_price"), nonnegative=True)
@@ -147,7 +147,7 @@ class CboeOptionsProvider:
     ) -> None:
         self.session = session
         self.cache_provider = cache_provider
-        self.now = now or (lambda: datetime.now(timezone.utc))
+        self.now = now or (lambda: datetime.now(UTC))
 
     def _fetch_raw(self, symbol: str) -> dict[str, Any]:
         url = CBOE_DELAYED_URL.format(symbol=cboe_symbol(symbol))

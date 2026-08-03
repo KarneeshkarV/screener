@@ -37,7 +37,6 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
-
 #: Detail levels, cheapest first. ``summary`` prints headline facts and the
 #: spill path only; ``head`` adds a header row plus the first
 #: :data:`HEAD_ROWS` rows; ``full`` prints every row and still spills.
@@ -266,10 +265,10 @@ def kv_line(pairs: list[tuple[str, Any]], per_line: int = 4) -> list[str]:
 
 
 __all__ = [
-    "AgentDetail",
     "DEFAULT_DETAIL",
     "DETAIL_LEVELS",
     "HEAD_ROWS",
+    "AgentDetail",
     "configure",
     "detail_level",
     "get_console",

@@ -14,7 +14,6 @@ overlays — those live in ``cli`` / ``delivery``. This module only sees a
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -23,7 +22,6 @@ from pydantic import BaseModel, Field, field_validator
 from screener.symbols import normalize_symbol
 
 from .classify import Direction, Strength, classify_direction, classify_strength
-
 
 # Threshold tiers — moderate is the entry filter; the others stamp strength.
 DEFAULT_MIN_RVOL = 2.0
@@ -50,27 +48,27 @@ class Event(BaseModel):
     direction: Direction
     strength: Strength
     # India-only — populated by the delivery overlay, default None elsewhere.
-    delivery_qty: Optional[float] = None
-    delivery_pct: Optional[float] = None
-    delivery_rvol: Optional[float] = None
-    conviction_score: Optional[float] = None
-    sector: Optional[str] = None
-    market_cap: Optional[float] = None
+    delivery_qty: float | None = None
+    delivery_pct: float | None = None
+    delivery_rvol: float | None = None
+    conviction_score: float | None = None
+    sector: str | None = None
+    market_cap: float | None = None
     notes: str = ""
     # Build-up overlay — populated by buildup.scan_buildups, default None.
-    buildup_score: Optional[float] = None
+    buildup_score: float | None = None
     buildup_flags: list[str] = Field(default_factory=list)
     # India micro-structure overlays — populated by the delivery / option-chain
     # / FII-DII / pledge overlays, default None elsewhere.
-    delivery_pct_last: Optional[float] = None
-    delivery_trend: Optional[float] = None
-    delivery_spike: Optional[float] = None
-    call_put_oi_ratio: Optional[float] = None
-    pcr: Optional[float] = None
-    fii_5d_net: Optional[float] = None
-    fii_trend: Optional[float] = None
-    dii_5d_net: Optional[float] = None
-    pledge_pct: Optional[float] = None
+    delivery_pct_last: float | None = None
+    delivery_trend: float | None = None
+    delivery_spike: float | None = None
+    call_put_oi_ratio: float | None = None
+    pcr: float | None = None
+    fii_5d_net: float | None = None
+    fii_trend: float | None = None
+    dii_5d_net: float | None = None
+    pledge_pct: float | None = None
 
     @field_validator("symbol")
     @classmethod
@@ -81,7 +79,7 @@ class Event(BaseModel):
         return self.model_dump(mode="json")
 
 
-def bars_on_or_before_as_of(bars: Optional[pd.DataFrame], as_of: date) -> pd.DataFrame:
+def bars_on_or_before_as_of(bars: pd.DataFrame | None, as_of: date) -> pd.DataFrame:
     """Return a date-sorted copy of ``bars`` clipped to rows on/before ``as_of``.
 
     Handles a missing/None frame and normalizes a ``date`` column into a
@@ -119,7 +117,7 @@ def detect_ticker(
     as_of: date,
     min_rvol: float = DEFAULT_MIN_RVOL,
     min_z: float = DEFAULT_MIN_Z,
-) -> Optional[Event]:
+) -> Event | None:
     """Return an ``Event`` for ``symbol`` on ``as_of`` if it crosses thresholds.
 
     ``bars`` must be a DataFrame with a DatetimeIndex (or a ``date`` column)

@@ -7,7 +7,6 @@ Single home for the symbol-conversion rules that were previously duplicated
 
 from __future__ import annotations
 
-
 # TradingView writes both ``&`` and ``-`` as ``_`` in Indian symbols, so the
 # underscore alone cannot say which separator the real ticker uses. yfinance,
 # FMP and the NSE bhavcopy all want the true separator (``M_M`` resolves

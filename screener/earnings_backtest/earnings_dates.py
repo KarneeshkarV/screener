@@ -15,7 +15,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import pandas as pd
 import yfinance as yf
@@ -62,7 +62,7 @@ def _earnings_to_records(ed: pd.DataFrame) -> list[dict[str, Any]]:
     return records
 
 
-def _earnings_from_records(records: list[dict[str, Any]]) -> Optional[pd.DataFrame]:
+def _earnings_from_records(records: list[dict[str, Any]]) -> pd.DataFrame | None:
     if not records:
         return None
     df = pd.DataFrame(records)
@@ -84,7 +84,7 @@ def _earnings_from_records(records: list[dict[str, Any]]) -> Optional[pd.DataFra
 def fetch_earnings_dates_yf(
     ticker: str,
     years: int = 3,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """Return yfinance earnings_dates for *ticker*."""
 
     def _fetch() -> list[dict[str, Any]]:
@@ -119,7 +119,7 @@ def fetch_earnings_dates_yf(
     return _earnings_from_records(records)
 
 
-def fetch_earnings_dates_nse() -> Optional[pd.DataFrame]:
+def fetch_earnings_dates_nse() -> pd.DataFrame | None:
     """Fetch earnings result dates from NSE corporate announcements via jugaad_data."""
 
     def _fetch() -> list[dict[str, Any]]:
@@ -231,7 +231,7 @@ def fetch_earnings_dates_openscreener(
     ticker: str,
     years: int = 3,
     filing_lag_days: int = INDIA_EARNINGS_FILING_LAG_DAYS,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """Return India quarterly result periods from screener.in via openscreener.
 
     screener.in keys each row on the fiscal PERIOD-END (e.g. ``"Mar 2024"`` →
@@ -247,6 +247,7 @@ def fetch_earnings_dates_openscreener(
 
     def _fetch() -> list[dict[str, Any]]:
         from openscreener import Stock
+
         from screener.insiders import _HttpScraper
 
         payload = Stock(symbol, scraper=_HttpScraper()).fetch("quarterly_results")
@@ -356,7 +357,7 @@ def _fetch_openscreener_earnings_rows(
 def fetch_earnings_dates_fmp(
     ticker: str,
     years: int = 3,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     """Return FMP historical earnings for *ticker* with a computed EPS surprise.
 
     FMP's ``historical/earning_calendar`` endpoint reports the real
@@ -567,7 +568,7 @@ def collect_earnings_events(
     years: int = 3,
     batch_size: int = 50,
     market: str = "us",
-    surprise_source: Optional[str] = None,
+    surprise_source: str | None = None,
 ) -> pd.DataFrame:
     """Collect earnings dates for all *tickers*.
 

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener import cache
-from screener import resilience
+from screener import cache, resilience
 from screener.providers import CachedProvider, FakeProvider, ProviderSpec
 
 

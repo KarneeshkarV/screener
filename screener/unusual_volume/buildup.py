@@ -28,7 +28,6 @@ already loads — it adds no new data dependencies.
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -38,7 +37,6 @@ from screener.indicators.frames import wilder_atr
 from screener.symbols import normalize_symbol
 
 from .detector import bars_on_or_before_as_of
-
 
 DEFAULT_WINDOW = 20
 DEFAULT_MIN_SCORE = 0.6
@@ -64,21 +62,21 @@ class BuildupScore(BaseModel):
     symbol: str
     as_of: date
     window: int
-    range_compression: Optional[float]
-    updown_volume: Optional[float]
-    higher_lows: Optional[float]
-    sustained_delivery: Optional[float]
-    close_near_high: Optional[float]
+    range_compression: float | None
+    updown_volume: float | None
+    higher_lows: float | None
+    sustained_delivery: float | None
+    close_near_high: float | None
     composite: float
     flags: list[str] = Field(default_factory=list)
     # Diagnostic raw values — handy when triaging a score in the journal.
-    atr_ratio: Optional[float] = None
-    bb_squeeze_ratio: Optional[float] = None
-    updown_ratio: Optional[float] = None
-    low_slope_norm: Optional[float] = None
-    delivery_mean: Optional[float] = None
-    delivery_hit_rate: Optional[float] = None
-    absorption_mean: Optional[float] = None
+    atr_ratio: float | None = None
+    bb_squeeze_ratio: float | None = None
+    updown_ratio: float | None = None
+    low_slope_norm: float | None = None
+    delivery_mean: float | None = None
+    delivery_hit_rate: float | None = None
+    absorption_mean: float | None = None
 
     model_config = ConfigDict(frozen=True)
 
@@ -114,7 +112,7 @@ def _bb_width(
 
 def _score_range_compression(
     df: pd.DataFrame, window: int
-) -> tuple[Optional[float], Optional[float], Optional[float]]:
+) -> tuple[float | None, float | None, float | None]:
     if len(df) < max(BB_LEN, ATR_LEN) + window:
         return None, None, None
     atr = _atr(df)
@@ -148,7 +146,7 @@ def _score_range_compression(
 
 def _score_updown_volume(
     df: pd.DataFrame, window: int
-) -> tuple[Optional[float], Optional[float]]:
+) -> tuple[float | None, float | None]:
     win = df.iloc[-window:]
     if len(win) < window:
         return None, None
@@ -175,7 +173,7 @@ def _score_updown_volume(
 
 def _score_higher_lows(
     df: pd.DataFrame, window: int
-) -> tuple[Optional[float], Optional[float]]:
+) -> tuple[float | None, float | None]:
     win = df.iloc[-window:]
     if len(win) < window:
         return None, None
@@ -211,11 +209,11 @@ def _swing_lows(lows: np.ndarray, k: int = 2) -> list[float]:
 
 
 def _score_sustained_delivery(
-    delivery_panel: Optional[pd.DataFrame],
+    delivery_panel: pd.DataFrame | None,
     symbol: str,
     as_of: date,
     window: int,
-) -> tuple[Optional[float], Optional[float], Optional[float]]:
+) -> tuple[float | None, float | None, float | None]:
     if delivery_panel is None or delivery_panel.empty:
         return None, None, None
     sym = symbol.upper()
@@ -241,7 +239,7 @@ def _score_sustained_delivery(
 
 def _score_close_near_high(
     df: pd.DataFrame, window: int
-) -> tuple[Optional[float], Optional[float]]:
+) -> tuple[float | None, float | None]:
     win = df.iloc[-window:]
     if len(win) < window:
         return None, None
@@ -261,11 +259,11 @@ def _score_close_near_high(
 
 def compute_buildup_score(
     symbol: str,
-    bars: Optional[pd.DataFrame],
+    bars: pd.DataFrame | None,
     as_of: date,
-    delivery_panel: Optional[pd.DataFrame] = None,
+    delivery_panel: pd.DataFrame | None = None,
     window: int = DEFAULT_WINDOW,
-) -> Optional[BuildupScore]:
+) -> BuildupScore | None:
     """Score one ticker. Returns None when the bar history is too short."""
     df = bars_on_or_before_as_of(bars, as_of)
     if len(df) < max(BB_LEN, ATR_LEN) + window:
@@ -321,7 +319,7 @@ def compute_buildup_score(
 def scan_buildups(
     bars_by_symbol: dict[str, pd.DataFrame],
     as_of: date,
-    delivery_panel: Optional[pd.DataFrame] = None,
+    delivery_panel: pd.DataFrame | None = None,
     window: int = DEFAULT_WINDOW,
     min_score: float = DEFAULT_MIN_SCORE,
 ) -> list[BuildupScore]:

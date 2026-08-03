@@ -7,12 +7,11 @@ import pandas as pd
 
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
-from screener.strategies.expressions import resolve_strategy
 from screener.backtester.vivek_equity import (
     prepare_vivek_equity_tool_frame,
     required_history_bars,
 )
-
+from screener.strategies.expressions import resolve_strategy
 from tests.conftest import StubPriceFetcher
 
 

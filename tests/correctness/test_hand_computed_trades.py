@@ -38,9 +38,7 @@ import pytest
 
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
-
 from tests.backtest_helpers import simulate_single_ticker
-
 from tests.conftest import StubPriceFetcher
 from tests.correctness.fixtures.explicit_bars import (
     bars_s1_buy_and_hold,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from screener.strategies.spec import register_expression_strategy
 
-
 register_expression_strategy(
     "ema150_200_revenue_up_3q",
     entry=(

@@ -7,7 +7,7 @@ underlying venue after numeric normalization.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -25,9 +25,9 @@ def _as_utc_datetime(value: datetime | date | str) -> datetime:
             value = date.fromisoformat(normalized)
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
-    return datetime.combine(value, time.min, tzinfo=timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+    return datetime.combine(value, time.min, tzinfo=UTC)
 
 
 class OptionContract(BaseModel):
@@ -78,7 +78,7 @@ class OptionContract(BaseModel):
         return _as_utc_datetime(value)
 
     @model_validator(mode="after")
-    def _validate_quote(self) -> "OptionContract":
+    def _validate_quote(self) -> OptionContract:
         if self.bid is not None and self.ask is not None and self.ask < self.bid:
             raise ValueError("ask must be greater than or equal to bid")
         return self
@@ -115,7 +115,7 @@ class OptionChain(BaseModel):
         return _as_utc_datetime(value)
 
     @model_validator(mode="after")
-    def _validate_contracts(self) -> "OptionChain":
+    def _validate_contracts(self) -> OptionChain:
         mismatched = {
             contract.underlying
             for contract in self.contracts

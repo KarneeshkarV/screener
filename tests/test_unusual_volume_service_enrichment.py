@@ -1,53 +1,24 @@
 from __future__ import annotations
 
-
 import sys
-
-
 import types
-
-
 from datetime import date
 
-
 import numpy as np
-
-
 import pandas as pd
-
-
 import pytest
-
-
 from pydantic import ValidationError
-
-
 from rich.console import Console
-
 
 from screener.unusual_volume import (
     Event,
 )
-
-
-from screener.unusual_volume import service as uv_service
-
-
-from screener.unusual_volume.enrichment import Enrichment
-
-
 from screener.unusual_volume import buildup as uv_buildup
-
-
 from screener.unusual_volume import enrich as uv_enrich
-
-
+from screener.unusual_volume import service as uv_service
 from screener.unusual_volume.buildup import BuildupScore
-
-
 from screener.unusual_volume.enrich import deep_enrich_india
-
-
+from screener.unusual_volume.enrichment import Enrichment
 from tests.conftest import make_bars
 
 

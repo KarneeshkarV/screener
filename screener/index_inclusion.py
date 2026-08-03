@@ -16,7 +16,6 @@ import pandas as pd
 
 from screener.backtester.data import PriceFetcher
 
-
 BENCHMARK_SYMBOL = "SPY"
 PRE_EVENT_TRADING_DAYS = 5
 HORIZONS: tuple[int, ...] = (5, 20, 60)

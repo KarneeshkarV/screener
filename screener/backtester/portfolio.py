@@ -22,8 +22,9 @@ ticker cannot be opened twice through the legacy API.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date, datetime
-from typing import Any, Iterable, Optional, Union, cast
+from typing import Any, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -90,8 +91,7 @@ class Portfolio:
             breakdown = breakdown_fn(side, notional, shares)
         else:
             frac = float(self.cost_model.side_cost_fraction(side, notional))
-            if frac < 0.0:
-                frac = 0.0
+            frac = max(frac, 0.0)
             breakdown = {"commission": notional * frac}
         total = 0.0
         for name, amount in breakdown.items():
@@ -112,7 +112,7 @@ class Portfolio:
     def _active_keys(self, ticker: str) -> list[tuple[str, int]]:
         return [k for k in self._open if k[0] == ticker]
 
-    def _oldest_key(self, ticker: str) -> Optional[tuple[str, int]]:
+    def _oldest_key(self, ticker: str) -> tuple[str, int] | None:
         keys = self._active_keys(ticker)
         if not keys:
             return None
@@ -152,8 +152,7 @@ class Portfolio:
         budget = cap if budget is None else min(max(float(budget), 0.0), cap)
         if shares is None:
             c = float(self.cost_model.side_cost_fraction("buy", budget))
-            if c < 0.0:
-                c = 0.0
+            c = max(c, 0.0)
             gross_per_share = entry_price * (1.0 + c)
             shares = budget / gross_per_share if gross_per_share > 0 else 0.0
         else:
@@ -180,8 +179,7 @@ class Portfolio:
         if key is None:
             return
         pos = self._open[key]
-        if high > pos.peak_price:
-            pos.peak_price = high
+        pos.peak_price = max(pos.peak_price, high)
 
     def credit_dividends(self, ticker: str, cash_per_share: float) -> float:
         """Credit ``shares * cash_per_share`` to portfolio cash for every open
@@ -320,7 +318,7 @@ class Portfolio:
     def open_tickers(self) -> list[str]:
         return list({k[0] for k in self._open})
 
-    def get_position(self, ticker: str) -> Optional[Position]:
+    def get_position(self, ticker: str) -> Position | None:
         key = self._oldest_key(ticker)
         return self._open.get(key) if key is not None else None
 

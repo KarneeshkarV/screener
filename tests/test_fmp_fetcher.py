@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-from datetime import date
 import os
 import time
 import urllib.parse
+from datetime import date
 
 import pandas as pd
 import pytest
 
 from screener import config as config_module
 from screener import fmp as fmp_module
+from screener.backtester import data as data_module
 from screener.backtester.data import (
     ExchangeFallbackPriceFetcher,
     FallbackPriceFetcher,
     FMPPriceFetcher,
     build_price_fetcher,
 )
-from screener.backtester import data as data_module
 
 
 class DummyResponse:

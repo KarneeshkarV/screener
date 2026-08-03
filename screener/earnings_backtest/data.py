@@ -16,7 +16,6 @@ Designed for batch processing under tight RAM constraints (~2 GB).
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
 import pandas as pd
 
@@ -56,7 +55,7 @@ def fetch_price_data(
     tickers: list[str],
     start: date,
     end: date,
-    fetcher: Optional[PriceFetcher] = None,
+    fetcher: PriceFetcher | None = None,
     batch_size: int = 50,
 ) -> dict[str, pd.DataFrame]:
     """Fetch OHLCV bars for *tickers* from *start* to *end*.

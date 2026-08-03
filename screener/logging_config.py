@@ -13,10 +13,10 @@ import logging
 import os
 import sys
 import threading
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 import structlog
-
 
 _CONFIGURED = False
 _CONFIGURED_EXPLICITLY = False

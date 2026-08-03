@@ -7,9 +7,9 @@ from datetime import date
 
 from click.testing import CliRunner
 
+import screener.commands.filings as filings_cmd
 from screener import filings as filings_module
 from screener.cli import cli
-import screener.commands.filings as filings_cmd
 from screener.filings import (
     Filing,
     FinancialReport,

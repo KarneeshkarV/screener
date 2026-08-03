@@ -10,7 +10,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from screener import agentio
+from screener import agentio, usage
 from screener.backtester.factor_tearsheet import factor_tearsheet
 from screener.backtester.historical import backtest_historical
 from screener.backtester.optimization.cli import optimize
@@ -35,7 +35,6 @@ from screener.earnings_backtest.cli import earnings_backtest, earnings_pead
 from screener.logging_config import configure_logging
 from screener.operator.cli import register as _register_operator_cli
 from screener.options.cli import options
-from screener import usage
 from screener.unusual_volume.cli import unusual_volume
 
 
@@ -243,7 +242,7 @@ def usage_report() -> None:
 
 # usage-report reads the usage tables; exempt it from tracking itself by
 # pre-marking its callback so UsageTrackedGroup.add_command skips it.
-setattr(usage_report.callback, "_usage_tracked", True)
+usage_report.callback._usage_tracked = True
 cli.add_command(usage_report)
 
 

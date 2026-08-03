@@ -21,7 +21,6 @@ from screener.indicators.plugins.rsi import rsi
 from screener.indicators.plugins.sma import sma
 from screener.indicators.plugins.stdev import stdev
 from screener.indicators.plugins.supertrend import supertrend_dir
-
 from tests.correctness.reference_adapters import finite_tail_mask, require_talib
 
 

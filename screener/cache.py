@@ -9,12 +9,12 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 import pandas as pd
-
 
 CACHE_ROOT = Path.home() / ".screener" / "cache"
 _DEFAULT_CACHE_ROOT = CACHE_ROOT
@@ -129,7 +129,7 @@ def stable_key(*parts: Any) -> str:
 
 
 def parse_ttl(
-    value: str | int | float | None, *, default: float | None = None
+    value: str | float | None, *, default: float | None = None
 ) -> float | None:
     """Parse a TTL value in seconds, or with s/m/h/d suffixes."""
     if value is None:

@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Sequence, cast
+from collections.abc import Sequence
+from typing import cast
 
 import numpy as np
 import pandas as pd

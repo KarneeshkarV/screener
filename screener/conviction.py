@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, timedelta
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
@@ -41,20 +41,19 @@ from rich.console import Console
 from rich.table import Table
 
 from screener.backtester.data import PriceFetcher
-
+from screener.financials import to_number
+from screener.fmp import resolve_api_key
 from screener.garp import (
-    GarpThresholds,
     INDIA_THRESHOLDS,
-    MissingMetricPolicy,
     US_THRESHOLDS,
+    GarpThresholds,
+    MissingMetricPolicy,
     evaluate_garp,
     load_garp_row,
 )
-from screener.financials import to_number
 from screener.indicators.plugins.ema import ema
 from screener.indicators.plugins.rsi import rsi
 from screener.insiders import load_insider_aggregate
-from screener.fmp import resolve_api_key
 from screener.markets import get_market
 from screener.pledge import resolve_pledge_pct
 from screener.providers import CachedProvider, ProviderSpec
@@ -74,7 +73,6 @@ from screener.rs_breakout import (
 from screener.symbols import tv_to_yf
 from screener.unusual_volume.delivery import load_delivery_panel
 from screener.unusual_volume.detector import EXTREME_RVOL, EXTREME_Z, detect_ticker
-
 
 # Composite weights per pillar. Skipped pillars are dropped and the
 # remaining weights renormalized, so e.g. a US run without an FMP key
@@ -120,10 +118,10 @@ _OPENSCREENER_SHAREHOLDING_PROVIDER = CachedProvider(
 
 class PillarResult(BaseModel):
     name: str
-    score: Optional[float] = None
+    score: float | None = None
     evidence: str = ""
     status: Literal["ok", "skipped"]
-    reason: Optional[str] = None
+    reason: str | None = None
 
     model_config = ConfigDict(frozen=True)
 
@@ -136,7 +134,7 @@ class ConvictionCard(BaseModel):
     symbol: str
     market: str
     as_of: date
-    composite: Optional[float]
+    composite: float | None
     pillars: list[PillarResult]
 
     model_config = ConfigDict(frozen=True)
@@ -166,7 +164,7 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, float(value)))
 
 
-def _quarter_public_date(label: Any) -> Optional[date]:
+def _quarter_public_date(label: Any) -> date | None:
     """Date an Indian quarterly result keyed on *label* (e.g. ``"Mar 2024"``)
     became public: fiscal period-end + the typical filing lag, or ``None`` if
     the label is unparseable."""
@@ -185,7 +183,7 @@ def _is_pit_stale(as_of: date) -> bool:
     return (date.today() - as_of).days > PIT_STALE_TOLERANCE_DAYS
 
 
-def compose(pillars: list[PillarResult]) -> Optional[float]:
+def compose(pillars: list[PillarResult]) -> float | None:
     """Weighted average over available pillars, weights renormalized."""
     weighted = [
         (PILLAR_WEIGHTS.get(p.name, 0.0), p.score)
@@ -289,7 +287,7 @@ def score_breakout(
     st_ok = math.isfinite(st_last) and close > st_last
     st_pts = 20.0 if st_ok else 0.0
 
-    rs_pts: Optional[float] = None
+    rs_pts: float | None = None
     rs_note = "RS55 n/a"
     if benchmark_close is not None and not benchmark_close.empty:
         rs = relative_strength_ratio(df["close"], benchmark_close)
@@ -323,7 +321,7 @@ def score_volume(
     symbol: str,
     bars: pd.DataFrame,
     as_of: date,
-    delivery: tuple[Optional[float], Optional[float]] | None = None,
+    delivery: tuple[float | None, float | None] | None = None,
 ) -> PillarResult:
     """RVOL/z-score/direction from the unusual-volume detector.
 
@@ -387,7 +385,7 @@ def _score_smart_money_india(payload: dict[str, Any]) -> PillarResult:
 
 def _load_smart_money_us(
     symbol: str, api_key: str, *, cache_ttl: float | None, refresh: bool
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     return load_insider_aggregate(
         symbol, api_key=api_key, cache_ttl=cache_ttl, refresh=refresh
     )
@@ -395,7 +393,7 @@ def _load_smart_money_us(
 
 def _promoter_pair_as_of(
     rows: list[dict[str, Any]], as_of: date
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Select the most recent promoter-holding quarter pair whose latest
     quarter was public by *as_of*, mirroring the latest/prev delta that
     :func:`screener.insiders._fetch_openscreener_one` returns for *today*."""
@@ -423,7 +421,7 @@ def _promoter_pair_as_of(
 
 def _load_smart_money_india(
     symbol: str, as_of: date, *, cache_ttl: float | None, refresh: bool
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Point-in-time promoter holding: fetch the full quarterly history and
     select the most recent pair public by *as_of* (not today's latest)."""
     from screener.insiders import _HttpScraper
@@ -513,7 +511,7 @@ def score_fundamentals(row: dict[str, Any], thresholds: GarpThresholds) -> Pilla
 
 def _load_fundamentals(
     symbol: str, market: str, *, cache_ttl: float | None, refresh: bool
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     # Per-symbol GARP row via the public loader; the fetch+map composition
     # (India openscreener sections / US FMP payload with yfinance fallback)
     # lives in :mod:`screener.garp` and is shared with the market screens.
@@ -547,7 +545,7 @@ def score_pledge(pledge_pct: float) -> PillarResult:
     return _ok("risk", score, f"promoter pledge {pledge_pct:.1f}%")
 
 
-def _load_pledge(symbol: str, *, refresh: bool) -> Optional[float]:
+def _load_pledge(symbol: str, *, refresh: bool) -> float | None:
     sym = india_symbol(symbol)
     return resolve_pledge_pct(sym, sym, refresh=refresh)
 
@@ -572,7 +570,7 @@ def _risk_pillar(symbol: str, as_of: date, *, refresh: bool) -> PillarResult:
 
 def _load_delivery(
     symbol: str, as_of: date
-) -> tuple[Optional[float], Optional[float]] | None:
+) -> tuple[float | None, float | None] | None:
     sym = india_symbol(symbol)
     try:
         panel = load_delivery_panel([sym], as_of, history_days=14)

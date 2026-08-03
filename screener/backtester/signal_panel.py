@@ -13,21 +13,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from datetime import date
-from typing import Optional
 
 import pandas as pd
 
 from screener.backtester.core import (
-    _RunCaches,
     _precompute_entry_signals,
     _precompute_filter_signals,
+    _RunCaches,
 )
 from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import Node, evaluate_panel_many, parse, required_lookback
 from screener.backtester.price_panel import PricePanel
 from screener.backtester.rolling_candidates import (
-    _RollingCandidateMatrices,
     _build_rolling_candidate_matrices,
+    _RollingCandidateMatrices,
 )
 from screener.regime import classify_regimes
 
@@ -52,12 +51,12 @@ class SignalPanelInputs:
 
     market: str
     entry_expr: str
-    exit_expr: Optional[str]
+    exit_expr: str | None
     regime_filter: tuple[str, ...]
     earnings_blackout_days: int | None
     sector_neutral: bool
-    min_price: Optional[float]
-    min_avg_dollar_volume: Optional[float]
+    min_price: float | None
+    min_avg_dollar_volume: float | None
     avg_dollar_volume_window: int
     membership_added: tuple[tuple[str, date], ...]
     membership_windows: tuple[tuple[str, date, date | None], ...]

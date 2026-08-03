@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -21,7 +21,8 @@ from tests.conftest import StubPriceFetcher
 FIXTURE = Path(__file__).parent / "fixtures" / "nse_fo_bhavcopy_options_sample.csv"
 
 # Offline weekday calendar — avoid NSE holiday network fetch in tests.
-_WEEKDAY = lambda d: d.weekday() < 5  # noqa: E731
+def _WEEKDAY(d):
+    return d.weekday() < 5
 
 
 def _run(cfg, **kwargs):
@@ -46,7 +47,7 @@ def _contract(**overrides) -> OptionContract:
         "previous_close": 30.0,
         "settle": 33.0,
         "lot_size": 500.0,
-        "as_of": datetime(2026, 7, 8, tzinfo=timezone.utc),
+        "as_of": datetime(2026, 7, 8, tzinfo=UTC),
         "source": "fixture",
     }
     values.update(overrides)
@@ -128,7 +129,7 @@ def _call_put_pair(
             ask=call_last + 0.5,
             settle=call_last,
             expiry=expiry,
-            as_of=datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
+            as_of=datetime.combine(day, datetime.min.time(), tzinfo=UTC),
             oi=oi,
             volume=volume,
             symbol=f"C{strike}{day.isoformat()}",
@@ -141,7 +142,7 @@ def _call_put_pair(
             ask=put_last + 0.5,
             settle=put_last,
             expiry=expiry,
-            as_of=datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc),
+            as_of=datetime.combine(day, datetime.min.time(), tzinfo=UTC),
             oi=oi,
             volume=volume,
             symbol=f"P{strike}{day.isoformat()}",

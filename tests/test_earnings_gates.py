@@ -12,18 +12,20 @@ import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from screener.cli import cli
 from screener.backtester.models import BacktestConfig
+from screener.backtester.rolling_candidates import (
+    _build_rolling_candidate_matrices,
+    _candidate_rows_for_day,
+)
 from screener.backtester.rolling_simulation import run_rolling_backtest
-from screener.backtester.rolling_candidates import _build_rolling_candidate_matrices
-from screener.backtester.rolling_candidates import _candidate_rows_for_day
-from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
+from screener.cli import cli
 from screener.earnings_backtest.earnings_dates import (
     events_to_dates_map,
     fetch_next_earnings_dates,
     load_earnings_dates_map,
     next_earnings_date,
 )
+from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from tests.conftest import StubPriceFetcher, make_bars
 
 
@@ -412,7 +414,7 @@ def test_screen_workflow_earnings_buffer(monkeypatch, tmp_path):
 
 def test_enrich_days_to_earnings_default_provider(monkeypatch):
     """provider=None imports the real earnings-dates fetcher lazily."""
-    import screener.earnings_backtest.earnings_dates as earnings_dates
+    from screener.earnings_backtest import earnings_dates
 
     as_of = date(2024, 3, 1)
     seen: list[tuple] = []

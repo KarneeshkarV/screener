@@ -120,13 +120,13 @@ def test_crossover_only_uses_i_and_iminus1():
     # with close=fast and another with close=slow, then evaluate both externally.
     a = evaluate(parse("close"), bars)
     b = bars["_slow"]
-    from screener.backtester.pine import _crossover  # noqa: E402
+    from screener.backtester.pine import _crossover
 
     out = _crossover(a, b)
     # First cross happens at index 6 (bar i=6): fast[6]=3>slow[6]=3? actually
     # fast[6]=3 vs slow[6]=3 -> not strictly greater. Try at index 7:
     # fast[7]=4 > slow[7]=3 True; prev fast[6]=3 <= slow[6]=3 True => crossover
-    assert out.iloc[7] is np.True_ or out.iloc[7] == True  # noqa: E712
+    assert out.iloc[7] is np.True_ or out.iloc[7]
     # Mutate bar i-2 (index 5) and confirm crossover at index 7 unchanged
     bars2 = bars.copy()
     bars2.iloc[5, bars2.columns.get_loc("close")] = 999.0

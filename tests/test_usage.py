@@ -269,7 +269,7 @@ def test_failed_command_does_not_record_usage(monkeypatch):
 
 
 def test_usage_report_renders_zero_state(monkeypatch):
-    monkeypatch.setattr(usage, "feature_usage_counts", lambda: [])
+    monkeypatch.setattr(usage, "feature_usage_counts", list)
 
     result = CliRunner().invoke(cli, ["usage-report"])
 

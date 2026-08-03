@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -31,7 +31,7 @@ def _contract(**overrides) -> OptionContract:
         "last": 5.0,
         "previous_close": 4.0,
         "lot_size": 10.0,
-        "as_of": datetime(2026, 7, 10, tzinfo=timezone.utc),
+        "as_of": datetime(2026, 7, 10, tzinfo=UTC),
         "source": "fixture",
     }
     values.update(overrides)

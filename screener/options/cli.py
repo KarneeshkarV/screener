@@ -578,7 +578,7 @@ def backtest(
             min_volume=float(min_volume),
             refresh=bool(refresh),
         )
-    except Exception as exc:  # noqa: BLE001 - surface config errors cleanly
+    except Exception as exc:
         raise click.UsageError(str(exc)) from exc
 
     try:

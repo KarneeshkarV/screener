@@ -1,8 +1,10 @@
 """MACD Oscillator strategy using 10 and 21 period simple moving averages."""
 
 from __future__ import annotations
+
 import numpy as np
 import pandas as pd
+
 from screener.indicators.plugins.sma import sma as _sma
 from screener.strategies.spec import strategy
 from screener.strategies.trades import ResearchTrade, _walk

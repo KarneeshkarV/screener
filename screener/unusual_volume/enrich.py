@@ -9,7 +9,8 @@ events.
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any
 
 import pandas as pd
 from tradingview_screener import Query, col
@@ -133,7 +134,7 @@ def _fetch_shareholding_quarterly(stock: Any) -> Any:
     return shareholding
 
 
-def _extract_promoter_pct(df: Any) -> Optional[float]:
+def _extract_promoter_pct(df: Any) -> float | None:
     """Best-effort: pull the most recent 'Promoters' row from a shareholding
     DataFrame and return their percent holding."""
     if df is None:

@@ -27,6 +27,7 @@ import pandas as pd
 
 from screener.backtester.data import PriceFetcher, build_price_fetcher, tv_to_yf
 from screener.backtester.pine import PineError, evaluate, parse
+from screener.ledger import ExitReason
 from screener.options.backtest import (
     OPTION_EXPRESSION_FIELDS,
     merge_options_into_bars,
@@ -38,7 +39,6 @@ from screener.options.bt_models import (
     OptionsBacktestConfig,
     StructureSpec,
 )
-from screener.ledger import ExitReason
 from screener.options.metrics import _quote_price
 from screener.options.models import OptionChain, OptionContract
 from screener.options.nse_bhavcopy import load_bhavcopy_chains

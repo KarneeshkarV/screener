@@ -14,14 +14,12 @@ from __future__ import annotations
 
 import logging
 import urllib.parse
-from typing import Optional
 
 import pandas as pd
 
 from screener import fmp
 from screener.parallel import parallel_map
 from screener.providers import CachedProvider, ProviderSpec
-
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +29,7 @@ _FMP_INSTITUTIONAL_PROVIDER = CachedProvider(
 )
 
 
-def _aggregate_institutional_holders(rows: list[dict]) -> Optional[dict]:
+def _aggregate_institutional_holders(rows: list[dict]) -> dict | None:
     """Aggregate per-holder FMP rows into a per-ticker ownership summary.
 
     ``shares`` rows that are not numeric are skipped entirely; a missing or
@@ -60,8 +58,8 @@ def _aggregate_institutional_holders(rows: list[dict]) -> Optional[dict]:
         has_change = True
     if holders == 0:
         return None
-    qoq_change: Optional[float] = change_shares if has_change else None
-    qoq_change_pct: Optional[float] = None
+    qoq_change: float | None = change_shares if has_change else None
+    qoq_change_pct: float | None = None
     if has_change:
         prev_total = total_shares - change_shares
         if prev_total > 0:
@@ -80,8 +78,8 @@ def _fetch_fmp_institutional_one(
     api_key: str,
     cache_ttl: float | None,
     refresh: bool,
-) -> Optional[dict]:
-    def _fetch() -> Optional[dict]:
+) -> dict | None:
+    def _fetch() -> dict | None:
         # Route through the shared FMP transport (base URL + apikey-last query +
         # urllib error mode). ``institutional-holder/{symbol}`` is a path-only
         # endpoint, so the symbol is quoted into the path and ``apikey`` is the

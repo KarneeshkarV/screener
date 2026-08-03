@@ -5,6 +5,11 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
+from screener.strategies import spec as strategy_spec_module
+from screener.strategies.expressions import NAMED_STRATEGIES, resolve_strategy
+from screener.strategies.plugins.ma_cross_st_entry import (
+    strat_ma_cross_st_entry,
+)
 from screener.strategies.plugins.rs_breakout import (
     _prepare_rs_breakout,
     _rs_breakout_lookback,
@@ -13,11 +18,6 @@ from screener.strategies.plugins.vivek_equity_tool import (
     _prepare_vivek,
     _vivek_lookback,
 )
-from screener.strategies import spec as strategy_spec_module
-from screener.strategies.plugins.ma_cross_st_entry import (
-    strat_ma_cross_st_entry,
-)
-from screener.strategies.expressions import NAMED_STRATEGIES, resolve_strategy
 from screener.strategies.registry import STRATEGIES
 from screener.strategies.spec import (
     CallableStrategySpec,

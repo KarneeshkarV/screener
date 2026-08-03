@@ -9,14 +9,13 @@ from datetime import date
 import pandas as pd
 from click.testing import CliRunner
 
-from screener.cli import cli
+from screener import history as history_mod
+from screener import screen_workflow as workflow_mod
 from screener.backtester import historical as historical_cli
 from screener.backtester.models import BacktestResult
 from screener.backtester.optimization import cli as optimize_cli
-from screener import history as history_mod
-from screener import screen_workflow as workflow_mod
+from screener.cli import cli
 from screener.cli import cli as package_cli
-
 from tests.conftest import StubPriceFetcher, make_bars
 
 

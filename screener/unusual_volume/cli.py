@@ -8,9 +8,7 @@ The command is registered on the main ``cli`` group in ``main.py`` via:
 
 from __future__ import annotations
 
-
 from pathlib import Path
-from typing import Optional
 
 import click
 from rich.console import Console
@@ -19,6 +17,8 @@ from screener.markets import as_of_option, market_option, resolve_as_of
 
 from .buildup import (
     DEFAULT_MIN_SCORE as DEFAULT_BUILDUP_MIN,
+)
+from .buildup import (
     DEFAULT_WINDOW as DEFAULT_BUILDUP_WINDOW,
 )
 from .detector import (
@@ -36,8 +36,8 @@ from .service import (
 
 def _resolve_universe(
     market: str,
-    tickers: Optional[str],
-    universe_file: Optional[str],
+    tickers: str | None,
+    universe_file: str | None,
 ) -> list[str]:
     from screener.universes import (
         UniverseRequest,
@@ -192,20 +192,20 @@ def _resolve_universe(
 def unusual_volume(
     market: str,
     as_of_arg,
-    tickers: Optional[str],
-    universe_file: Optional[str],
+    tickers: str | None,
+    universe_file: str | None,
     min_rvol: float,
     min_z: float,
     strength_floor: str,
     min_avg_volume: float,
-    min_market_cap: Optional[float],
+    min_market_cap: float | None,
     include_fno_ban: bool,
     deep_india: bool,
     option_chain: bool,
     fii_dii: bool,
     pledge: bool,
-    json_path: Optional[str],
-    md_path: Optional[str],
+    json_path: str | None,
+    md_path: str | None,
     no_output_files: bool,
     refresh: bool,
     limit: int,
@@ -260,10 +260,10 @@ def run_unusual_volume(
     request: UnusualVolumeRequest,
     *,
     limit: int = 50,
-    json_path: Optional[str] = None,
-    md_path: Optional[str] = None,
+    json_path: str | None = None,
+    md_path: str | None = None,
     no_output_files: bool = False,
-    console: Optional[Console] = None,
+    console: Console | None = None,
 ) -> bool:
     """Run a prepared scan request and render it (no Click context required)."""
     console = console or Console()

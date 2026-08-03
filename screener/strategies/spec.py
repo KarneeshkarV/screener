@@ -14,9 +14,9 @@ Strategies that need bar prep before the backtester evaluates signals attach a
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import date
-from typing import Any, Callable, Literal, Optional, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, SkipValidation, field_validator
@@ -24,7 +24,6 @@ from pydantic import BaseModel, ConfigDict, SkipValidation, field_validator
 from screener._registry import Registry
 from screener.backtester.data import PriceFetcher
 from screener.strategies.trades import ResearchTrade
-
 
 StrategyFn = Callable[[pd.DataFrame], list[ResearchTrade]]
 F = TypeVar("F", bound=Callable[..., Any])
@@ -80,9 +79,9 @@ class ExpressionStrategySpec(StrategySpec):
 
     kind: Literal["expression"] = "expression"
     entry: str
-    exit: Optional[str] = None
-    prepare_bars: Optional[PrepareBarsFn] = None
-    required_lookback: Optional[LookbackFn] = None
+    exit: str | None = None
+    prepare_bars: PrepareBarsFn | None = None
+    required_lookback: LookbackFn | None = None
 
     @field_validator("entry")
     @classmethod
@@ -111,7 +110,7 @@ class DerivedView(Mapping[str, V]):
     thin derived accessors of the one registry.
     """
 
-    def __init__(self, project: Callable[[StrategySpec], Optional[V]]) -> None:
+    def __init__(self, project: Callable[[StrategySpec], V | None]) -> None:
         self._project = project
 
     def __getitem__(self, key: str) -> V:
@@ -150,9 +149,9 @@ def register_expression_strategy(
     name: str,
     *,
     entry: str,
-    exit: Optional[str] = None,
-    prepare_bars: Optional[PrepareBarsFn] = None,
-    required_lookback: Optional[LookbackFn] = None,
+    exit: str | None = None,
+    prepare_bars: PrepareBarsFn | None = None,
+    required_lookback: LookbackFn | None = None,
     **meta: Any,
 ) -> ExpressionStrategySpec:
     """Register an expression strategy directly, without a fake function body."""

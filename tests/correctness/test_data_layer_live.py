@@ -26,7 +26,6 @@ from screener.backtester.data import (
     tv_to_yf,
 )
 
-
 # ─── AAPL historical sanity ─────────────────────────────────────────────────
 
 

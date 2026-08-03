@@ -38,18 +38,19 @@ exactly; :class:`DayLoop` is the single home for it.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, Protocol
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
 
 from screener.backtester.core import (
-    _SlotState,
     _bar_label,
     _check_exit_at_bar,
     _fire_partial_exits_at_bar,
     _maybe_credit_dividends,
+    _SlotState,
 )
 from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig

@@ -11,7 +11,6 @@ from click.testing import CliRunner
 
 from screener import history as history_mod
 from screener.cli import cli
-
 from tests.conftest import StubPriceFetcher, make_bars
 
 

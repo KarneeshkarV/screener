@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
-import json
-import logging
 from typing import Any, cast
 
 import numpy as np

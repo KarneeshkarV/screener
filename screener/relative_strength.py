@@ -25,7 +25,6 @@ from typing import Any, cast
 
 import pandas as pd
 
-
 RS_RATIO_WINDOW = 55
 RS_RANK_WINDOW = 252
 RS_SPREAD_WINDOW = 63

@@ -10,16 +10,16 @@ summary labels stay per-command.
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 import csv
 import sys
-from typing import Any, Callable
+from collections.abc import Callable
+from contextlib import nullcontext
+from typing import Any
 
 import click
 from rich.console import Console
 from rich.table import Table
 
-from screener.markets import market_option
 from screener.earnings_backtest.engine import (
     EarningsTrade,
     compute_backtest_summary,
@@ -31,6 +31,7 @@ from screener.earnings_backtest.pead import (
     compute_pead_summary,
     run_pead_backtest,
 )
+from screener.markets import market_option
 
 STRATEGY_CHOICES = [
     "price_momentum",

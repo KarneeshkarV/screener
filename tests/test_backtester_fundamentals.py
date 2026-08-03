@@ -1,18 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date
-from typing import Iterable
 
 import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from screener.cli import cli
-
 from screener.backtester import fundamentals
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling_simulation import run_rolling_backtest
-
+from screener.cli import cli
 from tests.conftest import StubPriceFetcher, make_bars
 
 
@@ -373,7 +371,7 @@ def test_rolling_unions_referenced_field_into_explicit_field_list(monkeypatch):
 class _RaisingProvider:
     """Provider seam whose ``fetch`` always raises (drives thread except-branch)."""
 
-    def fetch(self, *args, **kwargs):  # noqa: D401 - test double
+    def fetch(self, *args, **kwargs):
         raise RuntimeError("provider boom")
 
 

@@ -16,14 +16,12 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from tests.backtest_helpers import simulate_single_ticker
 from screener.backtester.historical import run_backtest, select_candidates
-from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import parse
-
+from screener.backtester.rolling_simulation import run_rolling_backtest
+from tests.backtest_helpers import simulate_single_ticker
 from tests.conftest import StubPriceFetcher, make_bars
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers

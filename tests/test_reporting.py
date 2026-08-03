@@ -19,7 +19,6 @@ import pytest
 
 from screener.reporting import dump_json_file, json_safe, markdown_row
 
-
 # ─────────────────────────── json_safe ───────────────────────────
 
 

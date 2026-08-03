@@ -20,9 +20,9 @@ deterministically. It is not evidence about live factor returns.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
-from typing import Iterable
 
 import numpy as np
 import pandas as pd

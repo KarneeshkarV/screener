@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import date, timedelta
 from io import StringIO
-import re
 from typing import Any, cast
 
 import numpy as np

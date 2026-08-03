@@ -12,8 +12,8 @@ arithmetic so the calculated frame is also useful standalone.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
 from collections.abc import Mapping
+from datetime import date, timedelta
 from typing import cast
 
 import pandas as pd

@@ -23,9 +23,9 @@ cache at ``./.autoresearch/ohlcv/india/<SYMBOL>__*.parquet`` already holds
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Iterable, Optional
 
 import pandas as pd
 
@@ -85,7 +85,7 @@ def latest_trading_day(d: date, *, lookback: int = TRADING_DAY_LOOKBACK) -> date
     raise RuntimeError(f"no NSE cash bhavcopy found within {lookback} days of {d}")
 
 
-def _parse_bhavcopy_date(df: pd.DataFrame) -> Optional[date]:
+def _parse_bhavcopy_date(df: pd.DataFrame) -> date | None:
     if "DATE1" not in df.columns or df.empty:
         return None
     raw = str(df["DATE1"].iloc[0]).strip()
@@ -211,7 +211,7 @@ def near_month_oi(fo_df: pd.DataFrame) -> pd.DataFrame:
 # ── 52-week High / Low from the parquet cache ──────────────────────────
 
 
-def _resolve_parquet(symbol: str) -> Optional[Path]:
+def _resolve_parquet(symbol: str) -> Path | None:
     """Pick the deepest-history parquet file for ``symbol`` from the cache.
 
     Files are named ``<SYMBOL>__<start>__<end>.parquet`` and many tickers

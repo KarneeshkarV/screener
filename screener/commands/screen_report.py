@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import html
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
 
 import pandas as pd
 import plotly.express as px

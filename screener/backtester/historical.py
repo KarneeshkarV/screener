@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 from collections import deque
+
 import numpy as np
 import pandas as pd
 
 from screener.backtester.core import (
-    _RunCaches,
-    _SlotState,
     _bar_label,
     _benchmark_series_from_panel,
     _eligible_reserve_signal_idx,
     _make_slot_state,
     _passes_entry_filters,
-    prepare_strategy_bars,
     _resolve_universe,
+    _RunCaches,
+    _SlotState,
+    prepare_strategy_bars,
 )
 from screener.backtester.costs import cost_model_from_config
 from screener.backtester.data import PriceFetcher
@@ -26,6 +27,7 @@ from screener.backtester.day_loop import (
     run_day_loop,
 )
 from screener.backtester.fills import FillModel
+from screener.backtester.historical_cli import backtest_historical
 from screener.backtester.metrics import (
     compute_cost_metrics,
     compute_metrics,
@@ -37,7 +39,6 @@ from screener.backtester.models import (
     BacktestConfig,
     BacktestResult,
 )
-from screener.backtester.historical_cli import backtest_historical
 from screener.backtester.pine import PineError, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.backtester.sizing import entry_budget_for

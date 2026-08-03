@@ -4,12 +4,11 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from tradingview_screener import Query
 import pandas as pd
+from tradingview_screener import Query
 
 from screener.markets import TV_MARKETS
 from screener.providers import CachedProvider, FrameWithMeta, ProviderSpec
-
 
 LOG = logging.getLogger(__name__)
 

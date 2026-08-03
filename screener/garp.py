@@ -21,7 +21,6 @@ from screener.providers import CachedProvider, ProviderSpec
 from screener.scanner import scan
 from screener.symbols import tv_to_nse, tv_to_yf
 
-
 INDIA_MIN_CRORE = 1000.0
 US_MIN_USD = 1_000_000_000.0
 logger = get_logger(__name__)

@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-from click.testing import CliRunner
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 
 from screener import cache
 from screener.cli import cli as _root_cli

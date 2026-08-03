@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
 import pandas as pd
-
 
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 CORPORATE_ACTION_COLUMNS = ["dividend", "split_factor", "stock_splits"]
@@ -106,7 +104,7 @@ def warn_unadjustable_fmp_frames(
 
 
 def merge_price_frames(
-    existing: Optional[pd.DataFrame], new: pd.DataFrame, interval: str = "1d"
+    existing: pd.DataFrame | None, new: pd.DataFrame, interval: str = "1d"
 ) -> pd.DataFrame:
     if existing is None or existing.empty:
         merged = new.copy()

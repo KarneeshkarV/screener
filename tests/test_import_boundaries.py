@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-
 _ROOT = Path(__file__).resolve().parents[1]
 _TRADE_EXTENSION_MODULES = {
     "screener/backtester/models.py": "screener.backtester",

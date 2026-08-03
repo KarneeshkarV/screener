@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar
 from typing import cast as type_cast
 
 import click
 
+from screener.backtester.cli_common import resolve_min_filters
+from screener.backtester.data import PriceFetcher
 from screener.backtester.models import BacktestConfig, Trade
-from screener.ledger import ExitReason
 from screener.backtester.optimization.grid import grid_search
 from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
 from screener.backtester.optimization.reporting import (
@@ -23,11 +25,9 @@ from screener.backtester.optimization.reporting import (
     write_json_report,
 )
 from screener.backtester.optimization.walk_forward import walk_forward_optimize
-from screener.backtester.cli_common import resolve_min_filters
-from screener.backtester.data import PriceFetcher
+from screener.ledger import ExitReason
 from screener.markets import get_market, get_price_fetcher, market_option
 from screener.universes import available_universes
-
 
 P = ParamSpec("P")
 R = TypeVar("R")

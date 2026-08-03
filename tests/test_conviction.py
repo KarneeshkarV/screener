@@ -17,7 +17,6 @@ from screener.conviction import (
     build_conviction_card,
     compose,
 )
-
 from tests.conftest import StubPriceFetcher, make_bars
 
 

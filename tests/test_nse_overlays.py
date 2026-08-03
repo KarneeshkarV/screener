@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import date
 import io
 import multiprocessing as mp
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 import pytest
 from rich.console import Console
 
-from screener import cache, pledge
-from screener import rs_breakout
-from screener.unusual_volume import service
-from screener.unusual_volume import fii_dii, nse_client, option_chain
+from screener import cache, pledge, rs_breakout
+from screener.unusual_volume import fii_dii, nse_client, option_chain, service
 from screener.unusual_volume.delivery import compute_delivery_metrics, overlay_events
 from screener.unusual_volume.detector import Event
 from screener.unusual_volume.enrichment import Enrichment

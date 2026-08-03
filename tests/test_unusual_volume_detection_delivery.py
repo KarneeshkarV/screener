@@ -1,32 +1,15 @@
 from __future__ import annotations
 
-
 import json
-
-
 import sys
-
-
 import types
-
-
 from datetime import date
 
-
 import numpy as np
-
-
 import pandas as pd
-
-
 import pytest
-
-
 from pydantic import ValidationError
-
-
 from rich.console import Console
-
 
 from screener.unusual_volume import (
     DEFAULT_MIN_RVOL,
@@ -34,30 +17,16 @@ from screener.unusual_volume import (
     detect_market,
     detect_ticker,
 )
-
-
 from screener.unusual_volume import service as uv_service
-
-
-from screener.unusual_volume.enrichment import Enrichment
-
-
 from screener.unusual_volume.buildup import BuildupScore
-
-
 from screener.unusual_volume.classify import classify_direction, classify_strength
-
-
 from screener.unusual_volume.delivery import (
     compute_delivery_metrics,
     overlay_events,
     quiet_accumulation_events,
 )
-
-
+from screener.unusual_volume.enrichment import Enrichment
 from screener.unusual_volume.filters import _parse_ban_csv, passes_volume_floor
-
-
 from screener.unusual_volume.output import (
     _color_direction,
     _color_strength,
@@ -69,8 +38,6 @@ from screener.unusual_volume.output import (
     write_json,
     write_markdown,
 )
-
-
 from tests.conftest import make_bars
 
 

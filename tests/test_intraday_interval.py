@@ -33,7 +33,6 @@ from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling_simulation import run_rolling_backtest
 from tests.conftest import StubPriceFetcher
 
-
 # --------------------------------------------------------------------------- #
 # Synthetic intraday bars
 # --------------------------------------------------------------------------- #

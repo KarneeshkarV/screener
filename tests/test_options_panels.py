@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
-from click.testing import CliRunner
 import pandas as pd
 import pytest
+from click.testing import CliRunner
 from pydantic import ValidationError
 
 from screener import cache
@@ -64,7 +64,7 @@ def _contract(**overrides) -> OptionContract:
         "previous_close": 4.0,
         "delta": 0.25,
         "lot_size": 10.0,
-        "as_of": datetime(2026, 7, 10, tzinfo=timezone.utc),
+        "as_of": datetime(2026, 7, 10, tzinfo=UTC),
         "source": "fixture",
     }
     values.update(overrides)
@@ -85,7 +85,7 @@ def _chain(*contracts: OptionContract, spot: float = 100.0) -> OptionChain:
 def test_models_are_normalized_frozen_and_validate_quotes():
     contract = _contract(underlying="abc")
     assert contract.underlying == "ABC"
-    assert contract.as_of.tzinfo is timezone.utc
+    assert contract.as_of.tzinfo is UTC
     with pytest.raises(ValidationError):
         _contract(bid=8.0, ask=7.0)
     with pytest.raises(ValidationError):

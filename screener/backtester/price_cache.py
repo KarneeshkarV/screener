@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import date
 import os
-from pathlib import Path
 import tempfile
 import time
-from typing import Optional
+from datetime import date
+from pathlib import Path
 
 import pandas as pd
 
 from screener.backtester.price_frames import OHLCV_COLUMNS, naive_normalized_index
-
 
 CACHE_DIR = Path.home() / ".screener" / "prices"
 FMP_CACHE_DIR = Path.home() / ".screener" / "fmp_prices"
@@ -26,7 +24,7 @@ def cache_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
 
 def load_cached_frame(
     ticker: str, cache_dir: Path = CACHE_DIR, interval: str = "1d"
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     path = cache_path(ticker, cache_dir)
     if not path.exists():
         return None

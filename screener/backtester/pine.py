@@ -32,7 +32,8 @@ single ``.shift(1)`` and so compare only bars ``i`` and ``i-1``.
 
 from __future__ import annotations
 
-from typing import Iterable, Literal, Union, cast
+from collections.abc import Iterable
+from typing import Literal, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -78,44 +79,44 @@ class UnaryOp(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     op: Literal["-", "+"]
-    operand: "Node"
+    operand: Node
 
 
 class Not(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    operand: "Node"
+    operand: Node
 
 
 class BinOp(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     op: Literal["+", "-", "*", "/"]
-    left: "Node"
-    right: "Node"
+    left: Node
+    right: Node
 
 
 class Compare(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     op: Literal[">", ">=", "<", "<=", "==", "!="]
-    left: "Node"
-    right: "Node"
+    left: Node
+    right: Node
 
 
 class BoolOp(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     op: Literal["and", "or"]
-    left: "Node"
-    right: "Node"
+    left: Node
+    right: Node
 
 
 class Call(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str
-    args: list["Node"]
+    args: list[Node]
     col: int  # column in source (for error messages)
 
 

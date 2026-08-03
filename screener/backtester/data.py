@@ -10,15 +10,16 @@ the engine never depends directly on yfinance.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import contextlib
-from datetime import date, datetime
 import io
 import os
 import queue
-from pathlib import Path
 import threading
-from typing import Callable, Iterable, Optional, Protocol, TypeVar, cast
+from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime
+from pathlib import Path
+from typing import Protocol, TypeVar, cast
 
 import pandas as pd
 import requests
@@ -27,23 +28,49 @@ from requests.adapters import HTTPAdapter
 from screener.backtester.price_cache import (
     CACHE_DIR,
     FMP_CACHE_DIR,
+)
+from screener.backtester.price_cache import (
     PRICE_TAIL_TTL_SECONDS as PRICE_TAIL_TTL_SECONDS,
+)
+from screener.backtester.price_cache import (
     cache_path as _cache_path,
+)
+from screener.backtester.price_cache import (
     load_cached_frame as _load_cached,
+)
+from screener.backtester.price_cache import (
     needs_tail_refresh as _needs_tail_refresh,
+)
+from screener.backtester.price_cache import (
     save_cached_frame as _save_cache,
 )
 from screener.backtester.price_frames import (
     CORPORATE_ACTION_COLUMNS as CORPORATE_ACTION_COLUMNS,
+)
+from screener.backtester.price_frames import (
     OHLCV_COLUMNS,
-    apply_splits_only_adjustment as apply_splits_only_adjustment,
-    empty_ohlcv_frame as _empty_ohlcv_frame,
-    frame_has_range as _has_range,
-    inclusive_fetch_bounds as _inclusive_fetch_bounds,
-    merge_price_frames as _merge_cached,
     naive_normalized_index,
     normalize_price_frame,
+)
+from screener.backtester.price_frames import (
+    apply_splits_only_adjustment as apply_splits_only_adjustment,
+)
+from screener.backtester.price_frames import (
+    empty_ohlcv_frame as _empty_ohlcv_frame,
+)
+from screener.backtester.price_frames import (
+    frame_has_range as _has_range,
+)
+from screener.backtester.price_frames import (
+    inclusive_fetch_bounds as _inclusive_fetch_bounds,
+)
+from screener.backtester.price_frames import (
+    merge_price_frames as _merge_cached,
+)
+from screener.backtester.price_frames import (
     split_yfinance_download as _split_download,
+)
+from screener.backtester.price_frames import (
     warn_unadjustable_fmp_frames as warn_unadjustable_fmp_frames,
 )
 
@@ -60,7 +87,6 @@ from screener.resilience import call_with_resilience
 # ``tv_to_yf`` from ``screener.backtester.data``. The definition now lives in
 # ``screener.symbols``.
 from screener.symbols import tv_to_yf as tv_to_yf
-
 
 _naive_normalized_index = naive_normalized_index
 _normalize_frame = normalize_price_frame
@@ -149,7 +175,7 @@ class YFinancePriceFetcher:
 
     def __init__(
         self,
-        cache_dir: Optional[Path] = None,
+        cache_dir: Path | None = None,
         auto_adjust: bool = True,
         batch_size: int = 75,
         refresh: bool = False,
@@ -466,7 +492,7 @@ class FMPPriceFetcher:
     def __init__(
         self,
         api_key: str | None = None,
-        cache_dir: Optional[Path] = None,
+        cache_dir: Path | None = None,
         auto_adjust: bool = True,
         refresh: bool = False,
         session: requests.Session | None = None,

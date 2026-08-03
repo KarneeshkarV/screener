@@ -7,11 +7,11 @@ remain ordinary Pine-like formulas while fundamentals stay point-in-time.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
-import os
 from typing import Any, Protocol, cast
 
 import pandas as pd
@@ -20,9 +20,8 @@ import requests
 from screener.backtester.data import load_env_file
 from screener.financials import as_percent as _as_percent
 from screener.financials import first_number, pct_change
-from screener.providers import CachedProvider, ProviderSpec
 from screener.provider_utils import fmp_get
-
+from screener.providers import CachedProvider, ProviderSpec
 
 INDIA_FUNDAMENTAL_FILING_LAG_DAYS = 60
 DEFAULT_FUNDAMENTAL_FIELDS: tuple[str, ...] = (
@@ -377,6 +376,7 @@ def _parse_india_period_end(label: Any) -> pd.Timestamp | None:
 
 def _fetch_openscreener_quarterly(symbol: str) -> dict[str, Any]:  # pragma: no cover
     from openscreener import Stock
+
     from screener.insiders import _HttpScraper
 
     payload = Stock(symbol, scraper=_HttpScraper()).fetch("quarterly_results")

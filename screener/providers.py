@@ -19,11 +19,14 @@ module attribute. See ``tests/conftest.py`` for the fake adapter.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from screener.cache import (
     FrameWithMeta as FrameWithMeta,  # re-exported: the "frame_meta" payload type
+)
+from screener.cache import (
     cache_path,
     cached_frame_call,
     cached_frame_meta_call,
@@ -205,4 +208,4 @@ class FakeProvider:
             return fallback
 
 
-__all__ = ["ProviderSpec", "CachedProvider", "FakeProvider", "FrameWithMeta"]
+__all__ = ["CachedProvider", "FakeProvider", "FrameWithMeta", "ProviderSpec"]

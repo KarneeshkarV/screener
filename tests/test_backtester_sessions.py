@@ -10,10 +10,10 @@ import pytest
 from click.testing import CliRunner
 from pydantic import ValidationError
 
-from tests.backtest_helpers import simulate_single_ticker
 from screener.backtester.models import BacktestConfig
 from screener.backtester.sessions import is_session_last, market_timezone, session_dates
 from screener.cli import cli
+from tests.backtest_helpers import simulate_single_ticker
 from tests.conftest import StubPriceFetcher
 
 

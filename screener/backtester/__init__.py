@@ -85,8 +85,8 @@ __all__ = [
     "BacktestResult",
     "Position",
     "Trade",
-    "run_backtest",
     "prepare_rolling_backtest",
+    "run_backtest",
     "run_prepared_rolling_backtest",
     "run_rolling_backtest",
 ]

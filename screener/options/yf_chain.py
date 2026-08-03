@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any, cast
 
 import pandas as pd
 import yfinance as yf
 
-from screener.options.greeks import black_scholes_greeks
-from screener.options.models import OptionChain, OptionContract, OptionsMarket
 from screener.options._parse import number as _number
 from screener.options._parse import quote_pair as _quote_pair
+from screener.options.greeks import black_scholes_greeks
+from screener.options.models import OptionChain, OptionContract, OptionsMarket
 from screener.providers import CachedProvider, ProviderSpec
 
 _YF_CACHE = CachedProvider(
@@ -120,9 +120,9 @@ def chain_from_yfinance_ticker(
     missing_volume_as_count: bool = False,
 ) -> OptionChain | None:
     """Normalize selected expiries from an already-created yfinance ticker."""
-    as_of = now or datetime.now(timezone.utc)
+    as_of = now or datetime.now(UTC)
     if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=timezone.utc)
+        as_of = as_of.replace(tzinfo=UTC)
     underlying = symbol.strip().upper()
     spot = _spot_from_ticker(ticker)
     contracts: list[OptionContract] = []
@@ -186,7 +186,7 @@ class YFinanceOptionsProvider:
         self.ticker_factory = ticker_factory
         self.configure = configure
         self.cache_provider = cache_provider
-        self.now = now or (lambda: datetime.now(timezone.utc))
+        self.now = now or (lambda: datetime.now(UTC))
         self.max_expiries = max(int(max_expiries), 1)
         self.risk_free_rate = float(risk_free_rate)
 

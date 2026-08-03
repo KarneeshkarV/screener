@@ -15,7 +15,6 @@ from screener.relative_strength import RS_RANK_WINDOW, relative_strength_rank
 from screener.symbols import tv_to_yf
 from screener.universes import load_tv_liquidity_universe
 
-
 MINERVINI_ENTRY_EXPR = (
     "close > sma(close, 150) and "
     "close > sma(close, 200) and "

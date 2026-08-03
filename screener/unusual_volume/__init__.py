@@ -12,27 +12,27 @@ from __future__ import annotations
 # re-export is explicit (detector re-imports them without an __all__).
 from .classify import Direction, Strength
 from .detector import (
-    Event,
     DEFAULT_MIN_RVOL,
     DEFAULT_MIN_Z,
-    HIGH_RVOL,
-    HIGH_Z,
     EXTREME_RVOL,
     EXTREME_Z,
-    detect_ticker,
+    HIGH_RVOL,
+    HIGH_Z,
+    Event,
     detect_market,
+    detect_ticker,
 )
 
 __all__ = [
-    "Event",
-    "Strength",
-    "Direction",
     "DEFAULT_MIN_RVOL",
     "DEFAULT_MIN_Z",
-    "HIGH_RVOL",
-    "HIGH_Z",
     "EXTREME_RVOL",
     "EXTREME_Z",
-    "detect_ticker",
+    "HIGH_RVOL",
+    "HIGH_Z",
+    "Direction",
+    "Event",
+    "Strength",
     "detect_market",
+    "detect_ticker",
 ]

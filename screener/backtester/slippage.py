@@ -24,7 +24,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from screener.backtester.costs import bps_fraction
 
-
 Side = Literal["buy", "sell"]
 
 
@@ -69,8 +68,7 @@ def apply_slippage(
     frac = float(
         model.adverse_fraction(side, shares, adv, sigma_daily, half_spread=half_spread)
     )
-    if frac < 0.0:
-        frac = 0.0
+    frac = max(frac, 0.0)
     if side == "buy":
         return reference_price * (1.0 + frac)
     return reference_price * (1.0 - frac)

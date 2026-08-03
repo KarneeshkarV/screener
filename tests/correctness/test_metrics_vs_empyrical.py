@@ -47,9 +47,9 @@ from screener.backtester.metrics import (
     _alpha_beta,
     _cagr,
     _max_drawdown,
-    equity_curve_sharpe,
     _sortino,
     _vol_annual,
+    equity_curve_sharpe,
 )
 
 # ---------------------------------------------------------------------------

@@ -12,15 +12,15 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from screener.cli import cli
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.optimization.grid import GridSearchResult
+from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
 from screener.backtester.optimization.research_report import (
     compute_parameter_stability,
     run_research_report,
 )
-from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
 from screener.backtester.optimization.walk_forward import WalkForwardSummary
+from screener.cli import cli
 from tests.conftest import StubPriceFetcher, make_bars
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -138,10 +138,10 @@ def test_run_research_report_end_to_end_stub(tmp_path, monkeypatch):
     cfg = _config(as_of=end)
     out = tmp_path / "reports" / "rs_report"
 
-    import screener.backtester.optimization.research_report as rr
     import screener.backtester.optimization.grid as grid_mod
-    import screener.backtester.optimization.walk_forward as wf_mod
     import screener.backtester.optimization.monte_carlo as mc_mod
+    import screener.backtester.optimization.research_report as rr
+    import screener.backtester.optimization.walk_forward as wf_mod
 
     calls = {"grid": 0, "wf": 0, "mc": 0}
     real_grid = grid_mod.grid_search
@@ -481,7 +481,7 @@ def test_research_report_reuses_walk_forward_oos_trades(tmp_path, monkeypatch):
 
 def test_resolve_universe_tickers_branches(monkeypatch):
     import screener.backtester.optimization.cli as optimization_cli
-    import screener.universes as universes
+    from screener import universes
 
     assert optimization_cli._resolve_universe_tickers(
         market="us",

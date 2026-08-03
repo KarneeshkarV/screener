@@ -12,7 +12,6 @@ import pandas as pd
 
 from screener.backtester.pine import _atr, _crossover, _crossunder
 
-
 EMA_FAST_1 = 10
 EMA_FAST_2 = 20
 TREND_LEN = 40

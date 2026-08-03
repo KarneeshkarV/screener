@@ -7,8 +7,8 @@ from pathlib import Path
 
 import click
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 import requests
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from rich.console import Console
 
 from screener.backtester.data import PriceFetcher, build_price_fetcher
@@ -72,6 +72,8 @@ def resolve_universe(
         UniverseSource,
         load_tv_liquidity_universe,
         parse_ticker_csv,
+    )
+    from screener.universes import (
         resolve_universe as resolve_universe_request,
     )
 

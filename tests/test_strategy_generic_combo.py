@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import screener.strategies.combo as combo
-from screener.backtester.models import BacktestConfig
 from screener.backtester.core import prepare_strategy_bars
+from screener.backtester.models import BacktestConfig
+from screener.strategies import combo
 from screener.strategies.combo import (
     combine_rank_scores,
     cross_sectional_zscore,

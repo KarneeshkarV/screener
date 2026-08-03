@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Optional
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 import requests
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from rich.console import Console
 
 from screener.backtester.data import build_price_fetcher, tv_to_yf
 from screener.symbols import tv_to_nse
+
 from .buildup import (
     DEFAULT_MIN_SCORE as DEFAULT_BUILDUP_MIN,
+)
+from .buildup import (
     DEFAULT_WINDOW as DEFAULT_BUILDUP_WINDOW,
+)
+from .buildup import (
     BuildupScore,
     compute_buildup_score,
     scan_buildups,
@@ -36,7 +40,6 @@ from .enrichment import (
 )
 from .filters import fetch_fno_ban_list, passes_market_cap, passes_volume_floor
 from .microstructure import run_microstructure_enrichments
-
 
 _DEFAULT_MIN_MCAP = {"us": 300_000_000.0, "india": 5_000_000_000.0}
 DEFAULT_MIN_AVG_VOLUME = 100_000.0
@@ -61,7 +64,7 @@ class UnusualVolumeRequest(BaseModel):
     min_z: float = Field(default=DEFAULT_MIN_Z, ge=0.0)
     strength_floor: str = "moderate"
     min_avg_volume: float = Field(default=DEFAULT_MIN_AVG_VOLUME, ge=0.0)
-    min_market_cap: Optional[float] = Field(default=None, ge=0.0)
+    min_market_cap: float | None = Field(default=None, ge=0.0)
     include_fno_ban: bool = False
     enrichments: frozenset[Enrichment] = frozenset()
     buildup_window: int = Field(default=DEFAULT_BUILDUP_WINDOW, ge=1)
@@ -142,7 +145,7 @@ def india_symbol(tv_sym: str) -> str:
 
 def standalone_buildup_event(
     score: BuildupScore, bars: pd.DataFrame, as_of: date
-) -> Optional[Event]:
+) -> Event | None:
     df_s = bars_on_or_before_as_of(bars, as_of)
     if df_s.empty:
         return None
@@ -293,7 +296,7 @@ def _overlay_india_delivery(
         return panel
     for ev in events:
         ev.symbol = india_symbol(ev.symbol)
-    india_syms = [india_symbol(s) for s in liquid.keys()]
+    india_syms = [india_symbol(s) for s in liquid]
     try:
         panel = load_delivery_panel(india_syms, request.as_of, history_days=40)
     except (

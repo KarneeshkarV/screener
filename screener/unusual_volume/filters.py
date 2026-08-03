@@ -8,12 +8,10 @@ The F&O ban-list is fetched from NSE archives via a primed requests session
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
 
 import pandas as pd
 
 from screener.unusual_volume.nse_client import fetch_nse_text
-
 
 FNO_BAN_URL = "https://nsearchives.nseindia.com/content/fo/fo_secban.csv"
 
@@ -75,7 +73,7 @@ def passes_volume_floor(bars: pd.DataFrame, min_avg_volume: float, as_of: date) 
     return float(avg20) >= min_avg_volume
 
 
-def passes_market_cap(market_cap: Optional[float], min_market_cap: float) -> bool:
+def passes_market_cap(market_cap: float | None, min_market_cap: float) -> bool:
     """Reject tickers below the configured market-cap floor.
 
     Returns True when ``market_cap`` is unknown — we'd rather emit an event
