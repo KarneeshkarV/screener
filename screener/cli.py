@@ -242,7 +242,8 @@ def usage_report() -> None:
 
 # usage-report reads the usage tables; exempt it from tracking itself by
 # pre-marking its callback so UsageTrackedGroup.add_command skips it.
-usage_report.callback._usage_tracked = True
+if usage_report.callback is not None:
+    usage_report.callback._usage_tracked = True  # type: ignore[attr-defined]
 cli.add_command(usage_report)
 
 
