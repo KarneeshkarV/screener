@@ -83,3 +83,15 @@ def near_52_week_high() -> list:
         col("close").between_pct("price_52_week_high", 0.8, 1),
         col("close") < col("price_52_week_high"),
     ]
+
+
+@criterion("above_20ema")
+def above_20ema() -> list:
+    """Close above 20-day EMA."""
+    return [col("close") > col("EMA20")]
+
+
+@criterion("above_200ema")
+def above_200ema() -> list:
+    """Close above 200-day EMA."""
+    return [col("close") > col("EMA200")]

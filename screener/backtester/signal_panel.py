@@ -28,6 +28,7 @@ from screener.backtester.rolling_candidates import (
     _build_rolling_candidate_matrices,
     _RollingCandidateMatrices,
 )
+from screener.backtester.breadth import breadth_regime_series
 from screener.regime import classify_regimes
 
 
@@ -53,6 +54,7 @@ class SignalPanelInputs:
     entry_expr: str
     exit_expr: str | None
     regime_filter: tuple[str, ...]
+    breadth_filter: tuple[str, ...]
     earnings_blackout_days: int | None
     sector_neutral: bool
     min_price: float | None
@@ -71,6 +73,7 @@ class SignalPanelInputs:
             entry_expr=cfg.entry_expr,
             exit_expr=cfg.exit_expr,
             regime_filter=cfg.regime_filter,
+            breadth_filter=cfg.breadth_filter,
             earnings_blackout_days=cfg.earnings_blackout_days,
             sector_neutral=cfg.sector_neutral,
             min_price=cfg.min_price,
@@ -192,6 +195,19 @@ def build_signal_panel(
         regime_allowed = classify_regimes(panel.benchmark).isin(
             set(inputs.regime_filter)
         )
+    if inputs.breadth_filter and panel.master_dates:
+        # Breadth is measured on the panel's own bars, so it shares the run's
+        # warmup history and needs no extra fetch. Combined with AND: when both
+        # gates are set a day must clear the benchmark trend *and* breadth.
+        breadth_allowed = breadth_regime_series(
+            bars_by_tv, pd.DatetimeIndex(panel.master_dates)
+        ).isin(set(inputs.breadth_filter))
+        if regime_allowed is None:
+            regime_allowed = breadth_allowed
+        else:
+            regime_allowed = regime_allowed.reindex(
+                breadth_allowed.index, method="ffill"
+            ).fillna(False).astype(bool) & breadth_allowed
 
     if not panel.master_dates:
         return SignalPanel(exit_signals={}, candidate_matrices=None)

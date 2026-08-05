@@ -25,6 +25,7 @@ from screener.commands.index_inclusion import index_inclusion
 from screener.commands.insiders import promoter_buys
 from screener.commands.institutional import institutional
 from screener.commands.live_strategies import obv_trend_live, vol_breakout_live
+from screener.commands.market_condition import market_condition
 from screener.commands.minervini import mark_minervini
 from screener.commands.rs_breakout import rs_breakout
 from screener.commands.screen import screen
@@ -175,6 +176,7 @@ cli.add_command(screen)
 cli.add_command(history_list)
 cli.add_command(history_backup)
 cli.add_command(rs_breakout)
+cli.add_command(market_condition)
 cli.add_command(garp)
 cli.add_command(mark_minervini)
 cli.add_command(vol_breakout_live)

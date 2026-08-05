@@ -90,6 +90,7 @@ class BacktestRequest:
     point_in_time: bool = False
     spread_proxy: bool = False
     regime_filter_args: tuple[str, ...] = ()
+    breadth_filter_args: tuple[str, ...] = ()
     sector_neutral: bool = False
     earnings_blackout_days: int | None = None
     fundamentals_provider: str | None = None
@@ -340,6 +341,7 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         dynamic_universe_rebalance=dynamic_universe_rebalance,
         spread_proxy=bool(request.spread_proxy),
         regime_filter=tuple(dict.fromkeys(request.regime_filter_args)),
+        breadth_filter=tuple(dict.fromkeys(request.breadth_filter_args)),
         earnings_blackout_days=request.earnings_blackout_days,
         fundamentals_provider=provider,
         fundamental_fields=fields,
