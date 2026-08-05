@@ -54,6 +54,11 @@ class BacktestConfig(BaseModel):
     exit_expr: str | None
     strategy_name: str | None = None
     regime_filter: tuple[str, ...] = ()
+    # Breadth-regime entry gate: allow entries only on days whose universe
+    # breadth regime (share above 20/200-day EMA) is in this set. Independent
+    # of ``regime_filter``, which reads the benchmark's own trend; when both
+    # are set a day must satisfy both.
+    breadth_filter: tuple[str, ...] = ()
     # Earnings blackout entry gate (rolling backtest): when set to N, suppress
     # entry signals on any calendar day within N days BEFORE (and including) a
     # known earnings date for that ticker. ``None`` disables the gate. Tickers

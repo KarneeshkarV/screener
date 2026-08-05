@@ -12,6 +12,11 @@ centering, no lookahead):
   volatility within its own trailing 252-observation distribution:
   ``high_vol`` when at or above the 80th percentile, else ``normal``.
   Warmup dates are labeled ``unknown``.
+
+:func:`classify_breadth` labels a *breadth* pair rather than a price series:
+the share of a universe trading above its 20-day and 200-day EMA. It is the
+single source of truth for those bands, shared by the live ``market-condition``
+command and the backtester's breadth gate so the two cannot drift apart.
 """
 
 from __future__ import annotations
@@ -26,6 +31,70 @@ VOL_DIST_WINDOW = 252
 VOL_HIGH_PERCENTILE = 0.8
 
 TREND_LABELS = ("bull", "pullback", "bear")
+
+BREADTH_LABELS = (
+    "strong_bull",
+    "bullish",
+    "long_term_bull_pullback",
+    "recovery_attempt",
+    "bearish",
+    "mixed",
+)
+
+# Bands are ordered: the first whose predicate holds wins. They are deliberately
+# not exhaustive — a pair that satisfies none (say a firm 200-day against a
+# merely soft 20-day) is ``mixed`` rather than being forced into the nearest
+# named regime. Comparisons are strict, so exactly 50/50 is ``mixed``.
+_BREADTH_BANDS: tuple[tuple[str, float, str, float, str], ...] = (
+    ("strong_bull", 60.0, "gt", 60.0, "gt"),
+    ("bullish", 50.0, "gt", 50.0, "gt"),
+    ("long_term_bull_pullback", 50.0, "gt", 40.0, "lt"),
+    ("recovery_attempt", 50.0, "lt", 60.0, "gt"),
+    ("bearish", 40.0, "lt", 40.0, "lt"),
+)
+
+
+def _cmp(values: pd.Series, op: str, threshold: float) -> pd.Series:
+    return values > threshold if op == "gt" else values < threshold
+
+
+def classify_breadth(pct_20: float, pct_200: float) -> str:
+    """Label one breadth reading; ``unknown`` when either share is missing.
+
+    ``pct_20``/``pct_200`` are percentages (0-100) of a universe trading above
+    its 20-day and 200-day EMA respectively.
+    """
+    if pd.isna(pct_20) or pd.isna(pct_200):
+        return "unknown"
+    labels = classify_breadth_series(
+        pd.Series([float(pct_20)]), pd.Series([float(pct_200)])
+    )
+    return str(labels.iloc[0])
+
+
+def classify_breadth_series(pct_20: pd.Series, pct_200: pd.Series) -> pd.Series:
+    """Label each date's breadth pair; dates missing either share are 'unknown'.
+
+    Vectorised counterpart of :func:`classify_breadth` over aligned series.
+    """
+    pct_20 = pd.to_numeric(pct_20, errors="coerce").astype(float)
+    pct_200 = pd.to_numeric(pct_200, errors="coerce").astype(float)
+    known = pct_20.notna() & pct_200.notna()
+
+    out = pd.Series("unknown", index=pct_20.index, dtype=object)
+    # ``mixed`` is the fallthrough for every known date no band claims.
+    out[known] = "mixed"
+    # Later bands must not overwrite an earlier match, so assign in reverse.
+    for label, slow_threshold, slow_op, fast_threshold, fast_op in reversed(
+        _BREADTH_BANDS
+    ):
+        match = (
+            known
+            & _cmp(pct_200, slow_op, slow_threshold)
+            & _cmp(pct_20, fast_op, fast_threshold)
+        )
+        out[match] = label
+    return out
 
 
 def classify_regimes(close: pd.Series) -> pd.Series:

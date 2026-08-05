@@ -44,6 +44,11 @@ _LAZY_COMMANDS: dict[str, tuple[str, str, str]] = {
         "history_backup",
         "Mirror local screen-run history to Turso (or restore it with --restore).",
     ),
+    "market-condition": (
+        "screener.commands.market_condition",
+        "market_condition",
+        "Check market condition via 20-day and 200-day EMA penetration rates.",
+    ),
     "rs-breakout": (
         "screener.commands.rs_breakout",
         "rs_breakout",
