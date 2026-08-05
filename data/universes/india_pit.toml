@@ -1,0 +1,21 @@
+# Point-in-time Nifty 500 membership for India backtests.
+#
+# Pair with --point-in-time so entries are gated by the membership window that
+# was actually in force on each bar, instead of applying today's 500 names to
+# all history. Regenerate the CSV with:
+#
+#     uv run python scripts/build_nifty500_history.py
+#
+# Usage:
+#
+#     uv run screener backtest-rolling -m india \
+#       --universe nifty500_pit --universe-config data/universes/india_pit.toml \
+#       --point-in-time --years 5 --strategy momentum_12_1 --cost-model india
+#
+# Coverage and residual bias are documented in docs/universes.md.
+
+[universes.nifty500_pit]
+market = "india"
+benchmark = "^NSEI"
+type = "snapshots"
+path = "nifty500_history.csv"
