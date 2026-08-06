@@ -293,6 +293,10 @@ Computes factor IC and quantile tearsheet for a named strategy (or a `combo:name
 ```bash
 uv run screener factor-tearsheet -m us --strategy momentum_12_1 --years 3
 just factor-tearsheet -m india --strategy momentum_12_1 --universe nifty50
+# dual-momentum: 12-1 winners that are also above SMA200
+uv run screener backtest-rolling -m us --years 3 --strategy momentum_12_1_trend --top 10
+# risk-adjusted: rank by mom_12_1 / vol_252 (volatility-scaled winners)
+uv run screener backtest-rolling -m us --years 3 --strategy momentum_12_1_riskadj --top 10
 ```
 
 ### `earnings-backtest`
