@@ -61,8 +61,9 @@ uv run pytest
 
 Use these modules instead of recreating logic:
 
-- Technical screen: `screener/screener/commands/screen.py`, `screener/screener/scanner.py`, `screener/screener/criteria/plugins/`.
+- Technical screen: `screener/screener/commands/screen.py`, `screener/screener/scanner.py`, `screener/screener/criteria/plugins/`, `screener/screener/scoring/`.
 - Custom criteria are pure filters: add a plugin in `screener/screener/criteria/plugins/` with `@criterion("name")`. `criterion()` takes only a name and wraps a zero-argument callable returning TradingView filter expressions — there is no `pipeline` kwarg. Full command workflows (enrichment, history, external providers) live in `screener/screener/screen_aliases.py` and `screener/screener/screen_alias_plugins/`, not this registry.
+- Ranking scores are separate: add a matching `@scorer("name")` in `screener/screener/scoring/plugins/` (same name as the criterion). Each recipe declares extra TV columns and a score function; output is always `setup_score`. Combined `-c` criteria equal-weight average their scorers via `resolve_scorer`.
 - Backtests: `screener/screener/backtester/historical.py`, `rolling.py`, `core.py`, `models.py`, `metrics.py`.
 - Position sizing: `screener/screener/backtester/sizing.py` (`@sizer` registry: `equal_slot`, `fixed_fraction`, `fixed_risk`, `atr_risk`, `inverse_vol`); exposed as `--sizing`/`--sizing-*` on both backtest commands. Default `equal_slot` is bit-identical to the legacy engine; other rules clamp to the slot budget and read only up to the signal bar.
 - Price data: `screener/screener/backtester/data.py`; use `tv_to_yf()` for symbol mapping and injected `PriceFetcher` for tests. Interval-aware: pass `interval=` to the fetcher constructors, never mix intervals in one cache key.

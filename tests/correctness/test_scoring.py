@@ -1,8 +1,8 @@
-"""Phase 8 correctness tests: scoring math for scanner._add_setup_score and garp.add_garp_score.
+"""Phase 8 correctness tests: scoring math for ema setup_score and garp.add_garp_score.
 
 All expected values are hand-derived from the formulas read directly from source.
 
-scanner.py formulas (verified from source):
+ema scorer (scoring/plugins/technical.py; parity with legacy scanner._add_setup_score):
   rsi_quality = (1 - abs(rsi - 60) / 40).clip(lower=0, upper=1).fillna(0)
   momentum    = ((change.clip(lower=-5, upper=10) + 5) / 15).fillna(0)
   overextension_penalty = ((extension - 0.12).clip(lower=0) / 0.25).clip(upper=1)
@@ -23,7 +23,8 @@ import pandas as pd
 import pytest
 
 from screener.garp import INDIA_THRESHOLDS, US_THRESHOLDS, _passes_garp, add_garp_score
-from screener.scanner import _add_setup_score, _log_percentile
+from screener.scanner import _add_setup_score
+from screener.scoring.components import log_percentile as _log_percentile
 
 # ---------------------------------------------------------------------------
 # Helpers to build minimal DataFrames with neutral column values

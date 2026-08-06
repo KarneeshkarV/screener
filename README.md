@@ -34,7 +34,7 @@ Features:
 - Markets: `us`, `india`.
 - Composable `-c` criteria: `ema`, `breakout`, `ema_breakout`, `value`, `quality`, `cheap_quality`, `undervalued`, `dividend`, `momentum_value`, `intraday_momentum`, `intraday_breakout`, `near_52_high` (repeat `-c` to combine).
 - Full workflows are their own top-level commands, not `-c` criteria: `garp`, `mark-minervini`, `rs-breakout`, `promoter-buys`, `unusual-volume`, `vol-breakout-live`, `obv-trend-live`, and `options signals -c <unusual_options|bullish_oi_buildup|high_iv_rank|low_iv_rank|cheap_earnings_vol>`.
-- Local `setup_score` ranking by default.
+- Local `setup_score` ranking by default — each criterion has its own philosophy score (trend for `ema`, cheapness for `value`, yield quality for `dividend`, etc.); combined `-c` criteria average their scores.
 - Optional CSV output with `--csv`.
 - Optional fundamentals with `--detail`.
 - TradingView cache controls with `--cache-ttl` and `--refresh`.

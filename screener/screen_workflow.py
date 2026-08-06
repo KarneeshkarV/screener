@@ -22,6 +22,7 @@ from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from screener.history import diff, previous_run, save_run
 from screener.reporting import temp_report_path
 from screener.scanner import scan
+from screener.scoring import resolve_scorer
 
 
 class ScreenMode(str, Enum):
@@ -63,6 +64,7 @@ class ScreenOutcome:
 def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
     """Run the full non-Click screen lifecycle and return its outcome."""
     selection = resolve_criteria(request.criteria_names)
+    scorer = resolve_scorer(request.criteria_names)
 
     total, df = scan(
         market=request.market,
@@ -72,6 +74,7 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
         detail=request.detail,
         cache_ttl=parse_ttl(request.cache_ttl, default=900),
         refresh=request.refresh,
+        scorer=scorer,
     )
 
     # Earnings enrichment is opt-in and runs only on final result rows.
