@@ -7,6 +7,7 @@ import pytest
 
 from screener.criteria import CRITERIA
 from screener.scoring import (
+    DEFAULT_SCORER_NAME,
     OUTPUT_SCORE_COLUMN,
     SCORERS,
     apply_score,
@@ -170,6 +171,201 @@ def test_composite_value_quality_average() -> None:
     scored = apply_score(df, resolve_scorer(["value", "quality"]))
     assert scored[OUTPUT_SCORE_COLUMN].notna().all()
     assert (scored[OUTPUT_SCORE_COLUMN] > 0).all()
+
+
+def test_negative_debt_to_equity_does_not_win_low_debt_rank() -> None:
+    # Negative D/E means negative shareholder equity, not a pristine balance
+    # sheet — it must not outrank a genuinely low-debt name.
+    df = pd.DataFrame(
+        [
+            {
+                "name": "NEGEQUITY",
+                "close": 100.0,
+                "volume": 1_000_000.0,
+                "market_cap_basic": 1e9,
+                "return_on_equity": 25.0,
+                "debt_to_equity": -3.5,
+                "EMA20": 105.0,
+                "EMA200": 90.0,
+            },
+            {
+                "name": "LOWDEBT",
+                "close": 100.0,
+                "volume": 1_000_000.0,
+                "market_cap_basic": 1e9,
+                "return_on_equity": 25.0,
+                "debt_to_equity": 0.2,
+                "EMA20": 105.0,
+                "EMA200": 90.0,
+            },
+        ]
+    )
+    for name in ("quality", "dividend"):
+        scored = apply_score(
+            df.assign(dividend_yield_recent=2.0, price_earnings_ttm=15.0),
+            get_scorer(name),
+        ).set_index("name")
+        assert (
+            scored.loc["LOWDEBT", OUTPUT_SCORE_COLUMN]
+            > scored.loc["NEGEQUITY", OUTPUT_SCORE_COLUMN]
+        ), name
+
+
+def test_zero_debt_still_earns_top_low_debt_rank() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "name": "DEBTFREE",
+                "close": 100.0,
+                "volume": 1_000_000.0,
+                "market_cap_basic": 1e9,
+                "return_on_equity": 20.0,
+                "debt_to_equity": 0.0,
+                "EMA20": 105.0,
+                "EMA200": 90.0,
+            },
+            {
+                "name": "LEVERED",
+                "close": 100.0,
+                "volume": 1_000_000.0,
+                "market_cap_basic": 1e9,
+                "return_on_equity": 20.0,
+                "debt_to_equity": 0.9,
+                "EMA20": 105.0,
+                "EMA200": 90.0,
+            },
+        ]
+    )
+    scored = apply_score(df, get_scorer("quality")).set_index("name")
+    assert (
+        scored.loc["DEBTFREE", OUTPUT_SCORE_COLUMN]
+        > scored.loc["LEVERED", OUTPUT_SCORE_COLUMN]
+    )
+
+
+def test_missing_rvol_is_not_ranked_below_the_worst_observed_rvol() -> None:
+    # Partial RVOL coverage: the row without RVOL falls back to change energy
+    # rather than being pushed under the lowest actual RVOL in the frame, which
+    # is what the old frame-level ``percentile(rvol)`` switch did.
+    def _row(name: str, rvol: float, change: float) -> dict[str, object]:
+        return {
+            "name": name,
+            "close": 98.0,
+            "change": change,
+            "volume": 1_000_000.0,
+            "market_cap_basic": 1e9,
+            "price_52_week_high": 100.0,
+            "relative_volume_10d_calc": rvol,
+            "EMA20": 95.0,
+            "EMA200": 80.0,
+            "RSI": 65.0,
+        }
+
+    df = pd.DataFrame(
+        [
+            _row("HIGHRVOL", 3.0, 0.0),
+            _row("LOWRVOL", 1.0, 0.0),
+            _row("NORVOL", float("nan"), 10.0),
+        ]
+    )
+    scored = apply_score(df, get_scorer("near_52_high")).set_index("name")
+    assert (
+        scored.loc["NORVOL", OUTPUT_SCORE_COLUMN]
+        > scored.loc["LOWRVOL", OUTPUT_SCORE_COLUMN]
+    )
+
+
+def test_full_rvol_coverage_still_ranks_by_rvol() -> None:
+    rows = [
+        {
+            "name": "SURGE",
+            "close": 98.0,
+            "change": 1.0,
+            "volume": 1_000_000.0,
+            "market_cap_basic": 1e9,
+            "price_52_week_high": 100.0,
+            "relative_volume_10d_calc": 4.0,
+            "EMA20": 95.0,
+            "EMA200": 80.0,
+            "RSI": 65.0,
+        },
+        {
+            "name": "QUIET",
+            "close": 98.0,
+            "change": 1.0,
+            "volume": 1_000_000.0,
+            "market_cap_basic": 1e9,
+            "price_52_week_high": 100.0,
+            "relative_volume_10d_calc": 0.5,
+            "EMA20": 95.0,
+            "EMA200": 80.0,
+            "RSI": 65.0,
+        },
+    ]
+    scored = apply_score(pd.DataFrame(rows), get_scorer("breakout")).set_index("name")
+    assert (
+        scored.loc["SURGE", OUTPUT_SCORE_COLUMN]
+        > scored.loc["QUIET", OUTPUT_SCORE_COLUMN]
+    )
+
+
+def test_momentum_value_ignores_unrelated_extra_columns() -> None:
+    # EMA100 is declared by the scorer, so adding columns from another
+    # criterion must not change the momentum_value ranking recipe.
+    rows = [
+        {
+            "name": "A",
+            "close": 100.0,
+            "change": 1.0,
+            "volume": 1_000_000.0,
+            "market_cap_basic": 1e9,
+            "price_earnings_ttm": 12.0,
+            "RSI": 60.0,
+            "EMA5": 99.0,
+            "EMA20": 97.0,
+            "EMA100": 92.0,
+            "EMA200": 85.0,
+        },
+        {
+            "name": "B",
+            "close": 100.0,
+            "change": 1.0,
+            "volume": 1_000_000.0,
+            "market_cap_basic": 1e9,
+            "price_earnings_ttm": 30.0,
+            "RSI": 45.0,
+            "EMA5": 98.0,
+            "EMA20": 99.0,
+            "EMA100": 101.0,
+            "EMA200": 103.0,
+        },
+    ]
+    df = pd.DataFrame(rows)
+    base = apply_score(df, get_scorer("momentum_value"))[OUTPUT_SCORE_COLUMN]
+    widened = apply_score(
+        df.assign(price_52_week_high=110.0, relative_volume_10d_calc=1.2),
+        get_scorer("momentum_value"),
+    )[OUTPUT_SCORE_COLUMN]
+    pd.testing.assert_series_equal(base, widened)
+
+
+def test_proximity_to_high_stays_float_dtype() -> None:
+    from screener.scoring.components import proximity_to_high
+
+    close = pd.Series([50.0, 90.0, 10.0])
+    high = pd.Series([100.0, 0.0, float("nan")])
+    result = proximity_to_high(close, high)
+    assert result.dtype == float
+    assert result.tolist() == [0.5, 0.0, 0.0]
+
+
+def test_resolve_scorer_non_strict_falls_back_to_default() -> None:
+    with pytest.raises(KeyError):
+        resolve_scorer(["definitely_not_a_criterion"])
+    spec = resolve_scorer(["definitely_not_a_criterion"], strict=False)
+    assert spec.name == DEFAULT_SCORER_NAME
+    # A valid name still resolves normally in non-strict mode.
+    assert resolve_scorer(["value"], strict=False).name == "value"
 
 
 def test_negative_pe_does_not_win_value_rank() -> None:

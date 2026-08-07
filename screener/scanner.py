@@ -12,6 +12,7 @@ from screener.scoring import (
     OUTPUT_SCORE_COLUMN,
     ScoreSpec,
     apply_score,
+    default_scorer,
     get_scorer,
 )
 from screener.scoring.components import log_percentile
@@ -66,11 +67,6 @@ class ScannerPlan:
     scorer: ScoreSpec | None = None
 
 
-def _default_scorer() -> ScoreSpec:
-    """EMA setup score — historical default for ``order_by=setup_score``."""
-    return get_scorer("ema")
-
-
 def build_scanner_plan(
     *,
     market: str,
@@ -86,7 +82,7 @@ def build_scanner_plan(
 
     active_scorer: ScoreSpec | None = None
     if order_by == OUTPUT_SCORE_COLUMN:
-        active_scorer = scorer if scorer is not None else _default_scorer()
+        active_scorer = scorer if scorer is not None else default_scorer()
         columns.extend(c for c in active_scorer.columns if c not in columns)
         fetch_limit = max(limit * 10, 500)
         query_order_by = "volume"
@@ -193,7 +189,7 @@ def _add_setup_score(
     Defaults to the EMA trend setup for backward compatibility with tests and
     call sites that still invoke this helper directly.
     """
-    active = scorer if scorer is not None else _default_scorer()
+    active = scorer if scorer is not None else default_scorer()
     return apply_score(df, active)
 
 
@@ -242,7 +238,7 @@ def shape_scan_results(
     """Shape raw scanner rows after Adapter fetch without provider access."""
     shaped = df
     if order_by == OUTPUT_SCORE_COLUMN and not shaped.empty:
-        active = scorer if scorer is not None else _default_scorer()
+        active = scorer if scorer is not None else default_scorer()
         shaped = _add_setup_score(shaped, active)
         shaped = shaped.sort_values(OUTPUT_SCORE_COLUMN, ascending=False)
         drop_cols = _helper_columns_to_drop(active, detail=detail)

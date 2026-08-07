@@ -19,6 +19,7 @@ ScoreFn = Callable[[pd.DataFrame], pd.Series]
 _RegisteredScoreFn = TypeVar("_RegisteredScoreFn", bound=ScoreFn)
 
 OUTPUT_SCORE_COLUMN = "setup_score"
+DEFAULT_SCORER_NAME = "ema"
 
 registry: Registry[ScoreFn] = Registry("scorer")
 
@@ -65,15 +66,29 @@ def get_scorer(name: str) -> ScoreSpec:
     )
 
 
-def resolve_scorer(names: Sequence[str]) -> ScoreSpec:
+def default_scorer() -> ScoreSpec:
+    """EMA setup score — historical default for ``order_by=setup_score``."""
+    return get_scorer(DEFAULT_SCORER_NAME)
+
+
+def resolve_scorer(names: Sequence[str], *, strict: bool = True) -> ScoreSpec:
     """Resolve one or more criterion names into a single ranking recipe.
 
     * One name → that scorer.
     * Several → equal-weight average of each scorer; columns are the union.
+
+    With ``strict=False`` an unregistered criterion name degrades to the
+    default scorer instead of raising, so a missing ranking recipe cannot take
+    down a whole screen (including ``--sort volume``, which never scores).
     """
     selected = tuple(names)
     if not selected:
         raise ValueError("resolve_scorer requires at least one criterion name")
+    if not strict:
+        try:
+            return resolve_scorer(selected)
+        except KeyError:
+            return default_scorer()
     if len(selected) == 1:
         return get_scorer(selected[0])
 
@@ -121,11 +136,13 @@ _register_plugins()
 SCORERS: dict[str, ScoreFn] = registry.as_dict()
 
 __all__ = [
+    "DEFAULT_SCORER_NAME",
     "OUTPUT_SCORE_COLUMN",
     "SCORERS",
     "ScoreFn",
     "ScoreSpec",
     "apply_score",
+    "default_scorer",
     "get_scorer",
     "registry",
     "resolve_scorer",

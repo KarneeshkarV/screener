@@ -30,16 +30,29 @@ def log_percentile(series: pd.Series) -> pd.Series:
     return percentile(values.add(1).map(math.log))
 
 
-def inv_percentile(series: pd.Series, *, positive_only: bool = False) -> pd.Series:
+def inv_percentile(
+    series: pd.Series,
+    *,
+    positive_only: bool = False,
+    lower_bound: float | None = None,
+) -> pd.Series:
     """Higher score for *lower* raw values (e.g. P/E, debt).
 
     When ``positive_only`` is true, non-positive values are treated as missing
     so they do not earn a top inverse rank (same idea as GARP PEG handling).
+    ``lower_bound`` does the same for values below it, which keeps metrics that
+    are only meaningful above a floor honest — a negative debt/equity means
+    negative shareholder equity, not a pristine balance sheet.
     """
     values = pd.to_numeric(series, errors="coerce")
     if positive_only:
         values = values.where(values > 0)
-    return (1 - values.rank(pct=True)).fillna(0)
+    if lower_bound is not None:
+        values = values.where(values >= lower_bound)
+    # Descending rank rather than ``1 - rank``: the worst *valid* value keeps a
+    # strictly positive score (1/n), so excluded rows landing on 0 really do
+    # rank below every valid one instead of tying with the bottom of the field.
+    return values.rank(ascending=False, pct=True).fillna(0)
 
 
 def clip_scale(
@@ -68,6 +81,19 @@ def momentum_change(change: pd.Series) -> pd.Series:
     """Map day change % into [0, 1] with soft clips at -5 / +10."""
     values = pd.to_numeric(change, errors="coerce")
     return ((values.clip(lower=-5, upper=10) + 5) / 15).fillna(0)
+
+
+def rvol_surge(rvol: pd.Series, change: pd.Series) -> pd.Series:
+    """Cross-sectional RVOL rank where available, day-change energy elsewhere.
+
+    The fallback is per row, not per frame: ranking only over the rows that
+    actually report RVOL means partial coverage no longer drops the missing
+    rows below the lowest observed RVOL (``percentile`` would ``fillna(0)``
+    them into last place, a silent penalty for a data gap).
+    """
+    values = pd.to_numeric(rvol, errors="coerce")
+    ranked = values.rank(pct=True)
+    return ranked.where(values.notna(), momentum_change(change)).fillna(0)
 
 
 def overextension_penalty(
@@ -105,7 +131,9 @@ def trend_stack_strength(
 
 def proximity_to_high(close: pd.Series, high_52w: pd.Series) -> pd.Series:
     """close / 52w high clipped to [0, 1]; missing high → 0."""
-    ratio = (close / high_52w.replace(0, pd.NA)).clip(lower=0, upper=1)
+    # ``where`` (not ``replace(0, pd.NA)``) so the result stays float64 instead
+    # of upcasting to object and losing the numeric fast path downstream.
+    ratio = (close / high_52w.where(high_52w != 0)).clip(lower=0, upper=1)
     return ratio.fillna(0)
 
 
@@ -128,5 +156,6 @@ __all__ = [
     "percentile",
     "proximity_to_high",
     "rsi_quality",
+    "rvol_surge",
     "trend_stack_strength",
 ]

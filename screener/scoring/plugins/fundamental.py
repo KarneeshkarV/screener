@@ -36,6 +36,7 @@ _MOMENTUM_VALUE_COLUMNS = (
     "RSI",
     "EMA5",
     "EMA20",
+    "EMA100",
     "EMA200",
 )
 
@@ -47,13 +48,14 @@ def _score_value_core(df: pd.DataFrame) -> pd.Series:
     volume = numeric(df, "volume")
     mcap = numeric(df, "market_cap_basic")
 
+    # ``positive_only`` already zeroes non-positive P/E, so there is no separate
+    # "has earnings" term: it would double-penalize loss-makers and act as a
+    # constant for the criteria whose filters already require P/E > 0.
     cheap = inv_percentile(pe, positive_only=True)
     liquidity = liquidity_from_dollar_volume(volume, close)
     market_cap = log_percentile(mcap)
-    # Prefer positive earnings presence (already filtered for most criteria).
-    has_earnings = (pe > 0).astype(float).fillna(0.0)
 
-    return (50 * cheap + 20 * liquidity + 15 * market_cap + 15 * has_earnings).round(2)
+    return (65 * cheap + 20 * liquidity + 15 * market_cap).round(2)
 
 
 @scorer(
@@ -84,7 +86,9 @@ def _score_quality_core(df: pd.DataFrame) -> pd.Series:
     ema200 = numeric(df, "EMA200")
 
     roe_rank = percentile(roe)
-    low_debt = inv_percentile(de)  # lower D/E better; missing → 0
+    # Lower D/E better, but only down to zero: negative D/E means negative
+    # shareholder equity, which must not earn the top low-debt rank.
+    low_debt = inv_percentile(de, lower_bound=0.0)
     liquidity = liquidity_from_dollar_volume(volume, close)
     trend = above_flag(ema20, ema200)
 
@@ -125,7 +129,7 @@ def score_dividend(df: pd.DataFrame) -> pd.Series:
 
     yield_rank = percentile(yield_)
     cheap = inv_percentile(pe, positive_only=True)
-    low_debt = inv_percentile(de)
+    low_debt = inv_percentile(de, lower_bound=0.0)
     liquidity = liquidity_from_dollar_volume(volume, close)
 
     return (40 * yield_rank + 25 * cheap + 20 * low_debt + 15 * liquidity).round(2)
@@ -152,9 +156,13 @@ def score_momentum_value(df: pd.DataFrame) -> pd.Series:
     short_stack = above_flag(ema5, ema20)
     long_trend = above_flag(ema20, ema200)
     liquidity = liquidity_from_dollar_volume(volume, close)
-    # Optional mild trend spread when full stack columns exist.
-    if "EMA100" in df.columns:
-        ema100 = numeric(df, "EMA100")
+    # EMA100 is declared in this scorer's columns, so the full stack spread is
+    # the normal path; the flag average is a fallback for markets that return
+    # no EMA100 at all. Keyed off the data, not off which other criteria were
+    # combined — otherwise ``-c momentum_value`` and ``-c momentum_value -c ema``
+    # would score the same stock differently.
+    ema100 = numeric(df, "EMA100")
+    if ema100.notna().any():
         trend = trend_stack_strength(close, ema5, ema20, ema100, ema200)
     else:
         trend = (short_stack + long_trend) / 2.0

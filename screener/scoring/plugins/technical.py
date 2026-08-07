@@ -19,6 +19,7 @@ from screener.scoring.components import (
     percentile,
     proximity_to_high,
     rsi_quality,
+    rvol_surge,
     trend_stack_strength,
 )
 
@@ -102,7 +103,7 @@ def _score_breakout_family(df: pd.DataFrame) -> pd.Series:
 
     near_high = proximity_to_high(close, high)
     # Prefer cross-sectional rank of RVOL when present; fall back to change energy.
-    vol_surge = percentile(rvol) if rvol.notna().any() else momentum_change(change)
+    vol_surge = rvol_surge(rvol, change)
     liquidity = liquidity_from_dollar_volume(volume, close)
     trend = above_flag(ema20, ema200)
     rsi_q = rsi_quality(rsi, center=65.0, half_width=35.0)
@@ -153,7 +154,7 @@ def score_intraday_breakout(df: pd.DataFrame) -> pd.Series:
     ema20 = numeric(df, "EMA20")
 
     near_high = proximity_to_high(close, high)
-    vol_surge = percentile(rvol) if rvol.notna().any() else momentum_change(change)
+    vol_surge = rvol_surge(rvol, change)
     liquidity = liquidity_from_dollar_volume(volume, close)
     short_trend = above_flag(ema5, ema20)
     day_move = momentum_change(change)
@@ -181,7 +182,7 @@ def score_intraday_momentum(df: pd.DataFrame) -> pd.Series:
     ema200 = numeric(df, "EMA200")
     rsi = numeric(df, "RSI")
 
-    vol_surge = percentile(rvol) if rvol.notna().any() else momentum_change(change)
+    vol_surge = rvol_surge(rvol, change)
     day_move = momentum_change(change)
     # Intraday sweet spot is a bit hotter than the swing RSI center.
     rsi_q = rsi_quality(rsi, center=65.0, half_width=25.0)

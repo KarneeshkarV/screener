@@ -64,7 +64,7 @@ class ScreenOutcome:
 def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
     """Run the full non-Click screen lifecycle and return its outcome."""
     selection = resolve_criteria(request.criteria_names)
-    scorer = resolve_scorer(request.criteria_names)
+    scorer = resolve_scorer(request.criteria_names, strict=False)
 
     total, df = scan(
         market=request.market,
