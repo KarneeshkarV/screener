@@ -1,0 +1,150 @@
+"""Per-criterion ranking scores for the TradingView screen path.
+
+Filters stay in ``screener.criteria``; this package owns the *ranking*
+philosophy for each criterion name. Output is always written as
+``setup_score`` so history, display, and CSV stay stable.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import TypeVar
+
+import pandas as pd
+
+from screener._registry import Registry
+
+ScoreFn = Callable[[pd.DataFrame], pd.Series]
+_RegisteredScoreFn = TypeVar("_RegisteredScoreFn", bound=ScoreFn)
+
+OUTPUT_SCORE_COLUMN = "setup_score"
+DEFAULT_SCORER_NAME = "ema"
+
+registry: Registry[ScoreFn] = Registry("scorer")
+
+
+@dataclass(frozen=True)
+class ScoreSpec:
+    """Resolved scorer used by the scanner plan + shape pipeline."""
+
+    name: str
+    columns: tuple[str, ...]
+    score_fn: ScoreFn
+    description: str = ""
+
+
+def scorer(
+    name: str,
+    *,
+    columns: Sequence[str] = (),
+    description: str = "",
+) -> Callable[[_RegisteredScoreFn], _RegisteredScoreFn]:
+    """Register a ranking recipe for a criterion name."""
+
+    def _wrap(fn: _RegisteredScoreFn) -> _RegisteredScoreFn:
+        registry.add(
+            name,
+            fn,
+            columns=tuple(columns),
+            description=description,
+        )
+        return fn
+
+    return _wrap
+
+
+def get_scorer(name: str) -> ScoreSpec:
+    """Look up one registered scorer by criterion name."""
+    fn = registry.get(name)
+    meta = registry.meta(name)
+    return ScoreSpec(
+        name=name,
+        columns=tuple(meta.get("columns", ())),
+        score_fn=fn,
+        description=str(meta.get("description", "")),
+    )
+
+
+def default_scorer() -> ScoreSpec:
+    """EMA setup score — historical default for ``order_by=setup_score``."""
+    return get_scorer(DEFAULT_SCORER_NAME)
+
+
+def resolve_scorer(names: Sequence[str], *, strict: bool = True) -> ScoreSpec:
+    """Resolve one or more criterion names into a single ranking recipe.
+
+    * One name → that scorer.
+    * Several → equal-weight average of each scorer; columns are the union.
+
+    With ``strict=False`` an unregistered criterion name degrades to the
+    default scorer instead of raising, so a missing ranking recipe cannot take
+    down a whole screen (including ``--sort volume``, which never scores).
+    """
+    selected = tuple(names)
+    if not selected:
+        raise ValueError("resolve_scorer requires at least one criterion name")
+    if not strict:
+        try:
+            return resolve_scorer(selected)
+        except KeyError:
+            return default_scorer()
+    if len(selected) == 1:
+        return get_scorer(selected[0])
+
+    specs = [get_scorer(name) for name in selected]
+    columns: list[str] = []
+    seen: set[str] = set()
+    for spec in specs:
+        for col in spec.columns:
+            if col not in seen:
+                seen.add(col)
+                columns.append(col)
+
+    descriptions = [s.description for s in specs if s.description]
+    label = "+".join(selected)
+
+    def blended(df: pd.DataFrame) -> pd.Series:
+        parts = [spec.score_fn(df) for spec in specs]
+        stacked = pd.concat(parts, axis=1)
+        return stacked.mean(axis=1)
+
+    return ScoreSpec(
+        name=label,
+        columns=tuple(columns),
+        score_fn=blended,
+        description="Equal blend: " + "; ".join(descriptions)
+        if descriptions
+        else f"Equal blend of {label}",
+    )
+
+
+def apply_score(df: pd.DataFrame, spec: ScoreSpec) -> pd.DataFrame:
+    """Assign ``setup_score`` from ``spec`` without sorting or dropping columns."""
+    if df.empty:
+        return df.assign(**{OUTPUT_SCORE_COLUMN: pd.Series(dtype=float)})
+    scores = spec.score_fn(df)
+    return df.assign(**{OUTPUT_SCORE_COLUMN: pd.to_numeric(scores, errors="coerce")})
+
+
+def _register_plugins() -> None:
+    from screener.scoring.plugins import fundamental, technical  # noqa: F401
+
+
+_register_plugins()
+
+SCORERS: dict[str, ScoreFn] = registry.as_dict()
+
+__all__ = [
+    "DEFAULT_SCORER_NAME",
+    "OUTPUT_SCORE_COLUMN",
+    "SCORERS",
+    "ScoreFn",
+    "ScoreSpec",
+    "apply_score",
+    "default_scorer",
+    "get_scorer",
+    "registry",
+    "resolve_scorer",
+    "scorer",
+]

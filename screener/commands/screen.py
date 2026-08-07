@@ -37,7 +37,11 @@ from screener.screen_workflow import (
     "--sort",
     "order_by",
     default="setup_score",
-    help="Sort by column. Use setup_score for local composite ranking.",
+    help=(
+        "Sort by column. setup_score ranks by the active criteria's philosophy "
+        "score (e.g. trend for ema, cheapness for value); other names are "
+        "TradingView columns such as volume."
+    ),
 )
 @click.option("--csv", "output_csv", is_flag=True, help="Output as CSV.")
 @click.option(

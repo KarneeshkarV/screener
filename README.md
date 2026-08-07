@@ -34,7 +34,7 @@ Features:
 - Markets: `us`, `india`.
 - Composable `-c` criteria: `ema`, `breakout`, `ema_breakout`, `value`, `quality`, `cheap_quality`, `undervalued`, `dividend`, `momentum_value`, `intraday_momentum`, `intraday_breakout`, `near_52_high` (repeat `-c` to combine).
 - Full workflows are their own top-level commands, not `-c` criteria: `garp`, `mark-minervini`, `rs-breakout`, `promoter-buys`, `unusual-volume`, `vol-breakout-live`, `obv-trend-live`, and `options signals -c <unusual_options|bullish_oi_buildup|high_iv_rank|low_iv_rank|cheap_earnings_vol>`.
-- Local `setup_score` ranking by default.
+- Local `setup_score` ranking by default — each criterion has its own philosophy score (trend for `ema`, cheapness for `value`, yield quality for `dividend`, etc.); combined `-c` criteria average their scores.
 - Optional CSV output with `--csv`.
 - Optional fundamentals with `--detail`.
 - TradingView cache controls with `--cache-ttl` and `--refresh`.
@@ -293,6 +293,10 @@ Computes factor IC and quantile tearsheet for a named strategy (or a `combo:name
 ```bash
 uv run screener factor-tearsheet -m us --strategy momentum_12_1 --years 3
 just factor-tearsheet -m india --strategy momentum_12_1 --universe nifty50
+# dual-momentum: 12-1 winners that are also above SMA200
+uv run screener backtest-rolling -m us --years 3 --strategy momentum_12_1_trend --top 10
+# risk-adjusted: rank by mom_12_1 / vol_252 (volatility-scaled winners)
+uv run screener backtest-rolling -m us --years 3 --strategy momentum_12_1_riskadj --top 10
 ```
 
 ### `earnings-backtest`

@@ -1,5 +1,4 @@
 import logging
-import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -9,6 +8,14 @@ from tradingview_screener import Query
 
 from screener.markets import TV_MARKETS
 from screener.providers import CachedProvider, FrameWithMeta, ProviderSpec
+from screener.scoring import (
+    OUTPUT_SCORE_COLUMN,
+    ScoreSpec,
+    apply_score,
+    default_scorer,
+    get_scorer,
+)
+from screener.scoring.components import log_percentile
 
 LOG = logging.getLogger(__name__)
 
@@ -37,13 +44,8 @@ DEFAULT_COLUMNS = [
     "market_cap_basic",
 ]
 
-SETUP_SCORE_COLUMNS = [
-    "EMA5",
-    "EMA20",
-    "EMA100",
-    "EMA200",
-    "RSI",
-]
+# Backward-compatible alias: columns the legacy EMA setup score fetches.
+SETUP_SCORE_COLUMNS = list(get_scorer("ema").columns)
 
 DETAIL_COLUMNS = [
     "price_earnings_ttm",
@@ -62,6 +64,7 @@ class ScannerPlan:
     order_by: str
     query_order_by: str
     fetch_limit: int
+    scorer: ScoreSpec | None = None
 
 
 def build_scanner_plan(
@@ -71,13 +74,16 @@ def build_scanner_plan(
     limit: int = 50,
     order_by: str = "volume",
     detail: bool = False,
+    scorer: ScoreSpec | None = None,
 ) -> ScannerPlan:
     columns = list(DEFAULT_COLUMNS)
     if detail:
-        columns.extend(DETAIL_COLUMNS)
+        columns.extend(c for c in DETAIL_COLUMNS if c not in columns)
 
-    if order_by == "setup_score":
-        columns.extend(c for c in SETUP_SCORE_COLUMNS if c not in columns)
+    active_scorer: ScoreSpec | None = None
+    if order_by == OUTPUT_SCORE_COLUMN:
+        active_scorer = scorer if scorer is not None else default_scorer()
+        columns.extend(c for c in active_scorer.columns if c not in columns)
         fetch_limit = max(limit * 10, 500)
         query_order_by = "volume"
     else:
@@ -91,6 +97,7 @@ def build_scanner_plan(
         order_by=order_by,
         query_order_by=query_order_by,
         fetch_limit=fetch_limit,
+        scorer=active_scorer,
     )
 
 
@@ -169,52 +176,21 @@ def get_scanner_data_cached(
     return int(meta.get("count", 0)), frame
 
 
-def _percentile(series: pd.Series) -> pd.Series:
-    return pd.to_numeric(series, errors="coerce").rank(pct=True).fillna(0)
+# Re-export for correctness tests that still import from scanner.
+_log_percentile = log_percentile
 
 
-def _log_percentile(series: pd.Series) -> pd.Series:
-    values = pd.to_numeric(series, errors="coerce").clip(lower=0)
-    return _percentile(values.add(1).map(math.log))
+def _add_setup_score(
+    df: pd.DataFrame,
+    scorer: ScoreSpec | None = None,
+) -> pd.DataFrame:
+    """Apply a ranking recipe and write ``setup_score``.
 
-
-def _add_setup_score(df: pd.DataFrame) -> pd.DataFrame:
-    close = pd.to_numeric(df["close"], errors="coerce")
-    ema5 = pd.to_numeric(df["EMA5"], errors="coerce")
-    ema20 = pd.to_numeric(df["EMA20"], errors="coerce")
-    ema100 = pd.to_numeric(df["EMA100"], errors="coerce")
-    ema200 = pd.to_numeric(df["EMA200"], errors="coerce")
-    change = pd.to_numeric(df["change"], errors="coerce")
-    rsi = pd.to_numeric(df["RSI"], errors="coerce")
-
-    dollar_volume = pd.to_numeric(df["volume"], errors="coerce") * close
-    liquidity = _log_percentile(dollar_volume)
-    market_cap = _log_percentile(df["market_cap_basic"])
-
-    trend_spread = (
-        ((ema5 - ema20) / close)
-        + ((ema20 - ema100) / close)
-        + ((ema100 - ema200) / close)
-    ).clip(lower=0, upper=0.35)
-    trend_strength = _percentile(trend_spread)
-
-    momentum = ((change.clip(lower=-5, upper=10) + 5) / 15).fillna(0)
-    rsi_quality = (1 - ((rsi - 60).abs() / 40)).clip(lower=0, upper=1).fillna(0)
-    price_quality = _percentile(close.clip(lower=0, upper=200))
-
-    extension = ((close - ema20) / ema20).fillna(0)
-    overextension_penalty = ((extension - 0.12).clip(lower=0) / 0.25).clip(upper=1)
-
-    setup_score = (
-        25 * liquidity
-        + 30 * trend_strength
-        + 15 * momentum
-        + 15 * market_cap
-        + 10 * rsi_quality
-        + 5 * price_quality
-        - 15 * overextension_penalty
-    ).round(2)
-    return df.assign(setup_score=setup_score)
+    Defaults to the EMA trend setup for backward compatibility with tests and
+    call sites that still invoke this helper directly.
+    """
+    active = scorer if scorer is not None else default_scorer()
+    return apply_score(df, active)
 
 
 def _dedupe_listings(df: pd.DataFrame) -> pd.DataFrame:
@@ -238,24 +214,35 @@ def _dedupe_listings(df: pd.DataFrame) -> pd.DataFrame:
     return deduped.drop(columns=["_listing_key"])
 
 
+def _helper_columns_to_drop(
+    scorer: ScoreSpec,
+    *,
+    detail: bool,
+) -> list[str]:
+    """Drop score-only helper columns; keep DEFAULT / DETAIL display columns."""
+    keep = set(DEFAULT_COLUMNS)
+    if detail:
+        keep.update(DETAIL_COLUMNS)
+    keep.add(OUTPUT_SCORE_COLUMN)
+    return [col for col in scorer.columns if col not in keep]
+
+
 def shape_scan_results(
     df: pd.DataFrame,
     *,
     limit: int = 50,
     order_by: str = "volume",
     detail: bool = False,
+    scorer: ScoreSpec | None = None,
 ) -> pd.DataFrame:
     """Shape raw scanner rows after Adapter fetch without provider access."""
     shaped = df
-    if order_by == "setup_score" and not shaped.empty:
-        shaped = _add_setup_score(shaped)
-        shaped = shaped.sort_values("setup_score", ascending=False)
-        hidden_score_columns = [
-            col
-            for col in SETUP_SCORE_COLUMNS
-            if not detail or col not in DETAIL_COLUMNS
-        ]
-        shaped = shaped.drop(columns=hidden_score_columns)
+    if order_by == OUTPUT_SCORE_COLUMN and not shaped.empty:
+        active = scorer if scorer is not None else default_scorer()
+        shaped = _add_setup_score(shaped, active)
+        shaped = shaped.sort_values(OUTPUT_SCORE_COLUMN, ascending=False)
+        drop_cols = _helper_columns_to_drop(active, detail=detail)
+        shaped = shaped.drop(columns=[c for c in drop_cols if c in shaped.columns])
     if not shaped.empty:
         shaped = _dedupe_listings(shaped).head(limit)
     return shaped
@@ -269,6 +256,7 @@ def scan(
     detail: bool = False,
     cache_ttl: float | None = 900,
     refresh: bool = False,
+    scorer: ScoreSpec | None = None,
 ) -> tuple[int, pd.DataFrame]:
     plan = build_scanner_plan(
         market=market,
@@ -276,10 +264,17 @@ def scan(
         limit=limit,
         order_by=order_by,
         detail=detail,
+        scorer=scorer,
     )
     count, df = TRADINGVIEW_SCANNER.fetch(
         plan,
         cache_ttl=cache_ttl,
         refresh=refresh,
     )
-    return count, shape_scan_results(df, limit=limit, order_by=order_by, detail=detail)
+    return count, shape_scan_results(
+        df,
+        limit=limit,
+        order_by=order_by,
+        detail=detail,
+        scorer=plan.scorer,
+    )
