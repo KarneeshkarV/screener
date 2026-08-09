@@ -26,11 +26,13 @@ import pandas as pd
 
 TREND_FAST_WINDOW = 50
 TREND_SLOW_WINDOW = 200
+RISK_ON_SLOPE_WINDOW = 20
 VOL_WINDOW = 20
 VOL_DIST_WINDOW = 252
 VOL_HIGH_PERCENTILE = 0.8
 
 TREND_LABELS = ("bull", "pullback", "bear")
+DEFENSIVE_REGIME_LABELS = ("risk_on", "transition", "risk_off")
 
 BREADTH_LABELS = (
     "strong_bull",
@@ -115,6 +117,38 @@ def classify_regimes(close: pd.Series) -> pd.Series:
     out[known] = "pullback"
     out[bull] = "bull"
     out[bear] = "bear"
+    return out
+
+
+def classify_defensive_regimes(close: pd.Series) -> pd.Series:
+    """Label a benchmark ``risk_on`` / ``transition`` / ``risk_off``.
+
+    This stricter, causal classifier is intended for defensive long-only
+    strategies.  ``risk_on`` requires price above both moving averages, a
+    bullish SMA50/SMA200 relationship, and a rising SMA50.  ``risk_off`` reacts
+    immediately to either a close below SMA200 or an SMA50 break below SMA200,
+    so it does not wait for the legacy ``bear`` label's two conditions to agree.
+    Dates without every required trailing value are ``unknown``.
+    """
+    close = close.astype(float).sort_index()
+    out = pd.Series("unknown", index=close.index, dtype=object)
+    if close.empty:
+        return out
+    sma_fast = close.rolling(TREND_FAST_WINDOW, min_periods=TREND_FAST_WINDOW).mean()
+    sma_slow = close.rolling(TREND_SLOW_WINDOW, min_periods=TREND_SLOW_WINDOW).mean()
+    fast_slope = sma_fast - sma_fast.shift(RISK_ON_SLOPE_WINDOW)
+    known = close.notna() & sma_fast.notna() & sma_slow.notna() & fast_slope.notna()
+    risk_on = (
+        known
+        & (close > sma_slow)
+        & (close > sma_fast)
+        & (sma_fast > sma_slow)
+        & (fast_slope > 0)
+    )
+    risk_off = known & ((close < sma_slow) | (sma_fast < sma_slow))
+    out[known] = "transition"
+    out[risk_off] = "risk_off"
+    out[risk_on] = "risk_on"
     return out
 
 
