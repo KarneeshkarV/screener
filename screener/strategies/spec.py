@@ -174,9 +174,11 @@ def discover_plugins() -> None:
         bb_pattern,
         breakout,
         donchian_breakout,
+        dual_momentum,
         ema150_200_revenue,
         ema_trend,
         heikin_ashi,
+        long_only_trend,
         low_volatility,
         ma_cross,
         ma_cross_regime,
@@ -188,6 +190,7 @@ def discover_plugins() -> None:
         minervini_filtered,
         mom_lowvol_combo,
         momentum_12_1,
+        momentum_riskmanaged,
         parabolic_sar,
         rs_breakout,
         rs_momentum_regime,
@@ -197,6 +200,7 @@ def discover_plugins() -> None:
         shooting_star,
         supertrend,
         supertrend_rsi,
+        time_series_momentum,
         vivek_equity_tool,
     )
 

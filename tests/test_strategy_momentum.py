@@ -8,6 +8,7 @@ import pandas as pd
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.strategies.plugins.momentum_12_1 import (
+    ENTRY_DEFENSIVE,
     ENTRY_PURE,
     ENTRY_RISKADJ,
     ENTRY_TREND,
@@ -109,6 +110,13 @@ def test_strategy_registered() -> None:
     assert riskadj.required_lookback is not None
     assert riskadj.required_lookback() == 253
 
+    defensive = registry.get_optional("momentum_12_1_defensive")
+    assert defensive is not None
+    assert defensive.entry == ENTRY_DEFENSIVE
+    assert defensive.prepare_bars is not None
+    assert defensive.required_lookback is not None
+    assert defensive.required_lookback() == 252
+
 
 def test_momentum_score_is_causal() -> None:
     close = pd.Series(np.linspace(100.0, 200.0, _N), index=_INDEX)
@@ -195,6 +203,49 @@ def test_trend_filter_skips_crashed_winner() -> None:
     filtered_traded = {tr.ticker for tr in filtered.trades}
     assert filtered_traded == {"STEADY"}, filtered_traded
     assert filtered.metrics["trade_count"] > 0
+
+
+def test_defensive_momentum_blocks_risk_off_benchmark() -> None:
+    """Positive stock momentum alone cannot enter while the benchmark is risk-off."""
+    winner = _trend(50.0, 0.0018, volume=900_000.0)
+    runner_up = _trend(50.0, 0.0010, volume=900_000.0)
+    tickers = ("WIN", "MID")
+    start = _INDEX[260].date()
+    end = _INDEX[-1].date()
+
+    risk_off_data = {
+        "WIN": winner,
+        "MID": runner_up,
+        "SPY": _trend(400.0, -0.0010, volume=1_000_000.0),
+    }
+    blocked = run_rolling_backtest(
+        _rolling_cfg("momentum_12_1_defensive", ENTRY_DEFENSIVE, tickers),
+        StubPriceFetcher(risk_off_data),
+        start_date=start,
+        end_date=end,
+    )
+    assert blocked.trades == []
+
+    risk_on_data = {
+        "WIN": winner,
+        "MID": runner_up,
+        "SPY": _trend(400.0, 0.0005, volume=1_000_000.0),
+    }
+    allowed = run_rolling_backtest(
+        _rolling_cfg("momentum_12_1_defensive", ENTRY_DEFENSIVE, tickers),
+        StubPriceFetcher(risk_on_data),
+        start_date=start,
+        end_date=end,
+    )
+    assert {trade.ticker for trade in allowed.trades} == {"WIN"}
+
+    missing_benchmark = run_rolling_backtest(
+        _rolling_cfg("momentum_12_1_defensive", ENTRY_DEFENSIVE, tickers),
+        StubPriceFetcher({"WIN": winner, "MID": runner_up}),
+        start_date=start,
+        end_date=end,
+    )
+    assert missing_benchmark.trades == []
 
 
 def test_riskadj_score_penalizes_volatility() -> None:
