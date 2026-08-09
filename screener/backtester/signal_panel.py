@@ -205,9 +205,12 @@ def build_signal_panel(
         if regime_allowed is None:
             regime_allowed = breadth_allowed
         else:
-            regime_allowed = regime_allowed.reindex(
-                breadth_allowed.index, method="ffill"
-            ).fillna(False).astype(bool) & breadth_allowed
+            regime_allowed = (
+                regime_allowed.reindex(breadth_allowed.index, method="ffill")
+                .fillna(False)
+                .astype(bool)
+                & breadth_allowed
+            )
 
     if not panel.master_dates:
         return SignalPanel(exit_signals={}, candidate_matrices=None)
