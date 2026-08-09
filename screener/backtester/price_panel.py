@@ -27,6 +27,7 @@ from screener.backtester.core import (
     _benchmark_series_from_panel,
     _resolve_universe,
     prepare_strategy_bars,
+    strategy_lookback_floor,
 )
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fundamentals import (
@@ -152,6 +153,14 @@ def build_price_panel(
     # via bars-per-session (with slack for weekends/holidays) so we don't request
     # ~365 days of minute data - which both blows past yfinance's intraday cap
     # and is unnecessary. Chunking longer intraday windows is Phase 2.
+    #
+    # The expression AST is not the whole story. A strategy that builds its own
+    # columns in ``prepare_bars`` reads them as bare names ("mom_12_1 > 0"), so
+    # the parser measures a lookback of zero and this would buy the 365-day
+    # floor. The eligibility gate downstream still demands the strategy's
+    # declared lookback, so the shortfall is not an error - it silently eats the
+    # front of the backtest window, which is worse. Ask the spec first.
+    lookback = max(lookback, strategy_lookback_floor(inputs.strategy_name))
     warmup_days = _warmup_days_for_interval(lookback, inputs.interval)
     fetch_start = (start_ts - pd.Timedelta(days=warmup_days)).date()
     fetch_end = end_ts.date()

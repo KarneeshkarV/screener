@@ -671,6 +671,30 @@ def _resolve_universe(cfg: UniverseSpec) -> tuple[list[str], list[str]]:
     raise ValueError(_NO_UNIVERSE_MSG)
 
 
+def strategy_lookback_floor(strategy: str | StrategySpec | None) -> int:
+    """Bars of history an expression strategy needs before its first signal.
+
+    Resolvable without any bars, which is the point: the price fetch has to know
+    how much warmup to buy *before* it fetches, and a strategy whose lookback
+    lives in ``prepare_bars`` (every plugin that builds its own columns) reports
+    zero to the expression parser. Asking the spec directly closes that gap.
+
+    A strategy that cannot be resolved reports no floor; the caller surfaces the
+    resolution error later, when it also has a warnings list to put it in.
+    """
+    from screener.strategies.spec import ExpressionStrategySpec, resolve_strategy_spec
+
+    try:
+        spec = (
+            resolve_strategy_spec(strategy) if isinstance(strategy, str) else strategy
+        )
+    except ValueError:
+        return 0
+    if not isinstance(spec, ExpressionStrategySpec) or spec.required_lookback is None:
+        return 0
+    return int(spec.required_lookback())
+
+
 def prepare_strategy_bars(
     strategy: str | StrategySpec | None,
     bars_by_tv: dict[str, pd.DataFrame],
