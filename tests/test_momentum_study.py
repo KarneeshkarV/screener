@@ -284,6 +284,50 @@ def test_build_writes_an_index_and_copies_the_page(tmp_path: Path) -> None:
     assert payload["metrics"]["benchmark_cagr"] == pytest.approx(0.1487, abs=1e-4)
 
 
+def test_build_serves_the_write_ups_it_advertises(tmp_path: Path) -> None:
+    # The page renders a reader button per entry in index["docs"], so an
+    # advertised document whose file was not copied would be a dead button.
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / "india__momentum_12_1__5y.json").write_text(
+        json.dumps(_fake_run("momentum_12_1", "india", 5)), encoding="utf-8"
+    )
+
+    assert build(tmp_path) == 0
+
+    data = tmp_path / "site" / "data"
+    index = json.loads((data / "index.json").read_text(encoding="utf-8"))
+    assert index["docs"], "expected the study write-ups to be advertised"
+    for doc in index["docs"]:
+        copied = data / "docs" / f"{doc['id']}.md"
+        assert copied.exists(), f"{doc['id']} advertised but not copied"
+        assert copied.read_text(encoding="utf-8").strip()
+
+
+def test_build_omits_a_write_up_it_cannot_find(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A missing write-up must drop out of the index rather than leave the page
+    # offering a button that 404s.
+    import scripts.build_momentum_site as site_builder
+
+    monkeypatch.setattr(
+        site_builder, "DOCS", (("ghost", "Ghost", Path("docs/does-not-exist.md")),)
+    )
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    (runs / "india__momentum_12_1__5y.json").write_text(
+        json.dumps(_fake_run("momentum_12_1", "india", 5)), encoding="utf-8"
+    )
+
+    assert build(tmp_path) == 0
+
+    index = json.loads(
+        (tmp_path / "site" / "data" / "index.json").read_text(encoding="utf-8")
+    )
+    assert index["docs"] == []
+
+
 def test_build_reports_an_empty_run_directory(tmp_path: Path) -> None:
     (tmp_path / "runs").mkdir()
     assert build(tmp_path) == 1

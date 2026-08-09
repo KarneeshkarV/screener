@@ -169,6 +169,28 @@
   .backlink { font-size: 13px; margin-bottom: 12px; display: inline-block; }
   .hidden { display: none; }
   footer { color: var(--muted); font-size: 12px; margin-top: 40px; }
+
+  /* Marks a baseline that one of its own sweep variants beats on both
+     metrics, so the row on screen is not the best available setup. */
+  .star { color: var(--good); cursor: help; }
+  #doc-buttons { display: inline-flex; gap: 8px; margin-right: 8px; }
+
+  .doc-body { max-width: 78ch; }
+  .doc-body h2 { font-size: 22px; margin: 30px 0 10px; }
+  .doc-body h3 { font-size: 17px; margin: 24px 0 8px; }
+  .doc-body h4, .doc-body h5 { font-size: 15px; margin: 20px 0 6px; }
+  .doc-body p { margin: 0 0 12px; line-height: 1.65; }
+  .doc-body ul { margin: 0 0 14px; padding-left: 20px; }
+  .doc-body li { margin-bottom: 6px; line-height: 1.6; }
+  .doc-body code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.9em;
+    background: var(--surface-2, rgba(127, 127, 127, 0.14));
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .doc-body hr { border: 0; border-top: 1px solid var(--border); margin: 26px 0; }
+  .doc-body .table-wrap { margin: 0 0 18px; }
 </style>
 </head>
 <body>
@@ -176,6 +198,7 @@
   <header class="top">
     <h1>Momentum strategy study</h1>
     <div class="spacer"></div>
+    <span id="doc-buttons"></span>
     <button class="ghost" id="theme-toggle" type="button">Toggle theme</button>
   </header>
   <p class="lede">
@@ -233,6 +256,16 @@
     <h2 id="detail-title"></h2>
     <p class="lede" id="detail-note"></p>
 
+    <div class="panel" id="winners-panel">
+      <h2>Configurations that beat this baseline <span id="winners-count"></span></h2>
+      <p class="notes" style="margin-top:-6px">
+        Sweep variants of this strategy that improve on the run below in both
+        Sharpe and max drawdown, best Sharpe first. Anything here is a better
+        configuration than the one you are looking at.
+      </p>
+      <div id="winners-body"></div>
+    </div>
+
     <div class="panel"><div class="meta" id="detail-meta"></div></div>
     <div class="panel"><div class="tiles" id="detail-tiles"></div></div>
 
@@ -270,6 +303,11 @@
       <h2>Run warnings</h2>
       <ul class="notes" id="detail-warnings"></ul>
     </div>
+  </div>
+
+  <div id="doc" class="hidden">
+    <a class="backlink" href="#" id="doc-back">&larr; All strategies</a>
+    <article class="doc-body" id="doc-body"></article>
   </div>
 
   <footer id="footer"></footer>
@@ -351,6 +389,32 @@ function variantLabel(run) {
   if (run.hold !== run.default_hold) parts.push(`hold ${run.hold}d`);
   if (run.lever) parts.push(run.lever_label);
   return parts.length ? parts.join(" + ") : "Baseline";
+}
+
+// One definition of "better", used by the overview star, the winners panel and
+// the variant table alike. A variant counts only if it improves Sharpe AND max
+// drawdown against its own baseline: either alone usually just means a
+// different risk level, not a better strategy.
+function beatsBaseline(variant, base) {
+  const baseSharpe = base?.metrics.sharpe;
+  const baseDd = base?.metrics.max_drawdown;
+  if (baseSharpe == null || baseDd == null) return false;
+  if (variant.baseline !== false) return false;
+  return (
+    (variant.metrics.sharpe ?? -9) > baseSharpe &&
+    (variant.metrics.max_drawdown ?? -1) > baseDd
+  );
+}
+
+// Variants of one strategy that beat their baseline, best Sharpe first.
+function winnersOf(run) {
+  const variants = variantsOf(run);
+  const base = variants.find((r) => r.baseline !== false);
+  if (!base) return { base: null, winners: [], total: 0 };
+  const winners = variants
+    .filter((r) => beatsBaseline(r, base))
+    .sort((a, b) => (b.metrics.sharpe ?? -9) - (a.metrics.sharpe ?? -9));
+  return { base, winners, total: variants.length - 1 };
 }
 
 function groupByFamily(runs) {
@@ -712,8 +776,27 @@ async function renderOverview() {
     }))
   );
 
+  // A star marks a baseline that at least one of its own sweep variants beats
+  // on both Sharpe and drawdown - i.e. the row on screen is not this
+  // strategy's best available configuration.
+  const winnerCount = new Map(
+    runs.map((r) => [r.key, winnersOf(r).winners.length])
+  );
+  const starFor = (r) => {
+    const n = winnerCount.get(r.key) || 0;
+    if (!n) return "";
+    const plural = n === 1 ? "variant beats" : "variants beat";
+    return ` <span class="star" title="${n} sweep ${plural} this baseline on both Sharpe and drawdown">★</span>`;
+  };
+
   const columns = [
-    { label: "Strategy", value: (r) => r.label, render: (r) => r.label },
+    { label: "Strategy", value: (r) => r.label,
+      render: (r) => `${r.label}${starFor(r)}` },
+    { label: "Better cfg", num: true, value: (r) => winnerCount.get(r.key) || 0,
+      render: (r) => {
+        const n = winnerCount.get(r.key) || 0;
+        return n ? `<span class="pos">${n}</span>` : "-";
+      } },
     { label: "Family", value: (r) => r.family,
       render: (r) => state.index.families[r.family] || r.family },
     { label: "CAGR", num: true, value: (r) => r.metrics.cagr,
@@ -736,7 +819,8 @@ async function renderOverview() {
   ];
   renderTable(document.getElementById("summary-table"), columns, runs, {
     onClick: (row) => { location.hash = `#run=${row.key}`; },
-    sortKey: "4", sortDir: "desc",
+    // Sharpe, which the "Better cfg" column pushed one place right.
+    sortKey: "5", sortDir: "desc",
   });
 
   const grid = document.getElementById("small-multiples");
@@ -747,7 +831,14 @@ async function renderOverview() {
     grid.append(row);
     for (const run of group.rows) {
       const card = el("div", { class: "card" });
-      card.append(el("div", { class: "title" }, run.label));
+      const title = el("div", { class: "title" }, run.label);
+      const wins = winnerCount.get(run.key) || 0;
+      if (wins) {
+        const star = el("span", { class: "star" }, " ★");
+        star.title = `${wins} sweep variant${wins === 1 ? "" : "s"} beat this baseline`;
+        title.append(star);
+      }
+      card.append(title);
       card.append(el("div", { class: "sub" },
         `CAGR ${fmtPct(run.metrics.cagr)} · Sharpe ${fmtNum(run.metrics.sharpe)} · DD ${fmtPct(run.metrics.max_drawdown)}`));
       card.addEventListener("click", () => { location.hash = `#run=${run.key}`; });
@@ -762,6 +853,65 @@ async function renderOverview() {
   }
 }
 
+// Winners are shown above the fold so the page leads with "there is a better
+// configuration than this one" rather than burying it in the variant table.
+function renderWinners(payload) {
+  const summary = state.index.runs.find((r) => r.key === payload.key);
+  const panel = document.getElementById("winners-panel");
+  const body = document.getElementById("winners-body");
+  const count = document.getElementById("winners-count");
+  body.replaceChildren();
+  if (!summary) {
+    panel.classList.add("hidden");
+    return;
+  }
+
+  const { base, winners, total } = winnersOf(summary);
+  if (!base || total < 1) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  count.textContent = `${winners.length} of ${total}`;
+  count.className = winners.length ? "pos" : "";
+
+  if (!winners.length) {
+    body.append(
+      el("p", { class: "notes" },
+        `No sweep variant beats the baseline on both metrics. Of ${total} tested, ` +
+        `none improved Sharpe and drawdown together, so the baseline is this ` +
+        `strategy's best configuration in this market and window.`)
+    );
+    return;
+  }
+
+  const columns = [
+    { label: "Configuration", value: (r) => variantLabel(r),
+      render: (r) => `<b>${variantLabel(r)}</b>` },
+    { label: "CAGR", num: true, value: (r) => r.metrics.cagr,
+      render: (r) => `<span class="${signClass(r.metrics.cagr)}">${fmtPct(r.metrics.cagr)}</span>` },
+    { label: "Sharpe", num: true, value: (r) => r.metrics.sharpe,
+      render: (r) => `${fmtNum(r.metrics.sharpe)} <span class="pos">(+${
+        ((r.metrics.sharpe ?? 0) - (base.metrics.sharpe ?? 0)).toFixed(2)})</span>` },
+    { label: "Max DD", num: true, value: (r) => r.metrics.max_drawdown,
+      render: (r) => `<span class="neg">${fmtPct(r.metrics.max_drawdown)}</span> <span class="pos">(+${
+        (((r.metrics.max_drawdown ?? 0) - (base.metrics.max_drawdown ?? 0)) * 100).toFixed(1)}pp)</span>` },
+    { label: "Under water", num: true,
+      value: (r) => (r.drawdown?.decline_days ?? 0) + (r.drawdown?.recovery_days ?? 0),
+      render: (r) => underwaterLabel(r.drawdown) },
+    { label: "Trades", num: true, value: (r) => r.metrics.trade_count,
+      render: (r) => String(r.metrics.trade_count ?? 0) },
+  ];
+  const table = el("table");
+  const wrap = el("div", { class: "table-wrap" });
+  wrap.append(table);
+  body.append(wrap);
+  renderTable(table, columns, winners, {
+    onClick: (row) => { location.hash = `#run=${row.key}`; },
+    sortKey: "2", sortDir: "desc",
+  });
+}
+
 function renderVariants(payload) {
   const summary = state.index.runs.find((r) => r.key === payload.key);
   const panel = document.getElementById("variant-panel");
@@ -771,12 +921,7 @@ function renderVariants(payload) {
 
   const base = variants.find((r) => r.baseline !== false);
   const baseSharpe = base?.metrics.sharpe ?? null;
-  const baseDd = base?.metrics.max_drawdown ?? null;
-  const better = (r) =>
-    baseSharpe !== null &&
-    baseDd !== null &&
-    (r.metrics.sharpe ?? -9) > baseSharpe &&
-    (r.metrics.max_drawdown ?? -1) > baseDd;
+  const better = (r) => beatsBaseline(r, base);
 
   const columns = [
     { label: "Variant", value: (r) => variantLabel(r),
@@ -901,6 +1046,7 @@ async function renderDetail(key) {
     { name: "Drawdown", points: drawdownSeries(payload.equity_curve), color: "var(--critical)", area: true },
   ], { fmtY: (v) => fmtPct(v, 0), includeZero: true, height: 200 });
 
+  renderWinners(payload);
   renderVariants(payload);
 
   document.getElementById("trade-count").textContent = `(${payload.trades.length})`;
@@ -927,7 +1073,118 @@ async function renderDetail(key) {
   for (const note of notes) warnings.append(el("li", { class: "warn" }, note));
 }
 
+// ── write-ups ──────────────────────────────────────────────────────────
+// A deliberately small Markdown subset - headings, tables, lists, rules and
+// inline emphasis - because the page has to stay self-contained and a parser
+// library would mean a third-party script. Anything it does not recognise
+// falls through as a paragraph rather than disappearing.
+function escapeHtml(text) {
+  return text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+}
+
+function inlineMarkdown(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+}
+
+function renderMarkdown(source) {
+  const lines = source.split("\n");
+  const out = [];
+  let i = 0;
+  const isTableRow = (s) => s.trim().startsWith("|") && s.trim().endsWith("|");
+  const cells = (s) => s.trim().slice(1, -1).split("|").map((c) => c.trim());
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+
+    const heading = line.match(/^(#{1,4})\s+(.*)$/);
+    if (heading) {
+      const level = Math.min(heading[1].length + 1, 5);
+      out.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      i++;
+      continue;
+    }
+
+    if (/^(-{3,}|\*{3,})$/.test(line.trim())) { out.push("<hr>"); i++; continue; }
+
+    // A table needs its header row plus the |---| separator beneath it.
+    if (isTableRow(line) && i + 1 < lines.length && /^\|[\s:|-]+\|$/.test(lines[i + 1].trim())) {
+      const head = cells(line);
+      i += 2;
+      const body = [];
+      while (i < lines.length && isTableRow(lines[i])) { body.push(cells(lines[i])); i++; }
+      out.push(
+        '<div class="table-wrap"><table><thead><tr>' +
+        head.map((c) => `<th>${inlineMarkdown(c)}</th>`).join("") +
+        "</tr></thead><tbody>" +
+        body.map((row) => "<tr>" + row.map((c) => `<td>${inlineMarkdown(c)}</td>`).join("") + "</tr>").join("") +
+        "</tbody></table></div>"
+      );
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(`<li>${inlineMarkdown(lines[i].replace(/^\s*[-*]\s+/, ""))}</li>`);
+        i++;
+      }
+      out.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+
+    // Consecutive non-blank lines are one paragraph, which is what makes the
+    // one-sentence-per-line source style render as prose rather than as a
+    // column of fragments.
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|\s*[-*]\s)/.test(lines[i]) && !isTableRow(lines[i])) {
+      para.push(lines[i].trim());
+      i++;
+    }
+    if (para.length) out.push(`<p>${inlineMarkdown(para.join(" "))}</p>`);
+  }
+  return out.join("\n");
+}
+
+async function renderDoc(id) {
+  const doc = (state.index.docs || []).find((d) => d.id === id);
+  document.getElementById("overview").classList.add("hidden");
+  document.getElementById("detail").classList.add("hidden");
+  document.getElementById("doc").classList.remove("hidden");
+  const body = document.getElementById("doc-body");
+  window.scrollTo(0, 0);
+  if (!doc) {
+    body.innerHTML = "<p>That write-up is not part of this build.</p>";
+    return;
+  }
+  body.innerHTML = "<p>Loading...</p>";
+  try {
+    const res = await fetch(`data/docs/${id}.md`);
+    if (!res.ok) throw new Error(String(res.status));
+    body.innerHTML = renderMarkdown(await res.text());
+  } catch (err) {
+    body.innerHTML = `<p>Could not load this write-up (${escapeHtml(String(err))}).</p>`;
+  }
+}
+
+function renderDocButtons() {
+  const host = document.getElementById("doc-buttons");
+  host.replaceChildren();
+  for (const doc of state.index.docs || []) {
+    const button = el("button", { class: "ghost", type: "button" }, doc.title);
+    button.addEventListener("click", () => { location.hash = `#doc=${doc.id}`; });
+    host.append(button);
+  }
+}
+
 function route() {
+  const docMatch = location.hash.match(/^#doc=(.+)$/);
+  if (docMatch) { renderDoc(decodeURIComponent(docMatch[1])); return; }
+  document.getElementById("doc").classList.add("hidden");
   const match = location.hash.match(/^#run=(.+)$/);
   if (match) renderDetail(decodeURIComponent(match[1]));
   else renderOverview();
@@ -950,9 +1207,15 @@ window.addEventListener("resize", () => {
   resizeTimer = setTimeout(route, 180);
 });
 
+document.getElementById("doc-back").addEventListener("click", (event) => {
+  event.preventDefault();
+  location.hash = "";
+});
+
 loadIndex().then(() => {
   document.getElementById("footer").textContent =
     `${state.index.runs.length} runs · generated ${state.index.generated} · research, not financial advice`;
+  renderDocButtons();
   route();
 });
 </script>
