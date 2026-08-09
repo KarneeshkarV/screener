@@ -76,6 +76,40 @@ def momentum_value() -> list:
     ]
 
 
+@criterion("momentum_12_1")
+def momentum_12_1() -> list:
+    """Jegadeesh-Titman 12-1 momentum: 12-month return excluding the last month.
+
+    TradingView exposes yearly (``Perf.Y``) and monthly (``Perf.1M``) trailing
+    performance, so the causal 12-1 momentum
+    ``(1 + Perf.Y) / (1 + Perf.1M) - 1 > 0`` reduces to ``Perf.Y > Perf.1M``.
+    """
+    return [
+        col("Perf.Y") > col("Perf.1M"),
+    ]
+
+
+@criterion("mark_minervini")
+def mark_minervini() -> list:
+    """Mark Minervini Trend Template (TradingView approximation).
+
+    Matches ``MINERVINI_ENTRY_EXPR`` wherever TradingView can express the
+    condition (SMA50/150/200 stack, price above 52-week low by 30% and within
+    25% of the 52-week high). The SMA200-rising and cross-sectional RS-rank
+    legs have no TradingView column, so they are dropped here.
+    """
+    return [
+        col("close") > col("SMA150"),
+        col("close") > col("SMA200"),
+        col("SMA150") > col("SMA200"),
+        col("SMA50") > col("SMA150"),
+        col("SMA50") > col("SMA200"),
+        col("close") > col("SMA50"),
+        col("close").above_pct("price_52_week_low", 1.3),
+        col("close").above_pct("price_52_week_high", 0.75),
+    ]
+
+
 @criterion("near_52_high")
 def near_52_week_high() -> list:
     """Between 80–100% of the 52-week high but strictly below it (under resistance)."""

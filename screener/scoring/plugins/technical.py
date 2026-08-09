@@ -23,6 +23,14 @@ from screener.scoring.components import (
     trend_stack_strength,
 )
 
+_MOMENTUM_12_1_COLUMNS = ("Perf.Y", "Perf.1M")
+_MARK_MINERVINI_COLUMNS = (
+    "SMA50",
+    "SMA150",
+    "SMA200",
+    "price_52_week_high",
+    "price_52_week_low",
+)
 _EMA_COLUMNS = ("EMA5", "EMA20", "EMA100", "EMA200", "RSI")
 _BREAKOUT_COLUMNS = (
     "price_52_week_high",
@@ -79,6 +87,44 @@ def _score_ema_setup(df: pd.DataFrame) -> pd.Series:
         + 5 * price_quality
         - 15 * penalty
     ).round(2)
+
+
+@scorer(
+    "momentum_12_1",
+    columns=_MOMENTUM_12_1_COLUMNS,
+    description="Higher 12-1 momentum (1y return net of last-month return)",
+)
+def score_momentum_12_1(df: pd.DataFrame) -> pd.Series:
+    perf_y = numeric(df, "Perf.Y")
+    perf_m = numeric(df, "Perf.1M")
+    mom_12_1 = ((1.0 + perf_y) / (1.0 + perf_m) - 1.0).fillna(-1.0)
+    return (100 * percentile(mom_12_1)).round(2)
+
+
+@scorer(
+    "mark_minervini",
+    columns=_MARK_MINERVINI_COLUMNS,
+    description="Minervini template: trend stack + proximity to 52w high + liquidity",
+)
+def score_mark_minervini(df: pd.DataFrame) -> pd.Series:
+    close = numeric(df, "close")
+    high = numeric(df, "price_52_week_high")
+    low = numeric(df, "price_52_week_low")
+    sma50 = numeric(df, "SMA50")
+    sma150 = numeric(df, "SMA150")
+    sma200 = numeric(df, "SMA200")
+    volume = numeric(df, "volume")
+
+    stack = (
+        above_flag(close, sma50)
+        + above_flag(sma50, sma150)
+        + above_flag(sma150, sma200)
+    ) / 3.0
+    near_high = proximity_to_high(close, high)
+    above_low = above_flag(close, low * 1.3)
+    liquidity = liquidity_from_dollar_volume(volume, close)
+
+    return (35 * stack + 25 * near_high + 15 * above_low + 25 * liquidity).round(2)
 
 
 @scorer(
@@ -210,5 +256,7 @@ __all__ = [
     "score_ema_breakout",
     "score_intraday_breakout",
     "score_intraday_momentum",
+    "score_mark_minervini",
+    "score_momentum_12_1",
     "score_near_52_high",
 ]
