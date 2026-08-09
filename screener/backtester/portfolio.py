@@ -428,13 +428,14 @@ def build_equity_curve(
         lo = int(calendar.searchsorted(entry_ts, side="left"))
         if exit_ts <= entry_ts:
             # Same-day entry and exit (e.g. a force-close of a position opened
-            # on the window's last bar): the event loop orders closes before
-            # opens on the same day, so the close never pops this position and
-            # it stays marked-to-market for every remaining calendar day.
-            # Preserved exactly for bit-identical curves.
-            hi = len(calendar)
-        else:
-            hi = int(calendar.searchsorted(exit_ts, side="left"))
+            # on the window's last bar). Both cash events land on this one day,
+            # so cash already carries the entire round trip; the position is
+            # never held at any day's close and contributes no mark-to-market.
+            # Marking it anyway double-counted the notional for the rest of the
+            # calendar - visible as the curve doubling on the final bar of any
+            # strategy whose rebalance fell there.
+            continue
+        hi = int(calendar.searchsorted(exit_ts, side="left"))
         if lo >= hi:
             continue
         prices = arr[lo:hi]
