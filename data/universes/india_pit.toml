@@ -19,3 +19,52 @@ market = "india"
 benchmark = "^NSEI"
 type = "snapshots"
 path = "nifty500_history.csv"
+
+# Cap-tier universes below are reconstructed from historical market cap rather
+# than archived constituent lists, because the Archive holds only one or two
+# captures of NSE's mid/small/microcap CSVs. Regenerate all four with:
+#
+#     uv run python scripts/build_cap_tier_history.py
+#
+# Each tier is a contiguous rank band of the NSE pool by trailing six-month
+# average market cap, rebalanced semi-annually, matching NSE's index bands.
+
+# The archived Nifty 500 history above starts in 2021, which is too short for a
+# ten-year run. This universe copies those snapshots verbatim from their first
+# date onward and reconstructs earlier membership as the top 500 of the listed
+# pool by trailing six-month average market cap. Use it for windows that start
+# before 2021; use nifty500_pit when the whole window is covered by the archive.
+[universes.nifty500_extended_pit]
+market = "india"
+benchmark = "^NSEI"
+type = "snapshots"
+path = "nifty_500_extended_history.csv"
+
+# Ranks 101-250: Nifty Midcap 150.
+[universes.nifty_midcap150_pit]
+market = "india"
+benchmark = "^NSEI"
+type = "snapshots"
+path = "nifty_midcap150_history.csv"
+
+# Ranks 251-500: Nifty Smallcap 250.
+[universes.nifty_smallcap250_pit]
+market = "india"
+benchmark = "^NSEI"
+type = "snapshots"
+path = "nifty_smallcap250_history.csv"
+
+# Ranks 501-750: Nifty Microcap 250.
+[universes.nifty_microcap250_pit]
+market = "india"
+benchmark = "^NSEI"
+type = "snapshots"
+path = "nifty_microcap250_history.csv"
+
+# Ranks 101-750: the three tiers stacked, for ranking momentum across the whole
+# small/mid/micro space instead of within a single band.
+[universes.nifty_smid650_pit]
+market = "india"
+benchmark = "^NSEI"
+type = "snapshots"
+path = "nifty_smid650_history.csv"
