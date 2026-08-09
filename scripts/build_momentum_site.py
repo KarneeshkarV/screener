@@ -43,6 +43,12 @@ from scripts.run_momentum_study import (
 
 PAGE_ASSET = Path("screener/assets/momentum_site.html")
 MARKET_SHORT = {"india": "India", "us": "US"}
+# Write-ups served alongside the data so the page can show the study's
+# conclusions next to the numbers they came from.
+DOCS = (
+    ("meta", "Meta-analysis", Path("docs/momentum-study-meta-analysis.md")),
+    ("findings", "Verified findings", Path("docs/momentum-study-findings.md")),
+)
 
 
 def _benchmark_cagr(total_return: float | None, years: int) -> float | None:
@@ -226,9 +232,25 @@ def build(out_dir: Path) -> int:
             if lever.key in present_levers
         ],
         "families": FAMILY_TITLES,
+        "docs": [
+            {"id": doc_id, "title": title}
+            for doc_id, title, source in DOCS
+            if source.exists()
+        ],
         "runs": summaries,
     }
     (data_dir / "index.json").write_text(json.dumps(index), encoding="utf-8")
+
+    docs_dir = data_dir / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    for doc_id, _title, source in DOCS:
+        if source.exists():
+            shutil.copyfile(source, docs_dir / f"{doc_id}.md")
+        else:
+            # A missing write-up must not fail the build, but it must be
+            # visible: the page lists only what the index advertises.
+            print(f"warning: {source} not found, its reader button is omitted")
+
     shutil.copyfile(PAGE_ASSET, site_dir / "index.html")
     print(f"wrote {site_dir}/index.html with {len(summaries)} runs")
     return 0
