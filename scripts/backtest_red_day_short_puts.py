@@ -165,20 +165,20 @@ def strike_for_delta(spot: float, years: float, iv: float, put_delta: float) -> 
 
 
 def modeled_iv(frame: pd.DataFrame) -> pd.Series:
-    returns = np.log(frame["close"].astype(float)).diff()
+    returns = pd.Series(np.log(frame["close"].astype(float))).diff()
     rv20 = returns.rolling(20).std() * sqrt(252)
     rv60 = returns.rolling(60).std() * sqrt(252)
     iv = pd.concat([rv20, rv60], axis=1).max(axis=1) * IV_MULTIPLIER
-    return iv.clip(lower=MIN_IV, upper=MAX_IV).ffill()
+    return pd.Series(iv.clip(lower=MIN_IV, upper=MAX_IV).ffill())
 
 
 def next_trading_day_on_or_after(
     index: pd.DatetimeIndex, ts: pd.Timestamp
 ) -> pd.Timestamp | None:
-    loc = index.searchsorted(ts, side="left")
+    loc = int(index.searchsorted(ts, side="left"))
     if loc >= len(index):
         return None
-    return index[loc]
+    return pd.Timestamp(index[loc])
 
 
 def run_window(
@@ -238,7 +238,7 @@ def run_window(
                             ticker=ticker,
                             entry_date=pos.entry_date.date(),
                             exit_date=current.date(),
-                            entry_underlying=float(frame.loc[pos.entry_date, "close"]),
+                            entry_underlying=float(frame["close"].loc[pos.entry_date]),
                             exit_underlying=spot,
                             strike=pos.strike,
                             entry_premium=pos.entry_premium,
@@ -273,7 +273,7 @@ def run_window(
                 )
                 contracts = int(cash[ticker] // reserve_per_contract)
                 expiry = next_trading_day_on_or_after(
-                    frame.index, current + timedelta(days=DTE)
+                    pd.DatetimeIndex(frame.index), current + timedelta(days=DTE)
                 )
                 if contracts > 0 and expiry is not None and premium > 0:
                     reserve = reserve_per_contract * contracts

@@ -391,7 +391,8 @@ def _trade_records(trades: list[Trade]) -> list[dict[str, Any]]:
 
 
 def _metrics_record(metrics: dict[str, Any]) -> dict[str, Any]:
-    return _jsonable(dict(metrics))
+    record: dict[str, Any] = _jsonable(dict(metrics))
+    return record
 
 
 def _meta_block() -> dict[str, Any]:
@@ -489,7 +490,8 @@ def run_matrix() -> dict[str, Any]:
             for (engine, interval), count in sorted(atr_share_diffs.items())
         },
     }
-    return _jsonable(doc)
+    record: dict[str, Any] = _jsonable(doc)
+    return record
 
 
 def _assert_atr_risk_binds(
