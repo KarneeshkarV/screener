@@ -27,14 +27,15 @@
 <body>
 <header>
   <h1>Screener backtester — flamegraph &amp; GPU offload analysis</h1>
-  <div class="sub">Rolling engine · 300 synthetic symbols · 3yr / 756 sessions · 709 trades · profile re-run 2026-08-03 (post #114–#119)</div>
+  <div class="sub">Rolling engine · 300 synthetic symbols · 3yr / 756 sessions · 709 trades · profile re-run 2026-08-09 (post-rebase, deps pinned)</div>
 </header>
 <main>
   <div class="card">
-    <h2>Profile re-run — after the rolling-backtest acceleration</h2>
-    <p>Every artifact on this page was regenerated on <strong>2026-08-03</strong> against <code>main@572d47b</code>, so it reflects the engine <em>after</em> PRs #114–#119. Interleaved A/B vs. the merge-base: <strong>0.61 s → 0.32 s per run (≈1.92×)</strong>, identical 709 trades. Preparation (<code>_prepare_simulation</code>) is now 61.2% of the engine; the old top bottleneck <code>_precompute_filter_signals</code> fell to 9.9%.</p>
-    <a class="btn" href="../flamegraph_analysis_2026_08_03.md">Re-run write-up (2026-08-03) →</a>
-    <a class="btn alt" href="../flamegraph_analysis_2026_07_28.md">Previous re-run (2026-07-28) →</a>
+    <h2>Profile re-run — after rebasing onto current main</h2>
+    <p>Every artifact on this page was regenerated on <strong>2026-08-09</strong> against the rebased branch (current <code>main@58ce9ba</code>), with <code>pandas==2.3.3</code> / <code>numpy==2.4.4</code> pinned. Interleaved before → prerebase → after on one idle box: <strong>2.235 s → 1.787 s per run</strong> (≈1.25× vs the pre-#114 merge-base); the rebase itself is flat. PR #96's lockfile regen had silently bumped pandas to 3.0.5, costing ~27% wall clock — this PR pins the versions it was measured against.</p>
+    <a class="btn" href="../flamegraph_analysis_2026_08_09.md">Re-run write-up (2026-08-09) →</a>
+    <a class="btn alt" href="../flamegraph_analysis_2026_08_03.md">Previous re-run (2026-08-03) →</a>
+    <a class="btn alt" href="../flamegraph_analysis_2026_07_28.md">Earlier re-run (2026-07-28) →</a>
     <a class="btn alt" href="../flamegraph_gpu_analysis_2026_07_25.md">Original, superseded (2026-07-25) →</a>
   </div>
 
@@ -46,7 +47,7 @@
 
   <div class="card">
     <h2>Analysis write-up</h2>
-    <p>Bottleneck ranking and GPU-offload assessment, rendered. <span class="note">Note: this page renders the 2026-07-25 analysis and is kept for the record — its numbers describe the pre-vectorization engine. The current ranking is in the 2026-08-03 re-run above.</span></p>
+    <p>Bottleneck ranking and GPU-offload assessment, rendered. <span class="note">Note: this page renders the 2026-07-25 analysis and is kept for the record — its numbers describe the pre-vectorization engine. The current ranking is in the 2026-08-09 re-run above.</span></p>
     <a class="btn" href="analysis.html">Open analysis (2026-07-25) →</a>
   </div>
 
@@ -58,14 +59,14 @@
 
   <div class="card">
     <h2>Flamegraph — cProfile (deterministic)</h2>
-    <p>Instrumented call-time flamegraph — 2,948,939 calls in 1.291 s instrumented (was 7,171,738 / 3.070 s before the vectorization work). Taken on a 16-core box with BLAS threads pinned to 1; absolute seconds are not comparable to the 07-25/07-28 runs.</p>
+    <p>Instrumented call-time flamegraph — 2,454,463 calls in 2.984 s instrumented (was 3,992,079 / 4.739 s for the merge-base). Taken on a 2-core VM with BLAS threads pinned to 1 and deps pinned to pandas 2.3.3 / numpy 2.4.4; absolute seconds are not comparable to the 16-core 07-25/07-28/08-03 runs.</p>
     <a class="btn alt" href="flamegraph_cprofile.svg" target="_blank">Full screen ↗</a>
     <iframe src="flamegraph_cprofile.svg" title="cProfile flamegraph"></iframe>
   </div>
 
   <div class="card">
-    <h2>Flamegraph — py-spy (sampling, 285 samples @250Hz)</h2>
-    <p>Native sampling profiler — includes C-extension frames the deterministic profiler can't see. The run is much shorter than the prior profile, so start-up dominates the small sample. <span class="note">≈48.2% of samples are <code>importlib</code> process start-up; the fixed import cost did not change, while engine time fell. Discount it when reading shares.</span></p>
+    <h2>Flamegraph — py-spy (sampling, 1350 samples @250Hz)</h2>
+    <p>Native sampling profiler — includes C-extension frames the deterministic profiler can't see. <span class="note">Start-up/imports dominate a single short run on the 2-core VM; discount it when reading shares.</span></p>
     <a class="btn alt" href="flamegraph_pyspy.svg" target="_blank">Full screen ↗</a>
     <iframe src="flamegraph_pyspy.svg" title="py-spy flamegraph"></iframe>
   </div>

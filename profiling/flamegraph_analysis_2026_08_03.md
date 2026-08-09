@@ -1,5 +1,12 @@
 # Flamegraph re-run after the rolling-backtest acceleration (2026-08-03)
 
+> **Superseded 2026-08-09.** [`flamegraph_analysis_2026_08_09.md`](flamegraph_analysis_2026_08_09.md)
+> re-measures the engine after rebasing onto current `main` (`58ce9ba`) with
+> `pandas==2.3.3`/`numpy==2.4.4` pinned. Its 08-03 numbers were taken on a
+> 16-core host before PR #96 landed; the new document profiles on a 2-core box
+> with the deps the code was built against. This document stays as the record
+> of the #114–#119 state.
+
 **Engine:** rolling backtester · **Source of truth:** `profiling/webview/rolling.prof`
 **Supersedes:** [`flamegraph_analysis_2026_07_28.md`](flamegraph_analysis_2026_07_28.md),
 which profiled the engine after PRs #114–#117. Since then #118 (price/ADV filters
