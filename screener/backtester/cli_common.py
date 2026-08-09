@@ -130,6 +130,16 @@ def sizing_options(command):
             ),
         ),
         click.option(
+            "--compounding/--no-compounding",
+            default=False,
+            show_default=True,
+            help=(
+                "Grow the per-slot budget with realized equity. Off keeps the "
+                "slot frozen at initial_capital/top, which de-levers a run that "
+                "compounds and understates its later volatility and drawdown."
+            ),
+        ),
+        click.option(
             "--sizing-risk-pct",
             type=float,
             default=0.01,

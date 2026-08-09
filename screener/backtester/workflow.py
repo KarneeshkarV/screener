@@ -77,6 +77,7 @@ class BacktestRequest:
     sizing_atr_multiple: float
     sizing_vol_window: int
     intraday_only: bool
+    compounding: bool = False
     start_arg: datetime | None = None
     end_arg: datetime | None = None
     years: int = 1
@@ -172,6 +173,7 @@ def _build_config(
             min_avg_dollar_volume=min_avg_dollar_volume,
             avg_dollar_volume_window=int(request.adv_window),
             sizing_rule=request.sizing_rule,
+            compounding=bool(request.compounding),
             sizing_risk_pct=float(request.sizing_risk_pct),
             sizing_position_pct=float(request.sizing_position_pct),
             sizing_atr_window=int(request.sizing_atr_window),

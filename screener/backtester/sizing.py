@@ -156,7 +156,14 @@ def entry_budget_for(
             f"{', '.join(available_sizing_rules())}"
         )
     ctx = SizingContext(
-        equity=portfolio.initial_capital,
+        # Under compounding the risk budget has to track the equity the slot
+        # ceiling now tracks, or a rule like inverse_vol keeps sizing off the
+        # day-one account and clamps to the (grown) slot on every entry.
+        equity=(
+            portfolio.realized_equity()
+            if portfolio.compounding
+            else portfolio.initial_capital
+        ),
         base_budget=base,
         stop_loss=cfg.stop_loss,
         policy=cfg,

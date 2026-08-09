@@ -58,6 +58,7 @@ BOOK_CONFIG_FIELDS = frozenset(
         "entry_limit_bps",
         # Per-entry sizing.
         "sizing_rule",
+        "compounding",
         "sizing_risk_pct",
         "sizing_position_pct",
         "sizing_atr_window",
@@ -85,6 +86,7 @@ def open_book(cfg: BacktestConfig) -> Book:
         cfg.initial_capital,
         max(cfg.top, 1),
         cost_model=cost_model_from_config(cfg),
+        compounding=cfg.compounding,
     )
     slot_states: dict[int, _SlotState | None] = {
         slot_id: None for slot_id in range(max(cfg.top, 1))
