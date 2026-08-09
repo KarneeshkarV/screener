@@ -503,6 +503,10 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     yf_by_tv = {tv: tv_to_yf(tv, cfg.market) for tv in tv_symbols}
     yf_symbols = list(dict.fromkeys(list(yf_by_tv.values()) + [cfg.benchmark]))
 
+    # A strategy that builds its columns in prepare_bars reads them as bare
+    # names, so the parser measures zero lookback for them; ask the spec before
+    # sizing the fetch rather than after (see price_panel for the same fix).
+    lookback = max(lookback, strategy_lookback_floor(cfg.strategy_name))
     start = (
         as_of_ts - pd.Timedelta(days=_warmup_days_for_interval(lookback, cfg.interval))
     ).date()
@@ -565,7 +569,10 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     reserves_df = selection[selection["role"] == "reserve"].reset_index(drop=True)
     slot_count = max(cfg.top, len(actives_df))
     portfolio = Portfolio(
-        cfg.initial_capital, slot_count, cost_model=cost_model_from_config(cfg)
+        cfg.initial_capital,
+        slot_count,
+        cost_model=cost_model_from_config(cfg),
+        compounding=cfg.compounding,
     )
 
     master_dates = _run_event_driven_sim(
