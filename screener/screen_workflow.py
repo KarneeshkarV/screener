@@ -16,13 +16,25 @@ from pathlib import Path
 import pandas as pd
 
 from screener.cache import parse_ttl
-from screener.commands.screen_report import render_screen_report
 from screener.criteria import resolve_criteria
 from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from screener.history import diff, previous_run, save_run
-from screener.reporting import temp_report_path
 from screener.scanner import scan
 from screener.scoring import resolve_scorer
+
+
+def temp_report_path(prefix: str) -> Path:
+    """Lazy wrapper so CSV / no-report imports skip reporting helpers."""
+    from screener.reporting import temp_report_path as _impl
+
+    return _impl(prefix)
+
+
+def render_screen_report(*args, **kwargs):
+    """Lazy wrapper: plotly lives behind screen_report, only imported on use."""
+    from screener.commands.screen_report import render_screen_report as _impl
+
+    return _impl(*args, **kwargs)
 
 
 class ScreenMode(str, Enum):
@@ -103,6 +115,8 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
         first_run = False
 
     # HTML report is opt-in: only when --report path and/or --open-report.
+    # render_screen_report / temp_report_path are module-level lazy wrappers
+    # (and monkeypatch seams) so CSV / table runs never import plotly.
     generated_report: Path | None = None
     want_report = request.report_path is not None or request.open_report
     if want_report:
