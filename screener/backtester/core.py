@@ -68,15 +68,26 @@ class LiquidityFilterSpec(Protocol):
 def _bar_label(ts, cfg: BacktestConfig) -> date | datetime:
     """Return the trade/position stamp for a bar timestamp.
 
-    Daily bars are midnight-normalized, so a plain ``date`` is returned — this
+    Daily bars are midnight-normalized, so a plain ``date`` is returned - this
     keeps the ledger byte-for-byte identical to the pre-intraday engine and
     comparable to the ``date``-typed test fixtures. Intraday bars return a full
     ``datetime`` so time-of-day survives into ``Trade``/``Position``.
+
+    The daily path avoids ``pd.Timestamp(...)`` when the input is already a
+    Timestamp/datetime/date: the day loop stamps every fill, so the constructor
+    was pure overhead on the hot path.
     """
-    ts = pd.Timestamp(ts)
     if cfg.interval == "1d":
-        return cast(date, ts.date())
-    return cast(datetime, ts.to_pydatetime())
+        if isinstance(ts, pd.Timestamp):
+            return cast(date, ts.date())
+        # ``datetime`` is a subclass of ``date``; check it first so time-bearing
+        # values still drop to a calendar date rather than passing through.
+        if isinstance(ts, datetime):
+            return ts.date()
+        if isinstance(ts, date):
+            return ts
+        return cast(date, pd.Timestamp(ts).date())
+    return cast(datetime, pd.Timestamp(ts).to_pydatetime())
 
 
 def _trailing_liquidity(

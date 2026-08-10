@@ -22,6 +22,7 @@ ticker cannot be opened twice through the legacy API.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable
 from datetime import date, datetime
 from typing import Any, Union, cast
@@ -60,6 +61,10 @@ class Portfolio:
         # methods resolve to the FIFO-oldest open position for that ticker.
         self._open: dict[tuple[str, int], Position] = {}
         self._open_seq: dict[str, int] = {}
+        # Per-ticker FIFO of open keys. Maintained on open/close so
+        # ``_oldest_key`` / ``get_position`` are O(1) instead of scanning
+        # ``_open`` on every dividend credit, partial exit, and full close.
+        self._open_fifo: dict[str, deque[tuple[str, int]]] = {}
         self._closed: list[Trade] = []
         self._ranks: dict[str, int] = {}
         self._signal_dates: dict[str, _Stamp] = {}
@@ -110,13 +115,14 @@ class Portfolio:
         return float(sum(self.fees_paid.values()))
 
     def _active_keys(self, ticker: str) -> list[tuple[str, int]]:
-        return [k for k in self._open if k[0] == ticker]
+        fifo = self._open_fifo.get(ticker)
+        return list(fifo) if fifo else []
 
     def _oldest_key(self, ticker: str) -> tuple[str, int] | None:
-        keys = self._active_keys(ticker)
-        if not keys:
+        fifo = self._open_fifo.get(ticker)
+        if not fifo:
             return None
-        return min(keys, key=lambda k: k[1])
+        return fifo[0]
 
     def open(
         self,
@@ -171,7 +177,13 @@ class Portfolio:
         )
         seq = self._open_seq.get(ticker, 0) + 1
         self._open_seq[ticker] = seq
-        self._open[(ticker, seq)] = position
+        key = (ticker, seq)
+        self._open[key] = position
+        fifo = self._open_fifo.get(ticker)
+        if fifo is None:
+            self._open_fifo[ticker] = deque([key])
+        else:
+            fifo.append(key)
         return position
 
     def update_peak(self, ticker: str, high: float) -> None:
@@ -217,6 +229,10 @@ class Portfolio:
         if key is None:
             raise KeyError(f"No open position for {ticker}")
         position = self._open.pop(key)
+        fifo = self._open_fifo[ticker]
+        fifo.popleft()
+        if not fifo:
+            del self._open_fifo[ticker]
         proceeds = position.shares * exit_price
         commission = self._charge_fees("sell", proceeds, position.shares)
         exit_value = proceeds - commission

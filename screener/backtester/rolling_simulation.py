@@ -197,6 +197,11 @@ class _DailyRankingSource:
         if not free_slots:
             return
 
+        # One active-ticker set for the day: exclude at rank time and keep it
+        # updated as slots open so the inner loop is an O(1) membership check
+        # instead of rescanning slot_states per candidate.
+        active_tickers = _active_or_pending_tickers(slot_states)
+
         # Rank the full eligible set but only materialise top-N plus a small
         # overfetch for open failures (session-last, quote gaps). Without the
         # cap every free day built list[dict] for the whole universe.
@@ -205,7 +210,7 @@ class _DailyRankingSource:
         candidates, day_warnings = _candidate_rows_for_day(
             day,
             self.candidate_matrices,
-            exclude=_active_or_pending_tickers(slot_states),
+            exclude=active_tickers,
             limit=materialise_limit,
         )
         self.warnings.extend(day_warnings)
@@ -218,12 +223,7 @@ class _DailyRankingSource:
             while candidate_queue and not opened:
                 row = candidate_queue.popleft()
                 ticker = str(row["ticker"])
-                if (
-                    ticker
-                    in _active_or_pending_tickers(  # pragma: no cover - candidates pre-excluded
-                        slot_states
-                    )
-                ):
+                if ticker in active_tickers:  # pragma: no cover - candidates pre-excluded
                     continue
                 # No default: dict.get evaluates its default eagerly, so passing
                 # pd.DataFrame() built and threw away a frame on every candidate
@@ -267,6 +267,7 @@ class _DailyRankingSource:
                 )
                 slot_states[slot_id] = state
                 self.slot_bars[slot_id] = bars
+                active_tickers.add(ticker)
                 self.selection_rows.append(
                     {
                         "ticker": ticker,
