@@ -188,11 +188,13 @@ class _RunCaches:
     evaluation (or the :class:`PineError` it raised, so repeat callers keep
     the original per-call failure semantics); ``exit_signals`` stores the
     normalised boolean exit Series (or the warning string its failure
-    produced).
+    produced). ``exit_signal_values`` mirrors successful exit Series as a bool
+    ndarray so the per-bar exit check never re-boxes the Series.
     """
 
     entry_signals: dict[str, pd.Series | PineError] = field(default_factory=dict)
     exit_signals: dict[str, pd.Series | str] = field(default_factory=dict)
+    exit_signal_values: dict[str, np.ndarray] = field(default_factory=dict)
     frames: dict[str, _FrameCache] = field(default_factory=dict)
 
     def frame(self, ticker: str, bars: pd.DataFrame) -> _FrameCache:
@@ -214,6 +216,15 @@ class _RunCaches:
             self.entry_signals[ticker] = cached
         return cached
 
+    def store_exit_signal(self, ticker: str, signal: pd.Series) -> pd.Series:
+        """Normalise, cache, and return a boolean exit Series for ``ticker``."""
+        normalised = signal.fillna(False).astype(bool)
+        self.exit_signals[ticker] = normalised
+        # Contiguous bool buffer for the hot exit path; copy so a later Series
+        # mutation cannot silently alias into a live slot state.
+        self.exit_signal_values[ticker] = np.asarray(normalised.to_numpy(), dtype=bool)
+        return normalised
+
     def prewarm_exit_signals(
         self,
         bars_by_ticker: dict[str, pd.DataFrame],
@@ -230,7 +241,8 @@ class _RunCaches:
 
         Entries are stored in exactly the form the lazy path stores: the
         normalised boolean Series, or the warning string a failure produced, so
-        slot-open behaviour and warning text are unchanged.
+        slot-open behaviour and warning text are unchanged. Bool ndarrays are
+        cached alongside so the first open does not pay ``Series.to_numpy``.
         """
         if exit_ast is None:
             return
@@ -245,7 +257,7 @@ class _RunCaches:
             if isinstance(result, PineError):
                 self.exit_signals[ticker] = f"exit eval failed: {result}"
             else:
-                self.exit_signals[ticker] = result.fillna(False).astype(bool)
+                self.store_exit_signal(ticker, result)
 
 
 def _cached_trailing_liquidity(
@@ -445,22 +457,32 @@ def _make_slot_state(
         if session_last[entry_idx]:
             return None, "entry skipped: session-last bar (intraday-only)"
     exit_signal = None
+    exit_signal_values: np.ndarray | None = None
     if exit_ast is not None:
         cached_exit = caches.exit_signals.get(ticker) if caches is not None else None
         if isinstance(cached_exit, str):
             return None, cached_exit
         if cached_exit is not None:
             exit_signal = cached_exit
+            if caches is not None:
+                exit_signal_values = caches.exit_signal_values.get(ticker)
         else:
             try:
-                exit_signal = evaluate(exit_ast, bars).fillna(False).astype(bool)
+                raw_exit = evaluate(exit_ast, bars)
             except PineError as exc:
                 warn = f"exit eval failed: {exc}"
                 if caches is not None:
                     caches.exit_signals[ticker] = warn
                 return None, warn
             if caches is not None:
-                caches.exit_signals[ticker] = exit_signal
+                exit_signal = caches.store_exit_signal(ticker, raw_exit)
+                exit_signal_values = caches.exit_signal_values[ticker]
+            else:
+                exit_signal = raw_exit.fillna(False).astype(bool)
+        if exit_signal_values is None and exit_signal is not None:
+            exit_signal_values = np.asarray(exit_signal.to_numpy(), dtype=bool)
+            if caches is not None:
+                caches.exit_signal_values[ticker] = exit_signal_values
     stop_ref = entry_fill * (1.0 - cfg.stop_loss) if cfg.stop_loss else None
     target_ref = entry_fill * (1.0 + cfg.take_profit) if cfg.take_profit else None
     partial_targets = tuple(
@@ -487,9 +509,7 @@ def _make_slot_state(
             partial_fractions=partial_fractions,
             partial_fired=[False] * len(partial_targets),
             frame_cache=frame_cache,
-            exit_signal_values=(
-                exit_signal.to_numpy() if exit_signal is not None else None
-            ),
+            exit_signal_values=exit_signal_values,
             session_last=session_last,
             entry_shares=(entry_shares if fills.needs_liquidity_inputs else None),
         ),

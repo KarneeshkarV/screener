@@ -7,12 +7,14 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from screener.backtester.book import BOOK_CONFIG_FIELDS, open_book
 from screener.backtester.core import (
     _active_or_pending_tickers,
     _bar_label,
+    _build_frame_cache,
     _FrameCache,
     _make_slot_state,
     _RunCaches,
@@ -160,9 +162,16 @@ class _DailyRankingSource:
         # Per-run memo: exit-AST evaluations and frame primitives are computed
         # once per ticker instead of once per slot open. Exit signals are filled
         # up front in one panel pass rather than one interpreted AST walk per
-        # first-traded ticker.
+        # first-traded ticker. Bool ndarrays are derived once here so the day
+        # loop never re-boxes Series for the per-bar exit check.
+        exit_signal_values = {
+            ticker: np.asarray(signal.to_numpy(), dtype=bool)
+            for ticker, signal in exit_signals.items()
+            if not isinstance(signal, str)
+        }
         self.caches = _RunCaches(
             exit_signals=dict(exit_signals),
+            exit_signal_values=exit_signal_values,
             frames=frame_caches,
         )
 
@@ -391,6 +400,15 @@ def prepare_rolling_backtest(
     prepared_warnings = (
         tuple(early_result.warnings) if early_result is not None else tuple(warnings)
     )
+    # Prebuild frame primitives once for the whole universe. Sequential runs that
+    # reuse this prepared object (parameter sweeps) then skip the lazy first-open
+    # construction, and the first simulation no longer pays for it on the hot day
+    # path either.
+    frame_caches = {
+        tv: _build_frame_cache(bars)
+        for tv, bars in panel.bars_by_tv.items()
+        if bars is not None and not bars.empty
+    }
     return PreparedRollingBacktest(
         config_fingerprint=_preparation_fingerprint(cfg),
         start_ts=start_ts,
@@ -401,7 +419,7 @@ def prepare_rolling_backtest(
         benchmark=panel.benchmark,
         exit_ast=program.exit_ast,
         exit_signals=signals.exit_signals,
-        frame_caches={},
+        frame_caches=frame_caches,
         warnings=prepared_warnings,
         early_result=early_result,
     )
