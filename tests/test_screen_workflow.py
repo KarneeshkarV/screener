@@ -17,6 +17,7 @@ def _request(
     *,
     output_csv: bool = False,
     report_path: Path | None = None,
+    open_report: bool = False,
     earnings: bool = False,
 ) -> ScreenRequest:
     return ScreenRequest(
@@ -29,6 +30,7 @@ def _request(
         refresh=False,
         cache_ttl="15m",
         report_path=report_path,
+        open_report=open_report,
         earnings=earnings,
     )
 
@@ -90,6 +92,30 @@ def test_screen_workflow_skips_earnings_enrichment_by_default(monkeypatch, tmp_p
     assert "days_to_earnings" not in outcome.df.columns
 
 
+def test_screen_workflow_skips_report_by_default(monkeypatch, tmp_path):
+    frame = _df("AAA")
+    calls: list[str] = []
+
+    _patch(
+        monkeypatch,
+        resolve_criteria=lambda names: FilterCriteriaSelection(
+            tuple(names), "ema", ["FILTER"]
+        ),
+        scan=lambda **kwargs: (1, frame),
+        save_run=lambda *args: calls.append("save") or 7,
+        previous_run=lambda *args: calls.append("previous") or None,
+        render_screen_report=lambda *args, **kwargs: calls.append("report"),
+        temp_report_path=lambda prefix: tmp_path / "unused.html",
+    )
+
+    outcome = run_screen_workflow(_request())
+
+    assert outcome.mode is ScreenMode.RESULTS
+    assert outcome.first_run is True
+    assert outcome.report_path is None
+    assert calls == ["save", "previous"]
+
+
 def test_screen_workflow_first_run_uses_default_report_path(monkeypatch, tmp_path):
     frame = _df("AAA")
     report = tmp_path / "screen.html"
@@ -113,7 +139,8 @@ def test_screen_workflow_first_run_uses_default_report_path(monkeypatch, tmp_pat
         render_screen_report=render_report,
     )
 
-    outcome = run_screen_workflow(_request())
+    # --open-report without --report still writes a temp HTML report.
+    outcome = run_screen_workflow(_request(open_report=True))
 
     assert outcome.mode is ScreenMode.RESULTS
     assert outcome.first_run is True

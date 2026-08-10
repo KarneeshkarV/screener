@@ -102,24 +102,28 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
         added, removed = diff(df, prev)
         first_run = False
 
-    generated_report = request.report_path
-    if generated_report is None:
-        generated_report = temp_report_path("screen")
+    # HTML report is opt-in: only when --report path and/or --open-report.
+    generated_report: Path | None = None
+    want_report = request.report_path is not None or request.open_report
+    if want_report:
+        generated_report = request.report_path
+        if generated_report is None:
+            generated_report = temp_report_path("screen")
 
-    render_screen_report(
-        df,
-        total,
-        request.market,
-        selection.label,
-        generated_report,
-        added=added,
-        removed=removed,
-        first_run=first_run,
-        detail=request.detail,
-        refresh=request.refresh,
-        cache_ttl=request.cache_ttl,
-        order_by=request.order_by,
-    )
+        render_screen_report(
+            df,
+            total,
+            request.market,
+            selection.label,
+            generated_report,
+            added=added,
+            removed=removed,
+            first_run=first_run,
+            detail=request.detail,
+            refresh=request.refresh,
+            cache_ttl=request.cache_ttl,
+            order_by=request.order_by,
+        )
 
     return ScreenOutcome(
         mode=ScreenMode.RESULTS,

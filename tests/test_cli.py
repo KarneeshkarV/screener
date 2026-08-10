@@ -133,13 +133,31 @@ def _screen_df() -> pd.DataFrame:
     )
 
 
-def test_screen_auto_temp_report(tmp_path, monkeypatch):
+def test_screen_default_skips_html_report(tmp_path, monkeypatch):
     report = tmp_path / "screen.html"
     monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
     monkeypatch.setattr(workflow_mod, "temp_report_path", lambda prefix: report)
     monkeypatch.setattr(workflow_mod, "scan", lambda **kwargs: (2, _screen_df()))
 
     res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2"])
+
+    assert res.exit_code == 0, res.output
+    assert "Report:" not in res.output
+    assert not report.exists()
+
+
+def test_screen_open_report_writes_temp_html(tmp_path, monkeypatch):
+    report = tmp_path / "screen.html"
+    monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
+    monkeypatch.setattr(workflow_mod, "temp_report_path", lambda prefix: report)
+    monkeypatch.setattr(workflow_mod, "scan", lambda **kwargs: (2, _screen_df()))
+    opened: list[object] = []
+    monkeypatch.setattr(
+        "screener.reporting.open_report",
+        lambda path: opened.append(path),
+    )
+
+    res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2", "--open-report"])
 
     assert res.exit_code == 0, res.output
     assert f"Report: {report}" in res.output
@@ -149,6 +167,7 @@ def test_screen_auto_temp_report(tmp_path, monkeypatch):
     assert "Important Metrics" in html
     assert "--paper: #07090d" in html
     assert '"plot_bgcolor":"#0d1117"' in html
+    assert opened == [report]
 
 
 def test_screen_csv_skips_auto_temp_report(tmp_path, monkeypatch):
