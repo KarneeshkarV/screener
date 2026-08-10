@@ -79,15 +79,15 @@ def _bar_label(ts, cfg: BacktestConfig) -> date | datetime:
     """
     if cfg.interval == "1d":
         if isinstance(ts, pd.Timestamp):
-            return cast(date, ts.date())
+            return ts.date()
         # ``datetime`` is a subclass of ``date``; check it first so time-bearing
         # values still drop to a calendar date rather than passing through.
         if isinstance(ts, datetime):
             return ts.date()
         if isinstance(ts, date):
             return ts
-        return cast(date, pd.Timestamp(ts).date())
-    return cast(datetime, pd.Timestamp(ts).to_pydatetime())
+        return pd.Timestamp(ts).date()
+    return pd.Timestamp(ts).to_pydatetime()
 
 
 def _trailing_liquidity(
@@ -956,7 +956,7 @@ def _rolling_mean_min_periods_1(values: np.ndarray, window: int) -> np.ndarray:
         sum_win[window:] = sum_cs[window:] - sum_cs[:-window]
         count_win[window:] = count_cs[window:] - count_cs[:-window]
     with np.errstate(invalid="ignore", divide="ignore"):
-        out = sum_win / count_win
+        out = np.asarray(sum_win / count_win, dtype=float)
     out[count_win < 1.0] = np.nan
     return out
 

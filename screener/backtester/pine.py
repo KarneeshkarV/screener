@@ -854,7 +854,11 @@ def evaluate_panel(
     tickers are only stacked when their indexes match exactly, so no value ever
     sees a reindex-padded neighbour.
     """
-    return evaluate_panel_many((node,), bars_by_ticker)[0]
+    # Default path never requests bool arrays, so every value is Series|PineError.
+    return cast(
+        dict[str, pd.Series | PineError],
+        evaluate_panel_many((node,), bars_by_ticker, as_bool_array=False)[0],
+    )
 
 
 def evaluate_panel_many(
