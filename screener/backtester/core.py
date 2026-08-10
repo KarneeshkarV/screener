@@ -896,6 +896,34 @@ def _precompute_filter_signals(
     return {t: out[t] for t in bars_by_ticker if t in out}
 
 
+def _rolling_mean_min_periods_1(values: np.ndarray, window: int) -> np.ndarray:
+    """Column-wise rolling mean with ``min_periods=1``, matching pandas skipna.
+
+    Used by :func:`_filter_signals_for_group` so the ADV filter does not pay
+    DataFrame construction + ``rolling().mean()`` dispatch for every panel
+    group. Window edges shorter than ``window`` average the available prefix;
+    non-finite inputs are excluded from the mean (pandas ``Series.mean`` /
+    rolling default), and a window with zero finite observations yields NaN.
+    """
+    if window <= 0:
+        raise ValueError("window must be positive")
+    finite = np.isfinite(values)
+    # Zero out non-finite so cumsum stays well-defined; count them separately.
+    filled = np.where(finite, values, 0.0)
+    count = finite.astype(np.float64, copy=False)
+    sum_cs = np.cumsum(filled, axis=0)
+    count_cs = np.cumsum(count, axis=0)
+    sum_win = sum_cs.copy()
+    count_win = count_cs.copy()
+    if window < values.shape[0]:
+        sum_win[window:] = sum_cs[window:] - sum_cs[:-window]
+        count_win[window:] = count_cs[window:] - count_cs[:-window]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = sum_win / count_win
+    out[count_win < 1.0] = np.nan
+    return out
+
+
 def _filter_signals_for_group(
     tickers: list[str],
     bars_by_ticker: dict[str, pd.DataFrame],
@@ -907,12 +935,12 @@ def _filter_signals_for_group(
     index = frames[0].index
     n_bars, n_tickers = len(index), len(tickers)
 
-    # ``astype(float)`` rather than ``to_numpy(dtype=float)``: it is the exact
-    # expression the per-ticker path used, and it yields a private copy, so the
-    # block can never alias a caller's frame.
+    # Write into a private block via ``to_numpy(dtype=float)``. The destination
+    # array is ours, so a view into an already-float64 caller column is fine
+    # (nothing mutates through the block). Avoids a redundant ``astype`` copy.
     close_block = np.empty((n_bars, n_tickers), dtype=float)
     for position, frame in enumerate(frames):
-        close_block[:, position] = frame["close"].astype(float).to_numpy()
+        close_block[:, position] = frame["close"].to_numpy(dtype=float, copy=False)
 
     # A non-finite close never passes either entry filter, including ADV-only.
     passes = np.isfinite(close_block)
@@ -927,16 +955,11 @@ def _filter_signals_for_group(
     if cfg.min_avg_dollar_volume is not None:
         dollar_vol = np.empty((n_bars, n_tickers), dtype=float)
         for position, frame in enumerate(frames):
-            dollar_vol[:, position] = frame["volume"].astype(float).to_numpy()
+            dollar_vol[:, position] = frame["volume"].to_numpy(dtype=float, copy=False)
         dollar_vol *= close_block
-        # One columnwise rolling pass for the whole group; pandas applies it
-        # per column, so each ticker sees exactly its own Series' result.
-        adv = (
-            pd.DataFrame(dollar_vol, index=index, columns=tickers, copy=False)
-            .rolling(window=window, min_periods=1)
-            .mean()
-            .to_numpy()
-        )
+        # One columnwise rolling pass for the whole group; arithmetic matches
+        # pandas ``rolling(window, min_periods=1).mean()`` (skipna).
+        adv = _rolling_mean_min_periods_1(dollar_vol, window)
         # NaN (or +-inf) ADV must fail the filter.
         passes &= np.isfinite(adv) & (adv >= float(cfg.min_avg_dollar_volume))
 
