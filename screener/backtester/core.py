@@ -241,12 +241,12 @@ class _RunCaches:
         bars_by_ticker: dict[str, pd.DataFrame],
         exit_ast,
         *,
-        evaluated: dict[str, pd.Series | PineError] | None = None,
+        evaluated: dict[str, pd.Series | np.ndarray | PineError] | None = None,
     ) -> None:
         """Fill ``exit_signals`` for every ticker in one panel pass.
 
         ``_make_slot_state`` otherwise evaluates the exit AST on the first slot
-        open per ticker — correct, but one interpreted walk each. Batching them
+        open per ticker - correct, but one interpreted walk each. Batching them
         up front costs one walk per index-group for the whole universe, which is
         cheaper even though not every ticker ends up being traded.
 
@@ -254,6 +254,9 @@ class _RunCaches:
         normalised boolean Series, or the warning string a failure produced, so
         slot-open behaviour and warning text are unchanged. Bool ndarrays are
         cached alongside so the first open does not pay ``Series.to_numpy``.
+        When ``evaluated`` already holds bool ndarrays (panel path with
+        ``as_bool_array=True``), rebuild only the thin Series wrapper needed by
+        the public cache type - the ndarray is stored directly.
         """
         if exit_ast is None:
             return
@@ -267,8 +270,17 @@ class _RunCaches:
                 continue
             if isinstance(result, PineError):
                 self.exit_signals[ticker] = f"exit eval failed: {result}"
-            else:
-                self.store_exit_signal(ticker, result)
+                continue
+            if isinstance(result, np.ndarray):
+                bars = bars_by_ticker[ticker]
+                values = (
+                    result if result.dtype == bool else np.asarray(result, dtype=bool)
+                )
+                series = pd.Series(values, index=bars.index, dtype=bool, copy=False)
+                self.exit_signals[ticker] = series
+                self.exit_signal_values[ticker] = values
+                continue
+            self.store_exit_signal(ticker, result)
 
 
 def _cached_trailing_liquidity(
@@ -843,14 +855,22 @@ def _precompute_entry_signals(
     entry_ast,
     warnings: list[str],
     *,
-    evaluated: dict[str, pd.Series | PineError] | None = None,
-) -> dict[str, pd.Series]:
+    evaluated: dict[str, pd.Series | np.ndarray | PineError] | None = None,
+) -> dict[str, pd.Series | np.ndarray]:
+    """Return per-ticker entry masks as Series or bool ndarrays.
+
+    When the panel evaluator is asked for ``as_bool_array=True``, values are
+    already bool ndarrays aligned to each ticker's bar index — keep them that
+    way so :func:`_build_rolling_candidate_matrices` can assemble signal_mat
+    without a Series detour. Series results (solo path, legacy callers) are
+    normalised with ``fillna(False).astype(bool)`` as before.
+    """
     results = (
         evaluated
         if evaluated is not None
         else evaluate_panel(entry_ast, bars_by_ticker)
     )
-    signals: dict[str, pd.Series] = {}
+    signals: dict[str, pd.Series | np.ndarray] = {}
     # Iterate the input order, not the panel's grouping order, so signal and
     # warning ordering stays byte-identical to the per-ticker loop.
     for ticker in bars_by_ticker:
@@ -859,6 +879,12 @@ def _precompute_entry_signals(
             continue
         if isinstance(result, PineError):
             warnings.append(f"entry eval failed: {ticker}: {result}")
+            continue
+        if isinstance(result, np.ndarray):
+            if result.dtype == bool:
+                signals[ticker] = result
+            else:
+                signals[ticker] = np.asarray(result, dtype=bool)
             continue
         signals[ticker] = result.fillna(False).astype(bool)
     return signals

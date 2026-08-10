@@ -223,7 +223,9 @@ class _DailyRankingSource:
             while candidate_queue and not opened:
                 row = candidate_queue.popleft()
                 ticker = str(row["ticker"])
-                if ticker in active_tickers:  # pragma: no cover - candidates pre-excluded
+                if (
+                    ticker in active_tickers
+                ):  # pragma: no cover - candidates pre-excluded
                     continue
                 # No default: dict.get evaluates its default eagerly, so passing
                 # pd.DataFrame() built and threw away a frame on every candidate
