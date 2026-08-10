@@ -98,9 +98,48 @@ def _sector_neutralize_scores(
     )
 
 
+def _signal_mask_matrix(
+    signals_by_tv: dict[str, pd.Series | np.ndarray],
+    bars_by_tv: dict[str, pd.DataFrame],
+    master_ix: pd.DatetimeIndex,
+    valid_tickers: list[str],
+) -> pd.DataFrame:
+    """Assemble a master-calendar bool matrix from per-ticker Series or arrays.
+
+    Bool ndarrays are assumed aligned to ``bars_by_tv[tv].index`` (the panel
+    evaluator contract). Series keep the historical reindex path so mixed
+    callers stay correct.
+    """
+    n_days = len(master_ix)
+    n_tickers = len(valid_tickers)
+    block = np.zeros((n_days, n_tickers), dtype=bool)
+    for column, tv in enumerate(valid_tickers):
+        signal = signals_by_tv.get(tv)
+        if signal is None:
+            continue
+        bars = bars_by_tv[tv]
+        if isinstance(signal, np.ndarray):
+            values = signal if signal.dtype == bool else np.asarray(signal, dtype=bool)
+            idx = bars.index
+            if len(values) == n_days and idx.equals(master_ix):
+                block[:, column] = values
+                continue
+            block[:, column] = (
+                pd.Series(values, index=idx, copy=False)
+                .reindex(master_ix)
+                .fillna(False)
+                .to_numpy(dtype=bool)
+            )
+            continue
+        block[:, column] = (
+            signal.reindex(master_ix).fillna(False).astype(bool).to_numpy(dtype=bool)
+        )
+    return pd.DataFrame(block, index=master_ix, columns=valid_tickers, copy=False)
+
+
 def _build_rolling_candidate_matrices(
     bars_by_tv: dict[str, pd.DataFrame],
-    entry_signals_by_tv: dict[str, pd.Series],
+    entry_signals_by_tv: dict[str, pd.Series | np.ndarray],
     filter_signals_by_tv: dict[str, pd.Series],
     master_dates: list[pd.Timestamp],
     lookback_required: int,
@@ -122,11 +161,8 @@ def _build_rolling_candidate_matrices(
     valid_tickers = [
         tv for tv, bars in bars_by_tv.items() if bars is not None and not bars.empty
     ]
-    signal_mat = (
-        pd.DataFrame(entry_signals_by_tv)
-        .reindex(master_ix)
-        .reindex(columns=valid_tickers)
-        .eq(True)
+    signal_mat = _signal_mask_matrix(
+        entry_signals_by_tv, bars_by_tv, master_ix, valid_tickers
     )
     # Point-in-time eligibility: suppress entry signals before a symbol's
     # index "date added" so today's constituents are not backtested through
@@ -374,8 +410,16 @@ def _candidate_rows_for_day(
     matrices: _RollingCandidateMatrices,
     *,
     exclude: set[str],
+    limit: int | None = None,
 ) -> tuple[list[dict], list[str]]:
-    """Evaluate entry signals for the full universe on one trading day."""
+    """Evaluate entry signals for the full universe on one trading day.
+
+    ``limit`` caps how many ranked candidates are materialised into ``list[dict]``.
+    Ranking still considers the whole eligible set, so ranks 1..limit match the
+    uncapped path; only the dict-building tail is skipped. Pass ``None`` (the
+    default) to materialise every eligible name — used by tests that assert on
+    full-day rankings.
+    """
     warnings: list[str] = []
     row = matrices.row_by_day[day]
     eligible = matrices.signal_np[row] & matrices.lookback_ok_np[row]
@@ -398,8 +442,8 @@ def _candidate_rows_for_day(
         if eligible_cols.size == 0:
             return [], warnings
         # Rank by cross-sectional factor score (descending), breaking ties by
-        # signal-day dollar volume so equal-score names resolve by liquidity —
-        # a principled deterministic fallback — rather than by arbitrary
+        # signal-day dollar volume so equal-score names resolve by liquidity -
+        # a principled deterministic fallback - rather than by arbitrary
         # universe/column insertion order. The DataFrame rows are in ascending
         # column order (``eligible_cols``), so a stable mergesort reproduces the
         # legacy pandas ranking byte-for-byte.
@@ -423,6 +467,8 @@ def _candidate_rows_for_day(
         # reverses the stable ascending order, so ties land in reversed column
         # order (see pandas ``nargsort``).
         order = dollar_vol[eligible_cols].argsort(kind="mergesort")[::-1]
+    if limit is not None and limit >= 0:
+        order = order[:limit]
     rows: list[dict] = []
     for rank, col in enumerate(eligible_cols[order], start=1):
         rows.append(

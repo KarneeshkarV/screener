@@ -164,13 +164,23 @@ def build_signal_panel(
     """Evaluate signals over ``panel`` and rank them into candidate matrices."""
     bars_by_tv = panel.bars_by_tv
     exit_signals_by_tv: dict[str, pd.Series | str] = {}
+    # Bool arrays: entry (and exit) results feed matrices / ndarray caches, so
+    # skip per-ticker Series boxing that otherwise dominates the pine bucket.
     if program.exit_ast is None:
+        evaluated_entry = evaluate_panel_many(
+            (program.entry_ast,), bars_by_tv, as_bool_array=True
+        )[0]
         entry_signals_by_tv = _precompute_entry_signals(
-            bars_by_tv, program.entry_ast, warnings
+            bars_by_tv,
+            program.entry_ast,
+            warnings,
+            evaluated=evaluated_entry,
         )
     else:
         evaluated_entry, evaluated_exit = evaluate_panel_many(
-            (program.entry_ast, program.exit_ast), bars_by_tv
+            (program.entry_ast, program.exit_ast),
+            bars_by_tv,
+            as_bool_array=True,
         )
         entry_signals_by_tv = _precompute_entry_signals(
             bars_by_tv,

@@ -68,15 +68,26 @@ class LiquidityFilterSpec(Protocol):
 def _bar_label(ts, cfg: BacktestConfig) -> date | datetime:
     """Return the trade/position stamp for a bar timestamp.
 
-    Daily bars are midnight-normalized, so a plain ``date`` is returned — this
+    Daily bars are midnight-normalized, so a plain ``date`` is returned - this
     keeps the ledger byte-for-byte identical to the pre-intraday engine and
     comparable to the ``date``-typed test fixtures. Intraday bars return a full
     ``datetime`` so time-of-day survives into ``Trade``/``Position``.
+
+    The daily path avoids ``pd.Timestamp(...)`` when the input is already a
+    Timestamp/datetime/date: the day loop stamps every fill, so the constructor
+    was pure overhead on the hot path.
     """
-    ts = pd.Timestamp(ts)
     if cfg.interval == "1d":
-        return cast(date, ts.date())
-    return cast(datetime, ts.to_pydatetime())
+        if isinstance(ts, pd.Timestamp):
+            return ts.date()
+        # ``datetime`` is a subclass of ``date``; check it first so time-bearing
+        # values still drop to a calendar date rather than passing through.
+        if isinstance(ts, datetime):
+            return ts.date()
+        if isinstance(ts, date):
+            return ts
+        return pd.Timestamp(ts).date()
+    return pd.Timestamp(ts).to_pydatetime()
 
 
 def _trailing_liquidity(
@@ -188,11 +199,13 @@ class _RunCaches:
     evaluation (or the :class:`PineError` it raised, so repeat callers keep
     the original per-call failure semantics); ``exit_signals`` stores the
     normalised boolean exit Series (or the warning string its failure
-    produced).
+    produced). ``exit_signal_values`` mirrors successful exit Series as a bool
+    ndarray so the per-bar exit check never re-boxes the Series.
     """
 
     entry_signals: dict[str, pd.Series | PineError] = field(default_factory=dict)
     exit_signals: dict[str, pd.Series | str] = field(default_factory=dict)
+    exit_signal_values: dict[str, np.ndarray] = field(default_factory=dict)
     frames: dict[str, _FrameCache] = field(default_factory=dict)
 
     def frame(self, ticker: str, bars: pd.DataFrame) -> _FrameCache:
@@ -214,23 +227,36 @@ class _RunCaches:
             self.entry_signals[ticker] = cached
         return cached
 
+    def store_exit_signal(self, ticker: str, signal: pd.Series) -> pd.Series:
+        """Normalise, cache, and return a boolean exit Series for ``ticker``."""
+        normalised = signal.fillna(False).astype(bool)
+        self.exit_signals[ticker] = normalised
+        # Contiguous bool buffer for the hot exit path; copy so a later Series
+        # mutation cannot silently alias into a live slot state.
+        self.exit_signal_values[ticker] = np.asarray(normalised.to_numpy(), dtype=bool)
+        return normalised
+
     def prewarm_exit_signals(
         self,
         bars_by_ticker: dict[str, pd.DataFrame],
         exit_ast,
         *,
-        evaluated: dict[str, pd.Series | PineError] | None = None,
+        evaluated: dict[str, pd.Series | np.ndarray | PineError] | None = None,
     ) -> None:
         """Fill ``exit_signals`` for every ticker in one panel pass.
 
         ``_make_slot_state`` otherwise evaluates the exit AST on the first slot
-        open per ticker — correct, but one interpreted walk each. Batching them
+        open per ticker - correct, but one interpreted walk each. Batching them
         up front costs one walk per index-group for the whole universe, which is
         cheaper even though not every ticker ends up being traded.
 
         Entries are stored in exactly the form the lazy path stores: the
         normalised boolean Series, or the warning string a failure produced, so
-        slot-open behaviour and warning text are unchanged.
+        slot-open behaviour and warning text are unchanged. Bool ndarrays are
+        cached alongside so the first open does not pay ``Series.to_numpy``.
+        When ``evaluated`` already holds bool ndarrays (panel path with
+        ``as_bool_array=True``), rebuild only the thin Series wrapper needed by
+        the public cache type - the ndarray is stored directly.
         """
         if exit_ast is None:
             return
@@ -244,8 +270,17 @@ class _RunCaches:
                 continue
             if isinstance(result, PineError):
                 self.exit_signals[ticker] = f"exit eval failed: {result}"
-            else:
-                self.exit_signals[ticker] = result.fillna(False).astype(bool)
+                continue
+            if isinstance(result, np.ndarray):
+                bars = bars_by_ticker[ticker]
+                values = (
+                    result if result.dtype == bool else np.asarray(result, dtype=bool)
+                )
+                series = pd.Series(values, index=bars.index, dtype=bool, copy=False)
+                self.exit_signals[ticker] = series
+                self.exit_signal_values[ticker] = values
+                continue
+            self.store_exit_signal(ticker, result)
 
 
 def _cached_trailing_liquidity(
@@ -445,22 +480,32 @@ def _make_slot_state(
         if session_last[entry_idx]:
             return None, "entry skipped: session-last bar (intraday-only)"
     exit_signal = None
+    exit_signal_values: np.ndarray | None = None
     if exit_ast is not None:
         cached_exit = caches.exit_signals.get(ticker) if caches is not None else None
         if isinstance(cached_exit, str):
             return None, cached_exit
         if cached_exit is not None:
             exit_signal = cached_exit
+            if caches is not None:
+                exit_signal_values = caches.exit_signal_values.get(ticker)
         else:
             try:
-                exit_signal = evaluate(exit_ast, bars).fillna(False).astype(bool)
+                raw_exit = evaluate(exit_ast, bars)
             except PineError as exc:
                 warn = f"exit eval failed: {exc}"
                 if caches is not None:
                     caches.exit_signals[ticker] = warn
                 return None, warn
             if caches is not None:
-                caches.exit_signals[ticker] = exit_signal
+                exit_signal = caches.store_exit_signal(ticker, raw_exit)
+                exit_signal_values = caches.exit_signal_values[ticker]
+            else:
+                exit_signal = raw_exit.fillna(False).astype(bool)
+        if exit_signal_values is None and exit_signal is not None:
+            exit_signal_values = np.asarray(exit_signal.to_numpy(), dtype=bool)
+            if caches is not None:
+                caches.exit_signal_values[ticker] = exit_signal_values
     stop_ref = entry_fill * (1.0 - cfg.stop_loss) if cfg.stop_loss else None
     target_ref = entry_fill * (1.0 + cfg.take_profit) if cfg.take_profit else None
     partial_targets = tuple(
@@ -487,9 +532,7 @@ def _make_slot_state(
             partial_fractions=partial_fractions,
             partial_fired=[False] * len(partial_targets),
             frame_cache=frame_cache,
-            exit_signal_values=(
-                exit_signal.to_numpy() if exit_signal is not None else None
-            ),
+            exit_signal_values=exit_signal_values,
             session_last=session_last,
             entry_shares=(entry_shares if fills.needs_liquidity_inputs else None),
         ),
@@ -812,14 +855,22 @@ def _precompute_entry_signals(
     entry_ast,
     warnings: list[str],
     *,
-    evaluated: dict[str, pd.Series | PineError] | None = None,
-) -> dict[str, pd.Series]:
+    evaluated: dict[str, pd.Series | np.ndarray | PineError] | None = None,
+) -> dict[str, pd.Series | np.ndarray]:
+    """Return per-ticker entry masks as Series or bool ndarrays.
+
+    When the panel evaluator is asked for ``as_bool_array=True``, values are
+    already bool ndarrays aligned to each ticker's bar index — keep them that
+    way so :func:`_build_rolling_candidate_matrices` can assemble signal_mat
+    without a Series detour. Series results (solo path, legacy callers) are
+    normalised with ``fillna(False).astype(bool)`` as before.
+    """
     results = (
         evaluated
         if evaluated is not None
         else evaluate_panel(entry_ast, bars_by_ticker)
     )
-    signals: dict[str, pd.Series] = {}
+    signals: dict[str, pd.Series | np.ndarray] = {}
     # Iterate the input order, not the panel's grouping order, so signal and
     # warning ordering stays byte-identical to the per-ticker loop.
     for ticker in bars_by_ticker:
@@ -828,6 +879,12 @@ def _precompute_entry_signals(
             continue
         if isinstance(result, PineError):
             warnings.append(f"entry eval failed: {ticker}: {result}")
+            continue
+        if isinstance(result, np.ndarray):
+            if result.dtype == bool:
+                signals[ticker] = result
+            else:
+                signals[ticker] = np.asarray(result, dtype=bool)
             continue
         signals[ticker] = result.fillna(False).astype(bool)
     return signals
@@ -876,6 +933,34 @@ def _precompute_filter_signals(
     return {t: out[t] for t in bars_by_ticker if t in out}
 
 
+def _rolling_mean_min_periods_1(values: np.ndarray, window: int) -> np.ndarray:
+    """Column-wise rolling mean with ``min_periods=1``, matching pandas skipna.
+
+    Used by :func:`_filter_signals_for_group` so the ADV filter does not pay
+    DataFrame construction + ``rolling().mean()`` dispatch for every panel
+    group. Window edges shorter than ``window`` average the available prefix;
+    non-finite inputs are excluded from the mean (pandas ``Series.mean`` /
+    rolling default), and a window with zero finite observations yields NaN.
+    """
+    if window <= 0:
+        raise ValueError("window must be positive")
+    finite = np.isfinite(values)
+    # Zero out non-finite so cumsum stays well-defined; count them separately.
+    filled = np.where(finite, values, 0.0)
+    count = finite.astype(np.float64, copy=False)
+    sum_cs = np.cumsum(filled, axis=0)
+    count_cs = np.cumsum(count, axis=0)
+    sum_win = sum_cs.copy()
+    count_win = count_cs.copy()
+    if window < values.shape[0]:
+        sum_win[window:] = sum_cs[window:] - sum_cs[:-window]
+        count_win[window:] = count_cs[window:] - count_cs[:-window]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = np.asarray(sum_win / count_win, dtype=float)
+    out[count_win < 1.0] = np.nan
+    return out
+
+
 def _filter_signals_for_group(
     tickers: list[str],
     bars_by_ticker: dict[str, pd.DataFrame],
@@ -887,12 +972,12 @@ def _filter_signals_for_group(
     index = frames[0].index
     n_bars, n_tickers = len(index), len(tickers)
 
-    # ``astype(float)`` rather than ``to_numpy(dtype=float)``: it is the exact
-    # expression the per-ticker path used, and it yields a private copy, so the
-    # block can never alias a caller's frame.
+    # Write into a private block via ``to_numpy(dtype=float)``. The destination
+    # array is ours, so a view into an already-float64 caller column is fine
+    # (nothing mutates through the block). Avoids a redundant ``astype`` copy.
     close_block = np.empty((n_bars, n_tickers), dtype=float)
     for position, frame in enumerate(frames):
-        close_block[:, position] = frame["close"].astype(float).to_numpy()
+        close_block[:, position] = frame["close"].to_numpy(dtype=float, copy=False)
 
     # A non-finite close never passes either entry filter, including ADV-only.
     passes = np.isfinite(close_block)
@@ -907,16 +992,11 @@ def _filter_signals_for_group(
     if cfg.min_avg_dollar_volume is not None:
         dollar_vol = np.empty((n_bars, n_tickers), dtype=float)
         for position, frame in enumerate(frames):
-            dollar_vol[:, position] = frame["volume"].astype(float).to_numpy()
+            dollar_vol[:, position] = frame["volume"].to_numpy(dtype=float, copy=False)
         dollar_vol *= close_block
-        # One columnwise rolling pass for the whole group; pandas applies it
-        # per column, so each ticker sees exactly its own Series' result.
-        adv = (
-            pd.DataFrame(dollar_vol, index=index, columns=tickers, copy=False)
-            .rolling(window=window, min_periods=1)
-            .mean()
-            .to_numpy()
-        )
+        # One columnwise rolling pass for the whole group; arithmetic matches
+        # pandas ``rolling(window, min_periods=1).mean()`` (skipna).
+        adv = _rolling_mean_min_periods_1(dollar_vol, window)
         # NaN (or +-inf) ADV must fail the filter.
         passes &= np.isfinite(adv) & (adv >= float(cfg.min_avg_dollar_volume))
 

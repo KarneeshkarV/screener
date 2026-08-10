@@ -814,6 +814,34 @@ def _build_panel(
     return PanelBars(wide, index, tickers, columns)
 
 
+def _series_from_panel_column(
+    values: np.ndarray, index: pd.Index, position: int
+) -> pd.Series:
+    """Build a Series for one panel column without ``DataFrame.iloc`` boxing."""
+    return pd.Series(values[:, position], index=index, copy=False)
+
+
+def _bool_array_from_series(series: pd.Series) -> np.ndarray:
+    """Match ``series.fillna(False).astype(bool).to_numpy()`` with less work."""
+    if series.dtype == bool:
+        if not series.hasnans:
+            return series.to_numpy(dtype=bool, copy=False)
+        return series.fillna(False).to_numpy(dtype=bool)
+    return series.fillna(False).astype(bool).to_numpy(dtype=bool)
+
+
+def _bool_block_from_frame(frame: pd.DataFrame) -> np.ndarray:
+    """Booleanize a panel result once for every ticker column."""
+    if len(frame.columns) == 0:
+        return np.empty((len(frame.index), 0), dtype=bool)
+    # Fast path: already a bool block with no NA.
+    if all(dt is bool or dt == np.dtype(bool) for dt in frame.dtypes):
+        if not frame.isna().any().any():
+            return frame.to_numpy(dtype=bool, copy=False)
+        return frame.fillna(False).to_numpy(dtype=bool)
+    return frame.fillna(False).astype(bool).to_numpy(dtype=bool)
+
+
 def evaluate_panel(
     node: Node,
     bars_by_ticker: dict[str, pd.DataFrame],
@@ -822,22 +850,33 @@ def evaluate_panel(
 
     Returns one entry per ticker with non-empty bars: either the Series
     :func:`evaluate` would have returned, or the :class:`PineError` it would
-    have raised. Results are identical to calling :func:`evaluate` per ticker —
+    have raised. Results are identical to calling :func:`evaluate` per ticker -
     tickers are only stacked when their indexes match exactly, so no value ever
     sees a reindex-padded neighbour.
     """
-    return evaluate_panel_many((node,), bars_by_ticker)[0]
+    # Default path never requests bool arrays, so every value is Series|PineError.
+    return cast(
+        dict[str, pd.Series | PineError],
+        evaluate_panel_many((node,), bars_by_ticker, as_bool_array=False)[0],
+    )
 
 
 def evaluate_panel_many(
     nodes: Iterable[Node],
     bars_by_ticker: dict[str, pd.DataFrame],
-) -> list[dict[str, pd.Series | PineError]]:
+    *,
+    as_bool_array: bool = False,
+) -> list[dict[str, pd.Series | np.ndarray | PineError]]:
     """Evaluate multiple expressions over one set of compatible ticker panels.
 
     Panel construction and structurally identical subexpressions are shared
     across the expressions. Results retain the same per-expression/per-ticker
     error isolation as repeated :func:`evaluate_panel` calls.
+
+    When ``as_bool_array`` is True, successful results are ``bool`` ndarrays
+    aligned to each ticker's bar index instead of Series. Callers that only
+    need matrices (entry signals feeding candidate matrices) skip the large
+    per-ticker Series boxing cost that otherwise dominates the pine bucket.
     """
     nodes = list(nodes)
     if not nodes:
@@ -856,7 +895,15 @@ def evaluate_panel_many(
         else:
             groups.setdefault(key, []).append(ticker)
 
-    outputs: list[dict[str, pd.Series | PineError]] = [{} for _node in nodes]
+    outputs: list[dict[str, pd.Series | np.ndarray | PineError]] = [
+        {} for _node in nodes
+    ]
+
+    def _store_series(position: int, ticker: str, series: pd.Series) -> None:
+        if as_bool_array:
+            outputs[position][ticker] = _bool_array_from_series(series)
+        else:
+            outputs[position][ticker] = series
 
     def eval_one(ticker: str) -> None:
         try:
@@ -866,12 +913,14 @@ def evaluate_panel_many(
             # from independent expressions.
             for position, node in enumerate(nodes):
                 try:
-                    outputs[position][ticker] = evaluate(node, bars_by_ticker[ticker])
+                    _store_series(
+                        position, ticker, evaluate(node, bars_by_ticker[ticker])
+                    )
                 except PineError as node_exc:
                     outputs[position][ticker] = node_exc
         else:
             for position, result in enumerate(results):
-                outputs[position][ticker] = result
+                _store_series(position, ticker, result)
 
     for ticker in solo:
         eval_one(ticker)
@@ -898,17 +947,30 @@ def evaluate_panel_many(
                 # results.
                 for ticker in tickers:
                     try:
-                        outputs[node_position][ticker] = evaluate(
-                            node, bars_by_ticker[ticker]
+                        _store_series(
+                            node_position,
+                            ticker,
+                            evaluate(node, bars_by_ticker[ticker]),
                         )
                     except PineError as exc:
                         outputs[node_position][ticker] = exc
                 continue
             frame = cast(pd.DataFrame, result)
-            for ticker_position, ticker in enumerate(tickers):
-                outputs[node_position][ticker] = frame.iloc[:, ticker_position].rename(
-                    None
-                )
+            if as_bool_array:
+                bool_block = _bool_block_from_frame(frame)
+                for ticker_position, ticker in enumerate(tickers):
+                    # Copy so callers can retain columns independently of the
+                    # temporary panel block.
+                    outputs[node_position][ticker] = np.array(
+                        bool_block[:, ticker_position], copy=True, dtype=bool
+                    )
+            else:
+                values = frame.to_numpy(copy=False)
+                index = frame.index
+                for ticker_position, ticker in enumerate(tickers):
+                    outputs[node_position][ticker] = _series_from_panel_column(
+                        values, index, ticker_position
+                    )
     return outputs
 
 
