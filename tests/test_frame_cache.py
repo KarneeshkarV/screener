@@ -127,3 +127,33 @@ def test_no_consumer_writes_through_the_cached_arrays():
     _cached_trailing_liquidity(cache, bars, 5)
     assert float(cache.close_arr[3]) == pytest.approx(bars["close"].iloc[3])
     assert float(cache.open_arr[0]) == pytest.approx(bars["open"].iloc[0])
+
+
+@pytest.mark.parametrize("unit", ["ns", "us", "ms", "s"])
+def test_index_i8_matches_timestamp_value_for_every_naive_unit(unit):
+    """day_loop searchsorteds against ``Timestamp.value`` (always nanoseconds).
+
+    Pandas 3 builds many daily indexes as ``datetime64[us]``. Caching a raw us
+    i8 view would make every lookup miss and fall back incorrectly.
+    """
+    idx = pd.date_range("2024-01-01", periods=8, freq="D").as_unit(unit)
+    cache = _build_frame_cache(_bars(8, index=idx))
+    assert cache.index_i8 is not None
+    for position, stamp in enumerate(idx):
+        assert cache.index_i8[position] == stamp.value
+        found = int(np.searchsorted(cache.index_i8, stamp.value))
+        assert found == position
+        assert cache.index_i8[found] == stamp.value
+
+
+def test_index_i8_disabled_for_tz_aware_and_duplicates():
+    aware = _build_frame_cache(
+        _bars(5, index=pd.date_range("2024-01-01", periods=5, tz="UTC"))
+    )
+    assert aware.index_i8 is None
+
+    dup_idx = pd.DatetimeIndex(
+        ["2024-01-01", "2024-01-02", "2024-01-02", "2024-01-03", "2024-01-04"]
+    )
+    dup = _build_frame_cache(_bars(5, index=dup_idx))
+    assert dup.index_i8 is None

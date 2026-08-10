@@ -125,9 +125,10 @@ class _FrameCache:
     low_arr: np.ndarray
     close_arr: np.ndarray
     dividend_arr: np.ndarray | None
-    # int64 epoch-nanosecond view of a unique, naive datetime64[ns] index for
-    # O(log n) day->position lookups; None otherwise, and callers then keep
-    # the original ``Index.get_loc`` semantics (duplicates, exotic dtypes).
+    # int64 epoch-nanosecond view of a unique, naive datetime64 index for
+    # O(log n) day->position lookups against ``Timestamp.value`` (always ns).
+    # None otherwise; callers keep ``Index.get_loc`` (duplicates, tz-aware,
+    # exotic dtypes). Non-ns resolutions are converted via ``as_unit("ns")``.
     index_i8: np.ndarray | None
     volume_f: pd.Series
     # close[i] / close[i-1] - 1: the exact ``pct_change`` arithmetic for
@@ -150,10 +151,14 @@ def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
     index_i8: np.ndarray | None = None
     if (
         isinstance(index, pd.DatetimeIndex)
-        and index.dtype == np.dtype("datetime64[ns]")
+        and isinstance(index.dtype, np.dtype)
+        and np.issubdtype(index.dtype, np.datetime64)
         and index.is_unique
     ):
-        index_i8 = index.to_numpy().view("i8")
+        # day_loop compares against Timestamp.value, which is always nanoseconds.
+        # Pandas 3 defaults many calendars to datetime64[us]; viewing those as i8
+        # without converting would make every searchsorted miss.
+        index_i8 = index.as_unit("ns").to_numpy().view("i8")
     rets = np.empty(close_arr.shape[0], dtype=float)
     if rets.shape[0]:
         rets[0] = np.nan
