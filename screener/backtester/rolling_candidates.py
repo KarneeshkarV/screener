@@ -374,8 +374,16 @@ def _candidate_rows_for_day(
     matrices: _RollingCandidateMatrices,
     *,
     exclude: set[str],
+    limit: int | None = None,
 ) -> tuple[list[dict], list[str]]:
-    """Evaluate entry signals for the full universe on one trading day."""
+    """Evaluate entry signals for the full universe on one trading day.
+
+    ``limit`` caps how many ranked candidates are materialised into ``list[dict]``.
+    Ranking still considers the whole eligible set, so ranks 1..limit match the
+    uncapped path; only the dict-building tail is skipped. Pass ``None`` (the
+    default) to materialise every eligible name — used by tests that assert on
+    full-day rankings.
+    """
     warnings: list[str] = []
     row = matrices.row_by_day[day]
     eligible = matrices.signal_np[row] & matrices.lookback_ok_np[row]
@@ -398,8 +406,8 @@ def _candidate_rows_for_day(
         if eligible_cols.size == 0:
             return [], warnings
         # Rank by cross-sectional factor score (descending), breaking ties by
-        # signal-day dollar volume so equal-score names resolve by liquidity —
-        # a principled deterministic fallback — rather than by arbitrary
+        # signal-day dollar volume so equal-score names resolve by liquidity -
+        # a principled deterministic fallback - rather than by arbitrary
         # universe/column insertion order. The DataFrame rows are in ascending
         # column order (``eligible_cols``), so a stable mergesort reproduces the
         # legacy pandas ranking byte-for-byte.
@@ -423,6 +431,8 @@ def _candidate_rows_for_day(
         # reverses the stable ascending order, so ties land in reversed column
         # order (see pandas ``nargsort``).
         order = dollar_vol[eligible_cols].argsort(kind="mergesort")[::-1]
+    if limit is not None and limit >= 0:
+        order = order[:limit]
     rows: list[dict] = []
     for rank, col in enumerate(eligible_cols[order], start=1):
         rows.append(

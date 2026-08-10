@@ -197,10 +197,16 @@ class _DailyRankingSource:
         if not free_slots:
             return
 
+        # Rank the full eligible set but only materialise top-N plus a small
+        # overfetch for open failures (session-last, quote gaps). Without the
+        # cap every free day built list[dict] for the whole universe.
+        overfetch = max(8, int(cfg.top))
+        materialise_limit = max(len(free_slots), int(cfg.top)) + overfetch
         candidates, day_warnings = _candidate_rows_for_day(
             day,
             self.candidate_matrices,
             exclude=_active_or_pending_tickers(slot_states),
+            limit=materialise_limit,
         )
         self.warnings.extend(day_warnings)
         if not candidates:
