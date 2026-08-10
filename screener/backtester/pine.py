@@ -718,6 +718,21 @@ def _panel_column_names(node: Node) -> set[str]:
     return names
 
 
+def _is_naive_numpy_datetime_index(index: pd.Index) -> bool:
+    """True for tz-naive DatetimeIndex backed by any numpy ``datetime64[unit]``.
+
+    Pandas 3 often builds daily calendars as ``datetime64[us]`` (2.x used
+    ``datetime64[ns]``). The fast path must accept every resolution; tz-aware
+    indexes use a non-numpy ``DatetimeTZDtype`` and stay on the slow path so
+    label identity (timezone) is preserved.
+    """
+    return (
+        isinstance(index, pd.DatetimeIndex)
+        and isinstance(index.dtype, np.dtype)
+        and bool(np.issubdtype(index.dtype, np.datetime64))
+    )
+
+
 def panel_index_key(index: pd.Index) -> tuple[str, object] | None:
     """Identity of ``index`` for stacking frames positionally, or None if unsafe.
 
@@ -737,9 +752,11 @@ def panel_index_key(index: pd.Index) -> tuple[str, object] | None:
     if not index.is_unique:
         # Stacking would align on duplicate labels instead of stacking positionally.
         return None
-    if isinstance(index, pd.DatetimeIndex) and index.dtype == np.dtype(
-        "datetime64[ns]"
-    ):
+    if _is_naive_numpy_datetime_index(index):
+        # Byte-hash the raw int64 ticks. Unit is already in str(dtype), so us/ns
+        # indexes with the same instants stay in different groups (correct).
+        # Falling through to tuple(index) boxes every Timestamp and is ~50x
+        # slower - the pandas-3 default of datetime64[us] used to force that.
         index_key: object = index.to_numpy().view("i8").tobytes()
     else:
         try:

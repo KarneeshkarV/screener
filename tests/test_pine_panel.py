@@ -20,6 +20,7 @@ from screener.backtester.pine import (
     evaluate,
     evaluate_panel,
     evaluate_panel_many,
+    panel_index_key,
     parse,
 )
 
@@ -261,6 +262,38 @@ def test_uniform_timezone_still_groups():
     names = _panel_column_names(parse("sma(close, 5)"))
     keys = {_group_key(_bars(40, seed=i).set_axis(idx), names) for i in range(4)}
     assert len(keys) == 1 and None not in keys
+
+
+@pytest.mark.parametrize("unit", ["ns", "us", "ms", "s"])
+def test_panel_index_key_byte_hashes_every_naive_datetime64_unit(unit):
+    """Pandas 3 defaults many calendars to us; the fast path must not be ns-only.
+
+    ``tuple(index)`` boxes every Timestamp via DatetimeArray.__iter__ and is the
+    wall-clock regression seen after the pandas 2.3 -> 3.0 lockfile bump.
+    """
+    idx = pd.date_range("2024-01-01", periods=40, freq="D").as_unit(unit)
+    key = panel_index_key(idx)
+    assert key is not None
+    assert key[0] == str(idx.dtype)
+    assert isinstance(key[1], bytes)
+    # Same instants at another resolution stay distinct groups.
+    other = idx.as_unit("ns" if unit != "ns" else "us")
+    other_key = panel_index_key(other)
+    assert other_key is not None
+    assert key != other_key
+
+
+@pytest.mark.parametrize("unit", ["ns", "us", "ms"])
+def test_uniform_naive_datetime_resolution_still_groups(unit):
+    """Aligned tickers at the same non-ns resolution must still batch."""
+    idx = pd.date_range("2024-01-01", periods=40, freq="D").as_unit(unit)
+    names = _panel_column_names(parse("sma(close, 5)"))
+    keys = {_group_key(_bars(40, seed=i).set_axis(idx), names) for i in range(4)}
+    assert len(keys) == 1 and None not in keys
+    _assert_matches_per_ticker(
+        "crossover(close, sma(close, 5))",
+        {f"T{i}": _bars(40, seed=i).set_axis(idx) for i in range(4)},
+    )
 
 
 def test_non_datetime_index_still_matches():
