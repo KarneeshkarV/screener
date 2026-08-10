@@ -38,6 +38,14 @@ _client_lock = threading.Lock()
 _usage_table_ready = False
 _invocations_table_ready = False
 
+# Non-blocking write path: stage rows, flush on a daemon thread, best-effort join.
+# SCREENER_USAGE_FLUSH_MS overrides the join budget (default 100 ms).
+_DEFAULT_FLUSH_TIMEOUT_S = 0.1
+_pending_lock = threading.Lock()
+_pending_usage: dict[str, Any] | None = None
+_pending_invocation: dict[str, Any] | None = None
+_flush_thread: threading.Thread | None = None
+
 
 class UsageClient(Protocol):
     def execute(self, stmt: str, args: list[object] | None = None): ...
@@ -147,11 +155,166 @@ def _close_client() -> None:
 
 
 def _reset_client_state() -> None:
-    """Drop cached client and DDL flags (for tests)."""
+    """Drop cached client, pending rows, and DDL flags (for tests)."""
     global _usage_table_ready, _invocations_table_ready
+    global _pending_usage, _pending_invocation, _flush_thread
+    flush_usage(timeout_s=1.0)
     _close_client()
+    with _pending_lock:
+        _pending_usage = None
+        _pending_invocation = None
+        _flush_thread = None
     _usage_table_ready = False
     _invocations_table_ready = False
+
+
+def _flush_timeout_s() -> float:
+    raw = os.environ.get("SCREENER_USAGE_FLUSH_MS", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw) / 1000.0)
+        except ValueError:
+            pass
+    return _DEFAULT_FLUSH_TIMEOUT_S
+
+
+def _write_usage_row(
+    client: UsageClient,
+    *,
+    feature: str,
+    command_path: str | None,
+    status: str,
+    duration_ms: int,
+    username: str,
+    hostname: str,
+) -> None:
+    _ensure_usage_table_once(client)
+    client.execute(
+        f"""
+        INSERT INTO {TABLE_NAME}
+            (project, feature, command_path, status, duration_ms, username, hostname)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            PROJECT_NAME,
+            feature,
+            command_path or feature,
+            status,
+            int(duration_ms),
+            username,
+            hostname,
+        ],
+    )
+
+
+def _write_invocation_row(
+    client: UsageClient,
+    *,
+    feature: str,
+    duration_ms: int,
+    status: str,
+    params: dict[str, Any],
+    username: str,
+    hostname: str,
+) -> None:
+    _ensure_invocations_table_once(client)
+    market = params.get("market")
+    criteria = _normalize_criteria(params.get("criteria_names"))
+    limit_n = params.get("limit")
+    refresh = params.get("refresh")
+    output_csv = params.get("output_csv")
+    cache_ttl = params.get("cache_ttl")
+
+    extras: dict[str, str] = {}
+    for key, value in params.items():
+        if key in _FLATTENED_PARAM_KEYS:
+            continue
+        if value is None:
+            continue
+        extras[key] = str(value)
+    extras_json = json.dumps(extras, default=str) if extras else None
+
+    client.execute(
+        f"""
+        INSERT INTO {INVOCATIONS_TABLE}
+            (project, feature, market, criteria, limit_n, refresh,
+             output_csv, cache_ttl, extras_json, duration_ms, status,
+             username, hostname)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            PROJECT_NAME,
+            feature,
+            str(market) if market is not None else None,
+            criteria,
+            int(limit_n) if limit_n is not None else None,
+            _coerce_bool_to_int(refresh) if refresh is not None else None,
+            str(output_csv) if output_csv is not None else None,
+            str(cache_ttl) if cache_ttl is not None else None,
+            extras_json,
+            int(duration_ms),
+            status,
+            username,
+            hostname,
+        ],
+    )
+
+
+def _flush_pending_sync() -> None:
+    """Write any staged usage/invocation rows on one connection (sync)."""
+    global _pending_usage, _pending_invocation
+    with _pending_lock:
+        usage_row = _pending_usage
+        inv_row = _pending_invocation
+        _pending_usage = None
+        _pending_invocation = None
+    if usage_row is None and inv_row is None:
+        return
+    try:
+        client = _connect()
+        if client is None:
+            return
+        if usage_row is not None:
+            _write_usage_row(client, **usage_row)
+        if inv_row is not None:
+            _write_invocation_row(client, **inv_row)
+    except Exception as exc:  # pragma: no cover - defensive telemetry path
+        logger.debug("feature usage flush failed: %s", exc)
+    finally:
+        _close_client()
+
+
+def flush_usage(timeout_s: float | None = None) -> None:
+    """Best-effort wait for a background usage flush (or run one inline)."""
+    global _flush_thread
+    budget = _flush_timeout_s() if timeout_s is None else max(0.0, timeout_s)
+    with _pending_lock:
+        thread = _flush_thread
+        has_pending = _pending_usage is not None or _pending_invocation is not None
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=budget)
+        return
+    if has_pending:
+        # No worker yet (e.g. usage staged without invocation): run inline.
+        _flush_pending_sync()
+
+
+def _schedule_flush() -> None:
+    """Start a daemon flush thread and best-effort join for a short budget."""
+    global _flush_thread
+    with _pending_lock:
+        existing = _flush_thread
+        if existing is not None and existing.is_alive():
+            thread = existing
+        else:
+            thread = threading.Thread(
+                target=_flush_pending_sync,
+                name="screener-usage-flush",
+                daemon=True,
+            )
+            _flush_thread = thread
+            thread.start()
+    thread.join(timeout=_flush_timeout_s())
 
 
 def ensure_usage_table(client: UsageClient) -> None:
@@ -249,66 +412,28 @@ def record_feature_invocation(
     status: str = "success",
     params: dict[str, Any] | None = None,
 ) -> None:
-    """Record one CLI invocation with its full Click parameter payload.
+    """Stage one CLI invocation row and flush pending usage on a daemon thread.
 
-    Always last in the CLI usage ``finally`` path, so this closes the shared
-    client after the write to avoid process-exit hangs from an open libsql
-    connection.
+    CLI always calls this last in ``finally``. Network I/O runs in the
+    background; the caller only waits up to ``SCREENER_USAGE_FLUSH_MS``
+    (default 100 ms) so Turso RTT does not dominate process wall time.
     """
     if _usage_disabled():
         return
-    try:
-        client = _connect()
-        if client is None:
-            return
-        _ensure_invocations_table_once(client)
-        params = params or {}
-
-        market = params.get("market")
-        criteria = _normalize_criteria(params.get("criteria_names"))
-        limit_n = params.get("limit")
-        refresh = params.get("refresh")
-        output_csv = params.get("output_csv")
-        cache_ttl = params.get("cache_ttl")
-
-        extras: dict[str, str] = {}
-        for key, value in params.items():
-            if key in _FLATTENED_PARAM_KEYS:
-                continue
-            if value is None:
-                continue
-            extras[key] = str(value)
-        extras_json = json.dumps(extras, default=str) if extras else None
-
-        client.execute(
-            f"""
-            INSERT INTO {INVOCATIONS_TABLE}
-                (project, feature, market, criteria, limit_n, refresh,
-                 output_csv, cache_ttl, extras_json, duration_ms, status,
-                 username, hostname)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                PROJECT_NAME,
-                feature,
-                str(market) if market is not None else None,
-                criteria,
-                int(limit_n) if limit_n is not None else None,
-                _coerce_bool_to_int(refresh) if refresh is not None else None,
-                str(output_csv) if output_csv is not None else None,
-                str(cache_ttl) if cache_ttl is not None else None,
-                extras_json,
-                int(duration_ms),
-                status,
-                getpass.getuser(),
-                platform.node(),
-            ],
-        )
-    except Exception as exc:  # pragma: no cover - defensive telemetry path
-        logger.debug("feature invocation tracking failed: %s", exc)
-    finally:
-        # CLI records usage then invocation; release after the last write.
-        _close_client()
+    global _pending_invocation
+    # Capture identity on the calling thread (getpass/platform can be slow-ish
+    # but stay off the Turso critical path relative to HTTPS).
+    row = {
+        "feature": feature,
+        "duration_ms": int(duration_ms),
+        "status": status,
+        "params": dict(params or {}),
+        "username": getpass.getuser(),
+        "hostname": platform.node(),
+    }
+    with _pending_lock:
+        _pending_invocation = row
+    _schedule_flush()
 
 
 def invocation_rollup(limit: int = 30) -> list[InvocationRollup]:
@@ -411,36 +536,24 @@ def record_feature_usage(
     status: str = "success",
     duration_ms: int = 0,
 ) -> None:
-    """Record one successful CLI feature usage without affecting CLI behavior.
+    """Stage one successful CLI feature usage row (flushed with invocation).
 
-    Leaves the shared client open so a following ``record_feature_invocation``
-    in the same process reuses the connection (CLI always sequences both).
+    Does not block on Turso. A following ``record_feature_invocation`` (or an
+    explicit ``flush_usage``) ships staged rows on one shared connection.
     """
     if _usage_disabled():
         return
-    try:
-        client = _connect()
-        if client is None:
-            return
-        _ensure_usage_table_once(client)
-        client.execute(
-            f"""
-            INSERT INTO {TABLE_NAME}
-                (project, feature, command_path, status, duration_ms, username, hostname)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                PROJECT_NAME,
-                feature,
-                command_path or feature,
-                status,
-                int(duration_ms),
-                getpass.getuser(),
-                platform.node(),
-            ],
-        )
-    except Exception as exc:  # pragma: no cover - defensive telemetry path
-        logger.debug("feature usage tracking failed: %s", exc)
+    global _pending_usage
+    row = {
+        "feature": feature,
+        "command_path": command_path,
+        "status": status,
+        "duration_ms": int(duration_ms),
+        "username": getpass.getuser(),
+        "hostname": platform.node(),
+    }
+    with _pending_lock:
+        _pending_usage = row
 
 
 def feature_usage_counts() -> list[UsageCount]:

@@ -46,6 +46,8 @@ def test_record_feature_usage_inserts_success(monkeypatch):
     monkeypatch.setattr(usage.platform, "node", lambda: "workstation")
 
     usage.record_feature_usage("screen", command_path="screener screen", duration_ms=42)
+    # Usage alone is staged; flush ships it (CLI normally pairs with invocation).
+    usage.flush_usage(timeout_s=1.0)
 
     insert = [
         item for item in client.statements if "INSERT INTO feature_usage" in item[0]
@@ -60,8 +62,6 @@ def test_record_feature_usage_inserts_success(monkeypatch):
         "karneeshkar",
         "workstation",
     ]
-    # Process-level client is reused; writers must not close it.
-    assert client.closed is False
 
 
 def test_usage_models_and_env_helpers(tmp_path, monkeypatch):
@@ -139,6 +139,7 @@ def test_record_pair_reuses_one_connect(monkeypatch):
         types.SimpleNamespace(create_client_sync=create_client_sync),
     )
 
+    monkeypatch.setenv("SCREENER_USAGE_FLUSH_MS", "2000")
     usage.record_feature_usage("screen", command_path="screener screen", duration_ms=1)
     usage.record_feature_invocation(
         "screen",
@@ -147,15 +148,15 @@ def test_record_pair_reuses_one_connect(monkeypatch):
         status="success",
         params={"market": "us"},
     )
+    usage.flush_usage(timeout_s=2.0)
 
     assert creates["n"] == 1
-    # Invocation is last in the CLI path and releases the shared client.
+    # Flush releases the shared client after both inserts.
     assert client.closed is True
     inserts = [s for s in client.statements if "INSERT INTO" in s[0]]
     assert len(inserts) == 2
     # DDL is cached across reconnects: a second pair must not re-run CREATE TABLE.
     create_stmts_before = sum(1 for s in client.statements if "CREATE TABLE" in s[0])
-    # Fresh FakeClient for reconnect (closed client is not reused by libsql).
     client2 = FakeClient()
     creates["n"] = 0
 
@@ -176,6 +177,7 @@ def test_record_pair_reuses_one_connect(monkeypatch):
         status="success",
         params={"market": "us"},
     )
+    usage.flush_usage(timeout_s=2.0)
     create_stmts_second = sum(1 for s in client2.statements if "CREATE TABLE" in s[0])
     assert create_stmts_second == 0
     assert creates["n"] == 1
@@ -197,6 +199,7 @@ def test_screener_usage_env_opt_out(monkeypatch):
 def test_record_feature_invocation_flattens_params(monkeypatch):
     client = FakeClient()
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("SCREENER_USAGE_FLUSH_MS", "2000")
     monkeypatch.setattr(usage, "_connect", lambda: client)
     monkeypatch.setattr(usage.getpass, "getuser", lambda: "user")
     monkeypatch.setattr(usage.platform, "node", lambda: "host")
@@ -217,6 +220,7 @@ def test_record_feature_invocation_flattens_params(monkeypatch):
             "none": None,
         },
     )
+    usage.flush_usage(timeout_s=2.0)
 
     insert = [
         item
@@ -238,7 +242,36 @@ def test_record_feature_invocation_flattens_params(monkeypatch):
         "user",
         "host",
     ]
-    assert client.closed is False
+
+
+def test_record_pair_is_non_blocking_for_slow_client(monkeypatch):
+    """Flush join budget must not wait for the full remote RTT."""
+    import time as time_mod
+
+    class SlowClient(FakeClient):
+        def execute(self, stmt: str, args: list[object] | None = None):
+            time_mod.sleep(0.4)
+            return super().execute(stmt, args)
+
+    client = SlowClient()
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("SCREENER_USAGE_FLUSH_MS", "50")
+    monkeypatch.setattr(usage, "_connect", lambda: client)
+    monkeypatch.setattr(usage.getpass, "getuser", lambda: "user")
+    monkeypatch.setattr(usage.platform, "node", lambda: "host")
+
+    t0 = time_mod.perf_counter()
+    usage.record_feature_usage("screen", command_path="screener screen", duration_ms=1)
+    usage.record_feature_invocation(
+        "screen",
+        command_path="screener screen",
+        duration_ms=1,
+        status="success",
+        params={},
+    )
+    elapsed = time_mod.perf_counter() - t0
+    # Default flush budget is ~50 ms; slow client takes 400 ms+ per execute.
+    assert elapsed < 0.25
 
 
 def test_usage_invocation_normalizers_cover_scalar_and_empty_values():
