@@ -31,6 +31,13 @@ class FakeClient:
         self.closed = True
 
 
+@pytest.fixture(autouse=True)
+def _reset_usage_client_state():
+    usage._reset_client_state()
+    yield
+    usage._reset_client_state()
+
+
 def test_record_feature_usage_inserts_success(monkeypatch):
     client = FakeClient()
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
@@ -53,7 +60,8 @@ def test_record_feature_usage_inserts_success(monkeypatch):
         "karneeshkar",
         "workstation",
     ]
-    assert client.closed
+    # Process-level client is reused; writers must not close it.
+    assert client.closed is False
 
 
 def test_usage_models_and_env_helpers(tmp_path, monkeypatch):
@@ -85,8 +93,10 @@ def test_usage_models_and_env_helpers(tmp_path, monkeypatch):
 
 def test_connect_uses_libsql_client_when_configured(monkeypatch):
     created = {}
+    create_calls = {"n": 0}
 
     def create_client_sync(url, auth_token):
+        create_calls["n"] += 1
         created["url"] = url
         created["auth_token"] = auth_token
         return "client"
@@ -103,7 +113,85 @@ def test_connect_uses_libsql_client_when_configured(monkeypatch):
     )
 
     assert usage._connect() == "client"
+    assert usage._connect() == "client"
+    assert create_calls["n"] == 1
     assert created == {"url": "https://remote", "auth_token": "token"}
+
+
+def test_record_pair_reuses_one_connect(monkeypatch):
+    """Usage + invocation for one command must not open two clients."""
+    client = FakeClient()
+    creates = {"n": 0}
+
+    def create_client_sync(url, auth_token):
+        creates["n"] += 1
+        return client
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("SCREENER_USAGE", raising=False)
+    monkeypatch.setattr(usage, "_database_url", lambda: "https://remote")
+    monkeypatch.setattr(usage, "_env_value", lambda name: "token")
+    monkeypatch.setattr(usage.getpass, "getuser", lambda: "user")
+    monkeypatch.setattr(usage.platform, "node", lambda: "host")
+    monkeypatch.setitem(
+        sys.modules,
+        "libsql_client",
+        types.SimpleNamespace(create_client_sync=create_client_sync),
+    )
+
+    usage.record_feature_usage("screen", command_path="screener screen", duration_ms=1)
+    usage.record_feature_invocation(
+        "screen",
+        command_path="screener screen",
+        duration_ms=1,
+        status="success",
+        params={"market": "us"},
+    )
+
+    assert creates["n"] == 1
+    # Invocation is last in the CLI path and releases the shared client.
+    assert client.closed is True
+    inserts = [s for s in client.statements if "INSERT INTO" in s[0]]
+    assert len(inserts) == 2
+    # DDL is cached across reconnects: a second pair must not re-run CREATE TABLE.
+    create_stmts_before = sum(1 for s in client.statements if "CREATE TABLE" in s[0])
+    # Fresh FakeClient for reconnect (closed client is not reused by libsql).
+    client2 = FakeClient()
+    creates["n"] = 0
+
+    def create_client_sync2(url, auth_token):
+        creates["n"] += 1
+        return client2
+
+    monkeypatch.setitem(
+        sys.modules,
+        "libsql_client",
+        types.SimpleNamespace(create_client_sync=create_client_sync2),
+    )
+    usage.record_feature_usage("screen", command_path="screener screen", duration_ms=1)
+    usage.record_feature_invocation(
+        "screen",
+        command_path="screener screen",
+        duration_ms=1,
+        status="success",
+        params={"market": "us"},
+    )
+    create_stmts_second = sum(1 for s in client2.statements if "CREATE TABLE" in s[0])
+    assert create_stmts_second == 0
+    assert creates["n"] == 1
+    assert create_stmts_before >= 1
+
+
+def test_screener_usage_env_opt_out(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("SCREENER_USAGE", "0")
+    monkeypatch.setattr(
+        usage,
+        "_connect",
+        lambda: (_ for _ in ()).throw(AssertionError("should not connect")),
+    )
+    usage.record_feature_usage("screen")
+    usage.record_feature_invocation("screen")
 
 
 def test_record_feature_invocation_flattens_params(monkeypatch):
@@ -150,7 +238,7 @@ def test_record_feature_invocation_flattens_params(monkeypatch):
         "user",
         "host",
     ]
-    assert client.closed
+    assert client.closed is False
 
 
 def test_usage_invocation_normalizers_cover_scalar_and_empty_values():
@@ -184,7 +272,7 @@ def test_feature_usage_counts_maps_rows(monkeypatch):
         ("screen", 2, "2026-05-10T12:00:00.000Z"),
         ("garp", 1, None),
     ]
-    assert client.closed
+    assert client.closed is False
 
 
 def test_invocation_rollup_groups_extras_and_limits(monkeypatch):
@@ -207,7 +295,7 @@ def test_invocation_rollup_groups_extras_and_limits(monkeypatch):
     ]
     assert rollup[0].last_used_at == "2026-01-03T00:00:01Z"
     assert rollup[0].top_extras == "foo=a"
-    assert client.closed
+    assert client.closed is False
 
 
 def test_invocation_rollup_no_client(monkeypatch):

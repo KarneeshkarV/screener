@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import platform
+import threading
 import time
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -19,6 +20,9 @@ PROJECT_NAME = "screener"
 TABLE_NAME = "feature_usage"
 INVOCATIONS_TABLE = "feature_usage_invocations"
 
+# SCREENER_USAGE=0|off|false|no skips all usage I/O (local opt-out).
+_USAGE_OFF_VALUES = frozenset({"0", "off", "false", "no"})
+
 _FLATTENED_PARAM_KEYS = {
     "market",
     "criteria_names",
@@ -27,6 +31,12 @@ _FLATTENED_PARAM_KEYS = {
     "output_csv",
     "cache_ttl",
 }
+
+# Process-level Turso client reuse: one connect, tables ensured once.
+_client: UsageClient | None = None
+_client_lock = threading.Lock()
+_usage_table_ready = False
+_invocations_table_ready = False
 
 
 class UsageClient(Protocol):
@@ -87,15 +97,61 @@ def _database_url() -> str | None:
     return url
 
 
+def _usage_disabled() -> bool:
+    """True when usage tracking should no-op (tests or SCREENER_USAGE opt-out)."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    raw = os.environ.get("SCREENER_USAGE", "").strip().lower()
+    return raw in _USAGE_OFF_VALUES
+
+
 def _connect() -> UsageClient | None:
-    url = _database_url()
-    token = _env_value("TURSO_AUTH_TOKEN")
-    if not url or not token:
-        return None
+    """Return a cached Turso client, creating it on first success in this process.
 
-    from libsql_client import create_client_sync  # type: ignore[import-untyped]
+    Sequential ``record_feature_usage`` + ``record_feature_invocation`` share one
+    HTTPS client (no double connect). The client is released after the invocation
+    write (always last in the CLI ``finally`` path) so libsql does not keep the
+    process alive at exit. Failures return None and do not poison later retries.
+    """
+    global _client
+    if _client is not None:
+        return _client
 
-    return cast(UsageClient, create_client_sync(url, auth_token=token))
+    with _client_lock:
+        if _client is not None:
+            return _client
+
+        url = _database_url()
+        token = _env_value("TURSO_AUTH_TOKEN")
+        if not url or not token:
+            return None
+
+        from libsql_client import create_client_sync  # type: ignore[import-untyped]
+
+        client = cast(UsageClient, create_client_sync(url, auth_token=token))
+        _client = client
+        return client
+
+
+def _close_client() -> None:
+    """Close and drop the cached client (keeps DDL-ensured flags)."""
+    global _client
+    with _client_lock:
+        client = _client
+        _client = None
+    if client is not None:
+        try:
+            client.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+
+def _reset_client_state() -> None:
+    """Drop cached client and DDL flags (for tests)."""
+    global _usage_table_ready, _invocations_table_ready
+    _close_client()
+    _usage_table_ready = False
+    _invocations_table_ready = False
 
 
 def ensure_usage_table(client: UsageClient) -> None:
@@ -152,6 +208,22 @@ def ensure_invocations_table(client: UsageClient) -> None:
     )
 
 
+def _ensure_usage_table_once(client: UsageClient) -> None:
+    global _usage_table_ready
+    if _usage_table_ready:
+        return
+    ensure_usage_table(client)
+    _usage_table_ready = True
+
+
+def _ensure_invocations_table_once(client: UsageClient) -> None:
+    global _invocations_table_ready
+    if _invocations_table_ready:
+        return
+    ensure_invocations_table(client)
+    _invocations_table_ready = True
+
+
 def _coerce_bool_to_int(value: Any) -> Any:
     if isinstance(value, bool):
         return 1 if value else 0
@@ -177,61 +249,66 @@ def record_feature_invocation(
     status: str = "success",
     params: dict[str, Any] | None = None,
 ) -> None:
-    """Record one CLI invocation with its full Click parameter payload."""
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    """Record one CLI invocation with its full Click parameter payload.
+
+    Always last in the CLI usage ``finally`` path, so this closes the shared
+    client after the write to avoid process-exit hangs from an open libsql
+    connection.
+    """
+    if _usage_disabled():
         return
     try:
         client = _connect()
         if client is None:
             return
-        try:
-            ensure_invocations_table(client)
-            params = params or {}
+        _ensure_invocations_table_once(client)
+        params = params or {}
 
-            market = params.get("market")
-            criteria = _normalize_criteria(params.get("criteria_names"))
-            limit_n = params.get("limit")
-            refresh = params.get("refresh")
-            output_csv = params.get("output_csv")
-            cache_ttl = params.get("cache_ttl")
+        market = params.get("market")
+        criteria = _normalize_criteria(params.get("criteria_names"))
+        limit_n = params.get("limit")
+        refresh = params.get("refresh")
+        output_csv = params.get("output_csv")
+        cache_ttl = params.get("cache_ttl")
 
-            extras: dict[str, str] = {}
-            for key, value in params.items():
-                if key in _FLATTENED_PARAM_KEYS:
-                    continue
-                if value is None:
-                    continue
-                extras[key] = str(value)
-            extras_json = json.dumps(extras, default=str) if extras else None
+        extras: dict[str, str] = {}
+        for key, value in params.items():
+            if key in _FLATTENED_PARAM_KEYS:
+                continue
+            if value is None:
+                continue
+            extras[key] = str(value)
+        extras_json = json.dumps(extras, default=str) if extras else None
 
-            client.execute(
-                f"""
-                INSERT INTO {INVOCATIONS_TABLE}
-                    (project, feature, market, criteria, limit_n, refresh,
-                     output_csv, cache_ttl, extras_json, duration_ms, status,
-                     username, hostname)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    PROJECT_NAME,
-                    feature,
-                    str(market) if market is not None else None,
-                    criteria,
-                    int(limit_n) if limit_n is not None else None,
-                    _coerce_bool_to_int(refresh) if refresh is not None else None,
-                    str(output_csv) if output_csv is not None else None,
-                    str(cache_ttl) if cache_ttl is not None else None,
-                    extras_json,
-                    int(duration_ms),
-                    status,
-                    getpass.getuser(),
-                    platform.node(),
-                ],
-            )
-        finally:
-            client.close()
+        client.execute(
+            f"""
+            INSERT INTO {INVOCATIONS_TABLE}
+                (project, feature, market, criteria, limit_n, refresh,
+                 output_csv, cache_ttl, extras_json, duration_ms, status,
+                 username, hostname)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                PROJECT_NAME,
+                feature,
+                str(market) if market is not None else None,
+                criteria,
+                int(limit_n) if limit_n is not None else None,
+                _coerce_bool_to_int(refresh) if refresh is not None else None,
+                str(output_csv) if output_csv is not None else None,
+                str(cache_ttl) if cache_ttl is not None else None,
+                extras_json,
+                int(duration_ms),
+                status,
+                getpass.getuser(),
+                platform.node(),
+            ],
+        )
     except Exception as exc:  # pragma: no cover - defensive telemetry path
         logger.debug("feature invocation tracking failed: %s", exc)
+    finally:
+        # CLI records usage then invocation; release after the last write.
+        _close_client()
 
 
 def invocation_rollup(limit: int = 30) -> list[InvocationRollup]:
@@ -239,7 +316,7 @@ def invocation_rollup(limit: int = 30) -> list[InvocationRollup]:
     if client is None:
         return []
     try:
-        ensure_invocations_table(client)
+        _ensure_invocations_table_once(client)
         rows = client.execute(
             f"""
             SELECT feature,
@@ -320,8 +397,11 @@ def invocation_rollup(limit: int = 30) -> list[InvocationRollup]:
                 )
             )
         return results
+    except Exception as exc:  # pragma: no cover - defensive read path
+        logger.debug("invocation rollup failed: %s", exc)
+        return []
     finally:
-        client.close()
+        _close_client()
 
 
 def record_feature_usage(
@@ -331,33 +411,34 @@ def record_feature_usage(
     status: str = "success",
     duration_ms: int = 0,
 ) -> None:
-    """Record one successful CLI feature usage without affecting CLI behavior."""
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    """Record one successful CLI feature usage without affecting CLI behavior.
+
+    Leaves the shared client open so a following ``record_feature_invocation``
+    in the same process reuses the connection (CLI always sequences both).
+    """
+    if _usage_disabled():
         return
     try:
         client = _connect()
         if client is None:
             return
-        try:
-            ensure_usage_table(client)
-            client.execute(
-                f"""
-                INSERT INTO {TABLE_NAME}
-                    (project, feature, command_path, status, duration_ms, username, hostname)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    PROJECT_NAME,
-                    feature,
-                    command_path or feature,
-                    status,
-                    int(duration_ms),
-                    getpass.getuser(),
-                    platform.node(),
-                ],
-            )
-        finally:
-            client.close()
+        _ensure_usage_table_once(client)
+        client.execute(
+            f"""
+            INSERT INTO {TABLE_NAME}
+                (project, feature, command_path, status, duration_ms, username, hostname)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                PROJECT_NAME,
+                feature,
+                command_path or feature,
+                status,
+                int(duration_ms),
+                getpass.getuser(),
+                platform.node(),
+            ],
+        )
     except Exception as exc:  # pragma: no cover - defensive telemetry path
         logger.debug("feature usage tracking failed: %s", exc)
 
@@ -367,7 +448,7 @@ def feature_usage_counts() -> list[UsageCount]:
     if client is None:
         return []
     try:
-        ensure_usage_table(client)
+        _ensure_usage_table_once(client)
         rows = client.execute(
             f"""
             SELECT feature, COUNT(*) AS usage_count, MAX(created_at) AS last_used_at
@@ -386,8 +467,11 @@ def feature_usage_counts() -> list[UsageCount]:
             )
             for row in rows
         ]
+    except Exception as exc:  # pragma: no cover - defensive read path
+        logger.debug("feature usage counts failed: %s", exc)
+        return []
     finally:
-        client.close()
+        _close_client()
 
 
 def elapsed_ms(start: float) -> int:
