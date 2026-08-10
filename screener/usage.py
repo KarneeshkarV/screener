@@ -39,8 +39,8 @@ _usage_table_ready = False
 _invocations_table_ready = False
 
 # Non-blocking write path: stage rows, flush on a daemon thread, best-effort join.
-# SCREENER_USAGE_FLUSH_MS overrides the join budget (default 100 ms).
-_DEFAULT_FLUSH_TIMEOUT_S = 0.1
+# SCREENER_USAGE_FLUSH_MS overrides the join budget (default 50 ms).
+_DEFAULT_FLUSH_TIMEOUT_S = 0.05
 _pending_lock = threading.Lock()
 _pending_usage: dict[str, Any] | None = None
 _pending_invocation: dict[str, Any] | None = None
@@ -416,7 +416,7 @@ def record_feature_invocation(
 
     CLI always calls this last in ``finally``. Network I/O runs in the
     background; the caller only waits up to ``SCREENER_USAGE_FLUSH_MS``
-    (default 100 ms) so Turso RTT does not dominate process wall time.
+    (default 50 ms) so Turso RTT does not dominate process wall time.
     """
     if _usage_disabled():
         return
