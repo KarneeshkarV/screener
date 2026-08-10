@@ -128,8 +128,7 @@ def screen(
         removed=list(outcome.removed),
         first_run=outcome.first_run,
     )
-    if outcome.report_path is not None:
-        click.echo(f"Report: {outcome.report_path}")
+    click.echo(f"Report: {outcome.report_path}")
     if open_report and outcome.report_path is not None:
         from screener.reporting import open_report as open_report_file
 

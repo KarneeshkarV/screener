@@ -62,7 +62,8 @@ Full per-commit samples: `profiling/_analysis/screen_bench_log.md`.
 
 ## UX
 
-- HTML report only with `--report` and/or `--open-report` (no auto temp HTML).
+- HTML report is written by default for non-CSV `screen` (temp path when `--report` omitted); `--csv` still skips it.
+- Plotly is still lazy-imported (CSV path never loads plotly).
 - Usage still recorded when Turso is configured (non-blocking, best-effort).
 - Default warm `screen -c ema -n 50` result ordering unchanged when cache is warm.
 
