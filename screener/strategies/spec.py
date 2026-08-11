@@ -169,19 +169,28 @@ def register_expression_strategy(
 def discover_plugins() -> None:
     """Import every plugin module so its ``@strategy`` decorators fire."""
     from screener.strategies.plugins import (  # noqa: F401
+        adx_trend,
         awesome_oscillator,
         bb_breakout,
         bb_pattern,
+        bollinger_reversion,
         breakout,
+        cci,
+        connors_rsi2,
         donchian_breakout,
         ema150_200_revenue,
         ema_trend,
+        fifty_two_week_high,
+        golden_cross,
         heikin_ashi,
+        keltner,
+        long_term_reversal,
         low_volatility,
         ma_cross,
         ma_cross_regime,
         ma_cross_st_entry,
         ma_cross_st_exit,
+        macd_cross,
         macd_oscillator,
         macd_rsi,
         mark_minervini,
@@ -195,9 +204,14 @@ def discover_plugins() -> None:
         rsi_pattern,
         rsi_reversion,
         shooting_star,
+        short_term_reversal,
+        stochastic,
         supertrend,
         supertrend_rsi,
+        trading_range_break,
+        turn_of_month,
         vivek_equity_tool,
+        williams_r,
     )
 
 
