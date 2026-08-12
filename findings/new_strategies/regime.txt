@@ -1,0 +1,1 @@
+--regime-filter bull --regime-filter pullback

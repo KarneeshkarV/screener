@@ -1,0 +1,9 @@
+india|momentum_quality_pe|1|63|fmp|none.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality_pe|2|63|fmp|none.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality_pe|1|63|fmp|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality_pe|2|63|fmp|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality_pe60|1|63|fmp|none.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality_pe60|2|63|fmp|none.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality_pe60|5|63|fmp|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality_pe60|1|63|fmp|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality_pe60|2|63|fmp|r.txt|/home/karneeshkar/screener/findings/new_strategies
