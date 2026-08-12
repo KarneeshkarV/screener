@@ -170,6 +170,14 @@ def discover_plugins() -> None:
     """Import every plugin module so its ``@strategy`` decorators fire."""
     from screener.strategies.plugins import (  # noqa: F401
         adx_trend,
+        calendar_seasonality,
+        delivery_accumulation,
+        keltner_squeeze_breakout,
+        quality_defensive,
+        vcp_breakout,
+        vol_expansion_breakout,
+        vol_target_lowvol,
+        volume_flow,
         awesome_oscillator,
         bb_breakout,
         bb_pattern,
@@ -202,6 +210,7 @@ def discover_plugins() -> None:
         quality_mom_lowvol,
         supertrend_expr,
         turtle_breakout,
+        value_garp,
         vwap_reversion,
         nifty_momentum,
         rs_trend,
