@@ -15,6 +15,7 @@ from datetime import date
 from typing import Any, Protocol, cast
 
 import pandas as pd
+import numpy as np
 import requests
 
 from screener.backtester.data import load_env_file
@@ -34,6 +35,72 @@ DEFAULT_FUNDAMENTAL_FIELDS: tuple[str, ...] = (
     "revenue_up_3q",
     "market_cap",
 )
+
+# Opt-in accounting/quality fields (request via --fundamental-field). Each maps
+# to the FMP section(s) that must be fetched; the normalize step computes them
+# from the raw income/balance/cash-flow/ratio payloads.
+BALANCE_FIELDS = frozenset(
+    {
+        "debt_to_equity",
+        "total_assets",
+        "gross_profit_to_assets",
+        "asset_growth",
+        "accruals",
+        "piotroski_fscore",
+        "z_score",
+        "current_ratio",
+    }
+)
+CASHFLOW_FIELDS = frozenset(
+    {"operating_cash_flow", "free_cash_flow", "fcf_yield", "piotroski_fscore"}
+)
+RATIOS_FIELDS = frozenset(
+    {
+        "pe_ttm",
+        "pb_ttm",
+        "roe_ttm",
+        "debt_to_equity",
+        "roa_ttm",
+        "asset_turnover",
+        "current_ratio",
+        "interest_coverage",
+        "dividend_yield_ttm",
+        "gross_margin_ttm",
+        "net_margin_ttm",
+    }
+)
+
+
+def _safe_div(numerator: float | None, denominator: float | None) -> float | None:
+    """Return numerator/denominator, or None when either side is unusable."""
+    if numerator is None or denominator is None:
+        return None
+    try:
+        value = float(numerator) / float(denominator)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    if not np.isfinite(value):
+        return None
+    return value
+
+
+def _clean_cashflow(value: float | None, net_income: float | None) -> float | None:
+    """Return the cash-flow value, or None when it looks like missing data.
+
+    FMP returns literal 0.0 cash-flow figures for some Indian symbols/quarters
+    even when the company is solidly profitable; a zero CFO with a nonzero
+    net income is treated as an unavailable figure so F-score/quality signals
+    do not silently punish those names.
+    """
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric == 0 and net_income is not None and float(net_income) != 0:
+        return None
+    return numeric
 
 
 _FMP_PROVIDER = CachedProvider(
@@ -162,23 +229,96 @@ def _fetch_fmp_sections(
     payload: dict[str, Any] = {
         "income": _fmp_get(session, f"income-statement/{symbol}", params, api_key),
     }
-    if any(field in fields for field in ("debt_to_equity",)):
+    if any(field in fields for field in BALANCE_FIELDS):
         payload["balance"] = _fmp_get(
             session, f"balance-sheet-statement/{symbol}", params, api_key
         )
-    if any(
-        field in fields for field in ("pe_ttm", "pb_ttm", "roe_ttm", "debt_to_equity")
-    ):
+    if any(field in fields for field in CASHFLOW_FIELDS):
+        payload["cashflow"] = _fmp_get(
+            session, f"cash-flow-statement/{symbol}", params, api_key
+        )
+    if any(field in fields for field in RATIOS_FIELDS):
         payload["ratios"] = _fmp_get(session, f"ratios/{symbol}", params, api_key)
     if any(field in fields for field in ("pe_ttm", "pb_ttm")):
         payload["key_metrics"] = _fmp_get(
             session, f"key-metrics/{symbol}", params, api_key
         )
-    if "market_cap" in fields:
+    if "market_cap" in fields or "fcf_yield" in fields:
         payload["enterprise_values"] = _fmp_get(
             session, f"enterprise-values/{symbol}", params, api_key
         )
     return payload
+
+
+def _piotroski_fscore(
+    row: Mapping[str, Any],
+    prior_income: Mapping[str, Any],
+    balance: Mapping[str, Any],
+    prior_balance: Mapping[str, Any],
+    cashflow: Mapping[str, Any],
+) -> float | None:
+    """Piotroski (2000) 9-point F-Score, computed from one quarter of data.
+
+    Signals (each 1/0): positive ROA; positive operating cash flow; ROA
+    improving yoy; CFO > net income (low accruals); leverage (debt/assets)
+    falling; current ratio rising; no share issuance; gross margin rising;
+    asset turnover rising. Returns None when the core legs are missing.
+    """
+    total_assets = first_number(balance, "totalAssets")
+    prior_assets = first_number(prior_balance, "totalAssets")
+    net_income = first_number(row, "netIncome")
+    roa = _safe_div(net_income, total_assets)
+    prior_roa = _safe_div(first_number(prior_income, "netIncome"), prior_assets)
+    cfo = _clean_cashflow(
+        first_number(
+            cashflow, "operatingCashFlow", "netCashProvidedByOperatingActivities"
+        ),
+        net_income,
+    )
+    if roa is None or cfo is None or total_assets is None:
+        return None
+
+    score = 0
+    score += 1 if roa > 0 else 0
+    score += 1 if cfo > 0 else 0
+    if prior_roa is not None:
+        score += 1 if roa - prior_roa > 0 else 0
+    if net_income is not None:
+        score += 1 if cfo > net_income else 0
+
+    debt = first_number(balance, "totalDebt")
+    prior_debt = first_number(prior_balance, "totalDebt")
+    if debt is not None and prior_debt is not None and prior_assets:
+        lev = _safe_div(debt, total_assets)
+        prior_lev = _safe_div(prior_debt, prior_assets)
+        if lev is not None and prior_lev is not None:
+            score += 1 if lev < prior_lev else 0
+
+    ca = first_number(balance, "totalCurrentAssets")
+    cl = first_number(balance, "totalCurrentLiabilities")
+    prior_ca = first_number(prior_balance, "totalCurrentAssets")
+    prior_cl = first_number(prior_balance, "totalCurrentLiabilities")
+    cr = _safe_div(ca, cl)
+    prior_cr = _safe_div(prior_ca, prior_cl)
+    if cr is not None and prior_cr is not None:
+        score += 1 if cr > prior_cr else 0
+
+    shares = first_number(row, "weightedAverageShsOut")
+    prior_shares = first_number(prior_income, "weightedAverageShsOut")
+    if shares is not None and prior_shares is not None:
+        score += 1 if shares <= prior_shares else 0
+
+    gm = first_number(row, "grossProfitRatio")
+    prior_gm = first_number(prior_income, "grossProfitRatio")
+    if gm is not None and prior_gm is not None:
+        score += 1 if gm > prior_gm else 0
+
+    turnover = _safe_div(first_number(row, "revenue"), total_assets)
+    prior_turnover = _safe_div(first_number(prior_income, "revenue"), prior_assets)
+    if turnover is not None and prior_turnover is not None:
+        score += 1 if turnover > prior_turnover else 0
+
+    return float(score)
 
 
 def _normalize_fmp_payload(
@@ -194,6 +334,7 @@ def _normalize_fmp_payload(
     ratio_by_date = _row_by_date(_rows(payload, "ratios"))
     metrics_by_date = _row_by_date(_rows(payload, "key_metrics"))
     balance_by_date = _row_by_date(_rows(payload, "balance"))
+    cashflow_by_date = _row_by_date(_rows(payload, "cashflow"))
     ev_by_date = _row_by_date(_rows(payload, "enterprise_values"))
     income_by_date = _row_by_date(income_rows)
 
@@ -209,11 +350,83 @@ def _normalize_fmp_payload(
         ratio = ratio_by_date.get(row_date, {})
         metrics = metrics_by_date.get(row_date, {})
         balance = balance_by_date.get(row_date, {})
+        cashflow = cashflow_by_date.get(row_date, {})
         enterprise = ev_by_date.get(row_date, {})
 
         ts = pd.Timestamp(row_date)
         prior_target = (ts - pd.DateOffset(years=1)).date().isoformat()
         prior_income = income_by_date.get(prior_target, {})
+        prior_balance = balance_by_date.get(prior_target, {})
+
+        # ── raw building blocks for the accounting/quality fields ──────────
+        revenue = first_number(row, "revenue")
+        total_assets = first_number(balance, "totalAssets")
+        prior_assets = first_number(prior_balance, "totalAssets")
+        market_cap = first_number(enterprise, "marketCapitalization", "marketCap")
+
+        # Novy-Marx (2013) gross profitability: gross profit / total assets.
+        gross_profit_to_assets = _safe_div(
+            first_number(row, "grossProfit"), total_assets
+        )
+        # Fama-French (2015) investment factor: yoy total-asset growth.
+        asset_growth = pct_change(total_assets, prior_assets)
+        # Sloan (1996) accruals: ((ΔCA − ΔCash) − (ΔCL − ΔSTD) − Dep) / avg assets.
+        accruals = _safe_div(
+            (
+                (first_number(balance, "totalCurrentAssets") or 0)
+                - (first_number(prior_balance, "totalCurrentAssets") or 0)
+                - (first_number(balance, "cashAndCashEquivalents") or 0)
+                + (first_number(prior_balance, "cashAndCashEquivalents") or 0)
+            )
+            - (
+                (first_number(balance, "totalCurrentLiabilities") or 0)
+                - (first_number(prior_balance, "totalCurrentLiabilities") or 0)
+                - (first_number(balance, "shortTermDebt") or 0)
+                + (first_number(prior_balance, "shortTermDebt") or 0)
+            )
+            - (first_number(row, "depreciationAndAmortization") or 0),
+            (total_assets + prior_assets) / 2
+            if total_assets and prior_assets
+            else None,
+        )
+        operating_cash_flow = _clean_cashflow(
+            first_number(
+                cashflow,
+                "operatingCashFlow",
+                "netCashProvidedByOperatingActivities",
+            ),
+            first_number(row, "netIncome"),
+        )
+        free_cash_flow = _clean_cashflow(
+            first_number(cashflow, "freeCashFlow"),
+            first_number(row, "netIncome"),
+        )
+        fcf_yield = _safe_div(free_cash_flow, market_cap)
+
+        # Altman (1968) Z-score: 1.2·WC/TA + 1.4·RE/TA + 3.3·EBIT/TA +
+        # 0.6·MVE/TL + 1.0·Sales/TA.
+        total_liabilities = first_number(balance, "totalLiabilities")
+        working_capital = (first_number(balance, "totalCurrentAssets") or 0) - (
+            first_number(balance, "totalCurrentLiabilities") or 0
+        )
+        retained_earnings = first_number(balance, "retainedEarnings")
+        ebit = first_number(row, "operatingIncome") or (
+            (first_number(row, "incomeBeforeTax") or 0)
+            + (first_number(row, "interestExpense") or 0)
+        )
+
+        def _z_term(term: float | None) -> float:
+            return 0.0 if term is None or not np.isfinite(term) else float(term)
+
+        z_score = None
+        if total_assets:
+            z_score = (
+                1.2 * _z_term(_safe_div(working_capital, total_assets))
+                + 1.4 * _z_term(_safe_div(retained_earnings, total_assets))
+                + 3.3 * _z_term(_safe_div(ebit, total_assets))
+                + 0.6 * _z_term(_safe_div(market_cap, total_liabilities))
+                + 1.0 * _z_term(_safe_div(revenue, total_assets))
+            )
         revenue_growth = pct_change(
             first_number(row, "revenue"),
             first_number(prior_income, "revenue"),
@@ -248,6 +461,30 @@ def _normalize_fmp_payload(
                 income_rows, current_pos, "revenue", 3
             ),
             "market_cap": first_number(enterprise, "marketCapitalization", "marketCap"),
+            "gross_profit_to_assets": gross_profit_to_assets,
+            "asset_growth": asset_growth,
+            "accruals": accruals,
+            "operating_cash_flow": operating_cash_flow,
+            "free_cash_flow": free_cash_flow,
+            "fcf_yield": fcf_yield,
+            "z_score": z_score,
+            "piotroski_fscore": _piotroski_fscore(
+                row, prior_income, balance, prior_balance, cashflow
+            ),
+            "total_assets": total_assets,
+            "roa_ttm": _as_percent(
+                first_number(ratio, "returnOnAssets", "returnOnAssetsTTM")
+            ),
+            "asset_turnover": first_number(ratio, "assetTurnover"),
+            "current_ratio": first_number(ratio, "currentRatio"),
+            "interest_coverage": first_number(ratio, "interestCoverage"),
+            "dividend_yield_ttm": _as_percent(first_number(ratio, "dividendYield")),
+            "gross_margin_ttm": _as_percent(
+                first_number(ratio, "grossProfitMargin", "grossProfitMarginTTM")
+            ),
+            "net_margin_ttm": _as_percent(
+                first_number(ratio, "netProfitMargin", "netProfitMarginTTM")
+            ),
         }
         records.append({key: record.get(key) for key in ("effective_date", *fields)})
 
