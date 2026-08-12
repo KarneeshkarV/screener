@@ -17,6 +17,7 @@ from datetime import date
 from functools import lru_cache
 from typing import Any, Protocol, cast
 
+import numpy as np
 import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
@@ -61,6 +62,73 @@ _FMP_STATEMENT_DATED_FIELDS: tuple[str, ...] = (
     "debt_to_equity",
     "market_cap",
 )
+
+# Opt-in accounting/quality fields (request via --fundamental-field). Each maps
+# to the FMP section(s) that must be fetched; the normalize step computes them
+# from the raw income/balance/cash-flow/ratio payloads.
+BALANCE_FIELDS = frozenset(
+    {
+        "debt_to_equity",
+        "total_assets",
+        "gross_profit_to_assets",
+        "asset_growth",
+        "accruals",
+        "piotroski_fscore",
+        "z_score",
+        "current_ratio",
+    }
+)
+CASHFLOW_FIELDS = frozenset(
+    {"operating_cash_flow", "free_cash_flow", "fcf_yield", "piotroski_fscore"}
+)
+RATIOS_FIELDS = frozenset(
+    {
+        "pe_ttm",
+        "pb_ttm",
+        "roe_ttm",
+        "debt_to_equity",
+        "roa_ttm",
+        "asset_turnover",
+        "current_ratio",
+        "interest_coverage",
+        "dividend_yield_ttm",
+        "gross_margin_ttm",
+        "net_margin_ttm",
+    }
+)
+
+
+def _safe_div(numerator: float | None, denominator: float | None) -> float | None:
+    """Return numerator/denominator, or None when either side is unusable."""
+    if numerator is None or denominator is None:
+        return None
+    try:
+        value = float(numerator) / float(denominator)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    if not np.isfinite(value):
+        return None
+    return value
+
+
+def _clean_cashflow(value: float | None, net_income: float | None) -> float | None:
+    """Return the cash-flow value, or None when it looks like missing data.
+
+    FMP returns literal 0.0 cash-flow figures for some Indian symbols/quarters
+    even when the company is solidly profitable; a zero CFO with a nonzero
+    net income is treated as an unavailable figure so F-score/quality signals
+    do not silently punish those names.
+    """
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric == 0 and net_income is not None and float(net_income) != 0:
+        return None
+    return numeric
+
 
 _FMP_PROVIDER = CachedProvider(
     ProviderSpec(
@@ -314,23 +382,202 @@ def _fetch_fmp_sections(
     # Ratio, key-metric and enterprise-value rows carry no filing date of
     # their own; they are dated from the income and balance statements of the
     # same fiscal period, so the balance sheet is fetched whenever they are.
-    if any(field in fields for field in _FMP_STATEMENT_DATED_FIELDS):
+    if any(
+        field in fields
+        for field in (*BALANCE_FIELDS, *RATIOS_FIELDS, *_FMP_STATEMENT_DATED_FIELDS)
+    ):
         payload["balance"] = _fmp_get(
             session, f"balance-sheet-statement/{symbol}", params, api_key
         )
-    if any(
-        field in fields for field in ("pe_ttm", "pb_ttm", "roe_ttm", "debt_to_equity")
-    ):
+    if any(field in fields for field in CASHFLOW_FIELDS):
+        payload["cashflow"] = _fmp_get(
+            session, f"cash-flow-statement/{symbol}", params, api_key
+        )
+    if any(field in fields for field in RATIOS_FIELDS):
         payload["ratios"] = _fmp_get(session, f"ratios/{symbol}", params, api_key)
     if any(field in fields for field in ("pe_ttm", "pb_ttm")):
         payload["key_metrics"] = _fmp_get(
             session, f"key-metrics/{symbol}", params, api_key
         )
-    if "market_cap" in fields:
+    if "market_cap" in fields or "fcf_yield" in fields:
         payload["enterprise_values"] = _fmp_get(
             session, f"enterprise-values/{symbol}", params, api_key
         )
     return payload
+
+
+def _piotroski_fscore(
+    row: Mapping[str, Any],
+    prior_income: Mapping[str, Any],
+    balance: Mapping[str, Any],
+    prior_balance: Mapping[str, Any],
+    cashflow: Mapping[str, Any],
+) -> float | None:
+    """Piotroski (2000) 9-point F-Score, computed from one quarter of data.
+
+    Signals (each 1/0): positive ROA; positive operating cash flow; ROA
+    improving yoy; CFO > net income (low accruals); leverage (debt/assets)
+    falling; current ratio rising; no share issuance; gross margin rising;
+    asset turnover rising. Returns None when the core legs are missing.
+    """
+    total_assets = first_number(balance, "totalAssets")
+    prior_assets = first_number(prior_balance, "totalAssets")
+    net_income = first_number(row, "netIncome")
+    roa = _safe_div(net_income, total_assets)
+    prior_roa = _safe_div(first_number(prior_income, "netIncome"), prior_assets)
+    cfo = _clean_cashflow(
+        first_number(
+            cashflow, "operatingCashFlow", "netCashProvidedByOperatingActivities"
+        ),
+        net_income,
+    )
+    if roa is None or cfo is None or total_assets is None:
+        return None
+
+    score = 0
+    score += 1 if roa > 0 else 0
+    score += 1 if cfo > 0 else 0
+    if prior_roa is not None:
+        score += 1 if roa - prior_roa > 0 else 0
+    if net_income is not None:
+        score += 1 if cfo > net_income else 0
+
+    debt = first_number(balance, "totalDebt")
+    prior_debt = first_number(prior_balance, "totalDebt")
+    if debt is not None and prior_debt is not None and prior_assets:
+        lev = _safe_div(debt, total_assets)
+        prior_lev = _safe_div(prior_debt, prior_assets)
+        if lev is not None and prior_lev is not None:
+            score += 1 if lev < prior_lev else 0
+
+    ca = first_number(balance, "totalCurrentAssets")
+    cl = first_number(balance, "totalCurrentLiabilities")
+    prior_ca = first_number(prior_balance, "totalCurrentAssets")
+    prior_cl = first_number(prior_balance, "totalCurrentLiabilities")
+    cr = _safe_div(ca, cl)
+    prior_cr = _safe_div(prior_ca, prior_cl)
+    if cr is not None and prior_cr is not None:
+        score += 1 if cr > prior_cr else 0
+
+    shares = first_number(row, "weightedAverageShsOut")
+    prior_shares = first_number(prior_income, "weightedAverageShsOut")
+    if shares is not None and prior_shares is not None:
+        score += 1 if shares <= prior_shares else 0
+
+    gm = first_number(row, "grossProfitRatio")
+    prior_gm = first_number(prior_income, "grossProfitRatio")
+    if gm is not None and prior_gm is not None:
+        score += 1 if gm > prior_gm else 0
+
+    turnover = _safe_div(first_number(row, "revenue"), total_assets)
+    prior_turnover = _safe_div(first_number(prior_income, "revenue"), prior_assets)
+    if turnover is not None and prior_turnover is not None:
+        score += 1 if turnover > prior_turnover else 0
+
+    return float(score)
+
+
+def _publish_accounting_fields(
+    publish: Callable[[str, float | None, list[dict[str, Any]]], None],
+    *,
+    row: dict[str, Any],
+    prior_income: dict[str, Any],
+    balance: dict[str, Any],
+    prior_balance: dict[str, Any],
+    cashflow: dict[str, Any],
+    enterprise: dict[str, Any],
+) -> None:
+    """Publish the opt-in accounting/quality fields for one income quarter.
+
+    Each field is published on the latest filing date of the sections it
+    reads, so a ratio of a balance-sheet item never appears before that
+    balance sheet was filed. An absent section (an empty dict) is left out
+    of the date set: the value already ignores it, and an undated section
+    that is present still blocks publication.
+    """
+
+    def emit(field: str, value: float | None, *sources: dict[str, Any]) -> None:
+        publish(field, value, [source for source in sources if source])
+
+    revenue = first_number(row, "revenue")
+    net_income = first_number(row, "netIncome")
+    total_assets = first_number(balance, "totalAssets")
+    prior_assets = first_number(prior_balance, "totalAssets")
+    market_cap = first_number(enterprise, "marketCapitalization", "marketCap")
+
+    # Novy-Marx (2013) gross profitability: gross profit / total assets.
+    emit(
+        "gross_profit_to_assets",
+        _safe_div(first_number(row, "grossProfit"), total_assets),
+        row,
+        balance,
+    )
+    # Fama-French (2015) investment factor: yoy total-asset growth.
+    emit("asset_growth", pct_change(total_assets, prior_assets), balance, prior_balance)
+    # Sloan (1996) accruals: ((dCA - dCash) - (dCL - dSTD) - Dep) / avg assets.
+    accruals = _safe_div(
+        (
+            (first_number(balance, "totalCurrentAssets") or 0)
+            - (first_number(prior_balance, "totalCurrentAssets") or 0)
+            - (first_number(balance, "cashAndCashEquivalents") or 0)
+            + (first_number(prior_balance, "cashAndCashEquivalents") or 0)
+        )
+        - (
+            (first_number(balance, "totalCurrentLiabilities") or 0)
+            - (first_number(prior_balance, "totalCurrentLiabilities") or 0)
+            - (first_number(balance, "shortTermDebt") or 0)
+            + (first_number(prior_balance, "shortTermDebt") or 0)
+        )
+        - (first_number(row, "depreciationAndAmortization") or 0),
+        (total_assets + prior_assets) / 2 if total_assets and prior_assets else None,
+    )
+    emit("accruals", accruals, row, balance, prior_balance)
+
+    operating_cash_flow = _clean_cashflow(
+        first_number(
+            cashflow, "operatingCashFlow", "netCashProvidedByOperatingActivities"
+        ),
+        net_income,
+    )
+    free_cash_flow = _clean_cashflow(first_number(cashflow, "freeCashFlow"), net_income)
+    emit("operating_cash_flow", operating_cash_flow, cashflow, row)
+    emit("free_cash_flow", free_cash_flow, cashflow, row)
+    emit("fcf_yield", _safe_div(free_cash_flow, market_cap), cashflow, row, enterprise)
+
+    # Altman (1968) Z-score: 1.2*WC/TA + 1.4*RE/TA + 3.3*EBIT/TA +
+    # 0.6*MVE/TL + 1.0*Sales/TA.
+    if total_assets:
+        working_capital = (first_number(balance, "totalCurrentAssets") or 0) - (
+            first_number(balance, "totalCurrentLiabilities") or 0
+        )
+        ebit = first_number(row, "operatingIncome") or (
+            (first_number(row, "incomeBeforeTax") or 0)
+            + (first_number(row, "interestExpense") or 0)
+        )
+
+        def z_term(term: float | None) -> float:
+            return 0.0 if term is None or not np.isfinite(term) else float(term)
+
+        z_score = (
+            1.2 * z_term(_safe_div(working_capital, total_assets))
+            + 1.4
+            * z_term(_safe_div(first_number(balance, "retainedEarnings"), total_assets))
+            + 3.3 * z_term(_safe_div(ebit, total_assets))
+            + 0.6
+            * z_term(_safe_div(market_cap, first_number(balance, "totalLiabilities")))
+            + 1.0 * z_term(_safe_div(revenue, total_assets))
+        )
+        emit("z_score", z_score, row, balance, enterprise)
+
+    emit(
+        "piotroski_fscore",
+        _piotroski_fscore(row, prior_income, balance, prior_balance, cashflow),
+        row,
+        prior_income,
+        balance,
+        prior_balance,
+        cashflow,
+    )
 
 
 def _normalize_fmp_payload(
@@ -344,6 +591,9 @@ def _normalize_fmp_payload(
         _rows(payload, "income"), key=lambda row: str(row.get("date", "")), reverse=True
     )
     income_by_date = _row_by_date(income_rows)
+    balance_by_date = _row_by_date(_rows(payload, "balance"))
+    cashflow_by_date = _row_by_date(_rows(payload, "cashflow"))
+    ev_by_date = _row_by_date(_rows(payload, "enterprise_values"))
     records: list[dict[str, Any]] = []
     excluded_no_filing = 0
     # A row's date is read once per field it publishes and again as a YoY and
@@ -423,6 +673,25 @@ def _normalize_fmp_payload(
         },
         "enterprise_values": {"market_cap": ("marketCapitalization", "marketCap")},
     }
+    section_fields["ratios"].update(
+        {
+            "roa_ttm": ("returnOnAssets", "returnOnAssetsTTM"),
+            "asset_turnover": ("assetTurnover",),
+            "current_ratio": ("currentRatio",),
+            "interest_coverage": ("interestCoverage",),
+            "dividend_yield_ttm": ("dividendYield",),
+            "gross_margin_ttm": ("grossProfitMargin", "grossProfitMarginTTM"),
+            "net_margin_ttm": ("netProfitMargin", "netProfitMarginTTM"),
+        }
+    )
+    section_fields["balance"]["total_assets"] = ("totalAssets",)
+    percent_fields = {
+        "roe_ttm",
+        "roa_ttm",
+        "dividend_yield_ttm",
+        "gross_margin_ttm",
+        "net_margin_ttm",
+    }
     for section, field_keys in section_fields.items():
         for row in _rows(payload, section):
             row_effective = effective_date(row)
@@ -433,7 +702,7 @@ def _normalize_fmp_payload(
                 continue
             for field, keys in field_keys.items():
                 value = first_number(row, *keys)
-                if field == "roe_ttm":
+                if field in percent_fields:
                     value = _as_percent(value)
                 publish(field, value, [row], effective=row_effective)
     for current_pos, row in enumerate(income_rows):
@@ -466,6 +735,15 @@ def _normalize_fmp_payload(
             "revenue_up_3q",
             _increased_last_n_quarters(income_rows, current_pos, "revenue", 3),
             income_rows[current_pos : current_pos + 3],
+        )
+        _publish_accounting_fields(
+            publish,
+            row=row,
+            prior_income=prior_income,
+            balance=balance_by_date.get(row_date, {}),
+            prior_balance=balance_by_date.get(prior_target, {}) if prior_target else {},
+            cashflow=cashflow_by_date.get(row_date, {}),
+            enterprise=ev_by_date.get(row_date, {}),
         )
 
     if excluded_no_filing:
