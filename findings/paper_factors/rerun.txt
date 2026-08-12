@@ -1,0 +1,5 @@
+india|piotroski_value_f6|1|126|fmp|fields_full.txt|/home/karneeshkar/screener/findings/paper_factors
+india|piotroski_value_f6|2|126|fmp|fields_full.txt|/home/karneeshkar/screener/findings/paper_factors
+india|piotroski_value_f6|3|126|fmp|fields_full.txt|/home/karneeshkar/screener/findings/paper_factors
+india|piotroski_value_f6|5|126|fmp|fields_full.txt|/home/karneeshkar/screener/findings/paper_factors
+us|qmj_quality|5|126|fmp|secneutral.txt|/home/karneeshkar/screener/findings/paper_factors
