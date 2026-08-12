@@ -1,0 +1,4 @@
+india|momentum_quality_pe60|3|63|fmp|r_t12.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality_pe60|3|63|fmp|r_h84.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality_pe60|3|63|fmp|r_tr15.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality_pe55|3|63|fmp|r.txt|/home/karneeshkar/screener/findings/new_strategies
