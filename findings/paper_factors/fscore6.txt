@@ -1,0 +1,1 @@
+--entry "pe_ttm > 0 and pe_ttm <= 20 and pb_ttm > 0 and pb_ttm <= 3 and piotroski_fscore >= 6"
