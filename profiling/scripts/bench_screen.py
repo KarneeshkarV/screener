@@ -161,6 +161,8 @@ req = ScreenRequest(
     report_path=None,
     open_report=False,
 )
+# report_path=None on HEAD writes the default temp HTML report (C8).
+# C4-C7 "final" M5 numbers were history-only and do not apply to this path.
 
 # Warm
 run_screen_workflow(req)

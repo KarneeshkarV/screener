@@ -25,6 +25,7 @@ Workflow scan itself was ~10ms warm.
 5. `perf(screen): avoid importing plotly unless rendering a report`
 6. `perf(usage): default flush join budget to 50ms` (residual wall tune)
 7. `docs(profiling): screen bench harness and per-commit measurements`
+8. `fix(screen): restore default HTML report for interactive screen` (`db81630`)
 
 ## Measurement table (mean_s)
 
@@ -39,6 +40,10 @@ Workflow scan itself was ~10ms warm.
 | M7_usage_pair | 0.415 | 0.232 | 0.100 | 0.100 | 0.100 | 0.100 | **0.050** | **-87.9%** |
 | M8_cli_warm_csv_no_turso | 0.640 | 0.667 | 0.657 | 0.510 | 0.513 | 0.420 | **0.430** | **-32.8%** |
 
+The **final** column is `c9339ed` (after C1-C7), **before** C8 restored the default temp report.
+Do not treat those M2/M5 numbers as HEAD.
+On HEAD, M5 (`report_path=None`) writes a temp HTML report again and imports Plotly.
+
 Full per-commit samples: `profiling/_analysis/screen_bench_log.md`.
 
 ## What each commit moved
@@ -48,9 +53,10 @@ Full per-commit samples: `profiling/_analysis/screen_bench_log.md`.
 | C1 client reuse | M7, M1 | M7 0.415 → 0.232 (one connect + DDL cache) |
 | C2 non-blocking | M1, M7 | M1 near no-Turso; M7 ≈ flush budget |
 | C3 lazy CLI | M3, M6, M1 | Help/import ~0.14s; no eager backtester/plotly |
-| C4 opt-in report | M2, M5 | M5 ~0.05s (history only); table path near CSV |
+| C4 opt-in report | M2, M5 | M5 ~0.05s (history only); table path near CSV. Later undone for default UX by C8. |
 | C5 lazy plotly | M1, M4 path | CSV workflow never imports plotly |
 | flush 50ms | M1, M7 | Residual Turso wait cut in half |
+| C8 restore default report | M2, M5 | Non-CSV writes a temp report again. CSV still skips Plotly. Re-bench M2/M5 on HEAD before quoting them. |
 
 ## Turso / `.env` notes
 
@@ -71,8 +77,8 @@ Full per-commit samples: `profiling/_analysis/screen_bench_log.md`.
 
 | Criterion | Result |
 | --- | --- |
-| M1 ≥50% better with Turso | 1.080 → 0.507 (**53.1%**) |
+| M1 ≥50% better with Turso | 1.080 → 0.507 (**53.1%**) at C7. Still valid: C8 does not change `--csv`. |
 | M3 ≥40% better | 0.627 → 0.140 (**77.7%**) |
-| M5 no Plotly by default | 0.045 ≈ M4 + history |
+| M5 isolates history only | True at C4-C7 (`0.045`). **False on HEAD:** default non-CSV renders Plotly again. |
 | Warm CSV returns 50 rows | verified |
 | No fetch_limit change | not changed |

@@ -20,7 +20,7 @@ Outputs:
 | M2_cli_warm_table | Full shell warm table |
 | M3_cli_help | Import + CLI load (`--help`) |
 | M4_workflow_warm_csv | In-process workflow CSV |
-| M5_workflow_warm_full | In-process workflow table path |
+| M5_workflow_warm_full | In-process workflow table path (HEAD includes the default temp report) |
 | M6_import_cli | `import screener.cli` wall |
 | M7_usage_pair | Turso usage + invocation pair |
 | M8_cli_warm_csv_no_turso | Shell CSV without Turso (cwd `/tmp`, env cleared) |
