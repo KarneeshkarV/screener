@@ -158,14 +158,19 @@ def _close_client() -> None:
 
 def _reset_client_state() -> None:
     """Drop cached client, pending rows, and DDL flags (for tests)."""
-    global _usage_table_ready, _invocations_table_ready
-    global _pending_usage, _pending_invocation, _flush_thread
-    flush_usage(timeout_s=1.0)
+    global _usage_table_ready, _invocations_table_ready, _flush_thread
+    with _pending_lock:
+        thread = _flush_thread
+    if thread is not None and thread.is_alive():
+        thread.join()
+    if _has_pending():
+        _flush_pending_sync()
     _close_client()
     with _pending_lock:
         _pending_usage.clear()
         _pending_invocation.clear()
-        _flush_thread = None
+        if _flush_thread is None or not _flush_thread.is_alive():
+            _flush_thread = None
     _usage_table_ready = False
     _invocations_table_ready = False
 

@@ -319,6 +319,9 @@ def test_record_pair_is_non_blocking_for_slow_client(monkeypatch):
     elapsed = time_mod.perf_counter() - t0
     # Default flush budget is ~50 ms; slow client takes 400 ms+ per execute.
     assert elapsed < 0.25
+    leftover = usage._flush_thread
+    if leftover is not None and leftover.is_alive():
+        leftover.join()
 
 
 def test_usage_invocation_normalizers_cover_scalar_and_empty_values():
