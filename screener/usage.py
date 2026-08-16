@@ -117,9 +117,10 @@ def _connect() -> UsageClient | None:
     """Return a cached Turso client, creating it on first success in this process.
 
     Sequential ``record_feature_usage`` + ``record_feature_invocation`` share one
-    HTTPS client (no double connect). The client is released after the invocation
-    write (always last in the CLI ``finally`` path) so libsql does not keep the
-    process alive at exit. Failures return None and do not poison later retries.
+    HTTPS client (no double connect). The flush worker closes the client in
+    ``finally``. The CLI only joins for ``SCREENER_USAGE_FLUSH_MS`` (default 50
+    ms), so write/close may be aborted at process exit. Failures return None
+    and do not poison later retries.
     """
     global _client
     if _client is not None:
