@@ -9,6 +9,7 @@ import os
 import platform
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -42,8 +43,8 @@ _invocations_table_ready = False
 # SCREENER_USAGE_FLUSH_MS overrides the join budget (default 50 ms).
 _DEFAULT_FLUSH_TIMEOUT_S = 0.05
 _pending_lock = threading.Lock()
-_pending_usage: dict[str, Any] | None = None
-_pending_invocation: dict[str, Any] | None = None
+_pending_usage: deque[dict[str, Any]] = deque()
+_pending_invocation: deque[dict[str, Any]] = deque()
 _flush_thread: threading.Thread | None = None
 
 
@@ -162,8 +163,8 @@ def _reset_client_state() -> None:
     flush_usage(timeout_s=1.0)
     _close_client()
     with _pending_lock:
-        _pending_usage = None
-        _pending_invocation = None
+        _pending_usage.clear()
+        _pending_invocation.clear()
         _flush_thread = None
     _usage_table_ready = False
     _invocations_table_ready = False
@@ -261,61 +262,86 @@ def _write_invocation_row(
     )
 
 
-def _flush_pending_sync() -> None:
-    """Write any staged usage/invocation rows on one connection (sync)."""
-    global _pending_usage, _pending_invocation
+def _drain_pending() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Take every staged row. Caller owns the lists."""
     with _pending_lock:
-        usage_row = _pending_usage
-        inv_row = _pending_invocation
-        _pending_usage = None
-        _pending_invocation = None
-    if usage_row is None and inv_row is None:
-        return
+        usage_rows = list(_pending_usage)
+        inv_rows = list(_pending_invocation)
+        _pending_usage.clear()
+        _pending_invocation.clear()
+    return usage_rows, inv_rows
+
+
+def _has_pending() -> bool:
+    with _pending_lock:
+        return bool(_pending_usage or _pending_invocation)
+
+
+def _flush_pending_sync() -> None:
+    """Write staged usage/invocation rows, looping until the queues are empty."""
     try:
-        client = _connect()
-        if client is None:
-            return
-        if usage_row is not None:
-            _write_usage_row(client, **usage_row)
-        if inv_row is not None:
-            _write_invocation_row(client, **inv_row)
+        while True:
+            usage_rows, inv_rows = _drain_pending()
+            if not usage_rows and not inv_rows:
+                return
+            client = _connect()
+            if client is None:
+                return
+            for usage_row in usage_rows:
+                _write_usage_row(client, **usage_row)
+            for inv_row in inv_rows:
+                _write_invocation_row(client, **inv_row)
     except Exception as exc:  # pragma: no cover - defensive telemetry path
         logger.debug("feature usage flush failed: %s", exc)
     finally:
         _close_client()
 
 
+def _start_flush_worker() -> threading.Thread:
+    """Start a daemon worker if none is alive. Returns the live thread."""
+    global _flush_thread
+    with _pending_lock:
+        existing = _flush_thread
+        if existing is not None and existing.is_alive():
+            return existing
+        thread = threading.Thread(
+            target=_flush_pending_sync,
+            name="screener-usage-flush",
+            daemon=True,
+        )
+        _flush_thread = thread
+        thread.start()
+        return thread
+
+
 def flush_usage(timeout_s: float | None = None) -> None:
     """Best-effort wait for a background usage flush (or run one inline)."""
-    global _flush_thread
     budget = _flush_timeout_s() if timeout_s is None else max(0.0, timeout_s)
     with _pending_lock:
         thread = _flush_thread
-        has_pending = _pending_usage is not None or _pending_invocation is not None
     if thread is not None and thread.is_alive():
         thread.join(timeout=budget)
+        if thread.is_alive():
+            return
+        if _has_pending():
+            _flush_pending_sync()
         return
-    if has_pending:
+    if _has_pending():
         # No worker yet (e.g. usage staged without invocation): run inline.
         _flush_pending_sync()
 
 
 def _schedule_flush() -> None:
     """Start a daemon flush thread and best-effort join for a short budget."""
-    global _flush_thread
-    with _pending_lock:
-        existing = _flush_thread
-        if existing is not None and existing.is_alive():
-            thread = existing
-        else:
-            thread = threading.Thread(
-                target=_flush_pending_sync,
-                name="screener-usage-flush",
-                daemon=True,
-            )
-            _flush_thread = thread
-            thread.start()
+    thread = _start_flush_worker()
     thread.join(timeout=_flush_timeout_s())
+    # Keep the caller budget at one join. If rows arrived after this worker
+    # exited, start another worker and do not wait again.
+    if _has_pending():
+        with _pending_lock:
+            current = _flush_thread
+        if current is None or not current.is_alive():
+            _start_flush_worker()
 
 
 def ensure_usage_table(client: UsageClient) -> None:
@@ -421,7 +447,6 @@ def record_feature_invocation(
     """
     if _usage_disabled():
         return
-    global _pending_invocation
     # Capture identity on the calling thread (getpass/platform can be slow-ish
     # but stay off the Turso critical path relative to HTTPS).
     row = {
@@ -433,7 +458,7 @@ def record_feature_invocation(
         "hostname": platform.node(),
     }
     with _pending_lock:
-        _pending_invocation = row
+        _pending_invocation.append(row)
     _schedule_flush()
 
 
@@ -544,7 +569,6 @@ def record_feature_usage(
     """
     if _usage_disabled():
         return
-    global _pending_usage
     row = {
         "feature": feature,
         "command_path": command_path,
@@ -554,7 +578,7 @@ def record_feature_usage(
         "hostname": platform.node(),
     }
     with _pending_lock:
-        _pending_usage = row
+        _pending_usage.append(row)
 
 
 def feature_usage_counts() -> list[UsageCount]:
