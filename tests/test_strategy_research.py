@@ -188,7 +188,9 @@ def test_cci_reversion_column_is_causal() -> None:
 
     frame = _trend_frame()
     prepared = _prepare_cci(_ctx({"AAA": frame}))["AAA"]
-    assert prepared["cci_20"].iloc[:38].isna().all()  # 20-bar SMA + 20-bar mean-dev legs
+    assert (
+        prepared["cci_20"].iloc[:38].isna().all()
+    )  # 20-bar SMA + 20-bar mean-dev legs
     assert not prepared["cci_20"].iloc[38:].isna().any()
 
 

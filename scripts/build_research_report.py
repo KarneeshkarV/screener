@@ -14,7 +14,17 @@ ROOT = Path(__file__).resolve().parent.parent
 CSV_PATH = ROOT / "findings" / "research_study" / "results.csv"
 OUT_PATH = ROOT / "findings" / "RESEARCH_STRATEGY_REPORT.md"
 
-COLUMNS = ["CAGR", "Sharpe", "Sortino", "Calmar", "Max Drawdown", "Hit Rate", "Avg Exposure", "Trades", "Benchmark Return"]
+COLUMNS = [
+    "CAGR",
+    "Sharpe",
+    "Sortino",
+    "Calmar",
+    "Max Drawdown",
+    "Hit Rate",
+    "Avg Exposure",
+    "Trades",
+    "Benchmark Return",
+]
 
 STRATEGY_LINKS = {
     "golden_cross_50_200": "strategy_golden_cross_50_200.md",
@@ -84,10 +94,17 @@ def fmt(row: dict[str, str], key: str) -> str:
 
 
 def table(rows: list[dict[str, str]], horizon: int) -> str:
-    lines = [f"### {horizon}-year window", "", "| Strategy | " + " | ".join(COLUMNS) + " |",
-             "|" + "---|" * (len(COLUMNS) + 1)]
+    lines = [
+        f"### {horizon}-year window",
+        "",
+        "| Strategy | " + " | ".join(COLUMNS) + " |",
+        "|" + "---|" * (len(COLUMNS) + 1),
+    ]
     for name in STRATEGY_ORDER:
-        row = next((r for r in rows if r["strategy"] == name and int(r["years"]) == horizon), None)
+        row = next(
+            (r for r in rows if r["strategy"] == name and int(r["years"]) == horizon),
+            None,
+        )
         if row is None:
             continue
         cells = [fmt(row, c) for c in COLUMNS]
@@ -144,7 +161,10 @@ def main() -> None:
         for name in STRATEGY_ORDER:
             strat_rows = [r for r in market_rows if r["strategy"] == name]
             avg = sum(num(r, "CAGR") or 0 for r in strat_rows) / len(strat_rows)
-            cagars = " / ".join(fmt(r, "CAGR") for r in sorted(strat_rows, key=lambda r: -int(r["years"])))
+            cagars = " / ".join(
+                fmt(r, "CAGR")
+                for r in sorted(strat_rows, key=lambda r: -int(r["years"]))
+            )
             parts.append(f"- `{name}` average CAGR {avg:+.1f}% — 5/3/2/1y: {cagars}")
 
     OUT_PATH.write_text("\n".join(parts))
