@@ -45,7 +45,9 @@ def _prepare_adx(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         prev_high = np.concatenate(([high[0]], high[:-1]))
         prev_low = np.concatenate(([low[0]], low[:-1]))
 
-        tr = np.maximum(high - low, np.maximum(np.abs(high - prev_close), np.abs(low - prev_close)))
+        tr = np.maximum(
+            high - low, np.maximum(np.abs(high - prev_close), np.abs(low - prev_close))
+        )
         up_move = high - prev_high
         down_move = prev_low - low
         plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)

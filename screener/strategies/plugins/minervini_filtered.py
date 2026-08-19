@@ -38,6 +38,10 @@ def _add_quality_features(frame: pd.DataFrame) -> pd.DataFrame:
     momentum as an *upper* bound (``mom_63d <= 0.25``), which an ungated stub
     return would satisfy by being absurd rather than by being good.
     """
+    if frame is None or frame.empty:
+        # A freshly listed or suspended symbol reaches the hook with no bars;
+        # every other plugin passes it straight through rather than raising.
+        return frame
     close = frame["close"].astype(float)
     volume = frame.get("volume")
     s50 = close.rolling(50).mean()
