@@ -175,6 +175,7 @@ def discover_plugins() -> None:
         breakout,
         donchian_breakout,
         ema150_200_revenue,
+        ema_stack_lowvol,
         ema_trend,
         heikin_ashi,
         low_volatility,
