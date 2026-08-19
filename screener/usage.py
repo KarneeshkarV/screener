@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import getpass
 import json
 import logging
@@ -42,6 +43,11 @@ _invocations_table_ready = False
 # Non-blocking write path: stage rows, flush on a daemon thread, best-effort join.
 # SCREENER_USAGE_FLUSH_MS overrides the join budget (default 50 ms).
 _DEFAULT_FLUSH_TIMEOUT_S = 0.05
+# Interpreter-exit grace period: covers a remote Turso round-trip so an
+# in-flight flush finishes instead of being killed with the process.
+_ATEXIT_FLUSH_TIMEOUT_S = 1.0
+# Bounded join for the test-reset helper: a wedged worker must not hang the suite.
+_RESET_JOIN_TIMEOUT_S = 2.0
 _pending_lock = threading.Lock()
 _pending_usage: deque[dict[str, Any]] = deque()
 _pending_invocation: deque[dict[str, Any]] = deque()
@@ -118,9 +124,9 @@ def _connect() -> UsageClient | None:
     """Return a cached Turso client, creating it on first success in this process.
 
     Sequential ``record_feature_usage`` + ``record_feature_invocation`` share one
-    HTTPS client (no double connect). The flush worker closes the client in
-    ``finally``. The CLI only joins for ``SCREENER_USAGE_FLUSH_MS`` (default 50
-    ms), so write/close may be aborted at process exit. Failures return None
+    HTTPS client (no double connect). The client lives for the process: writers
+    and readers never close it under each other, and the atexit handler closes
+    it at exit so libsql does not keep the process alive. Failures return None
     and do not poison later retries.
     """
     global _client
@@ -157,14 +163,18 @@ def _close_client() -> None:
 
 
 def _reset_client_state() -> None:
-    """Drop cached client, pending rows, and DDL flags (for tests)."""
+    """Drop cached client, pending rows, and DDL flags (for tests).
+
+    Discards staged rows rather than flushing them: this runs from the autouse
+    fixture on teardown, after monkeypatch is undone, so a flush here would use
+    the real credentials and publish test rows to the real database. Every join
+    is bounded so a wedged worker cannot hang the suite.
+    """
     global _usage_table_ready, _invocations_table_ready, _flush_thread
     with _pending_lock:
         thread = _flush_thread
     if thread is not None and thread.is_alive():
-        thread.join()
-    if _has_pending():
-        _flush_pending_sync()
+        thread.join(timeout=_RESET_JOIN_TIMEOUT_S)
     _close_client()
     with _pending_lock:
         _pending_usage.clear()
@@ -283,7 +293,14 @@ def _has_pending() -> bool:
 
 
 def _flush_pending_sync() -> None:
-    """Write staged usage/invocation rows, looping until the queues are empty."""
+    """Write staged rows on one connection; loop until the queues are empty.
+
+    The worker keeps draining until nothing is pending, so rows staged while a
+    flush is already in flight are written instead of stranded. Runs on the
+    daemon flush thread and inline from ``flush_usage``. The shared client is
+    left open for other callers; the atexit handler closes it.
+    """
+    global _flush_thread
     try:
         while True:
             usage_rows, inv_rows = _drain_pending()
@@ -299,7 +316,11 @@ def _flush_pending_sync() -> None:
     except Exception as exc:  # pragma: no cover - defensive telemetry path
         logger.debug("feature usage flush failed: %s", exc)
     finally:
-        _close_client()
+        # Release the slot on every exit path so a later staged row starts a
+        # fresh worker instead of joining this dead one.
+        with _pending_lock:
+            if _flush_thread is threading.current_thread():
+                _flush_thread = None
 
 
 def _start_flush_worker() -> threading.Thread:
@@ -320,20 +341,40 @@ def _start_flush_worker() -> threading.Thread:
 
 
 def flush_usage(timeout_s: float | None = None) -> None:
-    """Best-effort wait for a background usage flush (or run one inline)."""
+    """Best-effort wait for a background usage flush (or run one inline).
+
+    Returns once every staged row is written and no flush worker is still
+    running, or when the time budget expires. This is the explicit-flush API;
+    the interactive CLI path stays fast via the short ``_schedule_flush`` join.
+    """
+    global _flush_thread
     budget = _flush_timeout_s() if timeout_s is None else max(0.0, timeout_s)
-    with _pending_lock:
-        thread = _flush_thread
-    if thread is not None and thread.is_alive():
-        thread.join(timeout=budget)
-        if thread.is_alive():
+    deadline = time.monotonic() + budget
+    while True:
+        with _pending_lock:
+            thread = _flush_thread
+        # _has_pending takes the same lock, so read it outside the block above.
+        has_pending = _has_pending()
+        if not has_pending and (thread is None or not thread.is_alive()):
             return
-        if _has_pending():
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        elif has_pending:
             _flush_pending_sync()
-        return
-    if _has_pending():
-        # No worker yet (e.g. usage staged without invocation): run inline.
-        _flush_pending_sync()
+        if time.monotonic() >= deadline:
+            return
+
+
+def _flush_pending_on_exit() -> None:
+    """Best-effort flush of pending rows at interpreter exit, then release client."""
+    try:
+        flush_usage(timeout_s=_ATEXIT_FLUSH_TIMEOUT_S)
+    except Exception:  # pragma: no cover - defensive exit path
+        pass
+    _close_client()
+
+
+atexit.register(_flush_pending_on_exit)
 
 
 def _schedule_flush() -> None:
@@ -556,8 +597,6 @@ def invocation_rollup(limit: int = 30) -> list[InvocationRollup]:
     except Exception as exc:  # pragma: no cover - defensive read path
         logger.debug("invocation rollup failed: %s", exc)
         return []
-    finally:
-        _close_client()
 
 
 def record_feature_usage(
@@ -613,8 +652,6 @@ def feature_usage_counts() -> list[UsageCount]:
     except Exception as exc:  # pragma: no cover - defensive read path
         logger.debug("feature usage counts failed: %s", exc)
         return []
-    finally:
-        _close_client()
 
 
 def elapsed_ms(start: float) -> int:
