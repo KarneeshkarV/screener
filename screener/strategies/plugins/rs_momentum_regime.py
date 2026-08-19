@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from screener.strategies.spec import PrepareCtx, register_expression_strategy
@@ -9,16 +10,22 @@ from screener.strategies.spec import PrepareCtx, register_expression_strategy
 
 def _prepare_rs_momentum_regime(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     benchmark_bars = ctx.price_panel.get(ctx.benchmark, pd.DataFrame())
+    prepared: dict[str, pd.DataFrame] = {}
     if benchmark_bars is None or benchmark_bars.empty:
         ctx.warnings.append(
             f"benchmark data unavailable for rs_momentum_regime: {ctx.benchmark}"
         )
-        return ctx.bars_by_tv
+        for symbol, bars in ctx.bars_by_tv.items():
+            frame = bars.copy()
+            # Entry/exit reference rs; keep it NaN so they never fire instead of
+            # raising on an unknown identifier.
+            frame["rs"] = np.nan
+            prepared[symbol] = frame
+        return prepared
 
     # Bars are indexed by date (no "date" column), so align on the index.
     benchmark_close = benchmark_bars["close"]
 
-    prepared: dict[str, pd.DataFrame] = {}
     for symbol, bars in ctx.bars_by_tv.items():
         merged = bars.copy()
         aligned = benchmark_close.reindex(merged.index).ffill()

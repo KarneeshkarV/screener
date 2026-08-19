@@ -196,7 +196,10 @@ def test_prepared_frames_evaluate_entry_and_exit(
                 continue
             signal = evaluate(parse(rule), frame)
             assert len(signal) == len(frame), f"{spec.name}/{symbol}"
-            assert signal.astype(bool).notna().all(), f"{spec.name}/{symbol}"
+            # Gate rules evaluate to a bool Series; check the raw dtype and
+            # values rather than astype(bool), which coerces NaN to True.
+            assert signal.dtype == bool, f"{spec.name}/{symbol}"
+            assert signal.isin([True, False]).all(), f"{spec.name}/{symbol}"
 
 
 @pytest.mark.parametrize("spec", _WITH_PREPARE, ids=_ids(_WITH_PREPARE))
@@ -218,3 +221,14 @@ def test_prepare_bars_tolerates_empty_and_missing_data(
     assert prepared["BBB"].index.equals(ctx.bars_by_tv["BBB"].index)
     if "AAA" in prepared:
         assert prepared["AAA"].empty
+
+    # A missing benchmark must not leave the entry/exit identifiers absent:
+    # the rules must still evaluate (to a no-entry signal), not raise.
+    for symbol, frame in prepared.items():
+        if frame.empty:
+            continue
+        for rule in (spec.entry, spec.exit):
+            if not rule:
+                continue
+            signal = evaluate(parse(rule), frame)
+            assert len(signal) == len(frame), f"{spec.name}/{symbol}"

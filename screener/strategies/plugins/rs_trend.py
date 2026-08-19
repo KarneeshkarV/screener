@@ -18,6 +18,7 @@ approximates periodic rebalancing.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from screener.strategies.spec import PrepareCtx, register_expression_strategy
@@ -30,9 +31,9 @@ def _prepare_rs(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     benchmark_bars = ctx.price_panel.get(ctx.benchmark, pd.DataFrame())
     if benchmark_bars is None or benchmark_bars.empty:
         ctx.warnings.append(f"benchmark data unavailable for rs_trend: {ctx.benchmark}")
-        return ctx.bars_by_tv
-
-    benchmark_close = benchmark_bars["close"]
+        benchmark_close = None
+    else:
+        benchmark_close = benchmark_bars["close"]
 
     out: dict[str, pd.DataFrame] = {}
     for tv, bars in ctx.bars_by_tv.items():
@@ -40,10 +41,15 @@ def _prepare_rs(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
             out[tv] = bars
             continue
         frame = bars.copy()
-        aligned = benchmark_close.reindex(frame.index).ffill()
-        rs = frame["close"].astype(float) / aligned
-        frame["rs"] = rs
-        frame["rs_126"] = rs / rs.shift(_RS_WINDOW) - 1.0
+        if benchmark_close is None:
+            # Entry references rs_126; keep it NaN so entries never fire instead
+            # of raising on an unknown identifier.
+            frame["rs_126"] = np.nan
+        else:
+            aligned = benchmark_close.reindex(frame.index).ffill()
+            rs = frame["close"].astype(float) / aligned
+            frame["rs"] = rs
+            frame["rs_126"] = rs / rs.shift(_RS_WINDOW) - 1.0
         # Higher 6-month RS change ranks first (outperformance persistence).
         frame["rank_score"] = frame["rs_126"]
         out[tv] = frame
