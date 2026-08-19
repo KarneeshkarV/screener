@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -30,7 +31,7 @@ def temp_report_path(prefix: str) -> Path:
     return _impl(prefix)
 
 
-def render_screen_report(*args, **kwargs):
+def render_screen_report(*args: Any, **kwargs: Any) -> Path:
     """Lazy wrapper: plotly lives behind screen_report, only imported on use."""
     from screener.commands.screen_report import render_screen_report as _impl
 
