@@ -33,6 +33,7 @@ per-name.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from screener.strategies.spec import PrepareCtx, register_expression_strategy
@@ -50,15 +51,15 @@ def _prepare_vol_target(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         ctx.warnings.append(
             f"benchmark data unavailable for vol_target_lowvol: {ctx.benchmark}"
         )
-        return ctx.bars_by_tv
-
-    bench_close = benchmark_bars["close"].astype(float)
-    bench_ret = bench_close.pct_change()
-    bench_vol = bench_ret.rolling(_BENCH_VOL, min_periods=_BENCH_VOL).std()
-    # Causal percentile of today's market vol within its trailing window.
-    bench_vol_pct = bench_vol.rolling(_BENCH_RANK, min_periods=_BENCH_RANK // 2).rank(
-        pct=True
-    )
+        bench_vol_pct = None
+    else:
+        bench_close = benchmark_bars["close"].astype(float)
+        bench_ret = bench_close.pct_change()
+        bench_vol = bench_ret.rolling(_BENCH_VOL, min_periods=_BENCH_VOL).std()
+        # Causal percentile of today's market vol within its trailing window.
+        bench_vol_pct = bench_vol.rolling(
+            _BENCH_RANK, min_periods=_BENCH_RANK // 2
+        ).rank(pct=True)
 
     out: dict[str, pd.DataFrame] = {}
     for tv, bars in ctx.bars_by_tv.items():
@@ -66,11 +67,17 @@ def _prepare_vol_target(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
             out[tv] = bars
             continue
         frame = bars.copy()
-        close = frame["close"].astype(float)
-        vol = close.pct_change().rolling(_STOCK_VOL, min_periods=_STOCK_VOL).std()
-        frame["vol_63"] = vol
-        frame["rank_score"] = -vol  # calmest names rank first
-        frame["bench_vol_pct"] = bench_vol_pct.reindex(frame.index).ffill()
+        if bench_vol_pct is None:
+            # Entry/exit reference these columns; keep them NaN so the rules
+            # never fire instead of raising on an unknown identifier.
+            frame["vol_63"] = np.nan
+            frame["bench_vol_pct"] = np.nan
+        else:
+            close = frame["close"].astype(float)
+            vol = close.pct_change().rolling(_STOCK_VOL, min_periods=_STOCK_VOL).std()
+            frame["vol_63"] = vol
+            frame["bench_vol_pct"] = bench_vol_pct.reindex(frame.index).ffill()
+        frame["rank_score"] = -frame["vol_63"].astype(float)  # calmest names first
         out[tv] = frame
     return out
 
