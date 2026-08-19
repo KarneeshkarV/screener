@@ -1,0 +1,1223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Momentum strategy study</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --benchmark: #898781;
+    --good: #0ca30c;
+    --critical: #d03b3b;
+    --ghost: rgba(11, 11, 11, 0.04);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --page: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --series-3: #199e70;
+      --ghost: rgba(255, 255, 255, 0.06);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --ghost: rgba(255, 255, 255, 0.06);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 20px 80px; }
+  header.top { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+  h1 { font-size: 24px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 17px; margin: 0 0 14px; letter-spacing: -0.005em; }
+  h3 { font-size: 14px; margin: 0 0 8px; color: var(--text-secondary); font-weight: 600; }
+  p.lede { color: var(--text-secondary); margin: 6px 0 22px; max-width: 74ch; }
+  a { color: var(--series-1); }
+
+  button.ghost {
+    font: inherit; font-size: 13px; color: var(--text-secondary);
+    background: transparent; border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 11px; cursor: pointer;
+  }
+  button.ghost:hover { background: var(--ghost); }
+  .spacer { flex: 1 1 auto; }
+
+  .controls { display: flex; gap: 22px; flex-wrap: wrap; align-items: center; margin-bottom: 24px; }
+  .control { display: flex; align-items: center; gap: 8px; }
+  .control > span { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    font: inherit; font-size: 13px; padding: 6px 13px; border: 0; cursor: pointer;
+    background: var(--surface-1); color: var(--text-secondary);
+  }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button[aria-pressed="true"] { background: var(--series-1); color: #fff; }
+
+  .panel {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin-bottom: 22px;
+  }
+  .meta { display: flex; gap: 8px 22px; flex-wrap: wrap; font-size: 13px; color: var(--text-secondary); }
+  .meta b { color: var(--text-primary); font-weight: 600; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px; }
+  .tile { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .tile .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  .tile .v { font-size: 22px; font-weight: 600; margin-top: 2px; letter-spacing: -0.01em; }
+  .tile .s { font-size: 12px; color: var(--text-secondary); }
+
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: right; padding: 7px 10px; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th {
+    color: var(--muted); font-weight: 600; font-size: 12px; cursor: pointer;
+    border-bottom: 1px solid var(--axis); text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  th[aria-sort="ascending"]::after { content: " \2191"; }
+  th[aria-sort="descending"]::after { content: " \2193"; }
+  tbody tr { border-bottom: 1px solid var(--grid); }
+  tbody tr.clickable { cursor: pointer; }
+  tbody tr.clickable:hover { background: var(--ghost); }
+  td.num, th.num { font-variant-numeric: tabular-nums; }
+  .pos { color: var(--good); }
+  .neg { color: var(--critical); }
+
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; }
+  .family-head {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); margin: 22px 0 8px; font-weight: 600;
+  }
+  .family-head:first-child { margin-top: 0; }
+  tbody tr.group th {
+    text-align: left; text-transform: uppercase; letter-spacing: 0.06em;
+    font-size: 11px; color: var(--muted); padding-top: 16px; cursor: default;
+    border-bottom: 1px solid var(--grid);
+  }
+
+  .grid-small { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+  .card {
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 12px 6px;
+    cursor: pointer; background: var(--surface-1);
+  }
+  .card:hover { background: var(--ghost); }
+  .card .title { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .card .sub { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-variant-numeric: tabular-nums; }
+
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axisline { stroke: var(--axis); stroke-width: 1; }
+  .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .serieslabel { font-size: 12px; font-weight: 600; }
+  .crosshair { stroke: var(--axis); stroke-width: 1; }
+  .hitzone { fill: transparent; }
+
+  .tooltip {
+    position: fixed; pointer-events: none; z-index: 20; opacity: 0;
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 12px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.14); transition: opacity .08s linear;
+    font-variant-numeric: tabular-nums;
+  }
+  .tooltip .tt-date { color: var(--muted); margin-bottom: 4px; }
+  .tooltip .tt-row { display: flex; gap: 12px; justify-content: space-between; }
+  .tooltip .tt-row b { font-weight: 600; }
+
+  .notes { font-size: 13px; color: var(--text-secondary); }
+  .notes li { margin-bottom: 5px; }
+  .warn { color: var(--critical); }
+  .backlink { font-size: 13px; margin-bottom: 12px; display: inline-block; }
+  .hidden { display: none; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 40px; }
+
+  /* Marks a baseline that one of its own sweep variants beats on both
+     metrics, so the row on screen is not the best available setup. */
+  .star { color: var(--good); cursor: help; }
+  #doc-buttons { display: inline-flex; gap: 8px; margin-right: 8px; }
+
+  .doc-body { max-width: 78ch; }
+  .doc-body h2 { font-size: 22px; margin: 30px 0 10px; }
+  .doc-body h3 { font-size: 17px; margin: 24px 0 8px; }
+  .doc-body h4, .doc-body h5 { font-size: 15px; margin: 20px 0 6px; }
+  .doc-body p { margin: 0 0 12px; line-height: 1.65; }
+  .doc-body ul { margin: 0 0 14px; padding-left: 20px; }
+  .doc-body li { margin-bottom: 6px; line-height: 1.6; }
+  .doc-body code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.9em;
+    background: var(--surface-2, rgba(127, 127, 127, 0.14));
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .doc-body hr { border: 0; border-top: 1px solid var(--border); margin: 26px 0; }
+  .doc-body .table-wrap { margin: 0 0 18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Momentum strategy study</h1>
+    <div class="spacer"></div>
+    <span id="doc-buttons"></span>
+    <button class="ghost" id="theme-toggle" type="button">Toggle theme</button>
+  </header>
+  <p class="lede">
+    Sixteen strategies from the cross-sectional, dual, time-series and long-only
+    trend momentum literatures, backtested long-only over point-in-time Nifty 500
+    and S&amp;P 500 membership. Every run charges costs and slippage. None of them
+    short, lever, or earn interest on idle cash, so they read below the published
+    figures by construction. Research, not financial advice.
+  </p>
+  <p class="notes" style="margin:-14px 0 22px">
+    <strong>Position sizing compounds.</strong> Each slot is sized from current
+    realized equity, so the book stays invested as it grows. An earlier version
+    of this study froze the slot at day-one capital, which left a compounding run
+    mostly in idle cash and understated both its return and its drawdown by
+    roughly half on the ten-year window. Those numbers are not comparable with
+    these; treat any figure quoted before this note as superseded.
+  </p>
+
+  <div id="overview">
+    <div class="controls">
+      <div class="control"><span>Market</span><div class="seg" id="market-seg"></div></div>
+      <div class="control"><span>Window</span><div class="seg" id="period-seg"></div></div>
+      <div class="control" id="regime-control"><span>Regime overlay</span><div class="seg" id="regime-seg"></div></div>
+    </div>
+
+    <div class="panel">
+      <div class="meta" id="run-meta"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Risk-adjusted return by strategy</h2>
+      <p class="notes" style="margin-top:-8px">
+        Sharpe ratio over the selected window, grouped by literature.
+      </p>
+      <div id="sharpe-chart"></div>
+    </div>
+
+    <div class="panel">
+      <h2>All strategies</h2>
+      <div class="table-wrap"><table id="summary-table"></table></div>
+    </div>
+
+    <div class="panel">
+      <h2>Equity curves</h2>
+      <p class="notes" style="margin-top:-8px">
+        Each panel is one strategy against its benchmark, both indexed to 100 at
+        the start of the window. Click a panel for trades and detail.
+      </p>
+      <div id="small-multiples"></div>
+    </div>
+  </div>
+
+  <div id="detail" class="hidden">
+    <a class="backlink" href="#" id="back">&larr; All strategies</a>
+    <h2 id="detail-title"></h2>
+    <p class="lede" id="detail-note"></p>
+
+    <div class="panel" id="winners-panel">
+      <h2>Configurations that beat this baseline <span id="winners-count"></span></h2>
+      <p class="notes" style="margin-top:-6px">
+        Sweep variants of this strategy that improve on the run below in both
+        Sharpe and max drawdown, best Sharpe first. Anything here is a better
+        configuration than the one you are looking at.
+      </p>
+      <div id="winners-body"></div>
+    </div>
+
+    <div class="panel"><div class="meta" id="detail-meta"></div></div>
+    <div class="panel"><div class="tiles" id="detail-tiles"></div></div>
+
+    <div class="panel">
+      <h2>Equity vs benchmark</h2>
+      <div class="legend" id="detail-legend"></div>
+      <div id="detail-equity"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Drawdown</h2>
+      <p class="notes" style="margin-top:-8px" id="drawdown-note"></p>
+      <div id="detail-drawdown"></div>
+    </div>
+
+    <div class="panel" id="variant-panel">
+      <h2>Construction sweep</h2>
+      <p class="notes" style="margin-top:-8px">
+        The same strategy under regime overlays, holding periods and one-at-a-time
+        construction levers, ranked by Sharpe. The baseline row is the run above.
+        A variant only counts as an improvement if it beats the baseline on both
+        Sharpe and drawdown - one alone is usually just a different risk level.
+      </p>
+      <div class="table-wrap"><table id="variant-table"></table></div>
+    </div>
+
+    <div class="panel">
+      <h2>Trades <span id="trade-count" style="color:var(--muted);font-weight:400"></span></h2>
+      <div class="table-wrap" style="max-height:560px;overflow-y:auto">
+        <table id="trade-table"></table>
+      </div>
+    </div>
+
+    <div class="panel" id="warn-panel">
+      <h2>Run warnings</h2>
+      <ul class="notes" id="detail-warnings"></ul>
+    </div>
+  </div>
+
+  <div id="doc" class="hidden">
+    <a class="backlink" href="#" id="doc-back">&larr; All strategies</a>
+    <article class="doc-body" id="doc-body"></article>
+  </div>
+
+  <footer id="footer"></footer>
+</div>
+<div class="tooltip" id="tooltip" role="status" aria-live="polite"></div>
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+const state = {
+  index: null, market: null, years: null, regime: "", runCache: new Map(),
+};
+const tooltip = document.getElementById("tooltip");
+
+const fmtPct = (v, d = 1) => {
+  if (v === null || v === undefined || Number.isNaN(v)) return "-";
+  const pct = v * 100;
+  // Round first, so a value that rounds to zero never prints as "-0%".
+  const rounded = Number(pct.toFixed(d));
+  return (rounded === 0 ? 0 : rounded).toFixed(d) + "%";
+};
+const fmtNum = (v, d = 2) =>
+  v === null || v === undefined || Number.isNaN(v) ? "-" : v.toFixed(d);
+const signClass = (v) => (v > 0 ? "pos" : v < 0 ? "neg" : "");
+
+function el(tag, attrs = {}, text) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else node.setAttribute(k, v);
+  }
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+function svgEl(tag, attrs = {}) {
+  const node = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  return node;
+}
+
+// ── data ───────────────────────────────────────────────────────────────
+async function loadIndex() {
+  const res = await fetch("data/index.json");
+  state.index = await res.json();
+  state.market = state.index.markets[0].id;
+  state.years = state.index.periods[state.index.periods.length - 1];
+}
+async function loadRun(key) {
+  if (state.runCache.has(key)) return state.runCache.get(key);
+  const res = await fetch(`data/runs/${key}.json`);
+  const payload = await res.json();
+  state.runCache.set(key, payload);
+  return payload;
+}
+const currentRuns = () =>
+  state.index.runs
+    .filter(
+      (r) =>
+        r.market === state.market &&
+        r.years === state.years &&
+        r.baseline !== false
+    )
+    .sort((a, b) => a.family.localeCompare(b.family) || a.order - b.order);
+
+// Every swept variant of one strategy in one market and window, including the
+// baseline it is being compared against.
+const variantsOf = (run) =>
+  state.index.runs
+    .filter(
+      (r) =>
+        r.market === run.market &&
+        r.years === run.years &&
+        r.strategy === run.strategy
+    )
+    .sort((a, b) => (b.metrics.sharpe ?? -9) - (a.metrics.sharpe ?? -9));
+
+function variantLabel(run) {
+  const parts = [];
+  if (run.regime) parts.push(run.regime_label);
+  if (run.hold !== run.default_hold) parts.push(`hold ${run.hold}d`);
+  if (run.lever) parts.push(run.lever_label);
+  return parts.length ? parts.join(" + ") : "Baseline";
+}
+
+// One definition of "better", used by the overview star, the winners panel and
+// the variant table alike. A variant counts only if it improves Sharpe AND max
+// drawdown against its own baseline: either alone usually just means a
+// different risk level, not a better strategy.
+function beatsBaseline(variant, base) {
+  const baseSharpe = base?.metrics.sharpe;
+  const baseDd = base?.metrics.max_drawdown;
+  if (baseSharpe == null || baseDd == null) return false;
+  if (variant.baseline !== false) return false;
+  return (
+    (variant.metrics.sharpe ?? -9) > baseSharpe &&
+    (variant.metrics.max_drawdown ?? -1) > baseDd
+  );
+}
+
+// Variants of one strategy that beat their baseline, best Sharpe first.
+function winnersOf(run) {
+  const variants = variantsOf(run);
+  const base = variants.find((r) => r.baseline !== false);
+  if (!base) return { base: null, winners: [], total: 0 };
+  const winners = variants
+    .filter((r) => beatsBaseline(r, base))
+    .sort((a, b) => (b.metrics.sharpe ?? -9) - (a.metrics.sharpe ?? -9));
+  return { base, winners, total: variants.length - 1 };
+}
+
+function groupByFamily(runs) {
+  const groups = [];
+  for (const [key, title] of Object.entries(state.index.families)) {
+    const rows = runs.filter((r) => r.family === key);
+    if (rows.length) groups.push({ key, title, rows });
+  }
+  return groups;
+}
+
+// ── scales & paths ─────────────────────────────────────────────────────
+function extent(values) {
+  let lo = Infinity, hi = -Infinity;
+  for (const v of values) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  if (!Number.isFinite(lo)) return [0, 1];
+  if (lo === hi) return [lo - 1, hi + 1];
+  return [lo, hi];
+}
+function niceTicks(lo, hi, count) {
+  const span = hi - lo;
+  const raw = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1) * mag;
+  const out = [];
+  for (let t = Math.ceil(lo / step) * step; t <= hi + 1e-9; t += step) out.push(t);
+  return out;
+}
+function linePath(points) {
+  return points.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
+}
+
+// Index a curve to 100 at its first defined point, so a portfolio in rupees and
+// an index level share one axis instead of inventing a second scale.
+function indexed(curve) {
+  if (!curve || !curve.length) return [];
+  const base = curve[0].value;
+  if (!base) return curve.map((p) => ({ date: p.date, value: 100 }));
+  return curve.map((p) => ({ date: p.date, value: (p.value / base) * 100 }));
+}
+function drawdownSeries(curve) {
+  let peak = -Infinity;
+  return curve.map((p) => {
+    peak = Math.max(peak, p.value);
+    return { date: p.date, value: peak > 0 ? p.value / peak - 1 : 0 };
+  });
+}
+
+// ── charts ─────────────────────────────────────────────────────────────
+function lineChart(container, series, opts = {}) {
+  const width = opts.width || container.clientWidth || 820;
+  const height = opts.height || 300;
+  const pad = opts.pad || { t: 14, r: 54, b: 26, l: 46 };
+  const inner = { w: width - pad.l - pad.r, h: height - pad.t - pad.b };
+  container.replaceChildren();
+  const defined = series.filter((s) => s.points.length > 1);
+  if (!defined.length) {
+    container.append(el("p", { class: "notes" }, "No data for this run."));
+    return;
+  }
+  const n = defined[0].points.length;
+  const all = defined.flatMap((s) => s.points.map((p) => p.value));
+  let [lo, hi] = extent(all);
+  if (opts.includeZero) { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+  const ticks = niceTicks(lo, hi, 4);
+  lo = Math.min(lo, ticks[0]); hi = Math.max(hi, ticks[ticks.length - 1]);
+  const x = (i) => pad.l + (inner.w * i) / (n - 1);
+  const y = (v) => pad.t + inner.h - (inner.h * (v - lo)) / (hi - lo);
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, role: "img" });
+  const caption = svgEl("title", {});
+  caption.textContent = opts.title || "";
+  svg.append(caption);
+
+  for (const t of ticks) {
+    svg.append(svgEl("line", { class: "gridline", x1: pad.l, x2: pad.l + inner.w, y1: y(t), y2: y(t) }));
+    const label = svgEl("text", { class: "tick", x: pad.l - 8, y: y(t) + 4, "text-anchor": "end" });
+    label.textContent = opts.fmtY ? opts.fmtY(t) : t.toFixed(0);
+    svg.append(label);
+  }
+  svg.append(svgEl("line", {
+    class: "axisline", x1: pad.l, x2: pad.l + inner.w,
+    y1: pad.t + inner.h, y2: pad.t + inner.h,
+  }));
+
+  const dates = defined[0].points.map((p) => p.date);
+  for (const idx of [0, Math.floor((n - 1) / 2), n - 1]) {
+    const label = svgEl("text", {
+      class: "tick", x: x(idx), y: height - 8,
+      "text-anchor": idx === 0 ? "start" : idx === n - 1 ? "end" : "middle",
+    });
+    label.textContent = dates[idx];
+    svg.append(label);
+  }
+
+  for (const s of defined) {
+    if (s.area) {
+      const pts = s.points.map((p, i) => [x(i), y(p.value)]);
+      const area = svgEl("path", {
+        d: `${linePath(pts)}L${x(n - 1)},${y(0)}L${x(0)},${y(0)}Z`,
+        fill: s.color, "fill-opacity": 0.12, stroke: "none",
+      });
+      svg.append(area);
+    }
+    svg.append(svgEl("path", {
+      d: linePath(s.points.map((p, i) => [x(i), y(p.value)])),
+      fill: "none", stroke: s.color, "stroke-width": s.width || 2,
+      "stroke-linejoin": "round", "stroke-linecap": "round",
+    }));
+    // Direct end labels keep identity off color alone.
+    const last = s.points[s.points.length - 1];
+    const label = svgEl("text", {
+      class: "serieslabel", x: pad.l + inner.w + 6, y: y(last.value) + 4, fill: s.color,
+    });
+    label.textContent = opts.fmtY ? opts.fmtY(last.value) : last.value.toFixed(0);
+    svg.append(label);
+  }
+
+  if (opts.hover !== false) {
+    const cross = svgEl("line", {
+      class: "crosshair", y1: pad.t, y2: pad.t + inner.h, x1: 0, x2: 0, opacity: 0,
+    });
+    svg.append(cross);
+    const markers = defined.map((s) => {
+      const dot = svgEl("circle", { r: 4, fill: s.color, stroke: "var(--surface-1)", "stroke-width": 2, opacity: 0 });
+      svg.append(dot);
+      return dot;
+    });
+    const zone = svgEl("rect", { class: "hitzone", x: pad.l, y: pad.t, width: inner.w, height: inner.h });
+    svg.append(zone);
+    const move = (event) => {
+      const box = svg.getBoundingClientRect();
+      const rel = ((event.clientX - box.left) / box.width) * width;
+      const i = Math.max(0, Math.min(n - 1, Math.round(((rel - pad.l) / inner.w) * (n - 1))));
+      cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", 1);
+      defined.forEach((s, k) => {
+        const p = s.points[i];
+        if (!p) return;
+        markers[k].setAttribute("cx", x(i));
+        markers[k].setAttribute("cy", y(p.value));
+        markers[k].setAttribute("opacity", 1);
+      });
+      const rows = defined
+        .map((s) => `<div class="tt-row"><span>${s.name}</span><b>${
+          opts.fmtY ? opts.fmtY(s.points[i].value) : s.points[i].value.toFixed(1)
+        }</b></div>`)
+        .join("");
+      tooltip.innerHTML = `<div class="tt-date">${dates[i]}</div>${rows}`;
+      tooltip.style.opacity = 1;
+      tooltip.style.left = Math.min(event.clientX + 14, window.innerWidth - 190) + "px";
+      tooltip.style.top = Math.max(event.clientY - 20, 8) + "px";
+    };
+    zone.addEventListener("mousemove", move);
+    zone.addEventListener("mouseleave", () => {
+      tooltip.style.opacity = 0;
+      cross.setAttribute("opacity", 0);
+      markers.forEach((m) => m.setAttribute("opacity", 0));
+    });
+  }
+  container.append(svg);
+}
+
+function sparkline(container, payloadCurves) {
+  const width = 250, height = 84, pad = { t: 6, r: 6, b: 6, l: 6 };
+  const inner = { w: width - pad.l - pad.r, h: height - pad.t - pad.b };
+  const strategy = payloadCurves.strategy, bench = payloadCurves.benchmark;
+  if (!strategy.length) return;
+  const all = strategy.concat(bench).map((p) => p.value);
+  const [lo, hi] = extent(all);
+  const x = (i, len) => pad.l + (inner.w * i) / Math.max(1, len - 1);
+  const y = (v) => pad.t + inner.h - (inner.h * (v - lo)) / (hi - lo);
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, role: "img" });
+  svg.append(svgEl("path", {
+    d: linePath(bench.map((p, i) => [x(i, bench.length), y(p.value)])),
+    fill: "none", stroke: "var(--benchmark)", "stroke-width": 1.5, "stroke-dasharray": "3 3",
+  }));
+  svg.append(svgEl("path", {
+    d: linePath(strategy.map((p, i) => [x(i, strategy.length), y(p.value)])),
+    fill: "none", stroke: "var(--series-1)",
+    "stroke-width": 2, "stroke-linejoin": "round",
+  }));
+  container.append(svg);
+}
+
+// Rows are grouped under a text heading per family. Family is deliberately not
+// a colour: four categorical hues cannot clear the colourblind separation floor
+// when every pair can appear together, so the grouping carries identity and one
+// series colour carries the value.
+function barChart(container, groups) {
+  const rowH = 26, headH = 24, pad = { t: 8, r: 76, b: 26, l: 250 };
+  const width = container.clientWidth || 820;
+  const rowCount = groups.reduce((n, g) => n + g.rows.length, 0);
+  const bodyH = rowCount * rowH + groups.length * headH;
+  const height = pad.t + pad.b + bodyH;
+  const inner = { w: Math.max(120, width - pad.l - pad.r), h: bodyH };
+  container.replaceChildren();
+  const values = groups.flatMap((g) => g.rows.map((r) => r.value));
+  if (!values.length) return;
+  let lo = Math.min(0, ...values), hi = Math.max(0, ...values);
+  if (lo === hi) hi = lo + 1;
+  const ticks = niceTicks(lo, hi, 4);
+  lo = Math.min(lo, ticks[0]); hi = Math.max(hi, ticks[ticks.length - 1]);
+  const x = (v) => pad.l + (inner.w * (v - lo)) / (hi - lo);
+  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, role: "img" });
+
+  for (const t of ticks) {
+    svg.append(svgEl("line", { class: "gridline", x1: x(t), x2: x(t), y1: pad.t, y2: pad.t + inner.h }));
+    const label = svgEl("text", { class: "tick", x: x(t), y: height - 8, "text-anchor": "middle" });
+    label.textContent = t.toFixed(1);
+    svg.append(label);
+  }
+
+  let y = pad.t;
+  for (const group of groups) {
+    const heading = svgEl("text", { class: "tick", x: 0, y: y + 15 });
+    heading.setAttribute("fill", "var(--muted)");
+    heading.setAttribute("font-weight", "600");
+    heading.textContent = group.title.toUpperCase();
+    svg.append(heading);
+    y += headH;
+    for (const row of group.rows) {
+      const barH = rowH - 12;
+      const top = y + 5;
+      const zero = x(0), end = x(row.value);
+      const left = Math.min(zero, end), w = Math.max(2, Math.abs(end - zero));
+      svg.append(svgEl("rect", {
+        x: left, y: top, width: w, height: barH, rx: 4, fill: "var(--series-1)",
+      }));
+      const name = svgEl("text", { class: "tick", x: pad.l - 12, y: top + barH - 2, "text-anchor": "end" });
+      name.setAttribute("fill", "var(--text-secondary)");
+      name.textContent = row.label;
+      svg.append(name);
+      const value = svgEl("text", {
+        class: "tick", x: (row.value >= 0 ? end + 8 : end - 8), y: top + barH - 2,
+        "text-anchor": row.value >= 0 ? "start" : "end",
+      });
+      value.setAttribute("fill", "var(--text-primary)");
+      value.textContent = row.value.toFixed(2);
+      svg.append(value);
+      y += rowH;
+    }
+  }
+  svg.append(svgEl("line", { class: "axisline", x1: x(0), x2: x(0), y1: pad.t, y2: pad.t + inner.h }));
+  container.append(svg);
+}
+
+// ── tables ─────────────────────────────────────────────────────────────
+function renderTable(table, columns, rows, opts = {}) {
+  table.replaceChildren();
+  const thead = el("thead");
+  const headRow = el("tr");
+  columns.forEach((col, i) => {
+    const th = el("th", { class: col.num ? "num" : "", scope: "col" }, col.label);
+    th.addEventListener("click", () => {
+      const asc = table.dataset.sortKey === String(i) && table.dataset.sortDir === "desc";
+      table.dataset.sortKey = String(i);
+      table.dataset.sortDir = asc ? "asc" : "desc";
+      const sorted = rows.slice().sort((a, b) => {
+        const va = col.value(a), vb = col.value(b);
+        const cmp = typeof va === "string" ? va.localeCompare(vb) : (va ?? -Infinity) - (vb ?? -Infinity);
+        return asc ? cmp : -cmp;
+      });
+      renderTable(table, columns, sorted, { ...opts, sortKey: String(i), sortDir: asc ? "asc" : "desc" });
+    });
+    if (opts.sortKey === String(i)) {
+      th.setAttribute("aria-sort", opts.sortDir === "asc" ? "ascending" : "descending");
+    }
+    headRow.append(th);
+  });
+  thead.append(headRow);
+  table.append(thead);
+  const tbody = el("tbody");
+  for (const row of rows) {
+    const tr = el("tr", { class: opts.onClick ? "clickable" : "" });
+    columns.forEach((col) => {
+      const td = el("td", { class: col.num ? "num" : "" });
+      const rendered = col.render(row);
+      if (rendered instanceof Node) td.append(rendered);
+      else td.innerHTML = rendered;
+      tr.append(td);
+    });
+    if (opts.onClick) tr.addEventListener("click", () => opts.onClick(row));
+    tbody.append(tr);
+  }
+  table.append(tbody);
+  if (opts.sortKey !== undefined) {
+    table.dataset.sortKey = opts.sortKey;
+    table.dataset.sortDir = opts.sortDir;
+  }
+}
+
+// ── views ──────────────────────────────────────────────────────────────
+function renderSegments(node, values, current, label, onPick) {
+  node.replaceChildren();
+  for (const value of values) {
+    const button = el("button", { type: "button" }, label(value));
+    button.setAttribute("aria-pressed", String(value === current));
+    button.addEventListener("click", () => onPick(value));
+    node.append(button);
+  }
+}
+
+async function renderOverview() {
+  document.getElementById("overview").classList.remove("hidden");
+  document.getElementById("detail").classList.add("hidden");
+  renderSegments(
+    document.getElementById("market-seg"),
+    state.index.markets.map((m) => m.id),
+    state.market,
+    (id) => state.index.markets.find((m) => m.id === id).short,
+    (id) => { state.market = id; renderOverview(); }
+  );
+  renderSegments(
+    document.getElementById("period-seg"),
+    state.index.periods,
+    state.years,
+    (y) => `${y}y`,
+    (y) => { state.years = y; renderOverview(); }
+  );
+  // Sweep variants live on each strategy's own page, so the overview has no
+  // regime control - it always shows the baseline each variant is measured
+  // against.
+  document.getElementById("regime-control").classList.add("hidden");
+
+  const runs = currentRuns();
+  const meta = document.getElementById("run-meta");
+  meta.replaceChildren();
+  if (!runs.length) {
+    meta.append(el("span", {}, "No runs for this selection yet."));
+    document.getElementById("summary-table").replaceChildren();
+    document.getElementById("small-multiples").replaceChildren();
+    document.getElementById("sharpe-chart").replaceChildren();
+    return;
+  }
+  const sample = runs[0];
+  const bits = [
+    ["Universe", sample.market_label],
+    ["Window", `${sample.start} to ${sample.end}`],
+    ["Positions", `${sample.top} slots`],
+    ["Benchmark", `${sample.benchmark} ${fmtPct(sample.metrics.benchmark_cagr)} a year`],
+    ["Costs", `${sample.cost_model}, ${sample.slippage_bps} bps slippage`],
+  ];
+  for (const [k, v] of bits) {
+    const span = el("span");
+    span.append(document.createTextNode(k + " "), el("b", {}, v));
+    meta.append(span);
+  }
+
+  const families = groupByFamily(runs);
+  barChart(
+    document.getElementById("sharpe-chart"),
+    families.map((group) => ({
+      title: group.title,
+      rows: group.rows
+        .slice()
+        .sort((a, b) => (b.metrics.sharpe ?? -9) - (a.metrics.sharpe ?? -9))
+        .map((r) => ({ label: r.label, value: r.metrics.sharpe ?? 0 })),
+    }))
+  );
+
+  // A star marks a baseline that at least one of its own sweep variants beats
+  // on both Sharpe and drawdown - i.e. the row on screen is not this
+  // strategy's best available configuration.
+  const winnerCount = new Map(
+    runs.map((r) => [r.key, winnersOf(r).winners.length])
+  );
+  const starFor = (r) => {
+    const n = winnerCount.get(r.key) || 0;
+    if (!n) return "";
+    const plural = n === 1 ? "variant beats" : "variants beat";
+    return ` <span class="star" title="${n} sweep ${plural} this baseline on both Sharpe and drawdown">★</span>`;
+  };
+
+  const columns = [
+    { label: "Strategy", value: (r) => r.label,
+      render: (r) => `${r.label}${starFor(r)}` },
+    { label: "Better cfg", num: true, value: (r) => winnerCount.get(r.key) || 0,
+      render: (r) => {
+        const n = winnerCount.get(r.key) || 0;
+        return n ? `<span class="pos">${n}</span>` : "-";
+      } },
+    { label: "Family", value: (r) => r.family,
+      render: (r) => state.index.families[r.family] || r.family },
+    { label: "CAGR", num: true, value: (r) => r.metrics.cagr,
+      render: (r) => `<span class="${signClass(r.metrics.cagr)}">${fmtPct(r.metrics.cagr)}</span>` },
+    { label: "Benchmark", num: true, value: (r) => r.metrics.benchmark_cagr,
+      render: (r) => fmtPct(r.metrics.benchmark_cagr) },
+    { label: "Sharpe", num: true, value: (r) => r.metrics.sharpe, render: (r) => fmtNum(r.metrics.sharpe) },
+    { label: "Sortino", num: true, value: (r) => r.metrics.sortino, render: (r) => fmtNum(r.metrics.sortino) },
+    { label: "Max DD", num: true, value: (r) => r.metrics.max_drawdown,
+      render: (r) => `<span class="neg">${fmtPct(r.metrics.max_drawdown)}</span>` },
+    { label: "DD month-end", num: true, value: (r) => r.drawdown?.max_drawdown_monthly,
+      render: (r) => `<span class="neg">${fmtPct(r.drawdown?.max_drawdown_monthly)}</span>` },
+    { label: "Under water", num: true,
+      value: (r) => (r.drawdown?.decline_days ?? 0) + (r.drawdown?.recovery_days ?? 0),
+      render: (r) => underwaterLabel(r.drawdown) },
+    { label: "Vol", num: true, value: (r) => r.metrics.vol_annual, render: (r) => fmtPct(r.metrics.vol_annual) },
+    { label: "Exposure", num: true, value: (r) => r.metrics.exposure, render: (r) => fmtPct(r.metrics.exposure, 0) },
+    { label: "Hit rate", num: true, value: (r) => r.metrics.hit_rate, render: (r) => fmtPct(r.metrics.hit_rate, 0) },
+    { label: "Trades", num: true, value: (r) => r.metrics.trade_count, render: (r) => String(r.metrics.trade_count ?? 0) },
+  ];
+  renderTable(document.getElementById("summary-table"), columns, runs, {
+    onClick: (row) => { location.hash = `#run=${row.key}`; },
+    // Sharpe, which the "Better cfg" column pushed one place right.
+    sortKey: "5", sortDir: "desc",
+  });
+
+  const grid = document.getElementById("small-multiples");
+  grid.replaceChildren();
+  for (const group of families) {
+    grid.append(el("div", { class: "family-head" }, group.title));
+    const row = el("div", { class: "grid-small" });
+    grid.append(row);
+    for (const run of group.rows) {
+      const card = el("div", { class: "card" });
+      const title = el("div", { class: "title" }, run.label);
+      const wins = winnerCount.get(run.key) || 0;
+      if (wins) {
+        const star = el("span", { class: "star" }, " ★");
+        star.title = `${wins} sweep variant${wins === 1 ? "" : "s"} beat this baseline`;
+        title.append(star);
+      }
+      card.append(title);
+      card.append(el("div", { class: "sub" },
+        `CAGR ${fmtPct(run.metrics.cagr)} · Sharpe ${fmtNum(run.metrics.sharpe)} · DD ${fmtPct(run.metrics.max_drawdown)}`));
+      card.addEventListener("click", () => { location.hash = `#run=${run.key}`; });
+      row.append(card);
+      loadRun(run.key).then((payload) => {
+        sparkline(card, {
+          strategy: indexed(payload.equity_curve),
+          benchmark: indexed(payload.benchmark_curve),
+        });
+      });
+    }
+  }
+}
+
+// Winners are shown above the fold so the page leads with "there is a better
+// configuration than this one" rather than burying it in the variant table.
+function renderWinners(payload) {
+  const summary = state.index.runs.find((r) => r.key === payload.key);
+  const panel = document.getElementById("winners-panel");
+  const body = document.getElementById("winners-body");
+  const count = document.getElementById("winners-count");
+  body.replaceChildren();
+  if (!summary) {
+    panel.classList.add("hidden");
+    return;
+  }
+
+  const { base, winners, total } = winnersOf(summary);
+  if (!base || total < 1) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  count.textContent = `${winners.length} of ${total}`;
+  count.className = winners.length ? "pos" : "";
+
+  if (!winners.length) {
+    body.append(
+      el("p", { class: "notes" },
+        `No sweep variant beats the baseline on both metrics. Of ${total} tested, ` +
+        `none improved Sharpe and drawdown together, so the baseline is this ` +
+        `strategy's best configuration in this market and window.`)
+    );
+    return;
+  }
+
+  const columns = [
+    { label: "Configuration", value: (r) => variantLabel(r),
+      render: (r) => `<b>${variantLabel(r)}</b>` },
+    { label: "CAGR", num: true, value: (r) => r.metrics.cagr,
+      render: (r) => `<span class="${signClass(r.metrics.cagr)}">${fmtPct(r.metrics.cagr)}</span>` },
+    { label: "Sharpe", num: true, value: (r) => r.metrics.sharpe,
+      render: (r) => `${fmtNum(r.metrics.sharpe)} <span class="pos">(+${
+        ((r.metrics.sharpe ?? 0) - (base.metrics.sharpe ?? 0)).toFixed(2)})</span>` },
+    { label: "Max DD", num: true, value: (r) => r.metrics.max_drawdown,
+      render: (r) => `<span class="neg">${fmtPct(r.metrics.max_drawdown)}</span> <span class="pos">(+${
+        (((r.metrics.max_drawdown ?? 0) - (base.metrics.max_drawdown ?? 0)) * 100).toFixed(1)}pp)</span>` },
+    { label: "Under water", num: true,
+      value: (r) => (r.drawdown?.decline_days ?? 0) + (r.drawdown?.recovery_days ?? 0),
+      render: (r) => underwaterLabel(r.drawdown) },
+    { label: "Trades", num: true, value: (r) => r.metrics.trade_count,
+      render: (r) => String(r.metrics.trade_count ?? 0) },
+  ];
+  const table = el("table");
+  const wrap = el("div", { class: "table-wrap" });
+  wrap.append(table);
+  body.append(wrap);
+  renderTable(table, columns, winners, {
+    onClick: (row) => { location.hash = `#run=${row.key}`; },
+    sortKey: "2", sortDir: "desc",
+  });
+}
+
+function renderVariants(payload) {
+  const summary = state.index.runs.find((r) => r.key === payload.key);
+  const panel = document.getElementById("variant-panel");
+  const variants = summary ? variantsOf(summary) : [];
+  panel.classList.toggle("hidden", variants.length < 2);
+  if (variants.length < 2) return;
+
+  const base = variants.find((r) => r.baseline !== false);
+  const baseSharpe = base?.metrics.sharpe ?? null;
+  const better = (r) => beatsBaseline(r, base);
+
+  const columns = [
+    { label: "Variant", value: (r) => variantLabel(r),
+      render: (r) => (r.baseline !== false ? `<b>${variantLabel(r)}</b>` : variantLabel(r)) },
+    { label: "CAGR", num: true, value: (r) => r.metrics.cagr,
+      render: (r) => `<span class="${signClass(r.metrics.cagr)}">${fmtPct(r.metrics.cagr)}</span>` },
+    { label: "Sharpe", num: true, value: (r) => r.metrics.sharpe, render: (r) => fmtNum(r.metrics.sharpe) },
+    { label: "vs base", num: true,
+      value: (r) => (r.metrics.sharpe ?? 0) - (baseSharpe ?? 0),
+      render: (r) => {
+        const delta = (r.metrics.sharpe ?? 0) - (baseSharpe ?? 0);
+        if (r.baseline !== false) return "-";
+        return `<span class="${signClass(delta)}">${delta >= 0 ? "+" : ""}${delta.toFixed(2)}</span>`;
+      } },
+    { label: "Max DD", num: true, value: (r) => r.metrics.max_drawdown,
+      render: (r) => `<span class="neg">${fmtPct(r.metrics.max_drawdown)}</span>` },
+    { label: "Under water", num: true,
+      value: (r) => (r.drawdown?.decline_days ?? 0) + (r.drawdown?.recovery_days ?? 0),
+      render: (r) => underwaterLabel(r.drawdown) },
+    { label: "Exposure", num: true, value: (r) => r.metrics.exposure,
+      render: (r) => fmtPct(r.metrics.exposure, 0) },
+    { label: "Trades", num: true, value: (r) => r.metrics.trade_count,
+      render: (r) => String(r.metrics.trade_count ?? 0) },
+    { label: "Verdict", value: (r) => (better(r) ? 1 : 0),
+      render: (r) =>
+        r.baseline !== false
+          ? "baseline"
+          : better(r)
+            ? '<span class="pos">better on both</span>'
+            : "no" },
+  ];
+  renderTable(document.getElementById("variant-table"), columns, variants, {
+    onClick: (row) => { location.hash = `#run=${row.key}`; },
+    sortKey: "2", sortDir: "desc",
+  });
+}
+
+function underwaterLabel(drawdown) {
+  if (!drawdown || drawdown.decline_days === null) return "-";
+  const months = Math.round(
+    ((drawdown.decline_days || 0) + (drawdown.recovery_days || 0)) / 30.44
+  );
+  return drawdown.recovered ? `${months} mo` : `${months} mo+`;
+}
+
+async function renderDetail(key) {
+  const payload = await loadRun(key);
+  document.getElementById("overview").classList.add("hidden");
+  document.getElementById("detail").classList.remove("hidden");
+  window.scrollTo(0, 0);
+
+  const variant = variantLabel(payload);
+  const overlay = variant === "Baseline" ? "" : ` · ${variant}`;
+  document.getElementById("detail-title").textContent =
+    `${payload.label} - ${payload.market.toUpperCase()} ${payload.years}y${overlay}`;
+  document.getElementById("detail-note").textContent = `${payload.note} (${payload.paper})`;
+
+  const meta = document.getElementById("detail-meta");
+  meta.replaceChildren();
+  const bits = [
+    ["Window", `${payload.start} to ${payload.end}`],
+    ["Universe", payload.market_label],
+    ["Slots", String(payload.top)],
+    ["Holding period", `${payload.hold} trading days`],
+    ["Benchmark", payload.benchmark],
+    ["Costs", `${payload.cost_model}, ${payload.slippage_bps} bps slippage`],
+  ];
+  for (const [k, v] of bits) {
+    const span = el("span");
+    span.append(document.createTextNode(k + " "), el("b", {}, v));
+    meta.append(span);
+  }
+
+  const m = payload.metrics;
+  const tiles = document.getElementById("detail-tiles");
+  tiles.replaceChildren();
+  const tileSpec = [
+    ["CAGR", fmtPct(m.cagr), `benchmark ${fmtPct(m.benchmark_cagr)}`, signClass(m.cagr)],
+    ["Sharpe", fmtNum(m.sharpe), `sortino ${fmtNum(m.sortino)}`, ""],
+    ["Max drawdown", fmtPct(m.max_drawdown), `vol ${fmtPct(m.vol_annual)}`, "neg"],
+    ["Total return", fmtPct(m.total_return), `benchmark ${fmtPct(m.benchmark_return)}`, signClass(m.total_return)],
+    ["Hit rate", fmtPct(m.hit_rate, 0), `${m.trade_count} trades`, ""],
+    ["Exposure", fmtPct(m.exposure, 0), `${m.unique_tickers} names`, ""],
+    ["Fees", fmtPct(m.fees_pct_capital), "of starting capital", ""],
+  ];
+  for (const [k, v, s, cls] of tileSpec) {
+    const tile = el("div", { class: "tile" });
+    tile.append(el("div", { class: "k" }, k));
+    tile.append(el("div", { class: `v ${cls}` }, v));
+    tile.append(el("div", { class: "s" }, s));
+    tiles.append(tile);
+  }
+
+  const strategyCurve = indexed(payload.equity_curve);
+  const benchCurve = indexed(payload.benchmark_curve);
+  const legend = document.getElementById("detail-legend");
+  legend.replaceChildren();
+  for (const [name, color] of [[payload.label, "var(--series-1)"], [payload.benchmark, "var(--benchmark)"]]) {
+    const item = el("span");
+    const dot = el("span", { class: "dot" });
+    dot.style.background = color;
+    item.append(dot, document.createTextNode(name));
+    legend.append(item);
+  }
+  lineChart(document.getElementById("detail-equity"), [
+    { name: payload.label, points: strategyCurve, color: "var(--series-1)" },
+    { name: payload.benchmark, points: benchCurve, color: "var(--benchmark)", width: 1.5 },
+  ], { fmtY: (v) => v.toFixed(0), title: "Equity indexed to 100" });
+
+  const dd = payload.drawdown;
+  document.getElementById("drawdown-note").textContent = dd && dd.peak_date
+    ? `Worst decline ${fmtPct(dd.max_drawdown_daily)} on daily marks, ` +
+      `${fmtPct(dd.max_drawdown_monthly)} on month-end marks. ` +
+      `Peak ${dd.peak_date}, trough ${dd.trough_date} ` +
+      `(${Math.round(dd.decline_days / 30.44)} months down), ` +
+      (dd.recovered
+        ? `back to the previous high ${dd.recovery_date} ` +
+          `(${Math.round(dd.recovery_days / 30.44)} months to recover).`
+        : `still under water after ${Math.round(dd.recovery_days / 30.44)} months.`)
+    : "";
+  lineChart(document.getElementById("detail-drawdown"), [
+    { name: "Drawdown", points: drawdownSeries(payload.equity_curve), color: "var(--critical)", area: true },
+  ], { fmtY: (v) => fmtPct(v, 0), includeZero: true, height: 200 });
+
+  renderWinners(payload);
+  renderVariants(payload);
+
+  document.getElementById("trade-count").textContent = `(${payload.trades.length})`;
+  const tradeColumns = [
+    { label: "Ticker", value: (t) => t.ticker, render: (t) => t.ticker },
+    { label: "Entry", value: (t) => t.entry_date, render: (t) => t.entry_date.slice(0, 10) },
+    { label: "Exit", value: (t) => t.exit_date, render: (t) => t.exit_date.slice(0, 10) },
+    { label: "Entry px", num: true, value: (t) => t.entry_price, render: (t) => t.entry_price.toFixed(2) },
+    { label: "Exit px", num: true, value: (t) => t.exit_price, render: (t) => t.exit_price.toFixed(2) },
+    { label: "Return", num: true, value: (t) => t.return_pct,
+      render: (t) => `<span class="${signClass(t.return_pct)}">${fmtPct(t.return_pct)}</span>` },
+    { label: "P&L", num: true, value: (t) => t.pnl,
+      render: (t) => `<span class="${signClass(t.pnl)}">${t.pnl.toFixed(0)}</span>` },
+    { label: "Exit reason", value: (t) => t.exit_reason, render: (t) => t.exit_reason },
+  ];
+  renderTable(document.getElementById("trade-table"), tradeColumns, payload.trades, {
+    sortKey: "1", sortDir: "asc",
+  });
+
+  const warnings = document.getElementById("detail-warnings");
+  warnings.replaceChildren();
+  const notes = payload.warnings || [];
+  document.getElementById("warn-panel").classList.toggle("hidden", !notes.length);
+  for (const note of notes) warnings.append(el("li", { class: "warn" }, note));
+}
+
+// ── write-ups ──────────────────────────────────────────────────────────
+// A deliberately small Markdown subset - headings, tables, lists, rules and
+// inline emphasis - because the page has to stay self-contained and a parser
+// library would mean a third-party script. Anything it does not recognise
+// falls through as a paragraph rather than disappearing.
+function escapeHtml(text) {
+  return text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+}
+
+function inlineMarkdown(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+}
+
+function renderMarkdown(source) {
+  const lines = source.split("\n");
+  const out = [];
+  let i = 0;
+  const isTableRow = (s) => s.trim().startsWith("|") && s.trim().endsWith("|");
+  const cells = (s) => s.trim().slice(1, -1).split("|").map((c) => c.trim());
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i++; continue; }
+
+    const heading = line.match(/^(#{1,4})\s+(.*)$/);
+    if (heading) {
+      const level = Math.min(heading[1].length + 1, 5);
+      out.push(`<h${level}>${inlineMarkdown(heading[2])}</h${level}>`);
+      i++;
+      continue;
+    }
+
+    if (/^(-{3,}|\*{3,})$/.test(line.trim())) { out.push("<hr>"); i++; continue; }
+
+    // A table needs its header row plus the |---| separator beneath it.
+    if (isTableRow(line) && i + 1 < lines.length && /^\|[\s:|-]+\|$/.test(lines[i + 1].trim())) {
+      const head = cells(line);
+      i += 2;
+      const body = [];
+      while (i < lines.length && isTableRow(lines[i])) { body.push(cells(lines[i])); i++; }
+      out.push(
+        '<div class="table-wrap"><table><thead><tr>' +
+        head.map((c) => `<th>${inlineMarkdown(c)}</th>`).join("") +
+        "</tr></thead><tbody>" +
+        body.map((row) => "<tr>" + row.map((c) => `<td>${inlineMarkdown(c)}</td>`).join("") + "</tr>").join("") +
+        "</tbody></table></div>"
+      );
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push(`<li>${inlineMarkdown(lines[i].replace(/^\s*[-*]\s+/, ""))}</li>`);
+        i++;
+      }
+      out.push(`<ul>${items.join("")}</ul>`);
+      continue;
+    }
+
+    // Consecutive non-blank lines are one paragraph, which is what makes the
+    // one-sentence-per-line source style render as prose rather than as a
+    // column of fragments.
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,4}\s|\s*[-*]\s)/.test(lines[i]) && !isTableRow(lines[i])) {
+      para.push(lines[i].trim());
+      i++;
+    }
+    if (para.length) out.push(`<p>${inlineMarkdown(para.join(" "))}</p>`);
+  }
+  return out.join("\n");
+}
+
+async function renderDoc(id) {
+  const doc = (state.index.docs || []).find((d) => d.id === id);
+  document.getElementById("overview").classList.add("hidden");
+  document.getElementById("detail").classList.add("hidden");
+  document.getElementById("doc").classList.remove("hidden");
+  const body = document.getElementById("doc-body");
+  window.scrollTo(0, 0);
+  if (!doc) {
+    body.innerHTML = "<p>That write-up is not part of this build.</p>";
+    return;
+  }
+  body.innerHTML = "<p>Loading...</p>";
+  try {
+    const res = await fetch(`data/docs/${id}.md`);
+    if (!res.ok) throw new Error(String(res.status));
+    body.innerHTML = renderMarkdown(await res.text());
+  } catch (err) {
+    body.innerHTML = `<p>Could not load this write-up (${escapeHtml(String(err))}).</p>`;
+  }
+}
+
+function renderDocButtons() {
+  const host = document.getElementById("doc-buttons");
+  host.replaceChildren();
+  for (const doc of state.index.docs || []) {
+    const button = el("button", { class: "ghost", type: "button" }, doc.title);
+    button.addEventListener("click", () => { location.hash = `#doc=${doc.id}`; });
+    host.append(button);
+  }
+}
+
+function route() {
+  const docMatch = location.hash.match(/^#doc=(.+)$/);
+  if (docMatch) { renderDoc(decodeURIComponent(docMatch[1])); return; }
+  document.getElementById("doc").classList.add("hidden");
+  const match = location.hash.match(/^#run=(.+)$/);
+  if (match) renderDetail(decodeURIComponent(match[1]));
+  else renderOverview();
+}
+
+document.getElementById("theme-toggle").addEventListener("click", () => {
+  const root = document.documentElement;
+  const dark = getComputedStyle(root).getPropertyValue("--page").trim() === "#0d0d0d";
+  root.setAttribute("data-theme", dark ? "light" : "dark");
+  route();
+});
+document.getElementById("back").addEventListener("click", (event) => {
+  event.preventDefault();
+  location.hash = "";
+});
+window.addEventListener("hashchange", route);
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(route, 180);
+});
+
+document.getElementById("doc-back").addEventListener("click", (event) => {
+  event.preventDefault();
+  location.hash = "";
+});
+
+loadIndex().then(() => {
+  document.getElementById("footer").textContent =
+    `${state.index.runs.length} runs · generated ${state.index.generated} · research, not financial advice`;
+  renderDocButtons();
+  route();
+});
+</script>
+</body>
+</html>

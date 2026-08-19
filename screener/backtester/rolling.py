@@ -19,7 +19,7 @@ from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.workflow import BacktestRequest, resolve_backtest_run
 from screener.markets import market_option
-from screener.regime import TREND_LABELS
+from screener.regime import BREADTH_LABELS, TREND_LABELS
 from screener.universes import available_universes
 
 __all__ = ["backtest_rolling"]
@@ -147,6 +147,18 @@ __all__ = ["backtest_rolling"]
     help=(
         "Only allow entries on days whose benchmark trend regime matches "
         "(repeatable). Warmup days with an unknown regime are suppressed."
+    ),
+)
+@click.option(
+    "--breadth-regime",
+    "breadth_filter_args",
+    multiple=True,
+    type=click.Choice(list(BREADTH_LABELS)),
+    help=(
+        "Only allow entries on days whose universe BREADTH regime matches "
+        "(repeatable): the share of the universe above its 20/200-day EMA, "
+        "measured on the run's own bars. Days with too little coverage are "
+        "suppressed. Combines with --regime-filter via AND."
     ),
 )
 @click.option(

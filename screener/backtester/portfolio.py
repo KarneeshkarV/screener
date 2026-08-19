@@ -1,17 +1,33 @@
 """Explicit position + cash accounting for the backtester.
 
-Each slot has a fixed ``slot_capital = initial_capital / slot_count`` budget
-ceiling. At each ``open`` we spend up to ``min(slot_capital, current_cash)`` of
-cash to fill shares (the cap prevents negative cash when a slot is reused
-after a losing trade and cumulative losses have eroded the pool). At exit we
-receive ``shares * exit_price - exit_commission`` back into cash.
+Each slot has a ``slot_capital`` budget ceiling. At each ``open`` we spend up
+to ``min(slot_capital, current_cash)`` of cash to fill shares (the cap prevents
+negative cash when a slot is reused after a losing trade and cumulative losses
+have eroded the pool). At exit we receive
+``shares * exit_price - exit_commission`` back into cash.
 
 The equity curve is cash + mark-to-market of open positions. When the engine
 uses the event-driven reallocation path, closed-trade proceeds return to
 ``_cash`` and fund subsequent ``open`` calls on the same slot (a reserve
-ticker fills the freed slot). Realized gains that exceed ``slot_capital`` stay
-as idle cash within the slot — per-slot sizing is not compounded, to keep
-sizing balanced across slots regardless of lucky-early-trade effects.
+ticker fills the freed slot).
+
+**Sizing mode.** With ``compounding=False`` (the default) ``slot_capital`` is
+frozen at ``initial_capital / slot_count`` for the life of the run: realized
+gains above that stay as idle cash. That keeps sizing balanced across slots
+regardless of lucky-early-trade effects, and it is what pinned baselines
+expect, but it silently de-levers a run that compounds — a book that quadruples
+ends up with three quarters of its equity idle, so measured volatility and
+drawdown decay toward zero and Sharpe drifts upward for reasons that have
+nothing to do with the signal.
+
+With ``compounding=True`` the ceiling is recomputed per entry as
+``realized_equity / slot_count``, where realized equity is cash plus the cost
+basis of open positions (that is, ``initial_capital`` plus realized P&L net of
+fees). Slots stay balanced with each other — they all divide the *same* pool,
+rather than each compounding independently — so the original rationale is
+preserved while the book keeps its capital at work. Unrealized gains are
+excluded deliberately: including them would size new entries off marks that a
+later exit may not realize.
 
 Concurrent positions per ticker (pyramiding) are supported internally by
 keying ``_open`` on ``(ticker, open_seq)``. Legacy callers that pass ticker
@@ -45,11 +61,14 @@ class Portfolio:
         initial_capital: float,
         slot_count: int,
         cost_model: CostModel | None = None,
+        *,
+        compounding: bool = False,
     ) -> None:
         if slot_count <= 0:
             raise ValueError("slot_count must be > 0")
         self.initial_capital = float(initial_capital)
         self.slot_count = slot_count
+        self.compounding = compounding
         self.slot_capital = self.initial_capital / slot_count
         self.cost_model = cost_model or FlatCommission()
         # Running attribution of statutory/broker fees actually charged, keyed
@@ -73,9 +92,25 @@ class Portfolio:
         self._ranks[ticker] = rank
         self._signal_dates[ticker] = signal_date
 
+    def realized_equity(self) -> float:
+        """Cash plus the cost basis of open positions.
+
+        Equals ``initial_capital`` plus realized P&L net of fees, and needs no
+        current prices, so it can be evaluated at entry time inside the fill
+        path where marks are not available for every open ticker.
+        """
+        basis = sum(p.shares * p.entry_fill for p in self._open.values())
+        return max(self._cash, 0.0) + basis
+
+    def current_slot_capital(self) -> float:
+        """Per-slot ceiling for the next entry, honouring the sizing mode."""
+        if not self.compounding:
+            return self.slot_capital
+        return max(self.realized_equity(), 0.0) / self.slot_count
+
     def entry_budget(self) -> float:
         """Cash available to the next slot, before entry price/commission."""
-        return min(self.slot_capital, max(self._cash, 0.0))
+        return min(self.current_slot_capital(), max(self._cash, 0.0))
 
     def _charge_fees(
         self,
@@ -444,13 +479,14 @@ def build_equity_curve(
         lo = int(calendar.searchsorted(entry_ts, side="left"))
         if exit_ts <= entry_ts:
             # Same-day entry and exit (e.g. a force-close of a position opened
-            # on the window's last bar): the event loop orders closes before
-            # opens on the same day, so the close never pops this position and
-            # it stays marked-to-market for every remaining calendar day.
-            # Preserved exactly for bit-identical curves.
-            hi = len(calendar)
-        else:
-            hi = int(calendar.searchsorted(exit_ts, side="left"))
+            # on the window's last bar). Both cash events land on this one day,
+            # so cash already carries the entire round trip; the position is
+            # never held at any day's close and contributes no mark-to-market.
+            # Marking it anyway double-counted the notional for the rest of the
+            # calendar - visible as the curve doubling on the final bar of any
+            # strategy whose rebalance fell there.
+            continue
+        hi = int(calendar.searchsorted(exit_ts, side="left"))
         if lo >= hi:
             continue
         prices = arr[lo:hi]

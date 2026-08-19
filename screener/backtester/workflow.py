@@ -77,6 +77,7 @@ class BacktestRequest:
     sizing_atr_multiple: float
     sizing_vol_window: int
     intraday_only: bool
+    compounding: bool = False
     start_arg: datetime | None = None
     end_arg: datetime | None = None
     years: int = 1
@@ -90,6 +91,7 @@ class BacktestRequest:
     point_in_time: bool = False
     spread_proxy: bool = False
     regime_filter_args: tuple[str, ...] = ()
+    breadth_filter_args: tuple[str, ...] = ()
     sector_neutral: bool = False
     earnings_blackout_days: int | None = None
     fundamentals_provider: str | None = None
@@ -171,6 +173,7 @@ def _build_config(
             min_avg_dollar_volume=min_avg_dollar_volume,
             avg_dollar_volume_window=int(request.adv_window),
             sizing_rule=request.sizing_rule,
+            compounding=bool(request.compounding),
             sizing_risk_pct=float(request.sizing_risk_pct),
             sizing_position_pct=float(request.sizing_position_pct),
             sizing_atr_window=int(request.sizing_atr_window),
@@ -340,6 +343,7 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         dynamic_universe_rebalance=dynamic_universe_rebalance,
         spread_proxy=bool(request.spread_proxy),
         regime_filter=tuple(dict.fromkeys(request.regime_filter_args)),
+        breadth_filter=tuple(dict.fromkeys(request.breadth_filter_args)),
         earnings_blackout_days=request.earnings_blackout_days,
         fundamentals_provider=provider,
         fundamental_fields=fields,

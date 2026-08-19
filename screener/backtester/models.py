@@ -54,6 +54,11 @@ class BacktestConfig(BaseModel):
     exit_expr: str | None
     strategy_name: str | None = None
     regime_filter: tuple[str, ...] = ()
+    # Breadth-regime entry gate: allow entries only on days whose universe
+    # breadth regime (share above 20/200-day EMA) is in this set. Independent
+    # of ``regime_filter``, which reads the benchmark's own trend; when both
+    # are set a day must satisfy both.
+    breadth_filter: tuple[str, ...] = ()
     # Earnings blackout entry gate (rolling backtest): when set to N, suppress
     # entry signals on any calendar day within N days BEFORE (and including) a
     # known earnings date for that ticker. ``None`` disables the gate. Tickers
@@ -109,6 +114,11 @@ class BacktestConfig(BaseModel):
     # ``equal_slot`` reproduces the legacy fixed-slot budget exactly; every
     # other rule sizes DOWN from that slot ceiling, never above it.
     sizing_rule: str = "equal_slot"
+    # Grow the per-slot budget with realized equity instead of freezing it at
+    # ``initial_capital / top``. Off by default because it changes every
+    # multi-year number; on, a run that compounds keeps its capital deployed
+    # rather than drifting into idle cash (see ``Portfolio``).
+    compounding: bool = False
     sizing_risk_pct: float = Field(default=0.01, gt=0.0)
     sizing_position_pct: float = Field(default=0.10, gt=0.0)
     sizing_atr_window: int = Field(default=14, gt=0)

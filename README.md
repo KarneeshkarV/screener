@@ -241,6 +241,38 @@ Both backtest commands accept rule-based per-entry position sizing. The default 
 
 ATR/volatility lookbacks read only up to the signal bar (no lookahead) and fall back to the slot budget during warmup.
 
+### Compounding (`--compounding`)
+
+By default the per-slot budget is frozen at `initial_capital / top` for the life
+of the run, and realized gains above that ceiling stay as idle cash.
+That keeps slots balanced against each other, but it silently de-levers any run
+that compounds: a book that quadruples ends up with three quarters of its equity
+uninvested, so its measured volatility and drawdown decay toward zero and its
+Sharpe drifts upward for reasons that have nothing to do with the signal.
+On a ten-year run this made annualised volatility fall from 16.9% to 5.0% purely
+as an artifact of the sizing, which makes Sharpe incomparable between a 1-year
+and a 10-year window.
+
+`--compounding` recomputes the ceiling per entry as
+`realized_equity / top`, where realized equity is cash plus the cost basis of
+open positions.
+Every slot still divides the same pool, so they stay equal to one another and a
+lucky early trade cannot permanently enlarge one slot - the property the frozen
+design was protecting.
+Unrealized gains are excluded on purpose: sizing new entries off marks that a
+later exit may not realize would lever the book into its own paper profits.
+
+The momentum study always runs with compounding on. The flag defaults to off
+elsewhere so existing pinned baselines keep their numbers.
+
+Because every rule is clamped to the equal-slot budget, a risk target that is
+loose relative to the slot size makes the rule a no-op: `inverse_vol` at the
+default 1% risk with 20 slots asks for more than a 5% slot unless a name moves
+20% in a day, so it always clamps back to `equal_slot`.
+Size `--sizing-risk-pct` so a typical name lands near its slot cap - then quiet
+names fill the slot and volatile ones get cut below it, which is the point of
+the rule.
+
 ```bash
 uv run screener backtest-rolling -m us --years 2 --strategy rs_breakout --top 10 --sizing atr_risk --sizing-risk-pct 0.01
 uv run screener backtest-historical -m us --as-of 2026-03-20 --tickers AAPL,MSFT --entry "close > 0" --sizing fixed_risk --stop-loss 0.08
@@ -295,9 +327,136 @@ uv run screener factor-tearsheet -m us --strategy momentum_12_1 --years 3
 just factor-tearsheet -m india --strategy momentum_12_1 --universe nifty50
 # dual-momentum: 12-1 winners that are also above SMA200
 uv run screener backtest-rolling -m us --years 3 --strategy momentum_12_1_trend --top 10
+# defensive momentum: only enter while the benchmark's confirmed trend is risk-on
+uv run screener backtest-rolling -m us --years 3 --strategy momentum_12_1_defensive --top 10
 # risk-adjusted: rank by mom_12_1 / vol_252 (volatility-scaled winners)
 uv run screener backtest-rolling -m us --years 3 --strategy momentum_12_1_riskadj --top 10
 ```
+
+### Momentum literature strategies
+
+Sixteen registered strategies implement four momentum literatures as long-only
+stock portfolios. Each is an approximation of a published design - none of them
+short, lever, or hold an interest-bearing defensive sleeve - so their numbers are
+not directly comparable with the papers' headline Sharpes. The plugin docstrings
+state exactly which part of each paper survives the translation.
+
+Every strategy whose rule is a *state gate* exits on that gate as well as
+entering on it. The published rules re-decide their allocation each month and
+move out of equities when the test fails; an entry-only gate would hold
+positions through the decline it exists to avoid, which measurably worsens
+drawdowns rather than improving them.
+
+| Strategy | Family | Paper |
+| --- | --- | --- |
+| `momentum_12_1` | cross-sectional | Jegadeesh & Titman (1993) |
+| `momentum_6_6` | cross-sectional | Jegadeesh & Titman (1993), J=6/K=6 |
+| `momentum_12_1_trend` | cross-sectional | JT winners above SMA200 |
+| `momentum_12_1_riskadj` | cross-sectional | Barroso & Santa-Clara (2015), ranking |
+| `momentum_12_1_volmanaged` | cross-sectional | Barroso & Santa-Clara (2015), exposure |
+| `momentum_12_1_dynamic` | cross-sectional | Daniel & Moskowitz (2016), crash state |
+| `momentum_12_1_defensive` | cross-sectional | benchmark risk-on regime gate |
+| `dual_momentum_gem` | dual | Antonacci (2012/2017), per-name bill hurdle |
+| `dual_momentum_market` | dual | Antonacci (2012/2017), market bill hurdle |
+| `dual_momentum_paa` | dual | Keller & Keuning (2016) |
+| `dual_momentum_daa` | dual | Keller & Keuning (2018) |
+| `tsmom_12` | time-series | Moskowitz, Ooi & Pedersen (2012) |
+| `tsmom_blend` | time-series | Hurst, Ooi & Pedersen (2013, 2017) |
+| `faber_sma10` | long-only trend | Faber (2018) |
+| `absolute_momentum` | long-only trend | Antonacci (2013) |
+| `industry_trend_breakout` | long-only trend | Zarattini & Antonacci (2024) |
+
+```bash
+uv run screener backtest-rolling -m us --years 5 --strategy tsmom_blend --top 20 --hold 21
+uv run screener backtest-rolling -m india --years 10 --strategy dual_momentum_market \
+  --universe nifty500_extended_pit --universe-config data/universes/india_pit.toml \
+  --point-in-time --top 20 --hold 21 --cost-model india
+```
+
+The US dual-momentum hurdle reads FMP's `treasury` series (`month3`, the
+constant-maturity 3-month bill yield) when `FMP_API_KEY` is set, falling back to
+the 13-week T-bill quote `^IRX`.
+`^IRX` is a *discount rate* rather than a yield, so it runs below the FMP series
+and diverges further as rates rise; that is why it is the fallback.
+India has no free daily equivalent from either provider, so it uses the
+documented constant in `screener/risk_free.py` (override with
+`SCREENER_RISK_FREE_INDIA`).
+
+The `sectorneutral` lever resolves sectors from FMP's `profile` endpoint, which
+answers a hundred symbols per request, with yfinance `Ticker.info` as the
+per-symbol fallback.
+Sectors are cached under `~/.screener/sectors` for 30 days, but an `UNKNOWN`
+result expires after one day: every provider failure funnels into `UNKNOWN`, and
+caching a rate-limited lookup as confidently as a real answer would silently
+collapse sector-neutral ranking into a single bucket for a month.
+
+#### The full study and its site
+
+Three scripts run the whole matrix - sixteen strategies over 1, 2, 3, 5 and 10
+year windows on the Nifty 500 and the S&P 500 - and publish a browsable report.
+
+```bash
+uv run python scripts/run_momentum_study.py     # 160 runs into reports/momentum_study/runs
+uv run python scripts/build_momentum_site.py    # assemble reports/momentum_study/site
+uv run python scripts/serve_momentum_site.py    # serve it on the local network
+```
+
+Runs are resumable: an existing run JSON is skipped unless `--force` is passed.
+The site has a sortable metrics table, equity curves and the full trade ledger
+for every strategy, selectable by market, window and regime overlay. The server
+binds all interfaces and prints the Tailscale URL, so the report is reachable
+from another machine on the tailnet.
+
+#### Sweeping construction choices
+
+Three dimensions can be varied on top of a strategy's own rules.
+
+| Flag | Values | What it tests |
+| --- | --- | --- |
+| `--regime-sweep` | `bull`, `nonbear`, `breadth` | whether a plain benchmark-state filter adds anything to a signal that already has its own risk rules |
+| `--hold-sweep` | 21, 63, 126 days | holding period, the parameter these strategies are most sensitive to |
+| `--lever-sweep` | see below | one construction change at a time against the baseline |
+
+Holding period and the regime overlay are **crossed**, because they interact: a
+filter that blocks entries changes how often slots turn over, so the best hold
+under a filter need not be the best hold without one. The construction levers
+are swept **one at a time** instead - crossing everything would be tens of
+thousands of runs, and any single good cell would then be indistinguishable from
+the best of a very large search.
+
+| Lever | Change | Motivation |
+| --- | --- | --- |
+| `invvol` | inverse-volatility sizing | Moskowitz-Ooi-Pedersen, Hurst and Zarattini all size inversely to recent volatility; equal slots do not |
+| `top10` | 10 positions | Piras: concentration trades momentum exposure against idiosyncratic risk |
+| `top50` | 50 positions | the diffuse end of the same trade-off |
+| `sectorneutral` | z-score rank within sector | strips out the sector bet a momentum basket makes implicitly |
+| `trail25` | 25% trailing stop | Zarattini's exit is a trailing channel stop; narrow stops are already known to lose |
+
+```bash
+uv run python scripts/run_momentum_study.py -y 10 --regime-sweep --hold-sweep
+uv run python scripts/run_momentum_study.py -y 10 --lever-sweep
+```
+
+Each strategy's page shows its variants ranked against its own baseline. A
+variant counts as an improvement only when it beats the baseline on *both*
+Sharpe and drawdown - one alone usually just means a different risk level.
+
+`scripts/run_momentum_study_all.sh` runs every phase in order and republishes
+the site after each one. It shards by strategy across `WORKERS` processes
+(default 6, sized from the measured 875 MB peak of the heaviest run), caps the
+numeric libraries at two threads each, and runs under `nice`/`ionice` so it
+stays out of the way of interactive work.
+
+```bash
+WORKERS=4 ./scripts/run_momentum_study_all.sh
+```
+
+The site reports two drawdown conventions, because the literature mixes them:
+peak-to-trough on daily marks, and on month-end marks as Antonacci and Faber
+measure it. A crash that recovers inside a month is invisible to the month-end
+figure, so published month-end drawdowns read shallower than daily ones for the
+same path. It also reports the two durations the papers almost never give -
+months from peak to trough, and months from trough back to the previous high.
 
 ### `earnings-backtest`
 

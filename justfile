@@ -143,6 +143,10 @@ pine-india *args:
 unusual-volume *args:
     @{{screener}} unusual-volume "$@"
 
+# Check market condition via EMA penetration. Example: just market-condition -m us -n 500
+market-condition *args:
+    @{{screener}} market-condition "$@"
+
 # Find GARP stocks using market-specific fundamental data.
 garp *args:
     @{{screener}} garp "$@"
@@ -231,6 +235,10 @@ seasonality *args:
 # Show unusual-volume command help.
 help-unusual-volume:
     @{{screener}} unusual-volume --help
+
+# Show market condition command help.
+help-market-condition:
+    @{{screener}} market-condition --help
 
 # Compile Python files without running tests.
 compile:

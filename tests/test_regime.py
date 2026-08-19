@@ -6,7 +6,7 @@ import pandas as pd
 
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling_simulation import run_rolling_backtest
-from screener.regime import classify_regimes, vol_regime
+from screener.regime import classify_defensive_regimes, classify_regimes, vol_regime
 
 
 def _series(values: list[float], start: str = "2020-01-01") -> pd.Series:
@@ -60,6 +60,21 @@ def test_classify_regimes_no_lookahead():
     cut = 230
     truncated = classify_regimes(close.iloc[:cut])
     assert truncated.equals(full.iloc[:cut])
+
+
+def test_defensive_regime_marks_sharp_sma200_break_risk_off():
+    # The legacy regime stays ``pullback`` here because SMA50 remains above
+    # SMA200.  The defensive gate must block immediately on the price break.
+    close = _series([100.0] * 150 + [101.0] * 49 + [90.0])
+    assert classify_regimes(close).iloc[-1] == "pullback"
+    assert classify_defensive_regimes(close).iloc[-1] == "risk_off"
+
+
+def test_defensive_regime_requires_rising_confirmed_trend():
+    close = _series([100.0 + 0.5 * i for i in range(260)])
+    labels = classify_defensive_regimes(close)
+    assert (labels.iloc[:199] == "unknown").all()
+    assert (labels.iloc[219:] == "risk_on").all()
 
 
 # ---------------------------------------------------------------------------

@@ -136,6 +136,50 @@ def score_ema(df: pd.DataFrame) -> pd.Series:
     return _score_ema_setup(df)
 
 
+def _score_above_ema(df: pd.DataFrame, ema_column: str) -> pd.Series:
+    """Rank names already above one moving average by how healthy that stance is.
+
+    The criterion has filtered on the moving average, so the flag itself carries
+    no ranking information: every match is above it. What separates the matches
+    is how much room the move has left. The recipe therefore rewards liquidity,
+    a positive EMA20/EMA200 stack and recent change, and penalizes price that has
+    stretched far above its 20-day average - a stock 30% above the line is above
+    it for a worse reason than one 3% above.
+    """
+    close = numeric(df, "close")
+    ema20 = numeric(df, "EMA20")
+    ema200 = numeric(df, "EMA200")
+    volume = numeric(df, "volume")
+
+    liquidity = liquidity_from_dollar_volume(volume, close)
+    long_trend = above_flag(ema20, ema200)
+    headroom = percentile(-((close - numeric(df, ema_column)) / close).abs())
+    momentum = momentum_change(numeric(df, "change"))
+    penalty = overextension_penalty(close, ema20)
+
+    return (
+        35 * liquidity + 25 * long_trend + 20 * headroom + 20 * momentum - 15 * penalty
+    ).round(2)
+
+
+@scorer(
+    "above_20ema",
+    columns=("EMA20", "EMA200"),
+    description="Short-term trend stance: liquidity + stack + headroom − overextension",
+)
+def score_above_20ema(df: pd.DataFrame) -> pd.Series:
+    return _score_above_ema(df, "EMA20")
+
+
+@scorer(
+    "above_200ema",
+    columns=("EMA20", "EMA200"),
+    description="Long-term trend stance: liquidity + stack + headroom − overextension",
+)
+def score_above_200ema(df: pd.DataFrame) -> pd.Series:
+    return _score_above_ema(df, "EMA200")
+
+
 def _score_breakout_family(df: pd.DataFrame) -> pd.Series:
     """Proximity to 52w high + volume confirmation + mild trend support."""
     close = numeric(df, "close")
