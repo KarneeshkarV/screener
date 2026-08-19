@@ -32,7 +32,14 @@ MARKETS = {
     },
     "us": {
         "universe": "sp500",
-        "costs": ["--cost-model", "flat", "--commission-bps", "1", "--slippage-bps", "5"],
+        "costs": [
+            "--cost-model",
+            "flat",
+            "--commission-bps",
+            "1",
+            "--slippage-bps",
+            "5",
+        ],
     },
 }
 
@@ -105,12 +112,18 @@ def run_one(market: str, strategy: str, years: int) -> dict[str, str]:
     cmd = [
         str(ROOT / ".venv" / "bin" / "screener"),
         "backtest-rolling",
-        "-m", market,
-        "--years", str(years),
-        "--strategy", strategy,
-        "--top", str(sizing["top"]),
-        "--hold", str(sizing["hold"]),
-        "--universe", cfg["universe"],
+        "-m",
+        market,
+        "--years",
+        str(years),
+        "--strategy",
+        strategy,
+        "--top",
+        str(sizing["top"]),
+        "--hold",
+        str(sizing["hold"]),
+        "--universe",
+        cfg["universe"],
         *cfg["costs"],
     ]
     log_path = OUT / f"{market}__{strategy}__{years}y.log"

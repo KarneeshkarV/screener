@@ -42,8 +42,18 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 # market -> (universe, cost flags)
 MARKETS = {
-    "india": {"universe": "nifty500", "cost_model": "india", "slippage_bps": 10.0, "commission_bps": 0.0},
-    "us": {"universe": "sp500", "cost_model": "flat", "slippage_bps": 5.0, "commission_bps": 1.0},
+    "india": {
+        "universe": "nifty500",
+        "cost_model": "india",
+        "slippage_bps": 10.0,
+        "commission_bps": 0.0,
+    },
+    "us": {
+        "universe": "sp500",
+        "cost_model": "flat",
+        "slippage_bps": 5.0,
+        "commission_bps": 1.0,
+    },
 }
 
 # strategy -> (top, hold) — same sizing as the main study
@@ -98,8 +108,12 @@ def _metrics_of(result) -> dict[str, float]:
         "sharpe": m.get("sharpe"),
         "sortino": m.get("sortino"),
         "calmar": m.get("calmar"),
-        "max_drawdown": None if m.get("max_drawdown") is None else m["max_drawdown"] * 100.0,
-        "total_return": None if m.get("total_return") is None else m["total_return"] * 100.0,
+        "max_drawdown": None
+        if m.get("max_drawdown") is None
+        else m["max_drawdown"] * 100.0,
+        "total_return": None
+        if m.get("total_return") is None
+        else m["total_return"] * 100.0,
         "trades": float(m.get("trade_count", len(result.trades)) or 0.0),
         "exposure": float((m.get("exposure") or 0.0) * 100.0),
         "benchmark_return": float((m.get("benchmark_return") or 0.0) * 100.0),
@@ -127,7 +141,9 @@ def _sizing_check(prepared, regime_cfg: BacktestConfig, best: dict) -> dict | No
     return winner
 
 
-def _resolve(market: str, strategy: str, years: int) -> tuple[BacktestConfig, object, date, date]:
+def _resolve(
+    market: str, strategy: str, years: int
+) -> tuple[BacktestConfig, object, date, date]:
     top, hold = STRATEGIES[strategy]
     cfg_m = MARKETS[market]
     request = BacktestRequest(
@@ -198,7 +214,9 @@ def sweep_one(market: str, strategy: str) -> list[dict]:
     rows: list[dict] = []
     for regime in REGIMES:
         regime_cfg = cfg.model_copy(update={"regime_filter": regime})
-        prepared = prepare_rolling_backtest(regime_cfg, fetcher, start_date=start, end_date=end)
+        prepared = prepare_rolling_backtest(
+            regime_cfg, fetcher, start_date=start, end_date=end
+        )
         regime_rows: list[dict] = []
         for combo in GRID:
             combo_cfg = regime_cfg.model_copy(update=combo)
@@ -237,7 +255,9 @@ def sweep_one(market: str, strategy: str) -> list[dict]:
 
 
 def pick_best(rows: list[dict], min_trades: int = 8) -> dict | None:
-    eligible = [r for r in rows if r["trades"] >= min_trades and r["sharpe"] is not None]
+    eligible = [
+        r for r in rows if r["trades"] >= min_trades and r["sharpe"] is not None
+    ]
     if not eligible:
         return None
     return max(eligible, key=lambda r: r["sharpe"])
@@ -251,20 +271,30 @@ def validate_best(best_by_key: dict[str, dict]) -> list[dict]:
             if best is None:
                 continue
             cfg, _, _, _ = _resolve(market, strategy, 5)
-            regime = () if best["regime"] == "none" else tuple(best["regime"].split(","))
+            regime = (
+                () if best["regime"] == "none" else tuple(best["regime"].split(","))
+            )
             for years in (5, 2, 1):
                 _, fetcher_y, start, end = _resolve(market, strategy, years)
                 tuned = cfg.model_copy(
                     update={
                         "regime_filter": regime,
-                        "stop_loss": None if best["sl"] == "none" else float(best["sl"]),
-                        "take_profit": None if best["tp"] == "none" else float(best["tp"]),
-                        "trailing_stop": None if best["trail"] == "none" else float(best["trail"]),
+                        "stop_loss": None
+                        if best["sl"] == "none"
+                        else float(best["sl"]),
+                        "take_profit": None
+                        if best["tp"] == "none"
+                        else float(best["tp"]),
+                        "trailing_stop": None
+                        if best["trail"] == "none"
+                        else float(best["trail"]),
                     }
                 )
                 # Run the tuned config and the no-lever baseline on the same window.
                 for label, run_cfg in (("tuned", tuned), ("baseline", cfg)):
-                    result = run_rolling_backtest(run_cfg, fetcher_y, start_date=start, end_date=end)
+                    result = run_rolling_backtest(
+                        run_cfg, fetcher_y, start_date=start, end_date=end
+                    )
 
                     def _lv(v: float | None) -> str:
                         return "none" if v is None else f"{v:.2f}"
@@ -309,7 +339,13 @@ def main() -> None:
         for market in MARKETS:
             for strategy in STRATEGIES:
                 key = f"{market}/{strategy}"
-                best[key] = pick_best([r for r in all_rows if r["strategy"] == strategy and r["market"] == market])
+                best[key] = pick_best(
+                    [
+                        r
+                        for r in all_rows
+                        if r["strategy"] == strategy and r["market"] == market
+                    ]
+                )
         best_json.write_text(json.dumps(best, indent=2, default=str))
         print(f"sweep: {len(all_rows)} rows -> {sweep_csv}")
 

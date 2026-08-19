@@ -58,9 +58,12 @@ def main() -> None:
     ]
     for market, label in (("india", "India (Nifty 500)"), ("us", "US (S&P 500)")):
         lines.append(f"\n## {label}\n")
-        lines.append("| Strategy | 3y yf CAGR | 3y FMP CAGR | 5y yf | 5y FMP base | 5y FMP tuned | 1y yf | 1y FMP base | 1y FMP tuned |")
+        lines.append(
+            "| Strategy | 3y yf CAGR | 3y FMP CAGR | 5y yf | 5y FMP base | 5y FMP tuned | 1y yf | 1y FMP base | 1y FMP tuned |"
+        )
         lines.append("|---|---|---|---|---|---|---|---|---|")
         for s in STRATEGY_ORDER:
+
             def cag(rows, years, kind=None, sweep=False):
                 for r in rows:
                     if r["strategy"] != s or r["market"] != market:
