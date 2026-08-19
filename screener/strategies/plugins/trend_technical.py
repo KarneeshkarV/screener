@@ -136,7 +136,11 @@ def _efficiency_ratio(close: pd.Series, n: int = _KAMA_N) -> pd.Series:
     close = close.astype(float)
     change = (close - close.shift(n)).abs()
     volatility = close.diff().abs().rolling(n, min_periods=n).sum()
-    return (change / volatility).clip(lower=0.0, upper=1.0)
+    er = (change / volatility).clip(lower=0.0, upper=1.0)
+    # A halted / limit-locked tape sums to zero |diff| over the window, so the
+    # ratio is 0/0 (NaN). Treat that as zero efficiency (the slowest smoothing
+    # constant) rather than NaN, so the KAMA recursion never goes NaN.
+    return er.fillna(0.0)
 
 
 def _kama(
