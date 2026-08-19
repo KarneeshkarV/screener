@@ -69,7 +69,12 @@ def baseline(rows: list[dict], strategy: str, market: str) -> dict | None:
 
 
 def cfg_text(best: dict) -> str:
-    parts = [f"regime={best['regime']}", f"SL {best['sl']}", f"TP {best['tp']}", f"trail {best['trail']}"]
+    parts = [
+        f"regime={best['regime']}",
+        f"SL {best['sl']}",
+        f"TP {best['tp']}",
+        f"trail {best['trail']}",
+    ]
     sizing = best.get("sizing", "equal_slot")
     if sizing != "equal_slot":
         parts.append(f"sizing={sizing}")
@@ -78,7 +83,11 @@ def cfg_text(best: dict) -> str:
 
 def main() -> None:
     rows = load(OUT / "sweep_results_fmp.csv")
-    best = json.loads((OUT / "sweep_best_fmp.json").read_text()) if (OUT / "sweep_best_fmp.json").exists() else {}
+    best = (
+        json.loads((OUT / "sweep_best_fmp.json").read_text())
+        if (OUT / "sweep_best_fmp.json").exists()
+        else {}
+    )
     validate_rows = load(OUT / "sweep_validate_fmp.csv")
 
     lines = [
@@ -106,14 +115,28 @@ def main() -> None:
             base_cagr = pct(base["cagr"]) if base else "—"
             base_sharpe = num(base["sharpe"]) if base else "—"
             if best_row is None or best_row.get("sharpe") is None:
-                lines.append(f"| `{strategy}` | {base_cagr} / {base_sharpe} | — | — | — |")
+                lines.append(
+                    f"| `{strategy}` | {base_cagr} / {base_sharpe} | — | — | — |"
+                )
                 continue
             best_cagr = pct(best_row["cagr"])
             best_sharpe = num(best_row["sharpe"])
             best_mdd = pct(best_row["max_drawdown"])
             cfg_txt = cfg_text(best_row)
-            val_tuned = [r for r in validate_rows if r["strategy"] == strategy and r["market"] == market and r.get("kind") == "tuned"]
-            val_base = [r for r in validate_rows if r["strategy"] == strategy and r["market"] == market and r.get("kind") == "baseline"]
+            val_tuned = [
+                r
+                for r in validate_rows
+                if r["strategy"] == strategy
+                and r["market"] == market
+                and r.get("kind") == "tuned"
+            ]
+            val_base = [
+                r
+                for r in validate_rows
+                if r["strategy"] == strategy
+                and r["market"] == market
+                and r.get("kind") == "baseline"
+            ]
             val_tuned.sort(key=lambda r: -int(r["years"]))
             val_base.sort(key=lambda r: -int(r["years"]))
             if val_tuned:
