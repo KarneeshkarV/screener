@@ -183,14 +183,17 @@ _log_percentile = log_percentile
 def _add_setup_score(
     df: pd.DataFrame,
     scorer: ScoreSpec | None = None,
+    *,
+    market: str | None = None,
 ) -> pd.DataFrame:
     """Apply a ranking recipe and write ``setup_score``.
 
     Defaults to the EMA trend setup for backward compatibility with tests and
-    call sites that still invoke this helper directly.
+    call sites that still invoke this helper directly. ``market`` is only read
+    by bar-derived recipes, which resolve price history for the scanned rows.
     """
     active = scorer if scorer is not None else default_scorer()
-    return apply_score(df, active)
+    return apply_score(df, active, market=market)
 
 
 def _dedupe_listings(df: pd.DataFrame) -> pd.DataFrame:
@@ -234,12 +237,18 @@ def shape_scan_results(
     order_by: str = "volume",
     detail: bool = False,
     scorer: ScoreSpec | None = None,
+    market: str | None = None,
 ) -> pd.DataFrame:
-    """Shape raw scanner rows after Adapter fetch without provider access."""
+    """Shape raw scanner rows after Adapter fetch without provider access.
+
+    Scoring happens here, *after* the TradingView filters have already cut the
+    field, so a bar-derived recipe only ever fetches price history for the rows
+    the scan returned rather than for the whole market.
+    """
     shaped = df
     if order_by == OUTPUT_SCORE_COLUMN and not shaped.empty:
         active = scorer if scorer is not None else default_scorer()
-        shaped = _add_setup_score(shaped, active)
+        shaped = _add_setup_score(shaped, active, market=market)
         shaped = shaped.sort_values(OUTPUT_SCORE_COLUMN, ascending=False)
         drop_cols = _helper_columns_to_drop(active, detail=detail)
         shaped = shaped.drop(columns=[c for c in drop_cols if c in shaped.columns])
@@ -277,4 +286,5 @@ def scan(
         order_by=order_by,
         detail=detail,
         scorer=plan.scorer,
+        market=market,
     )

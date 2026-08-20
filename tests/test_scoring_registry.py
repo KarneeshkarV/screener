@@ -393,34 +393,13 @@ def test_negative_pe_does_not_win_value_rank() -> None:
     assert scored.iloc[0]["name"] == "OK"
 
 
-def test_momentum_12_1_ranks_higher_spread_first() -> None:
-    # 12-1 momentum is the 1y return net of the trailing month. A high 1y gain
-    # with a weak last month (past momentum) must outrank a low 1y gain.
-    df = pd.DataFrame(
-        [
-            {
-                "name": "PASTMOM",
-                "close": 100.0,
-                "volume": 1_000_000.0,
-                "market_cap_basic": 1e9,
-                "Perf.Y": 60.0,
-                "Perf.1M": 2.0,
-            },
-            {
-                "name": "RECENTMOM",
-                "close": 100.0,
-                "volume": 1_000_000.0,
-                "market_cap_basic": 1e9,
-                "Perf.Y": 10.0,
-                "Perf.1M": 20.0,
-            },
-        ]
-    )
-    scored = apply_score(df, get_scorer("momentum_12_1")).set_index("name")
-    assert (
-        scored.loc["PASTMOM", OUTPUT_SCORE_COLUMN]
-        > scored.loc["RECENTMOM", OUTPUT_SCORE_COLUMN]
-    )
+def test_momentum_12_1_is_bar_derived_not_a_snapshot_recipe() -> None:
+    # The 12-1 recipe moved to the shared price-only layer so the screen and
+    # the backtest report one number; see tests/test_score_unification.py for
+    # the parity check. Nothing here may read TradingView's Perf.* snapshot.
+    spec = get_scorer("momentum_12_1")
+    assert spec.bar_score is not None
+    assert spec.columns == ()
 
 
 def test_mark_minervini_ranks_full_trend_stack_and_near_high() -> None:

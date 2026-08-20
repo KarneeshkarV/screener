@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener.scoring import scorer
+from screener.scoring import register_bar_scorer, scorer
 from screener.scoring.components import (
     above_flag,
     liquidity_from_dollar_volume,
@@ -23,7 +23,6 @@ from screener.scoring.components import (
     trend_stack_strength,
 )
 
-_MOMENTUM_12_1_COLUMNS = ("Perf.Y", "Perf.1M")
 _MARK_MINERVINI_COLUMNS = (
     "SMA50",
     "SMA150",
@@ -89,16 +88,17 @@ def _score_ema_setup(df: pd.DataFrame) -> pd.Series:
     ).round(2)
 
 
-@scorer(
+# ``momentum_12_1`` is bar-derived, not a snapshot recipe. It used to be
+# ``100 * percentile((1 + Perf.Y) / (1 + Perf.1M) - 1)``, a different number
+# from the ``momentum_12_1`` backtest strategy of the same name, so a backtest
+# said nothing about what the screen would pick. Both now read the one recipe
+# in ``screener.factors.recipes``.
+register_bar_scorer(
     "momentum_12_1",
-    columns=_MOMENTUM_12_1_COLUMNS,
-    description="Higher 12-1 momentum (1y return net of last-month return)",
+    "momentum_12_1",
+    description="Jegadeesh-Titman 12-1 momentum from bars (same recipe as the "
+    "momentum_12_1 backtest strategy)",
 )
-def score_momentum_12_1(df: pd.DataFrame) -> pd.Series:
-    perf_y = numeric(df, "Perf.Y")
-    perf_m = numeric(df, "Perf.1M")
-    mom_12_1 = ((1.0 + perf_y) / (1.0 + perf_m) - 1.0).fillna(-1.0)
-    return (100 * percentile(mom_12_1)).round(2)
 
 
 @scorer(
@@ -257,6 +257,5 @@ __all__ = [
     "score_intraday_breakout",
     "score_intraday_momentum",
     "score_mark_minervini",
-    "score_momentum_12_1",
     "score_near_52_high",
 ]
