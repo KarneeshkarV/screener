@@ -1,10 +1,21 @@
-"""Valuation, quality, and dividend ranking recipes."""
+"""Valuation, quality, and dividend ranking recipes.
+
+Every recipe here is ``data_source="snapshot"`` and therefore screen-only.
+TradingView returns one current value per fundamental (``price_earnings_ttm``,
+``return_on_equity``, ``debt_to_equity``, ``dividend_yield_recent``) with no
+history and no point-in-time restatement: you cannot ask it what a company's
+trailing P/E looked like on a date in the past, and the figure you do get
+reflects filings published after many of the days a backtest would rank.
+Scoring a historical day with them is lookahead, so
+``screener.scoring.ensure_backtestable_scorer`` refuses these names anywhere in
+the backtest path.
+"""
 
 from __future__ import annotations
 
 import pandas as pd
 
-from screener.scoring import scorer
+from screener.scoring import SNAPSHOT_SOURCE, scorer
 from screener.scoring.components import (
     above_flag,
     inv_percentile,
@@ -62,6 +73,7 @@ def _score_value_core(df: pd.DataFrame) -> pd.Series:
     "value",
     columns=_VALUE_COLUMNS,
     description="Lower P/E (positive only) + liquidity",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_value(df: pd.DataFrame) -> pd.Series:
     return _score_value_core(df)
@@ -71,6 +83,7 @@ def score_value(df: pd.DataFrame) -> pd.Series:
     "undervalued",
     columns=_VALUE_COLUMNS,
     description="Deep-value: cheapest positive P/E with volume/liquidity",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_undervalued(df: pd.DataFrame) -> pd.Series:
     # Same core as value; undervalued filter already enforces deeper PE cut.
@@ -99,6 +112,7 @@ def _score_quality_core(df: pd.DataFrame) -> pd.Series:
     "quality",
     columns=_QUALITY_COLUMNS,
     description="High ROE + low debt + mild trend",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_quality(df: pd.DataFrame) -> pd.Series:
     return _score_quality_core(df)
@@ -108,6 +122,7 @@ def score_quality(df: pd.DataFrame) -> pd.Series:
     "cheap_quality",
     columns=_CHEAP_QUALITY_COLUMNS,
     description="Blend of cheapness, franchise quality, and mild trend",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_cheap_quality(df: pd.DataFrame) -> pd.Series:
     value = _score_value_core(df)
@@ -119,6 +134,7 @@ def score_cheap_quality(df: pd.DataFrame) -> pd.Series:
     "dividend",
     columns=_DIVIDEND_COLUMNS,
     description="Yield + sane valuation + balance sheet",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_dividend(df: pd.DataFrame) -> pd.Series:
     close = numeric(df, "close")
@@ -139,6 +155,7 @@ def score_dividend(df: pd.DataFrame) -> pd.Series:
     "momentum_value",
     columns=_MOMENTUM_VALUE_COLUMNS,
     description="Cheap + RSI in 50–70 band + short/long EMA support",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_momentum_value(df: pd.DataFrame) -> pd.Series:
     close = numeric(df, "close")

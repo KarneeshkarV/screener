@@ -2,13 +2,24 @@
 
 ``ema`` preserves the historical ``scanner._add_setup_score`` weights so the
 default screen path stays numerically equivalent.
+
+Everything registered with ``@scorer`` here is ``data_source="snapshot"``:
+each recipe reads TradingView's precomputed per-row fields - the vendor
+``RSI``, ``relative_volume_10d_calc``, ``market_cap_basic``, the EMA/SMA
+columns and the 52-week high/low. Those arrive as one as-of-today value with
+no history behind them, so ranking a *past* day by them would use numbers
+nobody had on that day. That is why they are screen-only and
+``ensure_backtestable_scorer`` rejects them in the backtest path.
+
+``momentum_12_1`` is the exception: it is ``data_source="bars"`` and delegates
+to the shared price-only recipe in ``screener.factors``.
 """
 
 from __future__ import annotations
 
 import pandas as pd
 
-from screener.scoring import register_bar_scorer, scorer
+from screener.scoring import SNAPSHOT_SOURCE, register_bar_scorer, scorer
 from screener.scoring.components import (
     above_flag,
     liquidity_from_dollar_volume,
@@ -105,6 +116,7 @@ register_bar_scorer(
     "mark_minervini",
     columns=_MARK_MINERVINI_COLUMNS,
     description="Minervini template: trend stack + proximity to 52w high + liquidity",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_mark_minervini(df: pd.DataFrame) -> pd.Series:
     close = numeric(df, "close")
@@ -131,6 +143,7 @@ def score_mark_minervini(df: pd.DataFrame) -> pd.Series:
     "ema",
     columns=_EMA_COLUMNS,
     description="Trend stack + liquidity + RSI sweet spot − overextension",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_ema(df: pd.DataFrame) -> pd.Series:
     return _score_ema_setup(df)
@@ -171,6 +184,7 @@ def _score_breakout_family(df: pd.DataFrame) -> pd.Series:
     "breakout",
     columns=_BREAKOUT_COLUMNS,
     description="Near 52w high + relative volume + trend support",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_breakout(df: pd.DataFrame) -> pd.Series:
     return _score_breakout_family(df)
@@ -180,6 +194,7 @@ def score_breakout(df: pd.DataFrame) -> pd.Series:
     "near_52_high",
     columns=_BREAKOUT_COLUMNS,
     description="Under resistance near 52w high with volume confirmation",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_near_52_high(df: pd.DataFrame) -> pd.Series:
     return _score_breakout_family(df)
@@ -189,6 +204,7 @@ def score_near_52_high(df: pd.DataFrame) -> pd.Series:
     "intraday_breakout",
     columns=_INTRADAY_BREAKOUT_COLUMNS,
     description="Intraday thrust at highs on volume surge",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_intraday_breakout(df: pd.DataFrame) -> pd.Series:
     close = numeric(df, "close")
@@ -218,6 +234,7 @@ def score_intraday_breakout(df: pd.DataFrame) -> pd.Series:
     "intraday_momentum",
     columns=_INTRADAY_MOM_COLUMNS,
     description="Liquid day-movers: RVOL + change + RSI band + trend",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_intraday_momentum(df: pd.DataFrame) -> pd.Series:
     close = numeric(df, "close")
@@ -244,6 +261,7 @@ def score_intraday_momentum(df: pd.DataFrame) -> pd.Series:
     "ema_breakout",
     columns=tuple(dict.fromkeys(_EMA_COLUMNS + _BREAKOUT_COLUMNS)),
     description="Equal blend of EMA trend setup and 52w breakout quality",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_ema_breakout(df: pd.DataFrame) -> pd.Series:
     blended = (_score_ema_setup(df) + _score_breakout_family(df)) / 2.0

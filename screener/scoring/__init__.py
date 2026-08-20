@@ -4,11 +4,16 @@ Filters stay in ``screener.criteria``; this package owns the *ranking*
 philosophy for each criterion name. Output is always written as
 ``setup_score`` so history, display, and CSV stay stable.
 
-A recipe comes in one of two flavours:
+Every recipe declares its ``data_source``, and the two values are not
+interchangeable:
 
-* **snapshot** - reads TradingView's per-row snapshot columns (``RSI``,
-  ``market_cap_basic``, ``Perf.Y``, fundamentals). Screen-only.
-* **bars** - delegates to a shared price-only recipe in
+* ``"snapshot"`` - reads TradingView's per-row snapshot columns (``RSI``,
+  ``market_cap_basic``, ``relative_volume_10d_calc``, ``Perf.Y``, and every
+  fundamental). A snapshot carries only *today's* value with no history and no
+  point-in-time restatement, so replaying one through a backtest is lookahead.
+  These recipes are screen-only, and :func:`ensure_backtestable_scorer` refuses
+  them anywhere in the backtest path.
+* ``"bars"`` - delegates to a shared price-only recipe in
   :mod:`screener.factors`, which the rolling backtester consumes through its
   own adapter. One formula, two consumers, identical numbers.
 """
@@ -18,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 import pandas as pd
 
@@ -30,6 +35,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 ScoreFn = Callable[[pd.DataFrame], pd.Series]
 _RegisteredScoreFn = TypeVar("_RegisteredScoreFn", bound=ScoreFn)
+
+#: Where a recipe's inputs come from. ``"snapshot"`` recipes are screen-only;
+#: only ``"bars"`` recipes are valid in the backtest path.
+ScoreDataSource = Literal["snapshot", "bars"]
+SNAPSHOT_SOURCE: ScoreDataSource = "snapshot"
+BARS_SOURCE: ScoreDataSource = "bars"
 
 OUTPUT_SCORE_COLUMN = "setup_score"
 DEFAULT_SCORER_NAME = "ema"
@@ -45,6 +56,9 @@ class ScoreSpec:
     columns: tuple[str, ...]
     score_fn: ScoreFn
     description: str = ""
+    #: Declares what the recipe reads. ``"snapshot"`` means TradingView's
+    #: as-of-today row, which is why such a recipe cannot be backtested.
+    data_source: ScoreDataSource = SNAPSHOT_SOURCE
     #: Set when the recipe is bar-derived: the shared price-only spec from
     #: :mod:`screener.factors` that both the screen and the backtest evaluate.
     #: ``None`` means the recipe reads TradingView snapshot columns instead.
@@ -85,6 +99,7 @@ def register_bar_scorer(
         _snapshot_only_score_fn(name),
         columns=(),
         description=description or spec.description,
+        data_source=BARS_SOURCE,
         bar_score=spec,
     )
 
@@ -94,8 +109,14 @@ def scorer(
     *,
     columns: Sequence[str] = (),
     description: str = "",
+    data_source: ScoreDataSource,
 ) -> Callable[[_RegisteredScoreFn], _RegisteredScoreFn]:
-    """Register a ranking recipe for a criterion name."""
+    """Register a ranking recipe for a criterion name.
+
+    ``data_source`` has no default on purpose: whether a recipe can ever be
+    replayed through history is a property its author must state, not one a
+    reader should infer from which columns it happens to touch today.
+    """
 
     def _wrap(fn: _RegisteredScoreFn) -> _RegisteredScoreFn:
         registry.add(
@@ -103,6 +124,7 @@ def scorer(
             fn,
             columns=tuple(columns),
             description=description,
+            data_source=data_source,
         )
         return fn
 
@@ -118,6 +140,7 @@ def get_scorer(name: str) -> ScoreSpec:
         columns=tuple(meta.get("columns", ())),
         score_fn=fn,
         description=str(meta.get("description", "")),
+        data_source=meta.get("data_source", SNAPSHOT_SOURCE),
         bar_score=meta.get("bar_score"),
     )
 
@@ -186,6 +209,45 @@ def resolve_scorer(names: Sequence[str], *, strict: bool = True) -> ScoreSpec:
     )
 
 
+class SnapshotOnlyScorerError(ValueError):
+    """Raised when a screen-only scorer is used in the backtest path."""
+
+
+def ensure_backtestable_scorer(name: str) -> None:
+    """Refuse a snapshot-only scorer name anywhere in the backtest path.
+
+    TradingView's snapshot columns are *today's* values: there is no history
+    for them and no point-in-time restatement, so ranking a historical day by
+    them would score that day with facts nobody had at the time. Only recipes
+    whose ``data_source`` is ``"bars"`` are replayable.
+
+    No-ops for a name that is not a registered scorer at all, so ordinary
+    "unknown strategy" handling stays unchanged.
+    """
+    fn = registry.get_optional(name)
+    if fn is None:
+        return
+    spec = get_scorer(name)
+    if spec.data_source == BARS_SOURCE:
+        return
+    raise SnapshotOnlyScorerError(
+        f"{name!r} is a screen-only scorer (data_source={spec.data_source!r}) "
+        "and cannot be used in the backtest path: it reads TradingView "
+        "snapshot columns, which carry only today's values, so replaying them "
+        "through history is lookahead. Use a bar-derived factor strategy "
+        f"instead (backtestable scorers: {sorted(backtestable_scorer_names())})."
+    )
+
+
+def backtestable_scorer_names() -> list[str]:
+    """Names of the scorers whose recipe is bar-derived, hence replayable."""
+    return [
+        name
+        for name in registry.names()
+        if registry.meta(name).get("data_source") == BARS_SOURCE
+    ]
+
+
 def apply_score(
     df: pd.DataFrame,
     spec: ScoreSpec,
@@ -233,13 +295,19 @@ _register_plugins()
 SCORERS: dict[str, ScoreFn] = registry.as_dict()
 
 __all__ = [
+    "BARS_SOURCE",
     "DEFAULT_SCORER_NAME",
     "OUTPUT_SCORE_COLUMN",
     "SCORERS",
+    "SNAPSHOT_SOURCE",
+    "ScoreDataSource",
     "ScoreFn",
     "ScoreSpec",
+    "SnapshotOnlyScorerError",
     "apply_score",
+    "backtestable_scorer_names",
     "default_scorer",
+    "ensure_backtestable_scorer",
     "get_scorer",
     "register_bar_scorer",
     "registry",

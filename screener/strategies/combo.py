@@ -88,6 +88,11 @@ def validate_combo_components(
             raise ValueError("nested combo strategies are not supported")
         spec = registry.get_optional(factor_name)
         if spec is None:
+            # A screen-only scorer name gets the lookahead explanation rather
+            # than a bare "unknown component".
+            from screener.scoring import ensure_backtestable_scorer
+
+            ensure_backtestable_scorer(factor_name)
             raise ValueError(
                 f"unknown combo component {factor_name!r}. "
                 f"Known: {sorted(registry.names())}"
