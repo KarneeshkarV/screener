@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 import sys
 import types
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -31,6 +34,13 @@ class FakeClient:
         self.closed = True
 
 
+@pytest.fixture(autouse=True)
+def _reset_usage_client_state():
+    usage._reset_client_state()
+    yield
+    usage._reset_client_state()
+
+
 def test_record_feature_usage_inserts_success(monkeypatch):
     client = FakeClient()
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
@@ -39,6 +49,8 @@ def test_record_feature_usage_inserts_success(monkeypatch):
     monkeypatch.setattr(usage.platform, "node", lambda: "workstation")
 
     usage.record_feature_usage("screen", command_path="screener screen", duration_ms=42)
+    # Usage alone is staged; flush ships it (CLI normally pairs with invocation).
+    usage.flush_usage(timeout_s=1.0)
 
     insert = [
         item for item in client.statements if "INSERT INTO feature_usage" in item[0]
@@ -53,7 +65,6 @@ def test_record_feature_usage_inserts_success(monkeypatch):
         "karneeshkar",
         "workstation",
     ]
-    assert client.closed
 
 
 def test_usage_models_and_env_helpers(tmp_path, monkeypatch):
@@ -85,8 +96,10 @@ def test_usage_models_and_env_helpers(tmp_path, monkeypatch):
 
 def test_connect_uses_libsql_client_when_configured(monkeypatch):
     created = {}
+    create_calls = {"n": 0}
 
     def create_client_sync(url, auth_token):
+        create_calls["n"] += 1
         created["url"] = url
         created["auth_token"] = auth_token
         return "client"
@@ -103,12 +116,82 @@ def test_connect_uses_libsql_client_when_configured(monkeypatch):
     )
 
     assert usage._connect() == "client"
+    assert usage._connect() == "client"
+    assert create_calls["n"] == 1
     assert created == {"url": "https://remote", "auth_token": "token"}
+
+
+def test_record_pair_reuses_one_connect(monkeypatch):
+    """Usage + invocation for one command must not open two clients."""
+    client = FakeClient()
+    creates = {"n": 0}
+
+    def create_client_sync(url, auth_token):
+        creates["n"] += 1
+        return client
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("SCREENER_USAGE", raising=False)
+    monkeypatch.setattr(usage, "_database_url", lambda: "https://remote")
+    monkeypatch.setattr(usage, "_env_value", lambda name: "token")
+    monkeypatch.setattr(usage.getpass, "getuser", lambda: "user")
+    monkeypatch.setattr(usage.platform, "node", lambda: "host")
+    monkeypatch.setitem(
+        sys.modules,
+        "libsql_client",
+        types.SimpleNamespace(create_client_sync=create_client_sync),
+    )
+
+    monkeypatch.setenv("SCREENER_USAGE_FLUSH_MS", "2000")
+    usage.record_feature_usage("screen", command_path="screener screen", duration_ms=1)
+    usage.record_feature_invocation(
+        "screen",
+        command_path="screener screen",
+        duration_ms=1,
+        status="success",
+        params={"market": "us"},
+    )
+    usage.flush_usage(timeout_s=2.0)
+
+    # One connect for the whole pair; the writer does not close the shared
+    # client under other callers (the atexit handler owns it).
+    assert creates["n"] == 1
+    assert client.closed is False
+    inserts = [s for s in client.statements if "INSERT INTO" in s[0]]
+    assert len(inserts) == 2
+    # DDL runs once on the shared client; a second pair must not re-run it.
+    create_stmts_before = sum(1 for s in client.statements if "CREATE TABLE" in s[0])
+    usage.record_feature_usage("screen", command_path="screener screen", duration_ms=1)
+    usage.record_feature_invocation(
+        "screen",
+        command_path="screener screen",
+        duration_ms=1,
+        status="success",
+        params={"market": "us"},
+    )
+    usage.flush_usage(timeout_s=2.0)
+    create_stmts_second = sum(1 for s in client.statements if "CREATE TABLE" in s[0])
+    assert create_stmts_second == create_stmts_before
+    assert creates["n"] == 1
+    assert create_stmts_before >= 1
+
+
+def test_screener_usage_env_opt_out(monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("SCREENER_USAGE", "0")
+    monkeypatch.setattr(
+        usage,
+        "_connect",
+        lambda: (_ for _ in ()).throw(AssertionError("should not connect")),
+    )
+    usage.record_feature_usage("screen")
+    usage.record_feature_invocation("screen")
 
 
 def test_record_feature_invocation_flattens_params(monkeypatch):
     client = FakeClient()
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("SCREENER_USAGE_FLUSH_MS", "2000")
     monkeypatch.setattr(usage, "_connect", lambda: client)
     monkeypatch.setattr(usage.getpass, "getuser", lambda: "user")
     monkeypatch.setattr(usage.platform, "node", lambda: "host")
@@ -129,6 +212,7 @@ def test_record_feature_invocation_flattens_params(monkeypatch):
             "none": None,
         },
     )
+    usage.flush_usage(timeout_s=2.0)
 
     insert = [
         item
@@ -150,7 +234,179 @@ def test_record_feature_invocation_flattens_params(monkeypatch):
         "user",
         "host",
     ]
-    assert client.closed
+
+
+def test_record_pair_is_non_blocking_for_slow_client(monkeypatch):
+    """Flush join budget must not wait for the full remote RTT."""
+    import time as time_mod
+
+    class SlowClient(FakeClient):
+        def execute(self, stmt: str, args: list[object] | None = None):
+            time_mod.sleep(0.4)
+            return super().execute(stmt, args)
+
+    client = SlowClient()
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("SCREENER_USAGE_FLUSH_MS", "50")
+    monkeypatch.setattr(usage, "_connect", lambda: client)
+    monkeypatch.setattr(usage.getpass, "getuser", lambda: "user")
+    monkeypatch.setattr(usage.platform, "node", lambda: "host")
+
+    t0 = time_mod.perf_counter()
+    usage.record_feature_usage("screen", command_path="screener screen", duration_ms=1)
+    usage.record_feature_invocation(
+        "screen",
+        command_path="screener screen",
+        duration_ms=1,
+        status="success",
+        params={},
+    )
+    elapsed = time_mod.perf_counter() - t0
+    # Default flush budget is ~50 ms; slow client takes 400 ms+ per execute.
+    assert elapsed < 0.25
+
+
+def test_rows_staged_while_worker_mid_flush_are_written(monkeypatch):
+    """Rows staged while a flush worker is mid-write must not be stranded."""
+    import threading as threading_mod
+    import time as time_mod
+
+    inserts: list[str] = []
+    release = threading_mod.Event()
+
+    class BlockingClient(FakeClient):
+        def execute(self, stmt: str, args: list[object] | None = None):
+            if stmt.lstrip().upper().startswith("INSERT"):
+                inserts.append(stmt)
+            if "INSERT INTO feature_usage_invocations" in stmt:
+                release.wait(timeout=5.0)
+            return super().execute(stmt, args)
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("SCREENER_USAGE_FLUSH_MS", "10")
+    monkeypatch.setattr(usage, "_connect", lambda: BlockingClient())
+    monkeypatch.setattr(usage.getpass, "getuser", lambda: "user")
+    monkeypatch.setattr(usage.platform, "node", lambda: "host")
+
+    usage.record_feature_usage("screen", command_path="c0", duration_ms=1)
+    usage.record_feature_invocation("screen", command_path="c0", duration_ms=1)
+    try:
+        # Wait until the worker is mid-flush (blocked on pair 0's invocation).
+        deadline = time_mod.perf_counter() + 5.0
+        while (
+            not any("feature_usage_invocations" in s for s in inserts)
+            and time_mod.perf_counter() < deadline
+        ):
+            time_mod.sleep(0.005)
+        assert any("feature_usage_invocations" in s for s in inserts), (
+            "worker did not start flushing"
+        )
+
+        # Stage a second pair while the worker is still busy with the first.
+        usage.record_feature_usage("screen", command_path="c1", duration_ms=1)
+        usage.record_feature_invocation("screen", command_path="c1", duration_ms=1)
+    finally:
+        release.set()
+    usage.flush_usage(timeout_s=5.0)
+
+    # Both pairs written: 2 usage + 2 invocation inserts.
+    assert len(inserts) == 4
+
+
+def test_flush_usage_respects_zero_budget(monkeypatch):
+    """flush_usage must not block past its budget on a stuck worker."""
+    import threading as threading_mod
+    import time as time_mod
+
+    release = threading_mod.Event()
+
+    class BlockingClient(FakeClient):
+        def execute(self, stmt: str, args: list[object] | None = None):
+            if "INSERT INTO feature_usage_invocations" in stmt:
+                release.wait(timeout=5.0)
+            return super().execute(stmt, args)
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("SCREENER_USAGE_FLUSH_MS", "10")
+    monkeypatch.setattr(usage, "_connect", lambda: BlockingClient())
+    monkeypatch.setattr(usage.getpass, "getuser", lambda: "user")
+    monkeypatch.setattr(usage.platform, "node", lambda: "host")
+
+    usage.record_feature_usage("screen", duration_ms=1)
+    usage.record_feature_invocation("screen", duration_ms=1)
+    try:
+        t0 = time_mod.perf_counter()
+        usage.flush_usage(timeout_s=0.0)
+        assert time_mod.perf_counter() - t0 < 0.25
+    finally:
+        release.set()
+
+
+def test_flush_pending_on_exit_writes_pending_rows(monkeypatch):
+    """The atexit handler must write staged rows instead of dropping them."""
+    client = FakeClient()
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(usage, "_connect", lambda: client)
+    monkeypatch.setattr(usage.getpass, "getuser", lambda: "user")
+    monkeypatch.setattr(usage.platform, "node", lambda: "host")
+
+    usage.record_feature_usage("screen", command_path="screener screen", duration_ms=1)
+    assert not [s for s in client.statements if "INSERT INTO" in s[0]]
+
+    usage._flush_pending_on_exit()
+
+    inserts = [s for s in client.statements if "INSERT INTO feature_usage" in s[0]]
+    assert len(inserts) == 1
+    assert inserts[0][1][1] == "screen"
+
+
+def test_atexit_handler_writes_pending_rows_on_process_exit(tmp_path):
+    """Registered atexit handler writes pending rows at interpreter exit."""
+    import subprocess
+
+    log = tmp_path / "written.jsonl"
+    script = tmp_path / "atexit_probe.py"
+    script.write_text(
+        f"""
+import json
+import os
+import sys
+import types
+
+LOG = {str(log)!r}
+
+class Client:
+    def execute(self, stmt, args=None):
+        if stmt.lstrip().upper().startswith("INSERT"):
+            with open(LOG, "a") as fh:
+                fh.write(json.dumps(args) + "\\n")
+    def close(self):
+        pass
+
+sys.modules["libsql_client"] = types.SimpleNamespace(
+    create_client_sync=lambda url, auth_token=None: Client()
+)
+os.environ["TURSO_DATABASE_URL"] = "libsql://probe.invalid"
+os.environ["TURSO_AUTH_TOKEN"] = "probe-token"
+
+from screener.usage import record_feature_usage
+
+record_feature_usage("screen", command_path="screener screen", duration_ms=1)
+"""
+    )
+    env = dict(os.environ)
+    env.pop("PYTEST_CURRENT_TEST", None)
+    env.pop("SCREENER_USAGE", None)
+    subprocess.run(
+        [sys.executable, str(script)],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env=env,
+        check=True,
+        timeout=30,
+    )
+    lines = log.read_text().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])[1] == "screen"
 
 
 def test_usage_invocation_normalizers_cover_scalar_and_empty_values():
@@ -184,7 +440,7 @@ def test_feature_usage_counts_maps_rows(monkeypatch):
         ("screen", 2, "2026-05-10T12:00:00.000Z"),
         ("garp", 1, None),
     ]
-    assert client.closed
+    assert client.closed is False
 
 
 def test_invocation_rollup_groups_extras_and_limits(monkeypatch):
@@ -207,7 +463,7 @@ def test_invocation_rollup_groups_extras_and_limits(monkeypatch):
     ]
     assert rollup[0].last_used_at == "2026-01-03T00:00:01Z"
     assert rollup[0].top_extras == "foo=a"
-    assert client.closed
+    assert client.closed is False
 
 
 def test_invocation_rollup_no_client(monkeypatch):

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import atexit
 import getpass
 import json
 import logging
 import os
 import platform
+import threading
 import time
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -19,6 +21,9 @@ PROJECT_NAME = "screener"
 TABLE_NAME = "feature_usage"
 INVOCATIONS_TABLE = "feature_usage_invocations"
 
+# SCREENER_USAGE=0|off|false|no skips all usage I/O (local opt-out).
+_USAGE_OFF_VALUES = frozenset({"0", "off", "false", "no"})
+
 _FLATTENED_PARAM_KEYS = {
     "market",
     "criteria_names",
@@ -27,6 +32,23 @@ _FLATTENED_PARAM_KEYS = {
     "output_csv",
     "cache_ttl",
 }
+
+# Process-level Turso client reuse: one connect, tables ensured once.
+_client: UsageClient | None = None
+_client_lock = threading.Lock()
+_usage_table_ready = False
+_invocations_table_ready = False
+
+# Non-blocking write path: stage rows, flush on a daemon thread, best-effort join.
+# SCREENER_USAGE_FLUSH_MS overrides the join budget (default 50 ms).
+_DEFAULT_FLUSH_TIMEOUT_S = 0.05
+# Interpreter-exit grace period: covers a remote Turso round-trip so an
+# in-flight flush finishes instead of being killed with the process.
+_ATEXIT_FLUSH_TIMEOUT_S = 1.0
+_pending_lock = threading.Lock()
+_pending_usage: dict[str, Any] | None = None
+_pending_invocation: dict[str, Any] | None = None
+_flush_thread: threading.Thread | None = None
 
 
 class UsageClient(Protocol):
@@ -87,15 +109,245 @@ def _database_url() -> str | None:
     return url
 
 
+def _usage_disabled() -> bool:
+    """True when usage tracking should no-op (tests or SCREENER_USAGE opt-out)."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    raw = os.environ.get("SCREENER_USAGE", "").strip().lower()
+    return raw in _USAGE_OFF_VALUES
+
+
 def _connect() -> UsageClient | None:
-    url = _database_url()
-    token = _env_value("TURSO_AUTH_TOKEN")
-    if not url or not token:
-        return None
+    """Return a cached Turso client, creating it on first success in this process.
 
-    from libsql_client import create_client_sync  # type: ignore[import-untyped]
+    Sequential ``record_feature_usage`` + ``record_feature_invocation`` share one
+    HTTPS client (no double connect). The client lives for the process: writers
+    and readers never close it under each other, and the atexit handler closes
+    it at exit so libsql does not keep the process alive. Failures return None
+    and do not poison later retries.
+    """
+    global _client
+    if _client is not None:
+        return _client
 
-    return cast(UsageClient, create_client_sync(url, auth_token=token))
+    with _client_lock:
+        if _client is not None:
+            return _client
+
+        url = _database_url()
+        token = _env_value("TURSO_AUTH_TOKEN")
+        if not url or not token:
+            return None
+
+        from libsql_client import create_client_sync  # type: ignore[import-untyped]
+
+        client = cast(UsageClient, create_client_sync(url, auth_token=token))
+        _client = client
+        return client
+
+
+def _close_client() -> None:
+    """Close and drop the cached client (keeps DDL-ensured flags)."""
+    global _client
+    with _client_lock:
+        client = _client
+        _client = None
+    if client is not None:
+        try:
+            client.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+
+def _reset_client_state() -> None:
+    """Drop cached client, pending rows, and DDL flags (for tests)."""
+    global _usage_table_ready, _invocations_table_ready
+    global _pending_usage, _pending_invocation, _flush_thread
+    flush_usage(timeout_s=1.0)
+    _close_client()
+    with _pending_lock:
+        _pending_usage = None
+        _pending_invocation = None
+        _flush_thread = None
+    _usage_table_ready = False
+    _invocations_table_ready = False
+
+
+def _flush_timeout_s() -> float:
+    raw = os.environ.get("SCREENER_USAGE_FLUSH_MS", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw) / 1000.0)
+        except ValueError:
+            pass
+    return _DEFAULT_FLUSH_TIMEOUT_S
+
+
+def _write_usage_row(
+    client: UsageClient,
+    *,
+    feature: str,
+    command_path: str | None,
+    status: str,
+    duration_ms: int,
+    username: str,
+    hostname: str,
+) -> None:
+    _ensure_usage_table_once(client)
+    client.execute(
+        f"""
+        INSERT INTO {TABLE_NAME}
+            (project, feature, command_path, status, duration_ms, username, hostname)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            PROJECT_NAME,
+            feature,
+            command_path or feature,
+            status,
+            int(duration_ms),
+            username,
+            hostname,
+        ],
+    )
+
+
+def _write_invocation_row(
+    client: UsageClient,
+    *,
+    feature: str,
+    duration_ms: int,
+    status: str,
+    params: dict[str, Any],
+    username: str,
+    hostname: str,
+) -> None:
+    _ensure_invocations_table_once(client)
+    market = params.get("market")
+    criteria = _normalize_criteria(params.get("criteria_names"))
+    limit_n = params.get("limit")
+    refresh = params.get("refresh")
+    output_csv = params.get("output_csv")
+    cache_ttl = params.get("cache_ttl")
+
+    extras: dict[str, str] = {}
+    for key, value in params.items():
+        if key in _FLATTENED_PARAM_KEYS:
+            continue
+        if value is None:
+            continue
+        extras[key] = str(value)
+    extras_json = json.dumps(extras, default=str) if extras else None
+
+    client.execute(
+        f"""
+        INSERT INTO {INVOCATIONS_TABLE}
+            (project, feature, market, criteria, limit_n, refresh,
+             output_csv, cache_ttl, extras_json, duration_ms, status,
+             username, hostname)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            PROJECT_NAME,
+            feature,
+            str(market) if market is not None else None,
+            criteria,
+            int(limit_n) if limit_n is not None else None,
+            _coerce_bool_to_int(refresh) if refresh is not None else None,
+            str(output_csv) if output_csv is not None else None,
+            str(cache_ttl) if cache_ttl is not None else None,
+            extras_json,
+            int(duration_ms),
+            status,
+            username,
+            hostname,
+        ],
+    )
+
+
+def _flush_pending_sync() -> None:
+    """Write staged rows on one connection; loop until nothing is pending.
+
+    The worker keeps draining until pending is empty, so rows staged while a
+    flush is already in flight are written instead of stranded. Runs on the
+    daemon flush thread and inline from ``flush_usage``. The shared client is
+    left open for other callers; the atexit handler closes it.
+    """
+    global _pending_usage, _pending_invocation, _flush_thread
+    while True:
+        with _pending_lock:
+            usage_row = _pending_usage
+            inv_row = _pending_invocation
+            _pending_usage = None
+            _pending_invocation = None
+            if usage_row is None and inv_row is None:
+                if _flush_thread is threading.current_thread():
+                    _flush_thread = None
+                return
+        try:
+            client = _connect()
+            if client is None:
+                continue
+            if usage_row is not None:
+                _write_usage_row(client, **usage_row)
+            if inv_row is not None:
+                _write_invocation_row(client, **inv_row)
+        except Exception as exc:  # pragma: no cover - defensive telemetry path
+            logger.debug("feature usage flush failed: %s", exc)
+
+
+def flush_usage(timeout_s: float | None = None) -> None:
+    """Best-effort wait for a background usage flush (or run one inline).
+
+    Returns once every staged row is written and no flush worker is still
+    running, or when the time budget expires. This is the explicit-flush API;
+    the interactive CLI path stays fast via the short ``_schedule_flush`` join.
+    """
+    global _flush_thread
+    budget = _flush_timeout_s() if timeout_s is None else max(0.0, timeout_s)
+    deadline = time.monotonic() + budget
+    while True:
+        with _pending_lock:
+            thread = _flush_thread
+            has_pending = _pending_usage is not None or _pending_invocation is not None
+        if not has_pending and (thread is None or not thread.is_alive()):
+            return
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        elif has_pending:
+            _flush_pending_sync()
+        if time.monotonic() >= deadline:
+            return
+
+
+def _flush_pending_on_exit() -> None:
+    """Best-effort flush of pending rows at interpreter exit, then release client."""
+    try:
+        flush_usage(timeout_s=_ATEXIT_FLUSH_TIMEOUT_S)
+    except Exception:  # pragma: no cover - defensive exit path
+        pass
+    _close_client()
+
+
+atexit.register(_flush_pending_on_exit)
+
+
+def _schedule_flush() -> None:
+    """Start a daemon flush thread and best-effort join for a short budget."""
+    global _flush_thread
+    with _pending_lock:
+        existing = _flush_thread
+        if existing is not None and existing.is_alive():
+            thread = existing
+        else:
+            thread = threading.Thread(
+                target=_flush_pending_sync,
+                name="screener-usage-flush",
+                daemon=True,
+            )
+            _flush_thread = thread
+            thread.start()
+    thread.join(timeout=_flush_timeout_s())
 
 
 def ensure_usage_table(client: UsageClient) -> None:
@@ -152,6 +404,22 @@ def ensure_invocations_table(client: UsageClient) -> None:
     )
 
 
+def _ensure_usage_table_once(client: UsageClient) -> None:
+    global _usage_table_ready
+    if _usage_table_ready:
+        return
+    ensure_usage_table(client)
+    _usage_table_ready = True
+
+
+def _ensure_invocations_table_once(client: UsageClient) -> None:
+    global _invocations_table_ready
+    if _invocations_table_ready:
+        return
+    ensure_invocations_table(client)
+    _invocations_table_ready = True
+
+
 def _coerce_bool_to_int(value: Any) -> Any:
     if isinstance(value, bool):
         return 1 if value else 0
@@ -177,61 +445,28 @@ def record_feature_invocation(
     status: str = "success",
     params: dict[str, Any] | None = None,
 ) -> None:
-    """Record one CLI invocation with its full Click parameter payload."""
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    """Stage one CLI invocation row and flush pending usage on a daemon thread.
+
+    CLI always calls this last in ``finally``. Network I/O runs in the
+    background; the caller only waits up to ``SCREENER_USAGE_FLUSH_MS``
+    (default 50 ms) so Turso RTT does not dominate process wall time.
+    """
+    if _usage_disabled():
         return
-    try:
-        client = _connect()
-        if client is None:
-            return
-        try:
-            ensure_invocations_table(client)
-            params = params or {}
-
-            market = params.get("market")
-            criteria = _normalize_criteria(params.get("criteria_names"))
-            limit_n = params.get("limit")
-            refresh = params.get("refresh")
-            output_csv = params.get("output_csv")
-            cache_ttl = params.get("cache_ttl")
-
-            extras: dict[str, str] = {}
-            for key, value in params.items():
-                if key in _FLATTENED_PARAM_KEYS:
-                    continue
-                if value is None:
-                    continue
-                extras[key] = str(value)
-            extras_json = json.dumps(extras, default=str) if extras else None
-
-            client.execute(
-                f"""
-                INSERT INTO {INVOCATIONS_TABLE}
-                    (project, feature, market, criteria, limit_n, refresh,
-                     output_csv, cache_ttl, extras_json, duration_ms, status,
-                     username, hostname)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    PROJECT_NAME,
-                    feature,
-                    str(market) if market is not None else None,
-                    criteria,
-                    int(limit_n) if limit_n is not None else None,
-                    _coerce_bool_to_int(refresh) if refresh is not None else None,
-                    str(output_csv) if output_csv is not None else None,
-                    str(cache_ttl) if cache_ttl is not None else None,
-                    extras_json,
-                    int(duration_ms),
-                    status,
-                    getpass.getuser(),
-                    platform.node(),
-                ],
-            )
-        finally:
-            client.close()
-    except Exception as exc:  # pragma: no cover - defensive telemetry path
-        logger.debug("feature invocation tracking failed: %s", exc)
+    global _pending_invocation
+    # Capture identity on the calling thread (getpass/platform can be slow-ish
+    # but stay off the Turso critical path relative to HTTPS).
+    row = {
+        "feature": feature,
+        "duration_ms": int(duration_ms),
+        "status": status,
+        "params": dict(params or {}),
+        "username": getpass.getuser(),
+        "hostname": platform.node(),
+    }
+    with _pending_lock:
+        _pending_invocation = row
+    _schedule_flush()
 
 
 def invocation_rollup(limit: int = 30) -> list[InvocationRollup]:
@@ -239,7 +474,7 @@ def invocation_rollup(limit: int = 30) -> list[InvocationRollup]:
     if client is None:
         return []
     try:
-        ensure_invocations_table(client)
+        _ensure_invocations_table_once(client)
         rows = client.execute(
             f"""
             SELECT feature,
@@ -320,8 +555,9 @@ def invocation_rollup(limit: int = 30) -> list[InvocationRollup]:
                 )
             )
         return results
-    finally:
-        client.close()
+    except Exception as exc:  # pragma: no cover - defensive read path
+        logger.debug("invocation rollup failed: %s", exc)
+        return []
 
 
 def record_feature_usage(
@@ -331,35 +567,24 @@ def record_feature_usage(
     status: str = "success",
     duration_ms: int = 0,
 ) -> None:
-    """Record one successful CLI feature usage without affecting CLI behavior."""
-    if os.environ.get("PYTEST_CURRENT_TEST"):
+    """Stage one successful CLI feature usage row (flushed with invocation).
+
+    Does not block on Turso. A following ``record_feature_invocation`` (or an
+    explicit ``flush_usage``) ships staged rows on one shared connection.
+    """
+    if _usage_disabled():
         return
-    try:
-        client = _connect()
-        if client is None:
-            return
-        try:
-            ensure_usage_table(client)
-            client.execute(
-                f"""
-                INSERT INTO {TABLE_NAME}
-                    (project, feature, command_path, status, duration_ms, username, hostname)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    PROJECT_NAME,
-                    feature,
-                    command_path or feature,
-                    status,
-                    int(duration_ms),
-                    getpass.getuser(),
-                    platform.node(),
-                ],
-            )
-        finally:
-            client.close()
-    except Exception as exc:  # pragma: no cover - defensive telemetry path
-        logger.debug("feature usage tracking failed: %s", exc)
+    global _pending_usage
+    row = {
+        "feature": feature,
+        "command_path": command_path,
+        "status": status,
+        "duration_ms": int(duration_ms),
+        "username": getpass.getuser(),
+        "hostname": platform.node(),
+    }
+    with _pending_lock:
+        _pending_usage = row
 
 
 def feature_usage_counts() -> list[UsageCount]:
@@ -367,7 +592,7 @@ def feature_usage_counts() -> list[UsageCount]:
     if client is None:
         return []
     try:
-        ensure_usage_table(client)
+        _ensure_usage_table_once(client)
         rows = client.execute(
             f"""
             SELECT feature, COUNT(*) AS usage_count, MAX(created_at) AS last_used_at
@@ -386,8 +611,9 @@ def feature_usage_counts() -> list[UsageCount]:
             )
             for row in rows
         ]
-    finally:
-        client.close()
+    except Exception as exc:  # pragma: no cover - defensive read path
+        logger.debug("feature usage counts failed: %s", exc)
+        return []
 
 
 def elapsed_ms(start: float) -> int:

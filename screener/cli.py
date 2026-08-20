@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import importlib
 import time
 from typing import Any
 
@@ -10,32 +11,146 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from screener import agentio, usage
-from screener.backtester.factor_tearsheet import factor_tearsheet
-from screener.backtester.historical import backtest_historical
-from screener.backtester.optimization.cli import optimize
-from screener.backtester.rolling import backtest_rolling
-from screener.commands.cache import cache_group
-from screener.commands.conviction import conviction
-from screener.commands.filings import filings
-from screener.commands.garp import garp
-from screener.commands.history_backup import history_backup
-from screener.commands.history_list import history_list
-from screener.commands.index_inclusion import index_inclusion
-from screener.commands.insiders import promoter_buys
-from screener.commands.institutional import institutional
-from screener.commands.live_strategies import obv_trend_live, vol_breakout_live
-from screener.commands.minervini import mark_minervini
-from screener.commands.rs_breakout import rs_breakout
-from screener.commands.screen import screen
-from screener.commands.seasonality import seasonality
-from screener.commands.universes import universes_group
+from screener import usage
 from screener.config import load_config
-from screener.earnings_backtest.cli import earnings_backtest, earnings_pead
 from screener.logging_config import configure_logging
-from screener.operator.cli import register as _register_operator_cli
-from screener.options.cli import options
-from screener.unusual_volume.cli import unusual_volume
+
+# Keep in sync with screener.agentio.DETAIL_LEVELS (avoid importing agentio /
+# pandas at CLI module load for --help).
+_AGENT_DETAIL_LEVELS = ("summary", "head", "full")
+_AGENT_DEFAULT_DETAIL = "head"
+
+# Lazy subcommand table: CLI name -> (module path, attribute, short help).
+# Import happens on first resolve (invoke or subcommand --help), not at
+# `import screener.cli` / top-level `--help`. Short help is stored here so
+# Click's group help formatter does not force-load every module.
+_LAZY_COMMANDS: dict[str, tuple[str, str, str]] = {
+    "screen": (
+        "screener.commands.screen",
+        "screen",
+        "Screen stocks based on technical criteria.",
+    ),
+    "history": (
+        "screener.commands.history_list",
+        "history_list",
+        "List persisted screen runs (replay them with `backtest-historical --from-run`).",
+    ),
+    "history-backup": (
+        "screener.commands.history_backup",
+        "history_backup",
+        "Mirror local screen-run history to Turso (or restore it with --restore).",
+    ),
+    "rs-breakout": (
+        "screener.commands.rs_breakout",
+        "rs_breakout",
+        "Screen stocks for RS + SuperTrend + breakout/volume setups.",
+    ),
+    "garp": (
+        "screener.commands.garp",
+        "garp",
+        "Find GARP stocks using market-specific fundamental data.",
+    ),
+    "mark-minervini": (
+        "screener.commands.minervini",
+        "mark_minervini",
+        "Screen for stocks matching Mark Minervini's Trend Template.",
+    ),
+    "vol-breakout-live": (
+        "screener.commands.live_strategies",
+        "vol_breakout_live",
+        "Donchian N-day high breakout confirmed by above-average volume.",
+    ),
+    "obv-trend-live": (
+        "screener.commands.live_strategies",
+        "obv_trend_live",
+        "OBV crosses above/below its EMA — flow-leads-price trend follower.",
+    ),
+    "conviction": (
+        "screener.commands.conviction",
+        "conviction",
+        "One composite conviction card for TICKER, fusing the screen pillars.",
+    ),
+    "promoter-buys": (
+        "screener.commands.insiders",
+        "promoter_buys",
+        "Find stocks where promoter/insider holding has increased.",
+    ),
+    "institutional": (
+        "screener.commands.institutional",
+        "institutional",
+        "Show FMP institutional ownership per ticker, ranked by QoQ change.",
+    ),
+    "filings": (
+        "screener.commands.filings",
+        "filings",
+        "Read US SEC filings (10-K/10-Q/8-K) via Financial Modeling Prep.",
+    ),
+    "index-inclusion": (
+        "screener.commands.index_inclusion",
+        "index_inclusion",
+        "Event study of post-addition excess drift for S&P 500 additions vs SPY.",
+    ),
+    "seasonality": (
+        "screener.commands.seasonality",
+        "seasonality",
+        "Show monthly, turn-of-month and day-of-week seasonality for TICKER.",
+    ),
+    "universes": (
+        "screener.commands.universes",
+        "universes_group",
+        "List available backtest universes.",
+    ),
+    "unusual-volume": (
+        "screener.unusual_volume.cli",
+        "unusual_volume",
+        "Detect abnormal trading volume across a market on a given day.",
+    ),
+    "earnings-backtest": (
+        "screener.earnings_backtest.cli",
+        "earnings_backtest",
+        "Backtest earnings-drift entry (E-1/E-2 → E) with sentiment filters.",
+    ),
+    "earnings-pead": (
+        "screener.earnings_backtest.cli",
+        "earnings_pead",
+        "Backtest post-earnings-announcement drift (next open → hold N days).",
+    ),
+    "backtest-historical": (
+        "screener.backtester.historical",
+        "backtest_historical",
+        "Run an accurate historical backtest with Pine-like entry/exit expressions.",
+    ),
+    "backtest-rolling": (
+        "screener.backtester.rolling",
+        "backtest_rolling",
+        "Run a true daily rolling backtest over a date window.",
+    ),
+    "factor-tearsheet": (
+        "screener.backtester.factor_tearsheet",
+        "factor_tearsheet",
+        "Compute factor IC and quantile tearsheet for a named strategy.",
+    ),
+    "operator-scan": (
+        "screener.operator.cli",
+        "operator_scan",
+        "NSE Operator Intent screener — daily Cash + F&O OI signal.",
+    ),
+    "optimize": (
+        "screener.backtester.optimization.cli",
+        "optimize",
+        "Optimize and validate backtest parameters.",
+    ),
+    "cache": (
+        "screener.commands.cache",
+        "cache_group",
+        "Inspect and prune the screener's on-disk caches.",
+    ),
+    "options": (
+        "screener.options.cli",
+        "options",
+        "Build, snapshot, and inspect normalized options data.",
+    ),
+}
 
 
 def _instrument_usage_tracking(
@@ -96,13 +211,79 @@ class UsageTrackedGroup(click.Group):
     space-joined command path. Mark a command's callback with
     ``_usage_tracked = True`` to opt it out (used for ``usage-report``, which
     reads the usage tables and should not record itself).
+
+    Heavy subcommands may be registered via :meth:`register_lazy` so
+    ``import screener.cli`` / ``screener --help`` do not pay their import tax.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # name -> (module, attr, short_help)
+        self._lazy_commands: dict[str, tuple[str, str, str]] = {}
+
+    def register_lazy(
+        self, name: str, module: str, attr: str, short_help: str = ""
+    ) -> None:
+        """Register a subcommand loaded from ``module.attr`` on first use."""
+        self._lazy_commands[name] = (module, attr, short_help)
 
     def add_command(self, cmd: click.Command, name: str | None = None) -> None:
         super().add_command(cmd, name)
         resolved = name or cmd.name
         if resolved is not None:
+            self._lazy_commands.pop(resolved, None)
             _instrument_usage_tracking(cmd, (resolved,))
+
+    def list_commands(self, ctx: click.Context) -> list[str]:
+        names = set(super().list_commands(ctx))
+        names.update(self._lazy_commands)
+        return sorted(names)
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            return command
+        spec = self._lazy_commands.get(cmd_name)
+        if spec is None:
+            return None
+        module_path, attr, _short = spec
+        module = importlib.import_module(module_path)
+        loaded = getattr(module, attr)
+        if not isinstance(loaded, click.Command):
+            raise TypeError(
+                f"lazy command {cmd_name!r} resolved to {type(loaded).__name__}, "
+                "expected click.Command"
+            )
+        # add_command instruments usage and removes the lazy entry.
+        self.add_command(loaded, cmd_name)
+        return loaded
+
+    def format_commands(
+        self, ctx: click.Context, formatter: click.HelpFormatter
+    ) -> None:
+        """List subcommands without importing lazy modules for short help."""
+        commands: list[tuple[str, str]] = []
+        for name in self.list_commands(ctx):
+            if name in self._lazy_commands:
+                commands.append((name, self._lazy_commands[name][2]))
+                continue
+            cmd = super().get_command(ctx, name)
+            if cmd is None or cmd.hidden:
+                continue
+            commands.append((name, cmd.get_short_help_str()))
+
+        if not commands:
+            return
+
+        limit = formatter.width - 6 - max(len(cmd[0]) for cmd in commands)
+        formatted: list[tuple[str, str]] = []
+        for name, help_s in commands:
+            if help_s and limit > 0 and len(help_s) > limit:
+                help_s = help_s[: max(0, limit - 3)].rstrip() + "..."
+            formatted.append((name, help_s))
+
+        with formatter.section("Commands"):
+            formatter.write_dl(formatted)
 
 
 @click.group(cls=UsageTrackedGroup)
@@ -137,11 +318,11 @@ class UsageTrackedGroup(click.Group):
 )
 @click.option(
     "--agent-detail",
-    type=click.Choice(agentio.DETAIL_LEVELS),
+    type=click.Choice(_AGENT_DETAIL_LEVELS),
     default=None,
     help=(
         "How much of the result to inline in agent mode. "
-        f"[default: {agentio.DEFAULT_DETAIL}]"
+        f"[default: {_AGENT_DEFAULT_DETAIL}]"
     ),
 )
 @click.pass_context
@@ -154,6 +335,8 @@ def cli(
     agent_detail: str | None,
 ) -> None:
     """Stock screener for US and Indian markets."""
+    from screener import agentio
+
     agentio.configure(agent_mode, agent_detail)  # type: ignore[arg-type]
     if config_path:
         config = load_config(config_path)
@@ -171,31 +354,9 @@ def cli(
     configure_logging(level=log_level, json=log_json)
 
 
-cli.add_command(screen)
-cli.add_command(history_list)
-cli.add_command(history_backup)
-cli.add_command(rs_breakout)
-cli.add_command(garp)
-cli.add_command(mark_minervini)
-cli.add_command(vol_breakout_live)
-cli.add_command(obv_trend_live)
-cli.add_command(conviction)
-cli.add_command(promoter_buys)
-cli.add_command(institutional)
-cli.add_command(filings)
-cli.add_command(index_inclusion)
-cli.add_command(seasonality)
-cli.add_command(universes_group)
-cli.add_command(unusual_volume)
-cli.add_command(earnings_backtest)
-cli.add_command(earnings_pead)
-cli.add_command(backtest_historical)
-cli.add_command(backtest_rolling)
-cli.add_command(factor_tearsheet)
-_register_operator_cli(cli)
-cli.add_command(optimize)
-cli.add_command(cache_group)
-cli.add_command(options)
+assert isinstance(cli, UsageTrackedGroup)
+for _name, (_module, _attr, _short) in _LAZY_COMMANDS.items():
+    cli.register_lazy(_name, _module, _attr, _short)
 
 
 @click.command(name="usage-report")

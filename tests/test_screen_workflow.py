@@ -17,6 +17,7 @@ def _request(
     *,
     output_csv: bool = False,
     report_path: Path | None = None,
+    open_report: bool = False,
     earnings: bool = False,
 ) -> ScreenRequest:
     return ScreenRequest(
@@ -29,6 +30,7 @@ def _request(
         refresh=False,
         cache_ttl="15m",
         report_path=report_path,
+        open_report=open_report,
         earnings=earnings,
     )
 
