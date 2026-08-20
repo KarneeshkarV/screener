@@ -176,6 +176,53 @@ def test_record_pair_reuses_one_connect(monkeypatch):
     assert create_stmts_before >= 1
 
 
+def test_second_pair_is_not_dropped_while_flush_is_running(monkeypatch):
+    """A second usage/invocation pair must not overwrite the first."""
+    import time as time_mod
+
+    class SlowClient(FakeClient):
+        def execute(self, stmt: str, args: list[object] | None = None):
+            time_mod.sleep(0.04)
+            return super().execute(stmt, args)
+
+    client = SlowClient()
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("SCREENER_USAGE", raising=False)
+    monkeypatch.setenv("SCREENER_USAGE_FLUSH_MS", "20")
+    monkeypatch.setattr(usage, "_connect", lambda: client)
+    monkeypatch.setattr(usage.getpass, "getuser", lambda: "user")
+    monkeypatch.setattr(usage.platform, "node", lambda: "host")
+
+    def record_pair(feature: str) -> None:
+        usage.record_feature_usage(feature, command_path=feature, duration_ms=1)
+        usage.record_feature_invocation(
+            feature,
+            command_path=feature,
+            duration_ms=1,
+            status="success",
+            params={"market": "us"},
+        )
+
+    record_pair("screen")
+    record_pair("garp")
+    usage.flush_usage(timeout_s=5.0)
+
+    inserts = [item for item in client.statements if "INSERT INTO" in item[0]]
+    assert len(inserts) == 4
+    usage_features = [
+        item[1][1]
+        for item in inserts
+        if item[1] is not None and "feature_usage_invocations" not in item[0]
+    ]
+    inv_features = [
+        item[1][1]
+        for item in inserts
+        if item[1] is not None and "feature_usage_invocations" in item[0]
+    ]
+    assert usage_features == ["screen", "garp"]
+    assert inv_features == ["screen", "garp"]
+
+
 def test_screener_usage_env_opt_out(monkeypatch):
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("SCREENER_USAGE", "0")
@@ -264,6 +311,9 @@ def test_record_pair_is_non_blocking_for_slow_client(monkeypatch):
     elapsed = time_mod.perf_counter() - t0
     # Default flush budget is ~50 ms; slow client takes 400 ms+ per execute.
     assert elapsed < 0.25
+    leftover = usage._flush_thread
+    if leftover is not None and leftover.is_alive():
+        leftover.join()
 
 
 def test_rows_staged_while_worker_mid_flush_are_written(monkeypatch):
