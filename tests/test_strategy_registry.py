@@ -186,7 +186,12 @@ def test_rs_breakout_prepare_handles_missing_benchmark():
 
     prepared = _prepare_rs_breakout(ctx)
 
-    assert prepared == ctx.bars_by_tv
+    # The entry references rs_breakout_entry, so a missing benchmark must still
+    # decorate the frame (with NaN) rather than return it bare -- otherwise the
+    # rule raises PineNameError instead of just never firing.
+    assert set(prepared) == {"AAA"}
+    assert prepared["AAA"].index.equals(ctx.bars_by_tv["AAA"].index)
+    assert prepared["AAA"]["rs_breakout_entry"].isna().all()
     assert ctx.warnings == ["benchmark data unavailable for rs_breakout: SPY"]
 
 

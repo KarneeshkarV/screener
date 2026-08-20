@@ -1,0 +1,10 @@
+india|momentum_quality|3|63|fmp|r_t15.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality|3|63|fmp|r_t20.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality|3|42|fmp|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality|3|63|fmp|r_s15.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality|3|63|fmp|r_iv.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality|3|84|fmp|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality|5|63|fmp|r_t15.txt|/home/karneeshkar/screener/findings/new_strategies
+india|momentum_quality|3|63|fmp|r_t15_s15.txt|/home/karneeshkar/screener/findings/new_strategies
+india|rs_trend|3|63|-|r_t15.txt|/home/karneeshkar/screener/findings/new_strategies
+india|nifty_momentum|3|63|-|r_t15.txt|/home/karneeshkar/screener/findings/new_strategies

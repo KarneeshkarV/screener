@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from screener.strategies.spec import PrepareCtx, register_expression_strategy
@@ -16,7 +17,17 @@ def _prepare_rs_breakout(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
         ctx.warnings.append(
             f"benchmark data unavailable for rs_breakout: {ctx.benchmark}"
         )
-        return ctx.bars_by_tv
+        out: dict[str, pd.DataFrame] = {}
+        for tv, bars in ctx.bars_by_tv.items():
+            if bars is None or bars.empty:
+                out[tv] = bars
+                continue
+            frame = bars.copy()
+            # Entry references rs_breakout_entry; keep it NaN so entries never
+            # fire instead of raising on an unknown identifier.
+            frame["rs_breakout_entry"] = np.nan
+            out[tv] = frame
+        return out
 
     delivery_panel = pd.DataFrame()
     if ctx.market == "india":

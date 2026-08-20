@@ -24,6 +24,10 @@ from screener.strategies.spec import PrepareCtx, register_expression_strategy
 def _add_quality_features(frame: pd.DataFrame) -> pd.DataFrame:
     """Attach trend-quality features. Definitions match the trade-study
     enrichment exactly so shipped thresholds reproduce the mined win rates."""
+    if frame is None or frame.empty:
+        # A freshly listed or suspended symbol reaches the hook with no bars;
+        # every other plugin passes it straight through rather than raising.
+        return frame
     close = frame["close"].astype(float)
     s50 = close.rolling(50).mean()
     s150 = close.rolling(150).mean()
