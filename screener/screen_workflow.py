@@ -25,7 +25,7 @@ from screener.scoring import resolve_scorer
 
 
 def temp_report_path(prefix: str) -> Path:
-    """Lazy wrapper so CSV / no-report imports skip reporting helpers."""
+    """Lazy wrapper so the CSV path skips reporting helpers."""
     from screener.reporting import temp_report_path as _impl
 
     return _impl(prefix)
