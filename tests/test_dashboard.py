@@ -124,3 +124,4 @@ def test_render_dashboard_writes_expected_sections(tmp_path):
     assert 'id="trade-diagnostics"' in html
     assert 'id="selection-diagnostics"' in html
     assert 'id="trade-ledger-table"' in html
+    assert 'style="height:320px;width:100%"' in html

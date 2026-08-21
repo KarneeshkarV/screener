@@ -84,7 +84,14 @@ def dashboard_frames(result: BacktestResult) -> dict[str, pd.DataFrame]:
     }
 
 
-def figure_html(fig: go.Figure, div_id: str) -> str:
+def figure_html(fig: go.Figure, div_id: str, *, height: int = 320) -> str:
+    """Serialize ``fig`` to a Plotly div that keeps a pixel height.
+
+    Plotly's ``responsive=True`` config emits ``height:100%`` on the graph
+    div. Inside a CSS grid panel with auto height that computes to ~0, so
+    the chart collapses to a strip of overlapping axis labels. A sized
+    wrapper gives the 100% div a real containing block.
+    """
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="#07090d",
@@ -97,18 +104,25 @@ def figure_html(fig: go.Figure, div_id: str) -> str:
         margin={"l": 56, "r": 28, "t": 44, "b": 42},
         hovermode="x unified",
         legend={"orientation": "h", "y": 1.08, "font": {"color": "#e5e7eb"}},
+        height=int(height),
+        autosize=True,
     )
     fig.update_xaxes(gridcolor="#242b36", zerolinecolor="#374151")
     fig.update_yaxes(gridcolor="#242b36", zerolinecolor="#374151")
-    return str(  # plotly.io.to_html is untyped -> Any; it returns the HTML str
+    plot_html = str(  # plotly.io.to_html is untyped -> Any; it returns the HTML str
         to_html(
             fig,
             include_plotlyjs=False,
             full_html=False,
             div_id=div_id,
-            config={"displaylogo": False, "responsive": True},
+            config={
+                "displaylogo": False,
+                "responsive": True,
+                "displayModeBar": "hover",
+            },
         )
     )
+    return f'<div style="height:{int(height)}px;width:100%">{plot_html}</div>'
 
 
 def _empty_panel(panel_id: str, title: str, message: str) -> str:

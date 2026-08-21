@@ -12,8 +12,13 @@ import plotly.express as px
 from plotly.offline import get_plotlyjs
 
 from screener.backtester.dashboard import figure_html, table_html
-from screener.display import COLUMN_LABELS
+from screener.display import COLUMN_LABELS, COLUMNS, _format_value
 from screener.html_report import html_page
+
+_TOP_CHANGE_BARS = 25
+_TOP_CHANGE_ROW_PX = 22
+_TOP_CHANGE_PAD_PX = 80
+_CHART_HEIGHT_PX = 320
 
 
 def _fmt(value: object) -> str:
@@ -50,7 +55,30 @@ def _summary_cards(
     )
 
 
-def _describe_numeric(df: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
+def _format_screen_cell(col: str, value: object, market: str) -> str:
+    if col in COLUMNS:
+        return _format_value(col, value, market)
+    if isinstance(value, float):
+        if pd.isna(value):
+            return "-"
+        return f"{value:,.2f}"
+    return str(value)
+
+
+def _screen_table_frame(df: pd.DataFrame, market: str) -> pd.DataFrame:
+    """Format screen rows with CLI column formatters so HTML skips scientific notation."""
+    formatted = pd.DataFrame(index=df.index)
+    for col in df.columns:
+        label = COLUMN_LABELS.get(col, str(col))
+        formatted[label] = [
+            _format_screen_cell(col, v, market) for v in df[col].tolist()
+        ]
+    return formatted
+
+
+def _describe_numeric(
+    df: pd.DataFrame, columns: Sequence[str], market: str
+) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for col in columns:
         if col not in df.columns or not pd.api.types.is_numeric_dtype(df[col]):
@@ -61,12 +89,16 @@ def _describe_numeric(df: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
         rows.append(
             {
                 "metric": COLUMN_LABELS.get(col, col),
-                "min": float(series.min()),
-                "median": float(series.median()),
-                "max": float(series.max()),
+                "min": _format_screen_cell(col, float(series.min()), market),
+                "median": _format_screen_cell(col, float(series.median()), market),
+                "max": _format_screen_cell(col, float(series.max()), market),
             }
         )
     return pd.DataFrame(rows)
+
+
+def _top_change_height(n_bars: int) -> int:
+    return max(_CHART_HEIGHT_PX, _TOP_CHANGE_ROW_PX * n_bars + _TOP_CHANGE_PAD_PX)
 
 
 def _ticker_list(title: str, tickers: Sequence[str], section_id: str) -> str:
@@ -108,10 +140,14 @@ def render_screen_report(
             nbins=20,
             labels={"setup_score": "Setup Score"},
         )
+        fig.update_layout(showlegend=False)
+        fig.update_yaxes(title_text="Count")
         sections.append(
             '<section class="panel" id="setup-score-distribution">'
             "<h2>Setup Score Distribution</h2>"
-            + figure_html(fig, "screen-setup-score-distribution")
+            + figure_html(
+                fig, "screen-setup-score-distribution", height=_CHART_HEIGHT_PX
+            )
             + "</section>"
         )
     if not df.empty and "change" in df.columns:
@@ -119,21 +155,35 @@ def render_screen_report(
         ranked["change"] = pd.to_numeric(ranked["change"], errors="coerce")
         ranked = ranked.dropna(subset=["change"]).sort_values("change", ascending=False)
         if not ranked.empty:
+            top = ranked.head(_TOP_CHANGE_BARS).copy()
+            if "name" not in top.columns:
+                top["name"] = top.index.astype(str)
+            top["name"] = top["name"].astype(str)
+            # Plotly draws the first row at the bottom; reverse so the
+            # largest change sits at the top of the horizontal bars.
+            top = top.iloc[::-1]
             fig = px.bar(
-                ranked.head(25),
-                x="name" if "name" in ranked.columns else ranked.index.astype(str),
-                y="change",
-                labels={"change": "Change %", "x": "Ticker"},
+                top,
+                x="change",
+                y="name",
+                orientation="h",
+                labels={"change": "Change %", "name": "Ticker"},
             )
+            fig.update_layout(showlegend=False)
+            fig.update_yaxes(title_text="", automargin=True)
             sections.append(
                 '<section class="panel" id="top-change">'
                 "<h2>Top Change</h2>"
-                + figure_html(fig, "screen-top-change")
+                + figure_html(
+                    fig, "screen-top-change", height=_top_change_height(len(top))
+                )
                 + "</section>"
             )
 
     numeric_summary = _describe_numeric(
-        df, ["close", "change", "volume", "market_cap_basic", "setup_score", "RSI"]
+        df,
+        ["close", "change", "volume", "market_cap_basic", "setup_score", "RSI"],
+        market,
     )
     notes = [
         f"Generated: {datetime.now().isoformat(timespec='seconds')}",
@@ -178,6 +228,7 @@ def render_screen_report(
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 16px;
+      align-items: start;
     }
     .metrics {
       grid-column: 1 / -1;
@@ -197,7 +248,12 @@ def render_screen_report(
       font-size: 12px;
       text-transform: uppercase;
     }
-    .metric strong { display: block; margin-top: 5px; font-size: 22px; }
+    .metric strong {
+      display: block;
+      margin-top: 5px;
+      font-size: 22px;
+      overflow-wrap: break-word;
+    }
     .panel { padding: 16px; min-width: 0; }
     .wide { grid-column: 1 / -1; }
     .table-wrap { overflow: auto; max-height: 560px; }
@@ -233,6 +289,7 @@ def render_screen_report(
       header, main { padding-left: 16px; padding-right: 16px; }
       main { grid-template-columns: 1fr; }
       .wide, .metrics { grid-column: auto; }
+      .metric strong { font-size: 18px; }
     }"""
     page_html = html_page(
         html.escape(title),
@@ -244,10 +301,10 @@ def render_screen_report(
   <main>
     <section class="metrics" id="screen-summary">{_summary_cards(market=market, criteria_name=criteria_name, total=total, shown=len(df), added=added, removed=removed)}</section>
     {"".join(sections)}
-    <section class="panel" id="numeric-summary"><h2>Important Metrics</h2><div class="table-wrap">{table_html(numeric_summary, "screen-numeric-summary")}</div></section>
+    <section class="panel wide" id="numeric-summary"><h2>Important Metrics</h2><div class="table-wrap">{table_html(numeric_summary, "screen-numeric-summary")}</div></section>
+    <section class="panel wide" id="screen-results"><h2>Results</h2><div class="table-wrap">{table_html(_screen_table_frame(df, market), "screen-results-table", limit=500)}</div></section>
     {_ticker_list("Added Since Previous Run", added, "added-tickers")}
     {_ticker_list("Removed Since Previous Run", removed, "removed-tickers")}
-    <section class="panel wide" id="screen-results"><h2>Results</h2><div class="table-wrap">{table_html(df, "screen-results-table", limit=500)}</div></section>
     <section class="panel wide" id="report-notes"><h2>Notes</h2><ul class="notes">{note_items}</ul></section>
   </main>""",
         head_extra=f"<script>{plotly_js}</script>",
