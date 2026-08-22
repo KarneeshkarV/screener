@@ -16,6 +16,10 @@ def test_display_value_formatters_cover_numeric_tiers():
     assert display._format_value("volume", 2_500) == "2.5K"
     assert display._format_value("volume", 25) == "25"
     assert display._format_value("market_cap_basic", 2_500_000_000) == "2.50B"
+    assert display._format_value("market_cap_basic", 2_500_000_000, "india") == (
+        "250.00 Cr"
+    )
+    assert display._format_value("sales", 7_800_000, "india") == "78.0 Lakh"
     assert display._format_value("close", 12.345) == "12.35"
     assert display._format_value("RSI", 55.678) == "55.68"
     assert display._format_value("sales", 2_500_000_000) == "2.50B"

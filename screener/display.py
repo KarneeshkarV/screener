@@ -6,7 +6,14 @@ import pandas as pd
 from rich.console import Console, JustifyMethod
 from rich.table import Table
 
-from screener.format import fmt_float, fmt_mcap, fmt_pct, fmt_volume, is_missing
+from screener.format import (
+    fmt_float,
+    fmt_mcap,
+    fmt_mcap_for_market,
+    fmt_pct,
+    fmt_volume,
+    is_missing,
+)
 
 console = Console()
 
@@ -27,8 +34,9 @@ def _default(val: Any) -> str:
 # Single source of truth fusing the former COLUMN_LABELS / RIGHT_ALIGN /
 # _format_value per-column tables. ``change`` uses fmt_pct, ``volume`` routes
 # through the shared compact volume formatter (B/M/K tiers, ``-`` for missing),
-# ``market_cap_basic`` / ``sales`` use fmt_mcap, and every other numeric column
-# is a fixed two-decimal float.
+# ``market_cap_basic`` / ``sales`` use US million/billion by default; India
+# screens swap in lakh/crore via ``fmt_mcap_for_market``. Every other numeric
+# column is a fixed two-decimal float.
 COLUMNS: dict[str, ColumnSpec] = {
     "ticker": ColumnSpec("Ticker", "left", _default),
     "name": ColumnSpec("Symbol", "left", _default),
@@ -65,11 +73,15 @@ COLUMNS: dict[str, ColumnSpec] = {
 #: Backward-compatible label map (e.g. ``commands.screen_report`` lookups).
 COLUMN_LABELS = {col: spec.label for col, spec in COLUMNS.items()}
 
+_MCAP_COLUMNS = frozenset({"market_cap_basic", "sales"})
+
 #: Backward-compatible right-align set for the screen tables.
 RIGHT_ALIGN = {col for col, spec in COLUMNS.items() if spec.align == "right"}
 
 
-def _format_value(col: str, val) -> str:
+def _format_value(col: str, val, market: str = "") -> str:
+    if col in _MCAP_COLUMNS:
+        return fmt_mcap_for_market(val, market)
     spec = COLUMNS.get(col)
     if spec is not None:
         return spec.formatter(val)
@@ -111,7 +123,9 @@ def print_results(
             table.add_column(label, justify=justify, no_wrap=True)
 
     for _, row in df.iterrows():
-        cells = [_format_value(col_name, row[col_name]) for col_name in display_cols]
+        cells = [
+            _format_value(col_name, row[col_name], market) for col_name in display_cols
+        ]
         table.add_row(*cells)
 
     console.print(table)
@@ -180,7 +194,7 @@ def print_garp_results(df: pd.DataFrame, market: str) -> None:
         else:
             table.add_column(label, justify=justify, no_wrap=True)
     for _, row in df.iterrows():
-        table.add_row(*[_format_value(col, row[col]) for col in columns])
+        table.add_row(*[_format_value(col, row[col], market) for col in columns])
     console.print(table)
 
 

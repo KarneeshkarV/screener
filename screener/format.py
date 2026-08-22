@@ -50,7 +50,7 @@ def fmt_volume(v) -> str:
 
 
 def fmt_mcap(v) -> str:
-    """Compact market cap: T / B / M tiers, ``-`` for missing values."""
+    """US market cap in trillion / billion / million, ``-`` for missing values."""
     if is_missing(v):
         return "-"
     if v >= 1e12:
@@ -60,3 +60,23 @@ def fmt_mcap(v) -> str:
     if v >= 1e6:
         return f"{v / 1e6:.1f}M"
     return f"{v:,.0f}"
+
+
+def fmt_mcap_india(v) -> str:
+    """India market cap in lakh crore / crore / lakh, ``-`` for missing values."""
+    if is_missing(v):
+        return "-"
+    if v >= 1e12:
+        return f"{v / 1e12:.2f} Lakh Cr"
+    if v >= 1e7:
+        return f"{v / 1e7:,.2f} Cr"
+    if v >= 1e5:
+        return f"{v / 1e5:.1f} Lakh"
+    return f"{v:,.0f}"
+
+
+def fmt_mcap_for_market(v, market: str = "") -> str:
+    """Market cap in lakh/crore for India, million/billion for US."""
+    if str(market).lower() == "india":
+        return fmt_mcap_india(v)
+    return fmt_mcap(v)
