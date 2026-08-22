@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import ast
+import inspect
+import textwrap
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -24,6 +29,7 @@ from screener.strategies.spec import (
     DerivedView,
     ExpressionStrategySpec,
     PrepareCtx,
+    discover_plugins,
     register_expression_strategy,
     strategy,
 )
@@ -58,6 +64,31 @@ def test_strategy_registry_preserves_pine_runner_names():
 
     assert pine_runner_names <= set(STRATEGIES)
     assert dict(STRATEGIES.items()) == dict(STRATEGIES)
+
+
+def test_every_plugin_file_is_named_in_discover_plugins():
+    # A plugin file that ships without an entry in discover_plugins() is dead in
+    # production: its strategies never register. inspect.getsource catches both
+    # a dropped import and a renamed one, since the import block names every
+    # plugin by its module stem.
+    # Exact imported names, not a substring scan: "keltner" occurs inside
+    # "keltner_squeeze_breakout", so a substring check would keep passing after
+    # the shorter module was dropped from the list.
+    tree = ast.parse(textwrap.dedent(inspect.getsource(discover_plugins)))
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    plugins_dir = (
+        Path(__file__).resolve().parents[1] / "screener" / "strategies" / "plugins"
+    )
+    on_disk = {
+        path.stem for path in plugins_dir.glob("*.py") if path.name != "__init__.py"
+    }
+
+    assert on_disk - imported == set()
 
 
 def test_strategy_views_are_live_derived_over_single_registry():
