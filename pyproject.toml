@@ -115,6 +115,9 @@ module = [
     "jugaad_data.*",
     "openscreener.*",
     "plotly.*",
+    # scipy ships no stubs on this pin; only the sparse solvers in the
+    # experimental feature module import it.
+    "scipy.*",
     "tradingview_screener.*",
     "yfinance.*",
 ]

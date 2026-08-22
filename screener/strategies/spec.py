@@ -235,6 +235,10 @@ def discover_plugins() -> None:
         turn_of_month,
         vivek_equity_tool,
         williams_r,
+        dual_momentum,
+        long_only_trend,
+        momentum_riskmanaged,
+        time_series_momentum,
     )
 
 
