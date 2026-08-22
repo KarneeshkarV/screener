@@ -76,6 +76,10 @@ class BacktestRequest:
     sizing_atr_window: int
     sizing_atr_multiple: float
     sizing_vol_window: int
+    sizing_ema_fast: int
+    sizing_ema_slow: int
+    sizing_ema_spread_cap: float
+    sizing_ema_spread_floor: float
     intraday_only: bool
     start_arg: datetime | None = None
     end_arg: datetime | None = None
@@ -176,6 +180,10 @@ def _build_config(
             sizing_atr_window=int(request.sizing_atr_window),
             sizing_atr_multiple=float(request.sizing_atr_multiple),
             sizing_vol_window=int(request.sizing_vol_window),
+            sizing_ema_fast=int(request.sizing_ema_fast),
+            sizing_ema_slow=int(request.sizing_ema_slow),
+            sizing_ema_spread_cap=float(request.sizing_ema_spread_cap),
+            sizing_ema_spread_floor=float(request.sizing_ema_spread_floor),
             **extra,
         )
     except ValidationError as exc:

@@ -167,6 +167,43 @@ def sizing_options(command):
             show_default=True,
             help="Return-volatility lookback (bars) for inverse_vol sizing.",
         ),
+        click.option(
+            "--sizing-ema-fast",
+            type=int,
+            default=50,
+            show_default=True,
+            help=(
+                "Fast EMA window for ema_spread sizing. Used only when the "
+                "strategy's own expressions name fewer than two ema() windows."
+            ),
+        ),
+        click.option(
+            "--sizing-ema-slow",
+            type=int,
+            default=200,
+            show_default=True,
+            help="Slow EMA window for ema_spread sizing (same fallback rule).",
+        ),
+        click.option(
+            "--sizing-ema-spread-cap",
+            type=float,
+            default=0.20,
+            show_default=True,
+            help=(
+                "Normalised (fast-slow)/slow EMA gap that earns a full slot "
+                "under ema_spread sizing. Wider gaps are clamped to one slot."
+            ),
+        ),
+        click.option(
+            "--sizing-ema-spread-floor",
+            type=float,
+            default=0.25,
+            show_default=True,
+            help=(
+                "Minimum fraction of a slot kept under ema_spread sizing when "
+                "the EMA gap is flat or inverted, so no entry is sized to zero."
+            ),
+        ),
     ]
     for option in reversed(options):
         command = option(command)

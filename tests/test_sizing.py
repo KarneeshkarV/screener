@@ -228,3 +228,226 @@ def test_rolling_default_matches_legacy_slot_sizing():
     for trade in result.trades:
         # top=2 -> slot_capital = 100_000 / 2 = 50_000, fully spent.
         assert trade.entry_cost == pytest.approx(50_000.0)
+
+
+# ── ema_spread ───────────────────────────────────────────────────────
+
+
+def _trending_bars(start: float, growth: float, n: int = _N) -> pd.DataFrame:
+    """Geometric ramp: a bigger ``growth`` widens the fast/slow EMA gap."""
+    idx = pd.bdate_range(_START, periods=n)
+    close_s = pd.Series(
+        [start * (1.0 + growth) ** i for i in range(n)], index=idx, dtype=float
+    )
+    return pd.DataFrame(
+        {
+            "open": close_s,
+            "high": close_s * 1.01,
+            "low": close_s * 0.99,
+            "close": close_s,
+            "volume": pd.Series(1_000_000.0, index=idx, dtype=float),
+        }
+    )
+
+
+def _ema_cfg(entry_expr: str = "close > 0", **sizing_kwargs) -> BacktestConfig:
+    cfg = _sizing_cfg("ema_spread", top=4, **sizing_kwargs)
+    return cfg.model_copy(update={"entry_expr": entry_expr})
+
+
+def test_ema_spread_windows_prefer_the_strategys_own_emas():
+    from screener.backtester.sizing import ema_spread_windows
+
+    cfg = _ema_cfg("close > ema(close, 20) and ema(close, 20) > ema(close, 150)")
+    cfg = cfg.model_copy(update={"exit_expr": "crossunder(close, ema(close, 8))"})
+    assert ema_spread_windows(cfg) == (8, 150)
+
+
+def test_ema_spread_windows_fall_back_when_the_strategy_names_no_ema_pair():
+    from screener.backtester.sizing import ema_spread_windows
+
+    # No ema() at all (the common case: most strategies are sma-based).
+    assert ema_spread_windows(_ema_cfg("close > sma(close, 50)")) == (50, 200)
+    # A single ema() is not a pair either.
+    single = _ema_cfg("close > ema(close, 30)", sizing_ema_fast=10, sizing_ema_slow=40)
+    assert ema_spread_windows(single) == (10, 40)
+
+
+def test_ema_spread_floors_a_flat_trend():
+    # Constant close -> fast EMA == slow EMA -> zero gap -> floor weight.
+    portfolio = Portfolio(100_000.0, 4)
+    cfg = _ema_cfg(
+        sizing_ema_fast=3,
+        sizing_ema_slow=10,
+        sizing_ema_spread_cap=0.20,
+        sizing_ema_spread_floor=0.25,
+    )
+    bars = _constant_bars(100.0)
+    assert entry_budget_for(cfg, portfolio, bars, 30) == pytest.approx(0.25 * 25_000.0)
+
+
+def test_ema_spread_caps_a_strong_trend_at_one_slot():
+    portfolio = Portfolio(100_000.0, 4)
+    cfg = _ema_cfg(
+        sizing_ema_fast=3,
+        sizing_ema_slow=10,
+        sizing_ema_spread_cap=0.01,  # a 1% gap already earns a whole slot
+        sizing_ema_spread_floor=0.25,
+    )
+    bars = _trending_bars(100.0, 0.02)
+    assert entry_budget_for(cfg, portfolio, bars, 30) == pytest.approx(25_000.0)
+
+
+def test_ema_spread_gives_a_wider_gap_a_bigger_slice():
+    portfolio = Portfolio(100_000.0, 4)
+    cfg = _ema_cfg(
+        sizing_ema_fast=3,
+        sizing_ema_slow=10,
+        sizing_ema_spread_cap=1.0,  # far above any gap here: nothing is clamped
+        sizing_ema_spread_floor=0.0,
+    )
+    budgets = [
+        entry_budget_for(cfg, portfolio, _trending_bars(100.0, growth), 30)
+        for growth in (0.002, 0.005, 0.010, 0.020)
+    ]
+    assert budgets == sorted(budgets)
+    assert budgets[0] < budgets[-1]
+    assert all(0.0 < b < 25_000.0 for b in budgets)
+
+
+def test_ema_spread_matches_the_normalised_gap_it_claims_to_use():
+    portfolio = Portfolio(100_000.0, 4)
+    cfg = _ema_cfg(
+        sizing_ema_fast=3,
+        sizing_ema_slow=10,
+        sizing_ema_spread_cap=0.05,
+        sizing_ema_spread_floor=0.10,
+    )
+    bars = _trending_bars(100.0, 0.005)
+    close = bars["close"]
+    fast = close.ewm(span=3, adjust=False, min_periods=3).mean().iloc[30]
+    slow = close.ewm(span=10, adjust=False, min_periods=10).mean().iloc[30]
+    expected = min(max(((fast - slow) / slow) / 0.05, 0.10), 1.0) * 25_000.0
+    assert entry_budget_for(cfg, portfolio, bars, 30) == pytest.approx(expected)
+
+
+def test_ema_spread_falls_back_to_the_slot_when_the_slow_ema_is_undefined():
+    # signal_idx 5 sits inside the 10-bar warmup, so the slow EMA is NaN.
+    portfolio = Portfolio(100_000.0, 4)
+    cfg = _ema_cfg(sizing_ema_fast=3, sizing_ema_slow=10)
+    bars = _trending_bars(100.0, 0.01)
+    assert entry_budget_for(cfg, portfolio, bars, 5) == pytest.approx(25_000.0)
+
+
+def test_ema_windows_must_be_ordered_fast_then_slow():
+    with pytest.raises(ValidationError, match="sizing_ema_fast must be shorter"):
+        _sizing_cfg("ema_spread", sizing_ema_fast=200, sizing_ema_slow=50)
+
+
+def test_rolling_ema_spread_sizes_down_from_the_slot():
+    fetcher = StubPriceFetcher(_RISING_DATA)
+    cfg = _rolling_cfg(
+        sizing_rule="ema_spread",
+        sizing_ema_fast=3,
+        sizing_ema_slow=10,
+        sizing_ema_spread_cap=0.50,
+        sizing_ema_spread_floor=0.10,
+    )
+    result = run_rolling_backtest(
+        cfg, fetcher, start_date=_INDEX[0].date(), end_date=_INDEX[-1].date()
+    )
+    baseline = run_rolling_backtest(
+        _rolling_cfg(), fetcher, start_date=_INDEX[0].date(), end_date=_INDEX[-1].date()
+    )
+    assert result.trades
+    # Same entries as equal_slot: the floor never zeroes a qualifying entry, so
+    # the rule changes weights only, never the trade count.
+    assert len(result.trades) == len(baseline.trades)
+    # No entry exceeds the 50_000 slot ceiling, and the ones taken after the
+    # 10-bar slow-EMA warmup are genuinely sized down by the gap. Entries
+    # inside the warmup keep the full slot (documented NaN fallback).
+    assert all(0.0 < trade.entry_cost <= 50_000.0 for trade in result.trades)
+    assert any(trade.entry_cost < 50_000.0 for trade in result.trades)
+
+
+# ── sma_spread / ma_extension ────────────────────────────────────────
+
+
+def test_sma_spread_reads_the_strategys_own_sma_pair():
+    from screener.backtester.sizing import ma_spread_windows
+
+    cfg = _ema_cfg("close > sma(close, 50) and sma(close, 50) > sma(close, 150)")
+    assert ma_spread_windows(cfg, "sma") == (50, 150)
+    # The ema scanner sees nothing in an sma-only strategy, so it falls back.
+    assert ma_spread_windows(cfg, "ema") == (50, 200)
+
+
+def test_sma_spread_floors_a_flat_trend_like_ema_spread_does():
+    portfolio = Portfolio(100_000.0, 4)
+    cfg = _sizing_cfg(
+        "sma_spread",
+        top=4,
+        sizing_ema_fast=3,
+        sizing_ema_slow=10,
+        sizing_ema_spread_floor=0.25,
+    )
+    assert entry_budget_for(cfg, portfolio, _constant_bars(100.0), 30) == pytest.approx(
+        0.25 * 25_000.0
+    )
+
+
+def test_sma_spread_gives_a_wider_gap_a_bigger_slice():
+    portfolio = Portfolio(100_000.0, 4)
+    cfg = _sizing_cfg(
+        "sma_spread",
+        top=4,
+        sizing_ema_fast=3,
+        sizing_ema_slow=10,
+        sizing_ema_spread_cap=1.0,
+        sizing_ema_spread_floor=0.0,
+    )
+    budgets = [
+        entry_budget_for(cfg, portfolio, _trending_bars(100.0, growth), 30)
+        for growth in (0.002, 0.005, 0.010, 0.020)
+    ]
+    assert budgets == sorted(budgets)
+    assert budgets[0] < budgets[-1]
+
+
+def test_ma_extension_weights_distance_above_the_slow_ema():
+    portfolio = Portfolio(100_000.0, 4)
+    cfg = _sizing_cfg(
+        "ma_extension",
+        top=4,
+        sizing_ema_fast=3,
+        sizing_ema_slow=10,
+        sizing_ema_spread_cap=0.05,
+        sizing_ema_spread_floor=0.10,
+    )
+    bars = _trending_bars(100.0, 0.005)
+    close = bars["close"]
+    slow = close.ewm(span=10, adjust=False, min_periods=10).mean().iloc[30]
+    expected = min(max(((close.iloc[30] - slow) / slow) / 0.05, 0.10), 1.0) * 25_000.0
+    assert entry_budget_for(cfg, portfolio, bars, 30) == pytest.approx(expected)
+
+
+def test_ma_extension_floors_a_flat_series():
+    portfolio = Portfolio(100_000.0, 4)
+    cfg = _sizing_cfg(
+        "ma_extension",
+        top=4,
+        sizing_ema_fast=3,
+        sizing_ema_slow=10,
+        sizing_ema_spread_floor=0.25,
+    )
+    assert entry_budget_for(cfg, portfolio, _constant_bars(100.0), 30) == pytest.approx(
+        0.25 * 25_000.0
+    )
+
+
+def test_spread_rules_fall_back_to_the_slot_inside_warmup():
+    portfolio = Portfolio(100_000.0, 4)
+    bars = _trending_bars(100.0, 0.01)
+    for rule in ("ema_spread", "sma_spread", "ma_extension"):
+        cfg = _sizing_cfg(rule, top=4, sizing_ema_fast=3, sizing_ema_slow=10)
+        assert entry_budget_for(cfg, portfolio, bars, 5) == pytest.approx(25_000.0)

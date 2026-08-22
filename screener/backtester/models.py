@@ -114,6 +114,14 @@ class BacktestConfig(BaseModel):
     sizing_atr_window: int = Field(default=14, gt=0)
     sizing_atr_multiple: float = Field(default=2.0, gt=0.0)
     sizing_vol_window: int = Field(default=20, gt=1)
+    # ``ema_spread`` sizing: fast/slow EMA windows used when the strategy's own
+    # expressions reference no ``ema(...)`` call, the normalised gap that earns
+    # a full slot, and the floor weight kept for a flat or inverted gap so a
+    # qualifying entry is never silently sized to zero shares.
+    sizing_ema_fast: int = Field(default=50, gt=0)
+    sizing_ema_slow: int = Field(default=200, gt=0)
+    sizing_ema_spread_cap: float = Field(default=0.20, gt=0.0)
+    sizing_ema_spread_floor: float = Field(default=0.25, ge=0.0, le=1.0)
 
     @field_validator("interval")
     @classmethod
@@ -161,6 +169,12 @@ class BacktestConfig(BaseModel):
         if self.spread_proxy != consumes:
             raise ValueError(
                 "spread_proxy and EstimatedHalfSpreadSlippage must be enabled together"
+            )
+
+        if self.sizing_ema_fast >= self.sizing_ema_slow:
+            raise ValueError(
+                "sizing_ema_fast must be shorter than sizing_ema_slow "
+                f"(got {self.sizing_ema_fast} >= {self.sizing_ema_slow})"
             )
 
         if self.sizing_rule == "fixed_risk" and (

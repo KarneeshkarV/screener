@@ -16,6 +16,14 @@ the full series and indexing at ``signal_idx`` matches truncated-history
 evaluation — the same discipline the entry-signal evaluators rely on. When
 the indicator is not yet defined at the signal bar (insufficient lookback,
 zero volatility), the rule falls back to the equal-slot budget.
+
+``ema_spread`` is the trend-strength rule: it reads the strategy's *own* EMA
+pair out of its entry/exit expressions and gives a wider fast-minus-slow gap a
+bigger slice of the slot. Because every rule is clamped to the slot ceiling,
+"more weight for a wider gap" is expressed as "less weight for a narrower gap":
+a run under ``ema_spread`` holds strictly less gross exposure than the same run
+under ``equal_slot``, so compare the two on risk-adjusted terms, not on total
+return alone.
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -133,6 +142,156 @@ def _inverse_vol(ctx: SizingContext) -> float:
     return ctx.equity * policy.sizing_risk_pct / vol_value
 
 
+@lru_cache(maxsize=512)
+def _ma_windows_in(
+    entry_expr: str, exit_expr: str | None, func: str
+) -> tuple[int, ...]:
+    """Sorted, de-duplicated ``func(source, N)`` windows named by the strategy.
+
+    Parsing uses the same Pine front end the signal evaluator uses, so a window
+    counts here only if it would really be computed at signal time. Only
+    integer-literal lengths are collected -- ``pine`` requires that anyway.
+    An unparseable expression yields no windows rather than raising: sizing must
+    never be the thing that fails a run whose signals already evaluated.
+    """
+    from screener.backtester.pine import (
+        BinOp,
+        BoolOp,
+        Call,
+        Compare,
+        Node,
+        Not,
+        Num,
+        PineError,
+        UnaryOp,
+        parse,
+    )
+
+    found: set[int] = set()
+
+    def visit(node: Node) -> None:
+        if isinstance(node, Call):
+            if node.name == func and len(node.args) == 2:
+                length = node.args[1]
+                if isinstance(length, Num) and float(length.value).is_integer():
+                    found.add(int(length.value))
+            for arg in node.args:
+                visit(arg)
+        elif isinstance(node, (BinOp, Compare, BoolOp)):
+            visit(node.left)
+            visit(node.right)
+        elif isinstance(node, (UnaryOp, Not)):
+            visit(node.operand)
+
+    for expr in (entry_expr, exit_expr):
+        if not expr:
+            continue
+        try:
+            visit(parse(expr))
+        except PineError:
+            continue
+    return tuple(sorted(found))
+
+
+def ma_spread_windows(cfg: BacktestConfig, func: str) -> tuple[int, int]:
+    """``(fast, slow)`` ``func`` windows a spread rule weights ``cfg`` by.
+
+    The strategy's own pair wins when its expressions name two or more windows
+    of that moving average (fastest against slowest). Anything else -- one
+    window, or none at all -- falls back to the configured
+    ``sizing_ema_fast``/``sizing_ema_slow``, defaulting to 50/200. The fallback
+    is shared on purpose: it is the pair the user asked for, and it keeps the
+    ema and sma arms weighting the same lengths whenever the strategy itself is
+    silent, so the two arms differ only in the average, not the lookback.
+    """
+    windows = _ma_windows_in(cfg.entry_expr, cfg.exit_expr, func)
+    if len(windows) >= 2:
+        return windows[0], windows[-1]
+    return cfg.sizing_ema_fast, cfg.sizing_ema_slow
+
+
+def ema_spread_windows(cfg: BacktestConfig) -> tuple[int, int]:
+    """``(fast, slow)`` EMA windows the ``ema_spread`` rule weights ``cfg`` by."""
+    return ma_spread_windows(cfg, "ema")
+
+
+def _spread_weight(policy: BacktestConfig, spread: float) -> float:
+    """Map a normalized gap onto ``[spread_floor, 1]`` slot fractions."""
+    return min(
+        max(spread / policy.sizing_ema_spread_cap, policy.sizing_ema_spread_floor), 1.0
+    )
+
+
+@sizer("ema_spread")
+def _ema_spread(ctx: SizingContext) -> float:
+    # Trend-strength weighting. The normalized gap ``(fast - slow) / slow`` is
+    # scale-free, so one cap works across a whole cross-section; it maps
+    # linearly onto ``[spread_floor, 1]`` and scales the equal-slot budget.
+    # The floor keeps a flat or inverted gap from sizing a qualifying entry down
+    # to zero shares, which would override the strategy's own entry criteria and
+    # silently change the trade count rather than only the weights.
+    policy = ctx.policy
+    fast_window, slow_window = ema_spread_windows(policy)
+    close = ctx.bars["close"]
+    fast = close.ewm(span=fast_window, adjust=False, min_periods=fast_window).mean()
+    slow = close.ewm(span=slow_window, adjust=False, min_periods=slow_window).mean()
+    fast_value = float(fast.iloc[ctx.signal_idx])
+    slow_value = float(slow.iloc[ctx.signal_idx])
+    if (
+        not math.isfinite(fast_value)
+        or not math.isfinite(slow_value)
+        or slow_value <= 0
+    ):
+        return math.nan
+    spread = (fast_value - slow_value) / slow_value
+    return ctx.base_budget * _spread_weight(policy, spread)
+
+
+@sizer("sma_spread")
+def _sma_spread(ctx: SizingContext) -> float:
+    # Same shape as ``ema_spread`` on the simple average. Most strategies in
+    # the research set are sma-based, so this arm reads their real moving
+    # averages where ``ema_spread`` has to fall back to 50/200.
+    policy = ctx.policy
+    fast_window, slow_window = ma_spread_windows(policy, "sma")
+    close = ctx.bars["close"]
+    fast = close.rolling(fast_window, min_periods=fast_window).mean()
+    slow = close.rolling(slow_window, min_periods=slow_window).mean()
+    fast_value = float(fast.iloc[ctx.signal_idx])
+    slow_value = float(slow.iloc[ctx.signal_idx])
+    if (
+        not math.isfinite(fast_value)
+        or not math.isfinite(slow_value)
+        or slow_value <= 0
+    ):
+        return math.nan
+    return ctx.base_budget * _spread_weight(
+        policy, (fast_value - slow_value) / slow_value
+    )
+
+
+@sizer("ma_extension")
+def _ma_extension(ctx: SizingContext) -> float:
+    # Price-against-trend instead of trend-against-trend: how far the close sits
+    # above the strategy's slow EMA. Same normalization and clamp as the spread
+    # rules, so the three arms differ only in what they measure.
+    policy = ctx.policy
+    _, slow_window = ma_spread_windows(policy, "ema")
+    close = ctx.bars["close"]
+    slow = close.ewm(span=slow_window, adjust=False, min_periods=slow_window).mean()
+    slow_value = float(slow.iloc[ctx.signal_idx])
+    close_value = float(close.iloc[ctx.signal_idx])
+    if (
+        not math.isfinite(slow_value)
+        or not math.isfinite(close_value)
+        or slow_value <= 0
+    ):
+        return math.nan
+    return ctx.base_budget * _spread_weight(
+        policy, (close_value - slow_value) / slow_value
+    )
+
+
 def entry_budget_for(
     cfg: BacktestConfig,
     portfolio: Portfolio,
@@ -172,6 +331,8 @@ def entry_budget_for(
 __all__ = [
     "SizingContext",
     "available_sizing_rules",
+    "ema_spread_windows",
     "entry_budget_for",
+    "ma_spread_windows",
     "sizer",
 ]

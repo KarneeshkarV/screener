@@ -63,6 +63,10 @@ BOOK_CONFIG_FIELDS = frozenset(
         "sizing_atr_window",
         "sizing_atr_multiple",
         "sizing_vol_window",
+        "sizing_ema_fast",
+        "sizing_ema_slow",
+        "sizing_ema_spread_cap",
+        "sizing_ema_spread_floor",
     }
 )
 

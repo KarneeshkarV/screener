@@ -310,6 +310,10 @@ def _rolling_request(**overrides):
         sizing_atr_window=14,
         sizing_atr_multiple=2.0,
         sizing_vol_window=20,
+        sizing_ema_fast=50,
+        sizing_ema_slow=200,
+        sizing_ema_spread_cap=0.20,
+        sizing_ema_spread_floor=0.25,
         intraday_only=False,
     )
     values.update(overrides)
