@@ -1,18 +1,17 @@
 ---
 name: screener-stock-analysis-codebase
-description: Use when analyzing stocks, portfolios, screens, backtests, or strategy ideas with this workspace. Covers how to use the Python screener CLI, Telegram bot support code together without inventing data or bypassing existing providers.
+description: Use when analyzing stocks, portfolios, screens, backtests, or strategy ideas with this workspace. Covers how to use the Python screener CLI without inventing data or bypassing existing providers.
 ---
 
 # Screener Stock Analysis Codebase
 
-Use this skill for codebase-backed stock analysis, portfolio reviews, signal checks, strategy research, and comparisons between the Python  implementations in this workspace.
+Use this skill for codebase-backed stock analysis, portfolio reviews, signal checks, and strategy research with the Python screener CLI in this workspace.
 
 ## Workspace Map
 
 - `screener/`: primary Python CLI and research code. Use `uv` from this directory.
-- `screener_bot/`: Telegram bot that wraps the Python `screener` package for portfolio checks, alerts, charts, and scheduled screen diffs.
 
-If repo guidance conflicts, follow `screener/AGENTS.md`: use `uv`; bot code lives in `../screener_bot/`.
+If repo guidance conflicts, follow `screener/AGENTS.md`: use `uv`.
 
 ## First Choice Tooling
 
@@ -34,15 +33,6 @@ uv run screener conviction AAPL -m us
 uv run screener research-report -m us --years 1 --strategy rs_breakout --top 10
 ```
 
-
-Use the bot project when the task involves Telegram command behavior, portfolio alerting, scheduled screener messages, chart rendering, authorization, or Turso-backed portfolio state:
-
-```bash
-cd screener_bot
-uv run python -m screener_bot
-uv run pytest
-```
-
 ## Data Source Rules
 
 - Prefer existing repo providers and caches before writing ad hoc network code.
@@ -61,8 +51,9 @@ uv run pytest
 
 Use these modules instead of recreating logic:
 
-- Technical screen: `screener/screener/commands/screen.py`, `screener/screener/scanner.py`, `screener/screener/criteria/plugins/`.
+- Technical screen: `screener/screener/commands/screen.py`, `screener/screener/scanner.py`, `screener/screener/criteria/plugins/`, `screener/screener/scoring/`.
 - Custom criteria are pure filters: add a plugin in `screener/screener/criteria/plugins/` with `@criterion("name")`. `criterion()` takes only a name and wraps a zero-argument callable returning TradingView filter expressions — there is no `pipeline` kwarg. Full command workflows (enrichment, history, external providers) live in `screener/screener/screen_aliases.py` and `screener/screener/screen_alias_plugins/`, not this registry.
+- Ranking scores are separate: add a matching `@scorer("name")` in `screener/screener/scoring/plugins/` (same name as the criterion). Each recipe declares extra TV columns and a score function; output is always `setup_score`. Combined `-c` criteria equal-weight average their scorers via `resolve_scorer`.
 - Backtests: `screener/screener/backtester/historical.py`, `rolling.py`, `core.py`, `models.py`, `metrics.py`.
 - Position sizing: `screener/screener/backtester/sizing.py` (`@sizer` registry: `equal_slot`, `fixed_fraction`, `fixed_risk`, `atr_risk`, `inverse_vol`); exposed as `--sizing`/`--sizing-*` on both backtest commands. Default `equal_slot` is bit-identical to the legacy engine; other rules clamp to the slot budget and read only up to the signal bar.
 - Price data: `screener/screener/backtester/data.py`; use `tv_to_yf()` for symbol mapping and injected `PriceFetcher` for tests. Interval-aware: pass `interval=` to the fetcher constructors, never mix intervals in one cache key.
@@ -81,14 +72,6 @@ Use these modules instead of recreating logic:
 - US SEC filings reader: `screener/screener/filings.py` and `screener/screener/commands/filings.py` (FMP filings index + 10-K/10-Q section JSON, needs `FMP_API_KEY`).
 - Factor research: `screener/screener/backtester/factor_tearsheet.py` (`factor-tearsheet`), `vbt_sweep.py` (`vbt-sweep`); one-command pipeline: `research-report` (grid → walk-forward → Monte Carlo) in `screener/screener/backtester/optimization/`.
 - Screen-run history: `screener/screener/history.py` (SQLite `~/.screener/history.db`), replay via `backtest-historical --from-run`, Turso mirror via `screener/screener/history_sync.py` (`history-backup`).
-
-For quick per-symbol technical detail, it is often easier to import bot logic:
-
-```python
-from screener_bot.technical import TechnicalService
-```
-
-but remember `screener_bot` normally depends on bot config and portfolio objects, so CLI/import scripts in `screener/` are cleaner for one-off research.
 
 ## Recommended Stock Analysis Workflow
 
@@ -135,22 +118,11 @@ but remember `screener_bot` normally depends on bot config and portfolio objects
 
 ## Validation
 
-Python:
-
 ```bash
 cd screener
 uv run pytest
 uv run ruff check $(git ls-files '*.py')
 uv run ruff format --check $(git ls-files '*.py')
-uv run mypy
-```
-
-Bot:
-
-```bash
-cd screener_bot
-uv run pytest
-uv run ruff check $(git ls-files '*.py')
 uv run mypy
 ```
 
