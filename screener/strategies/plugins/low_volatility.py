@@ -21,7 +21,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener.strategies.spec import PrepareCtx, register_expression_strategy
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    PrepareCtx,
+    register_expression_strategy,
+)
 
 _WINDOW = 252  # ~12 months of trading days
 
@@ -59,4 +63,5 @@ register_expression_strategy(
     exit=None,
     prepare_bars=_prepare_low_vol,
     required_lookback=_low_vol_lookback,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )

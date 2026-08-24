@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from screener.strategies.spec import register_expression_strategy
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    register_expression_strategy,
+)
 
 register_expression_strategy(
     "ema150_200_revenue_up_3q",
@@ -13,4 +16,5 @@ register_expression_strategy(
         "and revenue_up_3q > 0"
     ),
     exit=None,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )

@@ -10,6 +10,11 @@ A strategy comes in one of two flavors:
 Strategies that need bar prep before the backtester evaluates signals attach a
 ``prepare_bars`` hook and an optional ``required_lookback``. This replaces the
 ``if cfg.strategy_name == ...`` branches that used to live in the core.
+
+Expression strategies may also declare a ``StrategyProfile``: the candidate
+gate defaults (liquidity filters, regime gate, blackout, sector
+neutralisation) that screen and backtest will both load, mirroring
+``SignalPanelInputs``. Stage 1 declares it; nothing consumes it yet.
 """
 
 from __future__ import annotations
@@ -23,6 +28,10 @@ from pydantic import BaseModel, ConfigDict, SkipValidation, field_validator
 
 from screener._registry import Registry
 from screener.backtester.data import PriceFetcher
+from screener.backtester.signal_panel import (
+    RUN_SCOPED_SIGNAL_PANEL_FIELDS,
+    SIGNAL_PANEL_INPUT_FIELDS,
+)
 from screener.strategies.trades import ResearchTrade
 
 StrategyFn = Callable[[pd.DataFrame], list[ResearchTrade]]
@@ -48,6 +57,56 @@ class PrepareCtx(BaseModel):
 
 PrepareBarsFn = Callable[[PrepareCtx], dict[str, pd.DataFrame]]
 LookbackFn = Callable[[], int]
+
+
+class StrategyProfile(BaseModel):
+    """Per-strategy candidate-gate defaults for screen and backtest.
+
+    Mirrors the eligibility inputs of
+    :class:`~screener.backtester.signal_panel.SignalPanelInputs` field for
+    field, minus the run-scoped universe and venue fields collected in
+    ``RUN_SCOPED_SIGNAL_PANEL_FIELDS``: a strategy declares how a candidate is
+    judged, not which names or venue a run covers.
+
+    The field list is derived, not restated: the partition against
+    ``SIGNAL_PANEL_INPUT_FIELDS`` is enforced right below, so a gate added to
+    ``SignalPanelInputs`` cannot ship without either mirroring it here or
+    classifying it as run-scoped. Scalar values are the effective
+    ``BacktestConfig`` defaults, so an attached profile changes nothing until
+    a caller resolves and applies it (stage 1 wires no caller).
+
+    ``entry_expr``/``exit_expr`` are ``None`` when unset, meaning "the spec's
+    own ``entry``/``exit`` stand" - they stay required on
+    :class:`ExpressionStrategySpec`.
+    """
+
+    entry_expr: str | None = None
+    exit_expr: str | None = None
+    regime_filter: tuple[str, ...] = ()
+    earnings_blackout_days: int | None = None
+    sector_neutral: bool = False
+    min_price: float | None = None
+    min_avg_dollar_volume: float | None = None
+    avg_dollar_volume_window: int = 20
+
+
+_PROFILE_FIELD_NAMES = frozenset(StrategyProfile.model_fields)
+_UNCLASSIFIED_PANEL_FIELDS = (
+    SIGNAL_PANEL_INPUT_FIELDS - _PROFILE_FIELD_NAMES - RUN_SCOPED_SIGNAL_PANEL_FIELDS
+)
+_UNKNOWN_PROFILE_FIELDS = _PROFILE_FIELD_NAMES - SIGNAL_PANEL_INPUT_FIELDS
+if _UNCLASSIFIED_PANEL_FIELDS or _UNKNOWN_PROFILE_FIELDS:
+    raise RuntimeError(
+        "StrategyProfile drifted from SignalPanelInputs: "
+        f"unclassified panel gates {sorted(_UNCLASSIFIED_PANEL_FIELDS)}, "
+        f"profile fields unknown to the panel {sorted(_UNKNOWN_PROFILE_FIELDS)}. "
+        "Mirror each new SignalPanelInputs gate on StrategyProfile, or move it "
+        "into RUN_SCOPED_SIGNAL_PANEL_FIELDS with a reason."
+    )
+
+# The shared baseline every strategy without its own profile resolves to.
+# Equal to the effective BacktestConfig defaults by construction.
+DEFAULT_STRATEGY_PROFILE = StrategyProfile()
 
 
 class StrategySpec(BaseModel):
@@ -82,6 +141,9 @@ class ExpressionStrategySpec(StrategySpec):
     exit: str | None = None
     prepare_bars: PrepareBarsFn | None = None
     required_lookback: LookbackFn | None = None
+    # Declared candidate-gate defaults. ``None`` keeps the plugin on the
+    # effective defaults (``DEFAULT_STRATEGY_PROFILE``); nothing reads it yet.
+    profile: StrategyProfile | None = None
 
     @field_validator("entry")
     @classmethod
@@ -152,6 +214,7 @@ def register_expression_strategy(
     exit: str | None = None,
     prepare_bars: PrepareBarsFn | None = None,
     required_lookback: LookbackFn | None = None,
+    profile: StrategyProfile | None = None,
     **meta: Any,
 ) -> ExpressionStrategySpec:
     """Register an expression strategy directly, without a fake function body."""
@@ -161,6 +224,7 @@ def register_expression_strategy(
         exit=exit,
         prepare_bars=prepare_bars,
         required_lookback=required_lookback,
+        profile=profile,
     )
     registry.add(name, spec, **meta)
     return spec
@@ -222,3 +286,32 @@ def resolve_strategy_spec(name: str | None) -> StrategySpec | None:
 
         ensure_backtestable_scorer(name)
     return spec
+
+
+def resolve_strategy_profile(
+    spec: ExpressionStrategySpec | None = None,
+    overrides: Mapping[str, Any] | None = None,
+) -> StrategyProfile:
+    """Effective candidate gates: the declared profile, then explicit overrides.
+
+    A spec without a ``profile`` resolves to :data:`DEFAULT_STRATEGY_PROFILE`,
+    so the resolved value is total for every expression strategy. Overrides
+    use ``SignalPanelInputs`` field names, win over both the defaults and any
+    attached profile, and are validated by rebuilding the model; unknown keys
+    raise instead of silently doing nothing. No CLI path calls this yet -
+    stage 1 is additive only (D18).
+    """
+    base = (
+        spec.profile
+        if isinstance(spec, ExpressionStrategySpec) and spec.profile is not None
+        else DEFAULT_STRATEGY_PROFILE
+    )
+    if not overrides:
+        return base
+    unknown = [key for key in overrides if key not in StrategyProfile.model_fields]
+    if unknown:
+        raise ValueError(
+            f"unknown strategy-profile override(s): {sorted(unknown)}; "
+            f"known gates: {sorted(StrategyProfile.model_fields)}"
+        )
+    return StrategyProfile(**{**base.model_dump(), **overrides})

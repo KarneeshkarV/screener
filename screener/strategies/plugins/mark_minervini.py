@@ -10,7 +10,11 @@ from screener.minervini import (
     prepare_backtest_frames,
     required_history_bars,
 )
-from screener.strategies.spec import PrepareCtx, register_expression_strategy
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    PrepareCtx,
+    register_expression_strategy,
+)
 
 
 def _prepare_mark_minervini(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
@@ -23,4 +27,5 @@ register_expression_strategy(
     exit=MINERVINI_EXIT_EXPR,
     prepare_bars=_prepare_mark_minervini,
     required_lookback=required_history_bars,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )

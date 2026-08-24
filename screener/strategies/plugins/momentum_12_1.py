@@ -55,7 +55,11 @@ from screener.strategies.factor_adapter import (
     make_rank_score_prepare,
 )
 from screener.strategies.plugins.low_volatility import realized_volatility
-from screener.strategies.spec import PrepareCtx, register_expression_strategy
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    PrepareCtx,
+    register_expression_strategy,
+)
 
 # The 12-1 formula itself lives in ``screener.factors.recipes`` so the screen's
 # ``momentum_12_1`` scorer and this strategy are the same number, not two
@@ -131,6 +135,7 @@ register_expression_strategy(
     exit=None,
     prepare_bars=_prepare_momentum,
     required_lookback=_momentum_lookback,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )
 
 register_expression_strategy(
@@ -139,6 +144,7 @@ register_expression_strategy(
     exit=None,
     prepare_bars=_prepare_momentum,
     required_lookback=_momentum_lookback,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )
 
 register_expression_strategy(
@@ -147,4 +153,5 @@ register_expression_strategy(
     exit=None,
     prepare_bars=_prepare_riskadj,
     required_lookback=_riskadj_lookback,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )

@@ -18,7 +18,11 @@ from screener.minervini import (
     prepare_backtest_frames,
     required_history_bars,
 )
-from screener.strategies.spec import PrepareCtx, register_expression_strategy
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    PrepareCtx,
+    register_expression_strategy,
+)
 
 
 def _add_quality_features(frame: pd.DataFrame) -> pd.DataFrame:
@@ -69,6 +73,7 @@ def _register(name: str, entry: str) -> None:
         exit=EXIT,
         prepare_bars=_prep,
         required_lookback=required_history_bars,
+        profile=DEFAULT_STRATEGY_PROFILE,
     )
 
 

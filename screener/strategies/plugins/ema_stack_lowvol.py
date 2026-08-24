@@ -51,7 +51,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from screener.strategies.spec import PrepareCtx, register_expression_strategy
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    PrepareCtx,
+    register_expression_strategy,
+)
 
 # The default `ema` criterion. EMA200 > 0 is the has-enough-history gate, and
 # mirrors the live TradingView filter one-for-one.
@@ -109,6 +113,7 @@ register_expression_strategy(
     entry=ENTRY_STACK,
     exit=None,
     required_lookback=_stack_lookback,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )
 
 register_expression_strategy(
@@ -117,4 +122,5 @@ register_expression_strategy(
     exit=None,
     prepare_bars=_prepare_lowvol,
     required_lookback=_stack_lookback,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )

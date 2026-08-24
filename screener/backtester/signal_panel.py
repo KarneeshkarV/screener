@@ -93,6 +93,30 @@ SIGNAL_PANEL_CONFIG_FIELDS = (
     frozenset(f.name for f in fields(SignalPanelInputs)) | _INDIRECT_SIGNAL_PANEL_FIELDS
 )
 
+# Every declared field name of :class:`SignalPanelInputs`, derived from the
+# dataclass like :data:`SIGNAL_PANEL_CONFIG_FIELDS` but without the indirect
+# price-side extras.
+SIGNAL_PANEL_INPUT_FIELDS = frozenset(f.name for f in fields(SignalPanelInputs))
+
+# Run-scoped inputs that a per-strategy profile deliberately does not carry:
+# they say which names and venue a run covers, not how a candidate is judged.
+# Universe selection stays a run-level decision (``--universe``, D9 in
+# docs/plans/unify-screen-backtest.md); ``market`` picks the earnings and
+# sector sources for the run. Every other field must be mirrored field for
+# field by :class:`~screener.strategies.spec.StrategyProfile`; the partition
+# below is enforced at import time in spec.py so a new gate cannot be added
+# to :class:`SignalPanelInputs` without a profile decision.
+RUN_SCOPED_SIGNAL_PANEL_FIELDS = frozenset(
+    {
+        "market",
+        "membership_added",
+        "membership_windows",
+        "dynamic_universe_size",
+        "dynamic_universe_lookback",
+        "dynamic_universe_rebalance",
+    }
+)
+
 
 @dataclass(frozen=True)
 class SignalPanel:
