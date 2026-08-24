@@ -17,6 +17,45 @@ just screen -m us -n 20 --csv
 just backtest -m us --as-of 2026-03-20 --entry "close > 0" --tickers AAPL,MSFT
 ```
 
+## Use as a library
+
+Another codebase can install this straight from GitHub; there is no PyPI release.
+
+```bash
+uv add "screener @ git+https://github.com/KarneeshkarV/screener@main"
+```
+
+That installs both the `screener` console script and the importable package.
+The supported import surface is `screener.api`, re-exported from `screener` itself.
+Everything else under `screener.` is internal and may move in any commit.
+
+```python
+from screener import screen
+
+outcome = screen(market="india", criteria="ema", limit=30)
+print(outcome.total)   # total TradingView matches
+print(outcome.df)      # result frame
+```
+
+By default an embedded call has no side effects: it returns the frame and writes neither a `~/.screener/history.db` row nor an HTML report.
+Pass `persist=True` for the CLI's full behaviour.
+
+```python
+from screener import ScreenRequest, run_screen_workflow, list_criteria, list_markets
+
+list_criteria()   # ['breakout', 'cheap_quality', 'dividend', 'ema', ...]
+list_markets()    # ['india', 'us']
+
+# Full control: build the request yourself.
+outcome = run_screen_workflow(ScreenRequest(
+    market="us", criteria_names=("ema", "breakout"), limit=50,
+    order_by="setup_score", output_csv=True, detail=False,
+    refresh=False, cache_ttl="15m", report_path=None,
+))
+```
+
+`import screener` is lazy, so it pulls in neither pandas nor the scanner until you touch one of those names.
+
 ## Commands
 
 ### `screen`
