@@ -7,12 +7,20 @@ they feed. Like :mod:`screener.backtester.price_panel` it never sees a
 :class:`SignalPanelInputs` listing exactly the config values eligibility
 depends on, and :data:`SIGNAL_PANEL_CONFIG_FIELDS` is derived from that class
 so the reuse fingerprint cannot omit one of them.
+
+Two entry points read the same candidate matrices: :func:`build_signal_panel`
+for a whole window (the rolling engine) and :func:`build_day_candidates` for
+one as-of date (the screen). The one-day path adds no gate of its own; it
+composes the window builder and then reads a single row out of it, so the two
+callers cannot disagree about who is a candidate.
 """
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, fields
 from datetime import date
+from typing import Literal
 
 import pandas as pd
 
@@ -26,6 +34,7 @@ from screener.backtester.pine import Node, evaluate_panel_many, parse, required_
 from screener.backtester.price_panel import PricePanel
 from screener.backtester.rolling_candidates import (
     _build_rolling_candidate_matrices,
+    _candidate_rows_for_day,
     _RollingCandidateMatrices,
 )
 from screener.regime import classify_regimes
@@ -284,4 +293,163 @@ def build_signal_panel(
     return SignalPanel(
         exit_signals=exit_signals_by_tv,
         candidate_matrices=candidate_matrices,
+    )
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """One ticker that cleared every entry gate on one master-calendar bar.
+
+    Produced by :func:`day_candidates_from_panel` from the same candidate
+    matrices the rolling engine scans, so a screen and a backtest describe the
+    same name the same way. ``rank`` is the 1-based position in that day's
+    ranking and ``rank_basis`` names the field the ranking used: ``rank_score``
+    when the strategy wrote a cross-sectional factor score into its bars,
+    ``as_of_dollar_vol`` otherwise.
+    """
+
+    ticker: str
+    rank: int
+    rank_basis: Literal["rank_score", "as_of_dollar_vol"]
+    rank_score: float | None
+    as_of_close: float
+    as_of_volume: float
+    as_of_dollar_vol: float
+    signal_idx: int
+    role: Literal["active", "reserve"]
+
+
+@dataclass(frozen=True)
+class DayCandidates:
+    """The ranked candidates on one as-of date.
+
+    ``as_of`` is the master-calendar bar the request resolved to, which is the
+    last bar at or before the requested date. It is ``None`` when the window
+    holds no bar at or before that date, mirroring
+    :attr:`SignalPanel.candidate_matrices`; ``candidates`` is then empty.
+    """
+
+    as_of: pd.Timestamp | None
+    candidates: tuple[Candidate, ...]
+
+
+def _resolve_as_of_bar(
+    matrices: _RollingCandidateMatrices, as_of: date | pd.Timestamp
+) -> pd.Timestamp | None:
+    """Snap ``as_of`` back to the last master-calendar bar at or before it."""
+    calendar = matrices.signal_mat.index
+    if isinstance(as_of, pd.Timestamp):
+        position = int(calendar.searchsorted(as_of, side="right")) - 1
+    else:
+        # A plain calendar date covers its whole session, which matters
+        # intraday where a master-calendar stamp carries a time of day. Snap on
+        # the next midnight rather than "end of day minus one nanosecond": the
+        # master calendar is datetime64[us] under pandas 3, and searchsorted
+        # refuses a nanosecond bound it cannot convert losslessly.
+        next_midnight = pd.Timestamp(as_of).normalize() + pd.Timedelta(days=1)
+        position = int(calendar.searchsorted(next_midnight, side="left")) - 1
+    if position < 0:
+        return None
+    return pd.Timestamp(calendar[position])
+
+
+def day_candidates_from_panel(
+    signals: SignalPanel,
+    as_of: date | pd.Timestamp,
+    *,
+    exclude: Collection[str] = (),
+    limit: int | None = None,
+    warnings: list[str] | None = None,
+) -> DayCandidates:
+    """Read one day's ranked candidates out of an already-built signal panel.
+
+    This is the rolling engine's own per-day scan
+    (:func:`~screener.backtester.rolling_candidates._candidate_rows_for_day`)
+    over the rolling engine's own matrices, reshaped into :class:`Candidate`.
+    Every gate - entry signal, entry filters, regime, earnings blackout, sector
+    neutralisation - was already applied when ``signals`` was built, so there
+    is nothing here for a one-day caller to re-decide.
+    """
+    matrices = signals.candidate_matrices
+    if matrices is None:
+        return DayCandidates(as_of=None, candidates=())
+    day = _resolve_as_of_bar(matrices, as_of)
+    if day is None:
+        return DayCandidates(as_of=None, candidates=())
+
+    rows, day_warnings = _candidate_rows_for_day(
+        day, matrices, exclude=set(exclude), limit=limit
+    )
+    if warnings is not None:
+        warnings.extend(day_warnings)
+
+    rank_score_np = matrices.rank_score_np
+    rank_basis: Literal["rank_score", "as_of_dollar_vol"] = (
+        "rank_score" if rank_score_np is not None else "as_of_dollar_vol"
+    )
+    row_position = matrices.row_by_day[day]
+    candidates = tuple(
+        Candidate(
+            ticker=str(row["ticker"]),
+            rank=int(row["rank"]),
+            rank_basis=rank_basis,
+            rank_score=(
+                None
+                if rank_score_np is None
+                else float(
+                    rank_score_np[row_position, matrices.col_by_ticker[row["ticker"]]]
+                )
+            ),
+            as_of_close=float(row["as_of_close"]),
+            as_of_volume=float(row["as_of_volume"]),
+            as_of_dollar_vol=float(row["as_of_dollar_vol"]),
+            signal_idx=int(row["signal_idx"]),
+            role=row["role"],
+        )
+        for row in rows
+    )
+    return DayCandidates(as_of=day, candidates=candidates)
+
+
+def build_day_candidates(
+    inputs: SignalPanelInputs,
+    panel: PricePanel,
+    *,
+    program: SignalProgram,
+    as_of: date | pd.Timestamp,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    warnings: list[str],
+    earnings_blackout: dict[str, list[date]] | None = None,
+    exclude: Collection[str] = (),
+    limit: int | None = None,
+) -> DayCandidates:
+    """Rank the candidates for a single as-of date.
+
+    The one-day entry point, for a caller that wants one day rather than a
+    window. It builds the signal panel over ``[start_ts, end_ts]`` exactly as
+    :func:`~screener.backtester.rolling_simulation.prepare_rolling_backtest`
+    does and then reads the ``as_of`` row out of it, so it cannot drift from
+    the rolling engine: there is one implementation of every gate and this
+    calls it.
+
+    A caller holding several as-of dates over one window should build the panel
+    once with :func:`build_signal_panel` and call
+    :func:`day_candidates_from_panel` per date instead.
+    """
+    signals = build_signal_panel(
+        inputs,
+        panel,
+        program=program,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        warnings=warnings,
+        earnings_blackout=earnings_blackout,
+    )
+    return day_candidates_from_panel(
+        signals,
+        as_of,
+        exclude=exclude,
+        limit=limit,
+        warnings=warnings,
     )
