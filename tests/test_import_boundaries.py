@@ -64,6 +64,28 @@ _SCREEN_MODULES = (
     "screener/rs_breakout.py",
 )
 
+# The strategy declarations. The engine imports them (``core.py``,
+# ``factor_tearsheet.py``, ``cli_common.py`` all defer their ``strategies``
+# imports precisely because of that direction), so they must never import the
+# backtest engine back at module scope.
+# ``screener/strategies/spec.py`` is the one that regressed: stage 1 of the
+# screen/backtest unification (420bfec) pulled the profile-partition inputs
+# from ``screener.backtester.signal_panel`` at module scope, so importing
+# ``screener.strategies.spec`` went from pulling 7 ``screener.backtester.*``
+# modules to 18 - the whole rolling engine behind a strategy declaration -
+# and one promotion of those deferred engine-side imports away from a hard
+# circular import. The partition guard now lives in ``signal_panel.py``
+# itself, which already owns the gate list; ``spec.py`` keeps only its
+# pre-existing ``backtester.data`` (PriceFetcher) import.
+_STRATEGY_MODULES = sorted(
+    str(path.relative_to(_ROOT))
+    for path in (_ROOT / "screener" / "strategies").rglob("*.py")
+)
+_BANNED_STRATEGY_IMPORTS = (
+    "screener.backtester.core",
+    "screener.backtester.signal_panel",
+)
+
 
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(), filename=str(path))
@@ -73,6 +95,29 @@ def _imports(path: Path) -> set[str]:
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
+    return imported
+
+
+def _module_scope_imports(path: Path) -> set[str]:
+    """Imports that execute when the module loads, i.e. outside any function.
+
+    Class bodies count (they run at import); function and lambda bodies do
+    not, so a deliberate lazy import stays allowed where this helper is used.
+    """
+    tree = ast.parse(path.read_text(), filename=str(path))
+    imported: set[str] = set()
+
+    def visit(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            if isinstance(child, ast.Import):
+                imported.update(alias.name for alias in child.names)
+            elif isinstance(child, ast.ImportFrom) and child.module:
+                imported.add(child.module)
+            visit(child)
+
+    visit(tree)
     return imported
 
 
@@ -129,3 +174,15 @@ def test_neutral_ledger_has_no_feature_dependency() -> None:
         if module.startswith(feature)
     }
     assert not feature_imports
+
+
+@pytest.mark.parametrize("relative_path", _STRATEGY_MODULES)
+def test_strategies_do_not_import_backtest_engine_at_module_scope(
+    relative_path: str,
+) -> None:
+    """A strategy declaration must stay importable without the engine."""
+    imports = _module_scope_imports(_ROOT / relative_path)
+    offenders = {
+        module for module in imports if module.startswith(_BANNED_STRATEGY_IMPORTS)
+    }
+    assert not offenders

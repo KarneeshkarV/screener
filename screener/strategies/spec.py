@@ -28,10 +28,6 @@ from pydantic import BaseModel, ConfigDict, SkipValidation, field_validator
 
 from screener._registry import Registry
 from screener.backtester.data import PriceFetcher
-from screener.backtester.signal_panel import (
-    RUN_SCOPED_SIGNAL_PANEL_FIELDS,
-    SIGNAL_PANEL_INPUT_FIELDS,
-)
 from screener.strategies.trades import ResearchTrade
 
 StrategyFn = Callable[[pd.DataFrame], list[ResearchTrade]]
@@ -69,7 +65,9 @@ class StrategyProfile(BaseModel):
     judged, not which names or venue a run covers.
 
     The field list is derived, not restated: the partition against
-    ``SIGNAL_PANEL_INPUT_FIELDS`` is enforced right below, so a gate added to
+    ``SIGNAL_PANEL_INPUT_FIELDS`` is asserted at import time in
+    :mod:`screener.backtester.signal_panel` (which imports this module - the
+    sanctioned backtester -> strategies direction), so a gate added to
     ``SignalPanelInputs`` cannot ship without either mirroring it here or
     classifying it as run-scoped. Scalar values are the effective
     ``BacktestConfig`` defaults, so an attached profile changes nothing until
@@ -89,20 +87,6 @@ class StrategyProfile(BaseModel):
     min_avg_dollar_volume: float | None = None
     avg_dollar_volume_window: int = 20
 
-
-_PROFILE_FIELD_NAMES = frozenset(StrategyProfile.model_fields)
-_UNCLASSIFIED_PANEL_FIELDS = (
-    SIGNAL_PANEL_INPUT_FIELDS - _PROFILE_FIELD_NAMES - RUN_SCOPED_SIGNAL_PANEL_FIELDS
-)
-_UNKNOWN_PROFILE_FIELDS = _PROFILE_FIELD_NAMES - SIGNAL_PANEL_INPUT_FIELDS
-if _UNCLASSIFIED_PANEL_FIELDS or _UNKNOWN_PROFILE_FIELDS:
-    raise RuntimeError(
-        "StrategyProfile drifted from SignalPanelInputs: "
-        f"unclassified panel gates {sorted(_UNCLASSIFIED_PANEL_FIELDS)}, "
-        f"profile fields unknown to the panel {sorted(_UNKNOWN_PROFILE_FIELDS)}. "
-        "Mirror each new SignalPanelInputs gate on StrategyProfile, or move it "
-        "into RUN_SCOPED_SIGNAL_PANEL_FIELDS with a reason."
-    )
 
 # The shared baseline every strategy without its own profile resolves to.
 # Equal to the effective BacktestConfig defaults by construction.

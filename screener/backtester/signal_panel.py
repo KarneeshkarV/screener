@@ -29,6 +29,7 @@ from screener.backtester.rolling_candidates import (
     _RollingCandidateMatrices,
 )
 from screener.regime import classify_regimes
+from screener.strategies.spec import StrategyProfile
 
 
 @dataclass(frozen=True)
@@ -104,8 +105,8 @@ SIGNAL_PANEL_INPUT_FIELDS = frozenset(f.name for f in fields(SignalPanelInputs))
 # docs/plans/unify-screen-backtest.md); ``market`` picks the earnings and
 # sector sources for the run. Every other field must be mirrored field for
 # field by :class:`~screener.strategies.spec.StrategyProfile`; the partition
-# below is enforced at import time in spec.py so a new gate cannot be added
-# to :class:`SignalPanelInputs` without a profile decision.
+# below is enforced at import time so a new gate cannot be added to
+# :class:`SignalPanelInputs` without a profile decision.
 RUN_SCOPED_SIGNAL_PANEL_FIELDS = frozenset(
     {
         "market",
@@ -116,6 +117,24 @@ RUN_SCOPED_SIGNAL_PANEL_FIELDS = frozenset(
         "dynamic_universe_rebalance",
     }
 )
+
+# The partition itself. Asserted here rather than in spec.py because this
+# module owns the field list and already carries the heavy import graph;
+# ``screener.strategies`` must not import the backtest engine at module scope
+# (see tests/test_import_boundaries.py).
+_PROFILE_FIELD_NAMES = frozenset(StrategyProfile.model_fields)
+_UNCLASSIFIED_PANEL_FIELDS = (
+    SIGNAL_PANEL_INPUT_FIELDS - _PROFILE_FIELD_NAMES - RUN_SCOPED_SIGNAL_PANEL_FIELDS
+)
+_UNKNOWN_PROFILE_FIELDS = _PROFILE_FIELD_NAMES - SIGNAL_PANEL_INPUT_FIELDS
+if _UNCLASSIFIED_PANEL_FIELDS or _UNKNOWN_PROFILE_FIELDS:
+    raise RuntimeError(
+        "StrategyProfile drifted from SignalPanelInputs: "
+        f"unclassified panel gates {sorted(_UNCLASSIFIED_PANEL_FIELDS)}, "
+        f"profile fields unknown to the panel {sorted(_UNKNOWN_PROFILE_FIELDS)}. "
+        "Mirror each new SignalPanelInputs gate on StrategyProfile, or move it "
+        "into RUN_SCOPED_SIGNAL_PANEL_FIELDS with a reason."
+    )
 
 
 @dataclass(frozen=True)

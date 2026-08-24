@@ -100,7 +100,9 @@ def test_spec_without_profile_resolves_to_default_unchanged():
 
 def test_attached_profile_wins_over_default_and_overrides_win_last():
     attached = StrategyProfile(min_price=10.0, sector_neutral=True)
-    spec = ExpressionStrategySpec(name="with_profile", entry="close > 0", profile=attached)
+    spec = ExpressionStrategySpec(
+        name="with_profile", entry="close > 0", profile=attached
+    )
 
     assert resolve_strategy_profile(spec) == attached
     assert resolve_strategy_profile(spec, {"min_price": 99.0}) == StrategyProfile(
