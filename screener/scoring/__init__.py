@@ -65,7 +65,7 @@ class ScoreSpec:
     bar_score: PriceScoreSpec | None = None
 
 
-def _snapshot_only_score_fn(name: str) -> ScoreFn:
+def _bar_derived_score_fn(name: str) -> ScoreFn:
     """Placeholder ``score_fn`` for a bar-derived recipe.
 
     A bar-derived recipe cannot be evaluated from a snapshot row, so calling it
@@ -96,7 +96,7 @@ def register_bar_scorer(
     spec = get_price_score(price_score_name)
     registry.add(
         name,
-        _snapshot_only_score_fn(name),
+        _bar_derived_score_fn(name),
         columns=(),
         description=description or spec.description,
         data_source=BARS_SOURCE,
@@ -150,6 +150,17 @@ def default_scorer() -> ScoreSpec:
     return get_scorer(DEFAULT_SCORER_NAME)
 
 
+class IncompatibleScorerBlendError(ValueError):
+    """Raised when a bar-derived scorer is averaged with another criterion.
+
+    Both sides write ``setup_score`` on a 0-100 scale, but a bar-derived
+    percentile is computed from price history over the scan's survivors and a
+    snapshot composite is computed from TradingView columns. Averaging them
+    would mix two incomparable rankings. The CLI turns this into a usage error
+    so the refusal is not a traceback.
+    """
+
+
 def resolve_scorer(names: Sequence[str], *, strict: bool = True) -> ScoreSpec:
     """Resolve one or more criterion names into a single ranking recipe.
 
@@ -174,14 +185,15 @@ def resolve_scorer(names: Sequence[str], *, strict: bool = True) -> ScoreSpec:
     specs = [get_scorer(name) for name in selected]
     bar_derived = [spec.name for spec in specs if spec.bar_score is not None]
     if bar_derived:
-        # A bar-derived recipe produces a raw per-bar value, not a 0-100
-        # snapshot composite, so averaging it with a snapshot recipe would
-        # blend two incomparable units. Refuse loudly instead.
-        raise ValueError(
+        # A bar-derived recipe is scored from price history over the scan's
+        # survivors; a snapshot recipe is a composite over TradingView columns.
+        # Both write 0-100, but the percentiles are not over the same field, so
+        # averaging them would blend two incomparable rankings.
+        raise IncompatibleScorerBlendError(
             "cannot blend bar-derived scorer(s) "
-            f"{sorted(bar_derived)} with other criteria: their scores are raw "
-            "price-series values, not the 0-100 snapshot composites. Screen "
-            "them one criterion at a time."
+            f"{sorted(bar_derived)} with other criteria: a bar-derived "
+            "percentile is computed from price history, not from the snapshot "
+            "row. Screen them one criterion at a time."
         )
     columns: list[str] = []
     seen: set[str] = set()
@@ -262,7 +274,13 @@ def apply_score(
     A bar-derived ``spec`` needs ``market`` so the scanned tickers' cached
     price history can be resolved; it also drops rows with too little history,
     because in the unified layer NaN means ineligible rather than rank-last.
+
+    An empty frame short-circuits to an empty scored frame for every ``spec``,
+    bar-derived included: with no rows there is no price history to resolve, so
+    the missing ``market`` is not yet an error.
     """
+    if df.empty:
+        return df.assign(**{OUTPUT_SCORE_COLUMN: pd.Series(dtype=float)})
     if spec.bar_score is not None:
         if market is None:
             raise ValueError(
@@ -280,8 +298,6 @@ def apply_score(
             fetcher=fetcher,
             refresh=refresh,
         )
-    if df.empty:
-        return df.assign(**{OUTPUT_SCORE_COLUMN: pd.Series(dtype=float)})
     scores = spec.score_fn(df)
     return df.assign(**{OUTPUT_SCORE_COLUMN: pd.to_numeric(scores, errors="coerce")})
 
@@ -303,6 +319,7 @@ __all__ = [
     "ScoreDataSource",
     "ScoreFn",
     "ScoreSpec",
+    "IncompatibleScorerBlendError",
     "SnapshotOnlyScorerError",
     "apply_score",
     "backtestable_scorer_names",

@@ -21,7 +21,7 @@ from screener.criteria import resolve_criteria
 from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from screener.history import diff, previous_run, save_run
 from screener.scanner import scan
-from screener.scoring import resolve_scorer
+from screener.scoring import OUTPUT_SCORE_COLUMN, resolve_scorer
 
 
 def temp_report_path(prefix: str) -> Path:
@@ -77,7 +77,15 @@ class ScreenOutcome:
 def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
     """Run the full non-Click screen lifecycle and return its outcome."""
     selection = resolve_criteria(request.criteria_names)
-    scorer = resolve_scorer(request.criteria_names, strict=False)
+    # Only the ``setup_score`` ranking consumes a scorer, and resolving one can
+    # refuse a criteria combination whose scores are incomparable. Skip the
+    # resolution when the run sorts by a TradingView column, so a refusal fires
+    # only for a run that would actually rank by the refused recipe.
+    scorer = (
+        resolve_scorer(request.criteria_names, strict=False)
+        if request.order_by == OUTPUT_SCORE_COLUMN
+        else None
+    )
 
     total, df = scan(
         market=request.market,

@@ -5,11 +5,14 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from screener import screen_workflow
 from screener.criteria import CRITERIA
+from screener.screen_workflow import ScreenRequest, run_screen_workflow
 from screener.scoring import (
     DEFAULT_SCORER_NAME,
     OUTPUT_SCORE_COLUMN,
     SCORERS,
+    IncompatibleScorerBlendError,
     apply_score,
     get_scorer,
     resolve_scorer,
@@ -434,3 +437,59 @@ def test_mark_minervini_ranks_full_trend_stack_and_near_high() -> None:
         scored.loc["TEMPLATE", OUTPUT_SCORE_COLUMN]
         > scored.loc["LOOSE", OUTPUT_SCORE_COLUMN]
     )
+
+
+def _blend_request(*, order_by: str) -> ScreenRequest:
+    """A screen combining a bar-derived criterion with a snapshot one."""
+    return ScreenRequest(
+        market="india",
+        criteria_names=("momentum_12_1", "ema"),
+        limit=5,
+        order_by=order_by,
+        output_csv=True,
+        detail=False,
+        refresh=False,
+        cache_ttl="15m",
+        report_path=None,
+    )
+
+
+def test_screen_sorted_by_a_column_never_resolves_a_scorer(monkeypatch) -> None:
+    # `-c momentum_12_1 -c ema --sort volume` computes no score at all, so the
+    # blend refusal must not fire: the run has no ranking recipe to refuse.
+    captured: dict[str, object] = {}
+
+    def fake_scan(**kwargs: object) -> tuple[int, pd.DataFrame]:
+        captured.update(kwargs)
+        return 1, pd.DataFrame({"name": ["AAA"], "description": ["AAA Ltd"]})
+
+    monkeypatch.setattr(screen_workflow, "scan", fake_scan)
+
+    outcome = run_screen_workflow(_blend_request(order_by="volume"))
+
+    assert outcome.df["name"].tolist() == ["AAA"]
+    assert captured["scorer"] is None
+
+
+def test_screen_sorted_by_setup_score_still_refuses_the_blend(monkeypatch) -> None:
+    # Ranking *is* by setup_score here, so the refusal has to stay loud rather
+    # than silently ranking by the default recipe the user did not ask for.
+    def unexpected_scan(**kwargs: object) -> tuple[int, pd.DataFrame]:
+        raise AssertionError("scan must not run once the blend is refused")
+
+    monkeypatch.setattr(screen_workflow, "scan", unexpected_scan)
+
+    with pytest.raises(
+        IncompatibleScorerBlendError, match="cannot blend bar-derived scorer"
+    ):
+        run_screen_workflow(_blend_request(order_by=OUTPUT_SCORE_COLUMN))
+
+
+def test_apply_score_on_an_empty_frame_returns_an_empty_scored_frame() -> None:
+    # A bar-derived spec must behave like every snapshot spec here: with no
+    # rows there is no price history to resolve, so the missing `market` is
+    # not yet an error.
+    for spec in (get_scorer("momentum_12_1"), get_scorer("value")):
+        scored = apply_score(pd.DataFrame(), spec)
+        assert scored.empty
+        assert OUTPUT_SCORE_COLUMN in scored.columns

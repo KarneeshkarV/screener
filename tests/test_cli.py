@@ -151,6 +151,17 @@ def test_screen_auto_temp_report(tmp_path, monkeypatch):
     assert '"plot_bgcolor":"#0d1117"' in html
 
 
+def test_screen_refuses_a_bar_snapshot_blend_as_usage_error():
+    """``-c momentum_12_1 -c ema`` must fail as a usage error, not a traceback."""
+    res = CliRunner().invoke(
+        cli, ["screen", "-c", "momentum_12_1", "-c", "ema", "-n", "2"]
+    )
+
+    assert res.exit_code != 0
+    assert "cannot blend bar-derived scorer" in res.output
+    assert "Traceback" not in res.output
+
+
 def test_screen_csv_skips_auto_temp_report(tmp_path, monkeypatch):
     report = tmp_path / "screen.html"
     monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")

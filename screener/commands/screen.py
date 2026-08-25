@@ -16,6 +16,7 @@ from screener.screen_workflow import (
     ScreenRequest,
     run_screen_workflow,
 )
+from screener.scoring import IncompatibleScorerBlendError
 
 
 @click.command()
@@ -113,7 +114,10 @@ def screen(
         earnings=earnings,
         earnings_buffer=earnings_buffer,
     )
-    outcome = run_screen_workflow(request)
+    try:
+        outcome = run_screen_workflow(request)
+    except IncompatibleScorerBlendError as exc:
+        raise click.UsageError(str(exc)) from exc
 
     if outcome.mode is ScreenMode.CSV:
         print_csv(outcome.df)
