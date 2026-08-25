@@ -72,6 +72,24 @@ def test_bare_import_pulls_in_neither_pandas_nor_the_scanner() -> None:
     assert result.stdout.strip() == "False False"
 
 
+def test_bare_import_does_not_pay_for_importlib_metadata() -> None:
+    """A bare ``import screener`` must not import ``importlib.metadata``.
+
+    Resolving ``__version__`` eagerly would pull in ``importlib.metadata``
+    and ``email.message``, about 20 ms on every import of the package, so
+    the lookup stays behind the lazy ``__getattr__``. Run in a subprocess
+    because pytest has already imported ``importlib.metadata`` in this one.
+    """
+    probe = "import sys; import screener; print('importlib.metadata' in sys.modules)"
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "False"
+
+
 def test_py_typed_marker_ships_with_the_package() -> None:
     """Without it, a downstream mypy reads every import as ``Any``."""
     assert (_ROOT / "screener" / "py.typed").is_file()

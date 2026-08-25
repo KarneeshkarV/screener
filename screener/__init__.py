@@ -5,10 +5,13 @@ The supported surface for outside callers is re-exported here and defined in
 Everything else under ``screener.`` is internal.
 
 Attribute access is lazy (PEP 562), so a bare ``import screener`` imports no
-pandas and no scanner: reading ``__version__``, or depending on the package
-transitively, costs nothing. Touching any other name below loads
-:mod:`screener.api` and with it the screen workflow. Keep the laziness when
-adding exports; an eager re-export here would put pandas on every import.
+pandas and no scanner. ``__version__`` is deferred the same way: resolving it
+eagerly imports :mod:`importlib.metadata`, and with it :mod:`email.message`,
+which costs about 20 ms on every import of the package - including one that
+only depends on it transitively and never reads the version at all. Touching
+any other name below loads :mod:`screener.api` and with it the screen
+workflow. Keep the laziness when adding exports; an eager re-export here
+would put pandas on every import.
 """
 
 from __future__ import annotations
@@ -36,8 +39,6 @@ def _version() -> str:
         return "0.0.0+unknown"
 
 
-__version__ = _version()
-
 _EXPORTS = frozenset(
     {
         "ScreenMode",
@@ -52,6 +53,8 @@ _EXPORTS = frozenset(
 
 
 def __getattr__(name: str) -> Any:
+    if name == "__version__":
+        return _version()
     if name in _EXPORTS:
         import screener.api
 
