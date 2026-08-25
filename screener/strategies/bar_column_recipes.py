@@ -108,3 +108,50 @@ def macd_signal(bars: pd.DataFrame) -> pd.Series:
     close = bars["close"].to_numpy(dtype=float)
     macd = ema(close, 12) - ema(close, 26)
     return pd.Series(ema(macd, 9), index=bars.index, dtype=float)
+
+
+def _ao(bars: pd.DataFrame) -> pd.Series:
+    mid = (bars["high"].astype(float) + bars["low"].astype(float)) / 2.0
+    return mid.rolling(5, min_periods=5).mean() - mid.rolling(34, min_periods=34).mean()
+
+
+def awesome_oscillator(bars: pd.DataFrame) -> pd.Series:
+    """AO: SMA5 minus SMA34 of the bar midpoint."""
+    return _ao(bars)
+
+
+def ao_prev1(bars: pd.DataFrame) -> pd.Series:
+    return _ao(bars).shift(1)
+
+
+def ao_prev2(bars: pd.DataFrame) -> pd.Series:
+    return _ao(bars).shift(2)
+
+
+def _red(bars: pd.DataFrame) -> pd.Series:
+    return (bars["open"].astype(float) > bars["close"].astype(float)).astype(float)
+
+
+def _green(bars: pd.DataFrame) -> pd.Series:
+    return (bars["open"].astype(float) < bars["close"].astype(float)).astype(float)
+
+
+def red_prev1(bars: pd.DataFrame) -> pd.Series:
+    """1.0 when the previous bar closed down.
+
+    Red and green are not complements: a bar with open equal to close is
+    neither, so both are carried rather than derived from one another.
+    """
+    return _red(bars).shift(1)
+
+
+def red_prev2(bars: pd.DataFrame) -> pd.Series:
+    return _red(bars).shift(2)
+
+
+def green_prev1(bars: pd.DataFrame) -> pd.Series:
+    return _green(bars).shift(1)
+
+
+def green_prev2(bars: pd.DataFrame) -> pd.Series:
+    return _green(bars).shift(2)

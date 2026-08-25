@@ -84,14 +84,39 @@ The mode is written into the `runs.criteria` label so a diff never crosses modes
 Pin a baseline before stage 1 with `uv run python scripts/backtest_delta.py --out /tmp/unify-baseline.json`.
 Run `--compare /tmp/unify-baseline.json` at the end of every stage.
 
-- **Stage 0.** Branch off `feat/unify-score-layer`. Done.
-- **Stage 1.** `StrategyProfile` on the spec, derived from `SignalPanelInputs`. Every existing plugin gets its current effective defaults. No behaviour change.
-- **Stage 2.** `signal_panel` gains the one-day entry point. Nothing calls it yet. No behaviour change.
-- **Stage 3.** Callables convert. Indicator-registry columns are precomputed into bars and referenced as plain series names in the expression. Non-convertible callables stay and are rejected at screen time with a clear message, in the style of `ensure_backtestable_scorer`. No backtest behaviour change.
+- **Stage 0.** Branch off `feat/unify-score-layer`. **Done.**
+- **Stage 1. Done.** `StrategyProfile` on the spec, derived from `SignalPanelInputs`. Every existing plugin gets its current effective defaults. No behaviour change.
+- **Stage 2. Done.** `signal_panel` gains the one-day entry point. Nothing calls it yet. No behaviour change.
+- **Stage 3. Done.** Callables convert. Indicator-registry columns are precomputed into bars and referenced as plain series names in the expression. Non-convertible callables stay and are rejected at screen time with a clear message, in the style of `ensure_backtestable_scorer`. No backtest behaviour change.
 - **Stage 4.** `BarFeatures` extended with point-in-time fundamentals. The `RSI`, `relative_volume_10d_calc` and `Perf.Y` scorers port to bar recipes. `market_cap_basic` stays snapshot, which is acceptable because the default path still queries TradingView. No behaviour change until stage 6.
 - **Stage 5.** Reconciliation tests land, against the not-yet-default exact path.
 - **Stage 6.** The flip, in one reviewable commit. Criterion names become aliases onto the unified registry. Criterion filter functions become `tv_prefilter` declarations. `--universe` mode goes live. `runs.criteria` labels change. This is the only stage that moves numbers.
 - **Stage 7.** `CONTEXT.md` collision entries rewritten. ADR added under `docs/adr/` recording that TradingView is no longer a rule or fundamental source, and why.
+
+## Stage 3 outcome
+
+14 of 18 callable strategies converted. Bucket C (needs a new indicator) was empty:
+every indicator required already existed in `screener/indicators/`.
+
+Four remain callable-only because their trade generation is not a per-bar boolean:
+`heikin_ashi` (recursive `ha_open` plus a `cumsum` cap), `shooting_star`,
+`bb_pattern` and `rsi_pattern` (nested backward searches carrying state).
+Stage 6 rejects these at screen time with a clear message.
+
+Two mechanisms made this work, both of which serve the plan directly.
+`screener/strategies/registry.py` now synthesises the pine_runner's callable
+from an expression, so converting a name no longer drops it out of
+`STRATEGIES`, which the registry tests pin as a breaking change.
+`bar_columns` on the spec declares pure bar-local derived columns, so a new
+indicator becomes a column rather than a new function in the Pine parser.
+
+## Defect found, not fixed here
+
+`screener/strategies/plugins/shooting_star.py` computes
+`mean_body = np.mean(np.abs(op - cl))` over the entire series, including future
+bars, then uses it as a per-bar threshold. Every historical signal it produces
+is contaminated by data from after that bar. It is bucket D so this work does
+not touch it, but its results should not be trusted.
 
 ## Accepted residuals
 

@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from screener.strategies.plugins.awesome_oscillator import strat_awesome_oscillator
 from screener.strategies.plugins.bb_breakout import strat_bb_breakout
 from screener.strategies.plugins.donchian_breakout import strat_donchian_breakout
 from screener.strategies.plugins.ma_cross_st_entry import strat_ma_cross_st_entry
@@ -39,6 +40,7 @@ CASES = {
     "ma_cross_st_entry": (strat_ma_cross_st_entry, 20, 1.5),
     "ma_cross_st_exit": (strat_ma_cross_st_exit, 20, 1.5),
     "supertrend_rsi": (strat_supertrend_rsi, 20, 1.5),
+    "awesome_oscillator": (strat_awesome_oscillator, 40, 1.5),
 }
 
 
