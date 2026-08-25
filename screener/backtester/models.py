@@ -94,6 +94,13 @@ class BacktestConfig(BaseModel):
     entry_limit_bps: float | None = None
     partial_exits: tuple[tuple[float, float], ...] = ()
 
+    # Rank-based exit rebalance (rolling engine only). On every Nth trading
+    # day of the simulation window, any held ticker absent from that day's
+    # top ``rank_universe_size`` ranked candidates is force-closed with reason
+    # "rank" before the shared exit sweep. ``None`` disables the feature.
+    rank_exit_every: int | None = Field(default=None, ge=1)
+    rank_universe_size: int = Field(default=50, ge=1)
+
     # Portfolio
     top: int
     initial_capital: float

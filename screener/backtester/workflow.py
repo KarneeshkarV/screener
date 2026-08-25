@@ -91,6 +91,8 @@ class BacktestRequest:
     spread_proxy: bool = False
     regime_filter_args: tuple[str, ...] = ()
     sector_neutral: bool = False
+    rank_exit: int | None = None
+    rank_universe_size: int = 50
     earnings_blackout_days: int | None = None
     fundamentals_provider: str | None = None
     fundamental_field_args: tuple[str, ...] = ()
@@ -345,6 +347,10 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         fundamental_fields=fields,
         fundamental_lag_days=max(resolved_lag, 0),
         sector_neutral=bool(request.sector_neutral),
+        rank_exit_every=(
+            int(request.rank_exit) if request.rank_exit is not None else None
+        ),
+        rank_universe_size=int(request.rank_universe_size),
     )
     return BacktestRun(
         config=config,

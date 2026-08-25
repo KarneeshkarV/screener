@@ -19,6 +19,38 @@ DEFAULT_BENCHMARK = {name: market.benchmark for name, market in MARKETS.items()}
 DEFAULT_MIN_PRICE = {name: market.min_price for name, market in MARKETS.items()}
 DEFAULT_MIN_ADV = {name: market.min_adv for name, market in MARKETS.items()}
 
+# Presets for the rank-exit rebalance period, in trading bars.
+RANK_EXIT_PRESETS = {"weekly": 5, "monthly": 21}
+
+
+class RankExitPeriod(click.ParamType):
+    """Accepts ``weekly``, ``monthly``, or a positive integer trading-bar period."""
+
+    name = "weekly|monthly|N"
+
+    def convert(
+        self, value: Any, param: click.Parameter | None, ctx: click.Context | None
+    ) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        text = str(value).strip().lower()
+        preset = RANK_EXIT_PRESETS.get(text)
+        if preset is not None:
+            return preset
+        try:
+            parsed = int(text)
+        except ValueError:
+            self.fail(
+                f"{value!r} is not 'weekly', 'monthly', or a positive integer",
+                param,
+                ctx,
+            )
+        if parsed < 1:
+            self.fail(f"{value!r} must be >= 1", param, ctx)
+        return parsed
+
 
 def resolve_strategy_exprs(
     strategy_name: str | None,

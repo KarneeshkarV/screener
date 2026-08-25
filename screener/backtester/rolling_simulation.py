@@ -121,6 +121,79 @@ def _window_bounds(
     return start_ts, end_ts
 
 
+def _rank_exit_sweep(
+    *,
+    day: pd.Timestamp,
+    cfg: BacktestConfig,
+    candidate_matrices: _RollingCandidateMatrices,
+    portfolio: Portfolio,
+    slot_states: dict[int, _SlotState | None],
+    slot_bars: dict[int, pd.DataFrame],
+    fill_model: FillModel,
+    warnings: list[str],
+) -> None:
+    """Force-close held slots that left the day's top ``rank_universe_size``.
+
+    Runs in ``before_exits`` on every Nth trading bar of the window. The
+    ranking pass includes currently-held tickers (``exclude=set()``) so
+    membership is judged against the true top-N list. Strict rule: anything
+    absent from the (possibly short) list is closed at ``day``'s close with
+    reason ``"rank"``. A ticker with no bar on ``day`` (halt, data gap) cannot
+    be filled and stays open until a later scheduled sweep closes it.
+    """
+    held = [
+        (slot_id, state) for slot_id, state in slot_states.items() if state is not None
+    ]
+    if not held:
+        return
+    rows, day_warnings = _candidate_rows_for_day(
+        day,
+        candidate_matrices,
+        exclude=set(),
+        limit=int(cfg.rank_universe_size),
+    )
+    warnings.extend(day_warnings)
+    top = {str(row["ticker"]) for row in rows}
+    for slot_id, state in held:
+        if state.ticker in top:
+            continue
+        position = portfolio.get_position(state.ticker)
+        if position is None:
+            continue
+        bars = slot_bars[slot_id]
+        frame_cache = state.frame_cache
+        if frame_cache is not None and frame_cache.index_i8 is not None:
+            index_i8 = frame_cache.index_i8
+            pos = int(np.searchsorted(index_i8, day.value))
+            if pos >= index_i8.size or index_i8[pos] != day.value:
+                continue
+            i = pos
+        else:
+            if day not in bars.index:
+                continue
+            loc = bars.index.get_loc(day)
+            if isinstance(loc, slice) or not isinstance(loc, int):
+                continue
+            i = loc
+        if i < state.entry_idx + 1:
+            continue
+        fill = fill_model.exit_price(
+            reason="rank",
+            close=float(bars.iloc[i]["close"]),
+            shares=position.shares,
+            adv_shares=state.adv_shares,
+            sigma_daily=state.sigma_daily,
+            half_spread=state.half_spread,
+        )
+        portfolio.close(
+            ticker=state.ticker,
+            exit_date=_bar_label(day, cfg),
+            exit_price=fill,
+            reason="rank",
+        )
+        slot_states[slot_id] = None
+
+
 class _DailyRankingSource:
     """Rolling :class:`~screener.backtester.day_loop.CandidateSource` adapter.
 
@@ -159,6 +232,9 @@ class _DailyRankingSource:
         self.end_ts = end_ts
         self.selection_rows = selection_rows
         self.warnings = warnings
+        # Trading-bar counter for the rank-exit schedule; fires on every Nth
+        # bar from the start of the simulation window.
+        self._day_count = 0
         # Per-run memo: exit-AST evaluations and frame primitives are computed
         # once per ticker instead of once per slot open. Exit signals are filled
         # up front in one panel pass rather than one interpreted AST walk per
@@ -176,7 +252,19 @@ class _DailyRankingSource:
         )
 
     def before_exits(self, day: pd.Timestamp) -> None:
-        return None
+        if self.cfg.rank_exit_every is not None:
+            self._day_count += 1
+            if self._day_count % int(self.cfg.rank_exit_every) == 0:
+                _rank_exit_sweep(
+                    day=day,
+                    cfg=self.cfg,
+                    candidate_matrices=self.candidate_matrices,
+                    portfolio=self.portfolio,
+                    slot_states=self.slot_states,
+                    slot_bars=self.slot_bars,
+                    fill_model=self.fill_model,
+                    warnings=self.warnings,
+                )
 
     def after_exits(self, day: pd.Timestamp, freed: list[FreedSlot]) -> None:
         """Refill freed slots from the day's candidate ranking.
