@@ -166,8 +166,9 @@ __all__ = ["backtest_rolling"]
     help=(
         "Rank-based exit rebalance: 'weekly', 'monthly', or an integer "
         "trading-bar period N. On every Nth bar of the window, any holding "
-        "outside the top --rank-universe-size of that day's candidate ranking "
-        "is closed (exit reason: rank)."
+        "outside the top --rank-universe-size of the prior completed bar's "
+        "candidate ranking is closed at this bar's close (exit reason: rank). "
+        "Requires --rank-universe-size >= --top."
     ),
 )
 @click.option(

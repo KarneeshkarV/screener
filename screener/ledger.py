@@ -24,6 +24,7 @@ ExitReason = Literal[
     "time",
     "exit_expr",
     "eod",
+    "rank",
     "session",
     "expiry",
     "dte",

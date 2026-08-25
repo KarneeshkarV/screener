@@ -399,6 +399,10 @@ class _SlotState:
     # Portfolio.open. Fixed-price models retain legacy portfolio sizing.
     # See docs/adr/0001-pre-impact-entry-sizing.md.
     entry_shares: float | None = None
+    # Rank-exit rebalance flag (rolling engine): set between sweeps when the
+    # ticker left the prior bar's top-N ranking; the shared exit sweep then
+    # closes the slot through the normal dividend -> partial -> exit sequence.
+    rank_exit: bool = False
 
 
 def _half_spread_at_signal(
@@ -664,6 +668,11 @@ def _check_exit_at_bar(
         return _sell("trail", trail_ref), "trail"
     if target_hit:
         return _sell("target", state.target_ref), "target"
+
+    # Rank-exit rebalance membership rule: protective price exits above win,
+    # discretionary/session/time exits below lose to it.
+    if state.rank_exit:
+        return _sell("rank"), "rank"
 
     state.peak = max(state.peak, high)
 

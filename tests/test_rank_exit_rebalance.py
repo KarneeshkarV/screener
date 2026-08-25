@@ -69,6 +69,15 @@ _THIN_DATA = {
     "SPY": _ramp(400.0, 440.0, 1_000_000.0),
 }
 
+# AAA stays signal-eligible but its dollar volume is overtaken by BBB's, so it
+# falls below a top-1 cutoff without ever losing its entry signal.
+_LAGGARD_DATA = {
+    "AAA": _ramp(100.0, 102.0, 500_000.0),
+    "BBB": _ramp(100.0, 200.0, 300_000.0),
+    "CCC": _ramp(100.0, 130.0, 100_000.0),
+    "SPY": _ramp(400.0, 440.0, 1_000_000.0),
+}
+
 
 def _cfg(**overrides: object) -> BacktestConfig:
     values: dict[str, object] = {
@@ -94,7 +103,9 @@ def _cfg(**overrides: object) -> BacktestConfig:
     return BacktestConfig(**values)  # type: ignore[arg-type]
 
 
-def _run(cfg: BacktestConfig, data: dict[str, pd.DataFrame] | None = None) -> list[object]:
+def _run(
+    cfg: BacktestConfig, data: dict[str, pd.DataFrame] | None = None
+) -> list[object]:
     return run_rolling_backtest(
         cfg,
         StubPriceFetcher(data if data is not None else _DATA),
@@ -104,14 +115,15 @@ def _run(cfg: BacktestConfig, data: dict[str, pd.DataFrame] | None = None) -> li
 
 
 def test_rank_exit_closes_holding_that_left_the_top_list():
+    # AAA enters first (highest ADV), its signal dies on the first falling bar.
+    # The bar-5 sweep judges on bar 4 (AAA still listed); the bar-8 sweep
+    # judges on bar 7 (AAA ineligible) and flags it, so it closes at bar 8.
     trades = _run(_cfg())
 
-    # AAA enters first (highest ADV), its signal dies on the first falling bar,
-    # and the next scheduled sweep (bar index 5) closes it with reason "rank".
     aaa = trades[0]
     assert str(aaa.ticker) == "AAA"  # type: ignore[attr-defined]
     assert str(aaa.exit_reason) == "rank"  # type: ignore[attr-defined]
-    assert pd.Timestamp(aaa.exit_date) == _INDEX[5]  # type: ignore[attr-defined]
+    assert pd.Timestamp(aaa.exit_date) == _INDEX[8]  # type: ignore[attr-defined]
 
     # The freed slot refills the same day from that day's ranking: BBB enters.
     bbb = trades[1]
@@ -125,20 +137,48 @@ def test_rank_exit_is_off_by_default():
     assert {str(t.exit_reason) for t in trades}.isdisjoint({"rank"})  # type: ignore[attr-defined]
 
 
-def test_thin_top_list_is_strict():
-    """Both holdings leave a top-1 list that holds neither name: both close."""
-    trades = _run(_cfg(top=2, rank_universe_size=1), data=_THIN_DATA)
+def test_eligible_holding_below_the_rank_cutoff_is_closed():
+    """The core semantic: signal-eligible but ranked out means sold.
+
+    AAA keeps its entry signal the whole window, but BBB's dollar volume
+    crosses above it between bars 13 and 14. The bar-14 sweep judges on
+    bar 13 (AAA still ahead); the bar-17 sweep judges on bar 16 (BBB well
+    ahead) and flags AAA, which closes at bar 17's close.
+    """
+    trades = _run(_cfg(rank_universe_size=1), data=_LAGGARD_DATA)
+
+    aaa = trades[0]
+    assert str(aaa.ticker) == "AAA"  # type: ignore[attr-defined]
+    assert str(aaa.exit_reason) == "rank"  # type: ignore[attr-defined]
+    assert pd.Timestamp(aaa.exit_date) == _INDEX[17]  # type: ignore[attr-defined]
+
+    bbb = trades[1]
+    assert str(bbb.ticker) == "BBB"  # type: ignore[attr-defined]
+    assert str(bbb.exit_reason) == "eod"  # type: ignore[attr-defined]
+
+
+def test_short_top_list_closes_holdings_not_listed():
+    """Strict rule: a list shorter than N still closes everything absent."""
+    trades = _run(_cfg(top=2, rank_universe_size=2), data=_THIN_DATA)
 
     rank_exits = [t for t in trades if str(t.exit_reason) == "rank"]  # type: ignore[attr-defined]
     assert {str(t.ticker) for t in rank_exits} == {"AAA", "BBB"}  # type: ignore[attr-defined]
 
 
+def test_rank_universe_size_must_not_be_below_slot_count():
+    """A cutoff below the slot count would churn every refill candidate."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="rank_universe_size"):
+        _cfg(top=2, rank_universe_size=1)
+
+
 def test_schedule_fires_on_every_nth_trading_bar(monkeypatch: pytest.MonkeyPatch):
-    """The counter is global: first sweep on bar N, then every N bars after."""
-    fired: list[int] = []
+    """The counter is global: first sweep on bar N, judging the bar N-1."""
+    judged_days: list[pd.Timestamp] = []
     monkeypatch.setattr(
-        "screener.backtester.rolling_simulation._rank_exit_sweep",
-        lambda **kwargs: fired.append(1),
+        "screener.backtester.rolling_simulation._mark_rank_exits",
+        lambda **kwargs: judged_days.append(kwargs["prev_day"]),
     )
     source = _DailyRankingSource(
         candidate_matrices=None,  # type: ignore[arg-type]
@@ -155,10 +195,10 @@ def test_schedule_fires_on_every_nth_trading_bar(monkeypatch: pytest.MonkeyPatch
         exit_signals={},
         frame_caches={},
     )
-    for _ in range(12):
-        source.before_exits(_INDEX[0])
+    for day in _INDEX[:12]:
+        source.before_exits(day)
 
-    assert len(fired) == 2  # bars 5 and 10
+    assert judged_days == [_INDEX[3], _INDEX[8]]
 
 
 def test_rank_knobs_reuse_prepared_panels():

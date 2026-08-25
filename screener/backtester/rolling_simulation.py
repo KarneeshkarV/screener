@@ -121,77 +121,34 @@ def _window_bounds(
     return start_ts, end_ts
 
 
-def _rank_exit_sweep(
+def _mark_rank_exits(
     *,
-    day: pd.Timestamp,
+    prev_day: pd.Timestamp,
     cfg: BacktestConfig,
     candidate_matrices: _RollingCandidateMatrices,
-    portfolio: Portfolio,
     slot_states: dict[int, _SlotState | None],
-    slot_bars: dict[int, pd.DataFrame],
-    fill_model: FillModel,
     warnings: list[str],
 ) -> None:
-    """Force-close held slots that left the day's top ``rank_universe_size``.
+    """Flag held slots whose ticker left the prior completed bar's top-N.
 
-    Runs in ``before_exits`` on every Nth trading bar of the window. The
-    ranking pass includes currently-held tickers (``exclude=set()``) so
-    membership is judged against the true top-N list. Strict rule: anything
-    absent from the (possibly short) list is closed at ``day``'s close with
-    reason ``"rank"``. A ticker with no bar on ``day`` (halt, data gap) cannot
-    be filled and stays open until a later scheduled sweep closes it.
+    The membership decision reads the ranking of ``prev_day`` (with held
+    tickers included, ``exclude=set()``) so no same-bar information feeds the
+    decision; the shared exit sweep then closes flagged slots later today at
+    that bar's close, through the normal dividend -> partial -> full-exit
+    sequence with stop/trail/target still taking precedence. Strict rule:
+    anything absent from the (possibly short) list is flagged.
     """
-    held = [
-        (slot_id, state) for slot_id, state in slot_states.items() if state is not None
-    ]
-    if not held:
-        return
     rows, day_warnings = _candidate_rows_for_day(
-        day,
+        prev_day,
         candidate_matrices,
         exclude=set(),
         limit=int(cfg.rank_universe_size),
     )
     warnings.extend(day_warnings)
     top = {str(row["ticker"]) for row in rows}
-    for slot_id, state in held:
-        if state.ticker in top:
-            continue
-        position = portfolio.get_position(state.ticker)
-        if position is None:
-            continue
-        bars = slot_bars[slot_id]
-        frame_cache = state.frame_cache
-        if frame_cache is not None and frame_cache.index_i8 is not None:
-            index_i8 = frame_cache.index_i8
-            pos = int(np.searchsorted(index_i8, day.value))
-            if pos >= index_i8.size or index_i8[pos] != day.value:
-                continue
-            i = pos
-        else:
-            if day not in bars.index:
-                continue
-            loc = bars.index.get_loc(day)
-            if isinstance(loc, slice) or not isinstance(loc, int):
-                continue
-            i = loc
-        if i < state.entry_idx + 1:
-            continue
-        fill = fill_model.exit_price(
-            reason="rank",
-            close=float(bars.iloc[i]["close"]),
-            shares=position.shares,
-            adv_shares=state.adv_shares,
-            sigma_daily=state.sigma_daily,
-            half_spread=state.half_spread,
-        )
-        portfolio.close(
-            ticker=state.ticker,
-            exit_date=_bar_label(day, cfg),
-            exit_price=fill,
-            reason="rank",
-        )
-        slot_states[slot_id] = None
+    for state in slot_states.values():
+        if state is not None:
+            state.rank_exit = state.ticker not in top
 
 
 class _DailyRankingSource:
@@ -199,9 +156,9 @@ class _DailyRankingSource:
 
     Owns the rolling fill half: after the shared exit sweep, every slot that is
     now empty (whether idle since setup or freed today) is refilled from that
-    day's freshly ranked candidate scan. There is no pre-exit work, so
-    ``before_exits`` is a no-op. All state (slot maps, portfolio, selection rows,
-    warnings) is shared by reference with the driver.
+    day's freshly ranked candidate scan. ``before_exits`` only marks rank-exit
+    flags on scheduled bars when the feature is enabled. All state (slot maps,
+    portfolio, selection rows, warnings) is shared by reference with the driver.
     """
 
     def __init__(
@@ -232,9 +189,10 @@ class _DailyRankingSource:
         self.end_ts = end_ts
         self.selection_rows = selection_rows
         self.warnings = warnings
-        # Trading-bar counter for the rank-exit schedule; fires on every Nth
-        # bar from the start of the simulation window.
+        # Trading-bar counter and last-seen bar for the rank-exit schedule;
+        # membership is judged on the prior completed bar, fires every Nth bar.
         self._day_count = 0
+        self._prev_day: pd.Timestamp | None = None
         # Per-run memo: exit-AST evaluations and frame primitives are computed
         # once per ticker instead of once per slot open. Exit signals are filled
         # up front in one panel pass rather than one interpreted AST walk per
@@ -254,17 +212,18 @@ class _DailyRankingSource:
     def before_exits(self, day: pd.Timestamp) -> None:
         if self.cfg.rank_exit_every is not None:
             self._day_count += 1
-            if self._day_count % int(self.cfg.rank_exit_every) == 0:
-                _rank_exit_sweep(
-                    day=day,
+            if (
+                self._day_count % int(self.cfg.rank_exit_every) == 0
+                and self._prev_day is not None
+            ):
+                _mark_rank_exits(
+                    prev_day=self._prev_day,
                     cfg=self.cfg,
                     candidate_matrices=self.candidate_matrices,
-                    portfolio=self.portfolio,
                     slot_states=self.slot_states,
-                    slot_bars=self.slot_bars,
-                    fill_model=self.fill_model,
                     warnings=self.warnings,
                 )
+        self._prev_day = day
 
     def after_exits(self, day: pd.Timestamp, freed: list[FreedSlot]) -> None:
         """Refill freed slots from the day's candidate ranking.
