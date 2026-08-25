@@ -94,6 +94,16 @@ class BacktestConfig(BaseModel):
     entry_limit_bps: float | None = None
     partial_exits: tuple[tuple[float, float], ...] = ()
 
+    # Rank-based exit rebalance (rolling engine only). On every Nth trading
+    # bar of the simulation window, held tickers absent from the PRIOR
+    # completed bar's top ``rank_universe_size`` ranked candidates are flagged;
+    # the shared exit sweep closes them that same bar with reason "rank"
+    # (after stop/trail/target, before exit_expr/session/time). ``None``
+    # disables the feature. Requires ``rank_universe_size >= top`` to avoid
+    # guaranteed close/reopen churn on refill candidates below the cutoff.
+    rank_exit_every: int | None = Field(default=None, ge=1)
+    rank_universe_size: int = Field(default=50, ge=1)
+
     # Portfolio
     top: int
     initial_capital: float
@@ -124,6 +134,15 @@ class BacktestConfig(BaseModel):
                 f"{', '.join(SUPPORTED_INTERVALS)}"
             )
         return value
+
+    @model_validator(mode="after")
+    def _validate_rank_exit(self) -> BacktestConfig:
+        if self.rank_exit_every is not None and self.rank_universe_size < self.top:
+            raise ValueError(
+                "rank_universe_size must be >= top when rank_exit is enabled "
+                f"(got {self.rank_universe_size} < {self.top})"
+            )
+        return self
 
     @field_validator("sizing_rule")
     @classmethod

@@ -47,6 +47,9 @@ BOOK_CONFIG_FIELDS = frozenset(
         "trailing_stop",
         "partial_exits",
         "intraday_only",
+        # Rank-based exit rebalance.
+        "rank_exit_every",
+        "rank_universe_size",
         # Fills and costs.
         "slippage_bps",
         "commission_bps",

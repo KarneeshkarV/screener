@@ -87,6 +87,7 @@ The extensions keep their distinct persisted schemas and return units.
 
 **ExitReason** is one neutral literal set in `screener.ledger`.
 It preserves every existing equity and options serialized value.
+`rank` marks a rolling-engine position closed because it left the top `rank_universe_size` of the prior completed bar's candidate ranking (`--rank-exit`).
 
 **tearsheet** means two things with zero shared code.
 An HTML equity and trade report for a backtest result, and the factor IC and quantile report.

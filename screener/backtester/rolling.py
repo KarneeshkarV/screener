@@ -159,6 +159,27 @@ __all__ = ["backtest_rolling"]
     ),
 )
 @click.option(
+    "--rank-exit",
+    "rank_exit",
+    type=str,
+    default=None,
+    help=(
+        "Rank-based exit rebalance: 'weekly', 'monthly', or an integer "
+        "trading-bar period N. On every Nth bar of the window, any holding "
+        "outside the top --rank-universe-size of the prior completed bar's "
+        "candidate ranking is closed at this bar's close (exit reason: rank). "
+        "'weekly'/'monthly' count trading days and require --interval 1d. "
+        "Requires --rank-universe-size >= --top."
+    ),
+)
+@click.option(
+    "--rank-universe-size",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Top-N ranked candidates a holding must stay in under --rank-exit.",
+)
+@click.option(
     "--earnings-blackout",
     "earnings_blackout_days",
     type=int,

@@ -19,6 +19,31 @@ DEFAULT_BENCHMARK = {name: market.benchmark for name, market in MARKETS.items()}
 DEFAULT_MIN_PRICE = {name: market.min_price for name, market in MARKETS.items()}
 DEFAULT_MIN_ADV = {name: market.min_adv for name, market in MARKETS.items()}
 
+RANK_EXIT_PRESETS = {"weekly": 5, "monthly": 21}
+
+
+def parse_rank_exit(value: Any) -> tuple[int, bool] | None:
+    """Parse ``--rank-exit`` into ``(period_in_bars, used_named_preset)``.
+
+    ``None`` means the feature is off. Named presets count trading DAYS and
+    are therefore only valid for daily bars; callers enforce that.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    preset = RANK_EXIT_PRESETS.get(text)
+    if preset is not None:
+        return preset, True
+    try:
+        parsed = int(text)
+    except ValueError as exc:
+        raise click.BadParameter(
+            f"{value!r} is not 'weekly', 'monthly', or a positive integer"
+        ) from exc
+    if parsed < 1:
+        raise click.BadParameter(f"{value!r} must be >= 1")
+    return parsed, False
+
 
 def resolve_strategy_exprs(
     strategy_name: str | None,
