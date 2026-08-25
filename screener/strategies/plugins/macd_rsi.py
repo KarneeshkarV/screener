@@ -7,11 +7,14 @@ import pandas as pd
 
 from screener.indicators.plugins.ema import ema as _ema
 from screener.indicators.plugins.rsi import rsi as _rsi
-from screener.strategies.spec import strategy
+from screener.strategies import bar_column_recipes as _cols
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    register_expression_strategy,
+)
 from screener.strategies.trades import ResearchTrade, _walk
 
 
-@strategy("macd_rsi")
 def strat_macd_rsi(df: pd.DataFrame) -> list[ResearchTrade]:
     """entry: MACD crosses over signal AND RSI was <= 30 in last 5 bars
     exit:  MACD crosses under signal AND RSI was >= 70 in last 5 bars
@@ -39,3 +42,20 @@ def strat_macd_rsi(df: pd.DataFrame) -> list[ResearchTrade]:
     entries = cross_over & was_down
     exits = cross_under & was_up
     return _walk(entries, exits, close, df["date"].values)
+
+
+# One definition: the backtester evaluates this expression and the pine_runner
+# gets a callable synthesised from it. The function above stays unregistered as
+# the reference body tests/test_bucket_b_parity.py compares against.
+register_expression_strategy(
+    "macd_rsi",
+    entry="crossover(macd_line, macd_signal) and rsi_prev5_min <= 30",
+    exit="crossunder(macd_line, macd_signal) and rsi_prev5_max >= 70",
+    bar_columns={
+        "macd_line": _cols.macd_line,
+        "macd_signal": _cols.macd_signal,
+        "rsi_prev5_min": _cols.rsi_prev5_min,
+        "rsi_prev5_max": _cols.rsi_prev5_max,
+    },
+    profile=DEFAULT_STRATEGY_PROFILE,
+)

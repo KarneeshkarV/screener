@@ -36,6 +36,7 @@ from screener.backtester.pine import SERIES_NAMES, Name, Node, evaluate, parse
 from screener.strategies.base import StrategyFn
 from screener.strategies.spec import (
     CallableStrategySpec,
+    apply_bar_columns,
     DerivedView,
     ExpressionStrategySpec,
     StrategySpec,
@@ -93,31 +94,39 @@ def _is_self_contained(spec: ExpressionStrategySpec) -> bool:
     names = _identifiers(_parsed(spec.entry))
     if spec.exit is not None:
         names |= _identifiers(_parsed(spec.exit))
-    return names <= SERIES_NAMES
+    # Declared bar-local columns are self-contained by construction: each is a
+    # pure function of the one frame the pine_runner already has.
+    available = SERIES_NAMES | set(spec.bar_columns or ())
+    return names <= available
 
 
-@lru_cache(maxsize=None)
-def _expression_callable(name: str, entry: str, exit_expr: str | None) -> StrategyFn:
-    """Synthesise the pine_runner's callable from an expression strategy.
+#: Built callables, keyed by strategy name. A registry entry is immutable once
+#: added, so caching by name is safe. Memoising matters: without it every read
+#: of :data:`STRATEGIES` builds a fresh function, so the view stops being a
+#: projection in any useful sense
+#: (``dict(STRATEGIES.items()) != dict(STRATEGIES)``) and callers that cache or
+#: compare entries by identity break.
+_SYNTHESISED: dict[str, StrategyFn] = {}
 
-    Keyed on the three values that determine behaviour rather than on the spec
-    object, which carries an unhashable profile. Memoising matters: without it
-    every read of :data:`STRATEGIES` builds a fresh function, so the view stops
-    being a projection in any useful sense
-    (``dict(STRATEGIES.items()) != dict(STRATEGIES)``) and callers that cache or
-    compare entries by identity break.
-    """
+
+def _expression_callable(spec: ExpressionStrategySpec) -> StrategyFn:
+    """Synthesise the pine_runner's callable from an expression strategy."""
+    cached = _SYNTHESISED.get(spec.name)
+    if cached is not None:
+        return cached
 
     def _run(df: pd.DataFrame) -> list[ResearchTrade]:
+        bars = apply_bar_columns(spec.bar_columns, df)
         return _walk(
-            _mask(entry, df),
-            _mask(exit_expr, df),
-            df["close"].to_numpy(dtype=float),
-            df["date"].values,
+            _mask(spec.entry, bars),
+            _mask(spec.exit, bars),
+            bars["close"].to_numpy(dtype=float),
+            bars["date"].values,
         )
 
-    _run.__name__ = f"strat_{name}"
-    _run.__doc__ = f"Expression strategy {name!r}: entry={entry!r}."
+    _run.__name__ = f"strat_{spec.name}"
+    _run.__doc__ = f"Expression strategy {spec.name!r}: entry={spec.entry!r}."
+    _SYNTHESISED[spec.name] = _run
     return _run
 
 
@@ -125,7 +134,7 @@ def _callable_of(spec: StrategySpec) -> StrategyFn | None:
     if isinstance(spec, CallableStrategySpec):
         return spec.callable_fn
     if isinstance(spec, ExpressionStrategySpec) and _is_self_contained(spec):
-        return _expression_callable(spec.name, spec.entry, spec.exit)
+        return _expression_callable(spec)
     return None
 
 

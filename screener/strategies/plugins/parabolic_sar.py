@@ -6,11 +6,14 @@ import numpy as np
 import pandas as pd
 
 from screener.indicators.plugins.sar import sar as _sar
-from screener.strategies.spec import strategy
+from screener.strategies import bar_column_recipes as _cols
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    register_expression_strategy,
+)
 from screener.strategies.trades import ResearchTrade, _walk
 
 
-@strategy("parabolic_sar")
 def strat_parabolic_sar(df: pd.DataFrame) -> list[ResearchTrade]:
     hi = df["high"].to_numpy(dtype=float)
     lo = df["low"].to_numpy(dtype=float)
@@ -36,3 +39,15 @@ def strat_parabolic_sar(df: pd.DataFrame) -> list[ResearchTrade]:
     exits = below_prev & (~below)
 
     return _walk(entries, exits, cl, df["date"].values)
+
+
+# One definition: the backtester evaluates this expression and the pine_runner
+# gets a callable synthesised from it. The function above stays unregistered as
+# the reference body tests/test_bucket_b_parity.py compares against.
+register_expression_strategy(
+    "parabolic_sar",
+    entry="crossunder(sar, close)",
+    exit="crossover(sar, close)",
+    bar_columns={"sar": _cols.parabolic_sar},
+    profile=DEFAULT_STRATEGY_PROFILE,
+)

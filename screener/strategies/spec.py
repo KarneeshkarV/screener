@@ -54,6 +54,41 @@ class PrepareCtx(BaseModel):
 PrepareBarsFn = Callable[[PrepareCtx], dict[str, pd.DataFrame]]
 LookbackFn = Callable[[], int]
 
+#: Builds one derived column from a single ticker's OHLCV frame. Pure and
+#: bar-local on purpose: it sees no panel, no market and no fetcher, which is
+#: what lets the same declaration serve the backtester and the pine_runner.
+BarColumnFn = Callable[[pd.DataFrame], pd.Series]
+
+
+def apply_bar_columns(
+    bar_columns: Mapping[str, BarColumnFn] | None, bars: pd.DataFrame
+) -> pd.DataFrame:
+    """Return ``bars`` with each declared column computed and attached."""
+    if not bar_columns or bars is None or bars.empty:
+        return bars
+    frame = bars.copy()
+    for column, build in bar_columns.items():
+        frame[column] = build(frame)
+    return frame
+
+
+def _prepare_from_bar_columns(bar_columns: Mapping[str, BarColumnFn]) -> PrepareBarsFn:
+    """Lift bar-local column builders into the panel-level prepare_bars hook.
+
+    Declaring ``bar_columns`` therefore costs the backtester nothing new: it
+    keeps calling ``prepare_bars`` exactly as before. The same mapping is read
+    directly by ``screener.strategies.registry`` for the pine_runner, so the
+    columns an expression reads are defined once rather than once per consumer.
+    """
+
+    def _prepare(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
+        return {
+            tv: apply_bar_columns(bar_columns, bars)
+            for tv, bars in ctx.bars_by_tv.items()
+        }
+
+    return _prepare
+
 
 class StrategyProfile(BaseModel):
     """Per-strategy candidate-gate defaults for screen and backtest.
@@ -125,6 +160,10 @@ class ExpressionStrategySpec(StrategySpec):
     exit: str | None = None
     prepare_bars: PrepareBarsFn | None = None
     required_lookback: LookbackFn | None = None
+    # Bar-local derived columns the entry/exit expressions may reference by
+    # name. Keeps the Pine grammar fixed (plan D10): a new indicator becomes a
+    # column, never a new function in the parser.
+    bar_columns: SkipValidation[Mapping[str, BarColumnFn]] | None = None
     # Declared candidate-gate defaults. ``None`` keeps the plugin on the
     # effective defaults (``DEFAULT_STRATEGY_PROFILE``); nothing reads it yet.
     profile: StrategyProfile | None = None
@@ -199,9 +238,12 @@ def register_expression_strategy(
     prepare_bars: PrepareBarsFn | None = None,
     required_lookback: LookbackFn | None = None,
     profile: StrategyProfile | None = None,
+    bar_columns: Mapping[str, BarColumnFn] | None = None,
     **meta: Any,
 ) -> ExpressionStrategySpec:
     """Register an expression strategy directly, without a fake function body."""
+    if bar_columns and prepare_bars is None:
+        prepare_bars = _prepare_from_bar_columns(bar_columns)
     spec = ExpressionStrategySpec(
         name=name,
         entry=entry,
@@ -209,6 +251,7 @@ def register_expression_strategy(
         prepare_bars=prepare_bars,
         required_lookback=required_lookback,
         profile=profile,
+        bar_columns=bar_columns,
     )
     registry.add(name, spec, **meta)
     return spec
