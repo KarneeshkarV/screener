@@ -56,6 +56,35 @@ outcome = run_screen_workflow(ScreenRequest(
 
 `import screener` is lazy, so it pulls in neither pandas nor the scanner until you touch one of those names.
 
+### Extras
+
+The default install carries the screen path only.
+Other workflows need their extra:
+
+| Extra | Installs | Needed for |
+|---|---|---|
+| `report` | plotly | HTML reports and tear-sheets, i.e. `screen` without `--csv`, `dashboard`, `factor-tearsheet` |
+| `prices` | yfinance, openscreener | every backtest, `garp`, `conviction`, `options` |
+| `india` | jugaad-data | `unusual-volume`, `operator-scan` |
+| `usage` | libsql-client | Turso history mirror and feature-usage tracking |
+| `all` | all of the above | the pre-split behaviour |
+
+```bash
+uv add "screener[report] @ git+https://github.com/KarneeshkarV/screener@main"
+```
+
+A missing extra raises an `ImportError` naming the one to install, rather than a bare `ModuleNotFoundError`.
+Nothing degrades silently: a workflow either has its dependency or says which extra supplies it.
+
+Two consequences worth knowing before you pick an install:
+
+- **Using the CLI?** Install `screener[all]`.
+  A bare `screener screen` writes an HTML report, so it needs `report`; only `screener screen --csv` runs on the core install.
+- **Embedding `screen()`?** The core install is enough.
+  The default `persist=False` renders no report, so it needs no extra.
+
+Working on the repo itself still needs everything: `uv sync --all-extras --all-groups`.
+
 ## Commands
 
 ### `screen`

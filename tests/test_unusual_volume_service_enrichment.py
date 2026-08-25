@@ -10,6 +10,7 @@ import pytest
 from pydantic import ValidationError
 from rich.console import Console
 
+from screener import _optional
 from screener.unusual_volume import (
     Event,
 )
@@ -663,15 +664,17 @@ def test_deep_enrich_india_fetch_variants_and_failures(monkeypatch):
     uv_enrich.deep_enrich_india([untouched])
     assert untouched.notes == "note"
 
-    real_import = __import__
+    # openscreener ships in the optional `prices` extra; on a default install
+    # deep enrichment must leave the event untouched rather than raise.
+    # `_optional.load` is the seam that import goes through.
+    real_load = _optional.load
 
-    def fake_import(name, *args, **kwargs):
-        if name == "openscreener":
+    def fake_load(module: str):
+        if module == "openscreener":
             raise ImportError("missing")
-        return real_import(name, *args, **kwargs)
+        return real_load(module)
 
-    monkeypatch.delitem(sys.modules, "openscreener", raising=False)
-    monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.setattr(_optional, "load", fake_load)
     uv_enrich.deep_enrich_india([untouched])
     assert untouched.notes == "note"
 

@@ -6,17 +6,26 @@ import html
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.io import to_html
-from plotly.offline import get_plotlyjs
 
+from screener import _optional
 from screener.backtester.display import trades_dataframe
 from screener.backtester.metrics import result_view
 from screener.backtester.models import BacktestResult
 from screener.html_report import html_page
+
+if TYPE_CHECKING:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from plotly.io import to_html
+    from plotly.offline import get_plotlyjs
+else:
+    px = _optional.load("plotly.express")
+    go = _optional.load("plotly.graph_objects")
+    to_html = _optional.load("plotly.io").to_html
+    get_plotlyjs = _optional.load("plotly.offline").get_plotlyjs
 
 
 class _ReusableThreadingHTTPServer(ThreadingHTTPServer):

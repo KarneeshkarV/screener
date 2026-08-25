@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
+from screener import _optional
 from screener import history, usage
 
 REMOTE_RUNS_TABLE = "screen_runs"
@@ -66,7 +67,7 @@ def connect() -> SyncClient | None:
     if not url or not token:
         return None
 
-    from libsql_client import create_client_sync  # type: ignore[import-untyped]
+    create_client_sync = _optional.load("libsql_client").create_client_sync
 
     return cast(SyncClient, create_client_sync(url, auth_token=token))
 

@@ -5,13 +5,11 @@ from __future__ import annotations
 import html
 from collections.abc import Sequence
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.offline import get_plotlyjs
 
+from screener import _optional
 from screener.backtester.dashboard import (
     dashboard_frames,
     figure_html,
@@ -21,6 +19,15 @@ from screener.backtester.dashboard import (
 from screener.backtester.metrics import format_result_value
 from screener.backtester.models import BacktestResult
 from screener.html_report import html_page
+
+if TYPE_CHECKING:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from plotly.offline import get_plotlyjs
+else:
+    px = _optional.load("plotly.express")
+    go = _optional.load("plotly.graph_objects")
+    get_plotlyjs = _optional.load("plotly.offline").get_plotlyjs
 
 _MONTH_LABELS = [
     "Jan",

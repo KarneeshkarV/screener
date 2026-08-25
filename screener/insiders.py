@@ -21,16 +21,22 @@ from __future__ import annotations
 
 import logging
 import urllib.request
+from typing import TYPE_CHECKING
 
 import pandas as pd
-import yfinance as yf
 
+from screener import _optional
 from screener import fmp
 from screener.fmp import resolve_api_key
 from screener.parallel import parallel_map
 from screener.providers import CachedProvider, ProviderSpec
 from screener.resilience import call_with_resilience
 from screener.symbols import tv_to_yf
+
+if TYPE_CHECKING:
+    import yfinance as yf
+else:
+    yf = _optional.load("yfinance")
 
 logger = logging.getLogger(__name__)
 _SCREENER_URL = "https://www.screener.in/company/{symbol}/"
@@ -375,7 +381,7 @@ def _fetch_openscreener_one(
 ) -> dict | None:
     def _fetch() -> dict | None:
         try:
-            from openscreener import Stock
+            Stock = _optional.load("openscreener").Stock
         except ImportError:
             return None
         rows = Stock(name, scraper=_HttpScraper()).shareholding_quarterly()

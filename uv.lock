@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'win32'",
@@ -2676,13 +2676,9 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
-    { name = "jugaad-data" },
-    { name = "libsql-client" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "openscreener" },
     { name = "pandas" },
-    { name = "plotly" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -2690,7 +2686,28 @@ dependencies = [
     { name = "rich" },
     { name = "structlog" },
     { name = "tradingview-screener" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "jugaad-data" },
+    { name = "libsql-client" },
+    { name = "openscreener" },
+    { name = "plotly" },
     { name = "yfinance" },
+]
+india = [
+    { name = "jugaad-data" },
+]
+prices = [
+    { name = "openscreener" },
+    { name = "yfinance" },
+]
+report = [
+    { name = "plotly" },
+]
+usage = [
+    { name = "libsql-client" },
 ]
 
 [package.dev-dependencies]
@@ -2709,21 +2726,26 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.0" },
-    { name = "jugaad-data", specifier = ">=0.33.1" },
-    { name = "libsql-client", specifier = ">=0.3.1" },
+    { name = "jugaad-data", marker = "extra == 'india'", specifier = ">=0.33.1" },
+    { name = "libsql-client", marker = "extra == 'usage'", specifier = ">=0.3.1" },
     { name = "numpy", specifier = ">=1.24" },
-    { name = "openscreener", git = "https://github.com/KarneeshkarV/openscreener.git" },
+    { name = "openscreener", marker = "extra == 'prices'", git = "https://github.com/KarneeshkarV/openscreener.git" },
     { name = "pandas", specifier = ">=2.0" },
-    { name = "plotly", specifier = ">=5.24" },
+    { name = "plotly", marker = "extra == 'report'", specifier = ">=5.24" },
     { name = "pyarrow", specifier = ">=15.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.31" },
     { name = "rich", specifier = ">=13.0" },
+    { name = "screener", extras = ["india"], marker = "extra == 'all'" },
+    { name = "screener", extras = ["prices"], marker = "extra == 'all'" },
+    { name = "screener", extras = ["report"], marker = "extra == 'all'" },
+    { name = "screener", extras = ["usage"], marker = "extra == 'all'" },
     { name = "structlog", specifier = ">=24.1" },
     { name = "tradingview-screener", specifier = ">=3.0" },
-    { name = "yfinance", specifier = ">=0.2.40" },
+    { name = "yfinance", marker = "extra == 'prices'", specifier = ">=0.2.40" },
 ]
+provides-extras = ["report", "prices", "india", "usage", "all"]
 
 [package.metadata.requires-dev]
 dev = [

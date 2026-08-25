@@ -4,22 +4,44 @@ version = "0.1.0"
 description = "A Python CLI for screening, ranking, and backtesting US and Indian equities."
 readme = "README.md"
 requires-python = ">=3.11"
+# The screen path and nothing else. A codebase embedding `screener.api` to run
+# one screen should not have to install plotly, a price provider and a bhavcopy
+# client to do it, so every other workflow's third-party dependency sits in an
+# extra below. Verified by `tests/test_optional_extras.py`, which fails if a
+# module declared optional turns out to load on the screen path.
 dependencies = [
     "tradingview-screener>=3.0",
     "click>=8.0",
     "rich>=13.0",
-    "openscreener @ git+https://github.com/KarneeshkarV/openscreener.git",
-    "yfinance>=0.2.40",
     "pandas>=2.0",
-    "plotly>=5.24",
     "numpy>=1.24",
     "pyarrow>=15.0",
-    "jugaad-data>=0.33.1",
     "requests>=2.31",
     "structlog>=24.1",
     "PyYAML>=6.0",
-    "libsql-client>=0.3.1",
     "pydantic>=2.13.4",
+]
+
+# Keep each extra's members in sync with `screener/_optional.EXTRA_FOR_MODULE`;
+# the same test pins that the two agree, so a dependency can never be moved
+# here without its import site learning to name the extra.
+[project.optional-dependencies]
+# HTML reports and tear-sheets: `screen` without --csv, dashboard, tearsheet.
+report = ["plotly>=5.24"]
+# Price and fundamental history: every backtest, GARP, conviction, options.
+prices = [
+    "yfinance>=0.2.40",
+    "openscreener @ git+https://github.com/KarneeshkarV/openscreener.git",
+]
+# NSE bhavcopy and corporate announcements: unusual-volume, operator-scan.
+india = ["jugaad-data>=0.33.1"]
+# Turso mirror for screen-run history and feature-usage tracking.
+usage = ["libsql-client>=0.3.1"]
+all = [
+    "screener[report]",
+    "screener[prices]",
+    "screener[india]",
+    "screener[usage]",
 ]
 
 [project.scripts]

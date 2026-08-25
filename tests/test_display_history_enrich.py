@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import builtins
 import sys
 import types
 from datetime import UTC, datetime
 
 import pandas as pd
 
-from screener import display, enrich, history
+from screener import _optional, display, enrich, history
 
 
 def test_display_value_formatters_cover_numeric_tiers():
@@ -227,14 +226,17 @@ def test_enrich_fundamentals_non_india_empty_and_import_error(monkeypatch):
     assert enrich.enrich_fundamentals(df, "us") is df
     assert enrich.enrich_fundamentals(pd.DataFrame({"name": []}), "india").empty
 
-    real_import = builtins.__import__
+    # openscreener ships in the optional `prices` extra, so a default install
+    # has no Stock to import; enrichment must return the frame untouched.
+    # `_optional.load` is that seam, so absence is simulated there.
+    real_load = _optional.load
 
-    def fake_import(name, *args, **kwargs):
-        if name == "openscreener":
+    def fake_load(module: str):
+        if module == "openscreener":
             raise ImportError("missing")
-        return real_import(name, *args, **kwargs)
+        return real_load(module)
 
-    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(_optional, "load", fake_load)
     assert enrich.enrich_fundamentals(df, "india") is df
 
 

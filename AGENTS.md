@@ -29,7 +29,7 @@ pi; a plain terminal is unaffected.
 ## Cursor Cloud specific instructions
 
 - **Python version**: 3.11 (pinned in `.python-version`). `uv` handles this automatically.
-- **Package manager**: `uv`. Install all deps (including dev): `uv sync --all-groups`
+- **Package manager**: `uv`. Install all deps (including dev): `uv sync --all-extras --all-groups`
 - **Run the CLI**: `uv run screener <command>` (see `uv run screener --help` for commands)
 - **Lint & format**: `uv run ruff check $(git ls-files '*.py')` and `uv run ruff format --check $(git ls-files '*.py')`
 - **Type check**: `uv run mypy`

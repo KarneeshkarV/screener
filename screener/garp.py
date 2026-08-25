@@ -10,6 +10,7 @@ from typing import Any, Protocol, cast
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from screener import _optional
 from screener.cache import cached_json_call
 from screener.financials import first_number, pct_change, to_number
 from screener.fmp import resolve_api_key
@@ -335,7 +336,7 @@ def load_garp_universe(
 
 
 def _fetch_india_sections(symbol: str) -> dict[str, Any]:
-    from openscreener import Stock
+    Stock = _optional.load("openscreener").Stock
 
     from screener.insiders import _HttpScraper
 
@@ -490,7 +491,7 @@ def screen_india_garp(
 
 
 def _us_row(symbol: str, description: str | None) -> NormalizedGarpRow:
-    import yfinance as yf
+    yf = _optional.load("yfinance")
 
     ticker = yf.Ticker(symbol)
     info = ticker.info or {}

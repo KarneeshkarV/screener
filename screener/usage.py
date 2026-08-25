@@ -16,6 +16,8 @@ from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from screener import _optional
+
 logger = logging.getLogger(__name__)
 
 PROJECT_NAME = "screener"
@@ -142,7 +144,7 @@ def _connect() -> UsageClient | None:
         if not url or not token:
             return None
 
-        from libsql_client import create_client_sync  # type: ignore[import-untyped]
+        create_client_sync = _optional.load("libsql_client").create_client_sync
 
         client = cast(UsageClient, create_client_sync(url, auth_token=token))
         _client = client

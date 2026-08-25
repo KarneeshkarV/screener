@@ -6,6 +6,8 @@ from typing import Any, Protocol
 
 import pandas as pd
 
+from screener import _optional
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,7 +22,7 @@ def enrich_fundamentals(df: pd.DataFrame, market: str) -> pd.DataFrame:
         return df
 
     try:
-        from openscreener import Stock
+        Stock = _optional.load("openscreener").Stock
     except ImportError:
         return df
 

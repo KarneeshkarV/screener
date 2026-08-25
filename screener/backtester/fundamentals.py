@@ -17,6 +17,7 @@ from typing import Any, Protocol, cast
 import pandas as pd
 import requests
 
+from screener import _optional
 from screener.backtester.data import load_env_file
 from screener.financials import as_percent as _as_percent
 from screener.financials import first_number, pct_change
@@ -387,7 +388,7 @@ def _parse_india_period_end(label: Any) -> pd.Timestamp | None:
 
 
 def _fetch_openscreener_quarterly(symbol: str) -> dict[str, Any]:  # pragma: no cover
-    from openscreener import Stock
+    Stock = _optional.load("openscreener").Stock
 
     from screener.insiders import _HttpScraper
 
@@ -398,7 +399,7 @@ def _fetch_openscreener_quarterly(symbol: str) -> dict[str, Any]:  # pragma: no 
 def _fetch_yfinance_quarterly_revenue(
     ticker: str,
 ) -> dict[str, Any]:  # pragma: no cover
-    import yfinance as yf
+    yf = _optional.load("yfinance")
 
     stock = yf.Ticker(ticker)
     statement = stock.quarterly_financials

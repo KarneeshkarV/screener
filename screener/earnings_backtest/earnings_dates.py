@@ -15,11 +15,11 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
-import yfinance as yf
 
+from screener import _optional
 from screener.backtester.data import _configure_yfinance, call_yfinance_with_timeout
 from screener.cache import cached_json_call
 from screener.earnings_backtest.common import (
@@ -28,6 +28,11 @@ from screener.earnings_backtest.common import (
     SENTIMENT_CACHE_DAYS,
     jsonable,
 )
+
+if TYPE_CHECKING:
+    import yfinance as yf
+else:
+    yf = _optional.load("yfinance")
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +129,7 @@ def fetch_earnings_dates_nse() -> pd.DataFrame | None:
 
     def _fetch() -> list[dict[str, Any]]:
         try:
-            from jugaad_data.nse import NSELive
+            NSELive = _optional.load("jugaad_data.nse").NSELive
 
             nse = NSELive()
             announcements = nse.corporate_announcements()
@@ -246,7 +251,7 @@ def fetch_earnings_dates_openscreener(
     symbol = ticker.replace(".NS", "").replace(".BO", "")
 
     def _fetch() -> list[dict[str, Any]]:
-        from openscreener import Stock
+        Stock = _optional.load("openscreener").Stock
 
         from screener.insiders import _HttpScraper
 
