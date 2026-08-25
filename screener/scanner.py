@@ -84,7 +84,17 @@ def build_scanner_plan(
     if order_by == OUTPUT_SCORE_COLUMN:
         active_scorer = scorer if scorer is not None else default_scorer()
         columns.extend(c for c in active_scorer.columns if c not in columns)
-        fetch_limit = max(limit * 10, 500)
+        # Over-fetch so the rows dropped for short history and by dedupe still
+        # leave more than `limit` to rank. How much headroom is affordable
+        # depends on what the recipe reads: a snapshot recipe ranks on columns
+        # the single TradingView request already returned, so spare rows cost
+        # nothing, while a bar-derived recipe downloads daily OHLCV per
+        # surviving ticker, so every spare row is another network fetch. Keep
+        # the bar path just wide enough for those drops (~2x) instead of 10x.
+        if active_scorer.bar_score is not None:
+            fetch_limit = max(limit * 2, 100)
+        else:
+            fetch_limit = max(limit * 10, 500)
         query_order_by = "volume"
     else:
         fetch_limit = max(limit * 3, 100)
@@ -185,15 +195,18 @@ def _add_setup_score(
     scorer: ScoreSpec | None = None,
     *,
     market: str | None = None,
+    refresh: bool = False,
 ) -> pd.DataFrame:
     """Apply a ranking recipe and write ``setup_score``.
 
     Defaults to the EMA trend setup for backward compatibility with tests and
-    call sites that still invoke this helper directly. ``market`` is only read
-    by bar-derived recipes, which resolve price history for the scanned rows.
+    call sites that still invoke this helper directly. ``market`` and
+    ``refresh`` are only read by bar-derived recipes, which resolve price
+    history for the scanned rows; ``refresh`` bypasses the on-disk bar cache so
+    ``--refresh`` does not rank fresh snapshot rows on stale price history.
     """
     active = scorer if scorer is not None else default_scorer()
-    return apply_score(df, active, market=market)
+    return apply_score(df, active, market=market, refresh=refresh)
 
 
 def _dedupe_listings(df: pd.DataFrame) -> pd.DataFrame:
@@ -227,7 +240,16 @@ def _helper_columns_to_drop(
     if detail:
         keep.update(DETAIL_COLUMNS)
     keep.add(OUTPUT_SCORE_COLUMN)
-    return [col for col in scorer.columns if col not in keep]
+    helpers = list(scorer.columns)
+    # A bar-derived recipe also writes its raw value under ``aux_column`` (the
+    # number the backtester ranks on) beside the 0-100 ``setup_score``. That is
+    # a diagnostic, not a display column, so it rides along only under
+    # ``--detail``; otherwise it would push the table past the width at which
+    # ``display`` starts hiding ``description``.
+    aux = scorer.bar_score.aux_column if scorer.bar_score is not None else None
+    if aux is not None and not detail:
+        helpers.append(aux)
+    return [col for col in helpers if col not in keep]
 
 
 def shape_scan_results(
@@ -238,6 +260,7 @@ def shape_scan_results(
     detail: bool = False,
     scorer: ScoreSpec | None = None,
     market: str | None = None,
+    refresh: bool = False,
 ) -> pd.DataFrame:
     """Shape raw scanner rows after Adapter fetch without provider access.
 
@@ -248,7 +271,7 @@ def shape_scan_results(
     shaped = df
     if order_by == OUTPUT_SCORE_COLUMN and not shaped.empty:
         active = scorer if scorer is not None else default_scorer()
-        shaped = _add_setup_score(shaped, active, market=market)
+        shaped = _add_setup_score(shaped, active, market=market, refresh=refresh)
         shaped = shaped.sort_values(OUTPUT_SCORE_COLUMN, ascending=False)
         drop_cols = _helper_columns_to_drop(active, detail=detail)
         shaped = shaped.drop(columns=[c for c in drop_cols if c in shaped.columns])
@@ -287,4 +310,5 @@ def scan(
         detail=detail,
         scorer=plan.scorer,
         market=market,
+        refresh=refresh,
     )
