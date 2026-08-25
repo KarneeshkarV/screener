@@ -46,6 +46,12 @@ def momentum_12_1(
     required_lookback=MOMENTUM_LOOKBACK,
     description="Jegadeesh-Titman 12-1 momentum: close[t-21]/close[t-252] - 1",
     aux_column="mom_12_1",
+    # Jegadeesh-Titman buys winners, so a non-positive 12-1 return is not a
+    # candidate at all. Declaring the floor with the recipe is what lets the
+    # screen and the backtest gate on one rule instead of two: the screen
+    # filters on it after bar scoring, and the backtest's ``ENTRY_PURE``
+    # expression is rendered from it.
+    eligible_above=0.0,
 )
 def score_momentum_12_1(features: BarFeatures) -> pd.Series:
     return momentum_12_1(features.close)

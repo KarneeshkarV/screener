@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener.factors import get_price_score
+from screener.factors import entry_gate_expression, get_price_score
 from screener.factors.recipes import MOMENTUM_LOOKBACK, MOMENTUM_SKIP
 from screener.factors.recipes import momentum_12_1 as _momentum_12_1
 from screener.strategies.factor_adapter import (
@@ -68,10 +68,14 @@ _SKIP = MOMENTUM_SKIP
 _TREND_SMA = 200
 
 # Pure JT eligibility vs dual-momentum (absolute trend) eligibility.
-ENTRY_PURE = "mom_12_1 > 0"
-ENTRY_TREND = f"mom_12_1 > 0 and close > sma(close, {_TREND_SMA})"
+#
+# The positive-momentum leg is rendered from the recipe's own ``eligible_above``
+# declaration rather than spelled here, so the screen (which filters on the same
+# declaration after bar scoring) and these entries cannot drift apart.
+ENTRY_PURE = entry_gate_expression(_MOMENTUM_SCORE)
+ENTRY_TREND = f"{ENTRY_PURE} and close > sma(close, {_TREND_SMA})"
 # Risk-adj needs defined vol; vol_252 > 0 is the history/non-degenerate gate.
-ENTRY_RISKADJ = "mom_12_1 > 0 and vol_252 > 0"
+ENTRY_RISKADJ = f"{ENTRY_PURE} and vol_252 > 0"
 
 
 def momentum_12_1_score(close: pd.Series) -> pd.Series:

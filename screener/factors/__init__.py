@@ -26,6 +26,11 @@ Contract for anything registered here:
   a name with too little history has no score and is dropped by both adapters.
   (The legacy snapshot recipes in ``screener.scoring.components`` keep their
   historical ``fillna(0)`` behaviour; only this unified path is strict.)
+* Eligibility beyond NaN is declared *here*, on the spec, as
+  ``eligible_above``. Whether a raw value makes a name tradeable belongs to the
+  recipe, so neither adapter restates it: the screen filters with
+  :func:`eligible_mask` and the backtest renders the same declaration into its
+  entry expression with :func:`entry_gate_expression`.
 """
 
 from __future__ import annotations
@@ -101,6 +106,13 @@ class PriceScoreSpec:
     #: Column name the backtest adapter writes the raw score under, so an
     #: entry expression can gate on it (``rank_score`` is always written too).
     aux_column: str | None = None
+    #: The recipe's own eligibility floor on its *raw* value: a name is a
+    #: candidate only when its score is strictly greater than this. Declared
+    #: once here rather than restated per adapter, because whether a raw value
+    #: makes a name tradeable is a property of the recipe, not of whoever is
+    #: reading it. ``None`` means the recipe has no floor and only NaN (too
+    #: little history) makes a name ineligible.
+    eligible_above: float | None = None
 
 
 registry: Registry[PriceScoreSpec] = Registry("price score")
@@ -112,6 +124,7 @@ def price_score(
     required_lookback: int,
     description: str = "",
     aux_column: str | None = None,
+    eligible_above: float | None = None,
 ) -> Callable[[_RegisteredPriceScoreFn], _RegisteredPriceScoreFn]:
     """Register a causal, price-only ranking recipe under ``name``."""
 
@@ -124,11 +137,50 @@ def price_score(
                 required_lookback=int(required_lookback),
                 description=description,
                 aux_column=aux_column,
+                eligible_above=(
+                    None if eligible_above is None else float(eligible_above)
+                ),
             ),
         )
         return fn
 
     return _wrap
+
+
+def eligible_mask(spec: PriceScoreSpec, scores: pd.Series) -> pd.Series:
+    """Boolean mask of the rows ``spec`` accepts as candidates, aligned to ``scores``.
+
+    Two rules, both the recipe's own: NaN is ineligible (too little history),
+    and a raw value at or below ``eligible_above`` is ineligible. Every adapter
+    calls this instead of restating the rule, so the screen's candidate set and
+    the backtest's entry gate cannot drift apart.
+    """
+    values = pd.to_numeric(scores, errors="coerce").astype(float)
+    mask = values.notna()
+    if spec.eligible_above is not None:
+        mask &= values > spec.eligible_above
+    return mask
+
+
+def _format_threshold(value: float) -> str:
+    """Render a threshold the way a hand-written entry expression spells it."""
+    return str(int(value)) if float(value).is_integer() else repr(float(value))
+
+
+def entry_gate_expression(spec: PriceScoreSpec) -> str:
+    """Render ``spec``'s eligibility floor as a strategy entry expression.
+
+    The backtest path gates entries with an expression string rather than with
+    a mask, so this renders the *same* declaration into that vocabulary. A
+    strategy therefore never spells its own copy of the threshold.
+    """
+    if spec.aux_column is None or spec.eligible_above is None:
+        raise ValueError(
+            f"price score {spec.name!r} declares no entry gate: an expression "
+            "needs both an aux_column to read and an eligible_above floor to "
+            "compare it against"
+        )
+    return f"{spec.aux_column} > {_format_threshold(spec.eligible_above)}"
 
 
 def get_price_score(name: str) -> PriceScoreSpec:
@@ -178,6 +230,8 @@ __all__ = [
     "BarFeatures",
     "PriceScoreFn",
     "PriceScoreSpec",
+    "eligible_mask",
+    "entry_gate_expression",
     "get_price_score",
     "get_price_score_optional",
     "price_score",

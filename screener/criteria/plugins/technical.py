@@ -83,6 +83,18 @@ def momentum_12_1() -> list:
     TradingView exposes yearly (``Perf.Y``) and monthly (``Perf.1M``) trailing
     performance, so the causal 12-1 momentum
     ``(1 + Perf.Y) / (1 + Perf.1M) - 1 > 0`` reduces to ``Perf.Y > Perf.1M``.
+
+    This snapshot comparison is a coarse pre-filter that keeps the TradingView
+    field momentum-shaped, so the later bar download stays small. It is not
+    the eligibility rule. TradingView's ``Column`` type has no arithmetic, so
+    a slack form such as ``Perf.Y > Perf.1M - 5`` cannot be sent to the vendor.
+    The exact gate is the recipe's ``eligible_above=0`` floor, applied after
+    bar scoring as ``mom_12_1 > 0`` (the same expression the backtest entry
+    uses). Names whose 12-1 return sits near zero can still flip across this
+    snapshot diagonal: TradingView uses calendar-month anchors and its own
+    adjusted series, while the bar recipe uses 252/21 sessions and the
+    yfinance close. Those names rank at the bottom of the positive set, so a
+    top-N screen does not select them.
     """
     return [
         col("Perf.Y") > col("Perf.1M"),
