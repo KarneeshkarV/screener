@@ -34,6 +34,7 @@ from typing import Any
 import pandas as pd
 import requests
 
+from screener import _optional
 from screener.cache import cached_json_call
 from screener.resilience import call_with_resilience
 
@@ -61,7 +62,7 @@ _SOFT_BLOCK = _SoftBlock()
 
 
 def _new_session() -> requests.Session:
-    from jugaad_data.nse import NSEArchives
+    NSEArchives = _optional.load("jugaad_data.nse").NSEArchives
 
     # NSEArchives is untyped, so .s is Any; annotate to the documented Session.
     sess: requests.Session = NSEArchives().s
@@ -210,7 +211,7 @@ def save_delivery_bhavcopy(
     resilience_call=call_with_resilience,
 ) -> Path | None:
     """Save NSE delivery bhavcopy through the NSE Adapter Seam."""
-    from jugaad_data.nse import full_bhavcopy_save
+    full_bhavcopy_save = _optional.load("jugaad_data.nse").full_bhavcopy_save
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = resilience_call(
@@ -260,7 +261,7 @@ def read_cash_bhavcopy_raw(
     resilience_call=call_with_resilience,
 ) -> pd.DataFrame:
     """Download or load raw cash bhavcopy CSV with no domain filtering."""
-    from jugaad_data.nse import NSEArchives
+    NSEArchives = _optional.load("jugaad_data.nse").NSEArchives
 
     path = cash_bhavcopy_cache_path(d, cache_root)
     if not path.exists():
@@ -394,7 +395,7 @@ def read_fo_bhavcopy_raw(
     ``archive_url_template``); earlier dates fall back to the legacy archive
     and are normalized to the UDiff column names so callers see one schema.
     """
-    from jugaad_data.nse import NSEArchives
+    NSEArchives = _optional.load("jugaad_data.nse").NSEArchives
 
     is_legacy = d < FO_UDIFF_START
     path = fo_bhavcopy_cache_path(d, cache_root)

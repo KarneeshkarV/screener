@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 from tradingview_screener import Query, col
 
+from screener import _optional
 from screener.markets import TV_MARKETS
 from screener.providers import CachedProvider, ProviderSpec
 
@@ -94,7 +95,7 @@ def deep_enrich_india(events: list[Event]) -> None:
     screener.in scrape can be flaky.
     """
     try:
-        from openscreener import Stock
+        Stock = _optional.load("openscreener").Stock
     except ImportError:
         return
     for ev in events:

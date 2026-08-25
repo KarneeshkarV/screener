@@ -6,14 +6,21 @@ import html
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
-import plotly.express as px
-from plotly.offline import get_plotlyjs
 
+from screener import _optional
 from screener.backtester.dashboard import figure_html, table_html
 from screener.display import COLUMN_LABELS, COLUMNS, _format_value
 from screener.html_report import html_page
+
+if TYPE_CHECKING:
+    import plotly.express as px
+    from plotly.offline import get_plotlyjs
+else:
+    px = _optional.load("plotly.express")
+    get_plotlyjs = _optional.load("plotly.offline").get_plotlyjs
 
 _TOP_CHANGE_BARS = 25
 _TOP_CHANGE_ROW_PX = 22

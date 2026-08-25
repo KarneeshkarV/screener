@@ -40,6 +40,7 @@ from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 from rich.table import Table
 
+from screener import _optional
 from screener.backtester.data import PriceFetcher
 from screener.financials import to_number
 from screener.fmp import resolve_api_key
@@ -427,7 +428,7 @@ def _load_smart_money_india(
     from screener.insiders import _HttpScraper
 
     try:
-        from openscreener import Stock
+        Stock = _optional.load("openscreener").Stock
     except ImportError:
         return None
     sym = india_symbol(symbol)

@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from screener import _optional
 from screener.cache import is_fresh, read_json, write_json
 from screener.symbols import tv_to_yf
 
@@ -30,7 +31,7 @@ def _cache_path(yf_symbol: str) -> Path:
 
 
 def _default_info_fetcher(yf_symbol: str) -> Mapping[str, Any]:
-    import yfinance as yf
+    yf = _optional.load("yfinance")
 
     ticker = yf.Ticker(yf_symbol)
     info = getattr(ticker, "info", None)

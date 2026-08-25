@@ -25,6 +25,7 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 
+from screener import _optional
 from screener.backtester.price_cache import (
     CACHE_DIR,
     FMP_CACHE_DIR,
@@ -127,7 +128,7 @@ def _configure_yfinance() -> None:
     if _YFINANCE_CONFIGURED:
         return
     try:
-        import yfinance as yf
+        yf = _optional.load("yfinance")
 
         if os.path.isdir("/dev/shm"):
             yf.set_tz_cache_location("/dev/shm/screener-yftz")
@@ -300,7 +301,7 @@ class YFinancePriceFetcher:
             return results
 
         _configure_yfinance()
-        import yfinance as yf  # lazy import so tests without yfinance still run
+        yf = _optional.load("yfinance")
 
         jobs: list[tuple[pd.Timestamp, pd.Timestamp, list[str]]] = []
         for (fetch_start, fetch_end), group in missing.items():

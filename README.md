@@ -17,6 +17,74 @@ just screen -m us -n 20 --csv
 just backtest -m us --as-of 2026-03-20 --entry "close > 0" --tickers AAPL,MSFT
 ```
 
+## Use as a library
+
+Another codebase can install this straight from GitHub; there is no PyPI release.
+
+```bash
+uv add "screener @ git+https://github.com/KarneeshkarV/screener@main"
+```
+
+That installs both the `screener` console script and the importable package.
+The supported import surface is `screener.api`, re-exported from `screener` itself.
+Everything else under `screener.` is internal and may move in any commit.
+
+```python
+from screener import screen
+
+outcome = screen(market="india", criteria="ema", limit=30)
+print(outcome.total)   # total TradingView matches
+print(outcome.df)      # result frame
+```
+
+By default an embedded call has no side effects: it returns the frame and writes neither a `~/.screener/history.db` row nor an HTML report.
+Pass `persist=True` for the CLI's full behaviour.
+
+```python
+from screener import ScreenRequest, run_screen_workflow, list_criteria, list_markets
+
+list_criteria()   # ['breakout', 'cheap_quality', 'dividend', 'ema', ...]
+list_markets()    # ['india', 'us']
+
+# Full control: build the request yourself.
+outcome = run_screen_workflow(ScreenRequest(
+    market="us", criteria_names=("ema", "breakout"), limit=50,
+    order_by="setup_score", output_csv=True, detail=False,
+    refresh=False, cache_ttl="15m", report_path=None,
+))
+```
+
+`import screener` is lazy, so it pulls in neither pandas nor the scanner until you touch one of those names.
+
+### Extras
+
+The default install carries the screen path only.
+Other workflows need their extra:
+
+| Extra | Installs | Needed for |
+|---|---|---|
+| `report` | plotly | HTML reports and tear-sheets, i.e. `screen` without `--csv`, `dashboard`, `factor-tearsheet` |
+| `prices` | yfinance, openscreener | every backtest, `garp`, `conviction`, `options` |
+| `india` | jugaad-data | `unusual-volume`, `operator-scan` |
+| `usage` | libsql-client | Turso history mirror and feature-usage tracking |
+| `all` | all of the above | the pre-split behaviour |
+
+```bash
+uv add "screener[report] @ git+https://github.com/KarneeshkarV/screener@main"
+```
+
+A missing extra raises an `ImportError` naming the one to install, rather than a bare `ModuleNotFoundError`.
+Nothing degrades silently: a workflow either has its dependency or says which extra supplies it.
+
+Two consequences worth knowing before you pick an install:
+
+- **Using the CLI?** Install `screener[all]`.
+  A bare `screener screen` writes an HTML report, so it needs `report`; only `screener screen --csv` runs on the core install.
+- **Embedding `screen()`?** The core install is enough.
+  The default `persist=False` renders no report, so it needs no extra.
+
+Working on the repo itself still needs everything: `uv sync --all-extras --all-groups`.
+
 ## Commands
 
 ### `screen`

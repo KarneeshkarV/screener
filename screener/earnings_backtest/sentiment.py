@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, date, datetime, time
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
-import yfinance as yf
 
+from screener import _optional
 from screener.backtester.data import _configure_yfinance, call_yfinance_with_timeout
 from screener.cache import cached_json_call
 from screener.earnings_backtest.common import SENTIMENT_CACHE_DAYS, jsonable
@@ -23,6 +23,11 @@ from screener.options.metrics import compute_chain_metrics
 from screener.options.nse_live import parse_nse_chain
 from screener.options.yf_chain import chain_from_yfinance_ticker
 from screener.unusual_volume.option_chain import fetch_option_chain
+
+if TYPE_CHECKING:
+    import yfinance as yf
+else:
+    yf = _optional.load("yfinance")
 
 logger = logging.getLogger(__name__)
 

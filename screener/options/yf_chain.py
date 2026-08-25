@@ -4,16 +4,21 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
-import yfinance as yf
 
+from screener import _optional
 from screener.options._parse import number as _number
 from screener.options._parse import quote_pair as _quote_pair
 from screener.options.greeks import black_scholes_greeks
 from screener.options.models import OptionChain, OptionContract, OptionsMarket
 from screener.providers import CachedProvider, ProviderSpec
+
+if TYPE_CHECKING:
+    import yfinance as yf
+else:
+    yf = _optional.load("yfinance")
 
 _YF_CACHE = CachedProvider(
     ProviderSpec(provider="yfinance", namespace="options_yfinance", ttl_seconds=900)
