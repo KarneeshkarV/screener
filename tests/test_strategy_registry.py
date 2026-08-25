@@ -104,8 +104,24 @@ def test_strategy_views_are_live_derived_over_single_registry():
     # Visible immediately in the expression view (and its resolver)...
     assert name in NAMED_STRATEGIES
     assert resolve_strategy(name).entry == "close > 0"
-    # ...but partitioned out of the callable view, since it has no callable_fn.
-    assert name not in STRATEGIES
+    # ...and also in the callable view, which synthesises the pine_runner's
+    # callable from the same entry/exit rather than requiring a second hand
+    # written body. The two views are no longer a partition: one definition
+    # feeds both consumers, which is the point of
+    # docs/plans/unify-screen-backtest.md. Converting a strategy from callable
+    # to expression therefore does not drop its name out of STRATEGIES, and the
+    # names there are referenced by saved configs and CLI invocations.
+    assert name in STRATEGIES
+    assert callable(STRATEGIES[name])
+
+    # An expression that reads a column only a panel-level preparation step
+    # supplies stays out of the callable view: the pine_runner has one bare
+    # OHLCV frame, so projecting it would raise PineNameError on first use
+    # rather than be honestly absent.
+    prepared = "unit_live_view_prepared_probe"
+    register_expression_strategy(prepared, entry="rank_score > 0")
+    assert prepared in NAMED_STRATEGIES
+    assert prepared not in STRATEGIES
 
 
 def test_strategy_registry_lookup_returns_callable():
