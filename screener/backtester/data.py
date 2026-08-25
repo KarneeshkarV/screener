@@ -261,13 +261,15 @@ class YFinancePriceFetcher:
 
         for ticker in tickers:
             cache_key = self._cache_key(ticker)
-            cached = (
-                None
-                if self.refresh
-                else _load_cached(cache_key, self.cache_dir, self.interval)
-            )
-            if cached is not None and not cached.empty:
-                cached_by_ticker[ticker] = cached
+            # Load the stored frame even on a refresh. The save-time merge
+            # keeps bars outside the re-downloaded window. ``cached`` stays
+            # None while refreshing, so every download decision below stays
+            # unchanged. The merge keeps the LAST duplicate, so the fresh
+            # download still wins on the dates it covers.
+            stored = _load_cached(cache_key, self.cache_dir, self.interval)
+            if stored is not None and not stored.empty:
+                cached_by_ticker[ticker] = stored
+            cached = None if self.refresh else stored
             if (
                 not self.refresh
                 and cached is not None
@@ -537,11 +539,11 @@ class FMPPriceFetcher:
 
         def fetch_ticker(ticker: str) -> tuple[str, pd.DataFrame]:
             cache_key = _fmp_cache_key(ticker, self.auto_adjust, self.interval)
-            cached = (
-                None
-                if self.refresh
-                else _load_cached(cache_key, self.cache_dir, self.interval)
-            )
+            # Same contract as YFinancePriceFetcher.fetch. The stored frame
+            # loads even on a refresh and goes into the save-time merge, so a
+            # forced re-download never discards bars outside its window.
+            stored = _load_cached(cache_key, self.cache_dir, self.interval)
+            cached = None if self.refresh else stored
             if (
                 not self.refresh
                 and cached is not None
@@ -582,7 +584,7 @@ class FMPPriceFetcher:
                 fallback=empty_payload,
             )
             norm = _normalize_fmp_historical(payload, self.auto_adjust, self.interval)
-            merged = _merge_cached(cached, norm, self.interval)
+            merged = _merge_cached(stored, norm, self.interval)
             if not merged.empty:
                 if not norm.empty or not is_tail_refresh:
                     _save_cache(cache_key, merged, self.cache_dir)

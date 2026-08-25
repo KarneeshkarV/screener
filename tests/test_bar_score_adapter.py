@@ -375,3 +375,135 @@ def test_an_empty_ticker_list_short_circuits_before_any_fetch(
 ) -> None:
     assert bar_scores_for_tickers([], _SPEC, market=_MARKET, as_of=_AS_OF) == {}
     assert adjustment_probe == []
+
+
+# --- floor drops: rows failing eligible_above are counted and named ----------
+
+
+def test_below_floor_rows_are_logged_at_info_as_eligibility_drops(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A value that fails the recipe's floor is logged as its own drop reason."""
+    fetcher = _FakeFetcher(
+        {"WIN.NS": _bars(100.0, 0.002), "LOSE.NS": _bars(100.0, -0.001)}
+    )
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        apply_bar_score(
+            _rows("NSE:WIN", "NSE:LOSE"),
+            _SPEC,
+            market=_MARKET,
+            output_column=OUTPUT_SCORE_COLUMN,
+            as_of=_AS_OF,
+            fetcher=fetcher,
+        )
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    infos = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(infos) == 1
+    message = infos[0].getMessage()
+    assert "1/2" in message
+    assert "momentum_12_1" in message
+    assert "(0)" in message
+
+
+def test_a_floor_that_removes_every_candidate_warns_not_silences(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An all-dropped scan must say why instead of printing an empty table."""
+    fetcher = _FakeFetcher(
+        {"LOSE.NS": _bars(100.0, -0.001), "WORSE.NS": _bars(100.0, -0.002)}
+    )
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        scored = apply_bar_score(
+            _rows("NSE:LOSE", "NSE:WORSE"),
+            _SPEC,
+            market=_MARKET,
+            output_column=OUTPUT_SCORE_COLUMN,
+            as_of=_AS_OF,
+            fetcher=fetcher,
+        )
+
+    assert scored.empty
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage().lower()
+    assert "no name passed the recipe's floor" in message
+    assert '"nothing matched your filters"' in message
+    assert "2/2" in message
+    assert "momentum_12_1" in message
+    assert "(0)" in message
+
+
+def test_a_recipe_without_a_floor_never_logs_floor_drops(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No ``eligible_above`` declaration means no floor verdicts to report."""
+    spec = get_price_score("momentum_12_1")
+    bare = spec.__class__(
+        name=spec.name,
+        score_fn=spec.score_fn,
+        required_lookback=spec.required_lookback,
+        description=spec.description,
+        aux_column=spec.aux_column,
+        eligible_above=None,
+    )
+    fetcher = _FakeFetcher({"ALPHA.NS": _bars(100.0, -0.001)})
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        apply_bar_score(
+            _rows("NSE:ALPHA"),
+            bare,
+            market=_MARKET,
+            output_column=OUTPUT_SCORE_COLUMN,
+            as_of=_AS_OF,
+            fetcher=fetcher,
+        )
+
+    assert [r for r in caplog.records if r.name == _LOGGER_NAME] == []
+
+
+# --- stale last bars: a dead listing must not rank as current ----------------
+
+
+def test_a_fresh_last_bar_scores_normally(caplog: pytest.LogCaptureFixture) -> None:
+    """Bars ending at ``as_of`` are current. The value is the raw momentum."""
+    bars = _bars(100.0, 0.002)
+    fetcher = _FakeFetcher({"ALPHA.NS": bars})
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        scores = bar_scores_for_tickers(
+            ["NSE:ALPHA"], _SPEC, market=_MARKET, as_of=_AS_OF, fetcher=fetcher
+        )
+
+    assert scores["NSE:ALPHA"] == pytest.approx(float(score_bars(_SPEC, bars).iloc[-1]))
+    assert [r for r in caplog.records if r.name == _LOGGER_NAME] == []
+
+
+def test_a_last_bar_60_days_before_as_of_yields_nan_and_logs_stale(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A long frame whose coverage stopped is dropped as untradeable, not ranked.
+
+    The fresh name next to it must still score normally. The stale count is
+    kept apart from short history and from live values.
+    """
+    stale_bars = _bars(80.0, 0.001)
+    stale_bars.index = stale_bars.index - pd.Timedelta(days=60)
+    fetcher = _FakeFetcher({"ALPHA.NS": _bars(100.0, 0.002), "OLD.NS": stale_bars})
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        scores = bar_scores_for_tickers(
+            ["NSE:ALPHA", "NSE:OLD"],
+            _SPEC,
+            market=_MARKET,
+            as_of=_AS_OF,
+            fetcher=fetcher,
+        )
+
+    assert not np.isnan(scores["NSE:ALPHA"])
+    assert np.isnan(scores["NSE:OLD"])
+
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    infos = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(infos) == 1
+    message = infos[0].getMessage()
+    assert "1/2" in message
+    assert "stale last bar" in message
+    assert "untradeable" in message

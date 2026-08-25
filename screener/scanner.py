@@ -9,7 +9,9 @@ from tradingview_screener import Query
 from screener.markets import TV_MARKETS
 from screener.providers import CachedProvider, FrameWithMeta, ProviderSpec
 from screener.scoring import (
+    DEFAULT_PRICE_ADJUSTMENT,
     OUTPUT_SCORE_COLUMN,
+    PriceAdjustment,
     ScoreSpec,
     apply_score,
     default_scorer,
@@ -84,15 +86,17 @@ def build_scanner_plan(
     if order_by == OUTPUT_SCORE_COLUMN:
         active_scorer = scorer if scorer is not None else default_scorer()
         columns.extend(c for c in active_scorer.columns if c not in columns)
-        # Over-fetch so the rows dropped for short history and by dedupe still
-        # leave more than `limit` to rank. How much headroom is affordable
-        # depends on what the recipe reads: a snapshot recipe ranks on columns
-        # the single TradingView request already returned, so spare rows cost
-        # nothing, while a bar-derived recipe downloads daily OHLCV per
-        # surviving ticker, so every spare row is another network fetch. Keep
-        # the bar path just wide enough for those drops (~2x) instead of 10x.
+        # Over-fetch so the rows lost before ``.head(limit)`` still leave
+        # more than ``limit`` to rank. Three cuts happen after the fetch: the
+        # recipe's eligibility floor, names whose price fetch came back empty,
+        # and ``_dedupe_listings`` collapsing NSE/BSE dual listings. What that
+        # headroom costs depends on the recipe. A snapshot recipe ranks on
+        # columns the one TradingView request already returned, so spare rows
+        # are free. A bar-derived recipe downloads daily OHLCV per surviving
+        # ticker, so every spare row is another network fetch. 5x covers the
+        # three drops. The snapshot path can afford 10x.
         if active_scorer.bar_score is not None:
-            fetch_limit = max(limit * 2, 100)
+            fetch_limit = max(limit * 5, 200)
         else:
             fetch_limit = max(limit * 10, 500)
         query_order_by = "volume"
@@ -196,6 +200,7 @@ def _add_setup_score(
     *,
     market: str | None = None,
     refresh: bool = False,
+    price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
 ) -> pd.DataFrame:
     """Apply a ranking recipe and write ``setup_score``.
 
@@ -204,9 +209,17 @@ def _add_setup_score(
     ``refresh`` are only read by bar-derived recipes, which resolve price
     history for the scanned rows; ``refresh`` bypasses the on-disk bar cache so
     ``--refresh`` does not rank fresh snapshot rows on stale price history.
+    ``price_adjustment`` is bar-only too. It must match the backtest's
+    ``--price-adjustment`` so both sides score the same closes.
     """
     active = scorer if scorer is not None else default_scorer()
-    return apply_score(df, active, market=market, refresh=refresh)
+    return apply_score(
+        df,
+        active,
+        market=market,
+        refresh=refresh,
+        price_adjustment=price_adjustment,
+    )
 
 
 def _dedupe_listings(df: pd.DataFrame) -> pd.DataFrame:
@@ -261,6 +274,7 @@ def shape_scan_results(
     scorer: ScoreSpec | None = None,
     market: str | None = None,
     refresh: bool = False,
+    price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
 ) -> pd.DataFrame:
     """Shape raw scanner rows after Adapter fetch without provider access.
 
@@ -271,7 +285,13 @@ def shape_scan_results(
     shaped = df
     if order_by == OUTPUT_SCORE_COLUMN and not shaped.empty:
         active = scorer if scorer is not None else default_scorer()
-        shaped = _add_setup_score(shaped, active, market=market, refresh=refresh)
+        shaped = _add_setup_score(
+            shaped,
+            active,
+            market=market,
+            refresh=refresh,
+            price_adjustment=price_adjustment,
+        )
         shaped = shaped.sort_values(OUTPUT_SCORE_COLUMN, ascending=False)
         drop_cols = _helper_columns_to_drop(active, detail=detail)
         shaped = shaped.drop(columns=[c for c in drop_cols if c in shaped.columns])
@@ -289,6 +309,7 @@ def scan(
     cache_ttl: float | None = 900,
     refresh: bool = False,
     scorer: ScoreSpec | None = None,
+    price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
 ) -> tuple[int, pd.DataFrame]:
     plan = build_scanner_plan(
         market=market,
@@ -311,4 +332,5 @@ def scan(
         scorer=plan.scorer,
         market=market,
         refresh=refresh,
+        price_adjustment=price_adjustment,
     )

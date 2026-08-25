@@ -70,6 +70,45 @@ COLUMNS: dict[str, ColumnSpec] = {
     "days_to_earnings": ColumnSpec("Days to Earn", "right", fmt_float),
 }
 
+
+def _aux_label(aux_column: str) -> str:
+    """Turn an aux column name into a table header (``mom_12_1`` becomes ``Mom 12-1``).
+
+    Alpha segments are title-cased. A run of numeric segments joins with ``-``.
+    """
+    words: list[str] = []
+    digits: list[str] = []
+    for part in aux_column.split("_"):
+        if part.isdigit():
+            digits.append(part)
+            continue
+        if digits:
+            words.append("-".join(digits))
+            digits.clear()
+        words.append(part.capitalize())
+    if digits:
+        words.append("-".join(digits))
+    return " ".join(words)
+
+
+def _register_aux_columns() -> None:
+    """Register a formatted display spec for every declared price-score aux column.
+
+    Without this, a detail-only column such as ``mom_12_1`` falls through
+    ``_format_value`` to raw ``str`` and prints left-aligned under its own
+    column name. The import is lazy so ``screener.factors`` does not depend
+    on this module.
+    """
+    from screener import factors
+
+    for _, spec in factors.registry.items():
+        aux = spec.aux_column
+        if aux is not None and aux not in COLUMNS:
+            COLUMNS[aux] = ColumnSpec(_aux_label(aux), "right", fmt_float)
+
+
+_register_aux_columns()
+
 #: Backward-compatible label map (e.g. ``commands.screen_report`` lookups).
 COLUMN_LABELS = {col: spec.label for col, spec in COLUMNS.items()}
 

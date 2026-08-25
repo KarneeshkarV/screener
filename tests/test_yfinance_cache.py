@@ -213,6 +213,52 @@ def test_yfinance_tail_refresh_skips_fresh_and_historical_caches(tmp_path, monke
     assert calls == []
 
 
+def test_yfinance_refresh_merges_into_stored_history_instead_of_truncating_it(
+    tmp_path, monkeypatch
+):
+    """--refresh re-downloads its window but must keep bars outside it on disk."""
+    import yfinance as yf
+
+    wide = _plain_bars(date(2018, 1, 1), date(2024, 6, 1)).rename(columns=str.lower)
+    _save_cache("AAA", wide, tmp_path)
+
+    narrow_start, narrow_end = date(2024, 4, 1), date(2024, 4, 30)
+    calls = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append((pd.Timestamp(kwargs["start"]), pd.Timestamp(kwargs["end"])))
+        return _download_frame(tickers, kwargs["start"], kwargs["end"])
+
+    monkeypatch.setattr(yf, "download", fake_download)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True)
+    out = fetcher.fetch(["AAA"], narrow_start, narrow_end)["AAA"]
+
+    # The refresh forced a full re-download of exactly the requested window.
+    assert len(calls) == 1
+    assert calls[0] == (
+        pd.Timestamp(narrow_start),
+        pd.Timestamp(narrow_end) + pd.Timedelta(days=1),
+    )
+
+    stored = _load_cached("AAA", tmp_path)
+    assert stored.index.min() == wide.index.min()
+    assert stored.index.max() == wide.index.max()
+
+    # Overlapping dates carry the freshly downloaded values, not the old ones.
+    first_fresh = out.index[0]
+    fresh_close = float(out.loc[first_fresh, "close"])
+    assert fresh_close != float(wide.loc[first_fresh, "close"])
+    assert float(stored.loc[first_fresh, "close"]) == pytest.approx(fresh_close)
+
+    # Bars outside the refreshed window stay as they were.
+    outside = wide.index[~wide.index.isin(out.index)]
+    sample = outside[len(outside) // 2]
+    assert float(stored.loc[sample, "close"]) == pytest.approx(
+        float(wide.loc[sample, "close"])
+    )
+
+
 def test_yfinance_fetcher_frame_equal_fixture(tmp_path, monkeypatch):
     """Regression: batched fetch matches per-ticker normalization for a small fixture."""
     import yfinance as yf

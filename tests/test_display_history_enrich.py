@@ -5,6 +5,7 @@ import types
 from datetime import UTC, datetime
 
 import pandas as pd
+from rich.console import Console
 
 from screener import _optional, display, enrich, history
 
@@ -25,6 +26,48 @@ def test_display_value_formatters_cover_numeric_tiers():
     assert display._format_value("unknown", "abc") == "abc"
     assert display._format_value("unknown", None) == "-"
     assert display._format_value("unknown", float("nan")) == "-"
+
+
+def test_aux_column_renders_labelled_right_aligned_two_decimal(monkeypatch):
+    # A detail-only aux column (mom_12_1) must get its spec from the price
+    # score registry, not fall through to raw str().
+    assert display.COLUMN_LABELS["mom_12_1"] == "Mom 12-1"
+    assert "mom_12_1" in display.RIGHT_ALIGN
+    assert display._format_value("mom_12_1", 0.24920320171021) == "0.25"
+
+    frame = pd.DataFrame(
+        [
+            {
+                "ticker": "AAA",
+                "name": "AAA",
+                "setup_score": 90.0,
+                "mom_12_1": 0.24920320171021,
+            },
+            {
+                "ticker": "BBB",
+                "name": "BBB",
+                "setup_score": 55.0,
+                "mom_12_1": 12.345,
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        display, "console", Console(record=True, width=200, no_color=True)
+    )
+    display.print_results(frame, total=2, market="us", criteria_name="ema")
+    out = display.console.export_text()
+
+    assert "Mom 12-1" in out
+    rows = {
+        value: next(line for line in out.splitlines() if value in line)
+        for value in ("0.25", "12.35")
+    }
+    right_edges = {line.index(value) + len(value) for value, line in rows.items()}
+    left_edges = {line.index(value) for value, line in rows.items()}
+    # Right-aligned numerics share their right edge. A left-aligned render
+    # would share their start instead.
+    assert len(right_edges) == 1
+    assert len(left_edges) > 1
 
 
 def test_display_insider_and_institutional_formatters_cover_tiers():

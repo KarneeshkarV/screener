@@ -132,19 +132,19 @@ def test_bar_derived_scorer_over_fetches_far_less_than_a_snapshot_scorer():
     snapshot = _plan_limit(SNAPSHOT_SCORER, limit=limit, order_by=OUTPUT_SCORE_COLUMN)
 
     # Each bar-path row is one price download, so the field is only wide
-    # enough to survive short-history drops and dedupe.
-    assert bars == 100
+    # enough to survive the eligibility floor, price-fetch outages, and dedupe.
+    assert bars == 250
     assert snapshot == 500
     assert bars > limit
 
 
 def test_over_fetch_floors_hold_for_a_small_limit():
-    assert _plan_limit(BAR_SCORER, limit=5, order_by=OUTPUT_SCORE_COLUMN) == 100
+    assert _plan_limit(BAR_SCORER, limit=5, order_by=OUTPUT_SCORE_COLUMN) == 200
     assert _plan_limit(SNAPSHOT_SCORER, limit=5, order_by=OUTPUT_SCORE_COLUMN) == 500
 
 
 def test_over_fetch_multipliers_hold_for_a_large_limit():
-    assert _plan_limit(BAR_SCORER, limit=200, order_by=OUTPUT_SCORE_COLUMN) == 400
+    assert _plan_limit(BAR_SCORER, limit=200, order_by=OUTPUT_SCORE_COLUMN) == 1000
     assert _plan_limit(SNAPSHOT_SCORER, limit=200, order_by=OUTPUT_SCORE_COLUMN) == 2000
 
 

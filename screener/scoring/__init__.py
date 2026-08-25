@@ -29,6 +29,7 @@ import pandas as pd
 
 from screener._registry import Registry
 from screener.factors import PriceScoreSpec, get_price_score
+from screener.scoring.bar_scores import DEFAULT_PRICE_ADJUSTMENT, PriceAdjustment
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from screener.backtester.data import PriceFetcher
@@ -268,12 +269,17 @@ def apply_score(
     as_of: date | None = None,
     fetcher: "PriceFetcher | None" = None,
     refresh: bool = False,
+    price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
 ) -> pd.DataFrame:
     """Assign ``setup_score`` from ``spec`` without sorting or dropping columns.
 
     A bar-derived ``spec`` needs ``market`` so the scanned tickers' cached
     price history can be resolved; it also drops rows with too little history,
     because in the unified layer NaN means ineligible rather than rank-last.
+    ``price_adjustment`` is used only by bar-derived recipes. It must match
+    the backtest's ``--price-adjustment`` so the raw values are the same
+    numbers. Snapshot recipes ignore it. TradingView serves one set of
+    columns regardless of the adjustment.
 
     An empty frame short-circuits to an empty scored frame for every ``spec``,
     bar-derived included: with no rows there is no price history to resolve, so
@@ -297,6 +303,7 @@ def apply_score(
             as_of=as_of,
             fetcher=fetcher,
             refresh=refresh,
+            price_adjustment=price_adjustment,
         )
     scores = spec.score_fn(df)
     return df.assign(**{OUTPUT_SCORE_COLUMN: pd.to_numeric(scores, errors="coerce")})
@@ -312,8 +319,10 @@ SCORERS: dict[str, ScoreFn] = registry.as_dict()
 
 __all__ = [
     "BARS_SOURCE",
+    "DEFAULT_PRICE_ADJUSTMENT",
     "DEFAULT_SCORER_NAME",
     "OUTPUT_SCORE_COLUMN",
+    "PriceAdjustment",
     "SCORERS",
     "SNAPSHOT_SOURCE",
     "ScoreDataSource",

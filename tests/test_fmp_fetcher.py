@@ -15,6 +15,8 @@ from screener.backtester.data import (
     ExchangeFallbackPriceFetcher,
     FallbackPriceFetcher,
     FMPPriceFetcher,
+    _load_cached,
+    _save_cache,
     build_price_fetcher,
 )
 
@@ -233,6 +235,65 @@ def test_fmp_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch)
         == (pd.Timestamp(today) - pd.Timedelta(days=7)).date().isoformat()
     )
     assert out.loc[pd.Timestamp(today), "close"] == 201
+
+
+def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_path):
+    """A forced re-download must not replace the stored frame with only its window."""
+    wide = pd.DataFrame(
+        {
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000,
+        },
+        index=pd.bdate_range("2023-01-02", "2023-06-30"),
+    )
+    _save_cache("fmp_AAA", wide, tmp_path)
+
+    narrow = {
+        "historical": [
+            {
+                "date": day.date().isoformat(),
+                "open": 200,
+                "high": 202,
+                "low": 199,
+                "close": 201,
+                # adjClose == close so the adjusted close equals the raw one.
+                "adjClose": 201,
+                "volume": 2000,
+            }
+            for day in pd.bdate_range("2023-06-01", "2023-06-30")
+        ]
+    }
+    session = DummySession(narrow)
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+        refresh=True,
+    )
+
+    out = fetcher.fetch(["AAA"], date(2023, 6, 1), date(2023, 6, 30))["AAA"]
+
+    # The refresh forced a full re-download of exactly the requested window.
+    assert len(session.calls) == 1
+    assert session.calls[0][0].endswith("/historical-price-full/AAA")
+
+    stored = _load_cached("fmp_AAA", tmp_path)
+    assert stored.index.min() == wide.index.min()
+    assert stored.index.max() == wide.index.max()
+
+    # Overlapping dates carry the freshly downloaded values.
+    first_fresh = out.index[0]
+    assert float(out.loc[first_fresh, "close"]) == pytest.approx(201.0)
+    assert float(stored.loc[first_fresh, "close"]) == pytest.approx(201.0)
+
+    # Bars outside the refreshed window stay as they were.
+    sample = wide.index[20]
+    assert float(stored.loc[sample, "close"]) == pytest.approx(
+        float(wide.loc[sample, "close"])
+    )
 
 
 def _intraday_payload() -> list[dict]:

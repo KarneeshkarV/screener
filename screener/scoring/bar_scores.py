@@ -25,21 +25,24 @@ Two deliberate properties:
 * **Bars are fetched only for rows the TradingView filters already returned.**
   The adapter runs inside ``scanner.shape_scan_results``, after the scan, so
   the field is already cut to the scan's fetch limit rather than the whole
-  market. For a bar-derived scorer that ceiling is ``max(limit * 2, 100)``
-  (see ``scanner.build_scanner_plan``), so a default screen downloads at most
-  100 tickers of daily bars. The fetcher's on-disk parquet cache is reused
-  as-is.
+  market. For a bar-derived scorer that ceiling is ``max(limit * 5, 200)``,
+  set in ``scanner.build_scanner_plan``. The extra rows exist so the
+  eligibility floor, price-fetch outages, and NSE/BSE dedupe still leave
+  ``limit`` names. A default screen downloads at most 200 tickers of daily
+  bars. The fetcher's on-disk parquet cache is reused as-is.
 * **Ineligible names are dropped, not "ranked last".** A name without enough
   history has no score, and a name whose raw value fails the recipe's own
   ``eligible_above`` floor is not a candidate; neither is filled with 0 and
   quietly sorted to the bottom where it is still selectable. The floor is the
   recipe's declaration, not this adapter's, so the screen's candidate set is
-  the same rule the backtest strategy's entry expression gates on. The two ways a
-  score can go missing are *not* the same failure, so they are counted apart
-  and a fetch outage is logged: a name whose frame came back with bars but too
-  few of them is genuinely ineligible, while a name whose frame came back
-  empty means the price provider failed, and a whole scan of those renders as
-  a bare "0 results" that looks exactly like "nothing matched your filters".
+  the same rule the backtest strategy's entry expression gates on. A score can
+  go missing three ways, and they are *not* the same failure, so each is
+  counted apart. Too few bars means the name is ineligible. If the newest bar
+  predates ``as_of`` by more than :data:`STALE_BAR_ALLOWANCE_DAYS`, the name
+  is a dead listing, not a current value. An empty frame means the price
+  provider failed. That last one is logged loudly, because a whole scan of
+  empty frames renders as a bare "0 results" that reads like "nothing matched
+  your filters".
 
 **Adjustment must match the backtest.** ``score_bars`` reads ``close``, so the
 number this adapter reports is only comparable to the backtest's number when
@@ -47,11 +50,13 @@ both sides adjust closes the same way. The backtester derives
 ``auto_adjust=(price_adjustment == "full")`` from its ``--price-adjustment``
 flag, so under ``splits_only`` or ``none`` its closes keep dividends and its
 ``momentum_12_1`` is a different number from a dividend-adjusted screen's.
-``price_adjustment`` is therefore an explicit argument here, defaulting to
-:data:`DEFAULT_PRICE_ADJUSTMENT` (``"full"``) to state the assumption the
-screen path makes rather than inherit it silently from
-``build_price_fetcher``. An injected ``fetcher`` already carries its own
-adjustment and is used as given; matching it is then the caller's job.
+The screen offers the same ``--price-adjustment`` choice and passes it through
+``scan``, ``apply_score``, and this adapter. It defaults to
+:data:`DEFAULT_PRICE_ADJUSTMENT` (``"full"``, the backtester's own default), so
+a caller who says nothing keeps the old behaviour instead of inheriting an
+adjustment silently from ``build_price_fetcher``. An injected ``fetcher`` already
+carries its own adjustment and is used as given. Matching it is then the
+caller's job.
 """
 
 from __future__ import annotations
@@ -87,11 +92,16 @@ PERCENTILE_SCALE = 100.0
 #: shared score layer are configured with one vocabulary.
 PriceAdjustment = Literal["full", "splits_only", "none"]
 
-#: The screen path has no ``--price-adjustment`` flag, so it assumes the
-#: backtester's own default: fully adjusted closes (``auto_adjust=True``).
+#: Default when the caller names no adjustment. Fully adjusted closes
+#: (``auto_adjust=True``), the backtester's own default. The screen's
+#: ``--price-adjustment`` flag overrides it per run.
 DEFAULT_PRICE_ADJUSTMENT: PriceAdjustment = "full"
 
 _PRICE_ADJUSTMENTS: frozenset[str] = frozenset(("full", "splits_only", "none"))
+
+#: Largest gap allowed between a symbol's newest bar and ``as_of``. A holiday
+#: week plus a weekend still fits. A dead listing does not.
+STALE_BAR_ALLOWANCE_DAYS = 10
 
 
 def _fetch_start(as_of: date, lookback: int) -> date:
@@ -99,8 +109,31 @@ def _fetch_start(as_of: date, lookback: int) -> date:
     return (pd.Timestamp(as_of) - pd.Timedelta(days=span)).date()
 
 
-def _last_value(series: pd.Series) -> float:
-    if series.empty:
+def _stale_last_bar(series: pd.Series, as_of: date) -> bool:
+    """True when the newest bar predates ``as_of`` by more than the allowance.
+
+    An empty index, or one that is not a ``DatetimeIndex``, is never stale.
+    Those frames score the way they always did.
+    """
+    index = series.index
+    if not isinstance(index, pd.DatetimeIndex) or len(index) == 0:
+        return False
+    try:
+        gap_days = (pd.Timestamp(as_of) - index[-1]).days
+    except TypeError:  # tz-aware index vs naive as_of. Leave the value alone.
+        return False
+    return gap_days > STALE_BAR_ALLOWANCE_DAYS
+
+
+def _last_value(series: pd.Series, as_of: date) -> float:
+    """Value at the newest bar, or NaN when that bar is too old to trade on.
+
+    A renamed or suspended symbol can still return a long frame months after
+    its coverage stopped. Ranking that frame would treat a dead listing as
+    current. A stale newest bar becomes NaN, ineligible, the same as missing
+    history.
+    """
+    if series.empty or _stale_last_bar(series, as_of):
         return float("nan")
     return float(series.iloc[-1])
 
@@ -123,15 +156,23 @@ def _resolve_price_adjustment(price_adjustment: str) -> bool:
 
 
 def _log_missing_price_data(
-    spec: PriceScoreSpec, *, total: int, no_price_data: int, short_history: int
+    spec: PriceScoreSpec,
+    *,
+    total: int,
+    no_price_data: int,
+    short_history: int,
+    stale_price_data: int = 0,
 ) -> None:
-    """Report the two reasons a bar score went missing as the different failures they are.
+    """Report each reason a bar score went missing as its own failure.
 
-    ``short_history`` is the intended, quiet outcome: the fetch worked and the
-    name is ineligible. ``no_price_data`` means the fetch returned nothing at
-    all (provider outage, rate limit, network failure, or a symbol yfinance
-    does not carry), and because unscored rows are dropped it reaches the user
-    as a smaller result count with no other trace.
+    ``short_history`` and ``stale_price_data`` are intended and quiet. The
+    fetch worked and the name is ineligible. ``short_history`` means too few
+    bars. ``stale_price_data`` means history is long enough, but the newest
+    bar predates the scan date by more than :data:`STALE_BAR_ALLOWANCE_DAYS`.
+    That is what a renamed or suspended listing looks like. ``no_price_data``
+    means the fetch returned nothing. Provider outage, rate limit, network
+    failure, or a symbol yfinance does not carry. Unscored rows get dropped,
+    so that case reaches the user only as a smaller result count.
     """
     if short_history:
         LOG.info(
@@ -141,6 +182,18 @@ def _log_missing_price_data(
             total,
             spec.name,
             spec.required_lookback,
+        )
+    if stale_price_data:
+        LOG.info(
+            "%d/%d scanned tickers have a stale last bar for scorer %r. The "
+            "fetch worked and history is long enough, but the newest bar "
+            "predates the scan date by more than %d calendar days, so price "
+            "coverage likely stopped. Dropped as untradeable instead of "
+            "ranking on a months-old value.",
+            stale_price_data,
+            total,
+            spec.name,
+            STALE_BAR_ALLOWANCE_DAYS,
         )
     if not no_price_data:
         return
@@ -158,6 +211,36 @@ def _log_missing_price_data(
         )
     else:
         LOG.warning(message, *args)
+
+
+def _log_floor_drops(
+    spec: PriceScoreSpec, *, total: int, below_floor: int, survivors: int
+) -> None:
+    """Report rows that carry a value but fail the recipe's ``eligible_above`` floor.
+
+    A value at or below the floor is an eligibility drop, same as short
+    history, so it logs at INFO. If the floor removes every remaining
+    candidate, that is worse. The screen then renders as "N matches, showing
+    0" over an empty table. That is the ambiguity this module's docstring
+    exists to prevent, so that case logs at WARNING and names the rule that
+    emptied the table.
+    """
+    if spec.eligible_above is None or not below_floor:
+        return
+    detail = (
+        "%d/%d scanned tickers have a %s value at or below the recipe's "
+        "eligible_above floor (%g). Dropped as ineligible."
+    )
+    args = (below_floor, total, spec.name, spec.eligible_above)
+    if survivors == 0:
+        LOG.warning(
+            "No name passed the recipe's floor. " + detail + " This is not "
+            '"nothing matched your filters". The scan matched, and every '
+            "matched name failed the recipe's own eligibility floor.",
+            *args,
+        )
+    else:
+        LOG.info(detail, *args)
 
 
 def bar_scores_for_tickers(
@@ -194,6 +277,7 @@ def bar_scores_for_tickers(
     scores: dict[str, float] = {}
     no_price_data = 0
     short_history = 0
+    stale_price_data = 0
     for tv, yf_symbol in yf_by_tv.items():
         bars = panel.get(yf_symbol)
         if bars is None or bars.empty or "close" not in bars.columns:
@@ -202,15 +286,20 @@ def bar_scores_for_tickers(
             no_price_data += 1
             scores[tv] = float("nan")
             continue
-        score = _last_value(score_bars(spec, bars))
-        if score != score:  # NaN despite real bars, so the history is too short.
-            short_history += 1
+        scored_series = score_bars(spec, bars)
+        score = _last_value(scored_series, resolved_as_of)
+        if score != score:  # NaN despite real bars. Split stale from short history.
+            if _stale_last_bar(scored_series, resolved_as_of):
+                stale_price_data += 1
+            else:
+                short_history += 1
         scores[tv] = score
     _log_missing_price_data(
         spec,
         total=len(scores),
         no_price_data=no_price_data,
         short_history=short_history,
+        stale_price_data=stale_price_data,
     )
     return scores
 
@@ -267,6 +356,15 @@ def apply_bar_score(
     raw = pd.to_numeric(mapped, errors="coerce").astype(float)
     scored = df if not spec.aux_column else df.assign(**{spec.aux_column: raw})
     candidates = eligible_mask(spec, raw)
+    # A value that fails the floor is the third way a name leaves the ranking.
+    # Count those apart. A scan that drops every row must not look like a
+    # silent empty table.
+    _log_floor_drops(
+        spec,
+        total=len(raw),
+        below_floor=int((raw.notna() & ~candidates).sum()),
+        survivors=int(candidates.sum()),
+    )
     scored = scored[candidates]
     # Percentile over the candidates only, on the same [0, 1] rank with
     # average tie-breaking every snapshot recipe uses, scaled to 0-100. A lone
