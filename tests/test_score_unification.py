@@ -92,7 +92,15 @@ def _screen_setup_score(
 
 
 def test_screen_and_backtest_momentum_12_1_are_the_same_number() -> None:
-    """Headline: one formula, two adapters, byte-identical values."""
+    """Headline: one formula, two adapters. The raw value is identical.
+
+    ``setup_score`` is the within-scan 0-100 percentile of that raw value, so
+    downstream ``min_score`` thresholds keep working. The number that must
+    match the backtest's ``rank_score`` is the ``mom_12_1`` aux column.
+    A non-positive 12-1 name is not a candidate on either path: the screen
+    drops it before the percentile, the backtest keeps the raw value but
+    its ``ENTRY_PURE`` expression refuses the entry.
+    """
     bars_by_tv = {
         "NSE:ALPHA": _bars(100.0, 0.0020),
         "NSE:BETA": _bars(50.0, 0.0005),
@@ -102,13 +110,21 @@ def test_screen_and_backtest_momentum_12_1_are_the_same_number() -> None:
     backtest = _backtest_rank_score(bars_by_tv)
     screened = _screen_setup_score(bars_by_tv).set_index("ticker")
 
-    assert sorted(screened.index) == sorted(bars_by_tv)
-    for tv in bars_by_tv:
-        assert screened.loc[tv, OUTPUT_SCORE_COLUMN] == backtest[tv], tv
+    assert "NSE:GAMMA" not in screened.index
+    assert backtest["NSE:GAMMA"] <= 0
+    assert sorted(screened.index) == ["NSE:ALPHA", "NSE:BETA"]
+    for tv in screened.index:
+        assert screened.loc[tv, "mom_12_1"] == backtest[tv], tv
+        assert 0.0 <= screened.loc[tv, OUTPUT_SCORE_COLUMN] <= 100.0
 
-    # And the ordering the screen sorts on matches the backtester's ranking.
+    # Rank order of setup_score matches the backtester's ranking of survivors.
     assert list(screened[OUTPUT_SCORE_COLUMN].sort_values(ascending=False).index) == [
-        tv for tv, _ in sorted(backtest.items(), key=lambda kv: kv[1], reverse=True)
+        tv
+        for tv, _ in sorted(
+            ((name, backtest[name]) for name in screened.index),
+            key=lambda kv: kv[1],
+            reverse=True,
+        )
     ]
 
 
@@ -157,14 +173,22 @@ def test_bar_scorer_requests_no_tradingview_columns() -> None:
 
 
 def test_bar_scorer_does_not_blend_with_snapshot_recipes() -> None:
-    from screener.scoring import resolve_scorer
+    from screener.scoring import IncompatibleScorerBlendError, resolve_scorer
 
-    with pytest.raises(ValueError, match="bar-derived"):
+    with pytest.raises(IncompatibleScorerBlendError, match="cannot blend bar-derived"):
         resolve_scorer(["momentum_12_1", "ema"])
 
 
 def test_scan_scores_only_the_rows_the_filters_returned(monkeypatch) -> None:
-    """Bars are fetched for the scan's rows, never for the whole market."""
+    """Bars are fetched for the scan's rows, never for the whole market.
+
+    ``build_price_fetcher`` is patched where it is actually looked up
+    (``screener.backtester.data``, imported inside ``bar_scores_for_tickers``)
+    with ``raising=True``, so this test cannot reach the network even if the
+    explicit ``fetcher=`` injection below is ever dropped, and a rename of that
+    seam breaks the test loudly instead of silently re-enabling it.
+    """
+    import screener.backtester.data as backtester_data
     import screener.scoring.bar_scores as bar_scores
 
     bars_by_tv = {
@@ -184,10 +208,9 @@ def test_scan_scores_only_the_rows_the_filters_returned(monkeypatch) -> None:
 
     monkeypatch.setattr(fetcher, "fetch", _record)
     monkeypatch.setattr(
-        bar_scores,
+        backtester_data,
         "build_price_fetcher",
         lambda **_kwargs: fetcher,
-        raising=False,
     )
 
     rows = pd.DataFrame([{"ticker": tv, "name": tv} for tv in bars_by_tv])
