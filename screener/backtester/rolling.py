@@ -9,7 +9,6 @@ import click
 
 from screener import agentio
 from screener.backtester.cli_common import (
-    RankExitPeriod,
     backtest_options,
     intraday_options,
     resolve_report_path,
@@ -161,13 +160,15 @@ __all__ = ["backtest_rolling"]
 )
 @click.option(
     "--rank-exit",
-    type=RankExitPeriod(),
+    "rank_exit",
+    type=str,
     default=None,
     help=(
         "Rank-based exit rebalance: 'weekly', 'monthly', or an integer "
         "trading-bar period N. On every Nth bar of the window, any holding "
         "outside the top --rank-universe-size of the prior completed bar's "
         "candidate ranking is closed at this bar's close (exit reason: rank). "
+        "'weekly'/'monthly' count trading days and require --interval 1d. "
         "Requires --rank-universe-size >= --top."
     ),
 )

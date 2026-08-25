@@ -15,6 +15,7 @@ from screener.backtester.cli_common import (
     build_backtest_fetcher,
     build_slippage_model,
     parse_partial_exits,
+    parse_rank_exit,
     parse_ticker_list,
     referenced_fundamental_fields,
     resolve_min_filters,
@@ -91,7 +92,7 @@ class BacktestRequest:
     spread_proxy: bool = False
     regime_filter_args: tuple[str, ...] = ()
     sector_neutral: bool = False
-    rank_exit: int | None = None
+    rank_exit: str | None = None
     rank_universe_size: int = 50
     earnings_blackout_days: int | None = None
     fundamentals_provider: str | None = None
@@ -193,6 +194,12 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         and request.earnings_blackout_days < 0
     ):
         raise click.UsageError("--earnings-blackout must be >= 0.")
+    rank_exit = parse_rank_exit(request.rank_exit)
+    if rank_exit is not None and rank_exit[1] and request.interval != "1d":
+        raise click.UsageError(
+            "--rank-exit weekly/monthly count trading days and require "
+            "--interval 1d; pass an explicit bar count for intraday runs."
+        )
 
     entry_expr, exit_expr = resolve_strategy_exprs(
         request.strategy_name, request.entry_expr, request.exit_expr
@@ -347,9 +354,7 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         fundamental_fields=fields,
         fundamental_lag_days=max(resolved_lag, 0),
         sector_neutral=bool(request.sector_neutral),
-        rank_exit_every=(
-            int(request.rank_exit) if request.rank_exit is not None else None
-        ),
+        rank_exit_every=(rank_exit[0] if rank_exit is not None else None),
         rank_universe_size=int(request.rank_universe_size),
     )
     return BacktestRun(
