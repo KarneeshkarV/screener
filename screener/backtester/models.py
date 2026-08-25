@@ -137,8 +137,6 @@ class BacktestConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_rank_exit(self) -> BacktestConfig:
-        # A cutoff below the slot count makes every refill candidate fail the
-        # next rank sweep, producing guaranteed close/reopen churn.
         if self.rank_exit_every is not None and self.rank_universe_size < self.top:
             raise ValueError(
                 "rank_universe_size must be >= top when rank_exit is enabled "

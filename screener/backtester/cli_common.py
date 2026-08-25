@@ -19,7 +19,6 @@ DEFAULT_BENCHMARK = {name: market.benchmark for name, market in MARKETS.items()}
 DEFAULT_MIN_PRICE = {name: market.min_price for name, market in MARKETS.items()}
 DEFAULT_MIN_ADV = {name: market.min_adv for name, market in MARKETS.items()}
 
-# Presets for the rank-exit rebalance period, in trading days.
 RANK_EXIT_PRESETS = {"weekly": 5, "monthly": 21}
 
 

@@ -138,7 +138,6 @@ def test_rank_exit_closes_holding_that_left_the_top_list():
     assert str(aaa.exit_reason) == "rank"  # type: ignore[attr-defined]
     assert pd.Timestamp(aaa.exit_date) == _INDEX[8]  # type: ignore[attr-defined]
 
-    # The freed slot refills the same day from that day's ranking: BBB enters.
     bbb = trades[1]
     assert str(bbb.ticker) == "BBB"  # type: ignore[attr-defined]
     assert str(bbb.exit_reason) == "eod"  # type: ignore[attr-defined]
@@ -271,12 +270,6 @@ def test_named_rank_exit_presets_require_daily_bars():
     )
     assert result.exit_code == 2
     assert "require --interval 1d" in result.output
-
-
-# ---------------------------------------------------------------------------
-# Exit priority: the rank flag is judged inside _check_exit_at_bar, below
-# stop/trail/target and above exit_expr/session/time.
-# ---------------------------------------------------------------------------
 
 
 def _slot_state(**overrides: object) -> _SlotState:
