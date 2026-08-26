@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -11,6 +12,8 @@ from screener.screen_workflow import (
     ScreenRequest,
     run_screen_workflow,
 )
+
+_AS_OF = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
 def _request(
@@ -51,7 +54,7 @@ def test_screen_workflow_csv_short_circuits_history_and_report(monkeypatch, tmp_
         resolve_criteria=lambda names: FilterCriteriaSelection(
             tuple(names), "ema", ["FILTER"]
         ),
-        scan=lambda **kwargs: calls.append("scan") or (2, frame),
+        scan=lambda **kwargs: calls.append("scan") or (2, frame, _AS_OF),
         save_run=lambda *args: calls.append("save") or 1,
         previous_run=lambda *args: calls.append("previous") or None,
         render_screen_report=lambda *args, **kwargs: (
@@ -66,6 +69,8 @@ def test_screen_workflow_csv_short_circuits_history_and_report(monkeypatch, tmp_
     assert outcome.df is not None
     assert outcome.df["name"].tolist() == ["AAA", "BBB"]
     assert "days_to_earnings" in outcome.df.columns
+    # as_of is the scan fetch time the workflow received, not run time.
+    assert outcome.as_of == _AS_OF
     assert calls == ["scan"]
 
 
@@ -80,7 +85,7 @@ def test_screen_workflow_skips_earnings_enrichment_by_default(monkeypatch, tmp_p
         resolve_criteria=lambda names: FilterCriteriaSelection(
             tuple(names), "ema", ["FILTER"]
         ),
-        scan=lambda **kwargs: (1, frame),
+        scan=lambda **kwargs: (1, frame, _AS_OF),
         enrich_days_to_earnings=unexpected_enrichment,
     )
 
@@ -106,7 +111,7 @@ def test_screen_workflow_first_run_uses_default_report_path(monkeypatch, tmp_pat
         resolve_criteria=lambda names: FilterCriteriaSelection(
             tuple(names), "ema", ["FILTER"]
         ),
-        scan=lambda **kwargs: (1, frame),
+        scan=lambda **kwargs: (1, frame, _AS_OF),
         save_run=lambda *args: 7,
         previous_run=lambda *args: None,
         temp_report_path=lambda prefix: report,
@@ -124,6 +129,42 @@ def test_screen_workflow_first_run_uses_default_report_path(monkeypatch, tmp_pat
     assert rendered == {"path": report, "first_run": True}
 
 
+def test_screen_workflow_forwards_strict_timeout_retries_to_scan(monkeypatch):
+    seen: dict = {}
+
+    def fake_scan(**kwargs):
+        seen.update(kwargs)
+        return 0, _df("AAA"), _AS_OF
+
+    _patch(
+        monkeypatch,
+        resolve_criteria=lambda names: FilterCriteriaSelection(
+            tuple(names), "ema", ["FILTER"]
+        ),
+        scan=fake_scan,
+    )
+    request = ScreenRequest(
+        market="us",
+        criteria_names=("ema",),
+        limit=5,
+        order_by="setup_score",
+        output_csv=True,
+        detail=False,
+        refresh=False,
+        cache_ttl="15m",
+        report_path=None,
+        strict=True,
+        timeout=5.0,
+        retries=2,
+    )
+
+    run_screen_workflow(request)
+
+    assert seen["strict"] is True
+    assert seen["timeout"] == 5.0
+    assert seen["retries"] == 2
+
+
 def test_screen_workflow_previous_run_diff_uses_explicit_report_path(
     monkeypatch, tmp_path
 ):
@@ -136,7 +177,7 @@ def test_screen_workflow_previous_run_diff_uses_explicit_report_path(
         resolve_criteria=lambda names: FilterCriteriaSelection(
             tuple(names), "ema+value", ["EMA", "VALUE"]
         ),
-        scan=lambda **kwargs: (1, frame),
+        scan=lambda **kwargs: (1, frame, _AS_OF),
         save_run=lambda *args: 8,
         previous_run=lambda *args: prev,
         diff=lambda current, previous: (["AAA"], ["BBB"]),

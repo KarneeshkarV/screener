@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pandas as pd
 import pytest
@@ -9,6 +9,8 @@ from click.testing import CliRunner
 
 from screener.research.pine_runner import cli, data, output, run
 from screener.strategies.trades import ResearchTrade
+
+_AS_OF = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
 def test_fetch_ohlcv_normalizes_index_and_adj_close(monkeypatch):
@@ -55,7 +57,7 @@ def test_load_universe_reads_tradingview_names(monkeypatch):
         captured.update(
             {"market": market, "filters": filters, "limit": limit, "order_by": order_by}
         )
-        return 2, pd.DataFrame({"name": ["AAA", None, "BBB"]})
+        return 2, pd.DataFrame({"name": ["AAA", None, "BBB"]}), _AS_OF
 
     monkeypatch.setattr(data, "_tv_scan", fake_scan)
 

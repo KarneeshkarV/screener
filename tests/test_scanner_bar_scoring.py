@@ -7,6 +7,8 @@ for scoring must stay small when every extra row costs a price download.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pandas as pd
 
 from screener import scanner as scanner_module
@@ -14,6 +16,8 @@ from screener.scoring import OUTPUT_SCORE_COLUMN, ScoreSpec, get_scorer
 
 BAR_SCORER = "momentum_12_1"
 SNAPSHOT_SCORER = "ema"
+
+_AS_OF = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
 def _scan_frame() -> pd.DataFrame:
@@ -38,12 +42,10 @@ def _run_scan(monkeypatch, *, refresh: bool) -> dict[str, object]:
 
     def fake_fetch(
         plan: scanner_module.ScannerPlan,
-        *,
-        cache_ttl: float | None = 900,
-        refresh: bool = False,
-    ) -> tuple[int, pd.DataFrame]:
+        **kwargs: object,
+    ) -> tuple[int, pd.DataFrame, datetime]:
         captured["snapshot_refresh"] = refresh
-        return 1, _scan_frame()
+        return 1, _scan_frame(), _AS_OF
 
     def fake_apply_score(
         df: pd.DataFrame,

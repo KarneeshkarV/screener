@@ -5,7 +5,7 @@ All network access is stubbed — no live yfinance / NSE calls.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from threading import Barrier, get_ident
 
 import pandas as pd
@@ -27,6 +27,8 @@ from screener.earnings_backtest.earnings_dates import (
 )
 from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from tests.conftest import StubPriceFetcher, make_bars
+
+_AS_OF = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
 def _rolling_cfg(**overrides) -> BacktestConfig:
@@ -392,7 +394,7 @@ def test_screen_workflow_earnings_buffer(monkeypatch, tmp_path):
         "resolve_criteria",
         lambda names: FilterCriteriaSelection(tuple(names), "ema", ["FILTER"]),
     )
-    monkeypatch.setattr(sw, "scan", lambda **kwargs: (3, frame))
+    monkeypatch.setattr(sw, "scan", lambda **kwargs: (3, frame, _AS_OF))
     monkeypatch.setattr(sw, "enrich_days_to_earnings", fake_enrich)
     request = ScreenRequest(
         market="us",

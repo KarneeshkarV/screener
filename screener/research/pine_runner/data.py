@@ -38,5 +38,7 @@ def load_universe(market: str) -> list[str]:
     # Price floor strips OTC sub-penny tickers that volume-rank to the top.
     price_floor = {"us": 5.0, "india": 50.0}.get(market, 5.0)
     filters = [col("type") == "stock", col("close") >= price_floor]
-    _total, df = _tv_scan(market=market, filters=filters, limit=500, order_by="volume")
+    _total, df, _as_of = _tv_scan(
+        market=market, filters=filters, limit=500, order_by="volume"
+    )
     return [str(t) for t in df["name"].dropna().tolist()]

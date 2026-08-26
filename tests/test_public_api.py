@@ -9,8 +9,10 @@ nothing internal imports the facade back.
 from __future__ import annotations
 
 import ast
+import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +21,7 @@ import pytest
 
 import screener
 from screener import api
-from screener.screen_workflow import ScreenMode, ScreenOutcome, ScreenRequest
+from screener.screen_workflow import ScreenMode, ScreenOutcome, ScreenRequest, SignalRow
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,6 +29,8 @@ _PUBLIC_NAMES = {
     "ScreenMode",
     "ScreenOutcome",
     "ScreenRequest",
+    "SignalRow",
+    "StaleDataError",
     "list_criteria",
     "list_markets",
     "run_screen_workflow",
@@ -114,6 +118,7 @@ def _capture_request(monkeypatch: pytest.MonkeyPatch) -> list[ScreenRequest]:
             label="+".join(request.criteria_names),
             total=0,
             df=pd.DataFrame(),
+            as_of=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
         )
 
     monkeypatch.setattr(api, "run_screen_workflow", fake_workflow)
@@ -230,6 +235,7 @@ def test_screen_outcome_carries_the_frame() -> None:
         label="ema",
         total=1,
         df=pd.DataFrame({"name": ["AAPL"]}),
+        as_of=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
     )
     assert isinstance(outcome.df, pd.DataFrame)
     assert list(outcome.df["name"]) == ["AAPL"]
@@ -255,3 +261,146 @@ def test_public_dataclasses_stay_frozen() -> None:
 def test_dir_lists_the_public_surface() -> None:
     listed: list[Any] = dir(screener)
     assert set(listed) == _PUBLIC_NAMES | {"__version__"}
+
+
+def test_screen_forwards_strict_timeout_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The freshness/timeout knobs reach the request untouched."""
+    seen = _capture_request(monkeypatch)
+    api.screen(strict=True, timeout=7.5, retries=2)
+    (request,) = seen
+    assert request.strict is True
+    assert request.timeout == 7.5
+    assert request.retries == 2
+
+
+def test_strict_timeout_retries_default_to_old_behaviour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _capture_request(monkeypatch)
+    api.screen()
+    (request,) = seen
+    assert request.strict is False
+    assert request.timeout is None
+    assert request.retries is None
+
+
+def _signals_outcome() -> ScreenOutcome:
+    frame = pd.DataFrame(
+        {
+            "ticker": ["NSE:AAA", "NSE:BBB", "NSE:CCC", "NSE:DDD"],
+            "name": ["AAA", "BBB", "CCC", "DDD"],
+            "setup_score": [91.5, 80.0, None, 70.0],
+            # DDD's non-positive close is a data hole, not a real price.
+            "close": [10.0, 0.0, 55.0, -3.0],
+        }
+    )
+    return ScreenOutcome(
+        mode=ScreenMode.CSV,
+        market="india",
+        label="ema",
+        total=4,
+        df=frame,
+        as_of=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
+    )
+
+
+def test_signals_ranks_rows_and_maps_frame_columns() -> None:
+    rows = _signals_outcome().signals()
+
+    assert [(r.ticker, r.rank) for r in rows] == [
+        ("NSE:AAA", 1),
+        ("NSE:BBB", 2),
+        ("NSE:CCC", 3),
+        ("NSE:DDD", 4),
+    ]
+    assert [r.score for r in rows] == [91.5, 80.0, None, 70.0]
+    # NULL and non-positive closes become None, never 0.0.
+    assert [r.close for r in rows] == [10.0, None, 55.0, None]
+
+
+def test_signals_tolerates_missing_columns() -> None:
+    outcome = ScreenOutcome(
+        mode=ScreenMode.CSV,
+        market="us",
+        label="volume",
+        total=1,
+        df=pd.DataFrame({"ticker": ["AAPL"]}),
+        as_of=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
+    )
+
+    rows = outcome.signals()
+    assert rows == [SignalRow(ticker="AAPL", rank=1, score=None, close=None)]
+
+
+def test_signal_row_is_frozen() -> None:
+    (row, *_rest) = _signals_outcome().signals()
+    with pytest.raises(Exception):
+        row.rank = 99  # type: ignore[misc]
+
+
+def test_signals_are_consumable_without_pandas() -> None:
+    """A consumer reading the rows must not need pandas at all.
+
+    Serialize the rows to JSON, hand them to a fresh interpreter that never
+    imports pandas, and read every field there. If signals() leaked a pandas
+    or numpy scalar this would fail on the dump or the attribute reads.
+    """
+    rows = [
+        {"ticker": r.ticker, "rank": r.rank, "score": r.score, "close": r.close}
+        for r in _signals_outcome().signals()
+    ]
+    probe = (
+        "import sys, json; "
+        "rows = json.load(sys.stdin); "
+        "assert all(sorted(r) == ['close', 'rank', 'score', 'ticker'] for r in rows); "
+        "[print(r['ticker'], r['rank'], r['score'], r['close']) for r in rows]; "
+        "print('pandas' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        input=json.dumps(rows),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    lines = result.stdout.strip().splitlines()
+    assert len(lines) == 5  # one line per row plus the pandas flag
+    assert json.loads(lines[-1].lower()) is False
+    assert lines[0].split()[0] == "NSE:AAA"
+
+
+def test_stale_data_error_is_exported_and_raises() -> None:
+    assert isinstance(api.StaleDataError(), Exception)
+    assert issubclass(api.StaleDataError, RuntimeError)
+    with pytest.raises(api.StaleDataError):
+        raise api.StaleDataError("no fresh data")
+
+
+def test_signals_skips_identity_less_rows_and_keeps_ranks_dense() -> None:
+    """A row with no ticker cannot be traded, so it must not reach a consumer.
+
+    Emitting ``ticker=""`` would hand a caller a rank and a price for a name it
+    cannot place an order in. Ranks are assigned after the skip so they stay
+    dense and 1-based rather than leaving a hole where the bad row was.
+    """
+    outcome = ScreenOutcome(
+        mode=ScreenMode.CSV,
+        market="india",
+        label="ema",
+        total=4,
+        df=pd.DataFrame(
+            {
+                "ticker": ["NSE:AAA", None, "   ", "NSE:DDD"],
+                "setup_score": [91.5, 80.0, 75.0, 70.0],
+                "close": [10.0, 20.0, 30.0, 40.0],
+            }
+        ),
+        as_of=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
+    )
+
+    rows = outcome.signals()
+
+    assert [(r.ticker, r.rank) for r in rows] == [("NSE:AAA", 1), ("NSE:DDD", 2)]
+    assert all(r.ticker for r in rows)
