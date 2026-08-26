@@ -308,35 +308,32 @@ def test_apply_bar_score_threads_the_adjustment_through(
     assert adjustment_probe[0]["auto_adjust"] is False
 
 
-def test_screen_score_matches_the_backtest_only_under_the_matching_adjustment(
-    adjustment_probe: list[dict[str, object]],
-) -> None:
-    """The regression this finding is about: one name, two adjustment regimes.
-
-    A backtest run with ``--price-adjustment splits_only`` ranks on raw closes.
-    The screen has to score the same raw closes to report the same number, and
-    the fully adjusted default must be visibly a different number rather than a
-    silently different one.
-    """
-    adjusted_bars = _bars(100.0, 0.002)
+def test_splits_only_screen_score_matches_split_adjusted_backtest_score() -> None:
+    """A split in the momentum window must not create a false screen return."""
     raw_bars = _bars(100.0, 0.001)
-    backtest_full = float(score_bars(_SPEC, adjusted_bars).iloc[-1])
-    backtest_splits_only = float(score_bars(_SPEC, raw_bars).iloc[-1])
-    assert backtest_full != pytest.approx(backtest_splits_only)
+    split_row = 160
+    raw_bars.loc[raw_bars.index[:split_row], ["open", "high", "low", "close"]] *= 2
+    raw_bars["split_factor"] = 1.0
+    raw_bars.loc[raw_bars.index[:split_row], "split_factor"] = 2.0
+    fetcher = _FakeFetcher({"ALPHA.NS": raw_bars})
 
-    screen_full = bar_scores_for_tickers(
-        ["NSE:ALPHA"], _SPEC, market=_MARKET, as_of=_AS_OF, price_adjustment="full"
-    )["NSE:ALPHA"]
-    screen_splits_only = bar_scores_for_tickers(
+    adjusted_bars = backtester_data.apply_splits_only_adjustment(
+        {"ALPHA.NS": raw_bars}
+    )["ALPHA.NS"]
+    backtest_score = float(score_bars(_SPEC, adjusted_bars).iloc[-1])
+    raw_score = float(score_bars(_SPEC, raw_bars).iloc[-1])
+    assert raw_score != pytest.approx(backtest_score)
+
+    screen_score = bar_scores_for_tickers(
         ["NSE:ALPHA"],
         _SPEC,
         market=_MARKET,
         as_of=_AS_OF,
+        fetcher=fetcher,
         price_adjustment="splits_only",
     )["NSE:ALPHA"]
 
-    assert screen_full == pytest.approx(backtest_full)
-    assert screen_splits_only == pytest.approx(backtest_splits_only)
+    assert screen_score == pytest.approx(backtest_score)
 
 
 def test_an_injected_fetcher_keeps_its_own_adjustment(

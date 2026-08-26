@@ -51,12 +51,11 @@ both sides adjust closes the same way. The backtester derives
 flag, so under ``splits_only`` or ``none`` its closes keep dividends and its
 ``momentum_12_1`` is a different number from a dividend-adjusted screen's.
 The screen offers the same ``--price-adjustment`` choice and passes it through
-``scan``, ``apply_score``, and this adapter. It defaults to
-:data:`DEFAULT_PRICE_ADJUSTMENT` (``"full"``, the backtester's own default), so
-a caller who says nothing keeps the old behaviour instead of inheriting an
-adjustment silently from ``build_price_fetcher``. An injected ``fetcher`` already
-carries its own adjustment and is used as given. Matching it is then the
-caller's job.
+``scan``, ``apply_score``, and this adapter. In ``splits_only`` mode, this
+adapter applies the same split-only panel transformation as the backtest. It
+defaults to :data:`DEFAULT_PRICE_ADJUSTMENT` (``"full"``, the backtester's own
+default), so a caller who says nothing keeps the old behaviour instead of
+inheriting an adjustment silently from ``build_price_fetcher``.
 """
 
 from __future__ import annotations
@@ -255,10 +254,8 @@ def bar_scores_for_tickers(
 ) -> dict[str, float]:
     """Return ``{tv_ticker: score at the last bar}``; missing history -> NaN.
 
-    ``price_adjustment`` uses the backtester's spelling and decides whether the
-    closes fed to ``spec`` are dividend-adjusted; the score matches a backtest
-    only when the two sides pass the same value. Ignored when ``fetcher`` is
-    injected, since that fetcher already fixed its own adjustment.
+    ``price_adjustment`` uses the backtester's spelling and applies the same
+    fetch and split-only transformations as the backtest.
     """
     from screener.backtester.data import build_price_fetcher, tv_to_yf
 
@@ -274,6 +271,14 @@ def bar_scores_for_tickers(
         _fetch_start(resolved_as_of, spec.required_lookback),
         resolved_as_of,
     )
+    if price_adjustment == "splits_only":
+        from screener.backtester.data import (
+            apply_splits_only_adjustment,
+            warn_unadjustable_fmp_frames,
+        )
+
+        warn_unadjustable_fmp_frames(panel)
+        panel = apply_splits_only_adjustment(panel)
     scores: dict[str, float] = {}
     no_price_data = 0
     short_history = 0
