@@ -62,6 +62,17 @@ class _ProviderFetchFailed(RuntimeError):
     """Prevent a resilience fallback from being persisted by cache helpers."""
 
 
+class StaleDataError(RuntimeError):
+    """Raised in strict mode when a fetch fails and stale cache is refused.
+
+    The default ``CachedProvider`` behaviour trades freshness for availability:
+    a failed live fetch silently serves an arbitrarily old cached payload. That
+    is right for display paths and wrong for callers whose downstream math must
+    be able to say "this data is no older than the TTL". Those callers opt into
+    strict mode and get this error instead of old data.
+    """
+
+
 @dataclass(frozen=True)
 class ProviderSpec:
     """Declarative description of one cached, resilience-wrapped data source.
@@ -101,7 +112,14 @@ class CachedProvider:
         ttl_seconds: float | None | _Unset = _UNSET,
         operation: str | None = None,
         retry: RetryConfig | None = None,
+        strict: bool = False,
     ) -> T:
+        """Fetch through the cache + resilience stack.
+
+        ``strict=True`` demands fresh-or-error: when the live fetch fails, a
+        :class:`StaleDataError` is raised instead of serving a stale entry (or
+        ``fallback``). The default keeps the availability-first behaviour.
+        """
         ttl = self.spec.ttl_seconds if isinstance(ttl_seconds, _Unset) else ttl_seconds
         op = operation or self.spec.namespace
 
@@ -152,6 +170,11 @@ class CachedProvider:
                 fetch=resilient,
             )
         except _ProviderFetchFailed:
+            if strict:
+                raise StaleDataError(
+                    f"{self.spec.provider} fetch failed for {op}; strict mode "
+                    f"refuses to serve stale {self.spec.namespace} cache data"
+                ) from None
             stale = self._read_stale(key_parts)
             if stale is not _MISSING:
                 LOG.warning(
@@ -183,7 +206,8 @@ class FakeProvider:
 
     ``fetch`` calls ``fetch_fn`` directly and returns its result (or
     ``fallback`` when ``fetch_fn`` raises). Records ``(key_parts, refresh)``
-    for assertions.
+    for assertions. ``strict`` mirrors :class:`CachedProvider`: a failing
+    fetch raises :class:`StaleDataError` instead of returning the fallback.
     """
 
     def __init__(self, spec: ProviderSpec | None = None) -> None:
@@ -200,12 +224,23 @@ class FakeProvider:
         ttl_seconds: Any = None,
         operation: str | None = None,
         retry: RetryConfig | None = None,
+        strict: bool = False,
     ) -> T:
         self.calls.append((key_parts, refresh))
         try:
             return fetch_fn()
         except Exception:
+            if strict:  # mirror CachedProvider so doubles stay drop-in honest
+                raise StaleDataError(
+                    "fetch failed; strict mode refuses stale data"
+                ) from None
             return fallback
 
 
-__all__ = ["CachedProvider", "FakeProvider", "FrameWithMeta", "ProviderSpec"]
+__all__ = [
+    "CachedProvider",
+    "FakeProvider",
+    "FrameWithMeta",
+    "ProviderSpec",
+    "StaleDataError",
+]

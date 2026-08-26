@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import json
 import logging
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
+import pytest
 
 from screener import cache
 from screener import scanner as scanner_module
-from screener.scanner import get_scanner_data_cached
+from screener.providers import StaleDataError
+from screener.resilience import RetryConfig
+from screener.scanner import (
+    FETCHED_AT_META_KEY,
+    get_scanner_data_cached,
+)
 
 
 class FakeQuery:
@@ -62,6 +70,49 @@ def test_scanner_data_cache_refresh_bypasses_cache(tmp_path, monkeypatch):
     )
 
     assert query.calls == 2
+
+
+def test_as_of_round_trips_through_the_cache(tmp_path, monkeypatch):
+    """A cached entry reports its original fetch time, not the read time."""
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    query = FakeQuery()
+    kwargs = dict(
+        key_parts=("market", "filters", 100),
+        columns=["name", "volume"],
+        cache_ttl=3600,
+        refresh=False,
+    )
+
+    _, first_df, first_as_of = scanner_module._scanner_entry(query, **kwargs)
+    _, second_df, second_as_of = scanner_module._scanner_entry(query, **kwargs)
+
+    assert query.calls == 1  # second call served from cache
+    assert first_as_of == second_as_of
+    assert first_df.equals(second_df)
+    # The sidecar really carries the timestamp, so it survives the parquet
+    # + JSON round-trip on disk.
+    sidecar = json.loads(
+        list((tmp_path / "tradingview_scanner").glob("*.json"))[0].read_text()
+    )
+    # Full precision, not truncated to whole seconds: a truncated stamp reports
+    # the fetch as up to a second older than it was.
+    assert sidecar[FETCHED_AT_META_KEY] == first_as_of.isoformat()
+
+
+def test_as_of_is_a_fresh_timestamp_on_live_fetch(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    before = datetime.now(UTC) - timedelta(seconds=1)
+
+    _, _, as_of = scanner_module._scanner_entry(
+        FakeQuery(),
+        key_parts=("market", "filters", 100),
+        columns=["name", "volume"],
+        cache_ttl=60,
+        refresh=False,
+    )
+
+    assert datetime.now(UTC) + timedelta(seconds=1) > as_of > before
+    assert as_of.tzinfo is not None
 
 
 def test_scanner_cache_refetches_when_one_partner_file_is_missing(
@@ -182,6 +233,112 @@ def test_stale_scan_cache_is_served_when_tradingview_is_down(
     assert count == 2
     assert list(df["name"]) == ["AAA", "BBB"]
     assert "Serving stale tradingview_scanner cache data" in caplog.text
+
+
+def test_strict_scan_raises_instead_of_serving_stale(tmp_path, monkeypatch):
+    """strict=True refuses the arbitrarily old entry a default scan would use."""
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    kwargs = dict(
+        key_parts=("market", "filters", 100),
+        columns=["name", "volume"],
+        refresh=False,
+    )
+
+    get_scanner_data_cached(FakeQuery(), cache_ttl=60, **kwargs)
+
+    down = RaisingQuery()
+    with pytest.raises(StaleDataError):
+        # One attempt keeps the outage test free of retry backoff sleeps.
+        get_scanner_data_cached(down, cache_ttl=None, retries=1, strict=True, **kwargs)
+    assert down.calls == 1  # strict still attempts the live fetch first
+
+
+def test_strict_scan_false_keeps_the_stale_fallback(tmp_path, monkeypatch):
+    """The default path still serves the old frame when TradingView is down."""
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    kwargs = dict(
+        key_parts=("market", "filters", 100),
+        columns=["name", "volume"],
+        refresh=False,
+    )
+
+    get_scanner_data_cached(FakeQuery(), cache_ttl=60, **kwargs)
+
+    count, df = get_scanner_data_cached(
+        RaisingQuery(), cache_ttl=None, retries=1, strict=False, **kwargs
+    )
+    assert count == 2
+    assert list(df["name"]) == ["AAA", "BBB"]
+
+
+class TimeoutRecordingQuery:
+    """Records exactly which kwargs reached the request layer."""
+
+    def __init__(self) -> None:
+        self.kwargs: dict | None = None
+
+    def get_scanner_data(self, **kwargs):
+        self.kwargs = kwargs
+        return 1, pd.DataFrame({"name": ["AAA"], "volume": [10]})
+
+
+def test_timeout_reaches_the_request_layer(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+
+    query = TimeoutRecordingQuery()
+    get_scanner_data_cached(
+        query,
+        key_parts=("market", "filters", 100),
+        columns=["name", "volume"],
+        cache_ttl=None,  # always refetch so the query runs every call
+        refresh=True,
+        timeout=7.5,
+    )
+    assert query.kwargs == {"timeout": 7.5}
+
+    unset = TimeoutRecordingQuery()
+    get_scanner_data_cached(
+        unset,
+        key_parts=("market", "filters", 100),
+        columns=["name", "volume"],
+        cache_ttl=None,
+        refresh=True,
+        timeout=None,
+    )
+    assert unset.kwargs == {}  # None must not change the library's default
+
+
+class RetryRecordingProvider:
+    """Captures the retry config the scan hands the provider seam.
+
+    Returns a canned payload without running ``fetch_fn``: the point is what
+    the scan passes *to* the seam, and running it would hit the real Query.
+    """
+
+    def __init__(self) -> None:
+        self.retries: list[RetryConfig | None] = []
+
+    def fetch(self, key_parts, fetch_fn, **kwargs):
+        self.retries.append(kwargs.get("retry"))
+        return pd.DataFrame({"name": ["AAA"], "volume": [10]}), {"count": 1}
+
+
+def test_retry_override_reaches_the_provider_seam(monkeypatch):
+    provider = RetryRecordingProvider()
+    monkeypatch.setattr(scanner_module, "SCANNER_PROVIDER", provider)
+
+    total, df, as_of = scanner_module.scan(
+        "us",
+        [],
+        limit=5,
+        order_by="volume",
+        retries=4,
+    )
+
+    assert provider.retries == [RetryConfig(attempts=4)]
+    assert total == 1
+    assert list(df["name"]) == ["AAA"]
+    assert as_of is not None
 
 
 def test_scan_without_cache_entry_still_returns_empty_on_failure(tmp_path, monkeypatch):
@@ -373,3 +530,47 @@ def test_shape_scan_results_non_setup_order_dedupes_and_limits_without_score():
     assert len(out) == 1
     assert "setup_score" not in out.columns
     assert out.iloc[0]["name"] == "LOWDUP"
+
+
+def test_legacy_entry_without_timestamp_reports_its_mtime_not_now(
+    tmp_path, monkeypatch
+) -> None:
+    """A pre-``fetched_at`` cache entry must not claim to be freshly fetched.
+
+    The TTL-gated path would make "now" harmless, because a served entry really
+    is within the TTL. ``_read_stale`` is the dangerous one: it ignores the TTL
+    by design, so an arbitrarily old legacy frame reporting ``as_of=now`` would
+    look freshly fetched to a caller sizing real orders. The sidecar is written
+    with the payload, so its mtime is the honest fetch time.
+    """
+    sidecar = tmp_path / "legacy.json"
+    sidecar.write_text(json.dumps({"count": 1}))
+    old = datetime.now(UTC) - timedelta(days=9)
+    import os
+
+    os.utime(sidecar, (old.timestamp(), old.timestamp()))
+
+    as_of = scanner_module._fetched_at_from_meta({"count": 1}, sidecar)
+
+    assert as_of.tzinfo is not None
+    assert abs((as_of - old).total_seconds()) < 2
+    assert (datetime.now(UTC) - as_of).days >= 8
+
+
+def test_naive_stored_timestamp_is_refused_and_falls_back_to_mtime(
+    tmp_path,
+) -> None:
+    """A naive timestamp cannot be compared against an aware "now" safely."""
+    sidecar = tmp_path / "naive.json"
+    sidecar.write_text("{}")
+    old = datetime.now(UTC) - timedelta(days=3)
+    import os
+
+    os.utime(sidecar, (old.timestamp(), old.timestamp()))
+
+    as_of = scanner_module._fetched_at_from_meta(
+        {FETCHED_AT_META_KEY: "2020-01-01T00:00:00"}, sidecar
+    )
+
+    assert as_of.tzinfo is not None
+    assert abs((as_of - old).total_seconds()) < 2

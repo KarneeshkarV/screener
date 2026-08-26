@@ -23,10 +23,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from screener.providers import StaleDataError
 from screener.screen_workflow import (
     ScreenMode,
     ScreenOutcome,
     ScreenRequest,
+    SignalRow,
     run_screen_workflow,
 )
 
@@ -58,17 +60,31 @@ def screen(
     report_path: Path | str | None = None,
     earnings: bool = False,
     earnings_buffer: int | None = None,
+    strict: bool = False,
+    timeout: float | None = None,
+    retries: int | None = None,
 ) -> ScreenOutcome:
     """Run one screen and return its outcome.
 
     Defaults match the ``screener screen`` CLI, except ``persist``, which is
     off so that an embedded call has no side effects. ``outcome.df`` is the
-    result frame in both modes.
+    result frame in both modes; ``outcome.as_of`` is when the scan data was
+    fetched from the provider (the original fetch time on a cache hit).
 
     ``criteria`` accepts a single name for convenience; it is normalised to a
     tuple before it reaches the workflow.
 
+    ``strict=True`` demands fresh-or-error: if the live scan fails, raise
+    :class:`StaleDataError` instead of silently serving stale cache. The
+    default keeps the availability-first behaviour of the CLI.
+
+    ``timeout`` caps each TradingView request in seconds (forwarded to
+    ``requests.post``; ``None`` blocks indefinitely). ``retries`` overrides
+    the retry attempts for the scan - attempts x timeout is the real
+    wall-clock budget, so cap both together.
+
     Raises:
+        StaleDataError: ``strict=True`` and no fresh data could be fetched.
         KeyError: an unknown criterion name, listing the known ones.
         ValueError: ``earnings_buffer`` is negative, or ``report_path`` was
             given without ``persist=True`` (nothing would be written).
@@ -98,6 +114,9 @@ def screen(
         open_report=False,
         earnings=earnings,
         earnings_buffer=earnings_buffer,
+        strict=strict,
+        timeout=timeout,
+        retries=retries,
     )
     return run_screen_workflow(request)
 
@@ -106,6 +125,8 @@ __all__ = [
     "ScreenMode",
     "ScreenOutcome",
     "ScreenRequest",
+    "SignalRow",
+    "StaleDataError",
     "list_criteria",
     "list_markets",
     "run_screen_workflow",
