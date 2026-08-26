@@ -16,6 +16,7 @@ from screener.screen_workflow import (
     ScreenRequest,
     run_screen_workflow,
 )
+from screener.scoring import IncompatibleScorerBlendError, PriceAdjustment
 
 
 @click.command()
@@ -82,6 +83,17 @@ from screener.screen_workflow import (
         "enrichment."
     ),
 )
+@click.option(
+    "--price-adjustment",
+    type=click.Choice(["full", "splits_only", "none"]),
+    default="full",
+    help=(
+        "Price adjustment for bar-derived ranking scores. Same flag as the "
+        "backtester's --price-adjustment. full=yfinance auto_adjust=True; "
+        "splits_only=split-adjust OHLC and credit dividends as cash; none=raw "
+        "OHLC. Run a backtest with the same value so the scores match."
+    ),
+)
 def screen(
     market: str,
     criteria_names: tuple[str, ...],
@@ -95,6 +107,7 @@ def screen(
     open_report: bool,
     earnings: bool,
     earnings_buffer: int | None,
+    price_adjustment: PriceAdjustment,
 ) -> None:
     """Screen stocks based on technical criteria."""
     if earnings_buffer is not None and earnings_buffer < 0:
@@ -112,8 +125,12 @@ def screen(
         open_report=open_report,
         earnings=earnings,
         earnings_buffer=earnings_buffer,
+        price_adjustment=price_adjustment,
     )
-    outcome = run_screen_workflow(request)
+    try:
+        outcome = run_screen_workflow(request)
+    except IncompatibleScorerBlendError as exc:
+        raise click.UsageError(str(exc)) from exc
 
     if outcome.mode is ScreenMode.CSV:
         print_csv(outcome.df)

@@ -292,6 +292,18 @@ sync-skills:
     ).read_text()
     write(".codex/skills/screener-stock-analysis-codebase/SKILL.md", skill)
 
+    # opencode skill: keep only the description field, drop name.
+    _, skill_frontmatter, skill_body = skill.split("---\n", 2)
+    skill_fm = [
+        line
+        for line in skill_frontmatter.splitlines(keepends=True)
+        if not line.startswith("name:")
+    ]
+    write(
+        ".opencode/skills/screener-stock-analysis-codebase/SKILL.md",
+        "---\n" + "".join(skill_fm) + "---\n" + skill_body,
+    )
+
     # 2. techofundo: canonical command is .claude/commands/techofundo.md.
     cmd = pathlib.Path(".claude/commands/techofundo.md").read_text()
     _, frontmatter, body = cmd.split("---\n", 2)

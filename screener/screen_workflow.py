@@ -21,7 +21,12 @@ from screener.criteria import resolve_criteria
 from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from screener.history import diff, previous_run, save_run
 from screener.scanner import scan
-from screener.scoring import resolve_scorer
+from screener.scoring import (
+    DEFAULT_PRICE_ADJUSTMENT,
+    OUTPUT_SCORE_COLUMN,
+    PriceAdjustment,
+    resolve_scorer,
+)
 
 
 def temp_report_path(prefix: str) -> Path:
@@ -59,6 +64,9 @@ class ScreenRequest:
     # Drop final result rows whose next earnings date is within N calendar days.
     # ``None`` disables the filter. Unknown earnings dates are always kept.
     earnings_buffer: int | None = None
+    # Price adjustment for bar-derived ranking scores. Same spelling as the
+    # backtester's ``--price-adjustment``. Snapshot scorers ignore it.
+    price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT
 
 
 @dataclass(frozen=True)
@@ -77,7 +85,15 @@ class ScreenOutcome:
 def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
     """Run the full non-Click screen lifecycle and return its outcome."""
     selection = resolve_criteria(request.criteria_names)
-    scorer = resolve_scorer(request.criteria_names, strict=False)
+    # Only the ``setup_score`` ranking consumes a scorer, and resolving one can
+    # refuse a criteria combination whose scores are incomparable. Skip the
+    # resolution when the run sorts by a TradingView column, so a refusal fires
+    # only for a run that would actually rank by the refused recipe.
+    scorer = (
+        resolve_scorer(request.criteria_names, strict=False)
+        if request.order_by == OUTPUT_SCORE_COLUMN
+        else None
+    )
 
     total, df = scan(
         market=request.market,
@@ -88,6 +104,7 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
         cache_ttl=parse_ttl(request.cache_ttl, default=900),
         refresh=request.refresh,
         scorer=scorer,
+        price_adjustment=request.price_adjustment,
     )
 
     # Earnings enrichment is opt-in and runs only on final result rows.

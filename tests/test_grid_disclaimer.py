@@ -50,6 +50,7 @@ def _capture_grid_report() -> str:
 
 def test_grid_report_contains_in_sample_warning():
     text = _capture_grid_report().lower()
+    # Rendered on a width=200 console, so header words stay on one line.
     assert "starting capital" in text
     assert "final equity" in text
     assert "in-sample" in text

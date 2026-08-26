@@ -9,7 +9,9 @@ from datetime import date
 import pandas as pd
 from click.testing import CliRunner
 
+import screener.backtester.data as backtester_data
 from screener import history as history_mod
+from screener import scanner as scanner_module
 from screener import screen_workflow as workflow_mod
 from screener.backtester import historical as historical_cli
 from screener.backtester.models import BacktestResult
@@ -151,6 +153,17 @@ def test_screen_auto_temp_report(tmp_path, monkeypatch):
     assert '"plot_bgcolor":"#0d1117"' in html
 
 
+def test_screen_refuses_a_bar_snapshot_blend_as_usage_error():
+    """``-c momentum_12_1 -c ema`` must fail as a usage error, not a traceback."""
+    res = CliRunner().invoke(
+        cli, ["screen", "-c", "momentum_12_1", "-c", "ema", "-n", "2"]
+    )
+
+    assert res.exit_code != 0
+    assert "cannot blend bar-derived scorer" in res.output
+    assert "Traceback" not in res.output
+
+
 def test_screen_csv_skips_auto_temp_report(tmp_path, monkeypatch):
     report = tmp_path / "screen.html"
     monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
@@ -182,6 +195,87 @@ def test_screen_earnings_flag_enables_enrichment(monkeypatch):
     assert calls == [(["AAA", "BBB"], "us")]
     parsed = pd.read_csv(io.StringIO(res.output))
     assert parsed["days_to_earnings"].iloc[0] == 4
+
+
+def test_screen_price_adjustment_flag_reaches_the_bar_scorer(monkeypatch):
+    """``screen --price-adjustment`` must set the same auto_adjust a backtest gets.
+
+    The flag is passed scan -> shape_scan_results -> apply_score ->
+    apply_bar_score, which resolves it to ``build_price_fetcher(auto_adjust=...)``
+    the same way the backtester does. Snapshot scorers never build a fetcher.
+    """
+    index = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=300)
+    close = pd.Series([100.0 * 1.002**i for i in range(300)], index=index)
+    bars = pd.DataFrame(
+        {
+            "open": close,
+            "high": close * 1.001,
+            "low": close * 0.999,
+            "close": close,
+            "volume": 1_000_000.0,
+        }
+    )
+    captured: list[dict[str, object]] = []
+
+    class RecordingFetcher:
+        def __init__(self, **kwargs: object) -> None:
+            captured.append(kwargs)
+
+        def fetch(self, tickers, start, end):
+            return {t: bars for t in tickers}
+
+    monkeypatch.setattr(
+        backtester_data,
+        "build_price_fetcher",
+        lambda **kwargs: RecordingFetcher(**kwargs),
+    )
+
+    frame = pd.DataFrame(
+        [
+            {
+                "ticker": "NSE:AAA",
+                "name": "AAA",
+                "description": "Alpha Corp",
+                "close": 100.0,
+                "change": 1.0,
+                "volume": 1_000_000,
+                "market_cap_basic": 10_000_000_000,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        scanner_module.TRADINGVIEW_SCANNER,
+        "fetch",
+        lambda plan, **kwargs: (1, frame),
+    )
+
+    runner = CliRunner()
+    splits_only = runner.invoke(
+        cli,
+        [
+            "screen",
+            "-m",
+            "india",
+            "-c",
+            "momentum_12_1",
+            "-n",
+            "2",
+            "--csv",
+            "--price-adjustment",
+            "splits_only",
+        ],
+    )
+
+    assert splits_only.exit_code == 0, splits_only.output
+    assert captured[-1]["auto_adjust"] is False
+
+    default = runner.invoke(
+        cli,
+        ["screen", "-m", "india", "-c", "momentum_12_1", "-n", "2", "--csv"],
+    )
+
+    assert default.exit_code == 0, default.output
+    assert captured[-1]["auto_adjust"] is True
 
 
 def test_rolling_backtest_rejects_csv_with_dashboard():

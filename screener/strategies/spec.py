@@ -203,7 +203,12 @@ def discover_plugins() -> None:
 
 
 def resolve_strategy_spec(name: str | None) -> StrategySpec | None:
-    """Resolve a registered or dynamic strategy through one canonical path."""
+    """Resolve a registered or dynamic strategy through one canonical path.
+
+    A name that is not a strategy but *is* a screen-only scorer raises rather
+    than resolving to ``None``: silently reporting "unknown strategy" for
+    ``value`` or ``quality`` hides the real reason those cannot be backtested.
+    """
     if name is None:
         return None
     discover_plugins()
@@ -211,4 +216,9 @@ def resolve_strategy_spec(name: str | None) -> StrategySpec | None:
 
     if is_combo_strategy(name):
         return resolve_combo_spec(name)
-    return registry.get_optional(name)
+    spec = registry.get_optional(name)
+    if spec is None:
+        from screener.scoring import ensure_backtestable_scorer
+
+        ensure_backtestable_scorer(name)
+    return spec

@@ -9,7 +9,9 @@ from tradingview_screener import Query
 from screener.markets import TV_MARKETS
 from screener.providers import CachedProvider, FrameWithMeta, ProviderSpec
 from screener.scoring import (
+    DEFAULT_PRICE_ADJUSTMENT,
     OUTPUT_SCORE_COLUMN,
+    PriceAdjustment,
     ScoreSpec,
     apply_score,
     default_scorer,
@@ -84,7 +86,19 @@ def build_scanner_plan(
     if order_by == OUTPUT_SCORE_COLUMN:
         active_scorer = scorer if scorer is not None else default_scorer()
         columns.extend(c for c in active_scorer.columns if c not in columns)
-        fetch_limit = max(limit * 10, 500)
+        # Over-fetch so the rows lost before ``.head(limit)`` still leave
+        # more than ``limit`` to rank. Three cuts happen after the fetch: the
+        # recipe's eligibility floor, names whose price fetch came back empty,
+        # and ``_dedupe_listings`` collapsing NSE/BSE dual listings. What that
+        # headroom costs depends on the recipe. A snapshot recipe ranks on
+        # columns the one TradingView request already returned, so spare rows
+        # are free. A bar-derived recipe downloads daily OHLCV per surviving
+        # ticker, so every spare row is another network fetch. 5x covers the
+        # three drops. The snapshot path can afford 10x.
+        if active_scorer.bar_score is not None:
+            fetch_limit = max(limit * 5, 200)
+        else:
+            fetch_limit = max(limit * 10, 500)
         query_order_by = "volume"
     else:
         fetch_limit = max(limit * 3, 100)
@@ -183,14 +197,29 @@ _log_percentile = log_percentile
 def _add_setup_score(
     df: pd.DataFrame,
     scorer: ScoreSpec | None = None,
+    *,
+    market: str | None = None,
+    refresh: bool = False,
+    price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
 ) -> pd.DataFrame:
     """Apply a ranking recipe and write ``setup_score``.
 
     Defaults to the EMA trend setup for backward compatibility with tests and
-    call sites that still invoke this helper directly.
+    call sites that still invoke this helper directly. ``market`` and
+    ``refresh`` are only read by bar-derived recipes, which resolve price
+    history for the scanned rows; ``refresh`` bypasses the on-disk bar cache so
+    ``--refresh`` does not rank fresh snapshot rows on stale price history.
+    ``price_adjustment`` is bar-only too. It must match the backtest's
+    ``--price-adjustment`` so both sides score the same closes.
     """
     active = scorer if scorer is not None else default_scorer()
-    return apply_score(df, active)
+    return apply_score(
+        df,
+        active,
+        market=market,
+        refresh=refresh,
+        price_adjustment=price_adjustment,
+    )
 
 
 def _dedupe_listings(df: pd.DataFrame) -> pd.DataFrame:
@@ -224,7 +253,16 @@ def _helper_columns_to_drop(
     if detail:
         keep.update(DETAIL_COLUMNS)
     keep.add(OUTPUT_SCORE_COLUMN)
-    return [col for col in scorer.columns if col not in keep]
+    helpers = list(scorer.columns)
+    # A bar-derived recipe also writes its raw value under ``aux_column`` (the
+    # number the backtester ranks on) beside the 0-100 ``setup_score``. That is
+    # a diagnostic, not a display column, so it rides along only under
+    # ``--detail``; otherwise it would push the table past the width at which
+    # ``display`` starts hiding ``description``.
+    aux = scorer.bar_score.aux_column if scorer.bar_score is not None else None
+    if aux is not None and not detail:
+        helpers.append(aux)
+    return [col for col in helpers if col not in keep]
 
 
 def shape_scan_results(
@@ -234,12 +272,26 @@ def shape_scan_results(
     order_by: str = "volume",
     detail: bool = False,
     scorer: ScoreSpec | None = None,
+    market: str | None = None,
+    refresh: bool = False,
+    price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
 ) -> pd.DataFrame:
-    """Shape raw scanner rows after Adapter fetch without provider access."""
+    """Shape raw scanner rows after Adapter fetch without provider access.
+
+    Scoring happens here, *after* the TradingView filters have already cut the
+    field, so a bar-derived recipe only ever fetches price history for the rows
+    the scan returned rather than for the whole market.
+    """
     shaped = df
     if order_by == OUTPUT_SCORE_COLUMN and not shaped.empty:
         active = scorer if scorer is not None else default_scorer()
-        shaped = _add_setup_score(shaped, active)
+        shaped = _add_setup_score(
+            shaped,
+            active,
+            market=market,
+            refresh=refresh,
+            price_adjustment=price_adjustment,
+        )
         shaped = shaped.sort_values(OUTPUT_SCORE_COLUMN, ascending=False)
         drop_cols = _helper_columns_to_drop(active, detail=detail)
         shaped = shaped.drop(columns=[c for c in drop_cols if c in shaped.columns])
@@ -257,6 +309,7 @@ def scan(
     cache_ttl: float | None = 900,
     refresh: bool = False,
     scorer: ScoreSpec | None = None,
+    price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
 ) -> tuple[int, pd.DataFrame]:
     plan = build_scanner_plan(
         market=market,
@@ -277,4 +330,7 @@ def scan(
         order_by=order_by,
         detail=detail,
         scorer=plan.scorer,
+        market=market,
+        refresh=refresh,
+        price_adjustment=price_adjustment,
     )
