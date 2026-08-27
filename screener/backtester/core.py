@@ -728,6 +728,35 @@ def _resolve_universe(cfg: UniverseSpec) -> tuple[list[str], list[str]]:
     raise ValueError(_NO_UNIVERSE_MSG)
 
 
+def strategy_required_lookback(
+    strategy: str | StrategySpec | None,
+) -> int:
+    """Return the bars a named strategy needs before its prepared columns exist.
+
+    Fetch windows sized from the entry and exit expressions miss this floor.
+    Strategies such as a Bollinger Band breakout write ``bb_upper`` in
+    ``prepare_bars`` (about 350 prior bars) while the expression only names
+    the column. Too little history leaves the indicator as NaN and silently
+    drops valid trades.
+    """
+    from screener.strategies.spec import (
+        ExpressionStrategySpec,
+        resolve_strategy_spec,
+    )
+
+    if strategy is None:
+        return 0
+    try:
+        spec = (
+            resolve_strategy_spec(strategy) if isinstance(strategy, str) else strategy
+        )
+    except ValueError:
+        return 0
+    if not isinstance(spec, ExpressionStrategySpec) or spec.required_lookback is None:
+        return 0
+    return int(spec.required_lookback())
+
+
 def prepare_strategy_bars(
     strategy: str | StrategySpec | None,
     bars_by_tv: dict[str, pd.DataFrame],
@@ -757,7 +786,7 @@ def prepare_strategy_bars(
         return bars_by_tv, 0
     if not isinstance(spec, ExpressionStrategySpec):
         return bars_by_tv, 0
-    lookback_floor = spec.required_lookback() if spec.required_lookback else 0
+    lookback_floor = strategy_required_lookback(spec)
     if spec.prepare_bars is None:
         return bars_by_tv, lookback_floor
     ctx = PrepareCtx(

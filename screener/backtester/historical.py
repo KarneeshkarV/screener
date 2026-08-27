@@ -17,6 +17,7 @@ from screener.backtester.core import (
     _RunCaches,
     _SlotState,
     prepare_strategy_bars,
+    strategy_required_lookback,
 )
 from screener.backtester.costs import cost_model_from_config
 from screener.backtester.data import PriceFetcher
@@ -427,6 +428,9 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     lookback = required_lookback(entry_ast)
     if exit_ast is not None:
         lookback = max(lookback, required_lookback(exit_ast))
+    # Prepared columns (Bollinger Bands, rank scores) are invisible to the
+    # entry/exit AST. Raise the fetch window now or those columns stay NaN.
+    lookback = max(lookback, strategy_required_lookback(cfg.strategy_name))
 
     from screener.backtester.data import tv_to_yf
 
