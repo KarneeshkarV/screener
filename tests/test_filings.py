@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 
 from click.testing import CliRunner
@@ -22,6 +23,14 @@ from screener.filings import (
     parse_filings,
     parse_report,
 )
+
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    """Strip ANSI so title assertions do not depend on Rich highlighting."""
+    return _ANSI_ESCAPE.sub("", text)
 
 
 def _filing_row(
@@ -394,7 +403,7 @@ def test_cli_list_table(monkeypatch):
         cli, ["filings", "list", "aapl", "--type", "10-K"], catch_exceptions=False
     )
     assert res.exit_code == 0
-    assert "SEC filings (US)" in res.output and "10-K" in res.output
+    assert "SEC filings (US)" in _plain(res.output) and "10-K" in res.output
 
 
 def test_cli_list_csv(monkeypatch):
@@ -483,7 +492,7 @@ def test_cli_report_list_sections_flag(monkeypatch):
     res = CliRunner().invoke(
         cli, ["filings", "report", "AAPL", "--year", "2024", "--list-sections"]
     )
-    assert res.exit_code == 0 and "AAPL 2024 FY" in res.output
+    assert res.exit_code == 0 and "AAPL 2024 FY" in _plain(res.output)
 
 
 def test_cli_report_renders_matched_section(monkeypatch):

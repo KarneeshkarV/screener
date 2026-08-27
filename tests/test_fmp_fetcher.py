@@ -19,6 +19,7 @@ from screener.backtester.data import (
     _save_cache,
     build_price_fetcher,
 )
+from screener.providers import StaleDataError
 
 
 class DummyResponse:
@@ -294,6 +295,96 @@ def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_pat
     assert float(stored.loc[sample, "close"]) == pytest.approx(
         float(wide.loc[sample, "close"])
     )
+
+
+def test_fmp_refresh_without_strict_still_merges_failed_download_with_cache(tmp_path):
+    """Availability-first: a failed refresh still returns leftover parquet."""
+    cached = pd.DataFrame(
+        {
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000,
+        },
+        index=pd.bdate_range("2024-01-02", "2024-01-19"),
+    )
+    _save_cache("fmp_AAA", cached, tmp_path)
+    session = DummySession({})
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+        refresh=True,
+    )
+
+    out = fetcher.fetch(["AAA"], date(2024, 1, 2), date(2024, 1, 25))["AAA"]
+
+    assert not out.empty
+    assert out.index.max() == cached.index.max()
+
+
+def test_fmp_strict_refresh_raises_instead_of_ranking_on_cache(tmp_path):
+    """strict+refresh must not score leftover cache after a failed download."""
+    cached = pd.DataFrame(
+        {
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000,
+        },
+        index=pd.bdate_range("2024-01-02", "2024-01-19"),
+    )
+    _save_cache("fmp_AAA", cached, tmp_path)
+    session = DummySession({})
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+        refresh=True,
+        strict=True,
+    )
+    last_bar = cached.index.max().date()
+    as_of = date(2024, 1, 25)
+    age_days = (as_of - last_bar).days
+
+    with pytest.raises(
+        StaleDataError, match="strict refresh could not refresh bars for"
+    ) as caught:
+        fetcher.fetch(["AAA"], date(2024, 1, 2), as_of)
+
+    message = str(caught.value)
+    assert f"AAA (newest bar {last_bar}, {age_days} calendar days old)" in message
+
+
+def test_fmp_strict_without_refresh_keeps_cache(tmp_path):
+    """strict alone governs the scan snapshot; leftover bars still serve."""
+    cached = pd.DataFrame(
+        {
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000,
+        },
+        index=pd.bdate_range("2024-01-02", "2024-01-19"),
+    )
+    _save_cache("fmp_AAA", cached, tmp_path)
+    session = DummySession({})
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+        refresh=False,
+        strict=True,
+    )
+
+    out = fetcher.fetch(["AAA"], date(2024, 1, 2), date(2024, 1, 19))["AAA"]
+
+    assert not out.empty
+    assert out.index.max() == cached.index.max()
+    assert session.calls == []
 
 
 def _intraday_payload() -> list[dict]:

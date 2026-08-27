@@ -70,8 +70,12 @@ class ScreenRequest:
     # backtester's ``--price-adjustment``. Snapshot scorers ignore it.
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT
     # Raise StaleDataError instead of serving stale cache when the live scan
-    # fails. Off by default so existing callers keep the availability-first
-    # behaviour.
+    # fails. When ranking by a bar-derived setup_score, the same flag is
+    # forwarded to the price fetcher, so a failed bar refresh also raises
+    # instead of scoring leftover parquet. That extra refusal only fires
+    # when refresh is also True; strict without refresh still only governs
+    # the scan snapshot. Off by default so existing callers keep the
+    # availability-first behaviour.
     strict: bool = False
     # Per-request socket timeout forwarded to requests.post by
     # tradingview_screener; None keeps the library's blocking default.
