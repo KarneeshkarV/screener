@@ -29,7 +29,13 @@ Two deliberate properties:
   set in ``scanner.build_scanner_plan``. The extra rows exist so the
   eligibility floor, price-fetch outages, and NSE/BSE dedupe still leave
   ``limit`` names. A default screen downloads at most 200 tickers of daily
-  bars. The fetcher's on-disk parquet cache is reused as-is.
+  bars. The fetcher's on-disk parquet cache is reused as-is. ``refresh``
+  asks that cache to update; a failed download still merges leftover
+  parquet so the ranking stays available. When the caller asked for
+  ``strict`` and ``refresh`` together, that merge is refused:
+  :class:`~screener.providers.StaleDataError` is raised instead of ranking
+  on bars that were not actually refreshed. ``strict`` without ``refresh``
+  does not change this path; it governs the TradingView snapshot.
 * **Ineligible names are dropped, not "ranked last".** A name without enough
   history has no score, and a name whose raw value fails the recipe's own
   ``eligible_above`` floor is not a candidate; neither is filled with 0 and
@@ -251,11 +257,17 @@ def bar_scores_for_tickers(
     fetcher: "PriceFetcher | None" = None,
     refresh: bool = False,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
+    strict: bool = False,
 ) -> dict[str, float]:
     """Return ``{tv_ticker: score at the last bar}``; missing history -> NaN.
 
     ``price_adjustment`` uses the backtester's spelling and applies the same
     fetch and split-only transformations as the backtest.
+
+    ``strict`` is forwarded to :func:`~screener.backtester.data.build_price_fetcher`
+    along with ``refresh``. Together they refuse leftover bar cache after a
+    failed download. ``strict`` without ``refresh`` is a no-op on this path.
+    An injected ``fetcher`` is used as-is and does not see these flags.
     """
     from screener.backtester.data import build_price_fetcher, tv_to_yf
 
@@ -265,7 +277,9 @@ def bar_scores_for_tickers(
         return {}
     resolved_as_of = as_of or date.today()
     yf_by_tv = {tv: tv_to_yf(tv, market) for tv in symbols}
-    active = fetcher or build_price_fetcher(refresh=refresh, auto_adjust=auto_adjust)
+    active = fetcher or build_price_fetcher(
+        refresh=refresh, auto_adjust=auto_adjust, strict=strict
+    )
     panel = active.fetch(
         list(dict.fromkeys(yf_by_tv.values())),
         _fetch_start(resolved_as_of, spec.required_lookback),
@@ -319,6 +333,7 @@ def apply_bar_score(
     fetcher: "PriceFetcher | None" = None,
     refresh: bool = False,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
+    strict: bool = False,
 ) -> pd.DataFrame:
     """Write the ranked ``output_column`` plus the raw ``aux_column``, keeping candidates.
 
@@ -337,6 +352,9 @@ def apply_bar_score(
 
     ``price_adjustment`` must match the backtest's ``--price-adjustment`` for
     the raw value to be the same number; see the module docstring.
+
+    ``strict`` is forwarded with ``refresh`` to the price fetcher; see
+    :func:`bar_scores_for_tickers`.
     """
     if df.empty:
         empty = df.assign(**{output_column: pd.Series(dtype=float)})
@@ -356,6 +374,7 @@ def apply_bar_score(
         fetcher=fetcher,
         refresh=refresh,
         price_adjustment=price_adjustment,
+        strict=strict,
     )
     mapped: Any = df[TICKER_COLUMN].map(scores)
     raw = pd.to_numeric(mapped, errors="coerce").astype(float)

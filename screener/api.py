@@ -74,9 +74,14 @@ def screen(
     ``criteria`` accepts a single name for convenience; it is normalised to a
     tuple before it reaches the workflow.
 
-    ``strict=True`` demands fresh-or-error: if the live scan fails, raise
-    :class:`StaleDataError` instead of silently serving stale cache. The
-    default keeps the availability-first behaviour of the CLI.
+    ``strict=True`` demands fresh-or-error. If the live scan fails, raise
+    :class:`StaleDataError` instead of silently serving stale cache. When
+    ``refresh=True`` as well and ranking uses a bar-derived ``setup_score``,
+    the same refusal applies to the price history behind the ranking: a
+    failed bar download that would otherwise merge with on-disk cache
+    raises rather than scoring leftover bars. ``strict`` without
+    ``refresh`` still only governs the scan snapshot. The default keeps
+    the availability-first behaviour of the CLI.
 
     ``timeout`` caps each TradingView request in seconds (forwarded to
     ``requests.post``; ``None`` blocks indefinitely). ``retries`` overrides
@@ -84,7 +89,9 @@ def screen(
     wall-clock budget, so cap both together.
 
     Raises:
-        StaleDataError: ``strict=True`` and no fresh data could be fetched.
+        StaleDataError: ``strict=True`` and no fresh scan (or, with
+            ``refresh=True``, no refreshed bars behind a bar-derived ranking)
+            could be fetched.
         KeyError: an unknown criterion name, listing the known ones.
         ValueError: ``earnings_buffer`` is negative, or ``report_path`` was
             given without ``persist=True`` (nothing would be written).

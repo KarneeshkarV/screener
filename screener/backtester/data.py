@@ -15,7 +15,7 @@ import io
 import os
 import queue
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
@@ -82,6 +82,7 @@ from screener.backtester.price_frames import (
 from screener.config import load_env_file as load_env_file
 from screener.fmp import FMP_V3_BASE_URL, FmpClient, resolve_api_key
 from screener.logging_config import suppressed_yfinance_errors
+from screener.providers import StaleDataError
 from screener.resilience import call_with_resilience
 
 # Re-exported for backward compatibility: several modules and the docs import
@@ -154,6 +155,34 @@ class PriceFetcher(Protocol):
         """
 
 
+def _strict_refresh_stale_data_error(
+    leftover: Sequence[tuple[str, pd.DataFrame]],
+    *,
+    as_of: pd.Timestamp,
+) -> StaleDataError:
+    """StaleDataError for a strict refresh that would have scored leftover cache.
+
+    The message starts with ``strict refresh could not refresh bars for`` so a
+    log line greps back to this constructor. Each ticker is named with the
+    date of its newest cached bar and the calendar-day gap to ``as_of``.
+    """
+    as_of_ts = pd.Timestamp(as_of)
+    if as_of_ts.tz is not None:
+        as_of_ts = as_of_ts.tz_convert("UTC").tz_localize(None)
+    clauses: list[str] = []
+    for ticker, cached in leftover:
+        last_bar = pd.Timestamp(cached.index.max())
+        if last_bar.tz is not None:
+            last_bar = last_bar.tz_convert("UTC").tz_localize(None)
+        age_days = int((as_of_ts.normalize() - last_bar.normalize()).days)
+        clauses.append(
+            f"{ticker} (newest bar {last_bar.date()}, {age_days} calendar days old)"
+        )
+    return StaleDataError(
+        "strict refresh could not refresh bars for " + ", ".join(clauses)
+    )
+
+
 class YFinancePriceFetcher:
     """Fetches daily OHLCV from yfinance with a parquet on-disk cache.
 
@@ -172,6 +201,15 @@ class YFinancePriceFetcher:
     Cached parquet files are keyed by ticker name; switching regimes will not
     collide because the regime is encoded in an optional ``_meta`` suffix
     when ``auto_adjust=False`` is selected.
+
+    ``refresh=True`` forces a download of the requested window even when a
+    covering parquet already exists. A failed download is an empty frame,
+    and that empty frame is merged with leftover cache so the caller still
+    has data. ``strict=True`` changes only that failure path, and only
+    together with ``refresh``: leftover cache is refused with
+    :class:`~screener.providers.StaleDataError` instead of being returned
+    to rank on. ``strict`` without ``refresh`` is a no-op here; that flag
+    governs the TradingView snapshot, not these bars.
     """
 
     def __init__(
@@ -182,6 +220,7 @@ class YFinancePriceFetcher:
         refresh: bool = False,
         max_workers: int = 4,
         interval: str = "1d",
+        strict: bool = False,
     ) -> None:
         self.cache_dir = cache_dir or CACHE_DIR
         self.auto_adjust = bool(auto_adjust)
@@ -189,6 +228,7 @@ class YFinancePriceFetcher:
         self.refresh = bool(refresh)
         self.max_workers = max(1, int(max_workers))
         self.interval = str(interval)
+        self.strict = bool(strict)
 
     def _cache_key(self, ticker: str) -> str:
         # Intraday intervals get their own cache namespace so the existing daily
@@ -375,10 +415,25 @@ class YFinancePriceFetcher:
                     downloaded_by_ticker.get(ticker), norm, self.interval
                 )
 
+        leftover: list[tuple[str, pd.DataFrame]] = []
         for ticker in dict.fromkeys(t for group in missing.values() for t in group):
             cache_key = self._cache_key(ticker)
             norm = downloaded_by_ticker.get(ticker, _empty_ohlcv_frame())
-            merged = _merge_cached(cached_by_ticker.get(ticker), norm, self.interval)
+            stored = cached_by_ticker.get(ticker)
+            merged = _merge_cached(stored, norm, self.interval)
+            # A failed download is an empty frame, and the merge then returns
+            # leftover cache. That is the availability-first default. ``strict``
+            # plus ``refresh`` is the live engine's fresh-or-error contract:
+            # refuse to rank on those leftover bars. ``strict`` without
+            # ``refresh`` does not belong here; it governs the scan snapshot.
+            if (
+                self.strict
+                and self.refresh
+                and norm.empty
+                and stored is not None
+                and not stored.empty
+            ):
+                leftover.append((ticker, stored))
             if not merged.empty and (
                 not norm.empty or ticker not in tail_refresh_tickers
             ):
@@ -386,6 +441,8 @@ class YFinancePriceFetcher:
             results[ticker] = merged.loc[
                 (merged.index >= start_ts) & (merged.index <= end_ts)
             ]
+        if leftover:
+            raise _strict_refresh_stale_data_error(leftover, as_of=end_ts)
         return results
 
 
@@ -483,6 +540,10 @@ class FMPPriceFetcher:
 
     The API key is resolved by :func:`screener.fmp.resolve_api_key` (env, then
     the project ``.env``) unless passed explicitly.
+
+    ``strict`` plus ``refresh`` refuses leftover cache after a failed
+    download, matching :class:`YFinancePriceFetcher`. ``strict`` without
+    ``refresh`` is a no-op here.
     """
 
     # FMP price history responses are much larger than the metric endpoints, so
@@ -501,6 +562,7 @@ class FMPPriceFetcher:
         session: requests.Session | None = None,
         interval: str = "1d",
         max_workers: int = 8,
+        strict: bool = False,
     ) -> None:
         if interval != "1d" and interval not in _FMP_INTRADAY_INTERVALS:
             raise ValueError(
@@ -514,6 +576,7 @@ class FMPPriceFetcher:
         self.cache_dir = cache_dir or FMP_CACHE_DIR
         self.auto_adjust = bool(auto_adjust)
         self.refresh = bool(refresh)
+        self.strict = bool(strict)
         self.max_workers = max(1, int(max_workers))
         self.session = session or requests.Session()
         if hasattr(self.session, "mount"):
@@ -537,7 +600,9 @@ class FMPPriceFetcher:
         if not ticker_list:
             return {}
 
-        def fetch_ticker(ticker: str) -> tuple[str, pd.DataFrame]:
+        def fetch_ticker(
+            ticker: str,
+        ) -> tuple[str, pd.DataFrame, pd.DataFrame | None]:
             cache_key = _fmp_cache_key(ticker, self.auto_adjust, self.interval)
             # Same contract as YFinancePriceFetcher.fetch. The stored frame
             # loads even on a refresh and goes into the save-time merge, so a
@@ -552,9 +617,10 @@ class FMPPriceFetcher:
                 if not _needs_tail_refresh(
                     _cache_path(cache_key, self.cache_dir), end_ts
                 ):
-                    return ticker, cached.loc[
+                    in_range = cached.loc[
                         (cached.index >= start_ts) & (cached.index <= end_ts)
                     ]
+                    return ticker, in_range, None
                 fetch_start = max(cached.index) - pd.Timedelta(days=7)
                 is_tail_refresh = True
             else:
@@ -584,14 +650,27 @@ class FMPPriceFetcher:
                 fallback=empty_payload,
             )
             norm = _normalize_fmp_historical(payload, self.auto_adjust, self.interval)
+            leftover_cache = (
+                stored
+                if (
+                    self.strict
+                    and self.refresh
+                    and norm.empty
+                    and stored is not None
+                    and not stored.empty
+                )
+                else None
+            )
             merged = _merge_cached(stored, norm, self.interval)
             if not merged.empty:
                 if not norm.empty or not is_tail_refresh:
                     _save_cache(cache_key, merged, self.cache_dir)
-                return ticker, merged.loc[
-                    (merged.index >= start_ts) & (merged.index <= end_ts)
-                ]
-            return ticker, pd.DataFrame(columns=OHLCV_COLUMNS)
+                return (
+                    ticker,
+                    merged.loc[(merged.index >= start_ts) & (merged.index <= end_ts)],
+                    leftover_cache,
+                )
+            return ticker, pd.DataFrame(columns=OHLCV_COLUMNS), leftover_cache
 
         if len(ticker_list) == 1:
             fetched = [fetch_ticker(ticker_list[0])]
@@ -600,7 +679,12 @@ class FMPPriceFetcher:
                 max_workers=min(self.max_workers, len(ticker_list))
             ) as pool:
                 fetched = list(pool.map(fetch_ticker, ticker_list))
-        return dict(fetched)
+        leftover = [
+            (ticker, cache) for ticker, _frame, cache in fetched if cache is not None
+        ]
+        if leftover:
+            raise _strict_refresh_stale_data_error(leftover, as_of=end_ts)
+        return {ticker: frame for ticker, frame, _cache in fetched}
 
 
 class ExchangeFallbackPriceFetcher:
@@ -682,30 +766,49 @@ def build_price_fetcher(
     auto_adjust: bool = True,
     refresh: bool = False,
     interval: str = "1d",
+    strict: bool = False,
 ) -> PriceFetcher:
     load_env_file()
     resolved = (provider or os.environ.get("SCREENER_PRICE_PROVIDER") or "auto").lower()
     # The BSE retry wraps the outermost fetcher so a symbol is only re-requested
     # on ``.BO`` once every configured provider has come back empty for ``.NS``.
+    # ``strict`` is the screen's fresh-or-error flag. It is a no-op unless
+    # ``refresh`` is also True: a failed download then raises StaleDataError
+    # instead of merging leftover parquet cache into the ranking. Default
+    # False keeps every backtest and CLI caller on the availability-first path.
     if resolved in {"auto", "default"}:
         primary = YFinancePriceFetcher(
-            auto_adjust=auto_adjust, refresh=refresh, interval=interval
+            auto_adjust=auto_adjust,
+            refresh=refresh,
+            interval=interval,
+            strict=strict,
         )
         if os.environ.get("FMP_API_KEY"):
             fallback = FMPPriceFetcher(
-                auto_adjust=auto_adjust, refresh=refresh, interval=interval
+                auto_adjust=auto_adjust,
+                refresh=refresh,
+                interval=interval,
+                strict=strict,
             )
             return ExchangeFallbackPriceFetcher(FallbackPriceFetcher(primary, fallback))
         return ExchangeFallbackPriceFetcher(primary)
     if resolved in {"yf", "yfinance"}:
         return ExchangeFallbackPriceFetcher(
             YFinancePriceFetcher(
-                auto_adjust=auto_adjust, refresh=refresh, interval=interval
+                auto_adjust=auto_adjust,
+                refresh=refresh,
+                interval=interval,
+                strict=strict,
             )
         )
     if resolved in {"fmp", "financialmodelingprep"}:
         return ExchangeFallbackPriceFetcher(
-            FMPPriceFetcher(auto_adjust=auto_adjust, refresh=refresh, interval=interval)
+            FMPPriceFetcher(
+                auto_adjust=auto_adjust,
+                refresh=refresh,
+                interval=interval,
+                strict=strict,
+            )
         )
     raise ValueError(f"Unknown price provider: {provider}")
 

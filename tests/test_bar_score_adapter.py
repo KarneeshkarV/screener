@@ -26,7 +26,9 @@ import pandas as pd
 import pytest
 
 import screener.backtester.data as backtester_data
+from screener.backtester.data import YFinancePriceFetcher, _save_cache
 from screener.factors import get_price_score, score_bars
+from screener.providers import StaleDataError
 from screener.scoring import OUTPUT_SCORE_COLUMN
 from screener.scoring import bar_scores as bar_scores_module
 from screener.scoring.bar_scores import apply_bar_score, bar_scores_for_tickers
@@ -292,6 +294,90 @@ def test_adjustment_maps_to_auto_adjust_exactly_as_the_backtester_does(
         price_adjustment=price_adjustment,  # type: ignore[arg-type]
     )
     assert adjustment_probe[0]["auto_adjust"] is auto_adjust
+
+
+def test_strict_refresh_is_forwarded_to_the_price_fetcher(
+    adjustment_probe: list[dict[str, object]],
+) -> None:
+    bar_scores_for_tickers(
+        ["NSE:ALPHA"],
+        _SPEC,
+        market=_MARKET,
+        as_of=_AS_OF,
+        refresh=True,
+        strict=True,
+    )
+    assert adjustment_probe[0]["refresh"] is True
+    assert adjustment_probe[0]["strict"] is True
+
+
+def test_strict_and_refresh_default_off_on_the_price_fetcher(
+    adjustment_probe: list[dict[str, object]],
+) -> None:
+    bar_scores_for_tickers(["NSE:ALPHA"], _SPEC, market=_MARKET, as_of=_AS_OF)
+    assert adjustment_probe[0]["refresh"] is False
+    assert adjustment_probe[0]["strict"] is False
+
+
+def test_bar_scores_strict_refresh_raises_instead_of_ranking_on_cache(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ranking path must refuse leftover parquet when strict+refresh fail."""
+    import yfinance as yf
+
+    cached = _bars(100.0, 0.002)
+    _save_cache("ALPHA.NS", cached, tmp_path)
+    monkeypatch.setattr(yf, "download", lambda *args, **kwargs: pd.DataFrame())
+
+    def _builder(**kwargs: object) -> YFinancePriceFetcher:
+        return YFinancePriceFetcher(cache_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(backtester_data, "build_price_fetcher", _builder)
+
+    with pytest.raises(
+        StaleDataError, match="strict refresh could not refresh bars for"
+    ) as caught:
+        bar_scores_for_tickers(
+            ["NSE:ALPHA"],
+            _SPEC,
+            market=_MARKET,
+            as_of=_AS_OF,
+            refresh=True,
+            strict=True,
+        )
+
+    last_bar = cached.index.max().date()
+    age_days = (_AS_OF - last_bar).days
+    assert f"ALPHA.NS (newest bar {last_bar}, {age_days} calendar days old)" in str(
+        caught.value
+    )
+
+
+def test_bar_scores_refresh_without_strict_still_ranks_on_cache(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Availability-first ranking still scores leftover parquet after a failed download."""
+    import yfinance as yf
+
+    cached = _bars(100.0, 0.002)
+    _save_cache("ALPHA.NS", cached, tmp_path)
+    monkeypatch.setattr(yf, "download", lambda *args, **kwargs: pd.DataFrame())
+
+    def _builder(**kwargs: object) -> YFinancePriceFetcher:
+        return YFinancePriceFetcher(cache_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(backtester_data, "build_price_fetcher", _builder)
+
+    scores = bar_scores_for_tickers(
+        ["NSE:ALPHA"],
+        _SPEC,
+        market=_MARKET,
+        as_of=_AS_OF,
+        refresh=True,
+        strict=False,
+    )
+
+    assert not np.isnan(scores["NSE:ALPHA"])
 
 
 def test_apply_bar_score_threads_the_adjustment_through(

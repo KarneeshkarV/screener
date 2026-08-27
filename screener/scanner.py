@@ -313,16 +313,19 @@ def _add_setup_score(
     market: str | None = None,
     refresh: bool = False,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
+    strict: bool = False,
 ) -> pd.DataFrame:
     """Apply a ranking recipe and write ``setup_score``.
 
     Defaults to the EMA trend setup for backward compatibility with tests and
     call sites that still invoke this helper directly. ``market`` and
     ``refresh`` are only read by bar-derived recipes, which resolve price
-    history for the scanned rows; ``refresh`` bypasses the on-disk bar cache so
-    ``--refresh`` does not rank fresh snapshot rows on stale price history.
-    ``price_adjustment`` is bar-only too. It must match the backtest's
-    ``--price-adjustment`` so both sides score the same closes.
+    history for the scanned rows. ``refresh`` forces a bar download so a
+    fresh snapshot is not ranked on a cache that was never asked to update.
+    A failed download still merges leftover cache (availability-first) unless
+    ``strict`` is also set, in which case the call raises rather than score
+    the leftover bars. ``price_adjustment`` is bar-only too. It must match
+    the backtest's ``--price-adjustment`` so both sides score the same closes.
     """
     active = scorer if scorer is not None else default_scorer()
     return apply_score(
@@ -331,6 +334,7 @@ def _add_setup_score(
         market=market,
         refresh=refresh,
         price_adjustment=price_adjustment,
+        strict=strict,
     )
 
 
@@ -387,6 +391,7 @@ def shape_scan_results(
     market: str | None = None,
     refresh: bool = False,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
+    strict: bool = False,
 ) -> pd.DataFrame:
     """Shape raw scanner rows after Adapter fetch without provider access.
 
@@ -403,6 +408,7 @@ def shape_scan_results(
             market=market,
             refresh=refresh,
             price_adjustment=price_adjustment,
+            strict=strict,
         )
         shaped = shaped.sort_values(OUTPUT_SCORE_COLUMN, ascending=False)
         drop_cols = _helper_columns_to_drop(active, detail=detail)
@@ -433,7 +439,11 @@ def scan(
     caps each underlying request (forwarded to ``requests.post``);
     ``retries`` overrides the resilience retry attempts for this scan.
     ``strict=True`` raises :class:`StaleDataError` instead of serving stale
-    cache when the live fetch fails.
+    cache when the live fetch fails. When ranking by a bar-derived
+    ``setup_score``, ``strict`` is also forwarded to the price fetcher, so a
+    failed bar refresh raises the same error instead of scoring leftover
+    cache. That extra refusal only fires when ``refresh=True`` as well;
+    ``strict`` without ``refresh`` still only governs the scan snapshot.
     """
     plan = build_scanner_plan(
         market=market,
@@ -460,5 +470,6 @@ def scan(
         market=market,
         refresh=refresh,
         price_adjustment=price_adjustment,
+        strict=strict,
     )
     return count, shaped, as_of

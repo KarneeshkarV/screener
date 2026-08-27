@@ -10,6 +10,7 @@ import pytest
 
 from screener.backtester import data as data_module
 from screener.backtester.data import YFinancePriceFetcher, _load_cached, _save_cache
+from screener.providers import StaleDataError
 
 
 def _plain_bars(start, end, base: float = 100.0) -> pd.DataFrame:
@@ -257,6 +258,94 @@ def test_yfinance_refresh_merges_into_stored_history_instead_of_truncating_it(
     assert float(stored.loc[sample, "close"]) == pytest.approx(
         float(wide.loc[sample, "close"])
     )
+
+
+def _empty_download(tmp_path, monkeypatch):
+    """Force every yfinance download to the empty-frame fallback."""
+    import yfinance as yf
+
+    monkeypatch.setattr(yf, "download", lambda *args, **kwargs: pd.DataFrame())
+    cached = _plain_bars(date(2024, 1, 2), date(2024, 1, 20)).rename(columns=str.lower)
+    _save_cache("AAA", cached, tmp_path)
+    _save_cache("BBB", cached, tmp_path)
+    return cached
+
+
+def test_yfinance_refresh_without_strict_still_merges_failed_download_with_cache(
+    tmp_path, monkeypatch
+):
+    """Availability-first: a failed refresh still returns leftover parquet."""
+    cached = _empty_download(tmp_path, monkeypatch)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True)
+
+    out = fetcher.fetch(["AAA"], date(2024, 1, 2), date(2024, 1, 25))["AAA"]
+
+    assert not out.empty
+    assert out.index.max() == cached.index.max()
+
+
+def test_yfinance_strict_refresh_raises_instead_of_ranking_on_cache(
+    tmp_path, monkeypatch
+):
+    """strict+refresh must not score leftover cache after a failed download."""
+    cached = _empty_download(tmp_path, monkeypatch)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True, strict=True)
+    last_bar = cached.index.max().date()
+    as_of = date(2024, 1, 25)
+    age_days = (as_of - last_bar).days
+
+    with pytest.raises(
+        StaleDataError, match="strict refresh could not refresh bars for"
+    ) as caught:
+        fetcher.fetch(["AAA", "BBB"], date(2024, 1, 2), as_of)
+
+    message = str(caught.value)
+    assert f"AAA (newest bar {last_bar}, {age_days} calendar days old)" in message
+    assert f"BBB (newest bar {last_bar}, {age_days} calendar days old)" in message
+
+
+def test_yfinance_strict_without_refresh_keeps_cache(tmp_path, monkeypatch):
+    """strict alone governs the scan snapshot; leftover bars still serve."""
+    cached = _empty_download(tmp_path, monkeypatch)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=False, strict=True)
+
+    out = fetcher.fetch(["AAA"], date(2024, 1, 2), date(2024, 1, 19))["AAA"]
+
+    assert not out.empty
+    assert out.index.max() == cached.index.max()
+
+
+def test_yfinance_strict_refresh_returns_fresh_bars_when_download_works(
+    tmp_path, monkeypatch
+):
+    """A successful strict refresh must still return the downloaded bars."""
+    import yfinance as yf
+
+    cached = _plain_bars(date(2024, 1, 2), date(2024, 1, 20)).rename(columns=str.lower)
+    _save_cache("AAA", cached, tmp_path)
+
+    def fake_download(tickers, **kwargs):
+        return _download_frame(tickers, kwargs["start"], kwargs["end"])
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True, strict=True)
+
+    out = fetcher.fetch(["AAA"], date(2024, 1, 2), date(2024, 1, 25))["AAA"]
+
+    assert not out.empty
+    assert out.index.max() == pd.Timestamp("2024-01-25")
+
+
+def test_yfinance_strict_refresh_empty_without_cache_stays_empty(tmp_path, monkeypatch):
+    """No leftover cache means there is nothing stale to refuse; stay empty."""
+    import yfinance as yf
+
+    monkeypatch.setattr(yf, "download", lambda *args, **kwargs: pd.DataFrame())
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True, strict=True)
+
+    out = fetcher.fetch(["AAA"], date(2024, 1, 2), date(2024, 1, 25))
+
+    assert out["AAA"].empty
 
 
 def test_yfinance_fetcher_frame_equal_fixture(tmp_path, monkeypatch):
