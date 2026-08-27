@@ -218,7 +218,7 @@ def test_prepare_strategy_bars_reports_invalid_combo() -> None:
     )
     bars = {"A": pd.DataFrame({"close": [1.0, 2.0]}, index=idx)}
     warnings: list[str] = []
-    prepared, lookback = prepare_strategy_bars(
+    prepared = prepare_strategy_bars(
         cfg.strategy_name,
         bars,
         bars,
@@ -230,7 +230,7 @@ def test_prepare_strategy_bars_reports_invalid_combo() -> None:
         market=cfg.market,
         benchmark=cfg.benchmark,
     )
-    assert prepared is bars and lookback == 0
+    assert prepared is bars
     assert warnings and "strategy error" in warnings[0]
 
 

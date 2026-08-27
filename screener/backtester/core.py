@@ -728,6 +728,48 @@ def _resolve_universe(cfg: UniverseSpec) -> tuple[list[str], list[str]]:
     raise ValueError(_NO_UNIVERSE_MSG)
 
 
+def strategy_required_lookback(
+    strategy: str | StrategySpec | None,
+    warnings: list[str] | None = None,
+) -> int:
+    """Return the bars a named strategy needs before its prepared columns exist.
+
+    Fetch windows sized from the entry and exit expressions miss this floor.
+    ``low_volatility`` writes ``vol_252`` in ``prepare_bars`` (253 prior bars)
+    while its entry expression only names the column. Too little history
+    leaves the prepared column as NaN and silently drops valid trades.
+
+    ``warnings``, when given, collects the reason the floor could not be
+    computed. A strategy name that fails to resolve degrades to 0, which
+    under-sizes the fetch; callers that size a fetch from this value should
+    pass their warning list so that degradation is visible where it happens
+    rather than only later, as an all-NaN prepared column.
+    """
+    from screener.strategies.spec import (
+        ExpressionStrategySpec,
+        resolve_strategy_spec,
+    )
+
+    if strategy is None:
+        return 0
+    try:
+        spec = (
+            resolve_strategy_spec(strategy) if isinstance(strategy, str) else strategy
+        )
+    except ValueError as exc:
+        # Two different failures land here: a name that is not a strategy at
+        # all (a screen-only scorer), and a name that *is* a strategy but
+        # could not be built (a malformed ``combo:`` spec). Only the second
+        # loses a real floor, and neither should abort the run, so report and
+        # continue with no floor.
+        if warnings is not None:
+            warnings.append(f"strategy lookback unavailable: {exc}")
+        return 0
+    if not isinstance(spec, ExpressionStrategySpec) or spec.required_lookback is None:
+        return 0
+    return int(spec.required_lookback())
+
+
 def prepare_strategy_bars(
     strategy: str | StrategySpec | None,
     bars_by_tv: dict[str, pd.DataFrame],
@@ -740,8 +782,14 @@ def prepare_strategy_bars(
     *,
     market: str,
     benchmark: str,
-) -> tuple[dict[str, pd.DataFrame], int]:
-    """Resolve a strategy and run its preparation/lookback hooks."""
+) -> dict[str, pd.DataFrame]:
+    """Resolve a strategy and run its bar-preparation hook.
+
+    The lookback floor is *not* returned: it has to be applied before the
+    fetch, so callers read it from ``strategy_required_lookback`` while sizing
+    the window. Returning it here again would leave two sources of truth for
+    one number.
+    """
     from screener.strategies.spec import (
         ExpressionStrategySpec,
         PrepareCtx,
@@ -754,12 +802,9 @@ def prepare_strategy_bars(
         )
     except ValueError as exc:
         warnings.append(f"strategy error: {exc}")
-        return bars_by_tv, 0
-    if not isinstance(spec, ExpressionStrategySpec):
-        return bars_by_tv, 0
-    lookback_floor = spec.required_lookback() if spec.required_lookback else 0
-    if spec.prepare_bars is None:
-        return bars_by_tv, lookback_floor
+        return bars_by_tv
+    if not isinstance(spec, ExpressionStrategySpec) or spec.prepare_bars is None:
+        return bars_by_tv
     ctx = PrepareCtx(
         market=market,
         benchmark=benchmark,
@@ -771,7 +816,7 @@ def prepare_strategy_bars(
         fetcher=fetcher,
         warnings=warnings,
     )
-    return spec.prepare_bars(ctx), lookback_floor
+    return spec.prepare_bars(ctx)
 
 
 def _benchmark_series_from_panel(

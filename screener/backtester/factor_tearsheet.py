@@ -335,7 +335,7 @@ def load_factor_panels(
         panel_bars = price_panel.get(yf_by_tv[tv])
         bars_by_tv[tv] = pd.DataFrame() if panel_bars is None else panel_bars
     benchmark = get_market(market).benchmark
-    bars_by_tv, _ = prepare_strategy_bars(
+    bars_by_tv = prepare_strategy_bars(
         spec,
         bars_by_tv,
         price_panel,

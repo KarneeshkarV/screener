@@ -8,8 +8,11 @@ A strategy comes in one of two flavors:
   backtester. Register with ``register_expression_strategy(...)``.
 
 Strategies that need bar prep before the backtester evaluates signals attach a
-``prepare_bars`` hook and an optional ``required_lookback``. This replaces the
-``if cfg.strategy_name == ...`` branches that used to live in the core.
+``prepare_bars`` hook. That hook requires ``required_lookback``: columns written
+in ``prepare_bars`` are invisible to the entry expression, so fetch cannot size
+history from the AST. ``low_volatility`` is the worked example - it writes
+``vol_252`` from 253 bars behind an entry of ``vol_252 > 0``. This replaces the ``if cfg.strategy_name == ...``
+branches that used to live in the core.
 """
 
 from __future__ import annotations
@@ -19,7 +22,13 @@ from datetime import date
 from typing import Any, Literal, TypeVar, cast
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, SkipValidation, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    SkipValidation,
+    field_validator,
+    model_validator,
+)
 
 from screener._registry import Registry
 from screener.backtester.data import PriceFetcher
@@ -90,6 +99,16 @@ class ExpressionStrategySpec(StrategySpec):
         if not normalized:
             raise ValueError("strategy entry must not be empty")
         return normalized
+
+    @model_validator(mode="after")
+    def _prepare_bars_requires_lookback(self) -> ExpressionStrategySpec:
+        if self.prepare_bars is not None and self.required_lookback is None:
+            raise ValueError(
+                "prepare_bars requires required_lookback: columns written in "
+                "prepare_bars are invisible to the entry expression, so fetch "
+                "cannot size history from the AST"
+            )
+        return self
 
 
 registry: Registry[StrategySpec] = Registry("strategy")
