@@ -10,7 +10,8 @@ A strategy comes in one of two flavors:
 Strategies that need bar prep before the backtester evaluates signals attach a
 ``prepare_bars`` hook. That hook requires ``required_lookback``: columns written
 in ``prepare_bars`` are invisible to the entry expression, so fetch cannot size
-history from the AST. This replaces the ``if cfg.strategy_name == ...``
+history from the AST. ``low_volatility`` is the worked example - it writes
+``vol_252`` from 253 bars behind an entry of ``vol_252 > 0``. This replaces the ``if cfg.strategy_name == ...``
 branches that used to live in the core.
 """
 

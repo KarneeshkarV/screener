@@ -428,9 +428,9 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     lookback = required_lookback(entry_ast)
     if exit_ast is not None:
         lookback = max(lookback, required_lookback(exit_ast))
-    # Prepared columns (Bollinger Bands, rank scores) are invisible to the
+    # Prepared columns (rank scores, trailing-vol columns) are invisible to the
     # entry/exit AST. Raise the fetch window now or those columns stay NaN.
-    lookback = max(lookback, strategy_required_lookback(cfg.strategy_name))
+    lookback = max(lookback, strategy_required_lookback(cfg.strategy_name, warnings))
 
     from screener.backtester.data import tv_to_yf
 
@@ -461,7 +461,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     for tv in tv_symbols:
         panel_bars = price_panel.get(yf_by_tv[tv])
         bars_by_tv[tv] = pd.DataFrame() if panel_bars is None else panel_bars
-    bars_by_tv, strategy_lookback = prepare_strategy_bars(
+    bars_by_tv = prepare_strategy_bars(
         cfg.strategy_name,
         bars_by_tv,
         price_panel,
@@ -473,7 +473,6 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         market=cfg.market,
         benchmark=cfg.benchmark,
     )
-    lookback = max(lookback, strategy_lookback)
     bars_by_tv = merge_referenced_options(
         bars_by_tv,
         market=cfg.market,
