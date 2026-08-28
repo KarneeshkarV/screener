@@ -32,6 +32,7 @@ EXPRESSIONS = [
     "ema(close, 8) > sma(close, 12)",
     "rsi(close, 14) < 70",
     "atr(14) > 0.5",
+    "supertrend(10, 3.0) < 0",
     "highest(high, 5) - lowest(low, 5)",
     "not (close < open)",
     "adj_close * 2 - 1 > 0",
