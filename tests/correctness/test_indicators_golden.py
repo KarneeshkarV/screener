@@ -10,7 +10,9 @@ so a mismatch is a real defect, not a transcription of the implementation.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
+from screener.indicators.frames import wilder_rsi
 from screener.indicators.plugins.atr import atr
 from screener.indicators.plugins.ema import ema
 from screener.indicators.plugins.rma import rma
@@ -95,3 +97,46 @@ def test_supertrend_direction_trend_contract():
     high_dn, low_dn, close_dn = down + 1, down - 1, down
     dir_dn = supertrend_dir(high_dn, low_dn, close_dn, 10, 3.0)
     assert dir_dn[-1] > 0  # downtrend convention
+
+
+def test_wilder_rsi_seeds_from_the_sma_like_pine_ta_rma():
+    """``wilder_rsi`` must seed each smoother from the mean of the first n
+    changes, the way Pine ``ta.rma`` does - not from the first change alone.
+
+    ``ewm(adjust=False)`` seeds from the first observation, and that error only
+    decays by ``(1 - 1/n)`` per bar: at n=14 it is still worth more than a full
+    RSI point around bar 50, which is enough to flip an ``rsi > 50`` crossing.
+    """
+    close = pd.Series([10.0, 11.0, 10.5, 11.5, 11.0, 12.0])
+    got = wilder_rsi(close, 3, min_periods=3)
+
+    # Independent re-derivation. close.diff() is NaN on bar 0, so the three
+    # seeding observations are bars 1..3 and the first value lands on bar 3.
+    # gains  = [nan, 1, 0, 1, 0, 1]; losses = [nan, 0, 0.5, 0, 0.5, 0]
+    g3 = (1 + 0 + 1) / 3
+    l3 = (0 + 0.5 + 0) / 3
+    g4 = (1 / 3) * 0 + (2 / 3) * g3
+    l4 = (1 / 3) * 0.5 + (2 / 3) * l3
+    g5 = (1 / 3) * 1 + (2 / 3) * g4
+    l5 = (1 / 3) * 0 + (2 / 3) * l4
+    expected = [100 - 100 / (1 + g / lo) for g, lo in ((g3, l3), (g4, l4), (g5, l5))]
+
+    assert got.iloc[:3].isna().all()
+    np.testing.assert_allclose(got.iloc[3:], expected, atol=1e-12, rtol=0)
+
+
+def test_wilder_rsi_min_periods_masks_without_moving_the_seed():
+    """``min_periods`` hides early bars; it must not change what was seeded.
+
+    Conflating the two is the defect this pins: passing ``min_periods=period``
+    was assumed to give Pine's warm-up *and* Pine's seed, and it gave only the
+    first.
+    """
+    close = pd.Series([10.0, 11.0, 10.5, 11.5, 11.0, 12.0, 11.5, 12.5])
+
+    unmasked = wilder_rsi(close, 3)
+    masked = wilder_rsi(close, 3, min_periods=3)
+
+    both = unmasked.notna() & masked.notna()
+    assert both.sum() > 0
+    pd.testing.assert_series_equal(unmasked[both], masked[both])

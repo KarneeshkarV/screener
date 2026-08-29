@@ -79,6 +79,44 @@ def true_range(
 
 
 @overload
+def _wilder_rma(values: pd.Series, period: int) -> pd.Series: ...
+
+
+@overload
+def _wilder_rma(values: pd.DataFrame, period: int) -> pd.DataFrame: ...
+
+
+def _wilder_rma(
+    values: pd.Series | pd.DataFrame, period: int
+) -> pd.Series | pd.DataFrame:
+    """Wilder's running average, seeded the way Pine ``ta.rma`` seeds it.
+
+    ``ta.rma`` starts from the *simple mean of the first ``period``
+    observations* and only then applies the ``alpha = 1/period`` recursion.
+    ``ewm(alpha=..., adjust=False)`` instead starts from the first observation
+    alone, which is a different number: the resulting error decays by
+    ``(1 - 1/period)`` per bar, so at ``period = 14`` it is still worth more
+    than one RSI point around bar 50. ``min_periods`` cannot repair that - it
+    hides early bars, it does not change what the recursion started from.
+
+    The seed is placed at the position of the ``period``-th observation and
+    everything before it is blanked, so a plain ``adjust=False`` pass picks the
+    seed up as its first value and carries Wilder's recursion from there.
+    """
+    observed = values.notna()
+    count = observed.cumsum()
+    # A cumulative sum, read at the seed row, *is* the sum of the first
+    # ``period`` observations: every earlier gap contributed an exact zero. It
+    # costs a fraction of a full ``rolling(period).mean()`` and, unlike one,
+    # keeps seeding across an interior gap instead of returning NaN there.
+    seed = values.fillna(0.0).cumsum() / period
+    settled = (count > period).to_numpy()
+    at_seed = (observed & (count == period)).to_numpy()
+    seeded = values.where(settled).mask(at_seed, seed)
+    return seeded.ewm(alpha=1.0 / period, adjust=False).mean()
+
+
+@overload
 def wilder_rsi(
     close: pd.Series, period: int = 14, *, min_periods: int = 0
 ) -> pd.Series: ...
@@ -96,16 +134,23 @@ def wilder_rsi(
     *,
     min_periods: int = 0,
 ) -> pd.Series | pd.DataFrame:
-    """Return RSI using Wilder's exponentially smoothed gains and losses."""
+    """Return RSI using Wilder's exponentially smoothed gains and losses.
+
+    Matches Pine ``ta.rsi``: ``close.diff()`` is undefined on the first bar, so
+    the smoothers seed off the first ``period`` *real* changes and the first
+    value lands on bar ``period``. ``min_periods`` now only blanks output that
+    rests on fewer than that many observations; the seed no longer depends on
+    it.
+    """
     delta = close.diff()
     gains = delta.clip(lower=0.0)
     losses = -delta.clip(upper=0.0)
-    avg_gain = gains.ewm(
-        alpha=1.0 / period, adjust=False, min_periods=min_periods
-    ).mean()
-    avg_loss = losses.ewm(
-        alpha=1.0 / period, adjust=False, min_periods=min_periods
-    ).mean()
+    avg_gain = _wilder_rma(gains, period)
+    avg_loss = _wilder_rma(losses, period)
+    if min_periods > 0:
+        enough = (delta.notna().cumsum() >= min_periods).to_numpy()
+        avg_gain = avg_gain.where(enough)
+        avg_loss = avg_loss.where(enough)
     rs = avg_gain / avg_loss.replace(0.0, np.nan)
     result = 100.0 - (100.0 / (1.0 + rs))
     condition = ~((avg_loss == 0.0) & (avg_gain > 0.0))
