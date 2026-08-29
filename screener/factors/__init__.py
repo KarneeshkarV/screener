@@ -36,12 +36,16 @@ Contract for anything registered here:
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TypeVar
 
 import pandas as pd
 
 from screener._registry import Registry
+from screener.factors.fundamentals import (
+    FUNDAMENTAL_COLUMNS,
+    fundamental_provenance,
+)
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,15 @@ class BarFeatures:
 
     ``high`` / ``low`` / ``volume`` / ``benchmark_close`` are optional so a
     close-only recipe can be evaluated from a frame that carries nothing else.
+
+    ``fundamentals`` is the one non-price input allowed here, and only under a
+    proof: a column appears in it exactly when the frame carries the provenance
+    stamp written by
+    :func:`screener.backtester.fundamentals.merge_fundamentals_into_bars`,
+    which is the only place the reporting lag is applied. A frame holding a
+    fundamental column *without* that stamp was assigned to directly, so it may
+    carry today's value at every historical bar; :meth:`from_frame` refuses it
+    rather than scoring it.
     """
 
     close: pd.Series
@@ -57,6 +70,15 @@ class BarFeatures:
     low: pd.Series | None = None
     volume: pd.Series | None = None
     benchmark_close: pd.Series | None = None
+    #: Point-in-time fundamental series, keyed by column name. Empty unless the
+    #: frame came through the lagged merge.
+    fundamentals: Mapping[str, pd.Series] = field(default_factory=dict)
+    #: The reporting lag those series rest on, or ``None`` when there are none.
+    fundamental_filing_lag_days: int | None = None
+
+    def fundamental(self, name: str) -> pd.Series | None:
+        """One point-in-time fundamental series, or ``None`` when absent."""
+        return self.fundamentals.get(name)
 
     @classmethod
     def from_frame(
@@ -82,12 +104,35 @@ class BarFeatures:
                 .astype(float)
                 .reindex(bars.index)
             )
+        stamp = fundamental_provenance(bars)
+        declared = set(stamp.columns) if stamp is not None else set()
+        undeclared = sorted(
+            name
+            for name in FUNDAMENTAL_COLUMNS
+            if name in bars.columns and name not in declared
+        )
+        if undeclared:
+            raise ValueError(
+                f"fundamental column(s) {undeclared} are on these bars without "
+                "the point-in-time provenance stamp; a fundamental may only "
+                "reach bars through merge_fundamentals_into_bars, which applies "
+                "the filing lag. Direct assignment is lookahead."
+            )
+        fundamentals: dict[str, pd.Series] = {}
+        for name in sorted(declared):
+            series = _column(name)
+            if series is not None:
+                fundamentals[name] = series
         return cls(
             close=close,
             high=_column("high"),
             low=_column("low"),
             volume=_column("volume"),
             benchmark_close=aligned_benchmark,
+            fundamentals=fundamentals,
+            fundamental_filing_lag_days=(
+                stamp.filing_lag_days if stamp is not None else None
+            ),
         )
 
 
@@ -227,6 +272,7 @@ def _register_recipes() -> None:
 _register_recipes()
 
 __all__ = [
+    "FUNDAMENTAL_COLUMNS",
     "BarFeatures",
     "PriceScoreFn",
     "PriceScoreSpec",
