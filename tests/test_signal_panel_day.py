@@ -9,6 +9,8 @@ the same matrices, not a parallel path that happens to agree.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -242,3 +244,98 @@ def test_factor_ranking_reports_the_as_of_score_for_each_name(window) -> None:
     # Ranking is by score descending, which is the whole point of the branch.
     scores = [c.rank_score for c in result.candidates]
     assert scores == sorted(scores, reverse=True)
+
+
+def _intraday_panel(window) -> tuple[SignalPanelInputs, PricePanel, SignalProgram]:
+    """The same fixture on a calendar whose stamps carry a time of day."""
+    inputs, price_panel, program = window
+    stamps = pd.date_range("2024-01-02 09:15", periods=60, freq="75min")
+    bars_by_tv = {
+        tv: bars.set_axis(stamps) for tv, bars in price_panel.bars_by_tv.items()
+    }
+    intraday = PricePanel(
+        tv_symbols=price_panel.tv_symbols,
+        yf_by_tv=price_panel.yf_by_tv,
+        bars_by_tv=bars_by_tv,
+        benchmark=bars_by_tv["NSE:AAA"]["close"],
+        lookback=price_panel.lookback,
+        master_dates=list(stamps),
+    )
+    return inputs, intraday, program
+
+
+def test_a_datetime_as_of_is_an_instant_not_a_whole_session(window) -> None:
+    """A ``datetime`` resolves to the bar at or before it, never the session close.
+
+    ``datetime`` is a subclass of ``date``, so the whole-session branch would
+    swallow it and answer a 10:30 request with the last bar of that day - a
+    look-ahead of several hours on an intraday calendar.
+    """
+    inputs, intraday, program = _intraday_panel(window)
+    signals = build_signal_panel(
+        inputs,
+        intraday,
+        program=program,
+        start_ts=intraday.master_dates[0],
+        end_ts=intraday.master_dates[-1],
+        warnings=[],
+    )
+    stamps = list(signals.candidate_matrices.signal_mat.index)
+    same_day = [s for s in stamps if s.date() == stamps[0].date()]
+    assert len(same_day) > 1, "fixture is not intraday"
+
+    requested = same_day[1].to_pydatetime()
+    assert isinstance(requested, datetime)
+    resolved = day_candidates_from_panel(signals, requested)
+    assert resolved.as_of == same_day[1]
+    assert resolved.as_of != same_day[-1]
+
+    # A bare date still covers its whole session.
+    assert day_candidates_from_panel(signals, stamps[0].date()).as_of == same_day[-1]
+
+
+def test_as_of_past_the_window_end_has_no_candidates(window) -> None:
+    """A mis-sized window answers with nothing, not with stale candidates."""
+    inputs, price_panel, program = window
+    end_ts = price_panel.master_dates[30]
+    past = price_panel.master_dates[45]
+
+    inside = build_day_candidates(
+        inputs,
+        price_panel,
+        program=program,
+        as_of=end_ts,
+        start_ts=price_panel.master_dates[0],
+        end_ts=end_ts,
+        warnings=[],
+    )
+    assert inside.as_of == end_ts
+
+    outside = build_day_candidates(
+        inputs,
+        price_panel,
+        program=program,
+        as_of=past,
+        start_ts=price_panel.master_dates[0],
+        end_ts=end_ts,
+        warnings=[],
+    )
+    assert outside.as_of is None
+    assert outside.candidates == ()
+
+
+def test_a_holiday_after_the_last_bar_still_snaps_back(window) -> None:
+    """Only *past the window* is rejected; a non-trading day inside it is not."""
+    inputs, price_panel, program = window
+    last_bar = price_panel.master_dates[-1]
+    weekend = (last_bar + pd.Timedelta(days=1)).date()
+    result = build_day_candidates(
+        inputs,
+        price_panel,
+        program=program,
+        as_of=weekend,
+        start_ts=price_panel.master_dates[0],
+        end_ts=last_bar + pd.Timedelta(days=3),
+        warnings=[],
+    )
+    assert result.as_of == last_bar

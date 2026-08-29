@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass, fields
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 
 import pandas as pd
@@ -338,7 +338,10 @@ def _resolve_as_of_bar(
 ) -> pd.Timestamp | None:
     """Snap ``as_of`` back to the last master-calendar bar at or before it."""
     calendar = matrices.signal_mat.index
-    if isinstance(as_of, pd.Timestamp):
+    if isinstance(as_of, datetime):
+        # datetime covers pd.Timestamp too: both carry a time of day, so both
+        # are instants and must not be widened to the end of their session. A
+        # caller asking for 10:00 wants the 10:00 bar, not the 15:30 close.
         position = int(calendar.searchsorted(as_of, side="right")) - 1
     else:
         # A plain calendar date covers its whole session, which matters
@@ -351,6 +354,19 @@ def _resolve_as_of_bar(
     if position < 0:
         return None
     return pd.Timestamp(calendar[position])
+
+
+def _as_of_is_within(as_of: date | pd.Timestamp, end_ts: pd.Timestamp) -> bool:
+    """True when ``as_of`` falls at or before the window the panel was built on.
+
+    An as-of past the window end is a mis-sized request, not a holiday: snapping
+    back would answer with candidates dated days earlier and report it as a
+    success. A plain ``date`` is compared at the end of its session, matching
+    how :func:`_resolve_as_of_bar` reads one.
+    """
+    if isinstance(as_of, datetime):
+        return pd.Timestamp(as_of) <= end_ts
+    return pd.Timestamp(as_of).normalize() <= end_ts.normalize()
 
 
 def day_candidates_from_panel(
@@ -437,6 +453,10 @@ def build_day_candidates(
     once with :func:`build_signal_panel` and call
     :func:`day_candidates_from_panel` per date instead.
     """
+    if not _as_of_is_within(as_of, end_ts):
+        # Mirrors the below-window case, which _resolve_as_of_bar already
+        # answers with None rather than with the nearest bar it can find.
+        return DayCandidates(as_of=None, candidates=())
     signals = build_signal_panel(
         inputs,
         panel,
