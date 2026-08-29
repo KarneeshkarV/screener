@@ -153,14 +153,19 @@ def test_screen_auto_temp_report(tmp_path, monkeypatch):
     assert '"plot_bgcolor":"#0d1117"' in html
 
 
-def test_screen_refuses_a_bar_snapshot_blend_as_usage_error():
-    """``-c momentum_12_1 -c ema`` must fail as a usage error, not a traceback."""
+def test_screen_refuses_a_strategy_mixed_with_a_criterion_as_usage_error():
+    """``-c momentum_12_1 -c ema`` must fail as a usage error, not a traceback.
+
+    Since the stage 6 flip ``momentum_12_1`` names a strategy, so it carries a
+    whole entry rule rather than a filter set; two rules do not intersect into
+    one rule.
+    """
     res = CliRunner().invoke(
         cli, ["screen", "-c", "momentum_12_1", "-c", "ema", "-n", "2"]
     )
 
     assert res.exit_code != 0
-    assert "cannot blend bar-derived scorer" in res.output
+    assert "Screen one at a time" in res.output
     assert "Traceback" not in res.output
 
 

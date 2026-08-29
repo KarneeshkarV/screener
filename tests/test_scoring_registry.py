@@ -7,12 +7,12 @@ import pytest
 
 from screener import screen_workflow
 from screener.criteria import CRITERIA
+from screener.screen_candidates import UnscreenableStrategyError
 from screener.screen_workflow import ScreenRequest, run_screen_workflow
 from screener.scoring import (
     DEFAULT_SCORER_NAME,
     OUTPUT_SCORE_COLUMN,
     SCORERS,
-    IncompatibleScorerBlendError,
     apply_score,
     get_scorer,
     resolve_scorer,
@@ -439,11 +439,10 @@ def test_mark_minervini_ranks_full_trend_stack_and_near_high() -> None:
     )
 
 
-def _blend_request(*, order_by: str) -> ScreenRequest:
-    """A screen combining a bar-derived criterion with a snapshot one."""
+def _request(*, criteria: tuple[str, ...], order_by: str) -> ScreenRequest:
     return ScreenRequest(
         market="india",
-        criteria_names=("momentum_12_1", "ema"),
+        criteria_names=criteria,
         limit=5,
         order_by=order_by,
         output_csv=True,
@@ -455,8 +454,9 @@ def _blend_request(*, order_by: str) -> ScreenRequest:
 
 
 def test_screen_sorted_by_a_column_never_resolves_a_scorer(monkeypatch) -> None:
-    # `-c momentum_12_1 -c ema --sort volume` computes no score at all, so the
-    # blend refusal must not fire: the run has no ranking recipe to refuse.
+    # `--sort volume` computes no score at all, so a scoring refusal must not
+    # fire: the run has no ranking recipe to refuse. Both names here are
+    # filters-only criteria, which is what makes combining them legal.
     captured: dict[str, object] = {}
 
     def fake_scan(**kwargs: object) -> tuple[int, pd.DataFrame]:
@@ -465,24 +465,32 @@ def test_screen_sorted_by_a_column_never_resolves_a_scorer(monkeypatch) -> None:
 
     monkeypatch.setattr(screen_workflow, "scan", fake_scan)
 
-    outcome = run_screen_workflow(_blend_request(order_by="volume"))
+    outcome = run_screen_workflow(
+        _request(criteria=("ema", "value"), order_by="volume")
+    )
 
     assert outcome.df["name"].tolist() == ["AAA"]
     assert captured["scorer"] is None
 
 
-def test_screen_sorted_by_setup_score_still_refuses_the_blend(monkeypatch) -> None:
-    # Ranking *is* by setup_score here, so the refusal has to stay loud rather
-    # than silently ranking by the default recipe the user did not ask for.
+@pytest.mark.parametrize("order_by", ["volume", OUTPUT_SCORE_COLUMN])
+def test_screen_refuses_a_strategy_alias_combined_with_a_filter_criterion(
+    monkeypatch, order_by
+) -> None:
+    # Since the stage 6 flip, ``momentum_12_1`` names a strategy: a whole entry
+    # rule, not a filter set. Two rules do not intersect into one rule, so the
+    # combination is refused before anything runs - and unlike the older
+    # scorer-blend refusal it does not depend on --sort, because the objection
+    # is to the rule, not to the ranking.
     def unexpected_scan(**kwargs: object) -> tuple[int, pd.DataFrame]:
-        raise AssertionError("scan must not run once the blend is refused")
+        raise AssertionError("scan must not run once the combination is refused")
 
     monkeypatch.setattr(screen_workflow, "scan", unexpected_scan)
 
-    with pytest.raises(
-        IncompatibleScorerBlendError, match="cannot blend bar-derived scorer"
-    ):
-        run_screen_workflow(_blend_request(order_by=OUTPUT_SCORE_COLUMN))
+    with pytest.raises(UnscreenableStrategyError, match="Screen one at a time"):
+        run_screen_workflow(
+            _request(criteria=("momentum_12_1", "ema"), order_by=order_by)
+        )
 
 
 def test_apply_score_on_an_empty_frame_returns_an_empty_scored_frame() -> None:

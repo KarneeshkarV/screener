@@ -58,6 +58,7 @@ from screener.strategies.plugins.low_volatility import realized_volatility
 from screener.strategies.spec import (
     DEFAULT_STRATEGY_PROFILE,
     PrepareCtx,
+    StrategyProfile,
     register_expression_strategy,
 )
 
@@ -129,13 +130,18 @@ def _riskadj_lookback() -> int:
     return _LOOKBACK + 1
 
 
+# ``Perf.Y > Perf.1M`` is the vendor-side spelling of a positive 12-1 return
+# (see the ``momentum_12_1`` criterion). It is a coarse field cut on calendar
+# anchors, not the eligibility rule; the exact gate is ENTRY_PURE below.
+_PURE_PROFILE = StrategyProfile(tv_prefilter="momentum_12_1")
+
 register_expression_strategy(
     "momentum_12_1",
     entry=ENTRY_PURE,
     exit=None,
     prepare_bars=_prepare_momentum,
     required_lookback=_momentum_lookback,
-    profile=DEFAULT_STRATEGY_PROFILE,
+    profile=_PURE_PROFILE,
 )
 
 register_expression_strategy(

@@ -174,6 +174,20 @@ class StrategyProfile(BaseModel):
     min_avg_dollar_volume: float | None = None
     avg_dollar_volume_window: int = 20
 
+    #: Name of the criterion in :mod:`screener.criteria` whose TradingView
+    #: filters cut the field before bars are downloaded, or ``None`` for a
+    #: strategy that has no vendor-side prefilter.
+    #:
+    #: This is the one field that is *not* mirrored from
+    #: ``SignalPanelInputs``, and deliberately so: it names an optimisation,
+    #: never a rule. The prefilter may only ever remove names the bar rules
+    #: would have removed anyway, so a run with ``--universe`` (no prefilter)
+    #: and a default run must reach the same candidates on the names both saw.
+    #: A criterion *name* rather than the filter list itself, so this module
+    #: stays free of the ``tradingview_screener`` import and the filters keep
+    #: living exactly once, in ``screener/criteria/plugins/``.
+    tv_prefilter: str | None = None
+
 
 # The shared baseline every strategy without its own profile resolves to.
 # Equal to the effective BacktestConfig defaults by construction.

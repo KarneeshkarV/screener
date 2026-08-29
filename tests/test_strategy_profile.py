@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from screener.backtester.models import BacktestConfig
 from screener.backtester.signal_panel import (
+    NON_PANEL_PROFILE_FIELDS,
     RUN_SCOPED_SIGNAL_PANEL_FIELDS,
     SIGNAL_PANEL_INPUT_FIELDS,
     SignalPanelInputs,
@@ -51,9 +52,13 @@ def test_profile_fields_partition_signal_panel_inputs():
     # Every SignalPanelInputs field is either mirrored on StrategyProfile or
     # explicitly classified as run-scoped. A new gate added to the panel
     # inputs lands in neither set until someone decides, which fails here.
-    profile_fields = frozenset(StrategyProfile.model_fields)
-    assert not (profile_fields & RUN_SCOPED_SIGNAL_PANEL_FIELDS)
-    assert profile_fields | RUN_SCOPED_SIGNAL_PANEL_FIELDS == SIGNAL_PANEL_INPUT_FIELDS
+    # NON_PANEL_PROFILE_FIELDS is the third bucket: a profile field that is not
+    # a gate at all. ``tv_prefilter`` is one - it narrows the field before bars
+    # are fetched, and the panel judges whatever names it is handed.
+    gate_fields = frozenset(StrategyProfile.model_fields) - NON_PANEL_PROFILE_FIELDS
+    assert not (gate_fields & RUN_SCOPED_SIGNAL_PANEL_FIELDS)
+    assert gate_fields | RUN_SCOPED_SIGNAL_PANEL_FIELDS == SIGNAL_PANEL_INPUT_FIELDS
+    assert NON_PANEL_PROFILE_FIELDS <= frozenset(StrategyProfile.model_fields)
 
 
 def test_profile_annotations_match_signal_panel_inputs_field_for_field():
@@ -68,7 +73,8 @@ def test_profile_annotations_match_signal_panel_inputs_field_for_field():
     assert panel_hints["exit_expr"] == str | None
     assert profile_hints["entry_expr"] == str | None
     assert profile_hints["exit_expr"] == str | None
-    for name in set(StrategyProfile.model_fields) - inherited_rules:
+    skip = inherited_rules | set(NON_PANEL_PROFILE_FIELDS)
+    for name in set(StrategyProfile.model_fields) - skip:
         assert profile_hints[name] == panel_hints[name], name
 
 
@@ -125,11 +131,34 @@ def test_override_values_are_validated_by_the_model():
 
 
 def test_every_registered_expression_plugin_keeps_current_effective_defaults():
-    # Stage 1 pins plugin parity: any profile whose values deviate from the
-    # effective defaults would move candidates once stage 2+ consumes it.
-    # Deliberate deviations belong to the flip (stage 6), reviewed there.
+    # Plugin parity on the gates: a profile whose *gate* values deviate from
+    # the effective defaults would move candidates. ``tv_prefilter`` is exempt
+    # because it is not a gate; stage 6 attaches one to every strategy that has
+    # a TradingView spelling, and doing so must not move a candidate.
     discover_plugins()
     for name, spec in registry.items():
         if not isinstance(spec, ExpressionStrategySpec):
             continue
-        assert resolve_strategy_profile(spec) == DEFAULT_STRATEGY_PROFILE, name
+        resolved = resolve_strategy_profile(spec)
+        gates = resolved.model_copy(
+            update=dict.fromkeys(NON_PANEL_PROFILE_FIELDS, None)
+        )
+        assert gates == DEFAULT_STRATEGY_PROFILE, name
+
+
+def test_only_strategies_with_a_tradingview_spelling_declare_a_prefilter():
+    # A prefilter is an optimisation, so it must name a real criterion. A typo
+    # would otherwise fail at screen time, on a live run, rather than here.
+    from screener.criteria import registry as criteria_registry
+
+    discover_plugins()
+    declared = {
+        name: resolve_strategy_profile(spec).tv_prefilter
+        for name, spec in registry.items()
+        if isinstance(spec, ExpressionStrategySpec)
+        and resolve_strategy_profile(spec).tv_prefilter is not None
+    }
+
+    assert set(declared) == {"breakout", "mark_minervini", "momentum_12_1"}
+    for strategy_name, criterion in declared.items():
+        assert criteria_registry.get_optional(criterion) is not None, strategy_name

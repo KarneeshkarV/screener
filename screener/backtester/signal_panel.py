@@ -127,11 +127,20 @@ RUN_SCOPED_SIGNAL_PANEL_FIELDS = frozenset(
     }
 )
 
+# Profile fields that are deliberately not panel gates. ``tv_prefilter`` names
+# a vendor-side field cut that runs *before* bars are downloaded, so it can
+# only ever remove names; the panel judges whatever names it is handed and has
+# no opinion on how the field was narrowed. Listing it here rather than
+# widening the check keeps the partition itself strict.
+NON_PANEL_PROFILE_FIELDS = frozenset({"tv_prefilter"})
+
 # The partition itself. Asserted here rather than in spec.py because this
 # module owns the field list and already carries the heavy import graph;
 # ``screener.strategies`` must not import the backtest engine at module scope
 # (see tests/test_import_boundaries.py).
-_PROFILE_FIELD_NAMES = frozenset(StrategyProfile.model_fields)
+_PROFILE_FIELD_NAMES = frozenset(StrategyProfile.model_fields) - (
+    NON_PANEL_PROFILE_FIELDS
+)
 _UNCLASSIFIED_PANEL_FIELDS = (
     SIGNAL_PANEL_INPUT_FIELDS - _PROFILE_FIELD_NAMES - RUN_SCOPED_SIGNAL_PANEL_FIELDS
 )
@@ -142,7 +151,8 @@ if _UNCLASSIFIED_PANEL_FIELDS or _UNKNOWN_PROFILE_FIELDS:
         f"unclassified panel gates {sorted(_UNCLASSIFIED_PANEL_FIELDS)}, "
         f"profile fields unknown to the panel {sorted(_UNKNOWN_PROFILE_FIELDS)}. "
         "Mirror each new SignalPanelInputs gate on StrategyProfile, or move it "
-        "into RUN_SCOPED_SIGNAL_PANEL_FIELDS with a reason."
+        "into RUN_SCOPED_SIGNAL_PANEL_FIELDS with a reason, or - if it is not "
+        "a gate at all - into NON_PANEL_PROFILE_FIELDS."
     )
 
 
