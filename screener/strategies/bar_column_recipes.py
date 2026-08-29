@@ -8,6 +8,11 @@ indicator reaches the strategies without the Pine grammar growing a function
 Every recipe delegates to ``screener/indicators/``; none reimplements an
 indicator. They are pure and bar-local, seeing no panel, no market and no
 fetcher, which is what lets the backtester and the pine_runner share them.
+
+Each recipe declares its warm-up with ``@bar_column(n)``, in the same
+window-length unit as ``screener.backtester.pine.required_lookback``: the
+entry/exit expression cannot reveal that ``bb_upper`` hides a 350-bar window,
+so the recipe states it and the registration folds it into the spec's lookback.
 """
 
 from __future__ import annotations
@@ -18,11 +23,13 @@ from screener.indicators.plugins.bollinger_bands import bollinger_bands
 from screener.indicators.plugins.rsi import rsi
 from screener.indicators.plugins.sar import sar
 from screener.indicators.plugins.supertrend import supertrend_dir
+from screener.strategies.spec import bar_column
 
 ST_PERIOD = 10
 ST_MULT = 3.0
 
 
+@bar_column(ST_PERIOD)
 def supertrend_direction(bars: pd.DataFrame) -> pd.Series:
     """Supertrend direction: negative is an uptrend, positive a downtrend."""
     values = supertrend_dir(
@@ -35,6 +42,7 @@ def supertrend_direction(bars: pd.DataFrame) -> pd.Series:
     return pd.Series(values, index=bars.index, dtype=float)
 
 
+@bar_column(3)
 def parabolic_sar(bars: pd.DataFrame) -> pd.Series:
     return pd.Series(
         sar(
@@ -52,14 +60,17 @@ def _band(bars: pd.DataFrame, which: int, period: int, mult: float) -> pd.Series
     return pd.Series(bands[which], index=bars.index, dtype=float)
 
 
+@bar_column(350)
 def bb_upper_350(bars: pd.DataFrame) -> pd.Series:
     return _band(bars, 2, 350, 2.5)
 
 
+@bar_column(350)
 def bb_mid_350(bars: pd.DataFrame) -> pd.Series:
     return _band(bars, 1, 350, 2.5)
 
 
+@bar_column(21)
 def donchian_prior_high_20(bars: pd.DataFrame) -> pd.Series:
     """Highest high of the previous 20 bars, excluding the current one.
 
@@ -69,6 +80,7 @@ def donchian_prior_high_20(bars: pd.DataFrame) -> pd.Series:
     return bars["high"].astype(float).rolling(20).max().shift(1)
 
 
+@bar_column(11)
 def donchian_prior_low_10(bars: pd.DataFrame) -> pd.Series:
     return bars["low"].astype(float).rolling(10).min().shift(1)
 
@@ -79,16 +91,19 @@ def _rsi_series(bars: pd.DataFrame) -> pd.Series:
     )
 
 
+@bar_column(15)
 def rsi_prev5_min(bars: pd.DataFrame) -> pd.Series:
     """Lowest RSI over the previous 5 bars, excluding the current one."""
     return _rsi_series(bars).shift(1).rolling(5, min_periods=1).min()
 
 
+@bar_column(15)
 def rsi_prev5_max(bars: pd.DataFrame) -> pd.Series:
     """Highest RSI over the previous 5 bars, excluding the current one."""
     return _rsi_series(bars).shift(1).rolling(5, min_periods=1).max()
 
 
+@bar_column(26)
 def macd_line(bars: pd.DataFrame) -> pd.Series:
     """MACD(12,26) computed with the project's numpy EMA, not Pine's.
 
@@ -102,6 +117,7 @@ def macd_line(bars: pd.DataFrame) -> pd.Series:
     return pd.Series(ema(close, 12) - ema(close, 26), index=bars.index, dtype=float)
 
 
+@bar_column(35)
 def macd_signal(bars: pd.DataFrame) -> pd.Series:
     from screener.indicators.plugins.ema import ema
 
@@ -115,15 +131,18 @@ def _ao(bars: pd.DataFrame) -> pd.Series:
     return mid.rolling(5, min_periods=5).mean() - mid.rolling(34, min_periods=34).mean()
 
 
+@bar_column(34)
 def awesome_oscillator(bars: pd.DataFrame) -> pd.Series:
     """AO: SMA5 minus SMA34 of the bar midpoint."""
     return _ao(bars)
 
 
+@bar_column(35)
 def ao_prev1(bars: pd.DataFrame) -> pd.Series:
     return _ao(bars).shift(1)
 
 
+@bar_column(36)
 def ao_prev2(bars: pd.DataFrame) -> pd.Series:
     return _ao(bars).shift(2)
 
@@ -136,6 +155,7 @@ def _green(bars: pd.DataFrame) -> pd.Series:
     return (bars["open"].astype(float) < bars["close"].astype(float)).astype(float)
 
 
+@bar_column(2)
 def red_prev1(bars: pd.DataFrame) -> pd.Series:
     """1.0 when the previous bar closed down.
 
@@ -145,13 +165,16 @@ def red_prev1(bars: pd.DataFrame) -> pd.Series:
     return _red(bars).shift(1)
 
 
+@bar_column(3)
 def red_prev2(bars: pd.DataFrame) -> pd.Series:
     return _red(bars).shift(2)
 
 
+@bar_column(2)
 def green_prev1(bars: pd.DataFrame) -> pd.Series:
     return _green(bars).shift(1)
 
 
+@bar_column(3)
 def green_prev2(bars: pd.DataFrame) -> pd.Series:
     return _green(bars).shift(2)

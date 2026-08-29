@@ -59,6 +59,52 @@ LookbackFn = Callable[[], int]
 #: what lets the same declaration serve the backtester and the pine_runner.
 BarColumnFn = Callable[[pd.DataFrame], pd.Series]
 
+#: Attribute a ``@bar_column`` recipe carries its warm-up on.
+_BAR_COLUMN_LOOKBACK = "_bar_column_lookback"
+
+#: Attribute marking a ``prepare_bars`` hook as derived from ``bar_columns``
+#: rather than hand-written. Consumers that can apply the columns themselves
+#: (the pine_runner) use it to tell "prep I can reproduce" from "prep I cannot".
+_DERIVED_FROM_BAR_COLUMNS = "_derived_from_bar_columns"
+
+
+def bar_column(required_lookback: int) -> Callable[[BarColumnFn], BarColumnFn]:
+    """Declare how many bars of history a column recipe needs to be valid.
+
+    The warm-up is invisible to the entry/exit AST - an expression naming
+    ``bb_upper`` says nothing about the 350-bar window behind it - so each
+    recipe carries its own, and ``register_expression_strategy`` folds the
+    largest into the spec's ``required_lookback``. Leaving it undeclared is
+    rejected at registration rather than defaulting to zero: a silent zero is
+    what let a 350-bar Bollinger column ship behind a one-bar ``crossover``.
+
+    The unit matches :func:`screener.backtester.pine.required_lookback`: the
+    rolling window length, so a column built from ``rolling(20).shift(1)``
+    declares 21.
+    """
+    if required_lookback < 0:
+        raise ValueError("bar column lookback must not be negative")
+
+    def _wrap(fn: BarColumnFn) -> BarColumnFn:
+        setattr(fn, _BAR_COLUMN_LOOKBACK, required_lookback)
+        return fn
+
+    return _wrap
+
+
+def bar_columns_lookback(bar_columns: Mapping[str, BarColumnFn]) -> int:
+    """Largest warm-up any of the declared columns needs, in bars."""
+    floor = 0
+    for column, build in bar_columns.items():
+        declared = getattr(build, _BAR_COLUMN_LOOKBACK, None)
+        if declared is None:
+            raise ValueError(
+                f"bar column {column!r} does not declare its warm-up: "
+                "decorate the recipe with @bar_column(n)"
+            )
+        floor = max(floor, int(declared))
+    return floor
+
 
 def apply_bar_columns(
     bar_columns: Mapping[str, BarColumnFn] | None, bars: pd.DataFrame
@@ -87,7 +133,13 @@ def _prepare_from_bar_columns(bar_columns: Mapping[str, BarColumnFn]) -> Prepare
             for tv, bars in ctx.bars_by_tv.items()
         }
 
+    setattr(_prepare, _DERIVED_FROM_BAR_COLUMNS, True)
     return _prepare
+
+
+def is_derived_from_bar_columns(prepare_bars: PrepareBarsFn | None) -> bool:
+    """True when the hook is just ``bar_columns`` lifted to the panel level."""
+    return bool(getattr(prepare_bars, _DERIVED_FROM_BAR_COLUMNS, False))
 
 
 class StrategyProfile(BaseModel):
@@ -242,8 +294,29 @@ def register_expression_strategy(
     **meta: Any,
 ) -> ExpressionStrategySpec:
     """Register an expression strategy directly, without a fake function body."""
-    if bar_columns and prepare_bars is None:
+    if bar_columns and prepare_bars is not None:
+        # The two consumers would disagree: the backtester runs only the hook
+        # (so the columns never exist and the expression raises PineNameError),
+        # while the pine_runner applies only the columns. A hook that needs the
+        # columns should call apply_bar_columns itself.
+        raise ValueError(
+            f"strategy {name!r} declares both bar_columns and prepare_bars; "
+            "fold the columns into the hook with apply_bar_columns"
+        )
+    if bar_columns:
+        # A bar column's warm-up is invisible to the entry/exit AST, so fold it
+        # into the spec's own lookback. Without this the fetch window and the
+        # candidate mask both size themselves off the expression alone, and a
+        # long-window column is silently NaN over the whole backtest.
+        column_floor = bar_columns_lookback(bar_columns)
         prepare_bars = _prepare_from_bar_columns(bar_columns)
+        declared_lookback = required_lookback
+
+        def _lookback_with_columns() -> int:
+            explicit = declared_lookback() if declared_lookback else 0
+            return max(column_floor, explicit)
+
+        required_lookback = _lookback_with_columns
     spec = ExpressionStrategySpec(
         name=name,
         entry=entry,

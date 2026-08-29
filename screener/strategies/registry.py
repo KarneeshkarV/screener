@@ -32,7 +32,16 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel
 
-from screener.backtester.pine import SERIES_NAMES, Name, Node, evaluate, parse
+from screener.backtester.pine import (
+    FUNC_NAMES,
+    SERIES_NAMES,
+    Name,
+    Node,
+    PineError,
+    _call_names,
+    evaluate,
+    parse,
+)
 from screener.strategies.base import StrategyFn
 from screener.strategies.spec import (
     CallableStrategySpec,
@@ -41,6 +50,7 @@ from screener.strategies.spec import (
     ExpressionStrategySpec,
     StrategySpec,
     discover_plugins,
+    is_derived_from_bar_columns,
 )
 from screener.strategies.trades import ResearchTrade, _walk
 
@@ -90,30 +100,62 @@ def _is_self_contained(spec: ExpressionStrategySpec) -> bool:
     (``revenue_up_3q``) cannot be evaluated there. Deciding that statically
     from the AST keeps the view honest: such a strategy is simply absent rather
     than present and raising ``PineNameError`` on first use.
+
+    A hand-written ``prepare_bars`` is disqualifying on its own, whatever the
+    AST says. The synthesised callable can replay ``bar_columns`` but not a
+    panel-level hook, so a strategy whose entry reads only OHLCV while its prep
+    supplies the rest would otherwise project to a callable that silently skips
+    that prep - indistinguishable from the strategy it was derived from.
     """
-    names = _identifiers(_parsed(spec.entry))
-    if spec.exit is not None:
-        names |= _identifiers(_parsed(spec.exit))
+    if spec.prepare_bars is not None and not is_derived_from_bar_columns(
+        spec.prepare_bars
+    ):
+        return False
+    try:
+        asts = [_parsed(spec.entry)]
+        if spec.exit is not None:
+            asts.append(_parsed(spec.exit))
+    except PineError:
+        # An unparseable expression is excluded, not raised. This runs during
+        # iteration of STRATEGIES, and a market run that walks every strategy
+        # must not abort on one bad registration - the backtester still reports
+        # the syntax error when that strategy is the one being run.
+        return False
+    names: set[str] = set()
+    called: set[str] = set()
+    for ast in asts:
+        names |= _identifiers(ast)
+        called |= _call_names(ast)
+    # An unknown *function* passes the identifier check but raises PineNameError
+    # inside the pine_runner's per-ticker loop, which catches only ValueError
+    # and friends. Reject it here, where the answer is "absent from the view".
+    if not called <= FUNC_NAMES:
+        return False
     # Declared bar-local columns are self-contained by construction: each is a
     # pure function of the one frame the pine_runner already has.
     available = SERIES_NAMES | set(spec.bar_columns or ())
     return names <= available
 
 
-#: Built callables, keyed by strategy name. A registry entry is immutable once
-#: added, so caching by name is safe. Memoising matters: without it every read
-#: of :data:`STRATEGIES` builds a fresh function, so the view stops being a
-#: projection in any useful sense
+#: Built callables, keyed by the identity of the spec they were built from.
+#: Memoising matters: without it every read of :data:`STRATEGIES` builds a fresh
+#: function, so the view stops being a projection in any useful sense
 #: (``dict(STRATEGIES.items()) != dict(STRATEGIES)``) and callers that cache or
 #: compare entries by identity break.
-_SYNTHESISED: dict[str, StrategyFn] = {}
+#:
+#: Keyed by identity rather than by name because a name can be re-registered:
+#: ``Registry.remove`` exists for temporary registrations, so ``foo`` removed
+#: and re-added as a different spec would otherwise get the first spec's stale
+#: closure back. The spec is held alongside the callable so its ``id`` stays
+#: reserved for as long as the entry does.
+_SYNTHESISED: dict[int, tuple[ExpressionStrategySpec, StrategyFn]] = {}
 
 
 def _expression_callable(spec: ExpressionStrategySpec) -> StrategyFn:
     """Synthesise the pine_runner's callable from an expression strategy."""
-    cached = _SYNTHESISED.get(spec.name)
+    cached = _SYNTHESISED.get(id(spec))
     if cached is not None:
-        return cached
+        return cached[1]
 
     def _run(df: pd.DataFrame) -> list[ResearchTrade]:
         bars = apply_bar_columns(spec.bar_columns, df)
@@ -126,7 +168,7 @@ def _expression_callable(spec: ExpressionStrategySpec) -> StrategyFn:
 
     _run.__name__ = f"strat_{spec.name}"
     _run.__doc__ = f"Expression strategy {spec.name!r}: entry={spec.entry!r}."
-    _SYNTHESISED[spec.name] = _run
+    _SYNTHESISED[id(spec)] = (spec, _run)
     return _run
 
 
