@@ -265,6 +265,8 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
                 dynamic_size=int(request.universe_size),
                 dynamic_lookback=int(request.universe_lookback),
                 dynamic_rebalance=str(request.universe_rebalance),
+                point_in_time=bool(request.point_in_time),
+                start=start_date,
             )
         except (OSError, ValueError, RuntimeError) as exc:
             raise click.UsageError(str(exc)) from exc
@@ -292,6 +294,10 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
                     "--point-in-time requires snapshot history or the sp500 universe."
                 )
             else:
+                # The sp500 selection could not read its revision history, so
+                # fall back to the weaker "date added" filter: it dates only
+                # today's members, which keeps post-as-of additions out but
+                # cannot bring removed ex-members back.
                 added_by_symbol = load_sp500_membership(
                     as_of=end_date, use_cache=not request.no_universe_cache
                 )
