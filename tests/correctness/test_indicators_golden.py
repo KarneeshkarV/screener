@@ -56,34 +56,50 @@ def test_atr_first_bar_true_range_golden():
 
 
 def test_rsi_all_up_warmup_nan_then_100():
-    """A strictly increasing series: the n-1 warm-up bars are NaN (RMA warm-up
-    convention); post-warm-up bars have zero downside → RSI pinned at 100.
+    """A strictly increasing series: the first n bars are NaN, then RSI is 100.
 
-    (Previously the warm-up region was a spurious 100 because rma_dn=NaN made
-    rs=inf — the NaN-warmup fix removes that false overbought signal.)
+    n, not n-1. Bar 0 has no prior close, so its change is undefined and the
+    smoother has only n real changes to seed off by bar n. Past that every bar
+    has zero downside, so RSI pins at 100.
     """
     n = 3
     close = np.array([10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
     got = rsi(close, n)
-    assert np.isnan(got[: n - 1]).all()
-    assert np.all(got[n - 1 :] == 100.0)
+    assert np.isnan(got[:n]).all()
+    assert np.all(got[n:] == 100.0)
 
 
 def test_rsi_mixed_golden():
     close = np.array([10.0, 11.0, 10.5, 11.5, 11.0])
     got = rsi(close, 3)
-    # diff (prepend close[0]) = [0, 1, -0.5, 1, -0.5]
-    # up=[0,1,0,1,0], dn=[0,0,.5,0,.5]; rma(n=3) seeds at idx2.
-    rma_up2 = (0 + 1 + 0) / 3
-    rma_dn2 = (0 + 0 + 0.5) / 3
-    rsi2 = 100 - 100 / (1 + rma_up2 / rma_dn2)  # = 66.666...
-    rma_up3 = (1 / 3) * 1 + (2 / 3) * rma_up2
-    rma_dn3 = (1 / 3) * 0 + (2 / 3) * rma_dn2
-    rsi3 = 100 - 100 / (1 + rma_up3 / rma_dn3)  # = 83.333...
+    # diff = [nan, 1, -0.5, 1, -0.5], because bar 0 has no prior close.
+    # up=[nan,1,0,1,0], dn=[nan,0,.5,0,.5]; the 3 seeding observations are
+    # bars 1..3, so rma(n=3) seeds at idx3 - not idx2.
+    rma_up3 = (1 + 0 + 1) / 3
+    rma_dn3 = (0 + 0.5 + 0) / 3
+    rsi3 = 100 - 100 / (1 + rma_up3 / rma_dn3)  # = 80.0
     rma_up4 = (1 / 3) * 0 + (2 / 3) * rma_up3
     rma_dn4 = (1 / 3) * 0.5 + (2 / 3) * rma_dn3
-    rsi4 = 100 - 100 / (1 + rma_up4 / rma_dn4)  # = 60.606...
-    np.testing.assert_allclose(got[2:], [rsi2, rsi3, rsi4], atol=1e-9, rtol=0)
+    rsi4 = 100 - 100 / (1 + rma_up4 / rma_dn4)  # = 61.538...
+    assert np.isnan(got[:3]).all()
+    np.testing.assert_allclose(got[3:], [rsi3, rsi4], atol=1e-9, rtol=0)
+
+
+def test_the_two_rsi_implementations_are_now_the_same_number():
+    """``indicators/plugins/rsi.py`` and ``frames.wilder_rsi`` had different
+    seeds and so were permanently 0.3-0.9 RSI points apart. Both now implement
+    Pine ``ta.rsi``, so parity is exact, not asymptotic.
+    """
+    close = np.array([10.0, 11.0, 10.5, 11.5, 11.0, 12.0, 11.5, 12.5, 12.0])
+    numpy_side = rsi(close, 3)
+    pandas_side = wilder_rsi(pd.Series(close), 3).to_numpy()
+
+    np.testing.assert_array_equal(np.isnan(numpy_side), np.isnan(pandas_side))
+    finite = ~np.isnan(numpy_side)
+    assert finite.sum() > 0
+    np.testing.assert_allclose(
+        numpy_side[finite], pandas_side[finite], atol=1e-12, rtol=0
+    )
 
 
 def test_supertrend_direction_trend_contract():

@@ -192,7 +192,14 @@ def wilder_atr(
     min_periods: int = 0,
     first_bar: Literal["high_low", "nan"] = "high_low",
 ) -> pd.Series | pd.DataFrame:
-    """Return Average True Range using Wilder smoothing."""
+    """Return Average True Range using Wilder smoothing.
+
+    Matches Pine ``ta.atr``, which is ``ta.rma(ta.tr(true), length)``: the
+    smoother seeds off the mean of the first ``length`` true ranges, not off
+    the first one alone. With the default ``first_bar="high_low"`` the true
+    range is defined from bar 0, so the first value lands on bar
+    ``length - 1``; with ``"nan"`` it lands on bar ``length``.
+    """
     ranges: pd.Series | pd.DataFrame
     if (
         isinstance(high, pd.Series)
@@ -207,7 +214,11 @@ def wilder_atr(
             cast(pd.DataFrame, close),
             first_bar=first_bar,
         )
-    return ranges.ewm(alpha=1.0 / period, adjust=False, min_periods=min_periods).mean()
+    smoothed = _wilder_rma(ranges, period)
+    if min_periods > 0:
+        enough = (ranges.notna().cumsum() >= min_periods).to_numpy()
+        smoothed = smoothed.where(enough)
+    return smoothed
 
 
 def on_balance_volume(close: pd.DataFrame, volume: pd.DataFrame) -> pd.DataFrame:

@@ -100,13 +100,15 @@ def _rsi_series(bars: pd.DataFrame) -> pd.Series:
     )
 
 
-@bar_column(15)
+# 16, not 15: ``rsi(close, 14)`` first resolves on bar 14 - bar 0 has no
+# change to smooth - and ``shift(1)`` carries that to bar 15, the 16th bar.
+@bar_column(16)
 def rsi_prev5_min(bars: pd.DataFrame) -> pd.Series:
     """Lowest RSI over the previous 5 bars, excluding the current one."""
     return _rsi_series(bars).shift(1).rolling(5, min_periods=1).min()
 
 
-@bar_column(15)
+@bar_column(16)
 def rsi_prev5_max(bars: pd.DataFrame) -> pd.Series:
     """Highest RSI over the previous 5 bars, excluding the current one."""
     return _rsi_series(bars).shift(1).rolling(5, min_periods=1).max()

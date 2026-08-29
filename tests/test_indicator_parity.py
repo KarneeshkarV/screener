@@ -8,24 +8,20 @@ while the plugins operate on numpy arrays for speed.
 If these diverge numerically, downstream backtests can't be compared. This
 module feeds a deterministic OHLCV frame through both and asserts parity.
 
-Convergence notes:
+Parity notes:
   * SMA / EMA / highest / lowest: seeded identically; exact match (1e-9).
-  * RSI and ATR use Wilder smoothing (alpha = 1/n) with two different seeds,
-    and the difference is deliberate rather than accidental. The pandas path
-    (screener/indicators/frames.py, used by the AST evaluator and by
-    unusual_volume) seeds via ewm(adjust=False), which initializes from the
-    first value. The numpy plugin path seeds from the arithmetic mean of the
-    first n values, because screener/indicators/plugins/rma.py exists
-    specifically to match Pine's ``ta.rma`` so strategies ported from
-    TradingView reproduce their published numbers.
+  * RSI and ATR use Wilder smoothing (alpha = 1/n), and both paths now seed it
+    the way Pine ``ta.rma`` does: from the arithmetic mean of the first n
+    observations. Parity is therefore exact over the whole series, NaN warm-up
+    included - not asymptotic.
 
-    Measured on a 300-bar frame: the two differ by ~2e-2 at bar 13, ~1e-3 at
-    bar 50, and ~1e-11 by bar 299. So the test asserts tight parity only AFTER
-    a long warm-up (>= 200 bars).
-
-    Collapsing them onto one seed is therefore not a cleanup: choosing ewm
-    breaks Pine fidelity for ported strategies, and choosing rma moves the
-    engine's warm-up numbers. Leave both, and pick the right one per caller.
+    This used to be a documented divergence. The pandas path seeded via
+    ``ewm(adjust=False)``, which starts from the first value alone, and the
+    two differed by ~2e-2 at bar 13 and ~1e-3 at bar 50; the numpy path
+    manufactured a zero change on bar 0, which held it ~0.3-0.9 RSI points
+    off TradingView forever. Both were defects against Pine, not a trade-off
+    between two valid conventions, so the tolerance here is now zero and a
+    reappearing seed difference is a failure rather than a note.
 """
 
 from __future__ import annotations
@@ -89,20 +85,21 @@ def test_highest_lowest_parity(bars):
         assert np.max(np.abs(engine[mask] - port[mask])) < 1e-9, f"{op} diverges"
 
 
-def test_rsi_converges_after_warmup(bars):
-    """RSI seeds differ, but the two smoothers converge exponentially.
-    Require tight agreement after ~14 * 14 bars of warm-up (>=200 bars)."""
+def test_rsi_matches_exactly_including_the_warmup(bars):
+    """Both paths are Pine ``ta.rsi``, so they agree bar for bar from bar 0."""
     engine = pine_rsi(bars["close"], 14).to_numpy()
     port = pp_rsi(bars["close"].to_numpy(), 14)
-    tail_engine = engine[200:]
-    tail_port = port[200:]
-    mask = _aligned_mask(tail_engine, tail_port)
-    assert mask.sum() > 0
-    # after 200 bars the seed difference has decayed by (1 - 1/14)**186 ≈ 2e-6
-    assert np.max(np.abs(tail_engine[mask] - tail_port[mask])) < 1e-3
+
+    # The NaN run is part of the answer: a path that starts a bar early is
+    # wrong even where its finite values happen to line up.
+    np.testing.assert_array_equal(np.isnan(engine), np.isnan(port))
+    finite = ~np.isnan(engine)
+    assert finite.sum() > 0
+    np.testing.assert_allclose(engine[finite], port[finite], atol=1e-12, rtol=0)
 
 
-def test_atr_converges_after_warmup(bars):
+def test_atr_matches_exactly_including_the_warmup(bars):
+    """Both paths are Pine ``ta.atr`` = ``ta.rma(ta.tr(true), n)``."""
     engine = pine_atr(bars, 14).to_numpy()
     port = pp_atr(
         bars["high"].to_numpy(),
@@ -110,11 +107,11 @@ def test_atr_converges_after_warmup(bars):
         bars["close"].to_numpy(),
         14,
     )
-    tail_engine = engine[100:]
-    tail_port = port[100:]
-    mask = _aligned_mask(tail_engine, tail_port)
-    assert mask.sum() > 0
-    assert np.max(np.abs(tail_engine[mask] - tail_port[mask])) < 1e-2
+
+    np.testing.assert_array_equal(np.isnan(engine), np.isnan(port))
+    finite = ~np.isnan(engine)
+    assert finite.sum() > 0
+    np.testing.assert_allclose(engine[finite], port[finite], atol=1e-12, rtol=0)
 
 
 def test_rsi_bounds_both_implementations(bars):
