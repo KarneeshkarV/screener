@@ -53,12 +53,20 @@ from screener.strategies.spec import (
 from screener.strategies.spec import registry as strategy_registry
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from screener.backtester.fundamentals import FundamentalFetcher
     from screener.backtester.signal_panel import Candidate
 
 #: Calendar days of window handed to the candidate layer. The screen asks for
 #: one date, but that date can be a weekend or a holiday, so the window has to
 #: hold at least one bar for the as-of snap-back to land on.
 _WINDOW_SLACK_DAYS = 15
+
+#: Window used instead when the strategy reads fundamentals. A provider frame
+#: is clipped to the fetch window before it is merged, so a window shorter than
+#: a reporting cycle can contain no filing at all and forward-fill nothing -
+#: which reads downstream as "the fundamental gate failed", not as "no data".
+#: Five quarters always contains at least one filing.
+_FUNDAMENTAL_WINDOW_DAYS = 460
 
 #: Names a bar-path screen must produce for history and display. ``save_run``
 #: reads ``name`` as the ticker, so it is not optional.
@@ -130,10 +138,14 @@ def resolve_screen_strategy(names: Sequence[str]) -> ScreenStrategy | None:
     if not aliased:
         return None
     if len(selected) > 1:
+        others = sorted(set(selected) - set(aliased))
+        # With two strategy aliases the difference is empty, and "cannot be
+        # combined with []" reads as a bug rather than as the refusal it is.
+        combined = f"with {others}" if others else "with each other"
         raise UnscreenableStrategyError(
             f"criteria {sorted(aliased)} name strategies, which carry a whole "
             "entry rule rather than a filter set, so they cannot be combined "
-            f"with {sorted(set(selected) - set(aliased))}. Screen one at a time."
+            f"{combined}. Screen one at a time."
         )
     name = aliased[0]
     spec = aliased_strategy(name)
@@ -208,7 +220,12 @@ def _bar_display_row(bars: pd.DataFrame, ticker: str) -> dict[str, object]:
     change = (close / previous - 1.0) * 100.0 if previous else float("nan")
     return {
         "ticker": ticker,
-        "name": ticker,
+        # ``name`` is the plain symbol everywhere else - history keys on it and
+        # both enrichment paths look it up by it - so the exchange prefix that
+        # only the bar path carries has to come off here, or ``--earnings``
+        # answers None for every row and saved runs key differently from every
+        # other screen.
+        "name": ticker.split(":", 1)[-1],
         "description": "",
         "close": close,
         "change": change,
@@ -243,6 +260,7 @@ def screen_candidates(
     as_of: date,
     scanned: pd.DataFrame | None = None,
     limit: int | None = None,
+    order_by: str | None = None,
     refresh: bool = False,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
     strict: bool = False,
@@ -264,6 +282,12 @@ def screen_candidates(
     path ranks off bars, so serving a stale panel here would rank a run on
     bars that were not actually refreshed. ``strict`` without ``refresh`` is a
     no-op, exactly as on the bar-score path.
+
+    ``limit`` and ``order_by`` are applied to the finished frame rather than
+    inside the candidate layer, so ``setup_score`` is a percentile of every
+    candidate the rule found instead of a percentile of the top ``limit`` -
+    which would make the same name score differently at ``-n 10`` and
+    ``-n 100``.
     """
     from screener.backtester.data import build_price_fetcher
     from screener.backtester.price_panel import PricePanelInputs, build_price_panel
@@ -278,13 +302,18 @@ def screen_candidates(
 
     profile = strategy.spec.profile or DEFAULT_STRATEGY_PROFILE
     venue = get_market(market)
+    entry_expr = profile.entry_expr or strategy.spec.entry
+    exit_expr = profile.exit_expr or strategy.spec.exit
+    fundamental_fetcher, fundamentals_provider = _fundamentals_for(
+        entry_expr, exit_expr, market=market, refresh=refresh
+    )
     end_ts = pd.Timestamp(as_of)
-    start_ts = end_ts - pd.Timedelta(days=_WINDOW_SLACK_DAYS)
+    start_ts = end_ts - pd.Timedelta(days=_window_days(fundamental_fetcher))
 
     signal_inputs = SignalPanelInputs(
         market=market,
-        entry_expr=profile.entry_expr or strategy.spec.entry,
-        exit_expr=profile.exit_expr or strategy.spec.exit,
+        entry_expr=entry_expr,
+        exit_expr=exit_expr,
         regime_filter=profile.regime_filter,
         earnings_blackout_days=profile.earnings_blackout_days,
         sector_neutral=profile.sector_neutral,
@@ -310,7 +339,7 @@ def screen_candidates(
         interval="1d",
         price_adjustment=price_adjustment,
         strategy_name=strategy.spec.name,
-        fundamentals_provider=None,
+        fundamentals_provider=fundamentals_provider,
     )
     fetcher = build_price_fetcher(
         auto_adjust=(price_adjustment == "full"), refresh=refresh, strict=strict
@@ -324,6 +353,7 @@ def screen_candidates(
         start_ts=start_ts,
         end_ts=end_ts,
         warnings=warnings,
+        fundamental_fetcher=fundamental_fetcher,
     )
     day = build_day_candidates(
         signal_inputs,
@@ -333,17 +363,34 @@ def screen_candidates(
         start_ts=start_ts,
         end_ts=end_ts,
         warnings=warnings,
-        limit=limit,
+        limit=None,
     )
-    return _candidate_frame(day.candidates, panel.bars_by_tv, scanned)
+    return _candidate_frame(
+        day.candidates,
+        panel.bars_by_tv,
+        scanned,
+        limit=limit,
+        order_by=order_by,
+        warnings=warnings,
+    )
 
 
 def _candidate_frame(
     candidates: Sequence[Candidate],
     bars_by_tv: dict[str, pd.DataFrame],
     scanned: pd.DataFrame | None,
+    *,
+    limit: int | None = None,
+    order_by: str | None = None,
+    warnings: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Render candidates as the screen's result frame, in rank order."""
+    """Render candidates as the screen's result frame, in rank order.
+
+    ``order_by`` re-sorts the finished rows the way the snapshot path lets
+    ``--sort`` re-sort a scan; the rule still decides membership, so only the
+    presentation order changes. ``limit`` is applied last, after the score, so
+    the score does not depend on it.
+    """
     if not candidates:
         return pd.DataFrame(columns=[*_DISPLAY_COLUMNS, OUTPUT_SCORE_COLUMN])
     scores = _scores(candidates)
@@ -363,7 +410,84 @@ def _candidate_frame(
             return pd.DataFrame(columns=[*_DISPLAY_COLUMNS, OUTPUT_SCORE_COLUMN])
         order = list(rows["ticker"])
     rows[OUTPUT_SCORE_COLUMN] = [float(scores[t]) for t in order]
+    rows = _sorted_rows(rows, order_by, warnings)
+    if limit is not None:
+        rows = rows.head(limit)
     return rows.reset_index(drop=True)
+
+
+def _sorted_rows(
+    rows: pd.DataFrame, order_by: str | None, warnings: list[str] | None
+) -> pd.DataFrame:
+    """Order the finished rows by ``order_by``, descending.
+
+    ``setup_score`` and ``None`` both mean "keep rank order": the rows arrive
+    ranked by exactly what the score is a percentile of, so re-sorting on it
+    would only reorder ties. Any other name is a column of the display frame -
+    a TradingView column in default mode - and is refused loudly rather than
+    silently ignored when the frame does not carry it, which is the whole
+    failure this replaces.
+    """
+    if order_by is None or order_by == OUTPUT_SCORE_COLUMN:
+        return rows
+    if order_by not in rows.columns:
+        if warnings is not None:
+            warnings.append(
+                f"--sort {order_by} is not a column of this screen's results, "
+                "so the rows keep the rule's own rank order."
+            )
+        return rows
+    return rows.sort_values(order_by, ascending=False, kind="stable")
+
+
+def _window_days(fundamental_fetcher: FundamentalFetcher | None) -> int:
+    """Calendar days of window to build the panel over."""
+    return (
+        _WINDOW_SLACK_DAYS
+        if fundamental_fetcher is None
+        else max(_WINDOW_SLACK_DAYS, _FUNDAMENTAL_WINDOW_DAYS)
+    )
+
+
+def _fundamentals_for(
+    entry_expr: str | None,
+    exit_expr: str | None,
+    *,
+    market: str,
+    refresh: bool,
+) -> tuple[FundamentalFetcher | None, str | None]:
+    """The fundamentals fetcher this strategy's expressions need, if any.
+
+    A strategy naming ``revenue_up_3q`` or ``eps_growth_yoy`` has no such
+    column on bars until a provider merges it in. Without this the name simply
+    failed to resolve per ticker, and the per-ticker guard turned that into a
+    warning and an empty screen - a refusal dressed as a result. The provider
+    default matches the backtester's, so the two paths fetch the same values.
+    """
+    from screener.backtester.cli_common import referenced_fundamental_fields
+    from screener.backtester.fundamentals import (
+        build_fundamental_fetcher,
+        fundamental_filing_lag_days,
+    )
+
+    needed = referenced_fundamental_fields(entry_expr, exit_expr)
+    if not needed:
+        return None, None
+    provider = "fmp" if market == "us" else "openscreener"
+    try:
+        fetcher = build_fundamental_fetcher(
+            provider,
+            market=market,
+            fields=tuple(sorted(needed)),
+            lag_days=max(fundamental_filing_lag_days(provider), 0),
+            refresh=refresh,
+        )
+    except ValueError as exc:
+        raise UnscreenableStrategyError(
+            f"this strategy reads {sorted(needed)}, which needs a fundamentals "
+            f"provider, and none supports -m {market}: {exc}"
+        ) from exc
+    return fetcher, provider
 
 
 __all__ = [

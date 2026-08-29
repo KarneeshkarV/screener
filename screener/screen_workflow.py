@@ -43,6 +43,12 @@ from screener.scoring import (
 
 LOG = logging.getLogger(__name__)
 
+#: Upper bound on the prefilter scan, which exists only to stop an unbounded
+#: vendor request - not to rank. It is well above the size of either market's
+#: listed universe, so in practice the scan returns every name the prefilter
+#: matched and the bar rule sees the whole field.
+_PREFILTER_CANDIDATE_CAP = 5000
+
 
 def temp_report_path(prefix: str) -> Path:
     """Lazy wrapper so the CSV path skips reporting helpers."""
@@ -214,7 +220,12 @@ def _run_bar_screen(
         total, scanned, fetched_at = scan(
             market=request.market,
             filters=prefilter_filters(strategy),
-            limit=request.limit,
+            # NOT ``request.limit``. The scan here is a field cut, not the
+            # result: cutting it to the top ``-n`` names by raw volume would
+            # drop names the bar rule keeps, which is precisely what a
+            # prefilter may never do (D21). ``--limit`` applies to the
+            # candidates the rule returns, and is applied there.
+            limit=_PREFILTER_CANDIDATE_CAP,
             order_by="volume",
             detail=request.detail,
             cache_ttl=parse_ttl(request.cache_ttl, default=900),
@@ -234,6 +245,7 @@ def _run_bar_screen(
         as_of=signal_date,
         scanned=scanned,
         limit=request.limit,
+        order_by=request.order_by,
         refresh=request.refresh,
         price_adjustment=request.price_adjustment,
         strict=request.strict,

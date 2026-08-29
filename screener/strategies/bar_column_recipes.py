@@ -28,8 +28,17 @@ from screener.strategies.spec import bar_column
 ST_PERIOD = 10
 ST_MULT = 3.0
 
+#: Warm-up for the two recursive indicators below. Supertrend and SAR are not
+#: windowed: each bar's value is carried forward from the previous one, seeded
+#: at the first usable bar, so a short window does not give a truncated answer -
+#: it gives a different one. Declaring only the ATR/acceleration period let the
+#: screen evaluate them over ~13 bars while the backtester ran them over years,
+#: which is exactly the divergence this layer exists to remove. One trading
+#: year is long enough for the seed to stop showing in the value.
+RECURSIVE_WARMUP = 250
 
-@bar_column(ST_PERIOD)
+
+@bar_column(RECURSIVE_WARMUP)
 def supertrend_direction(bars: pd.DataFrame) -> pd.Series:
     """Supertrend direction: negative is an uptrend, positive a downtrend."""
     values = supertrend_dir(
@@ -42,7 +51,7 @@ def supertrend_direction(bars: pd.DataFrame) -> pd.Series:
     return pd.Series(values, index=bars.index, dtype=float)
 
 
-@bar_column(3)
+@bar_column(RECURSIVE_WARMUP)
 def parabolic_sar(bars: pd.DataFrame) -> pd.Series:
     return pd.Series(
         sar(
