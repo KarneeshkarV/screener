@@ -6,7 +6,6 @@ fetch/read_html seam in ``screener.universes``. They must never hit the network.
 
 from __future__ import annotations
 
-import json
 from datetime import date
 from types import SimpleNamespace
 
