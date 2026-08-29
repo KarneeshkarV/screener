@@ -10,8 +10,9 @@ injected callables through every call site.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,43 @@ class ScreenRequest:
     # the TradingView prefilter, which is the default. Only a criterion that
     # aliases a strategy has a bar rule to run, so this is refused otherwise.
     universe: str | None = None
+    # Raise StaleDataError instead of serving stale cache when the live scan
+    # fails. When ranking by a bar-derived setup_score, the same flag is
+    # forwarded to the price fetcher, so a failed bar refresh also raises
+    # instead of scoring leftover parquet. That extra refusal only fires
+    # when refresh is also True; strict without refresh still only governs
+    # the scan snapshot. Off by default so existing callers keep the
+    # availability-first behaviour.
+    strict: bool = False
+    # Per-request socket timeout forwarded to requests.post by
+    # tradingview_screener; None keeps the library's blocking default.
+    timeout: float | None = None
+    # Retry attempts for this scan; attempts x timeout is the real wall-clock
+    # budget, so callers cap both together. None keeps the resilience default.
+    retries: int | None = None
+
+
+@dataclass(frozen=True)
+class SignalRow:
+    """One ranked screen row as plain Python types.
+
+    Exists so a consumer of :meth:`ScreenOutcome.signals` can read results
+    without importing pandas: every field is a ``str``/``int``/``float``/None,
+    and the row itself is JSON-serializable. ``rank`` is 1-based row order;
+    an absent or non-positive close is ``None``, never ``0.0``.
+    """
+
+    ticker: str
+    rank: int
+    score: float | None
+    close: float | None
+
+
+# Column spellings in the scan frame, mirroring how history.py maps the same
+# columns into its persisted rows.
+_TICKER_COLUMN = "ticker"
+_SCORE_COLUMN = "setup_score"
+_CLOSE_COLUMN = "close"
 
 
 @dataclass(frozen=True)
@@ -94,16 +132,65 @@ class ScreenOutcome:
     label: str
     total: int
     df: pd.DataFrame
+    # When the payload behind this result was fetched - not when this workflow
+    # returned. A cache hit carries the original fetch time. With --universe
+    # there is no vendor payload, so it is when the bars were read.
+    as_of: datetime
     added: tuple[str, ...] = ()
     removed: tuple[str, ...] = ()
     first_run: bool = False
     report_path: Path | None = None
 
+    def signals(self) -> list[SignalRow]:
+        """The ranked rows as plain objects; no pandas needed to read them.
+
+        Rank follows row order (the frame is already sorted by the workflow).
+        Missing score/close columns degrade to ``None`` rather than raising,
+        so a consumer gets usable output from any shaped frame.
+        """
+        rows: list[SignalRow] = []
+        for _, record in self.df.iterrows():
+            raw_ticker = record.get(_TICKER_COLUMN)
+            if raw_ticker is None or pd.isna(raw_ticker):
+                continue
+            ticker = str(raw_ticker).strip()
+            # A row with no ticker has no identity, so it cannot be acted on:
+            # a consumer would carry a rank and a price for a name it cannot
+            # place an order in. Skip it rather than emit ``ticker=""``, and
+            # rank AFTER the skip so ranks stay dense and 1-based.
+            if not ticker:
+                continue
+            rows.append(
+                SignalRow(
+                    ticker=ticker,
+                    rank=len(rows) + 1,
+                    score=_plain_float(record.get(_SCORE_COLUMN)),
+                    # A zero or negative price is a data hole, not a price.
+                    close=_plain_float(record.get(_CLOSE_COLUMN), positive=True),
+                )
+            )
+        return rows
+
+
+def _plain_float(value: Any, *, positive: bool = False) -> float | None:
+    """Coerce a cell to ``float | None``, mirroring history's NULL handling."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number):
+        return None
+    if positive and number <= 0:
+        return None
+    return number
+
 
 def _run_bar_screen(
     request: ScreenRequest,
     strategy: ScreenStrategy,
-) -> tuple[int, pd.DataFrame]:
+) -> tuple[int, pd.DataFrame, datetime]:
     """Screen by ``strategy``'s entry rule instead of by TradingView filters.
 
     Two modes, differing only in where the field comes from. With
@@ -114,14 +201,17 @@ def _run_bar_screen(
     ``tests/correctness`` pins.
     """
     warnings: list[str] = []
-    as_of = date.today()
+    signal_date = date.today()
 
     if request.universe:
         tickers = resolve_universe_tickers(request.universe, request.market)
         scanned = None
         total = len(tickers)
+        # No vendor payload in this mode, so the freshness the outcome reports
+        # is the local bar read, which happens now.
+        fetched_at = datetime.now()
     else:
-        total, scanned = scan(
+        total, scanned, fetched_at = scan(
             market=request.market,
             filters=prefilter_filters(strategy),
             limit=request.limit,
@@ -131,6 +221,9 @@ def _run_bar_screen(
             refresh=request.refresh,
             scorer=None,
             price_adjustment=request.price_adjustment,
+            strict=request.strict,
+            timeout=request.timeout,
+            retries=request.retries,
         )
         tickers = [str(t) for t in scanned.get("ticker", pd.Series(dtype=str))]
 
@@ -138,16 +231,17 @@ def _run_bar_screen(
         strategy,
         market=request.market,
         tickers=tickers,
-        as_of=as_of,
+        as_of=signal_date,
         scanned=scanned,
         limit=request.limit,
         refresh=request.refresh,
         price_adjustment=request.price_adjustment,
+        strict=request.strict,
         warnings=warnings,
     )
     for warning in warnings:
         LOG.warning("%s", warning)
-    return total, df
+    return total, df, fetched_at
 
 
 def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
@@ -177,7 +271,7 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
         else None
     )
 
-    total, df = scan(
+    total, df, as_of = scan(
         market=request.market,
         filters=selection.filters,
         limit=request.limit,
@@ -187,9 +281,12 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
         refresh=request.refresh,
         scorer=scorer,
         price_adjustment=request.price_adjustment,
+        strict=request.strict,
+        timeout=request.timeout,
+        retries=request.retries,
     )
 
-    return _finish_screen(request, selection.label, total, df)
+    return _finish_screen(request, selection.label, total, df, as_of)
 
 
 def _finish_screen(
@@ -197,6 +294,7 @@ def _finish_screen(
     label: str,
     total: int,
     df: pd.DataFrame,
+    as_of: datetime,
 ) -> ScreenOutcome:
     """Everything after the candidate set is decided: enrich, persist, report.
 
@@ -217,6 +315,7 @@ def _finish_screen(
             label=label,
             total=total,
             df=df,
+            as_of=as_of,
         )
 
     run_id = save_run(request.market, label, total, df)
@@ -257,6 +356,7 @@ def _finish_screen(
         label=label,
         total=total,
         df=df,
+        as_of=as_of,
         added=tuple(added),
         removed=tuple(removed),
         first_run=first_run,
@@ -268,5 +368,6 @@ __all__ = [
     "ScreenMode",
     "ScreenOutcome",
     "ScreenRequest",
+    "SignalRow",
     "run_screen_workflow",
 ]

@@ -1,13 +1,17 @@
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from tradingview_screener import Query
 
+from screener.cache import frame_meta_paths
 from screener.markets import TV_MARKETS
 from screener.providers import CachedProvider, FrameWithMeta, ProviderSpec
+from screener.resilience import RetryConfig
 from screener.scoring import (
     DEFAULT_PRICE_ADJUSTMENT,
     OUTPUT_SCORE_COLUMN,
@@ -25,10 +29,16 @@ LOG = logging.getLogger(__name__)
 # frame cannot carry, so the entry is a parquet plus a JSON sidecar that expire
 # together. Routing it through the seam (instead of hand-wiring cache lookup +
 # resilience here) is what gives the scanner stale-serve on a provider outage.
+# Named separately from the spec because the sidecar path is resolved from it
+# directly: tests swap SCANNER_PROVIDER for a FakeProvider whose ``spec`` is
+# None, and reading the namespace through the provider would break under the
+# double.
+SCANNER_NAMESPACE = "tradingview_scanner"
+
 SCANNER_PROVIDER: CachedProvider = CachedProvider(
     ProviderSpec(
         provider="tradingview",
-        namespace="tradingview_scanner",
+        namespace=SCANNER_NAMESPACE,
         ttl_seconds=900,
         kind="frame_meta",
     )
@@ -124,7 +134,10 @@ class TradingViewScannerAdapter:
         *,
         cache_ttl: float | None = 900,
         refresh: bool = False,
-    ) -> tuple[int, pd.DataFrame]:
+        timeout: float | None = None,
+        retries: int | None = None,
+        strict: bool = False,
+    ) -> tuple[int, pd.DataFrame, datetime]:
         query = (
             Query()
             .set_markets(MARKETS[plan.market])
@@ -134,7 +147,7 @@ class TradingViewScannerAdapter:
             .limit(plan.fetch_limit)
         )
 
-        return get_scanner_data_cached(
+        return _scanner_entry(
             query,
             key_parts=(
                 "scanner",
@@ -150,10 +163,57 @@ class TradingViewScannerAdapter:
             columns=plan.columns,
             cache_ttl=cache_ttl,
             refresh=refresh,
+            timeout=timeout,
+            retries=retries,
+            strict=strict,
         )
 
 
 TRADINGVIEW_SCANNER = TradingViewScannerAdapter()
+
+
+# Metadata sidecar key holding the wall-clock time the payload was fetched
+# from TradingView. It rides the frame_meta JSON so it survives the parquet
+# round-trip: a cached frame's ``as_of`` stays its original fetch time.
+FETCHED_AT_META_KEY = "fetched_at"
+
+
+def _now_utc() -> datetime:
+    return datetime.now(UTC)
+
+
+def _fetched_at_from_meta(
+    meta: dict[str, Any], sidecar: Path | None = None
+) -> datetime:
+    """Recover the fetch timestamp from a frame_meta sidecar.
+
+    Falls back to the sidecar file's mtime, NOT to "now". Entries written
+    before this key existed carry no timestamp, and "now" would have called
+    them fresh. That is safe on the TTL-gated path, where a served entry really
+    is within the TTL, but wrong on the stale path: ``_read_stale`` ignores the
+    TTL by design, so an arbitrarily old legacy frame would have reported
+    ``as_of=now`` and looked freshly fetched to a caller sizing real orders.
+    The sidecar is written in the same breath as the payload, so its mtime is
+    the fetch time for both paths.
+
+    A naive timestamp is refused for the same reason: comparing it against an
+    aware "now" either raises or silently comes out wrong, and a cache file is
+    not a trustworthy enough source to guess an offset for.
+    """
+    raw = meta.get(FETCHED_AT_META_KEY)
+    if isinstance(raw, str):
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            parsed = None
+        if parsed is not None and parsed.tzinfo is not None:
+            return parsed.astimezone(UTC)
+    if sidecar is not None:
+        try:
+            return datetime.fromtimestamp(sidecar.stat().st_mtime, UTC)
+        except OSError:
+            pass
+    return _now_utc()
 
 
 def get_scanner_data_cached(
@@ -164,11 +224,53 @@ def get_scanner_data_cached(
     operation: str = "scanner data",
     cache_ttl: float | None = 900,
     refresh: bool = False,
+    timeout: float | None = None,
+    retries: int | None = None,
+    strict: bool = False,
 ) -> tuple[int, pd.DataFrame]:
-    def fetch() -> FrameWithMeta:
-        count, df = query.get_scanner_data()
-        return df, {"count": int(count)}
+    """Scanner fetch without the fetch timestamp; see :func:`_scanner_entry`."""
+    count, df, _as_of = _scanner_entry(
+        query,
+        key_parts=key_parts,
+        columns=columns,
+        operation=operation,
+        cache_ttl=cache_ttl,
+        refresh=refresh,
+        timeout=timeout,
+        retries=retries,
+        strict=strict,
+    )
+    return count, df
 
+
+def _scanner_entry(
+    query: Query,
+    *,
+    key_parts: object,
+    columns: list[str],
+    operation: str = "scanner data",
+    cache_ttl: float | None = 900,
+    refresh: bool = False,
+    timeout: float | None = None,
+    retries: int | None = None,
+    strict: bool = False,
+) -> tuple[int, pd.DataFrame, datetime]:
+    def fetch() -> FrameWithMeta:
+        # Forward only an explicit timeout: requests treats ``timeout=None``
+        # the same as absent, and passing nothing keeps stub queries that
+        # declare plain ``get_scanner_data(self)`` working.
+        request_kwargs: dict[str, Any] = (
+            {"timeout": timeout} if timeout is not None else {}
+        )
+        count, df = query.get_scanner_data(**request_kwargs)
+        return df, {
+            "count": int(count),
+            FETCHED_AT_META_KEY: _now_utc().isoformat(),
+        }
+
+    # The real wall-clock budget for a hung socket is attempts x timeout, so
+    # the caller can cap either side independently.
+    retry = RetryConfig(attempts=retries) if retries is not None else None
     result: FrameWithMeta | None = SCANNER_PROVIDER.fetch(
         key_parts,
         fetch,
@@ -176,18 +278,28 @@ def get_scanner_data_cached(
         fallback=None,
         ttl_seconds=cache_ttl,
         operation=operation,
+        retry=retry,
+        strict=strict,
     )
     if result is None:
         # No live data and no cache entry to fall back on. A stale entry would
-        # already have been served (with its own warning) by the provider.
+        # already have been served (with its own warning) by the provider -
+        # unless strict mode raised first.
         LOG.warning(
             "tradingview scan failed for %s; returning empty results "
             "(not cached) - rerun with --refresh once connectivity is back",
             operation,
         )
-        return 0, pd.DataFrame(columns=columns)
+        # Nothing was fetched, so there is no honest fetch time; "now" marks
+        # the moment this empty payload was assembled.
+        return 0, pd.DataFrame(columns=columns), _now_utc()
     frame, meta = result
-    return int(meta.get("count", 0)), frame
+    _, meta_path = frame_meta_paths(SCANNER_NAMESPACE, key_parts)
+    return (
+        int(meta.get("count", 0)),
+        frame,
+        _fetched_at_from_meta(meta, meta_path),
+    )
 
 
 # Re-export for correctness tests that still import from scanner.
@@ -201,16 +313,19 @@ def _add_setup_score(
     market: str | None = None,
     refresh: bool = False,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
+    strict: bool = False,
 ) -> pd.DataFrame:
     """Apply a ranking recipe and write ``setup_score``.
 
     Defaults to the EMA trend setup for backward compatibility with tests and
     call sites that still invoke this helper directly. ``market`` and
     ``refresh`` are only read by bar-derived recipes, which resolve price
-    history for the scanned rows; ``refresh`` bypasses the on-disk bar cache so
-    ``--refresh`` does not rank fresh snapshot rows on stale price history.
-    ``price_adjustment`` is bar-only too. It must match the backtest's
-    ``--price-adjustment`` so both sides score the same closes.
+    history for the scanned rows. ``refresh`` forces a bar download so a
+    fresh snapshot is not ranked on a cache that was never asked to update.
+    A failed download still merges leftover cache (availability-first) unless
+    ``strict`` is also set, in which case the call raises rather than score
+    the leftover bars. ``price_adjustment`` is bar-only too. It must match
+    the backtest's ``--price-adjustment`` so both sides score the same closes.
     """
     active = scorer if scorer is not None else default_scorer()
     return apply_score(
@@ -219,6 +334,7 @@ def _add_setup_score(
         market=market,
         refresh=refresh,
         price_adjustment=price_adjustment,
+        strict=strict,
     )
 
 
@@ -275,6 +391,7 @@ def shape_scan_results(
     market: str | None = None,
     refresh: bool = False,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
+    strict: bool = False,
 ) -> pd.DataFrame:
     """Shape raw scanner rows after Adapter fetch without provider access.
 
@@ -291,6 +408,7 @@ def shape_scan_results(
             market=market,
             refresh=refresh,
             price_adjustment=price_adjustment,
+            strict=strict,
         )
         shaped = shaped.sort_values(OUTPUT_SCORE_COLUMN, ascending=False)
         drop_cols = _helper_columns_to_drop(active, detail=detail)
@@ -310,7 +428,23 @@ def scan(
     refresh: bool = False,
     scorer: ScoreSpec | None = None,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
-) -> tuple[int, pd.DataFrame]:
+    timeout: float | None = None,
+    retries: int | None = None,
+    strict: bool = False,
+) -> tuple[int, pd.DataFrame, datetime]:
+    """Run one scan and return ``(total_matches, frame, as_of)``.
+
+    ``as_of`` is when the payload was fetched from TradingView, not when this
+    call returned - a cache hit reports the original fetch time. ``timeout``
+    caps each underlying request (forwarded to ``requests.post``);
+    ``retries`` overrides the resilience retry attempts for this scan.
+    ``strict=True`` raises :class:`StaleDataError` instead of serving stale
+    cache when the live fetch fails. When ranking by a bar-derived
+    ``setup_score``, ``strict`` is also forwarded to the price fetcher, so a
+    failed bar refresh raises the same error instead of scoring leftover
+    cache. That extra refusal only fires when ``refresh=True`` as well;
+    ``strict`` without ``refresh`` still only governs the scan snapshot.
+    """
     plan = build_scanner_plan(
         market=market,
         filters=filters,
@@ -319,12 +453,15 @@ def scan(
         detail=detail,
         scorer=scorer,
     )
-    count, df = TRADINGVIEW_SCANNER.fetch(
+    count, df, as_of = TRADINGVIEW_SCANNER.fetch(
         plan,
         cache_ttl=cache_ttl,
         refresh=refresh,
+        timeout=timeout,
+        retries=retries,
+        strict=strict,
     )
-    return count, shape_scan_results(
+    shaped = shape_scan_results(
         df,
         limit=limit,
         order_by=order_by,
@@ -333,4 +470,6 @@ def scan(
         market=market,
         refresh=refresh,
         price_adjustment=price_adjustment,
+        strict=strict,
     )
+    return count, shaped, as_of

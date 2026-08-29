@@ -7,6 +7,8 @@ for scoring must stay small when every extra row costs a price download.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pandas as pd
 
 from screener import scanner as scanner_module
@@ -14,6 +16,8 @@ from screener.scoring import OUTPUT_SCORE_COLUMN, ScoreSpec, get_scorer
 
 BAR_SCORER = "momentum_12_1"
 SNAPSHOT_SCORER = "ema"
+
+_AS_OF = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
 def _scan_frame() -> pd.DataFrame:
@@ -32,18 +36,17 @@ def _scan_frame() -> pd.DataFrame:
     )
 
 
-def _run_scan(monkeypatch, *, refresh: bool) -> dict[str, object]:
+def _run_scan(monkeypatch, *, refresh: bool, strict: bool = False) -> dict[str, object]:
     """Drive ``scan`` with the network seams faked; return what scoring saw."""
     captured: dict[str, object] = {}
 
     def fake_fetch(
         plan: scanner_module.ScannerPlan,
-        *,
-        cache_ttl: float | None = 900,
-        refresh: bool = False,
-    ) -> tuple[int, pd.DataFrame]:
+        **kwargs: object,
+    ) -> tuple[int, pd.DataFrame, datetime]:
         captured["snapshot_refresh"] = refresh
-        return 1, _scan_frame()
+        captured["snapshot_strict"] = kwargs.get("strict", False)
+        return 1, _scan_frame(), _AS_OF
 
     def fake_apply_score(
         df: pd.DataFrame,
@@ -51,9 +54,11 @@ def _run_scan(monkeypatch, *, refresh: bool) -> dict[str, object]:
         *,
         market: str | None = None,
         refresh: bool = False,
+        strict: bool = False,
         **kwargs: object,
     ) -> pd.DataFrame:
         captured["score_refresh"] = refresh
+        captured["score_strict"] = strict
         captured["score_market"] = market
         captured["score_name"] = spec.name
         return df.assign(**{OUTPUT_SCORE_COLUMN: [1.0]})
@@ -67,6 +72,7 @@ def _run_scan(monkeypatch, *, refresh: bool) -> dict[str, object]:
         limit=5,
         order_by=OUTPUT_SCORE_COLUMN,
         refresh=refresh,
+        strict=strict,
         scorer=get_scorer(BAR_SCORER),
     )
     return captured
@@ -77,6 +83,7 @@ def test_scan_refresh_reaches_the_bar_score_not_only_tradingview(monkeypatch):
 
     assert captured["snapshot_refresh"] is True
     assert captured["score_refresh"] is True
+    assert captured["score_strict"] is False
     assert captured["score_market"] == "india"
     assert captured["score_name"] == BAR_SCORER
 
@@ -86,6 +93,24 @@ def test_scan_without_refresh_leaves_the_bar_cache_alone(monkeypatch):
 
     assert captured["snapshot_refresh"] is False
     assert captured["score_refresh"] is False
+    assert captured["score_strict"] is False
+
+
+def test_scan_strict_refresh_reaches_the_bar_score_not_only_tradingview(monkeypatch):
+    captured = _run_scan(monkeypatch, refresh=True, strict=True)
+
+    assert captured["snapshot_strict"] is True
+    assert captured["score_refresh"] is True
+    assert captured["score_strict"] is True
+
+
+def test_scan_strict_without_refresh_still_forwards_strict_to_scoring(monkeypatch):
+    """strict without refresh still reaches scoring so the fetcher can no-op it."""
+    captured = _run_scan(monkeypatch, refresh=False, strict=True)
+
+    assert captured["snapshot_strict"] is True
+    assert captured["score_refresh"] is False
+    assert captured["score_strict"] is True
 
 
 def test_shape_scan_results_forwards_refresh_to_the_scorer(monkeypatch):
@@ -114,6 +139,38 @@ def test_shape_scan_results_forwards_refresh_to_the_scorer(monkeypatch):
     )
 
     assert seen["refresh"] is True
+
+
+def test_shape_scan_results_forwards_strict_to_the_scorer(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def fake_apply_score(
+        df: pd.DataFrame,
+        spec: ScoreSpec,
+        *,
+        market: str | None = None,
+        refresh: bool = False,
+        strict: bool = False,
+        **kwargs: object,
+    ) -> pd.DataFrame:
+        seen["refresh"] = refresh
+        seen["strict"] = strict
+        return df.assign(**{OUTPUT_SCORE_COLUMN: [1.0]})
+
+    monkeypatch.setattr(scanner_module, "apply_score", fake_apply_score)
+
+    scanner_module.shape_scan_results(
+        _scan_frame(),
+        limit=5,
+        order_by=OUTPUT_SCORE_COLUMN,
+        scorer=get_scorer(BAR_SCORER),
+        market="india",
+        refresh=True,
+        strict=True,
+    )
+
+    assert seen["refresh"] is True
+    assert seen["strict"] is True
 
 
 def _plan_limit(scorer_name: str | None, *, limit: int, order_by: str) -> int:

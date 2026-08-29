@@ -270,6 +270,7 @@ def apply_score(
     fetcher: "PriceFetcher | None" = None,
     refresh: bool = False,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
+    strict: bool = False,
 ) -> pd.DataFrame:
     """Assign ``setup_score`` from ``spec`` without sorting or dropping columns.
 
@@ -280,6 +281,15 @@ def apply_score(
     the backtest's ``--price-adjustment`` so the raw values are the same
     numbers. Snapshot recipes ignore it. TradingView serves one set of
     columns regardless of the adjustment.
+
+    ``refresh`` is bar-derived only: it is forwarded to
+    :func:`screener.backtester.data.build_price_fetcher` so the on-disk bar
+    cache is asked to update. A failed download still merges leftover cache
+    (the availability-first default). ``strict=True`` together with
+    ``refresh=True`` refuses that merge and raises
+    :class:`~screener.providers.StaleDataError` instead. ``strict`` without
+    ``refresh`` is ignored here; that flag's scan-snapshot meaning lives
+    on the TradingView fetch. Snapshot recipes ignore both flags.
 
     An empty frame short-circuits to an empty scored frame for every ``spec``,
     bar-derived included: with no rows there is no price history to resolve, so
@@ -304,6 +314,7 @@ def apply_score(
             fetcher=fetcher,
             refresh=refresh,
             price_adjustment=price_adjustment,
+            strict=strict,
         )
     scores = spec.score_fn(df)
     return df.assign(**{OUTPUT_SCORE_COLUMN: pd.to_numeric(scores, errors="coerce")})

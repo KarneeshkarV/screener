@@ -324,7 +324,7 @@ def load_garp_universe(
             col("close") >= market_meta.screen_min_close,
             col("market_cap_basic") >= US_MIN_USD,
         ]
-    _total, df = scan(
+    _total, df, _as_of = scan(
         market=market,
         filters=filters,
         limit=universe_size,

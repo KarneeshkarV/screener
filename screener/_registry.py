@@ -35,6 +35,11 @@ class Registry(Generic[T]):
         if meta:
             self._meta[name] = dict(meta)
 
+    def remove(self, name: str) -> None:
+        """Drop an entry. The inverse of ``add``, for temporary registrations."""
+        self._entries.pop(name, None)
+        self._meta.pop(name, None)
+
     def get(self, name: str) -> T:
         try:
             return self._entries[name]

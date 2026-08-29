@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pandas as pd
 import pytest
 
@@ -453,15 +455,18 @@ def _request(*, criteria: tuple[str, ...], order_by: str) -> ScreenRequest:
     )
 
 
+_AS_OF = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+
+
 def test_screen_sorted_by_a_column_never_resolves_a_scorer(monkeypatch) -> None:
     # `--sort volume` computes no score at all, so a scoring refusal must not
     # fire: the run has no ranking recipe to refuse. Both names here are
     # filters-only criteria, which is what makes combining them legal.
     captured: dict[str, object] = {}
 
-    def fake_scan(**kwargs: object) -> tuple[int, pd.DataFrame]:
+    def fake_scan(**kwargs: object) -> tuple[int, pd.DataFrame, datetime]:
         captured.update(kwargs)
-        return 1, pd.DataFrame({"name": ["AAA"], "description": ["AAA Ltd"]})
+        return 1, pd.DataFrame({"name": ["AAA"], "description": ["AAA Ltd"]}), _AS_OF
 
     monkeypatch.setattr(screen_workflow, "scan", fake_scan)
 

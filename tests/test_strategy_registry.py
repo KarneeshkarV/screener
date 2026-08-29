@@ -213,6 +213,50 @@ def test_strategy_spec_validation_and_decorator_metadata():
     assert len(strategy_spec_module.registry) == reg_size + 1
 
 
+def test_prepare_bars_requires_required_lookback():
+    def _prep(ctx: PrepareCtx) -> dict:
+        return ctx.bars_by_tv
+
+    with pytest.raises(
+        ValidationError, match="prepare_bars requires required_lookback"
+    ):
+        ExpressionStrategySpec(
+            name="broken_prep",
+            entry="close > 0",
+            prepare_bars=_prep,
+        )
+    with pytest.raises(
+        ValidationError, match="prepare_bars requires required_lookback"
+    ):
+        register_expression_strategy(
+            "broken_prep_register",
+            entry="close > 0",
+            prepare_bars=_prep,
+        )
+
+    # Zero is an explicit floor, not a missing one.
+    ok = ExpressionStrategySpec(
+        name="explicit_zero_lookback",
+        entry="close > 0",
+        prepare_bars=_prep,
+        required_lookback=lambda: 0,
+    )
+    assert ok.required_lookback is not None
+    assert ok.required_lookback() == 0
+
+
+def test_registered_prepare_bars_strategies_declare_a_lookback():
+    discover_plugins()
+    missing = [
+        name
+        for name, spec in strategy_spec_module.registry.items()
+        if isinstance(spec, ExpressionStrategySpec)
+        and spec.prepare_bars is not None
+        and spec.required_lookback is None
+    ]
+    assert missing == []
+
+
 def test_callable_strategy_decorator_builds_explicit_callable_spec():
     name = "unit_test_callable_spec"
 

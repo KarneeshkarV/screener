@@ -27,6 +27,7 @@ from screener.backtester.core import (
     _benchmark_series_from_panel,
     _resolve_universe,
     prepare_strategy_bars,
+    strategy_required_lookback,
 )
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fundamentals import (
@@ -137,7 +138,10 @@ def build_price_panel(
 
     ``entry_ast``/``exit_ast``/``lookback`` come from the signal side: the panel
     does not parse expressions, it is told how much warmup history to buy and
-    which option legs the expressions reference.
+    which option legs the expressions reference. The strategy's own
+    ``required_lookback`` still has to raise that floor *before* the fetch:
+    a prepared column such as ``low_volatility``'s 253-bar ``vol_252`` is
+    invisible to the AST.
     """
     from screener.backtester.data import tv_to_yf
 
@@ -152,6 +156,8 @@ def build_price_panel(
     # via bars-per-session (with slack for weekends/holidays) so we don't request
     # ~365 days of minute data - which both blows past yfinance's intraday cap
     # and is unnecessary. Chunking longer intraday windows is Phase 2.
+    # Buy enough history for prepared columns, not just the entry/exit AST.
+    lookback = max(lookback, strategy_required_lookback(inputs.strategy_name, warnings))
     warmup_days = _warmup_days_for_interval(lookback, inputs.interval)
     fetch_start = (start_ts - pd.Timedelta(days=warmup_days)).date()
     fetch_end = end_ts.date()
@@ -173,7 +179,7 @@ def build_price_panel(
     for tv in tv_symbols:
         panel_bars = price_panel.get(yf_by_tv[tv])
         bars_by_tv[tv] = pd.DataFrame() if panel_bars is None else panel_bars
-    bars_by_tv, strategy_lookback = prepare_strategy_bars(
+    bars_by_tv = prepare_strategy_bars(
         inputs.strategy_name,
         bars_by_tv,
         price_panel,
@@ -185,7 +191,6 @@ def build_price_panel(
         market=inputs.market,
         benchmark=inputs.benchmark,
     )
-    effective_lookback = max(lookback, strategy_lookback)
 
     if fundamental_fetcher is not None:
         fundamentals = fundamental_fetcher.fetch(
@@ -217,6 +222,6 @@ def build_price_panel(
         yf_by_tv=yf_by_tv,
         bars_by_tv=bars_by_tv,
         benchmark=benchmark,
-        lookback=effective_lookback,
+        lookback=lookback,
         master_dates=_master_dates(bars_by_tv, start_ts, end_ts),
     )

@@ -245,7 +245,7 @@ def load_tv_liquidity_universe(
     price_floor = get_market(market).rs_breakout_min_close
     requested_limit = 5000 if universe_limit == 0 else universe_limit
     filters = [col("type") == "stock", col("close") >= price_floor]
-    _total, df = scan(
+    _total, df, _as_of = scan(
         market=market,
         filters=filters,
         limit=requested_limit,

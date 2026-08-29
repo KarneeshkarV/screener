@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 
 import pandas as pd
 from click.testing import CliRunner
@@ -19,6 +19,8 @@ from screener.backtester.optimization import cli as optimize_cli
 from screener.cli import cli
 from screener.cli import cli as package_cli
 from tests.conftest import StubPriceFetcher, make_bars
+
+_AS_OF = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
 def test_help_includes_backtest_historical():
@@ -139,7 +141,9 @@ def test_screen_auto_temp_report(tmp_path, monkeypatch):
     report = tmp_path / "screen.html"
     monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
     monkeypatch.setattr(workflow_mod, "temp_report_path", lambda prefix: report)
-    monkeypatch.setattr(workflow_mod, "scan", lambda **kwargs: (2, _screen_df()))
+    monkeypatch.setattr(
+        workflow_mod, "scan", lambda **kwargs: (2, _screen_df(), _AS_OF)
+    )
 
     res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2"])
 
@@ -173,7 +177,9 @@ def test_screen_csv_skips_auto_temp_report(tmp_path, monkeypatch):
     report = tmp_path / "screen.html"
     monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
     monkeypatch.setattr(workflow_mod, "temp_report_path", lambda prefix: report)
-    monkeypatch.setattr(workflow_mod, "scan", lambda **kwargs: (2, _screen_df()))
+    monkeypatch.setattr(
+        workflow_mod, "scan", lambda **kwargs: (2, _screen_df(), _AS_OF)
+    )
 
     res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2", "--csv"])
 
@@ -191,7 +197,9 @@ def test_screen_earnings_flag_enables_enrichment(monkeypatch):
         calls.append((df["name"].tolist(), market))
         return df.assign(days_to_earnings=[4, None])
 
-    monkeypatch.setattr(workflow_mod, "scan", lambda **kwargs: (2, _screen_df()))
+    monkeypatch.setattr(
+        workflow_mod, "scan", lambda **kwargs: (2, _screen_df(), _AS_OF)
+    )
     monkeypatch.setattr(workflow_mod, "enrich_days_to_earnings", enrich)
 
     res = CliRunner().invoke(cli, ["screen", "--earnings", "--csv"])
@@ -251,7 +259,7 @@ def test_screen_price_adjustment_flag_reaches_the_bar_scorer(monkeypatch):
     monkeypatch.setattr(
         scanner_module.TRADINGVIEW_SCANNER,
         "fetch",
-        lambda plan, **kwargs: (1, frame),
+        lambda plan, **kwargs: (1, frame, _AS_OF),
     )
 
     runner = CliRunner()

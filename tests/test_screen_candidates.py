@@ -11,7 +11,7 @@ bar path *agrees* with the rolling engine is pinned separately, in
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 import pytest
@@ -226,9 +226,13 @@ class TestWorkflowWiring:
         # on a scale the run does not use.
         captured: dict[str, object] = {}
 
-        def fake_scan(**kwargs: object) -> tuple[int, pd.DataFrame]:
+        def fake_scan(**kwargs: object) -> tuple[int, pd.DataFrame, datetime]:
             captured.update(kwargs)
-            return 2, pd.DataFrame({"ticker": ["NSE:AAA", "NSE:BBB"]})
+            return (
+                2,
+                pd.DataFrame({"ticker": ["NSE:AAA", "NSE:BBB"]}),
+                datetime(2024, 6, 3, 12, 0),
+            )
 
         def fake_candidates(strategy, **kwargs: object) -> pd.DataFrame:
             captured["tickers"] = list(kwargs["tickers"])

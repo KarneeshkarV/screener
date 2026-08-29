@@ -245,6 +245,7 @@ def screen_candidates(
     limit: int | None = None,
     refresh: bool = False,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
+    strict: bool = False,
     warnings: list[str],
 ) -> pd.DataFrame:
     """Rank ``tickers`` by ``strategy``'s entry rule as of ``as_of``.
@@ -258,6 +259,11 @@ def screen_candidates(
     ``scanned`` carries the TradingView snapshot rows in default mode, so the
     display columns stay the ones the screen has always shown. In
     ``--universe`` mode it is ``None`` and the display columns come from bars.
+
+    ``strict`` is forwarded with ``refresh`` to the price fetcher: this whole
+    path ranks off bars, so serving a stale panel here would rank a run on
+    bars that were not actually refreshed. ``strict`` without ``refresh`` is a
+    no-op, exactly as on the bar-score path.
     """
     from screener.backtester.data import build_price_fetcher
     from screener.backtester.price_panel import PricePanelInputs, build_price_panel
@@ -307,7 +313,7 @@ def screen_candidates(
         fundamentals_provider=None,
     )
     fetcher = build_price_fetcher(
-        auto_adjust=(price_adjustment == "full"), refresh=refresh
+        auto_adjust=(price_adjustment == "full"), refresh=refresh, strict=strict
     )
     panel = build_price_panel(
         panel_inputs,

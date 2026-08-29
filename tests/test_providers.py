@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from screener import cache, resilience
-from screener.providers import CachedProvider, FakeProvider, ProviderSpec
+from screener.providers import (
+    CachedProvider,
+    FakeProvider,
+    ProviderSpec,
+    StaleDataError,
+)
 
 
 def _json_provider(ttl: float | None = 60) -> CachedProvider:
@@ -94,6 +100,58 @@ def test_stale_json_cache_is_served_on_failure(tmp_path, monkeypatch, caplog):
 
     assert result == {"old": True}
     assert "Serving stale provider_json cache data" in caplog.text
+
+
+def test_strict_mode_raises_instead_of_serving_stale(tmp_path, monkeypatch):
+    """strict=True trades the availability-first default for fresh-or-error."""
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    provider = _json_provider(ttl=None)
+    retry = resilience.RetryConfig(attempts=1, base_delay=0.0, jitter=0.0)
+
+    assert provider.fetch(("k",), lambda: {"old": True}) == {"old": True}
+
+    def boom() -> dict:
+        raise RuntimeError("provider down")
+
+    with pytest.raises(StaleDataError, match="refuses to serve stale"):
+        provider.fetch(
+            ("k",),
+            boom,
+            fallback={"fallback": True},
+            retry=retry,
+            strict=True,
+        )
+
+
+def test_strict_mode_raises_without_a_cache_entry(tmp_path, monkeypatch):
+    """No stale entry must not quietly degrade strict mode into fallback."""
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    provider = _json_provider()
+    retry = resilience.RetryConfig(attempts=1, base_delay=0.0, jitter=0.0)
+
+    def boom() -> dict:
+        raise RuntimeError("provider down")
+
+    # Non-strict keeps the documented fallback behaviour...
+    assert provider.fetch(("k",), boom, fallback=None, retry=retry) is None
+    # ...while strict raises even when there is nothing stale to refuse.
+    with pytest.raises(StaleDataError):
+        provider.fetch(("k",), boom, fallback=None, retry=retry, strict=True)
+
+
+def test_strict_frame_meta_raises_instead_of_serving_stale(tmp_path, monkeypatch):
+    """The scanner's frame_meta kind honours strict like every other kind."""
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    provider = _frame_meta_provider(ttl=None)
+    retry = resilience.RetryConfig(attempts=1, base_delay=0.0, jitter=0.0)
+
+    provider.fetch(("k",), lambda: (pd.DataFrame({"a": [1]}), {"count": 3}))
+
+    def boom() -> tuple[pd.DataFrame, dict]:
+        raise RuntimeError("provider down")
+
+    with pytest.raises(StaleDataError):
+        provider.fetch(("k",), boom, fallback=None, retry=retry, strict=True)
 
 
 def test_stale_json_null_is_distinguished_from_missing_cache(tmp_path, monkeypatch):
@@ -240,3 +298,13 @@ def test_fake_provider_returns_fallback_on_error():
         raise RuntimeError("down")
 
     assert fake.fetch(("k",), boom, fallback={"x": 1}) == {"x": 1}
+
+
+def test_fake_provider_mirrors_strict_mode():
+    fake = FakeProvider()
+
+    def boom() -> dict:
+        raise RuntimeError("down")
+
+    with pytest.raises(StaleDataError):
+        fake.fetch(("k",), boom, fallback={"x": 1}, strict=True)
