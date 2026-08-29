@@ -46,7 +46,8 @@ LOG = logging.getLogger(__name__)
 #: Upper bound on the prefilter scan, which exists only to stop an unbounded
 #: vendor request - not to rank. It is well above the size of either market's
 #: listed universe, so in practice the scan returns every name the prefilter
-#: matched and the bar rule sees the whole field.
+#: matched and the bar rule sees the whole field. When it does not,
+#: :func:`_run_bar_screen` warns rather than quietly screening a short field.
 _PREFILTER_CANDIDATE_CAP = 5000
 
 
@@ -204,7 +205,9 @@ def _run_bar_screen(
     field is consulted at all. Without it the TradingView prefilter narrows the
     field first, which is only sound because a prefilter may not drop a name
     the bar rule would have kept - the property
-    ``tests/correctness`` pins.
+    ``tests/correctness`` pins. The cap on that scan can break the property on
+    a field wider than it, so the two counts are compared and a short scan is
+    warned about instead of being reported as a whole one.
     """
     warnings: list[str] = []
     signal_date = date.today()
@@ -237,6 +240,20 @@ def _run_bar_screen(
             retries=request.retries,
         )
         tickers = [str(t) for t in scanned.get("ticker", pd.Series(dtype=str))]
+        if total > len(tickers):
+            # The cap exists to bound the request, but a truncated scan is
+            # still a prefilter that dropped names the bar rule never saw -
+            # the one thing a prefilter may not do (D21). The scan orders by
+            # volume, so what went missing is the low-volume tail, and nothing
+            # downstream can recover it. Say so rather than report a partial
+            # field as the whole one.
+            warnings.append(
+                f"prefilter scan returned {len(tickers)} of {total} matching "
+                f"names (cap {_PREFILTER_CANDIDATE_CAP}, ordered by volume), "
+                "so the low-volume tail was never evaluated against the bar "
+                "rule and this result may be missing candidates. Re-run with "
+                "--universe to screen the exact field."
+            )
 
     df = screen_candidates(
         strategy,

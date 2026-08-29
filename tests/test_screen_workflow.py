@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -194,3 +195,76 @@ def test_screen_workflow_previous_run_diff_uses_explicit_report_path(
     assert outcome.removed == ("BBB",)
     assert outcome.report_path == explicit
     assert explicit.exists()
+
+
+def test_bar_screen_warns_when_the_prefilter_scan_hits_its_cap(monkeypatch, caplog):
+    """A truncated scan drops names the bar rule never saw, so it must say so.
+
+    The prefilter is an optimisation, never a rule: it may only remove names
+    the bar rule would have removed anyway (D21). A scan capped at
+    ``_PREFILTER_CANDIDATE_CAP`` and ordered by volume breaks that on any field
+    wider than the cap, and nothing downstream can tell the difference between
+    a short field and a truncated one.
+    """
+    from screener.screen_candidates import ScreenStrategy
+    from screener.strategies.spec import discover_plugins, resolve_strategy_spec
+
+    discover_plugins()
+    spec = resolve_strategy_spec("breakout")
+    assert spec is not None
+    strategy = ScreenStrategy(criterion="breakout", spec=spec)
+    returned = _df(*(f"T{i}" for i in range(3)))
+    returned["ticker"] = returned["name"]
+
+    _patch(
+        monkeypatch,
+        resolve_screen_strategy=lambda names: strategy,
+        # The vendor matched 9000 names; the capped scan returned 3.
+        scan=lambda **kwargs: (9000, returned, _AS_OF),
+        screen_candidates=lambda *args, **kwargs: _df("T0"),
+        save_run=lambda *args: 1,
+        previous_run=lambda *args: None,
+        render_screen_report=lambda *args, **kwargs: (
+            Path(args[4]).write_text("report", encoding="utf-8") or Path(args[4])
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=sw.LOG.name):
+        run_screen_workflow(_request())
+
+    assert any(
+        "prefilter scan returned 3 of 9000" in record.message
+        for record in caplog.records
+    ), caplog.text
+
+
+def test_bar_screen_stays_quiet_when_the_scan_returns_the_whole_field(
+    monkeypatch, caplog
+):
+    """The warning must fire on truncation only, or it is noise on every run."""
+    from screener.screen_candidates import ScreenStrategy
+    from screener.strategies.spec import discover_plugins, resolve_strategy_spec
+
+    discover_plugins()
+    spec = resolve_strategy_spec("breakout")
+    assert spec is not None
+    strategy = ScreenStrategy(criterion="breakout", spec=spec)
+    returned = _df(*(f"T{i}" for i in range(3)))
+    returned["ticker"] = returned["name"]
+
+    _patch(
+        monkeypatch,
+        resolve_screen_strategy=lambda names: strategy,
+        scan=lambda **kwargs: (3, returned, _AS_OF),
+        screen_candidates=lambda *args, **kwargs: _df("T0"),
+        save_run=lambda *args: 1,
+        previous_run=lambda *args: None,
+        render_screen_report=lambda *args, **kwargs: (
+            Path(args[4]).write_text("report", encoding="utf-8") or Path(args[4])
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=sw.LOG.name):
+        run_screen_workflow(_request())
+
+    assert not any("prefilter scan returned" in r.message for r in caplog.records)
