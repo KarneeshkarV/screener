@@ -99,8 +99,16 @@ therefore retains an auditable identity.
 ## Data-source limitations
 
 - Nifty current constituents come from NSE's published index CSV files.
-- S&P 500 current and reconstructed membership uses the existing Wikipedia
-  constituent/change tables and records that provenance.
+- S&P 500 current membership comes from the live Wikipedia constituent table.
+- S&P 500 membership at a past date is reconstructed from the Wikipedia revision
+  that was current on that date, read through the MediaWiki API.
+  The `oldid` of that revision is recorded as the universe source, so every
+  point-in-time run names the exact article revision it used.
+  Revision content never changes, so parsed revisions are cached permanently.
+- When no revision can be read, the loader falls back to today's members, marks
+  the result as not point-in-time and warns.
+  That fallback is survivorship-biased and must not be reported as a
+  point-in-time result.
 - Sensex uses the public Wikipedia constituent table because BSE does not expose
   a stable documented free constituent API.
 - yfinance may lack usable prices for removed or delisted securities. Missing
