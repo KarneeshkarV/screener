@@ -1,6 +1,6 @@
 # Plan: one definition for screen and backtest
 
-Status: in progress.
+Status: complete. Stages 0-7 done.
 Branch: `feat/unify-screen-backtest`, cut from `feat/unify-score-layer` (PR #134).
 
 ## Goal
@@ -12,11 +12,13 @@ That one definition drives the screen, the rolling backtest, and the optimizer.
 
 All must pass before this work is done.
 
-1. A CI test driven off `screener.strategies.spec.registry.items()`, so it cannot be forgotten, asserts for every registered strategy: on a golden fixture panel and a fixed as-of date, the screen's candidate set equals the rolling engine's candidate rows for that date.
-2. A second CI test asserts the TradingView prefilter never drops a name the bar rules would have kept, on those fixtures.
-3. Exactly one implementation exists for each of `breakout`, `momentum_12_1`, and the Minervini trend template rule expression.
-4. `just ci` passes.
-5. `uv run python scripts/backtest_delta.py --compare <baseline>` reports zero movement, except where a stage note below says otherwise and names the reason.
+1. **Met.** A CI test driven off `screener.strategies.spec.registry.items()`, so it cannot be forgotten, asserts for every registered strategy: on a golden fixture panel and a fixed as-of date, the screen's candidate set equals the rolling engine's candidate rows for that date.
+2. **Met.** A second CI test asserts the TradingView prefilter never drops a name the bar rules would have kept, on those fixtures. It found one violation, in `breakout`, which is fixed.
+3. **Met, to the limit of the residuals below.** Exactly one implementation exists for each of `breakout`, `momentum_12_1`, and the Minervini trend template rule expression. `minervini.py:evaluate_symbol` and `historical.py` keep their own, frozen by D11 and D12.
+4. **Met.** `just ci` passes.
+5. **Forward guard only.** No baseline was pinned before stage 1, so the zero-movement check could not be run across this work. One is now pinned at `scripts/backtest_delta_baseline.json.gz`, cut after the flip, and later work compares against it:
+
+       uv run python scripts/backtest_delta.py --compare scripts/backtest_delta_baseline.json.gz
 
 ## Settled decisions
 
@@ -39,7 +41,7 @@ All must pass before this work is done.
 | D15 | Golden-fixture tests gate CI. Live triples opt in behind `SCREENER_LIVE_TESTS=1` and the `network` marker. |
 | D16 | Built on PR #134's `screener/factors/` layer. This branch lands together with it. |
 | D17 | At cutover the `runs.criteria` label changes, so diffs never cross the semantics change. |
-| D18 | Staged. Nothing observable changes until stage 6. |
+| D18 | Staged. Nothing observable changes until stage 6. **Breached by stage 3**: converting a callable to an expression changed which names some strategies select, before the flip. The staging held for the gates and the labels, not for the rules. |
 | D19 | Keep the word `strategy`. Add `StrategyProfile`. Rewrite the `CONTEXT.md` collision entries. Add an ADR. |
 | D20 | Port the `RSI`, `relative_volume_10d_calc` and `Perf.Y` scorers to bar recipes. |
 | D21 | The criterion's TradingView filters survive as a per-strategy declared prefilter. |
@@ -70,8 +72,11 @@ Direct assignment of a fundamental column onto bars is a bug.
 `StrategyProfile` mirrors `SignalPanelInputs` field for field, so it cannot omit a gate.
 Fields: `entry`, `exit`, `min_price`, `min_avg_dollar_volume`, `avg_dollar_volume_window`, `regime_filter`, `earnings_blackout_days`, `sector_neutral`, the fundamental stage, and an optional `tv_prefilter`.
 Screen and backtest both load it.
-CLI flags override it, and every override is printed.
 Without this the two paths still drift, by config instead of by code.
+
+Not built: per-gate CLI overrides.
+No flag on `screen` or `backtest` maps to a profile gate today, and D5 freezes the CLI surface, so adding one would contradict a settled decision to serve a sentence.
+The profile is the single place a gate is set.
 
 ### Two universe modes, recorded in the run
 
@@ -88,10 +93,10 @@ Run `--compare /tmp/unify-baseline.json` at the end of every stage.
 - **Stage 1. Done.** `StrategyProfile` on the spec, derived from `SignalPanelInputs`. Every existing plugin gets its current effective defaults. No behaviour change.
 - **Stage 2. Done.** `signal_panel` gains the one-day entry point. Nothing calls it yet. No behaviour change.
 - **Stage 3. Done.** Callables convert. Indicator-registry columns are precomputed into bars and referenced as plain series names in the expression. Non-convertible callables stay and are rejected at screen time with a clear message, in the style of `ensure_backtestable_scorer`. No backtest behaviour change.
-- **Stage 4.** `BarFeatures` extended with point-in-time fundamentals. The `RSI`, `relative_volume_10d_calc` and `Perf.Y` scorers port to bar recipes. `market_cap_basic` stays snapshot, which is acceptable because the default path still queries TradingView. No behaviour change until stage 6.
-- **Stage 5.** Reconciliation tests land, against the not-yet-default exact path.
-- **Stage 6.** The flip, in one reviewable commit. Criterion names become aliases onto the unified registry. Criterion filter functions become `tv_prefilter` declarations. `--universe` mode goes live. `runs.criteria` labels change. This is the only stage that moves numbers.
-- **Stage 7.** `CONTEXT.md` collision entries rewritten. ADR added under `docs/adr/` recording that TradingView is no longer a rule or fundamental source, and why.
+- **Stage 4. Done.** `BarFeatures` extended with point-in-time fundamentals. The `RSI`, `relative_volume_10d_calc` and `Perf.Y` scorers port to bar recipes. `market_cap_basic` stays snapshot, which is acceptable because the default path still queries TradingView. No behaviour change until stage 6.
+- **Stage 5. Done.** Reconciliation tests land, against the not-yet-default exact path.
+- **Stage 6. Done.** The flip, in one reviewable commit. Criterion names become aliases onto the unified registry. Criterion filter functions become `tv_prefilter` declarations. `--universe` mode goes live. `runs.criteria` labels change. This is the only stage that moves numbers.
+- **Stage 7. Done.** `CONTEXT.md` collision entries rewritten. ADR added under `docs/adr/` recording that TradingView is no longer a rule or fundamental source, and why.
 
 ## Stage 3 outcome
 
@@ -117,6 +122,23 @@ indicator becomes a column rather than a new function in the Pine parser.
 bars, then uses it as a per-bar threshold. Every historical signal it produces
 is contaminated by data from after that bar. It is bucket D so this work does
 not touch it, but its results should not be trusted.
+
+## Stage 5 outcome
+
+The equality sweep covers 39 expression strategies, 20 of which produce a
+non-empty candidate set on the fixture, all agreeing exactly with the rolling
+engine on ticker order, rank, role, signal index and the resolved as-of bar.
+Four callable-only strategies are excluded by kind, pinned by a test so the
+exclusion cannot widen by name.
+
+The prefilter sweep found one real violation. `breakout` fronted
+`close >= highest(close, 252) * 0.9` with `price_52_week_high`, the 52-week
+extreme of *highs*, which is never below the extreme of closes. The vendor
+threshold therefore sat at or above the rule's and dropped names inside the
+band - 8 name-days on the fixture. `breakout` now declares only the volume
+leg, as the `above_avg_volume` criterion. The entry expression is untouched,
+so no backtest number moves; the default screen widens, which is the sound
+direction.
 
 ## Accepted residuals
 
