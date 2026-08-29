@@ -439,29 +439,16 @@ def _prefilter_survivors(
     }
 
 
-# Known-narrow prefilters: a defect this test found, recorded rather than
-# hidden. ``strict=True`` means fixing one turns this file red, so the entry
-# has to be removed with the fix.
-#
-# ``breakout`` fronts ``close >= highest(close, 252) * 0.9`` with the vendor
-# column ``price_52_week_high``, which is the extreme of *highs*. That extreme
-# is never below the extreme of closes, so the vendor threshold sits above the
-# rule's and drops every name inside the band between them. Fixing it means
-# picking one 52-week high for both spellings, which moves backtest numbers and
-# so belongs to stage 6, not to this test file.
-_NARROW_PREFILTERS = {
-    "breakout": "prefilter reads the 52-week high of highs, the rule uses closes",
-}
-
+# This test found one real defect. ``breakout`` used to front
+# ``close >= highest(close, 252) * 0.9`` with the vendor column
+# ``price_52_week_high``, the extreme of *highs*. That extreme is never below
+# the extreme of closes, so the vendor threshold sat above the rule's and
+# dropped every name inside the band between them. ``breakout`` now declares
+# only the volume leg, ``above_avg_volume``, as its prefilter.
 _PREFILTERED_SPECS = [
     pytest.param(
         spec,
         id=name,
-        marks=(
-            [pytest.mark.xfail(reason=_NARROW_PREFILTERS[name], strict=True)]
-            if name in _NARROW_PREFILTERS
-            else []
-        ),
     )
     for name, spec in _SPECS
     if spec.kind == "expression" and resolve_strategy_profile(spec).tv_prefilter

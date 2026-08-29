@@ -16,6 +16,23 @@ def near_52w_breakout() -> list:
     ]
 
 
+@criterion("above_avg_volume")
+def above_average_volume() -> list:
+    """Volume above its own 10-day average.
+
+    This is the volume leg of ``near_52w_breakout`` on its own. The
+    ``breakout`` strategy declares it as its prefilter instead of the full
+    criterion, because the criterion's ``price_52_week_high`` leg reads the
+    52-week high of *highs* while the strategy's rule reads the 52-week high
+    of *closes*. Since ``max(high) >= max(close)``, the vendor threshold sits
+    at or above the rule's and drops names the rule would have kept, which a
+    prefilter may never do. The volume leg alone is a sound narrowing.
+    """
+    return [
+        col("volume") > col("average_volume_10d_calc"),
+    ]
+
+
 @criterion("ema")
 def ema_bullish_stack() -> list:
     """EMA5 > EMA20 > EMA100 > EMA200 (bullish stacking)."""

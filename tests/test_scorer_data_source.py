@@ -30,6 +30,7 @@ _SNAPSHOT_ONLY = (
     "ema",
     "ema_breakout",
     "breakout",
+    "above_avg_volume",
     "near_52_high",
     "intraday_breakout",
     "intraday_momentum",

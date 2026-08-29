@@ -152,6 +152,17 @@ class TestLabel:
         )
 
 
+# An alias usually fronts the criterion of the same name. ``breakout`` is the
+# exception: its criterion's ``price_52_week_high`` leg reads the 52-week high
+# of highs while its rule reads the high of closes, so the criterion drops
+# names the rule keeps. It fronts the volume leg alone instead.
+_PREFILTER_OF = {
+    "breakout": "above_avg_volume",
+    "mark_minervini": "mark_minervini",
+    "momentum_12_1": "momentum_12_1",
+}
+
+
 class TestPrefilter:
     @pytest.mark.parametrize("name", sorted(ALIASED))
     def test_each_alias_declares_the_criterion_whose_filters_cut_the_field(
@@ -159,13 +170,14 @@ class TestPrefilter:
     ) -> None:
         strategy = resolve_screen_strategy((name,))
         assert strategy is not None
-        assert strategy.tv_prefilter == name
+        assert strategy.tv_prefilter == _PREFILTER_OF[name]
 
     @pytest.mark.parametrize("name", sorted(ALIASED))
     def test_the_prefilter_yields_that_criterion_s_own_filters(self, name: str) -> None:
         strategy = resolve_screen_strategy((name,))
         assert strategy is not None
-        assert prefilter_filters(strategy) == list(criteria_registry.get(name)())
+        expected = list(criteria_registry.get(_PREFILTER_OF[name])())
+        assert prefilter_filters(strategy) == expected
 
     def test_a_strategy_without_a_prefilter_scans_unfiltered(self) -> None:
         # No declared prefilter means no field cut, which is always sound: the
@@ -229,7 +241,9 @@ class TestWorkflowWiring:
         outcome = run_screen_workflow(_request(criteria_names=("breakout",)))
 
         assert captured["scorer"] is None
-        assert captured["filters"] == list(criteria_registry.get("breakout")())
+        assert captured["filters"] == list(
+            criteria_registry.get(_PREFILTER_OF["breakout"])()
+        )
         assert captured["tickers"] == ["NSE:AAA", "NSE:BBB"]
         assert captured["strategy"] == "breakout"
         assert outcome.label == "breakout@tv"
