@@ -52,11 +52,13 @@ def test_grouped_frames_match_per_ticker_application():
     bars_by_tv = {f"T{seed}": _frame(seed, 300) for seed in range(5)}
     prepared = apply_bar_columns_to_panel(BAR_COLUMNS, bars_by_tv)
     for tv, bars in bars_by_tv.items():
-        pd.testing.assert_frame_equal(prepared[tv], apply_bar_columns(BAR_COLUMNS, bars))
+        pd.testing.assert_frame_equal(
+            prepared[tv], apply_bar_columns(BAR_COLUMNS, bars)
+        )
 
 
-def test_frames_with_unlike_indexes_stay_on_the_per_ticker_path():
-    """Only frames that share an index group; the rest must still be built."""
+def test_frames_with_unlike_indexes_are_still_exact():
+    """Frames need not share a calendar: each column is its own bar sequence."""
     bars_by_tv = {
         "SAME_A": _frame(1, 200),
         "SAME_B": _frame(2, 200),
@@ -67,33 +69,53 @@ def test_frames_with_unlike_indexes_stay_on_the_per_ticker_path():
     prepared = apply_bar_columns_to_panel(BAR_COLUMNS, bars_by_tv)
     assert set(prepared) == set(bars_by_tv)
     for tv, bars in bars_by_tv.items():
-        pd.testing.assert_frame_equal(prepared[tv], apply_bar_columns(BAR_COLUMNS, bars))
+        pd.testing.assert_frame_equal(
+            prepared[tv], apply_bar_columns(BAR_COLUMNS, bars)
+        )
 
 
-def test_duplicate_index_is_not_stacked():
-    """A non-unique index cannot be stacked positionally, so it must not be."""
+def test_duplicate_index_is_still_exact():
+    """Stacking is positional, so a non-unique index changes nothing."""
     duplicated = _frame(6, 100)
     duplicated.index = duplicated.index[:1].repeat(len(duplicated))
     bars_by_tv = {"DUP_A": duplicated, "DUP_B": duplicated.copy()}
     prepared = apply_bar_columns_to_panel(BAR_COLUMNS, bars_by_tv)
     for tv, bars in bars_by_tv.items():
-        pd.testing.assert_frame_equal(prepared[tv], apply_bar_columns(BAR_COLUMNS, bars))
+        pd.testing.assert_frame_equal(
+            prepared[tv], apply_bar_columns(BAR_COLUMNS, bars)
+        )
 
 
-def test_interior_gap_is_not_padded_into_a_panel():
-    """Padding can express a late start, not a hole in the middle of a history."""
+def test_interior_gap_is_still_exact():
+    """A hole is in the frame, not the panel: only trailing rows are padded."""
     full = _frame(7, 200)
     gapped = full.drop(full.index[80:90])
     bars_by_tv = {"FULL": full, "GAPPED": gapped}
     prepared = apply_bar_columns_to_panel(BAR_COLUMNS, bars_by_tv)
     for tv, bars in bars_by_tv.items():
-        pd.testing.assert_frame_equal(prepared[tv], apply_bar_columns(BAR_COLUMNS, bars))
+        pd.testing.assert_frame_equal(
+            prepared[tv], apply_bar_columns(BAR_COLUMNS, bars)
+        )
 
 
-def test_late_starting_history_is_padded_and_still_exact():
+def test_short_history_is_padded_and_still_exact():
     """A short history stacked against a long one must not see the padding."""
     full = _frame(8, 400)
     bars_by_tv = {"FULL": full, "LATE": _frame(9, 400).iloc[260:]}
     prepared = apply_bar_columns_to_panel(BAR_COLUMNS, bars_by_tv)
     for tv, bars in bars_by_tv.items():
-        pd.testing.assert_frame_equal(prepared[tv], apply_bar_columns(BAR_COLUMNS, bars))
+        pd.testing.assert_frame_equal(
+            prepared[tv], apply_bar_columns(BAR_COLUMNS, bars)
+        )
+
+
+def test_mixed_history_lengths_are_still_exact():
+    """The padding guard may split the panels; every column stays exact."""
+    bars_by_tv = {"LONG": _frame(10, 600)}
+    bars_by_tv.update({f"SHORT{seed}": _frame(seed, 60) for seed in range(11, 20)})
+    prepared = apply_bar_columns_to_panel(BAR_COLUMNS, bars_by_tv)
+    assert set(prepared) == set(bars_by_tv)
+    for tv, bars in bars_by_tv.items():
+        pd.testing.assert_frame_equal(
+            prepared[tv], apply_bar_columns(BAR_COLUMNS, bars)
+        )

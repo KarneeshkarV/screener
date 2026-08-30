@@ -8,6 +8,7 @@ import tempfile
 import time
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -83,6 +84,60 @@ def _has_missing(frame: pd.DataFrame, columns: list[str]) -> bool:
     return False
 
 
+def _frame_from_table(table: pa.Table) -> pd.DataFrame:
+    """``table.to_pandas()`` for a cache entry, taking a shortcut where it fits.
+
+    ``to_pandas`` is the slowest step of a warm read - slower than the parquet
+    decode itself - because it is general: any index, any dtype, any column
+    layout, then a block consolidation over the lot. A cache entry is always
+    the same narrow shape, so the shortcut below rebuilds that one shape
+    directly from the arrow columns and leaves every other shape to
+    ``to_pandas``.
+
+    The shortcut applies only when the pandas metadata describes a single
+    datetime index column and one column level, and every other column is
+    numeric. That is checked, not assumed: anything else - a range index, a
+    string column, a MultiIndex - falls through, so the frame this returns is
+    the frame ``to_pandas`` would have returned, including its column-index
+    name.
+    """
+    metadata = (table.schema.metadata or {}).get(b"pandas")
+    if metadata is None:
+        return cast(pd.DataFrame, table.to_pandas())
+    try:
+        described = json.loads(metadata)
+        index_columns = described["index_columns"]
+        column_indexes = described.get("column_indexes") or [{}]
+    except (ValueError, KeyError, TypeError):
+        return cast(pd.DataFrame, table.to_pandas())
+    if len(index_columns) != 1 or len(column_indexes) != 1:
+        return cast(pd.DataFrame, table.to_pandas())
+    index_name = index_columns[0]
+    if not isinstance(index_name, str) or index_name not in table.column_names:
+        return cast(pd.DataFrame, table.to_pandas())
+
+    index: np.ndarray | None = None
+    columns: dict[str, np.ndarray] = {}
+    for field, column in zip(table.schema, table.columns):
+        values = column.to_numpy(zero_copy_only=False)
+        if field.name == index_name:
+            index = values
+        elif pa.types.is_floating(field.type) or pa.types.is_integer(field.type):
+            columns[field.name] = values
+        else:
+            return cast(pd.DataFrame, table.to_pandas())
+    if index is None or index.dtype.kind != "M":
+        return cast(pd.DataFrame, table.to_pandas())
+
+    frame = pd.DataFrame(columns, copy=False)
+    # An unnamed index is stored under pandas' own placeholder name, which
+    # ``to_pandas`` strips back off on the way out.
+    restored = None if index_name.startswith("__index_level_") else index_name
+    frame.index = pd.DatetimeIndex(index, name=restored)
+    frame.columns.name = column_indexes[0].get("name")
+    return frame
+
+
 def load_cached_frame(
     ticker: str, cache_dir: Path = CACHE_DIR, interval: str = "1d"
 ) -> pd.DataFrame | None:
@@ -95,7 +150,10 @@ def load_cached_frame(
         # entries actually scales, and it skips a layer of pandas dispatch. The
         # pandas metadata parquet carries still restores the index, so the
         # frame is identical to what ``pd.read_parquet`` returned.
-        frame = pq.read_table(path).to_pandas()
+        # ``use_threads=False`` because the parallelism is already one thread
+        # per file: arrow's own pool then only adds contention, and a cache
+        # entry is one small row group anyway.
+        frame = _frame_from_table(pq.read_table(path, use_threads=False))
         frame.index = _canonical_index(frame.index, interval)
         price_columns = [column for column in OHLCV_COLUMNS if column in frame.columns]
         if price_columns and _has_missing(frame, price_columns):
