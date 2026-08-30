@@ -13,6 +13,7 @@ from typing import cast
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pcompute
 import pyarrow.parquet as pq
 
 from screener.backtester.price_frames import (
@@ -65,21 +66,35 @@ def _canonical_index(index: pd.Index, interval: str) -> pd.Index:
     return index
 
 
-def _has_missing(frame: pd.DataFrame, columns: list[str]) -> bool:
-    """Whether any of ``columns`` holds a null, without materialising a mask.
+def _has_missing(table: pa.Table, columns: list[str]) -> bool:
+    """Whether any of ``columns`` holds a null or a NaN, read off the arrow table.
 
     ``dropna`` copies the whole frame whether or not it has anything to drop,
     and a cache entry almost never does: the write path drops NaN rows before
     saving, so this guard exists for frames written by an older version. Asking
-    first costs one pass over a float buffer and keeps the copy for the rare
-    frame that needs it.
+    first keeps the copy for the rare frame that needs it.
+
+    Asking arrow rather than pandas because the answer is mostly free there. A
+    null count is metadata parquet already carries, so a clean column is
+    settled without touching its values at all; only a float column has to be
+    scanned, and only for a NaN stored as a value rather than as a null.
+    Pandas has to be asked column by column through ``__getitem__``, and that
+    dispatch - not the scan - was most of the cost of a warm cache read.
+
+    Columns are taken positionally so that a table with a repeated name reports
+    on its first copy rather than raising, which is what the pandas form did.
     """
+    names = table.column_names
     for column in columns:
-        values = frame[column].to_numpy(copy=False)
-        if values.dtype.kind == "f":
-            if np.isnan(values).any():
-                return True
-        elif values.dtype.kind not in "iub" and pd.isna(values).any():
+        if column not in names:
+            continue
+        values = table.column(names.index(column))
+        if values.null_count:
+            return True
+        if (
+            pa.types.is_floating(values.type)
+            and pcompute.any(pcompute.is_nan(values)).as_py()
+        ):
             return True
     return False
 
@@ -153,10 +168,12 @@ def load_cached_frame(
         # ``use_threads=False`` because the parallelism is already one thread
         # per file: arrow's own pool then only adds contention, and a cache
         # entry is one small row group anyway.
-        frame = _frame_from_table(pq.read_table(path, use_threads=False))
+        table = pq.read_table(path, use_threads=False)
+        missing = _has_missing(table, OHLCV_COLUMNS)
+        frame = _frame_from_table(table)
         frame.index = _canonical_index(frame.index, interval)
         price_columns = [column for column in OHLCV_COLUMNS if column in frame.columns]
-        if price_columns and _has_missing(frame, price_columns):
+        if price_columns and missing:
             return frame.dropna(subset=price_columns)
         return frame
     except (OSError, pd.errors.ParserError, ValueError, pa.ArrowException):

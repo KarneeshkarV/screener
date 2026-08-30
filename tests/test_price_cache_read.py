@@ -10,6 +10,7 @@ import pytest
 
 from screener.backtester.price_cache import (
     _frame_from_table,
+    _has_missing,
     load_cached_frame,
     save_cached_frame,
 )
@@ -64,3 +65,33 @@ def test_round_trip_through_the_cache(tmp_path):
     frame = _ohlcv()
     save_cached_frame("TEST", frame, cache_dir=tmp_path)
     pd.testing.assert_frame_equal(load_cached_frame("TEST", cache_dir=tmp_path), frame)
+
+
+def test_null_rows_are_dropped_on_read(tmp_path):
+    frame = _ohlcv()
+    frame.iloc[3, frame.columns.get_loc("close")] = np.nan
+    frame.to_parquet(tmp_path / "NULLS.parquet")
+    loaded = load_cached_frame("NULLS", cache_dir=tmp_path)
+    pd.testing.assert_frame_equal(loaded, frame.dropna(subset=["close"]))
+
+
+def test_nan_stored_as_a_value_is_still_dropped(tmp_path):
+    """Parquet can hold NaN as a value, not a null; the guard must see it."""
+    frame = _ohlcv()
+    table = pa.Table.from_pandas(frame)
+    close = pa.array(
+        [np.nan if row == 3 else value for row, value in enumerate(frame["close"])],
+        type=pa.float64(),
+    )
+    table = table.set_column(table.column_names.index("close"), "close", close)
+    assert table.column("close").null_count == 0
+    pq.write_table(table, tmp_path / "NANS.parquet")
+    loaded = load_cached_frame("NANS", cache_dir=tmp_path)
+    assert len(loaded) == len(frame) - 1
+
+
+def test_a_clean_frame_is_not_copied(tmp_path):
+    """The guard must not drop rows, or pay for a copy, when nothing is missing."""
+    frame = _ohlcv()
+    table = pa.Table.from_pandas(frame)
+    assert not _has_missing(table, ["open", "high", "low", "close", "volume"])
