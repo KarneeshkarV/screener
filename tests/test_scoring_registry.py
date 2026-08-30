@@ -22,10 +22,19 @@ from screener.scoring import (
 
 
 def test_every_criterion_has_a_scorer() -> None:
+    # ``-c`` accepts a TradingView criterion name or a strategy alias, so a
+    # bar scorer may be registered against a strategy that has no vendor
+    # filter set at all (``ha_momentum``). The reverse stays strict: a
+    # criterion with no scorer cannot be ranked.
+    from screener.strategies.spec import discover_plugins
+    from screener.strategies.spec import registry as strategy_registry
+
+    discover_plugins()
+    selectable = set(CRITERIA) | {name for name, _ in strategy_registry.items()}
     missing = sorted(set(CRITERIA) - set(SCORERS))
-    extra = sorted(set(SCORERS) - set(CRITERIA))
+    extra = sorted(set(SCORERS) - selectable)
     assert missing == [], f"criteria without scorers: {missing}"
-    assert extra == [], f"scorers without criteria: {extra}"
+    assert extra == [], f"scorers naming neither a criterion nor a strategy: {extra}"
 
 
 def test_resolve_scorer_single_returns_named_recipe() -> None:

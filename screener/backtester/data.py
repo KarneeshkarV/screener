@@ -337,12 +337,20 @@ class YFinancePriceFetcher:
         # seven-day tail refresh of a name that is already current.
         missing: dict[str, list[str]] = {}
         window_by_cause: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
+        # The window each ticker actually asked for, kept alongside the union
+        # window its cause group downloads. The download uses the union; the
+        # empty-history marker uses this, because the marker is a claim about
+        # one ticker and the union is a claim about the group. Recording the
+        # union would let a name missing only today's bar inherit a six-month
+        # emptiness claim from a group peer.
+        window_by_ticker: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
         tail_refresh_tickers: set[str] = set()
 
         def want(
             cause: str, ticker: str, first: pd.Timestamp, last: pd.Timestamp
         ) -> None:
             missing.setdefault(cause, []).append(ticker)
+            window_by_ticker[ticker] = (first, last)
             known = window_by_cause.get(cause)
             window_by_cause[cause] = (
                 (first, last)
@@ -433,7 +441,7 @@ class YFinancePriceFetcher:
 
         def download_job(
             job: tuple[pd.Timestamp, pd.Timestamp, list[str]],
-        ) -> tuple[list[str], pd.DataFrame]:
+        ) -> tuple[list[str], pd.DataFrame, bool]:
             fetch_start, fetch_end, batch = job
             download_end = fetch_end + pd.Timedelta(days=1)
             if self.interval != "1d":
@@ -453,13 +461,17 @@ class YFinancePriceFetcher:
             if not self.auto_adjust:
                 download_kwargs["actions"] = True
             target = " ".join(batch) if len(batch) > 1 else batch[0]
-            raw = call_with_resilience(
+            # The fallback is indistinguishable from a successful empty
+            # download, so the success flag rides along with it: an outage,
+            # a 429 or an open circuit must never be recorded as "the vendor
+            # has no history for these names".
+            ok, raw = call_with_resilience(
                 "yfinance",
                 f"download {len(batch)} ticker(s)",
-                lambda: yf.download(target, **download_kwargs),
-                fallback=pd.DataFrame(),
+                lambda: (True, yf.download(target, **download_kwargs)),
+                fallback=(False, pd.DataFrame()),
             )
-            return batch, raw
+            return batch, raw, ok
 
         # yfinance reports expected "possibly delisted" messages for empty
         # pre-listing ranges. The empty frame is enough for
@@ -482,19 +494,17 @@ class YFinancePriceFetcher:
                     downloads = list(pool.map(download_job, jobs))
 
         downloaded_by_ticker: dict[str, pd.DataFrame] = {}
-        for batch, raw in downloads:
+        # A ticker's history is only known-empty when every request covering it
+        # came back from the vendor. One failed chunk leaves it unknown.
+        download_ok: dict[str, bool] = {}
+        for batch, raw, ok in downloads:
             downloaded = _split_download(raw, batch, self.interval)
             for ticker in batch:
                 norm = downloaded.get(ticker, _empty_ohlcv_frame())
                 downloaded_by_ticker[ticker] = _merge_cached(
                     downloaded_by_ticker.get(ticker), norm, self.interval
                 )
-
-        window_asked: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {
-            ticker: window_by_cause[cause]
-            for cause, group in missing.items()
-            for ticker in group
-        }
+                download_ok[ticker] = download_ok.get(ticker, True) and ok
         leftover: list[tuple[str, pd.DataFrame]] = []
         for ticker in dict.fromkeys(t for group in missing.values() for t in group):
             cache_key = self._cache_key(ticker)
@@ -502,12 +512,12 @@ class YFinancePriceFetcher:
             # Tail refreshes are excluded: an empty tail is the ordinary
             # weekend answer, not a statement about the ticker's history.
             if ticker not in tail_refresh_tickers:
-                if norm.empty:
-                    _record_empty_history(
-                        cache_key, *window_asked[ticker], self.cache_dir
-                    )
-                else:
+                if not norm.empty:
                     _clear_empty_history(cache_key, self.cache_dir)
+                elif download_ok.get(ticker, False):
+                    _record_empty_history(
+                        cache_key, *window_by_ticker[ticker], self.cache_dir
+                    )
             stored = cached_by_ticker.get(ticker)
             merged = _merge_cached(stored, norm, self.interval)
             # A failed download is an empty frame, and the merge then returns
@@ -746,21 +756,24 @@ class FMPPriceFetcher:
                     },
                 )
 
-            empty_payload: object = {}
-            payload: object = call_with_resilience(
+            empty_payload: tuple[bool, object] = (False, {})
+            # Same contract as the yfinance leg: the resilience fallback is an
+            # empty payload, so the success flag rides with it and a failed
+            # request is never recorded as "the vendor has no history".
+            ok, payload = call_with_resilience(
                 "fmp",
                 f"historical prices {ticker}",
-                request_payload,
+                lambda: (True, request_payload()),
                 fallback=empty_payload,
             )
             norm = _normalize_fmp_historical(payload, self.auto_adjust, self.interval)
             if not is_tail_refresh:
-                if norm.empty:
+                if not norm.empty:
+                    _clear_empty_history(cache_key, self.cache_dir)
+                elif ok:
                     _record_empty_history(
                         cache_key, fetch_start, end_ts, self.cache_dir
                     )
-                else:
-                    _clear_empty_history(cache_key, self.cache_dir)
             leftover_cache = (
                 stored
                 if (

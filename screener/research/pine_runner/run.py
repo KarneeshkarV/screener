@@ -81,6 +81,13 @@ def run_market(
     fetch_end = today
 
     tickers = load_universe(market, universe=universe)
+    if strategy is not None and strategy not in STRATEGIES:
+        # Not every registered strategy is runnable here: an expression spec
+        # only reaches ``STRATEGIES`` once the registry can synthesise a
+        # callable for it. Say which names are, instead of a bare KeyError.
+        raise ValueError(
+            f"unknown strategy {strategy!r}; runnable names: {sorted(STRATEGIES)}"
+        )
     strategies = {strategy: STRATEGIES[strategy]} if strategy else dict(STRATEGIES)
     if limit and limit < len(tickers):
         tickers = tickers[:limit]

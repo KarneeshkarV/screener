@@ -104,8 +104,13 @@ def ha_momentum(
 
     ha_open, _ha_high, ha_low, ha_close = heikin_ashi_ohlc(op, hi, lo, cl)
     bullish = pd.Series((ha_close > ha_open) & (ha_open == ha_low), index=close.index)
-    streak = bullish.groupby((~bullish).cumsum()).cumcount() + 1
-    streak = streak.where(bullish, 0)
+    # Length of the bullish run ending at each bar. Grouping by
+    # ``(~bullish).cumsum()`` puts the terminating bearish bar first in its own
+    # group, so ``cumcount() + 1`` would score the first bullish bar after any
+    # bearish bar as 2. Subtracting the running total carried at the last
+    # bearish bar counts only the bullish bars since it.
+    running = bullish.cumsum()
+    streak = running - running.where(~bullish).ffill().fillna(0)
     confirmed = streak >= min_streak
 
     mom = momentum_12_1(close, lookback=lookback, skip=skip)

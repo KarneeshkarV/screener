@@ -498,3 +498,80 @@ def test_empty_history_marker_is_ignored_by_refresh_and_cleared_by_bars(
 
     assert not out["AAA"].empty
     assert not empty_history_path("AAA", tmp_path).exists()
+
+
+def test_a_failed_download_is_never_recorded_as_empty_history(tmp_path, monkeypatch):
+    """An outage is "unknown", not "the vendor has no bars for this name".
+
+    ``call_with_resilience`` returns an empty frame both when the vendor
+    answered with nothing and when every attempt raised, so recording the
+    marker off emptiness alone let one rate-limit or timeout suppress the
+    ticker's downloads for a whole day - served from whatever the cache held,
+    with no warning and no way past it but ``--refresh``.
+    """
+    import yfinance as yf
+
+    from screener.backtester.price_cache import empty_history_path
+
+    attempts = {"count": 0}
+
+    def failing_download(tickers, **kwargs):
+        attempts["count"] += 1
+        raise RuntimeError("429 Too Many Requests")
+
+    monkeypatch.setattr(yf, "download", failing_download)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    first = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 10))
+
+    assert first["AAA"].empty
+    assert not empty_history_path("AAA", tmp_path).exists()
+
+    before = attempts["count"]
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 10))
+    assert attempts["count"] > before, "the second run must still ask the vendor"
+
+
+def test_the_empty_marker_records_the_ticker_s_own_window_not_the_group_s(
+    tmp_path, monkeypatch
+):
+    """One ticker's short window must not inherit a peer's long one.
+
+    Both names are "extend" cases, so they download together under the union
+    of their two windows. The marker is a claim about a single ticker, so it
+    records what that ticker asked for. Recording the union would let ``AAA``,
+    which is only missing the last ten days, be skipped on a later request
+    reaching back to ``BBB``'s much older cache edge.
+    """
+    import yfinance as yf
+
+    from screener.backtester.price_cache import has_empty_history
+
+    def empty_download(tickers, **kwargs):
+        return pd.DataFrame()
+
+    monkeypatch.setattr(yf, "download", empty_download)
+
+    # Same cause ("extend"), different windows: AAA wants ten days, BBB six weeks.
+    _save_cache(
+        "AAA",
+        _plain_bars(date(2023, 12, 1), date(2024, 1, 21)).rename(columns=str.lower),
+        tmp_path,
+    )
+    _save_cache(
+        "BBB",
+        _plain_bars(date(2023, 12, 1), date(2023, 12, 16)).rename(columns=str.lower),
+        tmp_path,
+    )
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    fetcher.fetch(["AAA", "BBB"], date(2023, 12, 1), date(2024, 1, 31))
+
+    union_start = pd.Timestamp("2023-12-16")
+    end = pd.Timestamp("2024-01-31")
+    # BBB asked for the union window, so the union window is known empty.
+    assert has_empty_history("BBB", union_start, end, tmp_path)
+    # AAA never asked past its own cache edge, so that older stretch is still
+    # unknown and worth a request.
+    assert not has_empty_history("AAA", union_start, end, tmp_path)
+    assert has_empty_history("AAA", pd.Timestamp("2024-01-22"), end, tmp_path)

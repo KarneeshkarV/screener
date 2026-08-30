@@ -41,14 +41,18 @@ def main(
     strategy: str | None,
     trades_json: str | None,
 ) -> None:
-    result = run_market(
-        market=market,
-        years=years,
-        limit=limit,
-        refresh=refresh,
-        universe=universe,
-        strategy=strategy,
-    )
+    try:
+        result = run_market(
+            market=market,
+            years=years,
+            limit=limit,
+            refresh=refresh,
+            universe=universe,
+            strategy=strategy,
+        )
+    except ValueError as exc:
+        # An unknown --strategy or --universe is a typo, not a crash.
+        raise click.UsageError(str(exc)) from exc
     print_market_table(result)
     if trades_json:
         write_trades_json(result, trades_json)

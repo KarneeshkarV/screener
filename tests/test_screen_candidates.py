@@ -168,14 +168,16 @@ class TestLabel:
         )
 
 
-# An alias usually fronts the criterion of the same name. ``breakout`` is the
-# exception: its criterion's ``price_52_week_high`` leg reads the 52-week high
-# of highs while its rule reads the high of closes, so the criterion drops
-# names the rule keeps. It fronts the volume leg alone instead.
-_PREFILTER_OF = {
+# An alias usually fronts the criterion of the same name. Two do not, both
+# because the criterion drops names the bar rule keeps: ``breakout``'s
+# ``price_52_week_high`` leg reads the 52-week high of highs while its rule
+# reads the high of closes, so it fronts the volume leg alone; and
+# ``momentum_12_1``'s ``Perf.Y > Perf.1M`` is a calendar-anchored reading of a
+# rule written on 21/252 session offsets, which leaves no sound leg at all.
+_PREFILTER_OF: dict[str, str | None] = {
     "breakout": "above_avg_volume",
     "mark_minervini": "mark_minervini",
-    "momentum_12_1": "momentum_12_1",
+    "momentum_12_1": None,
 }
 
 
@@ -192,7 +194,8 @@ class TestPrefilter:
     def test_the_prefilter_yields_that_criterion_s_own_filters(self, name: str) -> None:
         strategy = resolve_screen_strategy((name,))
         assert strategy is not None
-        expected = list(criteria_registry.get(_PREFILTER_OF[name])())
+        criterion = _PREFILTER_OF[name]
+        expected = [] if criterion is None else list(criteria_registry.get(criterion)())
         assert prefilter_filters(strategy) == expected
 
     def test_a_strategy_without_a_prefilter_scans_unfiltered(self) -> None:

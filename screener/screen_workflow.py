@@ -240,7 +240,12 @@ def _run_bar_screen(
             retries=request.retries,
         )
         tickers = [str(t) for t in scanned.get("ticker", pd.Series(dtype=str))]
-        if total > len(tickers):
+        # Against the cap, not against ``len(tickers)``: the scan payload is
+        # deduped (dual listings collapse) before it reaches here, so a row
+        # count below ``total`` is the ordinary answer on any field carrying
+        # one. The vendor returns ``min(total, cap)`` rows, so truncation
+        # happened exactly when the match count exceeded the cap.
+        if total > _PREFILTER_CANDIDATE_CAP:
             # The cap exists to bound the request, but a truncated scan is
             # still a prefilter that dropped names the bar rule never saw -
             # the one thing a prefilter may not do (D21). The scan orders by

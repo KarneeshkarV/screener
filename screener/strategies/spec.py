@@ -167,8 +167,10 @@ class StrategyProfile(BaseModel):
     sanctioned backtester -> strategies direction), so a gate added to
     ``SignalPanelInputs`` cannot ship without either mirroring it here or
     classifying it as run-scoped. Scalar values are the effective
-    ``BacktestConfig`` defaults, so an attached profile changes nothing until
-    a caller resolves and applies it (stage 1 wires no caller).
+    ``BacktestConfig`` defaults, so an attached profile that restates them
+    changes nothing. Both callers resolve and apply it: the screen in
+    :mod:`screener.screen_candidates` and the rolling backtest in
+    ``screener.backtester.workflow._effective_gates``.
 
     ``entry_expr``/``exit_expr`` are ``None`` when unset, meaning "the spec's
     own ``entry``/``exit`` stand" - they stay required on
@@ -241,7 +243,9 @@ class ExpressionStrategySpec(StrategySpec):
     # column, never a new function in the parser.
     bar_columns: SkipValidation[Mapping[str, BarColumnFn]] | None = None
     # Declared candidate-gate defaults. ``None`` keeps the plugin on the
-    # effective defaults (``DEFAULT_STRATEGY_PROFILE``); nothing reads it yet.
+    # effective defaults (``DEFAULT_STRATEGY_PROFILE``). Both the screen and
+    # the rolling backtest read it, which is what keeps the two paths from
+    # drifting by config instead of by code.
     profile: StrategyProfile | None = None
 
     @field_validator("entry")
@@ -433,8 +437,9 @@ def resolve_strategy_profile(
     so the resolved value is total for every expression strategy. Overrides
     use ``SignalPanelInputs`` field names, win over both the defaults and any
     attached profile, and are validated by rebuilding the model; unknown keys
-    raise instead of silently doing nothing. No CLI path calls this yet -
-    stage 1 is additive only (D18).
+    raise instead of silently doing nothing. The backtest CLI passes the flags
+    the user actually typed as overrides, so a flag left at its option default
+    lets the profile speak.
     """
     base = (
         spec.profile

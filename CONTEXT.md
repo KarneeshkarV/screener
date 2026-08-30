@@ -33,7 +33,8 @@ Screen and backtest both load it, which is what makes the two paths agree.
 **prefilter**
 `StrategyProfile.tv_prefilter`: the name of a criterion whose TradingView filters cut the field before bars are downloaded.
 It is an optimisation, not a gate.
-It may only remove names the bar rule would have removed anyway, which `tests/correctness/test_screen_backtest_reconciliation.py` pins.
+It may only remove names the bar rule would have removed anyway, which `tests/correctness/test_screen_backtest_reconciliation.py` pins against calendar-anchored vendor columns.
+Two of the three aliases therefore front something other than the criterion of their own name: `breakout` fronts the volume leg alone, and `momentum_12_1` declares none at all.
 `--universe` is the exact path and applies none.
 
 **role**

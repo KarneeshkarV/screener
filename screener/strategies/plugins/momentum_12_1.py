@@ -58,7 +58,6 @@ from screener.strategies.plugins.low_volatility import realized_volatility
 from screener.strategies.spec import (
     DEFAULT_STRATEGY_PROFILE,
     PrepareCtx,
-    StrategyProfile,
     register_expression_strategy,
 )
 
@@ -130,10 +129,16 @@ def _riskadj_lookback() -> int:
     return _LOOKBACK + 1
 
 
-# ``Perf.Y > Perf.1M`` is the vendor-side spelling of a positive 12-1 return
-# (see the ``momentum_12_1`` criterion). It is a coarse field cut on calendar
-# anchors, not the eligibility rule; the exact gate is ENTRY_PURE below.
-_PURE_PROFILE = StrategyProfile(tv_prefilter="momentum_12_1")
+# No vendor prefilter. ``Perf.Y > Perf.1M`` is the vendor-side spelling of a
+# positive 12-1 return, but TradingView anchors ``Perf.*`` on calendar dates
+# while ENTRY_PURE reads bars 21 and 252 sessions back. Near the diagonal the
+# two disagree in both directions, so the cut drops names the rule keeps -
+# the one thing a prefilter may never do (D21), and what
+# ``tests/correctness/test_screen_backtest_reconciliation.py`` measures at 38
+# name-days on the golden fixture. Vendor ``Column`` values carry no
+# arithmetic, so no slack form of the comparison can be sent either. The
+# default screen therefore scans unfiltered and the bar rule judges the whole
+# field, which is the sound direction; ``--universe`` bounds it exactly.
 
 register_expression_strategy(
     "momentum_12_1",
@@ -141,7 +146,7 @@ register_expression_strategy(
     exit=None,
     prepare_bars=_prepare_momentum,
     required_lookback=_momentum_lookback,
-    profile=_PURE_PROFILE,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )
 
 register_expression_strategy(

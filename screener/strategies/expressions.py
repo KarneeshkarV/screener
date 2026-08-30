@@ -39,10 +39,25 @@ class NamedStrategy(BaseModel):
         return normalized
 
 
+def _named_from_expression(spec: ExpressionStrategySpec) -> NamedStrategy:
+    """The rules a run executes: the profile's overrides, else the spec's own.
+
+    ``screen_candidates`` reads the pair the same way, so a profile that
+    restates a rule cannot move one path without moving the other.
+    """
+    profile = spec.profile
+    if profile is None:
+        return NamedStrategy(entry=spec.entry, exit=spec.exit)
+    return NamedStrategy(
+        entry=profile.entry_expr or spec.entry,
+        exit=profile.exit_expr or spec.exit,
+    )
+
+
 def _named_of(spec: StrategySpec) -> NamedStrategy | None:
     if not isinstance(spec, ExpressionStrategySpec):
         return None
-    return NamedStrategy(entry=spec.entry, exit=spec.exit)
+    return _named_from_expression(spec)
 
 
 NAMED_STRATEGIES: DerivedView[NamedStrategy] = DerivedView(_named_of)
@@ -59,4 +74,4 @@ def resolve_strategy(name: str) -> NamedStrategy:
         raise KeyError(
             f"Unknown strategy {name!r}. Known: {sorted(NAMED_STRATEGIES)}"
         ) from None
-    return NamedStrategy(entry=spec.entry, exit=spec.exit)
+    return _named_from_expression(spec)

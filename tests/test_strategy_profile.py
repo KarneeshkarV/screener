@@ -149,6 +149,9 @@ def test_every_registered_expression_plugin_keeps_current_effective_defaults():
 def test_only_strategies_with_a_tradingview_spelling_declare_a_prefilter():
     # A prefilter is an optimisation, so it must name a real criterion. A typo
     # would otherwise fail at screen time, on a live run, rather than here.
+    # ``momentum_12_1`` has a TradingView spelling but declares no prefilter:
+    # ``Perf.Y > Perf.1M`` is calendar-anchored where the rule reads 21/252
+    # session offsets, so it drops names the rule keeps (D21).
     from screener.criteria import registry as criteria_registry
 
     discover_plugins()
@@ -159,6 +162,134 @@ def test_only_strategies_with_a_tradingview_spelling_declare_a_prefilter():
         and resolve_strategy_profile(spec).tv_prefilter is not None
     }
 
-    assert set(declared) == {"breakout", "mark_minervini", "momentum_12_1"}
+    assert set(declared) == {"breakout", "mark_minervini"}
     for strategy_name, criterion in declared.items():
         assert criteria_registry.get_optional(criterion) is not None, strategy_name
+
+
+# ---------------------------------------------------------------------------
+# Both paths load the profile
+# ---------------------------------------------------------------------------
+
+
+def _rolling_request(**overrides):
+    """A minimal rolling ``BacktestRequest``, every flag at its option default."""
+    from screener.backtester.workflow import BacktestRequest
+
+    values = dict(
+        mode="rolling",
+        context_obj=None,
+        market="us",
+        hold=20,
+        top=10,
+        entry_expr="close > 0",
+        exit_expr=None,
+        strategy_name=None,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        cost_model="flat",
+        initial_capital=100_000.0,
+        benchmark=None,
+        tickers="AAPL",
+        universe_file=None,
+        max_universe=0,
+        min_price=None,
+        min_avg_dollar_volume=None,
+        adv_window=20,
+        slippage_model="fixed",
+        half_spread_bps=0.0,
+        vol_impact_k=0.1,
+        no_gap_fills=False,
+        entry_order="moo",
+        entry_limit_bps=None,
+        partial_exit_args=(),
+        price_adjustment="full",
+        interval="1d",
+        output_csv=False,
+        report_path=None,
+        open_report=False,
+        sizing_rule="equal_slot",
+        sizing_risk_pct=0.01,
+        sizing_position_pct=0.1,
+        sizing_atr_window=14,
+        sizing_atr_multiple=2.0,
+        sizing_vol_window=20,
+        intraday_only=False,
+    )
+    values.update(overrides)
+    return BacktestRequest(**values)
+
+
+_PROBE_PROFILE = StrategyProfile(
+    min_price=12.5,
+    min_avg_dollar_volume=4_000_000.0,
+    avg_dollar_volume_window=45,
+    regime_filter=("spy_above_sma200",),
+    earnings_blackout_days=4,
+    sector_neutral=True,
+)
+
+
+@pytest.fixture
+def probe_strategy():
+    """A throwaway strategy declaring every panel gate, removed on teardown.
+
+    Registered rather than hand-built because ``_effective_gates`` resolves by
+    name, the way the CLI does. It must not outlive the test: the sweeps in
+    this file and in ``tests/correctness`` walk the whole registry.
+    """
+    from screener.strategies.spec import register_expression_strategy
+
+    discover_plugins()
+    name = "profile_gate_probe"
+    register_expression_strategy(
+        name, entry="close > 0", exit=None, profile=_PROBE_PROFILE
+    )
+    try:
+        yield name
+    finally:
+        registry.remove(name)
+
+
+def test_the_backtest_resolves_the_gates_a_strategy_declares(probe_strategy):
+    # The screen loads the profile in ``screen_candidates``; without the same
+    # load here a strategy would be screened with its declared gates and
+    # backtested without them, which is the drift the profile exists to stop.
+    from screener.backtester.workflow import _effective_gates
+
+    gates = _effective_gates(_rolling_request(strategy_name=probe_strategy))
+
+    assert gates == _PROBE_PROFILE
+
+
+def test_a_typed_flag_wins_over_the_declared_gate(probe_strategy):
+    # The profile is where a gate is set, not a ceiling on the CLI: a flag the
+    # user actually typed still wins, which is the precedence
+    # ``resolve_strategy_profile`` documents for overrides.
+    from screener.backtester.workflow import _effective_gates
+
+    gates = _effective_gates(
+        _rolling_request(
+            strategy_name=probe_strategy,
+            min_price=3.0,
+            adv_window=10,
+            earnings_blackout_days=0,
+        )
+    )
+
+    assert gates.min_price == 3.0
+    assert gates.avg_dollar_volume_window == 10
+    assert gates.earnings_blackout_days == 0
+    # Untyped flags still fall through to the profile.
+    assert gates.min_avg_dollar_volume == 4_000_000.0
+    assert gates.sector_neutral is True
+
+
+def test_a_strategy_without_a_profile_keeps_the_effective_defaults():
+    from screener.backtester.workflow import _effective_gates
+
+    discover_plugins()
+    assert _effective_gates(_rolling_request()) == DEFAULT_STRATEGY_PROFILE

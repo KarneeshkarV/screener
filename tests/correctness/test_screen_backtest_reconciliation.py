@@ -375,12 +375,24 @@ def _snapshot_row(bars: pd.DataFrame, as_of: pd.Timestamp) -> dict[str, float]:
 
     Computed from the same bars the bar rules see so the comparison is about
     the two rule spellings, not about two data sources. ``price_52_week_*`` are
-    high/low extremes, and ``Perf.*`` are trailing-window returns on 252/21
-    trading days, which is the closest bar-side reading of TradingView's
-    calendar anchors.
+    high/low extremes, and ``Perf.*`` are trailing returns off *calendar*
+    anchors, which is how TradingView defines them.
+
+    Modelling ``Perf.*`` on the recipes' own 252/21 bar offsets instead would
+    make any containment check against a ``Perf``-based prefilter vacuous: both
+    sides would then read the same two bars and could not disagree, which is
+    exactly the boundary the check exists to find.
     """
     history = bars.loc[bars.index <= as_of]
     close = history["close"].astype(float)
+
+    def _calendar_return(offset: pd.DateOffset) -> float:
+        """Return since the last bar at or before ``as_of - offset``."""
+        anchor = close.loc[close.index <= as_of - offset]
+        if anchor.empty:
+            return float("nan")
+        return float(close.iloc[-1] / anchor.iloc[-1] - 1.0)
+
     return {
         "close": float(close.iloc[-1]),
         "volume": float(history["volume"].iloc[-1]),
@@ -390,11 +402,8 @@ def _snapshot_row(bars: pd.DataFrame, as_of: pd.Timestamp) -> dict[str, float]:
         "SMA50": float(close.iloc[-50:].mean()),
         "SMA150": float(close.iloc[-150:].mean()),
         "SMA200": float(close.iloc[-200:].mean()),
-        # ``iloc[-1 - k]`` is bar ``t - k``, matching how the 12-1 recipe reads
-        # its two legs. Reading ``iloc[-252]`` instead is bar ``t - 251`` and
-        # shifts the whole comparison by one session.
-        "Perf.Y": float(close.iloc[-1] / close.iloc[-1 - 252] - 1.0),
-        "Perf.1M": float(close.iloc[-1] / close.iloc[-1 - 21] - 1.0),
+        "Perf.Y": _calendar_return(pd.DateOffset(years=1)),
+        "Perf.1M": _calendar_return(pd.DateOffset(months=1)),
     }
 
 
