@@ -37,10 +37,19 @@ from screener.backtester.price_cache import (
     cache_path as _cache_path,
 )
 from screener.backtester.price_cache import (
+    clear_empty_history as _clear_empty_history,
+)
+from screener.backtester.price_cache import (
+    has_empty_history as _has_empty_history,
+)
+from screener.backtester.price_cache import (
     load_cached_frame as _load_cached,
 )
 from screener.backtester.price_cache import (
     needs_tail_refresh as _needs_tail_refresh,
+)
+from screener.backtester.price_cache import (
+    record_empty_history as _record_empty_history,
 )
 from screener.backtester.price_cache import (
     save_cached_frame as _save_cache,
@@ -289,6 +298,24 @@ class YFinancePriceFetcher:
             chunk_start = chunk_end.normalize() + pd.Timedelta(days=1)
         return chunks
 
+    CACHE_READ_WORKERS = 8
+
+    def _load_cache_entries(
+        self, cache_keys: dict[str, str]
+    ) -> dict[str, pd.DataFrame | None]:
+        """Every ticker's cached frame, read concurrently."""
+
+        def read(cache_key: str) -> pd.DataFrame | None:
+            return _load_cached(cache_key, self.cache_dir, self.interval)
+
+        if len(cache_keys) < 2:
+            return {ticker: read(key) for ticker, key in cache_keys.items()}
+        with ThreadPoolExecutor(
+            max_workers=min(self.CACHE_READ_WORKERS, len(cache_keys))
+        ) as pool:
+            frames = list(pool.map(read, cache_keys.values()))
+        return dict(zip(cache_keys, frames))
+
     def fetch(
         self, tickers: Iterable[str], start: date, end: date
     ) -> dict[str, pd.DataFrame]:
@@ -296,17 +323,49 @@ class YFinancePriceFetcher:
         results: dict[str, pd.DataFrame] = {}
         start_ts, end_ts = _inclusive_fetch_bounds(start, end, self.interval)
         cached_by_ticker: dict[str, pd.DataFrame] = {}
-        missing: dict[tuple[pd.Timestamp, pd.Timestamp], list[str]] = {}
+        # Download windows grouped by *why* the ticker needs one. Each branch
+        # below pins one bound and derives the other from that ticker's own
+        # cache, so keying the group on the exact window put nearly every
+        # ticker in a group of its own: an India screen wanted 409 names in 171
+        # separate downloads. yfinance charges per request, not per bar, so
+        # that dominated the run. Grouping by cause and downloading the union
+        # of each group's windows keeps every ticker's bars a superset of what
+        # it asked for -- the save-time merge keeps bars outside the window and
+        # the result is sliced back to the caller's range -- while collapsing
+        # the request count to one batch chain per cause. Causes stay separate
+        # so a name that needs the whole history never widens the cheap
+        # seven-day tail refresh of a name that is already current.
+        missing: dict[str, list[str]] = {}
+        window_by_cause: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
         tail_refresh_tickers: set[str] = set()
 
+        def want(
+            cause: str, ticker: str, first: pd.Timestamp, last: pd.Timestamp
+        ) -> None:
+            missing.setdefault(cause, []).append(ticker)
+            known = window_by_cause.get(cause)
+            window_by_cause[cause] = (
+                (first, last)
+                if known is None
+                else (min(known[0], first), max(known[1], last))
+            )
+
+        # Load the stored frames even on a refresh. The save-time merge keeps
+        # bars outside the re-downloaded window. ``cached`` stays None while
+        # refreshing, so every download decision below stays unchanged. The
+        # merge keeps the LAST duplicate, so the fresh download still wins on
+        # the dates it covers.
+        #
+        # Reading them up front, in parallel, rather than one at a time inside
+        # the decision loop: parquet reads release the GIL, and a warm India
+        # field is ~1900 of them. Once the download count came down they cost
+        # more than the network did.
+        cache_keys = {ticker: self._cache_key(ticker) for ticker in tickers}
+        stored_by_ticker = self._load_cache_entries(cache_keys)
+
         for ticker in tickers:
-            cache_key = self._cache_key(ticker)
-            # Load the stored frame even on a refresh. The save-time merge
-            # keeps bars outside the re-downloaded window. ``cached`` stays
-            # None while refreshing, so every download decision below stays
-            # unchanged. The merge keeps the LAST duplicate, so the fresh
-            # download still wins on the dates it covers.
-            stored = _load_cached(cache_key, self.cache_dir, self.interval)
+            cache_key = cache_keys[ticker]
+            stored = stored_by_ticker[ticker]
             if stored is not None and not stored.empty:
                 cached_by_ticker[ticker] = stored
             cached = None if self.refresh else stored
@@ -317,7 +376,7 @@ class YFinancePriceFetcher:
             ):
                 if _needs_tail_refresh(_cache_path(cache_key, self.cache_dir), end_ts):
                     tail_start = max(cached.index) - pd.Timedelta(days=7)
-                    missing.setdefault((tail_start, end_ts), []).append(ticker)
+                    want("tail", ticker, tail_start, end_ts)
                     tail_refresh_tickers.add(ticker)
                 else:
                     results[ticker] = cached.loc[
@@ -326,6 +385,7 @@ class YFinancePriceFetcher:
                 continue
 
             fetch_start, fetch_end = start_ts, end_ts
+            cause = "full"
             if not self.refresh and cached is not None and not cached.empty:
                 min_cached = cached.index.min()
                 max_cached = cached.index.max()
@@ -333,11 +393,25 @@ class YFinancePriceFetcher:
                     days=3
                 ) and max_cached < end_ts - pd.Timedelta(days=3):
                     fetch_start = max_cached + pd.Timedelta(days=1)
+                    cause = "extend"
                 elif max_cached >= end_ts - pd.Timedelta(
                     days=3
                 ) and min_cached > start_ts + pd.Timedelta(days=3):
                     fetch_end = min_cached - pd.Timedelta(days=1)
-            missing.setdefault((fetch_start, fetch_end), []).append(ticker)
+                    cause = "backfill"
+            if not self.refresh and _has_empty_history(
+                cache_key, fetch_start, fetch_end, self.cache_dir
+            ):
+                # A recent request for a superset of this window served no
+                # bars. Asking again cannot change that, and it is what makes a
+                # warm screen spend most of its time on the network.
+                results[ticker] = (
+                    cached.loc[(cached.index >= start_ts) & (cached.index <= end_ts)]
+                    if cached is not None and not cached.empty
+                    else _empty_ohlcv_frame()
+                )
+                continue
+            want(cause, ticker, fetch_start, fetch_end)
 
         if not missing:
             return results
@@ -346,7 +420,8 @@ class YFinancePriceFetcher:
         yf = _optional.load("yfinance")
 
         jobs: list[tuple[pd.Timestamp, pd.Timestamp, list[str]]] = []
-        for (fetch_start, fetch_end), group in missing.items():
+        for cause, group in missing.items():
+            fetch_start, fetch_end = window_by_cause[cause]
             windows = [(fetch_start, fetch_end)]
             if self.interval != "1d":
                 windows = self._intraday_chunks(fetch_start, fetch_end)
@@ -415,10 +490,24 @@ class YFinancePriceFetcher:
                     downloaded_by_ticker.get(ticker), norm, self.interval
                 )
 
+        window_asked: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {
+            ticker: window_by_cause[cause]
+            for cause, group in missing.items()
+            for ticker in group
+        }
         leftover: list[tuple[str, pd.DataFrame]] = []
         for ticker in dict.fromkeys(t for group in missing.values() for t in group):
             cache_key = self._cache_key(ticker)
             norm = downloaded_by_ticker.get(ticker, _empty_ohlcv_frame())
+            # Tail refreshes are excluded: an empty tail is the ordinary
+            # weekend answer, not a statement about the ticker's history.
+            if ticker not in tail_refresh_tickers:
+                if norm.empty:
+                    _record_empty_history(
+                        cache_key, *window_asked[ticker], self.cache_dir
+                    )
+                else:
+                    _clear_empty_history(cache_key, self.cache_dir)
             stored = cached_by_ticker.get(ticker)
             merged = _merge_cached(stored, norm, self.interval)
             # A failed download is an empty frame, and the merge then returns
@@ -626,6 +715,21 @@ class FMPPriceFetcher:
             else:
                 fetch_start = start_ts
                 is_tail_refresh = False
+                if not self.refresh and _has_empty_history(
+                    cache_key, start_ts, end_ts, self.cache_dir
+                ):
+                    # Same contract as the yfinance fetcher: a recent request
+                    # for this window served no bars, so skip the round trip.
+                    # This leg runs one request per ticker, so the names FMP
+                    # does not carry cost the most.
+                    in_range = (
+                        cached.loc[
+                            (cached.index >= start_ts) & (cached.index <= end_ts)
+                        ]
+                        if cached is not None and not cached.empty
+                        else pd.DataFrame(columns=OHLCV_COLUMNS)
+                    )
+                    return ticker, in_range, None
 
             if self.interval == "1d":
                 path = f"{self.daily_path}/{ticker}"
@@ -650,6 +754,13 @@ class FMPPriceFetcher:
                 fallback=empty_payload,
             )
             norm = _normalize_fmp_historical(payload, self.auto_adjust, self.interval)
+            if not is_tail_refresh:
+                if norm.empty:
+                    _record_empty_history(
+                        cache_key, fetch_start, end_ts, self.cache_dir
+                    )
+                else:
+                    _clear_empty_history(cache_key, self.cache_dir)
             leftover_cache = (
                 stored
                 if (

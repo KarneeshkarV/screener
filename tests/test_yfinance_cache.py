@@ -379,3 +379,122 @@ def test_ticker_fetch_timeout_bounds_caller(monkeypatch) -> None:
         data_module.call_yfinance_with_timeout(lambda: blocker.wait())
 
     blocker.set()
+
+
+def test_yfinance_fetcher_coalesces_partial_windows_into_one_download(
+    tmp_path, monkeypatch
+):
+    """Tickers needing the same *kind* of window download together.
+
+    Each ticker's backfill window ends at its own first cached bar, so keying
+    the download group on the exact window gave every name a request of its
+    own. yfinance charges per request, so that is what a warm screen spends
+    its time on.
+    """
+    import yfinance as yf
+
+    calls = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append(
+            (tickers, pd.Timestamp(kwargs["start"]), pd.Timestamp(kwargs["end"]))
+        )
+        batch = tickers.split() if isinstance(tickers, str) else list(tickers)
+        return _download_frame(batch, kwargs["start"], kwargs["end"])
+
+    monkeypatch.setattr(yf, "download", fake_download)
+
+    # Two caches that start late, at different dates: both want older history.
+    _save_cache(
+        "AAA",
+        _plain_bars(date(2024, 1, 15), date(2024, 1, 31)).rename(columns=str.lower),
+        tmp_path,
+    )
+    _save_cache(
+        "BBB",
+        _plain_bars(date(2024, 1, 22), date(2024, 1, 31)).rename(columns=str.lower),
+        tmp_path,
+    )
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 1), date(2024, 1, 30))
+
+    assert len(calls) == 1, "both backfills belong in one request"
+    assert calls[0][0] == "AAA BBB"
+    # The union window is a superset of what either ticker asked for, and the
+    # result is still sliced back to the caller's range.
+    assert calls[0][1] == pd.Timestamp("2024-01-01")
+    for ticker in ("AAA", "BBB"):
+        assert out[ticker].index.min() == pd.Timestamp("2024-01-01")
+        assert out[ticker].index.max() <= pd.Timestamp("2024-01-30")
+
+
+def test_yfinance_fetcher_skips_a_window_a_recent_request_found_empty(
+    tmp_path, monkeypatch
+):
+    """A vendor with no bars for a window still has none on the next run."""
+    import yfinance as yf
+
+    calls = {"count": 0}
+
+    def fake_download(tickers, **kwargs):
+        calls["count"] += 1
+        return pd.DataFrame()
+
+    monkeypatch.setattr(yf, "download", fake_download)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    first = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 10))
+    second = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 10))
+
+    assert calls["count"] == 1
+    assert first["AAA"].empty and second["AAA"].empty
+
+
+def test_empty_history_marker_only_covers_the_window_it_answered(tmp_path, monkeypatch):
+    """A wider window was never asked for, so it is still worth asking."""
+    import yfinance as yf
+
+    calls = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append(pd.Timestamp(kwargs["start"]))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(yf, "download", fake_download)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    fetcher.fetch(["AAA"], date(2024, 1, 5), date(2024, 1, 10))
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 10))
+
+    assert calls == [pd.Timestamp("2024-01-05"), pd.Timestamp("2024-01-01")]
+
+
+def test_empty_history_marker_is_ignored_by_refresh_and_cleared_by_bars(
+    tmp_path, monkeypatch
+):
+    """``--refresh`` re-asks, and a download that finds bars drops the marker."""
+    import yfinance as yf
+
+    from screener.backtester.price_cache import empty_history_path
+
+    payloads = {"empty": True}
+
+    def fake_download(tickers, **kwargs):
+        if payloads["empty"]:
+            return pd.DataFrame()
+        batch = tickers.split() if isinstance(tickers, str) else list(tickers)
+        return _download_frame(batch, kwargs["start"], kwargs["end"])
+
+    monkeypatch.setattr(yf, "download", fake_download)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 10))
+    assert empty_history_path("AAA", tmp_path).exists()
+
+    payloads["empty"] = False
+    refreshing = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True)
+    out = refreshing.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 10))
+
+    assert not out["AAA"].empty
+    assert not empty_history_path("AAA", tmp_path).exists()
