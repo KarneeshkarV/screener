@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from screener.indicators.plugins.heikin_ashi import heikin_ashi_ohlc
 from screener.strategies.spec import strategy
 from screener.strategies.trades import ResearchTrade, _walk
 
@@ -17,15 +18,7 @@ def strat_heikin_ashi(df: pd.DataFrame) -> list[ResearchTrade]:
     cl = df["close"].to_numpy(dtype=float)
 
     n_len = len(cl)
-    ha_close = (op + hi + lo + cl) / 4.0
-    ha_open = np.zeros_like(cl)
-    if n_len > 0:
-        ha_open[0] = op[0]
-        for i in range(1, n_len):
-            ha_open[i] = (ha_open[i - 1] + ha_close[i - 1]) / 2.0
-
-    ha_high = np.maximum.reduce([ha_open, ha_close, hi])
-    ha_low = np.minimum.reduce([ha_open, ha_close, lo])
+    ha_open, ha_high, ha_low, ha_close = heikin_ashi_ohlc(op, hi, lo, cl)
 
     stls = 3
     entries = np.zeros(n_len, dtype=bool)

@@ -52,8 +52,9 @@ from screener.factors.fundamentals import (
 class BarFeatures:
     """The only inputs a shared price-only recipe may read.
 
-    ``high`` / ``low`` / ``volume`` / ``benchmark_close`` are optional so a
-    close-only recipe can be evaluated from a frame that carries nothing else.
+    ``open`` / ``high`` / ``low`` / ``volume`` / ``benchmark_close`` are
+    optional so a close-only recipe can be evaluated from a frame that
+    carries nothing else.
 
     ``fundamentals`` is the one non-price input allowed here, and only under a
     proof: a column appears in it exactly when the frame carries the provenance
@@ -66,6 +67,7 @@ class BarFeatures:
     """
 
     close: pd.Series
+    open: pd.Series | None = None
     high: pd.Series | None = None
     low: pd.Series | None = None
     volume: pd.Series | None = None
@@ -125,6 +127,7 @@ class BarFeatures:
                 fundamentals[name] = series
         return cls(
             close=close,
+            open=_column("open"),
             high=_column("high"),
             low=_column("low"),
             volume=_column("volume"),

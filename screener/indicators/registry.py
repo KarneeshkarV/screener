@@ -28,6 +28,7 @@ def _register_plugins() -> None:
         atr,
         bollinger_bands,
         ema,
+        heikin_ashi,
         rma,
         rsi,
         sar,

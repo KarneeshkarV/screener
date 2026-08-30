@@ -375,6 +375,7 @@ def discover_plugins() -> None:
         ema150_200_revenue,
         ema_stack_lowvol,
         ema_trend,
+        ha_momentum,
         heikin_ashi,
         low_volatility,
         ma_cross,

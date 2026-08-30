@@ -111,6 +111,13 @@ register_bar_scorer(
     "momentum_12_1 backtest strategy)",
 )
 
+register_bar_scorer(
+    "ha_momentum",
+    "ha_momentum",
+    description="12-1 momentum ranked only while Heikin-Ashi confirms an "
+    "active uptrend (same recipe as the ha_momentum backtest strategy)",
+)
+
 
 @scorer(
     "mark_minervini",

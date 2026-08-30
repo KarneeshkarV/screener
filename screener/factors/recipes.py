@@ -25,11 +25,15 @@ import numpy as np
 import pandas as pd
 
 from screener.factors import BarFeatures, price_score
+from screener.indicators.plugins.heikin_ashi import heikin_ashi_ohlc
 from screener.indicators.plugins.rsi import rsi as _wilder_rsi
 
 # Trading-day windows. 252 ~ 12 months, 21 ~ 1 month (the skipped reversal leg).
 MOMENTUM_LOOKBACK = 252
 MOMENTUM_SKIP = 21
+
+#: Consecutive bullish Heikin-Ashi candles required to confirm a trend.
+HA_STREAK_MIN = 3
 
 #: Wilder's default RSI period, matching TradingView's ``RSI`` column.
 RSI_PERIOD = 14
@@ -72,6 +76,57 @@ def momentum_12_1(
 )
 def score_momentum_12_1(features: BarFeatures) -> pd.Series:
     return momentum_12_1(features.close)
+
+
+def ha_momentum(
+    open_: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    *,
+    lookback: int = MOMENTUM_LOOKBACK,
+    skip: int = MOMENTUM_SKIP,
+    min_streak: int = HA_STREAK_MIN,
+) -> pd.Series:
+    """12-1 momentum, confirmed by an active Heikin-Ashi uptrend.
+
+    Same ``mom_12_1`` value as :func:`momentum_12_1`, except a name only
+    carries a score while its Heikin-Ashi candles are on a bullish streak of
+    at least ``min_streak`` bars (``ha_close > ha_open``, no wicks below the
+    body: ``ha_open == ha_low``). Everywhere else the value is NaN, which
+    both adapters already treat as "not a candidate" - Heikin-Ashi's smoothing
+    is the trend-confirmation leg, 12-1 momentum stays the ranking leg.
+    """
+    op = pd.to_numeric(open_, errors="coerce").astype(float).to_numpy()
+    hi = pd.to_numeric(high, errors="coerce").astype(float).to_numpy()
+    lo = pd.to_numeric(low, errors="coerce").astype(float).to_numpy()
+    cl = pd.to_numeric(close, errors="coerce").astype(float).to_numpy()
+
+    ha_open, _ha_high, ha_low, ha_close = heikin_ashi_ohlc(op, hi, lo, cl)
+    bullish = pd.Series((ha_close > ha_open) & (ha_open == ha_low), index=close.index)
+    streak = bullish.groupby((~bullish).cumsum()).cumcount() + 1
+    streak = streak.where(bullish, 0)
+    confirmed = streak >= min_streak
+
+    mom = momentum_12_1(close, lookback=lookback, skip=skip)
+    return mom.where(confirmed)
+
+
+@price_score(
+    "ha_momentum",
+    required_lookback=MOMENTUM_LOOKBACK,
+    description=(
+        "12-1 momentum, ranked only while Heikin-Ashi confirms an active "
+        f"uptrend ({HA_STREAK_MIN}+ consecutive bullish HA candles)"
+    ),
+    aux_column="ha_mom_12_1",
+    # Same floor as plain momentum_12_1: only long the winners.
+    eligible_above=0.0,
+)
+def score_ha_momentum(features: BarFeatures) -> pd.Series:
+    if features.open is None or features.high is None or features.low is None:
+        return pd.Series(np.nan, index=features.close.index, dtype=float)
+    return ha_momentum(features.open, features.high, features.low, features.close)
 
 
 def rsi_14(close: pd.Series, *, period: int = RSI_PERIOD) -> pd.Series:
@@ -145,15 +200,18 @@ def score_perf_y(features: BarFeatures) -> pd.Series:
 
 
 __all__ = [
+    "HA_STREAK_MIN",
     "MOMENTUM_LOOKBACK",
     "MOMENTUM_SKIP",
     "PERF_Y_LOOKBACK",
     "RSI_PERIOD",
     "RVOL_WINDOW",
+    "ha_momentum",
     "momentum_12_1",
     "perf_y",
     "relative_volume_10d",
     "rsi_14",
+    "score_ha_momentum",
     "score_momentum_12_1",
     "score_perf_y",
     "score_relative_volume_10d",
