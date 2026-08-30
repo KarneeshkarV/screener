@@ -78,6 +78,7 @@ def _cached_series(
         ctx.series_cache[key] = cached
     return cached
 
+
 _SIZERS: dict[str, SizerFunc] = {}
 
 
@@ -158,10 +159,9 @@ def _inverse_vol(ctx: SizingContext) -> float:
         ctx,
         "inverse_vol",
         window,
-        lambda: ctx.bars["close"]
-        .pct_change()
-        .rolling(window, min_periods=window)
-        .std(),
+        lambda: (
+            ctx.bars["close"].pct_change().rolling(window, min_periods=window).std()
+        ),
     )
     vol_value = float(vol[ctx.signal_idx])
     if not math.isfinite(vol_value) or vol_value <= 0:
