@@ -70,6 +70,7 @@ from screener.backtester.price_frames import (
 )
 from screener.backtester.price_frames import (
     frame_has_range as _has_range,
+    range_slice as _range_slice,
 )
 from screener.backtester.price_frames import (
     inclusive_fetch_bounds as _inclusive_fetch_bounds,
@@ -383,13 +384,11 @@ class YFinancePriceFetcher:
                 and _has_range(cached, start_ts, end_ts, self.interval)
             ):
                 if _needs_tail_refresh(_cache_path(cache_key, self.cache_dir), end_ts):
-                    tail_start = max(cached.index) - pd.Timedelta(days=7)
+                    tail_start = cached.index.max() - pd.Timedelta(days=7)
                     want("tail", ticker, tail_start, end_ts)
                     tail_refresh_tickers.add(ticker)
                 else:
-                    results[ticker] = cached.loc[
-                        (cached.index >= start_ts) & (cached.index <= end_ts)
-                    ]
+                    results[ticker] = _range_slice(cached, start_ts, end_ts)
                 continue
 
             fetch_start, fetch_end = start_ts, end_ts
@@ -414,7 +413,7 @@ class YFinancePriceFetcher:
                 # bars. Asking again cannot change that, and it is what makes a
                 # warm screen spend most of its time on the network.
                 results[ticker] = (
-                    cached.loc[(cached.index >= start_ts) & (cached.index <= end_ts)]
+                    _range_slice(cached, start_ts, end_ts)
                     if cached is not None and not cached.empty
                     else _empty_ohlcv_frame()
                 )
@@ -537,9 +536,7 @@ class YFinancePriceFetcher:
                 not norm.empty or ticker not in tail_refresh_tickers
             ):
                 _save_cache(cache_key, merged, self.cache_dir)
-            results[ticker] = merged.loc[
-                (merged.index >= start_ts) & (merged.index <= end_ts)
-            ]
+            results[ticker] = _range_slice(merged, start_ts, end_ts)
         if leftover:
             raise _strict_refresh_stale_data_error(leftover, as_of=end_ts)
         return results
@@ -716,11 +713,8 @@ class FMPPriceFetcher:
                 if not _needs_tail_refresh(
                     _cache_path(cache_key, self.cache_dir), end_ts
                 ):
-                    in_range = cached.loc[
-                        (cached.index >= start_ts) & (cached.index <= end_ts)
-                    ]
-                    return ticker, in_range, None
-                fetch_start = max(cached.index) - pd.Timedelta(days=7)
+                    return ticker, _range_slice(cached, start_ts, end_ts), None
+                fetch_start = cached.index.max() - pd.Timedelta(days=7)
                 is_tail_refresh = True
             else:
                 fetch_start = start_ts
@@ -733,9 +727,7 @@ class FMPPriceFetcher:
                     # This leg runs one request per ticker, so the names FMP
                     # does not carry cost the most.
                     in_range = (
-                        cached.loc[
-                            (cached.index >= start_ts) & (cached.index <= end_ts)
-                        ]
+                        _range_slice(cached, start_ts, end_ts)
                         if cached is not None and not cached.empty
                         else pd.DataFrame(columns=OHLCV_COLUMNS)
                     )
@@ -791,7 +783,7 @@ class FMPPriceFetcher:
                     _save_cache(cache_key, merged, self.cache_dir)
                 return (
                     ticker,
-                    merged.loc[(merged.index >= start_ts) & (merged.index <= end_ts)],
+                    _range_slice(merged, start_ts, end_ts),
                     leftover_cache,
                 )
             return ticker, pd.DataFrame(columns=OHLCV_COLUMNS), leftover_cache

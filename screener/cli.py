@@ -11,9 +11,13 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from screener import usage
 from screener.config import load_config
 from screener.logging_config import configure_logging
+
+# ``screener.usage`` is imported where it is used, not here. It pulls in
+# pydantic, and nothing needs it until a command has already finished running -
+# so at module load it is 0.15s spent before Click has even read argv, on every
+# invocation including a bare ``--help``.
 
 # Keep in sync with screener.agentio.DETAIL_LEVELS (avoid importing agentio /
 # pandas at CLI module load for --help).
@@ -182,6 +186,8 @@ def _instrument_usage_tracking(
             status = type(exc).__name__
             raise
         finally:
+            from screener import usage
+
             duration = usage.elapsed_ms(started_at)
             if status == "success":
                 usage.record_feature_usage(
@@ -362,6 +368,8 @@ for _name, (_module, _attr, _short) in _LAZY_COMMANDS.items():
 @click.command(name="usage-report")
 def usage_report() -> None:
     """Show successful feature usage counts from Turso."""
+    from screener import usage
+
     console = Console()
     rows = usage.feature_usage_counts()
     if not rows:
