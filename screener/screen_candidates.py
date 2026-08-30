@@ -364,6 +364,11 @@ def screen_candidates(
         end_ts=end_ts,
         warnings=warnings,
         limit=None,
+        # The screen's as-of bar is the newest bar there is, so the
+        # backtester's "a later bar must exist to fill the entry on" rule would
+        # reject every name. A screen names today's triggers; the fill is
+        # tomorrow's problem, and tomorrow's bar does not exist yet.
+        require_next_bar=False,
     )
     return _candidate_frame(
         day.candidates,

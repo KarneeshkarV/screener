@@ -339,3 +339,66 @@ def test_a_holiday_after_the_last_bar_still_snaps_back(window) -> None:
         warnings=[],
     )
     assert result.as_of == last_bar
+
+
+def test_the_last_bar_is_a_candidate_only_when_no_next_bar_is_required(
+    window,
+) -> None:
+    """A screen asks about the newest bar; the backtester cannot fill on it.
+
+    The rolling engine drops a signal on the final bar because no later bar
+    exists to enter at. A screen's as-of bar is *always* the final bar, so
+    applying that rule there returns nothing, however many names fired.
+    """
+    inputs, price_panel, program = window
+    # Strictly rising closes, so ``close > sma(close, 5)`` is true on every bar
+    # past warmup for every ticker -- the last bar included.
+    dates = pd.DatetimeIndex(price_panel.master_dates)
+    for offset, tv in enumerate(_TICKERS):
+        closes = 100.0 + offset + np.arange(len(dates), dtype=float)
+        price_panel.bars_by_tv[tv] = pd.DataFrame(
+            {
+                "open": closes,
+                "high": closes * 1.01,
+                "low": closes * 0.99,
+                "close": closes,
+                "volume": np.full(len(dates), 1_000_000.0),
+            },
+            index=dates,
+        )
+    last = price_panel.master_dates[-1]
+
+    def candidates(require_next_bar: bool) -> list[str]:
+        signals = build_signal_panel(
+            inputs,
+            price_panel,
+            program=program,
+            start_ts=price_panel.master_dates[0],
+            end_ts=last,
+            warnings=[],
+            require_next_bar=require_next_bar,
+        )
+        return [c.ticker for c in day_candidates_from_panel(signals, last).candidates]
+
+    assert candidates(require_next_bar=True) == []
+    assert sorted(candidates(require_next_bar=False)) == sorted(_TICKERS)
+
+
+def test_require_next_bar_changes_nothing_inside_the_window(window) -> None:
+    """The gate only ever touches the final bar."""
+    inputs, price_panel, program = window
+    inner = price_panel.master_dates[40]
+
+    def candidates(require_next_bar: bool) -> list[str]:
+        signals = build_signal_panel(
+            inputs,
+            price_panel,
+            program=program,
+            start_ts=price_panel.master_dates[0],
+            end_ts=price_panel.master_dates[-1],
+            warnings=[],
+            require_next_bar=require_next_bar,
+        )
+        return [c.ticker for c in day_candidates_from_panel(signals, inner).candidates]
+
+    assert candidates(require_next_bar=False) == candidates(require_next_bar=True)

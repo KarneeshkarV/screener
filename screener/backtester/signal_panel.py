@@ -222,8 +222,14 @@ def build_signal_panel(
     end_ts: pd.Timestamp,
     warnings: list[str],
     earnings_blackout: dict[str, list[date]] | None = None,
+    require_next_bar: bool = True,
 ) -> SignalPanel:
-    """Evaluate signals over ``panel`` and rank them into candidate matrices."""
+    """Evaluate signals over ``panel`` and rank them into candidate matrices.
+
+    ``require_next_bar`` is forwarded to
+    :func:`~screener.backtester.rolling_candidates._build_rolling_candidate_matrices`;
+    see there for why a screen turns it off.
+    """
     bars_by_tv = panel.bars_by_tv
     exit_signals_by_tv: dict[str, pd.Series | str] = {}
     # Bool arrays: entry (and exit) results feed matrices / ndarray caches, so
@@ -299,6 +305,7 @@ def build_signal_panel(
         warnings=warnings,
         sector_neutral=inputs.sector_neutral,
         sector_by_tv=sector_by_tv,
+        require_next_bar=require_next_bar,
     )
     return SignalPanel(
         exit_signals=exit_signals_by_tv,
@@ -449,6 +456,7 @@ def build_day_candidates(
     earnings_blackout: dict[str, list[date]] | None = None,
     exclude: Collection[str] = (),
     limit: int | None = None,
+    require_next_bar: bool = True,
 ) -> DayCandidates:
     """Rank the candidates for a single as-of date.
 
@@ -475,6 +483,7 @@ def build_day_candidates(
         end_ts=end_ts,
         warnings=warnings,
         earnings_blackout=earnings_blackout,
+        require_next_bar=require_next_bar,
     )
     return day_candidates_from_panel(
         signals,
