@@ -11,7 +11,15 @@ CORPORATE_ACTION_COLUMNS = ["dividend", "split_factor", "stock_splits"]
 
 
 def naive_normalized_index(index: pd.Index, interval: str = "1d") -> pd.DatetimeIndex:
-    """Return the canonical tz-naive daily or UTC-intraday index."""
+    """Return the canonical tz-naive daily or UTC-intraday index.
+
+    The result never carries a ``freq``. Under pandas 3 ``normalize`` *infers*
+    one from the values, so an index that had none acquired ``BusinessDay`` or
+    ``Day`` purely from the shape of the data it happened to hold. No price
+    source supplies that, nothing in the codebase reads it, and it is not
+    stored in the parquet cache - so leaving it on made a frame's identity
+    depend on which path it was read through.
+    """
     if not isinstance(index, pd.DatetimeIndex):
         index = pd.to_datetime(index)
     if index.tz is not None:
@@ -19,7 +27,16 @@ def naive_normalized_index(index: pd.Index, interval: str = "1d") -> pd.Datetime
             index = index.tz_localize(None)
         else:
             index = index.tz_convert("UTC").tz_localize(None)
-    return index.normalize() if interval == "1d" else index
+    if interval == "1d":
+        index = index.normalize()
+    return drop_index_freq(index)
+
+
+def drop_index_freq(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Return ``index`` without its inferred frequency, allocating only if set."""
+    if index.freq is None:
+        return index
+    return pd.DatetimeIndex(index.to_numpy(copy=False), name=index.name)
 
 
 def empty_ohlcv_frame() -> pd.DataFrame:

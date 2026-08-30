@@ -9,9 +9,16 @@ import time
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-from screener.backtester.price_frames import OHLCV_COLUMNS, naive_normalized_index
+from screener.backtester.price_frames import (
+    OHLCV_COLUMNS,
+    drop_index_freq,
+    naive_normalized_index,
+)
 
 CACHE_DIR = Path.home() / ".screener" / "prices"
 FMP_CACHE_DIR = Path.home() / ".screener" / "fmp_prices"
@@ -24,6 +31,58 @@ def cache_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
     return cache_dir / f"{safe}.parquet"
 
 
+#: Ticks per calendar day for each pandas datetime64 resolution, used to ask
+#: whether an index is already midnight-aligned without building a new one.
+_TICKS_PER_DAY = {
+    "s": 86_400,
+    "ms": 86_400_000,
+    "us": 86_400_000_000,
+    "ns": 86_400_000_000_000,
+}
+
+
+def _canonical_index(index: pd.Index, interval: str) -> pd.Index:
+    """``naive_normalized_index``, skipped when the index is already canonical.
+
+    Every frame this module writes is stored canonical, so the conversion is a
+    no-op on essentially every cache hit -- but it still allocated a new index
+    per ticker, and a warm screen reads hundreds of them. The checks below are
+    all metadata reads except the midnight test, which is one integer modulo
+    over the existing buffer and allocates nothing.
+    """
+    if not isinstance(index, pd.DatetimeIndex) or index.tz is not None:
+        return naive_normalized_index(index, interval)
+    if interval != "1d":
+        return index
+    index = drop_index_freq(index)
+    ticks = _TICKS_PER_DAY.get(index.unit)
+    if ticks is None:
+        return index.normalize()
+    values = index.asi8
+    if values.size and (values % ticks).any():
+        return index.normalize()
+    return index
+
+
+def _has_missing(frame: pd.DataFrame, columns: list[str]) -> bool:
+    """Whether any of ``columns`` holds a null, without materialising a mask.
+
+    ``dropna`` copies the whole frame whether or not it has anything to drop,
+    and a cache entry almost never does: the write path drops NaN rows before
+    saving, so this guard exists for frames written by an older version. Asking
+    first costs one pass over a float buffer and keeps the copy for the rare
+    frame that needs it.
+    """
+    for column in columns:
+        values = frame[column].to_numpy(copy=False)
+        if values.dtype.kind == "f":
+            if np.isnan(values).any():
+                return True
+        elif values.dtype.kind not in "iub" and pd.isna(values).any():
+            return True
+    return False
+
+
 def load_cached_frame(
     ticker: str, cache_dir: Path = CACHE_DIR, interval: str = "1d"
 ) -> pd.DataFrame | None:
@@ -31,11 +90,18 @@ def load_cached_frame(
     if not path.exists():
         return None
     try:
-        frame = pd.read_parquet(path)
-        frame.index = naive_normalized_index(frame.index, interval)
+        # ``pq.read_table`` rather than ``pd.read_parquet``: the arrow read
+        # releases the GIL, so the thread pool in ``data.py`` that reads these
+        # entries actually scales, and it skips a layer of pandas dispatch. The
+        # pandas metadata parquet carries still restores the index, so the
+        # frame is identical to what ``pd.read_parquet`` returned.
+        frame = pq.read_table(path).to_pandas()
+        frame.index = _canonical_index(frame.index, interval)
         price_columns = [column for column in OHLCV_COLUMNS if column in frame.columns]
-        return frame.dropna(subset=price_columns) if price_columns else frame
-    except (OSError, pd.errors.ParserError, ValueError):
+        if price_columns and _has_missing(frame, price_columns):
+            return frame.dropna(subset=price_columns)
+        return frame
+    except (OSError, pd.errors.ParserError, ValueError, pa.ArrowException):
         return None
 
 

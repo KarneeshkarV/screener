@@ -27,6 +27,7 @@ from collections.abc import Callable, Iterator, Mapping
 from datetime import date
 from typing import Any, Literal, TypeVar, cast
 
+import numpy as np
 import pandas as pd
 from pydantic import (
     BaseModel,
@@ -69,8 +70,21 @@ LookbackFn = Callable[[], int]
 #: what lets the same declaration serve the backtester and the pine_runner.
 BarColumnFn = Callable[[pd.DataFrame], pd.Series]
 
+#: Optional panel form of a recipe: the same column for many tickers at once,
+#: over ``(bars, symbols)`` arrays keyed "open"/"high"/"low"/"close"/"volume".
+#: It exists for the recipes whose indicator recurses bar by bar, where the
+#: per-ticker form pays one Python step per bar *per ticker*. Only the shape
+#: changes; the arithmetic is the same call into ``screener/indicators/``.
+BarColumnPanelFn = Callable[[Mapping[str, np.ndarray]], np.ndarray]
+
+#: Fields offered to a panel recipe, when every frame in the group has them.
+_PANEL_FIELDS = ("open", "high", "low", "close", "volume")
+
 #: Attribute a ``@bar_column`` recipe carries its warm-up on.
 _BAR_COLUMN_LOOKBACK = "_bar_column_lookback"
+
+#: Attribute a recipe carries its optional panel form on.
+_BAR_COLUMN_PANEL = "_bar_column_panel"
 
 #: Attribute marking a ``prepare_bars`` hook as derived from ``bar_columns``
 #: rather than hand-written. Consumers that can apply the columns themselves
@@ -78,7 +92,9 @@ _BAR_COLUMN_LOOKBACK = "_bar_column_lookback"
 _DERIVED_FROM_BAR_COLUMNS = "_derived_from_bar_columns"
 
 
-def bar_column(required_lookback: int) -> Callable[[BarColumnFn], BarColumnFn]:
+def bar_column(
+    required_lookback: int, panel: BarColumnPanelFn | None = None
+) -> Callable[[BarColumnFn], BarColumnFn]:
     """Declare how many bars of history a column recipe needs to be valid.
 
     The warm-up is invisible to the entry/exit AST - an expression naming
@@ -91,15 +107,26 @@ def bar_column(required_lookback: int) -> Callable[[BarColumnFn], BarColumnFn]:
     The unit matches :func:`screener.backtester.pine.required_lookback`: the
     rolling window length, so a column built from ``rolling(20).shift(1)``
     declares 21.
+
+    ``panel`` is an optional second form of the same recipe that builds the
+    column for a whole group of tickers at once; see :data:`BarColumnPanelFn`.
+    It is an optimisation only - a recipe without one is still correct, just
+    slower - and :func:`apply_bar_columns_to_panel` is the only caller.
     """
     if required_lookback < 0:
         raise ValueError("bar column lookback must not be negative")
 
     def _wrap(fn: BarColumnFn) -> BarColumnFn:
         setattr(fn, _BAR_COLUMN_LOOKBACK, required_lookback)
+        setattr(fn, _BAR_COLUMN_PANEL, panel)
         return fn
 
     return _wrap
+
+
+def bar_column_panel_fn(build: BarColumnFn) -> BarColumnPanelFn | None:
+    """The recipe's panel form, or None when it only has the per-ticker one."""
+    return cast("BarColumnPanelFn | None", getattr(build, _BAR_COLUMN_PANEL, None))
 
 
 def bar_columns_lookback(bar_columns: Mapping[str, BarColumnFn]) -> int:
@@ -128,6 +155,177 @@ def apply_bar_columns(
     return frame
 
 
+#: How much taller than its tallest member a shared calendar may be before a
+#: group is not worth stacking. A field is one calendar with symbols starting
+#: and ending on different dates, so the union is a little taller than any one
+#: of them; anything beyond this is a mixed field whose panel would be mostly
+#: padding.
+_MAX_PANEL_PADDING = 2.0
+
+
+def _panel_groups(
+    bars_by_tv: Mapping[str, pd.DataFrame],
+) -> list[tuple[list[str], np.ndarray, int]]:
+    """Frames that can be stacked, as ``(members, offsets, height)`` groups.
+
+    Two passes, because most of a field shares one calendar exactly and the
+    rest does not. The first groups frames with identical indexes, using
+    :func:`screener.backtester.pine.panel_index_key` - the rule the engine's
+    own panel paths use - and needs no padding at all. The second offers what
+    is left to :func:`_aligned_panel_groups`, which pads. Running the union
+    pass first would be worse than useless: one late listing's extra dates
+    would put a hole in every frame that shares the main calendar.
+    """
+    from screener.backtester.pine import panel_index_key
+
+    exact: dict[object, list[str]] = {}
+    for tv, bars in bars_by_tv.items():
+        if bars is None or bars.empty:
+            continue
+        key = panel_index_key(bars.index)
+        if key is not None:
+            exact.setdefault(key, []).append(tv)
+
+    groups: list[tuple[list[str], np.ndarray, int]] = []
+    remaining: dict[str, pd.DataFrame] = {}
+    for members in exact.values():
+        if len(members) < 2:
+            # A group of one saves nothing here, but it may still align with
+            # the frames the exact rule could not group.
+            remaining[members[0]] = bars_by_tv[members[0]]
+            continue
+        groups.append(
+            (
+                members,
+                np.zeros(len(members), dtype=int),
+                int(bars_by_tv[members[0]].shape[0]),
+            )
+        )
+    return groups + _aligned_panel_groups(remaining)
+
+
+def _aligned_panel_groups(
+    bars_by_tv: Mapping[str, pd.DataFrame],
+) -> list[tuple[list[str], np.ndarray, int]]:
+    """Group frames whose calendars are contiguous slices of one calendar.
+
+    Returns ``(members, offsets, height)`` per group: each member's bars occupy
+    rows ``offset .. offset + len(bars)`` of a shared calendar of ``height``
+    rows, so the group stacks into one array with the shorter histories padded.
+
+    Requiring a *contiguous* slice is the safety rule. Symbols in one field
+    share a trading calendar and differ only in when their history starts and
+    ends; a frame with an interior hole is not a slice of anything and is left
+    out, because padding cannot express a gap. Members keep their own indexes -
+    nothing is relabelled - so unlike ``pine.panel_index_key`` this does not
+    have to reject frames whose labels merely compare equal.
+    """
+    from screener.backtester.pine import is_naive_numpy_datetime_index
+
+    by_calendar: dict[str, list[tuple[str, np.ndarray]]] = {}
+    for tv, bars in bars_by_tv.items():
+        if bars is None or bars.empty:
+            continue
+        index = bars.index
+        if not is_naive_numpy_datetime_index(index) or not index.is_unique:
+            continue
+        by_calendar.setdefault(str(index.dtype), []).append(
+            (tv, index.to_numpy().view("i8"))
+        )
+
+    groups: list[tuple[list[str], np.ndarray, int]] = []
+    for calendar in by_calendar.values():
+        if len(calendar) < 2:
+            continue
+        union = np.unique(np.concatenate([ticks for _, ticks in calendar]))
+        members: list[str] = []
+        offsets: list[int] = []
+        for tv, ticks in calendar:
+            offset = int(np.searchsorted(union, ticks[0]))
+            slot = union[offset : offset + ticks.size]
+            if slot.size == ticks.size and np.array_equal(slot, ticks):
+                members.append(tv)
+                offsets.append(offset)
+        if len(members) < 2:
+            continue
+        tallest = max(bars_by_tv[tv].shape[0] for tv in members)
+        if union.size > _MAX_PANEL_PADDING * tallest:
+            continue
+        groups.append((members, np.asarray(offsets), int(union.size)))
+    return groups
+
+
+def apply_bar_columns_to_panel(
+    bar_columns: Mapping[str, BarColumnFn] | None,
+    bars_by_tv: Mapping[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    """``apply_bar_columns`` over many tickers, in one pass where a recipe allows it.
+
+    A recipe that declares a panel form is built once per group of tickers on
+    one calendar rather than once per ticker. That is what makes the two
+    recursive recipes affordable: their indicators step through bars in Python,
+    so the per-ticker form costs one step per bar per ticker, while the panel
+    form costs one step per bar for the whole group.
+
+    Grouping is :func:`_panel_groups`, and a symbol whose history is
+    shorter than the group's calendar is padded with NaN at the ends. A panel
+    recipe must therefore give a padded column exactly what the symbol's own
+    frame gives - a NaN run outside the history means "no bars here", never "a
+    bar with no price". Anything the grouping rejects, and any recipe with no
+    panel form, falls back to the per-ticker path.
+    """
+    if not bar_columns:
+        return dict(bars_by_tv)
+    panel_builders = {}
+    for column, build in bar_columns.items():
+        panel_build = bar_column_panel_fn(build)
+        if panel_build is not None:
+            panel_builders[column] = panel_build
+    if not panel_builders:
+        return {
+            tv: apply_bar_columns(bar_columns, bars) for tv, bars in bars_by_tv.items()
+        }
+    per_ticker = {
+        column: build
+        for column, build in bar_columns.items()
+        if column not in panel_builders
+    }
+
+    prepared: dict[str, pd.DataFrame] = {}
+    for members, offsets, height in _panel_groups(bars_by_tv):
+        frames = [bars_by_tv[tv] for tv in members]
+        fields: dict[str, np.ndarray] = {}
+        for field in _PANEL_FIELDS:
+            if not all(field in frame.columns for frame in frames):
+                continue
+            stacked = np.full((height, len(frames)), np.nan, dtype=float)
+            for position, (frame, offset) in enumerate(zip(frames, offsets)):
+                values = frame[field].to_numpy(dtype=float)
+                stacked[offset : offset + values.size, position] = values
+            fields[field] = stacked
+        try:
+            built = {column: build(fields) for column, build in panel_builders.items()}
+        except KeyError:
+            # A recipe wanted a field this group does not carry. Leave the
+            # group to the per-ticker path, which raises where it always did.
+            continue
+        for position, (tv, frame, offset) in enumerate(zip(members, frames, offsets)):
+            prepared_frame = apply_bar_columns(per_ticker, frame)
+            if prepared_frame is frame:
+                prepared_frame = frame.copy()
+            rows = slice(offset, offset + frame.shape[0])
+            for column, values in built.items():
+                prepared_frame[column] = pd.Series(
+                    values[rows, position], index=frame.index, dtype=float
+                )
+            prepared[tv] = prepared_frame
+
+    for tv, bars in bars_by_tv.items():
+        if tv not in prepared:
+            prepared[tv] = apply_bar_columns(bar_columns, bars)
+    return prepared
+
+
 def _prepare_from_bar_columns(bar_columns: Mapping[str, BarColumnFn]) -> PrepareBarsFn:
     """Lift bar-local column builders into the panel-level prepare_bars hook.
 
@@ -138,10 +336,7 @@ def _prepare_from_bar_columns(bar_columns: Mapping[str, BarColumnFn]) -> Prepare
     """
 
     def _prepare(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
-        return {
-            tv: apply_bar_columns(bar_columns, bars)
-            for tv, bars in ctx.bars_by_tv.items()
-        }
+        return apply_bar_columns_to_panel(bar_columns, ctx.bars_by_tv)
 
     setattr(_prepare, _DERIVED_FROM_BAR_COLUMNS, True)
     return _prepare
