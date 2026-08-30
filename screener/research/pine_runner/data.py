@@ -8,6 +8,7 @@ import pandas as pd
 
 from screener.backtester.data import build_price_fetcher, tv_to_yf
 from screener.scanner import scan as _tv_scan
+from screener.universes import load_current_universe
 
 _FETCHER = build_price_fetcher()
 
@@ -32,7 +33,10 @@ def fetch_ohlcv(
     return df
 
 
-def load_universe(market: str) -> list[str]:
+def load_universe(market: str, universe: str | None = None) -> list[str]:
+    if universe:
+        return list(load_current_universe(universe).symbols)
+
     from tradingview_screener import col
 
     # Price floor strips OTC sub-penny tickers that volume-rank to the top.
