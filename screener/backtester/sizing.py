@@ -25,6 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from screener.indicators.frames import wilder_atr
@@ -48,9 +49,34 @@ class SizingContext:
     policy: BacktestConfig
     bars: pd.DataFrame
     signal_idx: int
+    # Per-frame memo for the full indicator series a rule reads one scalar out
+    # of, keyed by ``(rule kind, window)``. Owned by
+    # ``screener.backtester.core._FrameCache`` and threaded in by
+    # :func:`entry_budget_for`; ``None`` means "no run caches", and every rule
+    # then recomputes as it always did.
+    series_cache: dict[tuple[str, int], np.ndarray] | None = None
 
 
 SizerFunc = Callable[[SizingContext], float]
+
+
+def _cached_series(
+    ctx: SizingContext, kind: str, window: int, build: Callable[[], pd.Series]
+) -> np.ndarray:
+    """``build()`` as a float ndarray, computed at most once per frame.
+
+    Sizing rules are causal and read only ``signal_idx``, so the series for one
+    ticker is the same for every entry the run opens on it. Building it per
+    entry made position sizing cost O(entries * bars) instead of O(bars).
+    """
+    if ctx.series_cache is None:
+        return build().to_numpy(dtype=float)
+    key = (kind, window)
+    cached = ctx.series_cache.get(key)
+    if cached is None:
+        cached = build().to_numpy(dtype=float)
+        ctx.series_cache[key] = cached
+    return cached
 
 _SIZERS: dict[str, SizerFunc] = {}
 
@@ -101,14 +127,20 @@ def _atr_risk(ctx: SizingContext) -> float:
     # adverse excursion and risk ``sizing_risk_pct`` of equity against it.
     policy = ctx.policy
     bars = ctx.bars
-    atr = wilder_atr(
-        bars["high"],
-        bars["low"],
-        bars["close"],
-        policy.sizing_atr_window,
-        min_periods=policy.sizing_atr_window,
+    window = policy.sizing_atr_window
+    atr = _cached_series(
+        ctx,
+        "atr",
+        window,
+        lambda: wilder_atr(
+            bars["high"],
+            bars["low"],
+            bars["close"],
+            window,
+            min_periods=window,
+        ),
     )
-    atr_value = float(atr.iloc[ctx.signal_idx])
+    atr_value = float(atr[ctx.signal_idx])
     close = float(bars["close"].iloc[ctx.signal_idx])
     if not math.isfinite(atr_value) or atr_value <= 0 or close <= 0:
         return math.nan
@@ -121,13 +153,17 @@ def _inverse_vol(ctx: SizingContext) -> float:
     # Daily volatility targeting: size so the position's expected daily PnL
     # swing (budget * realized daily vol) is ``sizing_risk_pct`` of equity.
     policy = ctx.policy
-    vol = (
-        ctx.bars["close"]
+    window = policy.sizing_vol_window
+    vol = _cached_series(
+        ctx,
+        "inverse_vol",
+        window,
+        lambda: ctx.bars["close"]
         .pct_change()
-        .rolling(policy.sizing_vol_window, min_periods=policy.sizing_vol_window)
-        .std()
+        .rolling(window, min_periods=window)
+        .std(),
     )
-    vol_value = float(vol.iloc[ctx.signal_idx])
+    vol_value = float(vol[ctx.signal_idx])
     if not math.isfinite(vol_value) or vol_value <= 0:
         return math.nan
     return ctx.equity * policy.sizing_risk_pct / vol_value
@@ -138,12 +174,18 @@ def entry_budget_for(
     portfolio: Portfolio,
     bars: pd.DataFrame,
     signal_idx: int,
+    *,
+    series_cache: dict[tuple[str, int], np.ndarray] | None = None,
 ) -> float:
     """Dollar budget for the next entry under ``cfg.sizing_rule``.
 
     ``equal_slot`` short-circuits to ``portfolio.entry_budget()`` so the
     default path is bit-identical to the pre-sizing engine. Every other rule
     is clamped to ``[0, entry_budget()]``.
+
+    ``series_cache`` is ``_FrameCache.sizing_series`` for this ticker's frame,
+    so a run opening many entries on one name computes its ATR once. Omitting
+    it is correct and only slower.
     """
     base = portfolio.entry_budget()
     rule = cfg.sizing_rule
@@ -162,6 +204,7 @@ def entry_budget_for(
         policy=cfg,
         bars=bars,
         signal_idx=signal_idx,
+        series_cache=series_cache,
     )
     raw = func(ctx)
     if not math.isfinite(raw):

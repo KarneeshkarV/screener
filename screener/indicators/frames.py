@@ -102,18 +102,27 @@ def _wilder_rma(
     The seed is placed at the position of the ``period``-th observation and
     everything before it is blanked, so a plain ``adjust=False`` pass picks the
     seed up as its first value and carries Wilder's recursion from there.
+
+    The blanking runs on the raw ndarray rather than through ``notna``/
+    ``cumsum``/``where``/``mask``. Each of those allocates a whole frame, and
+    ``atr_risk`` sizing calls this once per entry, so the pandas spelling cost
+    the rolling engine roughly one extra ATR pass per candidate opened. The
+    arithmetic is identical; only the number of intermediate frames changes.
     """
-    observed = values.notna()
-    count = observed.cumsum()
+    array = values.to_numpy(dtype=float)
+    observed = ~np.isnan(array)
+    count = np.cumsum(observed, axis=0)
+    seeded = np.where(count > period, array, np.nan)
     # A cumulative sum, read at the seed row, *is* the sum of the first
     # ``period`` observations: every earlier gap contributed an exact zero. It
     # costs a fraction of a full ``rolling(period).mean()`` and, unlike one,
     # keeps seeding across an interior gap instead of returning NaN there.
-    seed = values.fillna(0.0).cumsum() / period
-    settled = (count > period).to_numpy()
-    at_seed = (observed & (count == period)).to_numpy()
-    seeded = values.where(settled).mask(at_seed, seed)
-    return seeded.ewm(alpha=1.0 / period, adjust=False).mean()
+    np.copyto(
+        seeded,
+        np.nancumsum(array, axis=0) / period,
+        where=observed & (count == period),
+    )
+    return _restore(values, seeded).ewm(alpha=1.0 / period, adjust=False).mean()
 
 
 @overload

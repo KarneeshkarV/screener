@@ -200,7 +200,11 @@ class _ReserveRotationSource:
                     continue
                 new_rank = portfolio._ranks.get(ticker, 0)
                 entry_budget = entry_budget_for(
-                    cfg, portfolio, slot_frame, reentry_signal_idx
+                    cfg,
+                    portfolio,
+                    slot_frame,
+                    reentry_signal_idx,
+                    series_cache=self.caches.frame(ticker, slot_frame).sizing_series,
                 )
                 state, warn = _make_slot_state(
                     ticker,
@@ -266,7 +270,11 @@ class _ReserveRotationSource:
                 if reserve_signal_idx is None:
                     continue
                 entry_budget = entry_budget_for(
-                    cfg, portfolio, reserve_bars, reserve_signal_idx
+                    cfg,
+                    portfolio,
+                    reserve_bars,
+                    reserve_signal_idx,
+                    series_cache=self.caches.frame(ticker, reserve_bars).sizing_series,
                 )
                 state, warn = _make_slot_state(
                     ticker,
@@ -339,7 +347,13 @@ def _run_event_driven_sim(
             slot_states[slot_id] = None
             continue
         signal_idx = int(np.where(mask)[0][-1])
-        entry_budget = entry_budget_for(cfg, portfolio, bars, signal_idx)
+        entry_budget = entry_budget_for(
+            cfg,
+            portfolio,
+            bars,
+            signal_idx,
+            series_cache=caches.frame(ticker, bars).sizing_series,
+        )
         state, warn = _make_slot_state(
             ticker,
             bars,
