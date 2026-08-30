@@ -55,6 +55,9 @@ build-backend = "hatchling.build"
 # openscreener is pinned to the rustwright-powered fork via a direct git ref.
 allow-direct-references = true
 
+[tool.uv.sources]
+openscreener = { git = "https://github.com/KarneeshkarV/openscreener.git" }
+
 [dependency-groups]
 dev = [
     "empyrical-reloaded>=0.5.12",
