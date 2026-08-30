@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -107,6 +108,12 @@ class ScreenRequest:
     # Retry attempts for this scan; attempts x timeout is the real wall-clock
     # budget, so callers cap both together. None keeps the resilience default.
     retries: int | None = None
+    # Hand the report back unrendered, as ``ScreenOutcome.render_report``, so
+    # the caller decides when it runs. Rendering imports plotly and lays out
+    # the whole page, which is about 0.4s the caller is otherwise blocked on
+    # before it can show a result it already has. The CLI sets this and renders
+    # after printing; every other caller keeps the report written for it.
+    defer_report: bool = False
 
 
 @dataclass(frozen=True)
@@ -147,6 +154,10 @@ class ScreenOutcome:
     removed: tuple[str, ...] = ()
     first_run: bool = False
     report_path: Path | None = None
+    # Set only for a ``defer_report`` request: writes the HTML report to
+    # :attr:`report_path` and returns it. ``None`` means the report is already
+    # written, or that this is a CSV outcome, which has none.
+    render_report: Callable[[], Path] | None = None
 
     def signals(self) -> list[SignalRow]:
         """The ranked rows as plain objects; no pandas needed to read them.
@@ -369,20 +380,24 @@ def _finish_screen(
     if generated_report is None:
         generated_report = temp_report_path("screen")
 
-    render_screen_report(
-        df,
-        total,
-        request.market,
-        label,
-        generated_report,
-        added=added,
-        removed=removed,
-        first_run=first_run,
-        detail=request.detail,
-        refresh=request.refresh,
-        cache_ttl=request.cache_ttl,
-        order_by=request.order_by,
-    )
+    def render() -> Path:
+        return render_screen_report(
+            df,
+            total,
+            request.market,
+            label,
+            generated_report,
+            added=added,
+            removed=removed,
+            first_run=first_run,
+            detail=request.detail,
+            refresh=request.refresh,
+            cache_ttl=request.cache_ttl,
+            order_by=request.order_by,
+        )
+
+    if not request.defer_report:
+        render()
 
     return ScreenOutcome(
         mode=ScreenMode.RESULTS,
@@ -395,6 +410,7 @@ def _finish_screen(
         removed=tuple(removed),
         first_run=first_run,
         report_path=generated_report,
+        render_report=render if request.defer_report else None,
     )
 
 

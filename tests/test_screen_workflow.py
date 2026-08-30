@@ -22,6 +22,7 @@ def _request(
     output_csv: bool = False,
     report_path: Path | None = None,
     earnings: bool = False,
+    defer_report: bool = False,
 ) -> ScreenRequest:
     return ScreenRequest(
         market="us",
@@ -34,6 +35,7 @@ def _request(
         cache_ttl="15m",
         report_path=report_path,
         earnings=earnings,
+        defer_report=defer_report,
     )
 
 
@@ -268,3 +270,62 @@ def test_bar_screen_stays_quiet_when_the_scan_returns_the_whole_field(
         run_screen_workflow(_request())
 
     assert not any("prefilter scan returned" in r.message for r in caplog.records)
+
+
+def test_deferred_report_is_written_only_when_the_caller_asks(monkeypatch, tmp_path):
+    """``defer_report`` hands the render back; the workflow must not run it."""
+    frame = _df("AAA")
+    report = tmp_path / "screen.html"
+    rendered: list[Path] = []
+
+    def render_report(*args, **kwargs):
+        rendered.append(Path(args[4]))
+        Path(args[4]).write_text("report", encoding="utf-8")
+        return Path(args[4])
+
+    _patch(
+        monkeypatch,
+        resolve_criteria=lambda names: FilterCriteriaSelection(
+            tuple(names), "ema", ["FILTER"]
+        ),
+        scan=lambda **kwargs: (1, frame, _AS_OF),
+        save_run=lambda *args: 7,
+        previous_run=lambda *args: None,
+        temp_report_path=lambda prefix: report,
+        render_screen_report=render_report,
+    )
+
+    outcome = run_screen_workflow(_request(defer_report=True))
+
+    assert outcome.report_path == report
+    assert rendered == []
+    assert not report.exists()
+
+    assert outcome.render_report is not None
+    assert outcome.render_report() == report
+    assert rendered == [report]
+    assert report.read_text(encoding="utf-8") == "report"
+
+
+def test_a_report_written_for_the_caller_leaves_no_render_hook(monkeypatch, tmp_path):
+    """Without ``defer_report`` the report is already written, so there is
+    nothing left to call - a caller that ran the hook anyway would render it
+    twice."""
+    frame = _df("AAA")
+    report = tmp_path / "screen.html"
+
+    _patch(
+        monkeypatch,
+        resolve_criteria=lambda names: FilterCriteriaSelection(
+            tuple(names), "ema", ["FILTER"]
+        ),
+        scan=lambda **kwargs: (1, frame, _AS_OF),
+        save_run=lambda *args: 7,
+        previous_run=lambda *args: None,
+        temp_report_path=lambda prefix: report,
+        render_screen_report=lambda *args, **kwargs: Path(args[4]),
+    )
+
+    outcome = run_screen_workflow(_request())
+
+    assert outcome.render_report is None

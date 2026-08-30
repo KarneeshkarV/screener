@@ -157,6 +157,37 @@ def test_screen_auto_temp_report(tmp_path, monkeypatch):
     assert '"plot_bgcolor":"#0d1117"' in html
 
 
+def test_screen_prints_the_table_before_it_renders_the_report(tmp_path, monkeypatch):
+    """The report costs about 0.4s of plotly work the terminal need not wait on.
+
+    Checked by when the file appears rather than by timing: at the moment the
+    table is printed the report must still be unwritten, and it must be there
+    by the time the command returns.
+    """
+    import screener.commands.screen as screen_mod
+
+    report = tmp_path / "screen.html"
+    monkeypatch.setattr(history_mod, "DB_PATH", tmp_path / "history.db")
+    monkeypatch.setattr(workflow_mod, "temp_report_path", lambda prefix: report)
+    monkeypatch.setattr(
+        workflow_mod, "scan", lambda **kwargs: (2, _screen_df(), _AS_OF)
+    )
+    printed = screen_mod.print_results
+    existed: list[bool] = []
+
+    def record(*args, **kwargs):
+        existed.append(report.exists())
+        return printed(*args, **kwargs)
+
+    monkeypatch.setattr(screen_mod, "print_results", record)
+
+    res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2"])
+
+    assert res.exit_code == 0, res.output
+    assert existed == [False]
+    assert report.exists()
+
+
 def test_screen_refuses_a_strategy_mixed_with_a_criterion_as_usage_error():
     """``-c momentum_12_1 -c ema`` must fail as a usage error, not a traceback.
 
