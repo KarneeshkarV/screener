@@ -1,0 +1,191 @@
+"""Bar-local column builders shared by the converted expression strategies.
+
+Each function here turns one ticker's OHLCV frame into one derived column, so
+an entry/exit expression can name it like any other series. That is how a new
+indicator reaches the strategies without the Pine grammar growing a function
+(plan D10 in ``docs/plans/unify-screen-backtest.md``).
+
+Every recipe delegates to ``screener/indicators/``; none reimplements an
+indicator. They are pure and bar-local, seeing no panel, no market and no
+fetcher, which is what lets the backtester and the pine_runner share them.
+
+Each recipe declares its warm-up with ``@bar_column(n)``, in the same
+window-length unit as ``screener.backtester.pine.required_lookback``: the
+entry/exit expression cannot reveal that ``bb_upper`` hides a 350-bar window,
+so the recipe states it and the registration folds it into the spec's lookback.
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+
+from screener.indicators.plugins.bollinger_bands import bollinger_bands
+from screener.indicators.plugins.rsi import rsi
+from screener.indicators.plugins.sar import sar
+from screener.indicators.plugins.supertrend import supertrend_dir
+from screener.strategies.spec import bar_column
+
+ST_PERIOD = 10
+ST_MULT = 3.0
+
+#: Warm-up for the two recursive indicators below. Supertrend and SAR are not
+#: windowed: each bar's value is carried forward from the previous one, seeded
+#: at the first usable bar, so a short window does not give a truncated answer -
+#: it gives a different one. Declaring only the ATR/acceleration period let the
+#: screen evaluate them over ~13 bars while the backtester ran them over years,
+#: which is exactly the divergence this layer exists to remove. One trading
+#: year is long enough for the seed to stop showing in the value.
+RECURSIVE_WARMUP = 250
+
+
+@bar_column(RECURSIVE_WARMUP)
+def supertrend_direction(bars: pd.DataFrame) -> pd.Series:
+    """Supertrend direction: negative is an uptrend, positive a downtrend."""
+    values = supertrend_dir(
+        bars["high"].to_numpy(dtype=float),
+        bars["low"].to_numpy(dtype=float),
+        bars["close"].to_numpy(dtype=float),
+        period=ST_PERIOD,
+        mult=ST_MULT,
+    )
+    return pd.Series(values, index=bars.index, dtype=float)
+
+
+@bar_column(RECURSIVE_WARMUP)
+def parabolic_sar(bars: pd.DataFrame) -> pd.Series:
+    return pd.Series(
+        sar(
+            bars["high"].to_numpy(dtype=float),
+            bars["low"].to_numpy(dtype=float),
+            bars["close"].to_numpy(dtype=float),
+        ),
+        index=bars.index,
+        dtype=float,
+    )
+
+
+def _band(bars: pd.DataFrame, which: int, period: int, mult: float) -> pd.Series:
+    bands = bollinger_bands(bars["close"].to_numpy(dtype=float), period, mult)
+    return pd.Series(bands[which], index=bars.index, dtype=float)
+
+
+@bar_column(350)
+def bb_upper_350(bars: pd.DataFrame) -> pd.Series:
+    return _band(bars, 2, 350, 2.5)
+
+
+@bar_column(350)
+def bb_mid_350(bars: pd.DataFrame) -> pd.Series:
+    return _band(bars, 1, 350, 2.5)
+
+
+@bar_column(21)
+def donchian_prior_high_20(bars: pd.DataFrame) -> pd.Series:
+    """Highest high of the previous 20 bars, excluding the current one.
+
+    A column rather than ``highest(high, 20)`` because Pine's window includes
+    the current bar and the grammar has no shift operator.
+    """
+    return bars["high"].astype(float).rolling(20).max().shift(1)
+
+
+@bar_column(11)
+def donchian_prior_low_10(bars: pd.DataFrame) -> pd.Series:
+    return bars["low"].astype(float).rolling(10).min().shift(1)
+
+
+def _rsi_series(bars: pd.DataFrame) -> pd.Series:
+    return pd.Series(
+        rsi(bars["close"].to_numpy(dtype=float), 14), index=bars.index, dtype=float
+    )
+
+
+# 16, not 15: ``rsi(close, 14)`` first resolves on bar 14 - bar 0 has no
+# change to smooth - and ``shift(1)`` carries that to bar 15, the 16th bar.
+@bar_column(16)
+def rsi_prev5_min(bars: pd.DataFrame) -> pd.Series:
+    """Lowest RSI over the previous 5 bars, excluding the current one."""
+    return _rsi_series(bars).shift(1).rolling(5, min_periods=1).min()
+
+
+@bar_column(16)
+def rsi_prev5_max(bars: pd.DataFrame) -> pd.Series:
+    """Highest RSI over the previous 5 bars, excluding the current one."""
+    return _rsi_series(bars).shift(1).rolling(5, min_periods=1).max()
+
+
+@bar_column(26)
+def macd_line(bars: pd.DataFrame) -> pd.Series:
+    """MACD(12,26) computed with the project's numpy EMA, not Pine's.
+
+    The numpy EMA seeds from bar 0 where Pine's is NaN until it has n bars.
+    Using the numpy one keeps the converted strategy faithful to the body it
+    replaces instead of silently changing its warm-up.
+    """
+    from screener.indicators.plugins.ema import ema
+
+    close = bars["close"].to_numpy(dtype=float)
+    return pd.Series(ema(close, 12) - ema(close, 26), index=bars.index, dtype=float)
+
+
+@bar_column(35)
+def macd_signal(bars: pd.DataFrame) -> pd.Series:
+    from screener.indicators.plugins.ema import ema
+
+    close = bars["close"].to_numpy(dtype=float)
+    macd = ema(close, 12) - ema(close, 26)
+    return pd.Series(ema(macd, 9), index=bars.index, dtype=float)
+
+
+def _ao(bars: pd.DataFrame) -> pd.Series:
+    mid = (bars["high"].astype(float) + bars["low"].astype(float)) / 2.0
+    return mid.rolling(5, min_periods=5).mean() - mid.rolling(34, min_periods=34).mean()
+
+
+@bar_column(34)
+def awesome_oscillator(bars: pd.DataFrame) -> pd.Series:
+    """AO: SMA5 minus SMA34 of the bar midpoint."""
+    return _ao(bars)
+
+
+@bar_column(35)
+def ao_prev1(bars: pd.DataFrame) -> pd.Series:
+    return _ao(bars).shift(1)
+
+
+@bar_column(36)
+def ao_prev2(bars: pd.DataFrame) -> pd.Series:
+    return _ao(bars).shift(2)
+
+
+def _red(bars: pd.DataFrame) -> pd.Series:
+    return (bars["open"].astype(float) > bars["close"].astype(float)).astype(float)
+
+
+def _green(bars: pd.DataFrame) -> pd.Series:
+    return (bars["open"].astype(float) < bars["close"].astype(float)).astype(float)
+
+
+@bar_column(2)
+def red_prev1(bars: pd.DataFrame) -> pd.Series:
+    """1.0 when the previous bar closed down.
+
+    Red and green are not complements: a bar with open equal to close is
+    neither, so both are carried rather than derived from one another.
+    """
+    return _red(bars).shift(1)
+
+
+@bar_column(3)
+def red_prev2(bars: pd.DataFrame) -> pd.Series:
+    return _red(bars).shift(2)
+
+
+@bar_column(2)
+def green_prev1(bars: pd.DataFrame) -> pd.Series:
+    return _green(bars).shift(1)
+
+
+@bar_column(3)
+def green_prev2(bars: pd.DataFrame) -> pd.Series:
+    return _green(bars).shift(2)

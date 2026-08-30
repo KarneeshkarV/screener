@@ -111,6 +111,13 @@ register_bar_scorer(
     "momentum_12_1 backtest strategy)",
 )
 
+register_bar_scorer(
+    "ha_momentum",
+    "ha_momentum",
+    description="12-1 momentum ranked only while Heikin-Ashi confirms an "
+    "active uptrend (same recipe as the ha_momentum backtest strategy)",
+)
+
 
 @scorer(
     "mark_minervini",
@@ -188,6 +195,32 @@ def _score_breakout_family(df: pd.DataFrame) -> pd.Series:
 )
 def score_breakout(df: pd.DataFrame) -> pd.Series:
     return _score_breakout_family(df)
+
+
+@scorer(
+    "above_avg_volume",
+    columns=("relative_volume_10d_calc",),
+    description="Volume surge over the 10d average, weighted by liquidity",
+    data_source=SNAPSHOT_SOURCE,
+)
+def score_above_avg_volume(df: pd.DataFrame) -> pd.Series:
+    """Rank a volume-only cut by how big the surge is and how liquid the name.
+
+    The criterion is a prefilter first: it fronts the ``breakout`` strategy's
+    ``volume > sma(volume, 10)`` leg. Selected on its own it still needs a
+    ranking, and the only thing it asserts about a name is the surge, so that
+    is what it ranks on.
+    """
+    rvol = numeric(df, "relative_volume_10d_calc")
+    change = numeric(df, "change")
+    volume = numeric(df, "volume")
+    close = numeric(df, "close")
+
+    return (
+        70 * rvol_surge(rvol, change)
+        + 20 * liquidity_from_dollar_volume(volume, close)
+        + 10 * momentum_change(change)
+    ).round(2)
 
 
 @scorer(
@@ -269,6 +302,7 @@ def score_ema_breakout(df: pd.DataFrame) -> pd.Series:
 
 
 __all__ = [
+    "score_above_avg_volume",
     "score_breakout",
     "score_ema",
     "score_ema_breakout",

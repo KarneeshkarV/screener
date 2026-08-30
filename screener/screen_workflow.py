@@ -9,9 +9,10 @@ injected callables through every call site.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,15 @@ import pandas as pd
 
 from screener.cache import parse_ttl
 from screener.criteria import resolve_criteria
+from screener.screen_candidates import (
+    ScreenStrategy,
+    UnscreenableStrategyError,
+    prefilter_filters,
+    resolve_screen_strategy,
+    resolve_universe_tickers,
+    screen_candidates,
+    screen_label,
+)
 from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from screener.history import diff, previous_run, save_run
 from screener.scanner import scan
@@ -29,6 +39,16 @@ from screener.scoring import (
     PriceAdjustment,
     resolve_scorer,
 )
+
+
+LOG = logging.getLogger(__name__)
+
+#: Upper bound on the prefilter scan, which exists only to stop an unbounded
+#: vendor request - not to rank. It is well above the size of either market's
+#: listed universe, so in practice the scan returns every name the prefilter
+#: matched and the bar rule sees the whole field. When it does not,
+#: :func:`_run_bar_screen` warns rather than quietly screening a short field.
+_PREFILTER_CANDIDATE_CAP = 5000
 
 
 def temp_report_path(prefix: str) -> Path:
@@ -69,6 +89,10 @@ class ScreenRequest:
     # Price adjustment for bar-derived ranking scores. Same spelling as the
     # backtester's ``--price-adjustment``. Snapshot scorers ignore it.
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT
+    # Named universe or universe file for the exact path (D9). ``None`` keeps
+    # the TradingView prefilter, which is the default. Only a criterion that
+    # aliases a strategy has a bar rule to run, so this is refused otherwise.
+    universe: str | None = None
     # Raise StaleDataError instead of serving stale cache when the live scan
     # fails. When ranking by a bar-derived setup_score, the same flag is
     # forwarded to the price fetcher, so a failed bar refresh also raises
@@ -115,8 +139,9 @@ class ScreenOutcome:
     label: str
     total: int
     df: pd.DataFrame
-    # When the scan payload was fetched from the provider - not when this
-    # workflow returned. A cache hit carries the original fetch time.
+    # When the payload behind this result was fetched - not when this workflow
+    # returned. A cache hit carries the original fetch time. With --universe
+    # there is no vendor payload, so it is when the bars were read.
     as_of: datetime
     added: tuple[str, ...] = ()
     removed: tuple[str, ...] = ()
@@ -169,8 +194,106 @@ def _plain_float(value: Any, *, positive: bool = False) -> float | None:
     return number
 
 
+def _run_bar_screen(
+    request: ScreenRequest,
+    strategy: ScreenStrategy,
+) -> tuple[int, pd.DataFrame, datetime]:
+    """Screen by ``strategy``'s entry rule instead of by TradingView filters.
+
+    Two modes, differing only in where the field comes from. With
+    ``--universe`` the names come from ``screener.universes`` and no vendor
+    field is consulted at all. Without it the TradingView prefilter narrows the
+    field first, which is only sound because a prefilter may not drop a name
+    the bar rule would have kept - the property
+    ``tests/correctness`` pins. The cap on that scan can break the property on
+    a field wider than it, so the two counts are compared and a short scan is
+    warned about instead of being reported as a whole one.
+    """
+    warnings: list[str] = []
+    signal_date = date.today()
+
+    if request.universe:
+        tickers = resolve_universe_tickers(request.universe, request.market)
+        scanned = None
+        total = len(tickers)
+        # No vendor payload in this mode, so the freshness the outcome reports
+        # is the local bar read, which happens now.
+        fetched_at = datetime.now()
+    else:
+        total, scanned, fetched_at = scan(
+            market=request.market,
+            filters=prefilter_filters(strategy),
+            # NOT ``request.limit``. The scan here is a field cut, not the
+            # result: cutting it to the top ``-n`` names by raw volume would
+            # drop names the bar rule keeps, which is precisely what a
+            # prefilter may never do (D21). ``--limit`` applies to the
+            # candidates the rule returns, and is applied there.
+            limit=_PREFILTER_CANDIDATE_CAP,
+            order_by="volume",
+            detail=request.detail,
+            cache_ttl=parse_ttl(request.cache_ttl, default=900),
+            refresh=request.refresh,
+            scorer=None,
+            price_adjustment=request.price_adjustment,
+            strict=request.strict,
+            timeout=request.timeout,
+            retries=request.retries,
+        )
+        tickers = [str(t) for t in scanned.get("ticker", pd.Series(dtype=str))]
+        # Against the cap, not against ``len(tickers)``: the scan payload is
+        # deduped (dual listings collapse) before it reaches here, so a row
+        # count below ``total`` is the ordinary answer on any field carrying
+        # one. The vendor returns ``min(total, cap)`` rows, so truncation
+        # happened exactly when the match count exceeded the cap.
+        if total > _PREFILTER_CANDIDATE_CAP:
+            # The cap exists to bound the request, but a truncated scan is
+            # still a prefilter that dropped names the bar rule never saw -
+            # the one thing a prefilter may not do (D21). The scan orders by
+            # volume, so what went missing is the low-volume tail, and nothing
+            # downstream can recover it. Say so rather than report a partial
+            # field as the whole one.
+            warnings.append(
+                f"prefilter scan returned {len(tickers)} of {total} matching "
+                f"names (cap {_PREFILTER_CANDIDATE_CAP}, ordered by volume), "
+                "so the low-volume tail was never evaluated against the bar "
+                "rule and this result may be missing candidates. Re-run with "
+                "--universe to screen the exact field."
+            )
+
+    df = screen_candidates(
+        strategy,
+        market=request.market,
+        tickers=tickers,
+        as_of=signal_date,
+        scanned=scanned,
+        limit=request.limit,
+        order_by=request.order_by,
+        refresh=request.refresh,
+        price_adjustment=request.price_adjustment,
+        strict=request.strict,
+        warnings=warnings,
+    )
+    for warning in warnings:
+        LOG.warning("%s", warning)
+    return total, df, fetched_at
+
+
 def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
     """Run the full non-Click screen lifecycle and return its outcome."""
+    strategy = resolve_screen_strategy(request.criteria_names)
+    if request.universe and strategy is None:
+        raise UnscreenableStrategyError(
+            f"--universe needs a criterion that names a strategy, because only "
+            f"a strategy carries a bar rule to evaluate; {request.criteria_names} "
+            "names TradingView filters only, which have nothing to run against "
+            "a local universe."
+        )
+    if strategy is not None:
+        label = screen_label(
+            request.criteria_names, strategy=strategy, universe=request.universe
+        )
+        return _finish_screen(request, label, *_run_bar_screen(request, strategy))
+
     selection = resolve_criteria(request.criteria_names)
     # Only the ``setup_score`` ranking consumes a scorer, and resolving one can
     # refuse a criteria combination whose scores are incomparable. Skip the
@@ -197,6 +320,22 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
         retries=request.retries,
     )
 
+    return _finish_screen(request, selection.label, total, df, as_of)
+
+
+def _finish_screen(
+    request: ScreenRequest,
+    label: str,
+    total: int,
+    df: pd.DataFrame,
+    as_of: datetime,
+) -> ScreenOutcome:
+    """Everything after the candidate set is decided: enrich, persist, report.
+
+    Shared by both paths on purpose. The two paths differ in how a name is
+    selected and in nothing else, so the earnings filter, the history diff and
+    the report must not be written twice.
+    """
     # Earnings enrichment is opt-in and runs only on final result rows.
     if request.earnings or request.earnings_buffer is not None:
         df = enrich_days_to_earnings(df, request.market)
@@ -207,14 +346,14 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
         return ScreenOutcome(
             mode=ScreenMode.CSV,
             market=request.market,
-            label=selection.label,
+            label=label,
             total=total,
             df=df,
             as_of=as_of,
         )
 
-    run_id = save_run(request.market, selection.label, total, df)
-    prev = previous_run(request.market, selection.label, run_id)
+    run_id = save_run(request.market, label, total, df)
+    prev = previous_run(request.market, label, run_id)
     if prev is None:
         added: list[str] = []
         removed: list[str] = []
@@ -234,7 +373,7 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
         df,
         total,
         request.market,
-        selection.label,
+        label,
         generated_report,
         added=added,
         removed=removed,
@@ -248,7 +387,7 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
     return ScreenOutcome(
         mode=ScreenMode.RESULTS,
         market=request.market,
-        label=selection.label,
+        label=label,
         total=total,
         df=df,
         as_of=as_of,

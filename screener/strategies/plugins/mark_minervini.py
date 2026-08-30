@@ -10,7 +10,11 @@ from screener.minervini import (
     prepare_backtest_frames,
     required_history_bars,
 )
-from screener.strategies.spec import PrepareCtx, register_expression_strategy
+from screener.strategies.spec import (
+    PrepareCtx,
+    StrategyProfile,
+    register_expression_strategy,
+)
 
 
 def _prepare_mark_minervini(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
@@ -23,4 +27,10 @@ register_expression_strategy(
     exit=MINERVINI_EXIT_EXPR,
     prepare_bars=_prepare_mark_minervini,
     required_lookback=required_history_bars,
+    # The ``mark_minervini`` criterion is the lossy TradingView spelling of
+    # MINERVINI_ENTRY_EXPR: it carries the SMA stack and the 52-week band, and
+    # drops the SMA200-rising and RS-rank legs, which have no vendor column.
+    # Dropping legs makes it strictly wider, which is the direction a prefilter
+    # is allowed to be wrong in.
+    profile=StrategyProfile(tv_prefilter="mark_minervini"),
 )

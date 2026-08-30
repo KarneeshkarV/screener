@@ -85,17 +85,16 @@ def test_flat_series_zero_std_and_collapsed_bands():
 
 
 def test_flat_series_rsi_warmup_nan_then_100():
-    """Flat market: the n-1 warm-up bars are NaN (RMA warm-up convention);
-    post-warm-up bars have zero downside → RSI pinned at 100.
+    """Flat market: the first n bars are NaN, then RSI is pinned at 100.
 
-    (Previously the whole series was a spurious 100 because the NaN warm-up
-    region was masked by rs=inf — now the warm-up is correctly NaN.)
+    n, not n-1: bar 0 has no prior close, so the smoother needs bars 1..n to
+    collect n real changes. Past that there is zero downside, so RSI is 100.
     """
     n = 14
     x = np.full(30, 5.0)
     got = rsi(x, n)
-    assert np.isnan(got[: n - 1]).all()
-    assert np.all(got[n - 1 :] == 100.0)
+    assert np.isnan(got[:n]).all()
+    assert np.all(got[n:] == 100.0)
 
 
 # --------------------------------------------------------------------------- #

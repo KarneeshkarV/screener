@@ -20,6 +20,8 @@ from screener.backtester.historical import run_backtest, select_candidates
 from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import parse
 from screener.backtester.rolling_simulation import run_rolling_backtest
+from screener.factors import BarFeatures
+from screener.factors.fundamentals import FUNDAMENTAL_COLUMNS, fundamental_provenance
 from tests.backtest_helpers import simulate_single_ticker
 from tests.conftest import StubPriceFetcher, make_bars
 
@@ -473,3 +475,94 @@ class TestT4RollingEngine:
             f"LOOKAHEAD BUG: signal_dates outside [{roll_start!r}, {roll_end!r}] found: "
             f"{out_of_window.tolist()!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# T5 - the fundamental join: one case per point-in-time fundamental column
+# ---------------------------------------------------------------------------
+
+
+class TestT5FundamentalMerge:
+    """``merge_fundamentals_into_bars`` is the one door a fundamental enters by.
+
+    Every other source in this suite is a price series the perturbation helper
+    already covers. A fundamental is different: it is dated by *filing*, not by
+    bar, so a wrong alignment there would be invisible to the price tests while
+    silently handing every historical bar a number nobody could have known.
+    A case per column is therefore not redundant - the columns are merged as
+    one frame, but the assertion that matters is per column, since a future
+    field could be added with its own date handling.
+    """
+
+    _CUTOFF_POS = 20
+
+    def _bars(self) -> pd.DataFrame:
+        return make_bars(start="2024-01-01", n=40)
+
+    def _merge(self, bars: pd.DataFrame, frame: pd.DataFrame) -> pd.DataFrame:
+        from screener.backtester.fundamentals import merge_fundamentals_into_bars
+
+        return merge_fundamentals_into_bars(
+            {"AAA": bars},
+            {"AAA": frame},
+            {"AAA": "AAA"},
+            filing_lag_days=60,
+        )["AAA"]
+
+    @pytest.mark.parametrize("column", FUNDAMENTAL_COLUMNS)
+    def test_values_at_or_before_the_cutoff_ignore_later_filings(self, column):
+        bars = self._bars()
+        cutoff = bars.index[self._CUTOFF_POS]
+        early, late = bars.index[5], bars.index[self._CUTOFF_POS + 5]
+
+        baseline = pd.DataFrame({column: [10.0, 20.0]}, index=[early, late])
+        perturbed = pd.DataFrame({column: [10.0, 999_999.0]}, index=[early, late])
+
+        merged = self._merge(bars, baseline)
+        merged_perturbed = self._merge(bars, perturbed)
+
+        pd.testing.assert_series_equal(
+            merged.loc[:cutoff, column],
+            merged_perturbed.loc[:cutoff, column],
+        )
+
+    @pytest.mark.parametrize("column", FUNDAMENTAL_COLUMNS)
+    def test_a_filing_never_reaches_a_bar_before_its_effective_date(self, column):
+        bars = self._bars()
+        effective = bars.index[self._CUTOFF_POS]
+        frame = pd.DataFrame({column: [42.0]}, index=[effective])
+
+        merged = self._merge(bars, frame)
+
+        assert merged.loc[: bars.index[self._CUTOFF_POS - 1], column].isna().all()
+        assert merged.loc[effective:, column].eq(42.0).all()
+
+    def test_merged_columns_carry_the_lag_they_were_built_with(self):
+        bars = self._bars()
+        frame = pd.DataFrame({"roe_ttm": [12.0]}, index=[bars.index[3]])
+
+        stamp = fundamental_provenance(self._merge(bars, frame))
+
+        assert stamp is not None
+        assert stamp.columns == ("roe_ttm",)
+        assert stamp.filing_lag_days == 60
+
+    def test_bar_features_refuse_a_fundamental_that_skipped_the_merge(self):
+        bars = self._bars()
+        bars["pe_ttm"] = 18.0  # today's value smeared over all history
+
+        with pytest.raises(ValueError, match="merge_fundamentals_into_bars"):
+            BarFeatures.from_frame(bars)
+
+    def test_bar_features_expose_a_merged_fundamental(self):
+        bars = self._bars()
+        frame = pd.DataFrame({"pe_ttm": [18.0]}, index=[bars.index[3]])
+
+        features = BarFeatures.from_frame(self._merge(bars, frame))
+
+        assert features.fundamental_filing_lag_days == 60
+        series = features.fundamental("pe_ttm")
+        assert series is not None
+        # Point-in-time, not smeared: NaN before the filing, 18.0 from it on.
+        assert series.iloc[:3].isna().all()
+        assert series.iloc[3:].eq(18.0).all()

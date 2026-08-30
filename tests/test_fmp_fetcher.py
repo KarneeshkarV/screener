@@ -637,3 +637,62 @@ def test_exchange_fallback_keeps_empty_frame_when_bse_also_empty():
 
     assert inner.calls == [["GONE.NS"], ["GONE.BO"]]
     assert out["GONE.NS"].empty
+
+
+class _FailingSession:
+    """A session whose every request raises, as an outage or a 429 does."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get(self, url: str, *, headers: dict[str, str], timeout: float):
+        self.calls += 1
+        raise RuntimeError("429 Too Many Requests")
+
+
+def test_a_failed_fmp_request_is_never_recorded_as_empty_history(tmp_path):
+    """Same contract as the yfinance leg: a failure is unknown, not empty.
+
+    ``call_with_resilience`` hands back the empty fallback payload for an auth
+    error, a 429, a timeout and an open circuit alike, so recording the marker
+    off an empty ``norm`` alone let one bad minute suppress the ticker's
+    requests for a whole day.
+    """
+    from screener.backtester.price_cache import empty_history_path
+
+    session = _FailingSession()
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+    )
+
+    out = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 5))
+
+    assert out["AAA"].empty
+    assert not empty_history_path("fmp_AAA", tmp_path).exists()
+
+    before = session.calls
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 5))
+    assert session.calls > before, "the second run must still ask the vendor"
+
+
+def test_an_empty_fmp_payload_is_recorded_as_empty_history(tmp_path):
+    """A vendor that answered "no history" is still remembered, as before."""
+    from screener.backtester.price_cache import empty_history_path
+
+    session = DummySession({"symbol": "AAA", "historical": []})
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+    )
+
+    out = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 5))
+
+    assert out["AAA"].empty
+    assert empty_history_path("fmp_AAA", tmp_path).exists()
+
+    before = len(session.calls)
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 5))
+    assert len(session.calls) == before, "the known-empty window is not re-asked"

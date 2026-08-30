@@ -196,7 +196,12 @@ def build_price_panel(
         fundamentals = fundamental_fetcher.fetch(
             yf_by_tv.values(), fetch_start, fetch_end
         )
-        bars_by_tv = merge_fundamentals_into_bars(bars_by_tv, fundamentals, yf_by_tv)
+        bars_by_tv = merge_fundamentals_into_bars(
+            bars_by_tv,
+            fundamentals,
+            yf_by_tv,
+            filing_lag_days=fundamental_fetcher.lag_days,
+        )
 
     bars_by_tv = merge_referenced_options(
         bars_by_tv,

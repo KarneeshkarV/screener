@@ -7,11 +7,14 @@ import pandas as pd
 
 from screener.indicators.plugins.ema import ema as _ema
 from screener.indicators.plugins.supertrend import supertrend_dir as _supertrend_dir
-from screener.strategies.spec import strategy
+from screener.strategies import bar_column_recipes as _cols
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    register_expression_strategy,
+)
 from screener.strategies.trades import ResearchTrade, _walk
 
 
-@strategy("ma_cross_st_entry")
 def strat_ma_cross_st_entry(df: pd.DataFrame) -> list[ResearchTrade]:
     """Entry = ma_cross AND supertrend bullish; exit = ma_cross bearish."""
     close = df["close"].to_numpy(dtype=float)
@@ -25,3 +28,15 @@ def strat_ma_cross_st_entry(df: pd.DataFrame) -> list[ResearchTrade]:
     entries = (mfp <= msp) & (mf > ms) & (d < 0)
     exits = (mfp >= msp) & (mf < ms)
     return _walk(entries, exits, close, df["date"].values)
+
+
+# One definition: the backtester evaluates this expression and the pine_runner
+# gets a callable synthesised from it. The function above stays unregistered as
+# the reference body tests/test_bucket_b_parity.py compares against.
+register_expression_strategy(
+    "ma_cross_st_entry",
+    entry="crossover(ema(close, 10), ema(close, 20)) and st_dir < 0",
+    exit="crossunder(ema(close, 10), ema(close, 20))",
+    bar_columns={"st_dir": _cols.supertrend_direction},
+    profile=DEFAULT_STRATEGY_PROFILE,
+)

@@ -12,6 +12,13 @@ byte-identical JSON on repeated runs.
     uv run python scripts/backtest_delta.py --out /tmp/baseline.json
     uv run python scripts/backtest_delta.py --compare /tmp/baseline.json
 
+A ``.gz`` suffix on either path gzips or gunzips transparently. The pinned
+baseline for this repo lives at ``scripts/backtest_delta_baseline.json.gz``
+and was cut after the screen/backtest unification flip:
+
+    uv run python scripts/backtest_delta.py \
+        --compare scripts/backtest_delta_baseline.json.gz
+
 Bar factories and the price-fetcher stub are defined here on purpose. The
 harness is the instrument that measures whether later stages moved the
 numbers; importing fixtures from ``tests/`` would let a test refactor silently
@@ -20,6 +27,7 @@ move the baseline.
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 import sys
@@ -672,6 +680,26 @@ def compare_baselines(baseline: dict[str, Any], current: dict[str, Any]) -> int:
 # --------------------------------------------------------------------------- #
 
 
+def _write_baseline(path: Path, payload: str) -> None:
+    """Write the baseline, gzipping when the path says so.
+
+    The full matrix is ~3 MB of JSON, which is too much to keep in git as
+    text. ``mtime=0`` keeps the container byte-identical for identical
+    content, so a pinned baseline only churns when the numbers move.
+    """
+    if path.suffix == ".gz":
+        with gzip.GzipFile(path, "wb", compresslevel=9, mtime=0) as handle:
+            handle.write(payload.encode("utf-8"))
+        return
+    path.write_text(payload, encoding="utf-8")
+
+
+def _read_baseline(path: Path) -> str:
+    if path.suffix == ".gz":
+        return gzip.decompress(path.read_bytes()).decode("utf-8")
+    return path.read_text(encoding="utf-8")
+
+
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
     "--out",
@@ -712,12 +740,12 @@ def main(out_path: Path | None, compare_path: Path | None) -> None:
 
     if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(payload, encoding="utf-8")
+        _write_baseline(out_path, payload)
         click.echo(f"wrote {out_path}", err=True)
         return
 
     assert compare_path is not None
-    baseline = json.loads(compare_path.read_text(encoding="utf-8"))
+    baseline = json.loads(_read_baseline(compare_path))
     current = json.loads(payload)
     code = compare_baselines(baseline, current)
     sys.exit(code)

@@ -6,11 +6,13 @@ import numpy as np
 import pandas as pd
 
 from screener.indicators.plugins.sma import sma as _sma
-from screener.strategies.spec import strategy
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    register_expression_strategy,
+)
 from screener.strategies.trades import ResearchTrade, _walk
 
 
-@strategy("macd_oscillator")
 def strat_macd_oscillator(df: pd.DataFrame) -> list[ResearchTrade]:
     cl = df["close"].to_numpy(dtype=float)
 
@@ -24,3 +26,14 @@ def strat_macd_oscillator(df: pd.DataFrame) -> list[ResearchTrade]:
     exits = (ma1_prev >= ma2_prev) & (ma1 < ma2)
 
     return _walk(entries, exits, cl, df["date"].values)
+
+
+# The rule now lives here once, as the expression both the backtester and the
+# pine_runner evaluate. The function above is kept unregistered as the
+# reference body that tests/test_bucket_a_parity.py compares against.
+register_expression_strategy(
+    "macd_oscillator",
+    entry="crossover(sma(close, 10), sma(close, 21))",
+    exit="crossunder(sma(close, 10), sma(close, 21))",
+    profile=DEFAULT_STRATEGY_PROFILE,
+)

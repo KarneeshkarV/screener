@@ -6,11 +6,14 @@ import numpy as np
 import pandas as pd
 
 from screener.indicators.plugins.sma import sma as _sma
-from screener.strategies.spec import strategy
+from screener.strategies import bar_column_recipes as _cols
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    register_expression_strategy,
+)
 from screener.strategies.trades import ResearchTrade, _walk
 
 
-@strategy("awesome_oscillator")
 def strat_awesome_oscillator(df: pd.DataFrame) -> list[ResearchTrade]:
     op = df["open"].to_numpy(dtype=float)
     hi = df["high"].to_numpy(dtype=float)
@@ -54,3 +57,24 @@ def strat_awesome_oscillator(df: pd.DataFrame) -> list[ResearchTrade]:
     exits = saucer_short | cross_short
 
     return _walk(entries, exits, cl, df["date"].values)
+
+
+# The saucer legs need 1- and 2-bar lags of AO and of the bar colour, and Pine
+# has no shift operator, so each lag is a declared column. AO itself is a
+# column too: inlining it would repeat the same SMA pair four times across the
+# two expressions.
+register_expression_strategy(
+    "awesome_oscillator",
+    entry="ao > 0 or (open > close and green_p1 > 0 and green_p2 > 0 and ao_p1 > ao_p2 and ao_p1 < 0 and ao < 0)",
+    exit="ao < 0 or (open < close and red_p1 > 0 and red_p2 > 0 and ao_p1 < ao_p2 and ao_p1 > 0 and ao > 0)",
+    bar_columns={
+        "ao": _cols.awesome_oscillator,
+        "ao_p1": _cols.ao_prev1,
+        "ao_p2": _cols.ao_prev2,
+        "red_p1": _cols.red_prev1,
+        "red_p2": _cols.red_prev2,
+        "green_p1": _cols.green_prev1,
+        "green_p2": _cols.green_prev2,
+    },
+    profile=DEFAULT_STRATEGY_PROFILE,
+)

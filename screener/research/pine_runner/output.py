@@ -8,7 +8,6 @@ import numpy as np
 
 from screener.logging_config import get_logger
 from screener.research.pine_runner.run import MarketRun
-from screener.strategies.registry import STRATEGIES
 
 log = get_logger("pine_runner")
 
@@ -30,7 +29,7 @@ def print_market_table(result: MarketRun) -> None:
     print(hdr)
     print("-" * len(hdr))
     rows = []
-    for name in STRATEGIES:
+    for name in result.per_strategy:
         results = result.per_strategy[name]
         if not results:
             print(f"{name:<18}  no results  (errors: {result.error_counts[name]})")

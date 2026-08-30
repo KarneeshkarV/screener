@@ -21,6 +21,11 @@ DEFAULT_MIN_ADV = {name: market.min_adv for name, market in MARKETS.items()}
 
 RANK_EXIT_PRESETS = {"weekly": 5, "monthly": 21}
 
+#: The ``--adv-window`` option default. Named so callers can tell "the user
+#: typed a window" from "the option fell back", which is what lets a strategy
+#: profile supply the window instead.
+ADV_WINDOW_DEFAULT = 20
+
 
 def parse_rank_exit(value: Any) -> tuple[int, bool] | None:
     """Parse ``--rank-exit`` into ``(period_in_bars, used_named_preset)``.
@@ -411,7 +416,9 @@ def _opt_adv_window(mode: str) -> OptionDecorator:
         if mode == "historical"
         else "Lookback bars for average dollar-volume filter."
     )
-    return click.option("--adv-window", type=int, default=20, help=help_text)
+    return click.option(
+        "--adv-window", type=int, default=ADV_WINDOW_DEFAULT, help=help_text
+    )
 
 
 def _opt_slippage_model(mode: str) -> OptionDecorator:

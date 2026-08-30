@@ -79,6 +79,53 @@ def true_range(
 
 
 @overload
+def _wilder_rma(values: pd.Series, period: int) -> pd.Series: ...
+
+
+@overload
+def _wilder_rma(values: pd.DataFrame, period: int) -> pd.DataFrame: ...
+
+
+def _wilder_rma(
+    values: pd.Series | pd.DataFrame, period: int
+) -> pd.Series | pd.DataFrame:
+    """Wilder's running average, seeded the way Pine ``ta.rma`` seeds it.
+
+    ``ta.rma`` starts from the *simple mean of the first ``period``
+    observations* and only then applies the ``alpha = 1/period`` recursion.
+    ``ewm(alpha=..., adjust=False)`` instead starts from the first observation
+    alone, which is a different number: the resulting error decays by
+    ``(1 - 1/period)`` per bar, so at ``period = 14`` it is still worth more
+    than one RSI point around bar 50. ``min_periods`` cannot repair that - it
+    hides early bars, it does not change what the recursion started from.
+
+    The seed is placed at the position of the ``period``-th observation and
+    everything before it is blanked, so a plain ``adjust=False`` pass picks the
+    seed up as its first value and carries Wilder's recursion from there.
+
+    The blanking runs on the raw ndarray rather than through ``notna``/
+    ``cumsum``/``where``/``mask``. Each of those allocates a whole frame, and
+    ``atr_risk`` sizing calls this once per entry, so the pandas spelling cost
+    the rolling engine roughly one extra ATR pass per candidate opened. The
+    arithmetic is identical; only the number of intermediate frames changes.
+    """
+    array = values.to_numpy(dtype=float)
+    observed = ~np.isnan(array)
+    count = np.cumsum(observed, axis=0)
+    seeded = np.where(count > period, array, np.nan)
+    # A cumulative sum, read at the seed row, *is* the sum of the first
+    # ``period`` observations: every earlier gap contributed an exact zero. It
+    # costs a fraction of a full ``rolling(period).mean()`` and, unlike one,
+    # keeps seeding across an interior gap instead of returning NaN there.
+    np.copyto(
+        seeded,
+        np.nancumsum(array, axis=0) / period,
+        where=observed & (count == period),
+    )
+    return _restore(values, seeded).ewm(alpha=1.0 / period, adjust=False).mean()
+
+
+@overload
 def wilder_rsi(
     close: pd.Series, period: int = 14, *, min_periods: int = 0
 ) -> pd.Series: ...
@@ -96,16 +143,23 @@ def wilder_rsi(
     *,
     min_periods: int = 0,
 ) -> pd.Series | pd.DataFrame:
-    """Return RSI using Wilder's exponentially smoothed gains and losses."""
+    """Return RSI using Wilder's exponentially smoothed gains and losses.
+
+    Matches Pine ``ta.rsi``: ``close.diff()`` is undefined on the first bar, so
+    the smoothers seed off the first ``period`` *real* changes and the first
+    value lands on bar ``period``. ``min_periods`` now only blanks output that
+    rests on fewer than that many observations; the seed no longer depends on
+    it.
+    """
     delta = close.diff()
     gains = delta.clip(lower=0.0)
     losses = -delta.clip(upper=0.0)
-    avg_gain = gains.ewm(
-        alpha=1.0 / period, adjust=False, min_periods=min_periods
-    ).mean()
-    avg_loss = losses.ewm(
-        alpha=1.0 / period, adjust=False, min_periods=min_periods
-    ).mean()
+    avg_gain = _wilder_rma(gains, period)
+    avg_loss = _wilder_rma(losses, period)
+    if min_periods > 0:
+        enough = (delta.notna().cumsum() >= min_periods).to_numpy()
+        avg_gain = avg_gain.where(enough)
+        avg_loss = avg_loss.where(enough)
     rs = avg_gain / avg_loss.replace(0.0, np.nan)
     result = 100.0 - (100.0 / (1.0 + rs))
     condition = ~((avg_loss == 0.0) & (avg_gain > 0.0))
@@ -147,7 +201,14 @@ def wilder_atr(
     min_periods: int = 0,
     first_bar: Literal["high_low", "nan"] = "high_low",
 ) -> pd.Series | pd.DataFrame:
-    """Return Average True Range using Wilder smoothing."""
+    """Return Average True Range using Wilder smoothing.
+
+    Matches Pine ``ta.atr``, which is ``ta.rma(ta.tr(true), length)``: the
+    smoother seeds off the mean of the first ``length`` true ranges, not off
+    the first one alone. With the default ``first_bar="high_low"`` the true
+    range is defined from bar 0, so the first value lands on bar
+    ``length - 1``; with ``"nan"`` it lands on bar ``length``.
+    """
     ranges: pd.Series | pd.DataFrame
     if (
         isinstance(high, pd.Series)
@@ -162,7 +223,11 @@ def wilder_atr(
             cast(pd.DataFrame, close),
             first_bar=first_bar,
         )
-    return ranges.ewm(alpha=1.0 / period, adjust=False, min_periods=min_periods).mean()
+    smoothed = _wilder_rma(ranges, period)
+    if min_periods > 0:
+        enough = (ranges.notna().cumsum() >= min_periods).to_numpy()
+        smoothed = smoothed.where(enough)
+    return smoothed
 
 
 def on_balance_volume(close: pd.DataFrame, volume: pd.DataFrame) -> pd.DataFrame:

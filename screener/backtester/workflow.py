@@ -5,13 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import click
 from pydantic import ValidationError
 
 from screener import history
 from screener.backtester.cli_common import (
+    ADV_WINDOW_DEFAULT,
     build_backtest_fetcher,
     build_slippage_model,
     parse_partial_exits,
@@ -31,6 +32,9 @@ from screener.backtester.fundamentals import (
 from screener.backtester.models import BacktestConfig
 from screener.markets import get_market
 from screener.universes import load_sp500_membership, load_universe_selection
+
+if TYPE_CHECKING:
+    from screener.strategies.spec import StrategyProfile
 
 
 @dataclass(frozen=True)
@@ -138,6 +142,7 @@ def _build_config(
     exit_expr: str | None,
     slippage_model: Any,
     partial_exits: tuple[tuple[float, float], ...],
+    avg_dollar_volume_window: int | None = None,
     **extra: Any,
 ) -> BacktestConfig:
     try:
@@ -172,7 +177,11 @@ def _build_config(
             initial_capital=float(request.initial_capital),
             min_price=min_price,
             min_avg_dollar_volume=min_avg_dollar_volume,
-            avg_dollar_volume_window=int(request.adv_window),
+            avg_dollar_volume_window=(
+                int(request.adv_window)
+                if avg_dollar_volume_window is None
+                else int(avg_dollar_volume_window)
+            ),
             sizing_rule=request.sizing_rule,
             sizing_risk_pct=float(request.sizing_risk_pct),
             sizing_position_pct=float(request.sizing_position_pct),
@@ -183,6 +192,48 @@ def _build_config(
         )
     except ValidationError as exc:
         raise click.UsageError(str(exc)) from exc
+
+
+def _effective_gates(request: BacktestRequest) -> StrategyProfile:
+    """The strategy's declared candidate gates, with typed CLI flags winning.
+
+    ``screener.screen_candidates`` loads the same profile for the screen.
+    Loading it here as well is what stops the two paths drifting by config
+    instead of by code (D13 in ``docs/plans/unify-screen-backtest.md``); without
+    it a strategy is screened with its declared gates and backtested without
+    them. A flag left at its option default is "not given", so the profile
+    supplies the value; anything the user typed becomes an override, which is
+    the precedence :func:`resolve_strategy_profile` documents.
+
+    Gates the profile deliberately does not carry - the universe and venue
+    fields in ``RUN_SCOPED_SIGNAL_PANEL_FIELDS`` - stay with the request.
+    """
+    from screener.strategies.spec import (
+        ExpressionStrategySpec,
+        resolve_strategy_profile,
+        resolve_strategy_spec,
+    )
+
+    spec = (
+        resolve_strategy_spec(request.strategy_name) if request.strategy_name else None
+    )
+    overrides: dict[str, Any] = {}
+    if request.min_price is not None:
+        overrides["min_price"] = float(request.min_price)
+    if request.min_avg_dollar_volume is not None:
+        overrides["min_avg_dollar_volume"] = float(request.min_avg_dollar_volume)
+    if int(request.adv_window) != ADV_WINDOW_DEFAULT:
+        overrides["avg_dollar_volume_window"] = int(request.adv_window)
+    regime_filter = tuple(dict.fromkeys(request.regime_filter_args))
+    if regime_filter:
+        overrides["regime_filter"] = regime_filter
+    if request.earnings_blackout_days is not None:
+        overrides["earnings_blackout_days"] = int(request.earnings_blackout_days)
+    if request.sector_neutral:
+        overrides["sector_neutral"] = True
+    return resolve_strategy_profile(
+        spec if isinstance(spec, ExpressionStrategySpec) else None, overrides
+    )
 
 
 def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
@@ -327,8 +378,12 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         request.vol_impact_k,
         spread_proxy=bool(request.spread_proxy),
     )
+    gates = _effective_gates(request)
+    # ``resolve_min_filters`` still applies the per-market floor when neither
+    # the flag nor the profile named one, and still reads an explicit 0 as
+    # "disabled".
     min_price, min_adv = resolve_min_filters(
-        request.market, request.min_price, request.min_avg_dollar_volume
+        request.market, gates.min_price, gates.min_avg_dollar_volume
     )
     config = _build_config(
         request,
@@ -348,12 +403,13 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         dynamic_universe_lookback=dynamic_universe_lookback,
         dynamic_universe_rebalance=dynamic_universe_rebalance,
         spread_proxy=bool(request.spread_proxy),
-        regime_filter=tuple(dict.fromkeys(request.regime_filter_args)),
-        earnings_blackout_days=request.earnings_blackout_days,
+        avg_dollar_volume_window=gates.avg_dollar_volume_window,
+        regime_filter=gates.regime_filter,
+        earnings_blackout_days=gates.earnings_blackout_days,
         fundamentals_provider=provider,
         fundamental_fields=fields,
         fundamental_lag_days=max(resolved_lag, 0),
-        sector_neutral=bool(request.sector_neutral),
+        sector_neutral=gates.sector_neutral,
         rank_exit_every=(rank_exit[0] if rank_exit is not None else None),
         rank_universe_size=int(request.rank_universe_size),
     )

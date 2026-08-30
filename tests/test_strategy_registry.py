@@ -104,8 +104,52 @@ def test_strategy_views_are_live_derived_over_single_registry():
     # Visible immediately in the expression view (and its resolver)...
     assert name in NAMED_STRATEGIES
     assert resolve_strategy(name).entry == "close > 0"
-    # ...but partitioned out of the callable view, since it has no callable_fn.
-    assert name not in STRATEGIES
+    # ...and also in the callable view, which synthesises the pine_runner's
+    # callable from the same entry/exit rather than requiring a second hand
+    # written body. The two views are no longer a partition: one definition
+    # feeds both consumers, which is the point of
+    # docs/plans/unify-screen-backtest.md. Converting a strategy from callable
+    # to expression therefore does not drop its name out of STRATEGIES, and the
+    # names there are referenced by saved configs and CLI invocations.
+    assert name in STRATEGIES
+    assert callable(STRATEGIES[name])
+
+    # An expression that reads a column only a panel-level preparation step
+    # supplies stays out of the callable view: the pine_runner has one bare
+    # OHLCV frame, so projecting it would raise PineNameError on first use
+    # rather than be honestly absent.
+    prepared = "unit_live_view_prepared_probe"
+    register_expression_strategy(prepared, entry="rank_score > 0")
+    assert prepared in NAMED_STRATEGIES
+    assert prepared not in STRATEGIES
+
+    # A hand-written prepare_bars keeps a strategy out of the callable view even
+    # when its expression reads nothing but OHLCV. The synthesised callable can
+    # replay bar_columns but not a panel-level hook, so projecting this one
+    # would silently drop the prep and produce a strategy indistinguishable
+    # from the same expression without it.
+    hooked = "unit_live_view_panel_prep_probe"
+    register_expression_strategy(
+        hooked,
+        entry="close > 0",
+        prepare_bars=lambda ctx: ctx.bars_by_tv,
+        required_lookback=lambda: 0,
+    )
+    assert hooked in NAMED_STRATEGIES
+    assert hooked not in STRATEGIES
+
+    # Columns lifted into prepare_bars are reproducible, so they stay in.
+    from screener.strategies.spec import bar_column
+
+    @bar_column(3)
+    def _mid(bars):
+        return (bars["high"] + bars["low"]) / 2.0
+
+    columned = "unit_live_view_bar_columns_probe"
+    register_expression_strategy(
+        columned, entry="close > mid", bar_columns={"mid": _mid}
+    )
+    assert columned in STRATEGIES
 
 
 def test_strategy_registry_lookup_returns_callable():
@@ -330,3 +374,45 @@ def _prepare_ctx(
         fetcher=lambda *_args, **_kwargs: {},
         warnings=[],
     )
+
+
+def test_a_broken_expression_is_excluded_not_raised_during_iteration():
+    """One bad registration must not abort a walk over every strategy.
+
+    ``pine_runner`` iterates ``STRATEGIES.items()`` for a whole market. Before
+    this, ``_is_self_contained`` parsed on iteration, so a syntax error aborted
+    the run, and an unknown *function* passed the identifier check only to raise
+    ``PineNameError`` deep inside the per-ticker loop, which catches
+    ``ValueError`` and friends but not ``PineError``.
+    """
+    from screener.strategies.spec import register_expression_strategy
+
+    broken = "unit_broken_syntax_probe"
+    register_expression_strategy(broken, entry="close > > 3")
+    unknown_fn = "unit_unknown_function_probe"
+    register_expression_strategy(unknown_fn, entry="vwap(close, 5) > 0")
+
+    names = list(STRATEGIES)
+    assert broken not in names
+    assert unknown_fn not in names
+    assert dict(STRATEGIES.items()) is not None
+    assert len(names) == len(STRATEGIES)
+
+    # Both are still expression strategies; only the callable view drops them.
+    assert broken in NAMED_STRATEGIES
+    assert unknown_fn in NAMED_STRATEGIES
+
+
+def test_synthesised_callables_are_cached_per_spec_not_per_name():
+    """A re-registered name must not get the previous spec's closure back."""
+    from screener.strategies import registry as registry_module
+    from screener.strategies.spec import ExpressionStrategySpec
+
+    first = ExpressionStrategySpec(name="unit_cache_probe", entry="close > 0")
+    second = ExpressionStrategySpec(name="unit_cache_probe", entry="close < 0")
+
+    fn_first = registry_module._expression_callable(first)
+    fn_second = registry_module._expression_callable(second)
+    assert fn_first is not fn_second
+    # Memoisation still holds, or the view stops being a stable projection.
+    assert registry_module._expression_callable(first) is fn_first

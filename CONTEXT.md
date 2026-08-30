@@ -21,6 +21,22 @@ Slot state is keyed by an integer `slot_id`, and slots are not compounded.
 A ticker whose entry signal fired and which passed the entry filters on a given day.
 Produced per day by the rolling engine's candidate matrices.
 
+**criterion**
+A name passed to `screen --criteria`.
+Three of them - `breakout`, `mark_minervini`, `momentum_12_1` - are aliases onto the strategy of the same name, so the screen judges them with that strategy's bar rule.
+The rest are TradingView filter sets, judged by the vendor.
+
+**profile**
+`StrategyProfile`: the eligibility gates a strategy declares next to its rule, mirroring `SignalPanelInputs` field for field so a gate cannot be omitted.
+Screen and backtest both load it, which is what makes the two paths agree.
+
+**prefilter**
+`StrategyProfile.tv_prefilter`: the name of a criterion whose TradingView filters cut the field before bars are downloaded.
+It is an optimisation, not a gate.
+It may only remove names the bar rule would have removed anyway, which `tests/correctness/test_screen_backtest_reconciliation.py` pins against calendar-anchored vendor columns.
+Two of the three aliases therefore front something other than the criterion of their own name: `breakout` fronts the volume leg alone, and `momentum_12_1` declares none at all.
+`--universe` is the exact path and applies none.
+
 **role**
 `active` or `reserve`.
 Actives fill slots at `as_of`; reserves wait in a queue sized `top * reserve_multiple`.
@@ -60,7 +76,7 @@ It is the equity curve's index.
 
 Four symbol spellings coexist and are not interchangeable.
 
-- TradingView: `NSE:RELIANCE`, `M_M`. The canonical key for bars.
+- TradingView: `NSE:RELIANCE`, `M_M`. The canonical key a name is addressed by, including in the bar cache. It is not where the bars come from.
 - yfinance: `RELIANCE.NS`, `M&M.NS`. Keys the price panel.
 - NSE bhavcopy: `M&M`.
 - FMP: `RELIANCE.NS` for India, bare symbol for US.
@@ -97,8 +113,12 @@ A circuit-breaker name, a price provider selector, and a fundamentals provider s
 
 **strategy** spans five populations.
 Callable specs, expression specs, earnings scorers, vbt signal builders, and a vbt config literal.
+The first two have stopped being a collision inside the screen/backtest path: an expression spec is the one definition that drives the screen, the rolling backtest and the optimizer.
+Four callable specs remain, whose trade generation is not a per-bar boolean, and the screen rejects them by kind with a clear message.
 
 **screen** means the `screen` command, the standalone feature commands that are not that command, an operator labeller, and an options criterion.
+Within the `screen` command the word has one meaning again: for an aliased criterion it asks the same question the rolling backtest asks, on the same day, off the same bars.
+The standalone commands (`garp`, `conviction`, `rs_breakout`, `mark-minervini`) still carry their own hand-written definitions and are outside that guarantee.
 
 **sharpe** is computed two incomparable ways.
 `equity_curve_sharpe` annualises a daily equity curve.

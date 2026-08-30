@@ -283,7 +283,11 @@ class _DailyRankingSource:
                 ):  # pragma: no cover - only valid tickers ranked
                     continue
                 entry_budget = entry_budget_for(
-                    cfg, portfolio, bars, int(row["signal_idx"])
+                    cfg,
+                    portfolio,
+                    bars,
+                    int(row["signal_idx"]),
+                    series_cache=self.caches.frame(ticker, bars).sizing_series,
                 )
                 state, warn = _make_slot_state(
                     ticker,

@@ -71,6 +71,8 @@ def run_market(
     years: int,
     limit: int,
     refresh: bool,
+    universe: str | None = None,
+    strategy: str | None = None,
 ) -> MarketRun:
     today = date.today()
     window_start_ts = pd.Timestamp(today) - pd.DateOffset(years=years)
@@ -78,7 +80,15 @@ def run_market(
     fetch_start = (pd.Timestamp(today) - pd.DateOffset(years=years + 4)).date()
     fetch_end = today
 
-    tickers = load_universe(market)
+    tickers = load_universe(market, universe=universe)
+    if strategy is not None and strategy not in STRATEGIES:
+        # Not every registered strategy is runnable here: an expression spec
+        # only reaches ``STRATEGIES`` once the registry can synthesise a
+        # callable for it. Say which names are, instead of a bare KeyError.
+        raise ValueError(
+            f"unknown strategy {strategy!r}; runnable names: {sorted(STRATEGIES)}"
+        )
+    strategies = {strategy: STRATEGIES[strategy]} if strategy else dict(STRATEGIES)
     if limit and limit < len(tickers):
         tickers = tickers[:limit]
     log.info(
@@ -89,7 +99,7 @@ def run_market(
         window_end=str(today),
         years=years,
         warmup_start=str(fetch_start),
-        strategies=list(STRATEGIES),
+        strategies=list(strategies),
     )
 
     ohlcv: dict[str, pd.DataFrame] = {}
@@ -120,10 +130,10 @@ def run_market(
     if bench_return is None:
         log.warning("backtest.benchmark_missing", benchmark=bench_sym)
 
-    per_strat: dict[str, list[dict]] = {n: [] for n in STRATEGIES}
-    err_counts: dict[str, int] = {n: 0 for n in STRATEGIES}
+    per_strat: dict[str, list[dict]] = {n: [] for n in strategies}
+    err_counts: dict[str, int] = {n: 0 for n in strategies}
     for i, (t, df) in enumerate(ohlcv.items(), 1):
-        for name, fn in STRATEGIES.items():
+        for name, fn in strategies.items():
             try:
                 res = _run_ticker(df, window_start_ts, fn)
             except (ValueError, KeyError, TypeError, RuntimeError, IndexError) as exc:

@@ -155,8 +155,16 @@ def _build_rolling_candidate_matrices(
     *,
     sector_neutral: bool = False,
     sector_by_tv: dict[str, str] | None = None,
+    require_next_bar: bool = True,
 ) -> _RollingCandidateMatrices:
-    """Build once-per-run matrices for daily candidate scans."""
+    """Build once-per-run matrices for daily candidate scans.
+
+    ``require_next_bar`` is the backtester's rule that a signal is only a
+    candidate if a later bar exists to fill the entry on. A screen asks the
+    opposite question - "who fires on the newest bar I have?" - and for it the
+    signal bar is always the last one, so the rule would reject every answer.
+    Screens pass ``False``; every backtest path keeps the default.
+    """
     master_ix = pd.DatetimeIndex(master_dates)
     valid_tickers = [
         tv for tv, bars in bars_by_tv.items() if bars is not None and not bars.empty
@@ -262,8 +270,9 @@ def _build_rolling_candidate_matrices(
         n = len(bars)
         has_bar = pos >= 0
         bar_idx_np[:, column] = pos
+        enough_history = (pos + 1 >= lookback_required + 1) & has_bar
         lookback_ok_np[:, column] = (
-            (pos + 1 >= lookback_required + 1) & (pos + 1 < n) & has_bar
+            (enough_history & (pos + 1 < n)) if require_next_bar else enough_history
         )
         close_np[:, column] = np.where(has_bar, close[pos], np.nan)
         volume_np[:, column] = np.where(has_bar, volume[pos], np.nan)

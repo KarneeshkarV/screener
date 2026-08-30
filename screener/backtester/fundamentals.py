@@ -19,22 +19,17 @@ import requests
 
 from screener import _optional
 from screener.backtester.data import load_env_file
+from screener.factors.fundamentals import FUNDAMENTAL_COLUMNS, stamp_fundamentals
 from screener.financials import as_percent as _as_percent
 from screener.financials import first_number, pct_change
 from screener.provider_utils import fmp_get
 from screener.providers import CachedProvider, ProviderSpec
 
 INDIA_FUNDAMENTAL_FILING_LAG_DAYS = 60
-DEFAULT_FUNDAMENTAL_FIELDS: tuple[str, ...] = (
-    "pe_ttm",
-    "pb_ttm",
-    "roe_ttm",
-    "debt_to_equity",
-    "revenue_growth_yoy",
-    "eps_growth_yoy",
-    "revenue_up_3q",
-    "market_cap",
-)
+# The default request is the full known vocabulary, which lives in
+# ``screener.factors`` so the feature layer can check a column against it
+# without importing the backtester.
+DEFAULT_FUNDAMENTAL_FIELDS: tuple[str, ...] = FUNDAMENTAL_COLUMNS
 
 
 _FMP_PROVIDER = CachedProvider(
@@ -60,6 +55,10 @@ _YFINANCE_FUNDAMENTALS_PROVIDER = CachedProvider(
 
 class FundamentalFetcher(Protocol):
     markets: frozenset[str]
+    #: Calendar days added to each filing date before a value is considered
+    #: knowable. Declared on the protocol because the merge records it as the
+    #: provenance of every column it writes.
+    lag_days: int
 
     def fetch(
         self,
@@ -704,8 +703,23 @@ def merge_fundamentals_into_bars(
     bars_by_tv: dict[str, pd.DataFrame],
     fundamentals_by_yf: Mapping[str, pd.DataFrame],
     yf_by_tv: Mapping[str, str],
+    *,
+    filing_lag_days: int,
 ) -> dict[str, pd.DataFrame]:
-    """Forward-fill dated fundamentals onto each ticker's OHLCV frame."""
+    """Forward-fill dated fundamentals onto each ticker's OHLCV frame.
+
+    This is the only sanctioned way a fundamental column reaches bars. The
+    fetcher has already shifted each filing to the date it became knowable
+    (filing date + ``filing_lag_days``), so the forward-fill here can never
+    place a value on a bar that precedes its own effective date.
+
+    Each merged frame is stamped with that fact via
+    :func:`~screener.factors.fundamentals.stamp_fundamentals`, and
+    :class:`screener.factors.BarFeatures` reads fundamentals only from stamped
+    frames. That turns "these columns are point-in-time" from a convention into
+    something the feature layer checks. The stamp is written *after* the join
+    because pandas drops ``attrs`` across ``DataFrame.join``.
+    """
     out: dict[str, pd.DataFrame] = {}
     for tv_symbol, bars in bars_by_tv.items():
         if bars is None or bars.empty:
@@ -716,5 +730,10 @@ def merge_fundamentals_into_bars(
             out[tv_symbol] = bars
             continue
         aligned = fundamentals.sort_index().reindex(bars.index, method="ffill")
-        out[tv_symbol] = bars.join(aligned, how="left")
+        merged = bars.join(aligned, how="left")
+        out[tv_symbol] = stamp_fundamentals(
+            merged,
+            columns=tuple(aligned.columns),
+            filing_lag_days=filing_lag_days,
+        )
     return out

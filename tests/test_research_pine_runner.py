@@ -67,6 +67,23 @@ def test_load_universe_reads_tradingview_names(monkeypatch):
     assert captured["order_by"] == "volume"
 
 
+def test_load_universe_named_universe_skips_tv_scan(monkeypatch):
+    class FakeUniverse:
+        symbols = ("RELIANCE", "TCS")
+
+    monkeypatch.setattr(
+        data,
+        "load_current_universe",
+        lambda name: (
+            FakeUniverse()
+            if name == "nifty500"
+            else (_ for _ in ()).throw(AssertionError)
+        ),
+    )
+
+    assert data.load_universe("india", universe="nifty500") == ["RELIANCE", "TCS"]
+
+
 def test_compound_and_run_ticker_filter_window():
     bars = _bars(60)
     trades = [
@@ -109,7 +126,9 @@ def test_run_market_aggregates_successes_errors_and_benchmark(monkeypatch):
         "bad": lambda df: (_ for _ in ()).throw(ValueError("boom")),
     }
     monkeypatch.setattr(run, "STRATEGIES", strategies)
-    monkeypatch.setattr(run, "load_universe", lambda market: ["AAA", "EMPTY", "ERR"])
+    monkeypatch.setattr(
+        run, "load_universe", lambda market, universe=None: ["AAA", "EMPTY", "ERR"]
+    )
 
     def fake_fetch(ticker, start, end, market, refresh=False):
         if ticker == "EMPTY":
@@ -142,7 +161,7 @@ def test_run_market_aggregates_successes_errors_and_benchmark(monkeypatch):
 
 def test_run_market_handles_missing_benchmark(monkeypatch):
     monkeypatch.setattr(run, "STRATEGIES", {"ok": lambda df: []})
-    monkeypatch.setattr(run, "load_universe", lambda market: ["SHORT"])
+    monkeypatch.setattr(run, "load_universe", lambda market, universe=None: ["SHORT"])
 
     def fake_fetch(ticker, *args, **kwargs):
         if ticker == "SHORT":
@@ -159,7 +178,6 @@ def test_run_market_handles_missing_benchmark(monkeypatch):
 
 
 def test_print_market_table_and_write_trades_json(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(output, "STRATEGIES", {"ok": object(), "empty": object()})
     result = run.MarketRun(
         market="us",
         today=date(2024, 3, 1),
@@ -205,7 +223,6 @@ def test_print_market_table_and_write_trades_json(tmp_path, monkeypatch, capsys)
 
 
 def test_print_market_table_handles_missing_benchmark(monkeypatch, capsys):
-    monkeypatch.setattr(output, "STRATEGIES", {"ok": object()})
     result = run.MarketRun(
         market="india",
         today=date(2024, 3, 1),

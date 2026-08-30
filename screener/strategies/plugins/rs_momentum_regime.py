@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener.strategies.spec import PrepareCtx, register_expression_strategy
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    PrepareCtx,
+    register_expression_strategy,
+)
 
 
 def _prepare_rs_momentum_regime(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
@@ -37,4 +41,5 @@ register_expression_strategy(
     exit="rs < sma(rs, 50)",
     prepare_bars=_prepare_rs_momentum_regime,
     required_lookback=_rs_momentum_regime_lookback,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )

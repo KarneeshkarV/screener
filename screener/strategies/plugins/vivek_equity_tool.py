@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from screener.strategies.spec import PrepareCtx, register_expression_strategy
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    PrepareCtx,
+    register_expression_strategy,
+)
 
 
 def _prepare_vivek(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
@@ -28,4 +32,5 @@ register_expression_strategy(
     exit="vivek_equity_exit > 0 or vivek_equity_close > 0",
     prepare_bars=_prepare_vivek,
     required_lookback=_vivek_lookback,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )

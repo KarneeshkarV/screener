@@ -154,6 +154,12 @@ class _FrameCache:
     # Lazily filled session-last mask (see ``sessions.is_session_last``); None
     # until the first ``intraday_only`` slot open on this frame.
     session_last: np.ndarray | None = None
+    # Lazily filled sizing indicator series, keyed by (rule kind, window). A
+    # sizing rule reads one scalar at the signal bar but computes the whole
+    # causal series to get it, so without this the rolling engine recomputes
+    # the same ATR (or realised-vol) series once per candidate it opens. Filled
+    # by ``screener.backtester.sizing``, which owns the arithmetic.
+    sizing_series: dict[tuple[str, int], np.ndarray] = field(default_factory=dict)
 
 
 def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:

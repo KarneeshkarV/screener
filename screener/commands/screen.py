@@ -16,6 +16,7 @@ from screener.screen_workflow import (
     ScreenRequest,
     run_screen_workflow,
 )
+from screener.screen_candidates import UnscreenableStrategyError
 from screener.scoring import IncompatibleScorerBlendError, PriceAdjustment
 
 
@@ -32,6 +33,16 @@ from screener.scoring import IncompatibleScorerBlendError, PriceAdjustment
     multiple=True,
     default=("ema",),
     help="Screening criteria (repeat to combine, e.g. -c ema -c breakout).",
+)
+@click.option(
+    "--universe",
+    default=None,
+    help=(
+        "Screen a named universe (nifty50, nifty500, sensex, sp500) or a "
+        "universe file, with no TradingView prefilter. This is the exact path: "
+        "the answer depends on local bars only. Slower, because every name is "
+        "fetched. Needs a criterion that names a strategy."
+    ),
 )
 @click.option("-n", "--limit", default=50, help="Number of results.")
 @click.option(
@@ -97,6 +108,7 @@ from screener.scoring import IncompatibleScorerBlendError, PriceAdjustment
 def screen(
     market: str,
     criteria_names: tuple[str, ...],
+    universe: str | None,
     limit: int,
     order_by: str,
     output_csv: bool,
@@ -115,6 +127,7 @@ def screen(
     request = ScreenRequest(
         market=market,
         criteria_names=criteria_names,
+        universe=universe,
         limit=int(limit),
         order_by=order_by,
         output_csv=output_csv,
@@ -129,7 +142,7 @@ def screen(
     )
     try:
         outcome = run_screen_workflow(request)
-    except IncompatibleScorerBlendError as exc:
+    except (IncompatibleScorerBlendError, UnscreenableStrategyError) as exc:
         raise click.UsageError(str(exc)) from exc
 
     if outcome.mode is ScreenMode.CSV:

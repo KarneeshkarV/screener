@@ -45,7 +45,11 @@ import pandas as pd
 
 from screener.strategies.plugins.low_volatility import realized_volatility
 from screener.strategies.plugins.momentum_12_1 import momentum_12_1_score
-from screener.strategies.spec import PrepareCtx, register_expression_strategy
+from screener.strategies.spec import (
+    DEFAULT_STRATEGY_PROFILE,
+    PrepareCtx,
+    register_expression_strategy,
+)
 
 _MOM_WEIGHT = 0.5
 _VOL_WEIGHT = 0.5
@@ -94,4 +98,5 @@ register_expression_strategy(
     exit=None,
     prepare_bars=_prepare_combo,
     required_lookback=_combo_lookback,
+    profile=DEFAULT_STRATEGY_PROFILE,
 )

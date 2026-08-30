@@ -16,6 +16,23 @@ def near_52w_breakout() -> list:
     ]
 
 
+@criterion("above_avg_volume")
+def above_average_volume() -> list:
+    """Volume above its own 10-day average.
+
+    This is the volume leg of ``near_52w_breakout`` on its own. The
+    ``breakout`` strategy declares it as its prefilter instead of the full
+    criterion, because the criterion's ``price_52_week_high`` leg reads the
+    52-week high of *highs* while the strategy's rule reads the 52-week high
+    of *closes*. Since ``max(high) >= max(close)``, the vendor threshold sits
+    at or above the rule's and drops names the rule would have kept, which a
+    prefilter may never do. The volume leg alone is a sound narrowing.
+    """
+    return [
+        col("volume") > col("average_volume_10d_calc"),
+    ]
+
+
 @criterion("ema")
 def ema_bullish_stack() -> list:
     """EMA5 > EMA20 > EMA100 > EMA200 (bullish stacking)."""
@@ -84,17 +101,14 @@ def momentum_12_1() -> list:
     performance, so the causal 12-1 momentum
     ``(1 + Perf.Y) / (1 + Perf.1M) - 1 > 0`` reduces to ``Perf.Y > Perf.1M``.
 
-    This snapshot comparison is a coarse pre-filter that keeps the TradingView
-    field momentum-shaped, so the later bar download stays small. It is not
-    the eligibility rule. TradingView's ``Column`` type has no arithmetic, so
-    a slack form such as ``Perf.Y > Perf.1M - 5`` cannot be sent to the vendor.
-    The exact gate is the recipe's ``eligible_above=0`` floor, applied after
-    bar scoring as ``mom_12_1 > 0`` (the same expression the backtest entry
-    uses). Names whose 12-1 return sits near zero can still flip across this
-    snapshot diagonal: TradingView uses calendar-month anchors and its own
-    adjusted series, while the bar recipe uses 252/21 sessions and the
-    yfinance close. Those names rank at the bottom of the positive set, so a
-    top-N screen does not select them.
+    This is a vendor filter set, not the eligibility rule, and deliberately
+    **not** the ``momentum_12_1`` strategy's prefilter. TradingView anchors
+    ``Perf.*`` on calendar dates while the rule reads bars 21 and 252 sessions
+    back, so near the diagonal the snapshot comparison drops names the rule
+    keeps - which a prefilter may never do (D21). ``Column`` values carry no
+    arithmetic, so no slack form such as ``Perf.Y > Perf.1M - 5`` can be sent
+    to the vendor either. The exact gate is the recipe's ``eligible_above=0``
+    floor, applied after bar scoring as ``mom_12_1 > 0``.
     """
     return [
         col("Perf.Y") > col("Perf.1M"),

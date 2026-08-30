@@ -110,9 +110,10 @@ def test_probe_entry_expression_does_not_encode_the_prepare_window() -> None:
     # low_volatility is the real case: 252 rolling returns plus the bar
     # pct_change consumes, none of it visible in ``vol_252 > 0``.
     assert strategy_required_lookback("low_volatility") == 253
-    # bb_breakout is a callable pine port with no prepare_bars, so it has no
-    # floor of its own.
-    assert strategy_required_lookback("bb_breakout") == 0
+    # bb_breakout is the other shape a hidden window takes: a declared bar
+    # column. Its 350-period Bollinger bands are invisible to an entry of
+    # ``crossover(close, bb_upper)``, so the floor comes from the column.
+    assert strategy_required_lookback("bb_breakout") == 350
     assert strategy_required_lookback(None) == 0
 
 
