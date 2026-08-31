@@ -45,6 +45,15 @@ All must pass before this work is done.
 | D19 | Keep the word `strategy`. Add `StrategyProfile`. Rewrite the `CONTEXT.md` collision entries. Add an ADR. |
 | D20 | Port the `RSI`, `relative_volume_10d_calc` and `Perf.Y` scorers to bar recipes. |
 | D21 | The criterion's TradingView filters survive as a per-strategy declared prefilter. |
+| D22 | One resolver owns the gates. `resolve_strategy_profile(spec, overrides, market=...)` is the only place a `StrategyProfile` becomes the gates a run uses, for the screen and the rolling backtest alike. |
+| D23 | A flag left at its option default is not given. Only a flag the user typed overrides the declared profile. An explicit `0` means "disable this gate", which is not the same as saying nothing. |
+| D24 | The market floor applies on both paths. An unset `min_price` or `min_avg_dollar_volume` falls to the venue minimum from `markets.py`. The resolver uses `get_market`, so an unknown market name raises rather than quietly producing an unfloored screen. |
+| D25 | The shared flags live in `screener/gate_options.py`, a module that imports neither the screen nor the backtester. Both commands build their options from it, so a gate cannot be added to one command and forgotten on the other. `signal_panel.py` asserts the same partition at import time on the data side. |
+| D26 | `--min-score` is a candidate-layer gate, not a presentation filter. The percentile is taken over the day's eligible field, before `exclude` and before `limit`, so the score means the same thing in a screen and in a backtest day. |
+| D27 | `--earnings-buffer` stays screen-only. It is a presentation-stage filter on result rows, a different stage from `--earnings-blackout`, which suppresses entry signals. Sharing the name would hide that. |
+| D28 | The screen's run label carries a settings fingerprint (`<criteria>@<universe>#<8 hex>`). The gates are part of the question, so history never diffs a run made with `--min-price 50` against one made without it. |
+| D29 | The screen's panel lookback is `max(program.lookback, avg_dollar_volume_window)`. A 15-bar window judged a 20-bar ADV mean on too few bars, which is a screen-only defect this work fixes. |
+| D30 | Bar-path flags are refused, never ignored. A gate flag, `--interval`, or `--max-universe` on a criterion that names TradingView filters only raises `UnscreenableStrategyError`. A non-`1d` interval with a fundamental fetcher or an earnings blackout raises `IntervalNotScreenableError`. |
 
 ## Target architecture
 
@@ -150,3 +159,33 @@ These are known and are not fixed by this work.
   `minervini.py:evaluate_symbol` is a hand-written Python re-implementation with all ten checks inline, and D11 freezes it.
 - `historical.py` keeps its own candidate definition, so `screener backtest --as-of` answers a different question than `screener screen` for the same strategy and day. D12 accepts this. It is scheduled for deletion, not for a fence.
 - The default path still has a field cut that TradingView does not declare. The stage 5 prefilter test bounds it on fixtures only, not live.
+
+## Gate parity outcome
+
+`resolve_screen_gates` and `resolve_rolling_gates` both call
+`resolve_strategy_profile`, and `tests/correctness/test_screen_backtest_reconciliation.py`
+asserts they agree field for field over the whole strategy registry against both
+markets, with and without typed overrides. A second test drives both commands'
+`--help` from `GATE_OPTION_NAMES`, so a new shared flag that reaches only one
+command fails CI rather than shipping.
+
+Checked end to end against live nifty50 bars:
+
+```
+screener screen -m india -c breakout --universe nifty50 --min-price 1000 --min-score 50
+screener backtest-rolling -m india --universe nifty50 --strategy breakout --candidates --min-price 1000 --min-score 50
+```
+
+Both drop the sub-₹1000 names, both recompute the percentile over what survived
+the price gate, and both keep the top half. The residual difference between the
+two lists is the signal bar: the screen answers for the newest bar, the backtest
+for the last bar in its window.
+
+## Known gaps, deliberate
+
+- `backtest-historical` still ignores strategy profiles and keeps its own
+  candidate definition. D12 stands: it is scheduled for deletion, not for a fence.
+- Freshness defaults differ by design. The screen caches TradingView for 15m;
+  the backtest reads bars for a closed window. `--refresh` is on both.
+- `--max-universe` is run-scoped, not a gate. It caps the field before bars are
+  fetched, so it is not part of the profile and not part of the fingerprint.

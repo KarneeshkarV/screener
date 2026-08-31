@@ -24,6 +24,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from screener.providers import StaleDataError
+from screener.scoring import DEFAULT_PRICE_ADJUSTMENT, PriceAdjustment
+from screener.screen_candidates import (
+    DEFAULT_INTERVAL,
+    IntervalNotScreenableError,
+    UnscreenableStrategyError,
+)
+from screener.strategies.spec import StrategyProfile
 from screener.screen_workflow import (
     ScreenMode,
     ScreenOutcome,
@@ -47,6 +54,17 @@ def list_markets() -> list[str]:
     return sorted(MARKETS)
 
 
+def list_universes() -> list[str]:
+    """Names accepted by ``universe``, e.g. ``["nifty50", "sp500", ...]``.
+
+    Only the registered named universes. ``universe`` also takes a path to a
+    newline-separated ticker file, which cannot be enumerated here.
+    """
+    from screener.universes import available_universes
+
+    return sorted(available_universes())
+
+
 def screen(
     *,
     market: str = "us",
@@ -63,6 +81,11 @@ def screen(
     strict: bool = False,
     timeout: float | None = None,
     retries: int | None = None,
+    universe: str | None = None,
+    price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
+    gates: StrategyProfile | None = None,
+    interval: str = DEFAULT_INTERVAL,
+    max_universe: int = 0,
 ) -> ScreenOutcome:
     """Run one screen and return its outcome.
 
@@ -88,18 +111,40 @@ def screen(
     the retry attempts for the scan - attempts x timeout is the real
     wall-clock budget, so cap both together.
 
+    ``universe`` selects the exact path: a named universe or a universe file,
+    screened with no TradingView prefilter, which is the path a backtest's
+    universe corresponds to. It needs a criterion that names a strategy.
+
+    ``gates`` states the candidate gates outright, as the resolved
+    :class:`~screener.strategies.spec.StrategyProfile` the rolling backtest
+    would apply. ``None`` - the default - means "whatever this strategy
+    declares on this market", which is the same answer. Pass the profile a
+    backtest ran with to screen exactly what it entered.
+
+    ``price_adjustment`` and ``interval`` are the backtester's own flags and
+    must match the backtest a screen is being compared against.
+    ``max_universe`` caps the field before bars are fetched (0 = no cap).
+
     Raises:
         StaleDataError: ``strict=True`` and no fresh scan (or, with
             ``refresh=True``, no refreshed bars behind a bar-derived ranking)
             could be fetched.
         KeyError: an unknown criterion name, listing the known ones.
-        ValueError: ``earnings_buffer`` is negative, or ``report_path`` was
-            given without ``persist=True`` (nothing would be written).
+        ValueError: ``earnings_buffer`` is negative, ``max_universe`` is
+            negative, or ``report_path`` was given without ``persist=True``
+            (nothing would be written).
+        UnscreenableStrategyError: a bar-path argument (``gates``,
+            ``interval``, ``max_universe``, ``universe``) was given for a
+            criteria set that names TradingView filters only.
+        IntervalNotScreenableError: ``interval`` is intraday and the strategy
+            reads fundamentals or applies an earnings blackout.
     """
     if isinstance(criteria, str):
         criteria = (criteria,)
     if earnings_buffer is not None and earnings_buffer < 0:
         raise ValueError("earnings_buffer must be >= 0.")
+    if max_universe < 0:
+        raise ValueError("max_universe must be >= 0.")
     if report_path is not None and not persist:
         raise ValueError(
             "report_path requires persist=True; the no-side-effect path "
@@ -124,17 +169,30 @@ def screen(
         strict=strict,
         timeout=timeout,
         retries=retries,
+        universe=universe,
+        price_adjustment=price_adjustment,
+        # A profile handed in is a complete statement of the gates, so every
+        # field of it is an override. The market floor still applies to the
+        # ones it leaves unset, exactly as it does for a declared profile.
+        gate_overrides={} if gates is None else gates.model_dump(),
+        interval=interval,
+        max_universe=int(max_universe),
     )
     return run_screen_workflow(request)
 
 
 __all__ = [
+    "DEFAULT_INTERVAL",
+    "IntervalNotScreenableError",
     "ScreenMode",
     "ScreenOutcome",
     "ScreenRequest",
     "SignalRow",
     "StaleDataError",
+    "StrategyProfile",
+    "UnscreenableStrategyError",
     "list_criteria",
+    "list_universes",
     "list_markets",
     "run_screen_workflow",
     "screen",

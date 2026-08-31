@@ -48,6 +48,30 @@ def _minimal_config() -> BacktestConfig:
     )
 
 
+def _floored(profile: StrategyProfile, market: str = "us") -> StrategyProfile:
+    """``profile`` with ``market``'s liquidity floors applied.
+
+    Resolution folds the per-market floor in, so a gate nobody set resolves to
+    the venue minimum rather than to ``None``. Spelling that out here keeps the
+    expectations readable and makes a changed floor fail loudly.
+    """
+    from screener.markets import get_market
+
+    venue = get_market(market)
+    return profile.model_copy(
+        update={
+            "min_price": (
+                venue.min_price if profile.min_price is None else profile.min_price
+            ),
+            "min_avg_dollar_volume": (
+                venue.min_adv
+                if profile.min_avg_dollar_volume is None
+                else profile.min_avg_dollar_volume
+            ),
+        }
+    )
+
+
 def test_profile_fields_partition_signal_panel_inputs():
     # Every SignalPanelInputs field is either mirrored on StrategyProfile or
     # explicitly classified as run-scoped. A new gate added to the panel
@@ -94,14 +118,18 @@ def test_profile_defaults_equal_backtest_config_effective_gates():
 def test_default_profile_is_the_shared_baseline():
     assert DEFAULT_STRATEGY_PROFILE == StrategyProfile()
     # Total resolution: even a missing spec resolves to something valid.
-    assert resolve_strategy_profile(None) == DEFAULT_STRATEGY_PROFILE
+    assert resolve_strategy_profile(None, market="us") == _floored(
+        DEFAULT_STRATEGY_PROFILE
+    )
 
 
 def test_spec_without_profile_resolves_to_default_unchanged():
     spec = ExpressionStrategySpec(name="no_profile", entry=" close > 0 ")
 
     assert spec.profile is None
-    assert resolve_strategy_profile(spec) == DEFAULT_STRATEGY_PROFILE
+    assert resolve_strategy_profile(spec, market="us") == _floored(
+        DEFAULT_STRATEGY_PROFILE
+    )
 
 
 def test_attached_profile_wins_over_default_and_overrides_win_last():
@@ -110,24 +138,26 @@ def test_attached_profile_wins_over_default_and_overrides_win_last():
         name="with_profile", entry="close > 0", profile=attached
     )
 
-    assert resolve_strategy_profile(spec) == attached
-    assert resolve_strategy_profile(spec, {"min_price": 99.0}) == StrategyProfile(
-        min_price=99.0, sector_neutral=True
+    assert resolve_strategy_profile(spec, market="us") == _floored(attached)
+    assert resolve_strategy_profile(spec, {"min_price": 99.0}, market="us") == _floored(
+        StrategyProfile(min_price=99.0, sector_neutral=True)
     )
     # Overrides also apply over the defaults when no profile is attached.
-    assert resolve_strategy_profile(None, {"regime_filter": ("bull",)}) == (
-        StrategyProfile(regime_filter=("bull",))
-    )
+    assert resolve_strategy_profile(
+        None, {"regime_filter": ("bull",)}, market="us"
+    ) == _floored(StrategyProfile(regime_filter=("bull",)))
 
 
 def test_override_rejects_unknown_keys_by_name():
     with pytest.raises(ValueError, match="min_price"):
-        resolve_strategy_profile(None, {"minn_price": 5.0})
+        resolve_strategy_profile(None, {"minn_price": 5.0}, market="us")
 
 
 def test_override_values_are_validated_by_the_model():
     with pytest.raises(ValidationError):
-        resolve_strategy_profile(None, {"avg_dollar_volume_window": "not-an-int"})
+        resolve_strategy_profile(
+            None, {"avg_dollar_volume_window": "not-an-int"}, market="us"
+        )
 
 
 def test_every_registered_expression_plugin_keeps_current_effective_defaults():
@@ -139,11 +169,11 @@ def test_every_registered_expression_plugin_keeps_current_effective_defaults():
     for name, spec in registry.items():
         if not isinstance(spec, ExpressionStrategySpec):
             continue
-        resolved = resolve_strategy_profile(spec)
+        resolved = resolve_strategy_profile(spec, market="us")
         gates = resolved.model_copy(
             update=dict.fromkeys(NON_PANEL_PROFILE_FIELDS, None)
         )
-        assert gates == DEFAULT_STRATEGY_PROFILE, name
+        assert gates == _floored(DEFAULT_STRATEGY_PROFILE), name
 
 
 def test_only_strategies_with_a_tradingview_spelling_declare_a_prefilter():
@@ -156,10 +186,10 @@ def test_only_strategies_with_a_tradingview_spelling_declare_a_prefilter():
 
     discover_plugins()
     declared = {
-        name: resolve_strategy_profile(spec).tv_prefilter
+        name: resolve_strategy_profile(spec, market="us").tv_prefilter
         for name, spec in registry.items()
         if isinstance(spec, ExpressionStrategySpec)
-        and resolve_strategy_profile(spec).tv_prefilter is not None
+        and resolve_strategy_profile(spec, market="us").tv_prefilter is not None
     }
 
     assert set(declared) == {"breakout", "mark_minervini"}
@@ -262,7 +292,7 @@ def test_the_backtest_resolves_the_gates_a_strategy_declares(probe_strategy):
 
     gates = _effective_gates(_rolling_request(strategy_name=probe_strategy))
 
-    assert gates == _PROBE_PROFILE
+    assert gates == _floored(_PROBE_PROFILE)
 
 
 def test_a_typed_flag_wins_over_the_declared_gate(probe_strategy):
@@ -292,4 +322,4 @@ def test_a_strategy_without_a_profile_keeps_the_effective_defaults():
     from screener.backtester.workflow import _effective_gates
 
     discover_plugins()
-    assert _effective_gates(_rolling_request()) == DEFAULT_STRATEGY_PROFILE
+    assert _effective_gates(_rolling_request()) == _floored(DEFAULT_STRATEGY_PROFILE)

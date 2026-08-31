@@ -270,7 +270,10 @@ class TestWorkflowWiring:
         )
         assert captured["tickers"] == ["NSE:AAA", "NSE:BBB"]
         assert captured["strategy"] == "breakout"
-        assert outcome.label == "breakout@tv"
+        # The digest is the settings fingerprint; the readable part is what
+        # says which mode ran. Both must be there, so the mode is asserted
+        # exactly and the digest only for its shape.
+        assert outcome.label.startswith("breakout@tv#")
         assert outcome.total == 2
 
     def test_the_prefilter_scan_is_not_cut_to_the_result_limit(
@@ -355,7 +358,7 @@ class TestWorkflowWiring:
 
         assert captured["scanned"] is None
         assert captured["tickers"] == ["NSE:AAA", "NSE:BBB", "NSE:CCC"]
-        assert outcome.label == "breakout@universe:nifty50"
+        assert outcome.label.startswith("breakout@universe:nifty50#")
         # `total` is the field the rule judged, which in this mode is the whole
         # universe rather than a vendor-narrowed slice.
         assert outcome.total == 3
@@ -381,7 +384,16 @@ class TestCandidateFrame:
         assert OUTPUT_SCORE_COLUMN in df.columns
 
 
-def _candidate(ticker: str, rank: int, score: float | None) -> Candidate:
+def _candidate(
+    ticker: str, rank: int, score: float | None, setup_score: float | None = None
+) -> Candidate:
+    """One candidate as the candidate layer hands it over.
+
+    ``setup_score`` defaults to a value that falls with ``rank``, which is the
+    only relationship the frame builder relies on: the layer takes the
+    percentile over the whole eligible field, so a lower rank always carries a
+    lower score.
+    """
     return Candidate(
         ticker=ticker,
         rank=rank,
@@ -390,6 +402,7 @@ def _candidate(ticker: str, rank: int, score: float | None) -> Candidate:
         as_of_close=10.0,
         as_of_volume=1_000.0,
         as_of_dollar_vol=10_000.0 * rank,
+        setup_score=100.0 - (rank - 1) * 10.0 if setup_score is None else setup_score,
         signal_idx=5,
         role="active",
     )
@@ -424,23 +437,22 @@ class TestResultFrame:
         assert df["ticker"].tolist() == ["NSE:CCC", "NSE:AAA", "NSE:BBB"]
         assert df["description"].tolist() == ["C", "A", "B"]
 
-    def test_the_score_column_is_a_percentile_of_what_was_actually_ranked(
+    def test_the_score_column_is_the_one_the_candidate_layer_assigned(
         self,
     ) -> None:
-        # setup_score describes the ranking rather than asserting a scale of its
-        # own, so it must decrease monotonically down the rank order and stay
-        # inside 0-100 regardless of the raw basis values.
+        # The score is computed with the candidate, over the whole eligible
+        # field, so the frame must carry it through untouched rather than
+        # re-deriving a percentile of whoever survived to this point.
         candidates = [
-            _candidate("NSE:CCC", 1, 900.0),
-            _candidate("NSE:AAA", 2, 5.0),
-            _candidate("NSE:BBB", 3, 1.0),
+            _candidate("NSE:CCC", 1, 900.0, setup_score=100.0),
+            _candidate("NSE:AAA", 2, 5.0, setup_score=62.5),
+            _candidate("NSE:BBB", 3, 1.0, setup_score=12.5),
         ]
         scanned = pd.DataFrame({"ticker": ["NSE:AAA", "NSE:BBB", "NSE:CCC"]})
 
         scores = _candidate_frame(candidates, {}, scanned)[OUTPUT_SCORE_COLUMN]
 
-        assert scores.is_monotonic_decreasing
-        assert scores.between(0.0, 100.0).all()
+        assert scores.tolist() == [100.0, 62.5, 12.5]
 
     def test_a_dollar_volume_ranked_day_still_scores(self) -> None:
         # A strategy that writes no factor score ranks on dollar volume, and the

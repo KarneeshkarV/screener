@@ -32,6 +32,7 @@ import pandas as pd
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     SkipValidation,
     field_validator,
     model_validator,
@@ -340,6 +341,10 @@ class StrategyProfile(BaseModel):
     min_price: float | None = None
     min_avg_dollar_volume: float | None = None
     avg_dollar_volume_window: int = 20
+    #: Percentile floor a candidate's ``setup_score`` must clear, 0-100.
+    #: ``None`` disables the gate. Cross-sectional, so it is a statement about
+    #: standing in the day's field, not an absolute quality bar.
+    min_score: float | None = Field(default=None, ge=0.0, le=100.0)
 
     #: Name of the criterion in :mod:`screener.criteria` whose TradingView
     #: filters cut the field before bars are downloaded, or ``None`` for a
@@ -582,11 +587,25 @@ def resolve_strategy_spec(name: str | None) -> StrategySpec | None:
     return spec
 
 
+def _floor(value: float | None, default: float | None) -> float | None:
+    """One liquidity gate, resolved against its per-market floor.
+
+    ``None`` means "nobody named a value", so the market's own minimum stands.
+    An explicit ``0`` means "disabled" and resolves to ``None``, which is how
+    the backtest CLI has always spelled "admit everything". Any other value is
+    what the profile or the caller asked for and is used as given.
+    """
+    resolved = default if value is None else value
+    return None if resolved == 0 else resolved
+
+
 def resolve_strategy_profile(
     spec: ExpressionStrategySpec | None = None,
     overrides: Mapping[str, Any] | None = None,
+    *,
+    market: str,
 ) -> StrategyProfile:
-    """Effective candidate gates: the declared profile, then explicit overrides.
+    """Effective candidate gates: declared profile, overrides, then market floor.
 
     A spec without a ``profile`` resolves to :data:`DEFAULT_STRATEGY_PROFILE`,
     so the resolved value is total for every expression strategy. Overrides
@@ -595,18 +614,38 @@ def resolve_strategy_profile(
     raise instead of silently doing nothing. The backtest CLI passes the flags
     the user actually typed as overrides, so a flag left at its option default
     lets the profile speak.
+
+    ``market`` is required, and deliberately so. The per-market liquidity floor
+    used to be applied by the rolling CLI *after* this call and by nothing else,
+    so a screen resolved the same strategy without a floor the backtest applied
+    - a name below the venue minimum was screened as a candidate and could never
+    have been entered by a backtest. Applying it here makes the floor structural:
+    a caller cannot reach the gates without naming the venue they apply to.
     """
+    # Local import: ``screener.markets`` pulls the backtester, and this module
+    # must stay importable without it.
+    from screener.markets import get_market
+
     base = (
         spec.profile
         if isinstance(spec, ExpressionStrategySpec) and spec.profile is not None
         else DEFAULT_STRATEGY_PROFILE
     )
-    if not overrides:
-        return base
-    unknown = [key for key in overrides if key not in StrategyProfile.model_fields]
-    if unknown:
-        raise ValueError(
-            f"unknown strategy-profile override(s): {sorted(unknown)}; "
-            f"known gates: {sorted(StrategyProfile.model_fields)}"
-        )
-    return StrategyProfile(**{**base.model_dump(), **overrides})
+    if overrides:
+        unknown = [key for key in overrides if key not in StrategyProfile.model_fields]
+        if unknown:
+            raise ValueError(
+                f"unknown strategy-profile override(s): {sorted(unknown)}; "
+                f"known gates: {sorted(StrategyProfile.model_fields)}"
+            )
+        base = StrategyProfile(**{**base.model_dump(), **overrides})
+
+    # ``get_market`` raises on an unknown name rather than quietly resolving to
+    # no floor: a typo'd market must not produce an unfloored screen.
+    venue = get_market(market)
+    return base.model_copy(
+        update={
+            "min_price": _floor(base.min_price, venue.min_price),
+            "min_avg_dollar_volume": _floor(base.min_avg_dollar_volume, venue.min_adv),
+        }
+    )

@@ -12,7 +12,6 @@ from pydantic import ValidationError
 
 from screener import history
 from screener.backtester.cli_common import (
-    ADV_WINDOW_DEFAULT,
     build_backtest_fetcher,
     build_slippage_model,
     parse_partial_exits,
@@ -30,6 +29,7 @@ from screener.backtester.fundamentals import (
     fundamental_filing_lag_days,
 )
 from screener.backtester.models import BacktestConfig
+from screener.gate_options import gate_overrides
 from screener.markets import get_market
 from screener.universes import load_sp500_membership, load_universe_selection
 
@@ -114,6 +114,16 @@ class BacktestRequest:
     max_reentries: int = 0
     market_was_explicit: bool = False
     top_was_explicit: bool = False
+    # Percentile floor on ``setup_score`` (0-100). Defaulted because only the
+    # rolling command declares ``--min-score``; historical has no candidate
+    # layer to gate.
+    min_score: float | None = None
+    # Bypass cached bars. Only the rolling command declares ``--refresh``; a
+    # screen has always had one, and a screen compared against a backtest that
+    # served stale bars is not a comparison.
+    refresh: bool = False
+    # Print the ranked candidate set for the last bar and stop.
+    candidates: bool = False
 
 
 @dataclass(frozen=True)
@@ -217,23 +227,36 @@ def _effective_gates(request: BacktestRequest) -> StrategyProfile:
     spec = (
         resolve_strategy_spec(request.strategy_name) if request.strategy_name else None
     )
-    overrides: dict[str, Any] = {}
-    if request.min_price is not None:
-        overrides["min_price"] = float(request.min_price)
-    if request.min_avg_dollar_volume is not None:
-        overrides["min_avg_dollar_volume"] = float(request.min_avg_dollar_volume)
-    if int(request.adv_window) != ADV_WINDOW_DEFAULT:
-        overrides["avg_dollar_volume_window"] = int(request.adv_window)
-    regime_filter = tuple(dict.fromkeys(request.regime_filter_args))
-    if regime_filter:
-        overrides["regime_filter"] = regime_filter
-    if request.earnings_blackout_days is not None:
-        overrides["earnings_blackout_days"] = int(request.earnings_blackout_days)
-    if request.sector_neutral:
-        overrides["sector_neutral"] = True
-    return resolve_strategy_profile(
-        spec if isinstance(spec, ExpressionStrategySpec) else None, overrides
+    overrides = gate_overrides(
+        min_price=request.min_price,
+        min_avg_dollar_volume=request.min_avg_dollar_volume,
+        adv_window=request.adv_window,
+        regime_filter_args=request.regime_filter_args,
+        earnings_blackout_days=request.earnings_blackout_days,
+        sector_neutral=request.sector_neutral,
+        min_score=request.min_score,
     )
+    return resolve_strategy_profile(
+        spec if isinstance(spec, ExpressionStrategySpec) else None,
+        overrides,
+        market=request.market,
+    )
+
+
+def resolve_rolling_gates(request: BacktestRequest) -> StrategyProfile:
+    """The candidate gates the rolling engine applies, per-market floor included.
+
+    :func:`_effective_gates` resolves the declared profile against the flags the
+    user actually typed; ``resolve_min_filters`` then applies the venue floor,
+    which is what turns a profile naming no liquidity gate into the market's own
+    minimum (and still reads an explicit 0 as "disabled").
+
+    Named rather than inlined so the screen's
+    :func:`screener.screen_candidates.resolve_screen_gates` has something to be
+    compared against: for one strategy and one market the two must agree, and
+    ``tests/correctness`` asserts exactly that.
+    """
+    return _effective_gates(request)
 
 
 def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
@@ -378,21 +401,15 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         request.vol_impact_k,
         spread_proxy=bool(request.spread_proxy),
     )
-    gates = _effective_gates(request)
-    # ``resolve_min_filters`` still applies the per-market floor when neither
-    # the flag nor the profile named one, and still reads an explicit 0 as
-    # "disabled".
-    min_price, min_adv = resolve_min_filters(
-        request.market, gates.min_price, gates.min_avg_dollar_volume
-    )
+    gates = resolve_rolling_gates(request)
     config = _build_config(
         request,
         market=request.market,
         benchmark=benchmark,
         as_of=end_date,
         tickers=tickers,
-        min_price=min_price,
-        min_avg_dollar_volume=min_adv,
+        min_price=gates.min_price,
+        min_avg_dollar_volume=gates.min_avg_dollar_volume,
         entry_expr=entry_expr,
         exit_expr=exit_expr,
         slippage_model=slippage_model,
@@ -410,6 +427,7 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         fundamental_fields=fields,
         fundamental_lag_days=max(resolved_lag, 0),
         sector_neutral=gates.sector_neutral,
+        min_score=gates.min_score,
         rank_exit_every=(rank_exit[0] if rank_exit is not None else None),
         rank_universe_size=int(request.rank_universe_size),
     )
@@ -419,6 +437,7 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
             request.context_obj,
             price_adjustment=request.price_adjustment,
             interval=request.interval,
+            refresh=request.refresh,
         ),
         fundamental_fetcher=fundamental_fetcher,
         start_date=start_date,

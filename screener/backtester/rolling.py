@@ -19,10 +19,57 @@ from screener.backtester.display import print_backtest, print_ledger_csv
 from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.backtester.workflow import BacktestRequest, resolve_backtest_run
 from screener.markets import market_option
-from screener.regime import TREND_LABELS
 from screener.universes import available_universes
 
 __all__ = ["backtest_rolling"]
+
+
+def _print_candidates(run: Any) -> None:
+    """Print the last ranked candidate set the engine would have entered on.
+
+    The point is comparability with ``screener screen --universe``: both read
+    the same candidate matrices, so a name in one and not the other is a real
+    disagreement rather than a difference in how the two commands were run.
+
+    The date printed is the last *signal* bar of the window, which is not the
+    last bar: the engine only calls a name a candidate when a later bar exists
+    to fill the entry on. A screen has no such bar and names the last one, so
+    to compare them run the screen at the date printed here.
+    """
+    from screener.backtester.rolling_simulation import prepare_rolling_backtest
+    from screener.backtester.signal_panel import SignalPanel, day_candidates_from_panel
+
+    prepared = prepare_rolling_backtest(
+        run.config,
+        run.price_fetcher,
+        start_date=run.start_date,
+        end_date=run.end_date,
+        fundamental_fetcher=run.fundamental_fetcher,
+    )
+    console = agentio.get_console()
+    for warning in prepared.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+    panel = SignalPanel(
+        exit_signals=prepared.exit_signals,
+        candidate_matrices=prepared.candidate_matrices,
+    )
+    for day in reversed(prepared.master_dates):
+        found = day_candidates_from_panel(panel, day)
+        if found.candidates:
+            break
+    else:
+        console.print("[yellow]No candidate fired anywhere in the window.[/yellow]")
+        return
+
+    console.print(f"[dim]Signal bar: {day.date().isoformat()}[/dim]")
+    console.print(f"[dim]Ranked by: {found.candidates[0].rank_basis}[/dim]")
+    for candidate in found.candidates:
+        console.print(
+            f"{candidate.rank:>4}  {candidate.ticker:<20} "
+            f"setup_score={candidate.setup_score:6.2f}  "
+            f"close={candidate.as_of_close:,.2f}  "
+            f"adv={candidate.as_of_dollar_vol:,.0f}"
+        )
 
 
 @click.command(name="backtest-rolling")
@@ -129,6 +176,7 @@ __all__ = ["backtest_rolling"]
     "min-price",
     "min-avg-dollar-volume",
     "adv-window",
+    "min-score",
     "slippage-model",
     "half-spread-bps",
     "vol-impact-k",
@@ -139,25 +187,7 @@ __all__ = ["backtest_rolling"]
     "price-adjustment",
     "interval",
 )
-@click.option(
-    "--regime-filter",
-    "regime_filter_args",
-    multiple=True,
-    type=click.Choice(list(TREND_LABELS)),
-    help=(
-        "Only allow entries on days whose benchmark trend regime matches "
-        "(repeatable). Warmup days with an unknown regime are suppressed."
-    ),
-)
-@click.option(
-    "--sector-neutral",
-    is_flag=True,
-    default=False,
-    help=(
-        "Z-score rank_score within each sector group per day before ranking "
-        "(factor strategies only; no-op when no rank_score column exists)."
-    ),
-)
+@backtest_options("rolling", "regime-filter", "sector-neutral")
 @click.option(
     "--rank-exit",
     "rank_exit",
@@ -179,17 +209,7 @@ __all__ = ["backtest_rolling"]
     show_default=True,
     help="Top-N ranked candidates a holding must stay in under --rank-exit.",
 )
-@click.option(
-    "--earnings-blackout",
-    "earnings_blackout_days",
-    type=int,
-    default=None,
-    help=(
-        "Suppress entry signals within N calendar days before (and including) "
-        "a known earnings date for each ticker. Tickers with no known earnings "
-        "dates remain eligible (a warning is recorded)."
-    ),
-)
+@backtest_options("rolling", "earnings-blackout", "refresh", "candidates")
 @click.option(
     "--fundamentals-provider",
     type=click.Choice(["fmp", "openscreener", "yfinance"]),
@@ -245,6 +265,9 @@ def backtest_rolling(**params: Any) -> None:
     )
     run = resolve_backtest_run(request)
     assert run.start_date is not None and run.end_date is not None
+    if params["candidates"]:
+        _print_candidates(run)
+        return
     result = run_rolling_backtest(
         run.config,
         run.price_fetcher,

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import click
 
 from screener.backtester.models import SUPPORTED_INTERVALS
+from screener.gate_options import ADV_WINDOW_DEFAULT, gate_options
 from screener.markets import MARKETS
 
 if TYPE_CHECKING:
@@ -21,10 +22,10 @@ DEFAULT_MIN_ADV = {name: market.min_adv for name, market in MARKETS.items()}
 
 RANK_EXIT_PRESETS = {"weekly": 5, "monthly": 21}
 
-#: The ``--adv-window`` option default. Named so callers can tell "the user
-#: typed a window" from "the option fell back", which is what lets a strategy
-#: profile supply the window instead.
-ADV_WINDOW_DEFAULT = 20
+#: Re-exported from :mod:`screener.gate_options`, which owns the gate flags
+#: the screen and the rolling backtest share. Kept importable from here so the
+#: backtester's existing callers do not have to learn a second module name.
+__all__ = ["ADV_WINDOW_DEFAULT"]
 
 
 def parse_rank_exit(value: Any) -> tuple[int, bool] | None:
@@ -390,35 +391,80 @@ def _opt_max_universe(mode: str) -> OptionDecorator:
     )
 
 
+# The three liquidity gates below are the screen's gates too, so in rolling
+# mode they are taken from :mod:`screener.gate_options` rather than restated:
+# a flag that gates candidates must not be able to mean two things. Historical
+# mode keeps its own wording - it does not share a candidate layer with the
+# screen (a deliberate gap, see docs/plans/unify-screen-backtest.md).
 def _opt_min_price(mode: str) -> OptionDecorator:
-    help_text = (
-        "Minimum as-of close to admit a ticker. Default: $1 (US) / ₹10 (India). Pass 0 to disable."
-        if mode == "historical"
-        else "Minimum signal-day close. Pass 0 to disable."
+    if mode != "historical":
+        return gate_options("min-price")
+    return click.option(
+        "--min-price",
+        type=float,
+        default=None,
+        help="Minimum as-of close to admit a ticker. Default: $1 (US) / ₹10 (India). Pass 0 to disable.",
     )
-    return click.option("--min-price", type=float, default=None, help=help_text)
 
 
 def _opt_min_avg_dollar_volume(mode: str) -> OptionDecorator:
-    help_text = (
-        "Minimum rolling-mean dollar volume (close*volume) over --adv-window. Default: $1,000 (US) / ₹100,000 (India). Pass 0 to disable."
-        if mode == "historical"
-        else "Minimum rolling mean dollar volume. Pass 0 to disable."
-    )
+    if mode != "historical":
+        return gate_options("min-avg-dollar-volume")
     return click.option(
-        "--min-avg-dollar-volume", type=float, default=None, help=help_text
+        "--min-avg-dollar-volume",
+        type=float,
+        default=None,
+        help="Minimum rolling-mean dollar volume (close*volume) over --adv-window. Default: $1,000 (US) / ₹100,000 (India). Pass 0 to disable.",
     )
 
 
 def _opt_adv_window(mode: str) -> OptionDecorator:
-    help_text = (
-        "Lookback (bars) for average dollar-volume filter."
-        if mode == "historical"
-        else "Lookback bars for average dollar-volume filter."
-    )
+    if mode != "historical":
+        return gate_options("adv-window")
     return click.option(
-        "--adv-window", type=int, default=ADV_WINDOW_DEFAULT, help=help_text
+        "--adv-window",
+        type=int,
+        default=ADV_WINDOW_DEFAULT,
+        help="Lookback (bars) for average dollar-volume filter.",
     )
+
+
+def _opt_refresh(mode: str) -> OptionDecorator:
+    return click.option(
+        "--refresh",
+        is_flag=True,
+        default=False,
+        help="Bypass cached bars and re-download the price history.",
+    )
+
+
+def _opt_candidates(mode: str) -> OptionDecorator:
+    return click.option(
+        "--candidates",
+        is_flag=True,
+        default=False,
+        help=(
+            "Print the ranked candidate set for the last bar of the window and "
+            "stop, running no trades. This is the same answer 'screener screen "
+            "--universe' gives, so the two can be compared directly."
+        ),
+    )
+
+
+def _opt_min_score(mode: str) -> OptionDecorator:
+    return gate_options("min-score")
+
+
+def _opt_regime_filter(mode: str) -> OptionDecorator:
+    return gate_options("regime-filter")
+
+
+def _opt_sector_neutral(mode: str) -> OptionDecorator:
+    return gate_options("sector-neutral")
+
+
+def _opt_earnings_blackout(mode: str) -> OptionDecorator:
+    return gate_options("earnings-blackout")
 
 
 def _opt_slippage_model(mode: str) -> OptionDecorator:
@@ -579,6 +625,12 @@ _OPTION_BUILDERS: dict[str, OptionBuilder] = {
     "min-price": _opt_min_price,
     "min-avg-dollar-volume": _opt_min_avg_dollar_volume,
     "adv-window": _opt_adv_window,
+    "min-score": _opt_min_score,
+    "refresh": _opt_refresh,
+    "candidates": _opt_candidates,
+    "regime-filter": _opt_regime_filter,
+    "sector-neutral": _opt_sector_neutral,
+    "earnings-blackout": _opt_earnings_blackout,
     "slippage-model": _opt_slippage_model,
     "half-spread-bps": _opt_half_spread_bps,
     "vol-impact-k": _opt_vol_impact_k,
@@ -618,7 +670,9 @@ def parse_ticker_list(tickers: str | None) -> tuple[str, ...] | None:
     return tuple(t.strip() for t in tickers.split(",") if t.strip())
 
 
-def build_backtest_fetcher(ctx_obj: Any, *, price_adjustment: str, interval: str):
+def build_backtest_fetcher(
+    ctx_obj: Any, *, price_adjustment: str, interval: str, refresh: bool = False
+):
     """Resolve the shared price fetcher exactly as both commands do."""
     from screener.backtester.data import build_price_fetcher
     from screener.markets import get_price_fetcher
@@ -628,6 +682,7 @@ def build_backtest_fetcher(ctx_obj: Any, *, price_adjustment: str, interval: str
         builder=build_price_fetcher,
         auto_adjust=price_adjustment == "full",
         interval=interval,
+        refresh=refresh,
     )
 
 

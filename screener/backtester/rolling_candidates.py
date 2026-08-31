@@ -53,6 +53,11 @@ class _RollingCandidateMatrices:
     # Numpy mirror of ``rank_score_mat`` (``None`` when no factor scores), kept
     # aligned column-for-column with the other ``*_np`` arrays.
     rank_score_np: np.ndarray | None
+    # Percentile floor a candidate's ``setup_score`` must clear, on the 0-100
+    # scale. ``None`` disables the gate. It rides on the matrices rather than
+    # on the per-day call so every caller of :func:`_candidate_rows_for_day`
+    # gets the run's gate without having to remember to pass it.
+    min_score: float | None = None
 
 
 def _sector_neutralize_scores(
@@ -156,6 +161,7 @@ def _build_rolling_candidate_matrices(
     sector_neutral: bool = False,
     sector_by_tv: dict[str, str] | None = None,
     require_next_bar: bool = True,
+    min_score: float | None = None,
 ) -> _RollingCandidateMatrices:
     """Build once-per-run matrices for daily candidate scans.
 
@@ -382,6 +388,7 @@ def _build_rolling_candidate_matrices(
         volume_np=volume_np,
         bar_idx_np=bar_idx_np,
         rank_score_np=final_rank_score_np,
+        min_score=min_score,
     )
 
 
@@ -414,6 +421,53 @@ def _dynamic_eligibility_mask(
     return mask
 
 
+#: ``setup_score`` runs 0-100, like every other percentile the project reports.
+_PERCENTILE_SCALE = 100.0
+
+
+def _setup_scores(values: np.ndarray, eligible: np.ndarray) -> np.ndarray:
+    """Cross-sectional percentile of ``values``, over ``eligible`` only, 0-100.
+
+    The field a name is scored against is the eligible set *before* ``exclude``
+    and before ``limit``: a score says where a name stands among the names that
+    cleared the gates, not among the ones the caller had room for. Ties share
+    the average rank, so the score never depends on column order.
+
+    Names outside ``eligible`` score 0. They are dropped anyway, and 0 is what
+    :func:`screener.scoring.components.percentile` gives a missing value.
+    """
+    scores = np.zeros(values.shape, dtype=float)
+    cols = np.nonzero(eligible)[0]
+    if cols.size == 0:
+        return scores
+    ranked = pd.Series(values[cols]).rank(pct=True).to_numpy(dtype=float)
+    scores[cols] = ranked * _PERCENTILE_SCALE
+    return scores
+
+
+def _apply_min_score(
+    eligible: np.ndarray, setup_score: np.ndarray, min_score: float | None
+) -> np.ndarray:
+    """``eligible`` with the names below ``min_score`` removed."""
+    if min_score is None:
+        return eligible
+    return eligible & (setup_score >= min_score)
+
+
+def _drop_excluded(
+    eligible: np.ndarray, col_by_ticker: dict[str, int], exclude: set[str]
+) -> None:
+    """Clear ``eligible`` in place for every name in ``exclude``.
+
+    Applied after the percentile so a name the caller already holds still
+    counts towards the field the others are ranked against.
+    """
+    for ticker in exclude:
+        col = col_by_ticker.get(ticker)
+        if col is not None:
+            eligible[col] = False
+
+
 def _candidate_rows_for_day(
     day: pd.Timestamp,
     matrices: _RollingCandidateMatrices,
@@ -434,11 +488,6 @@ def _candidate_rows_for_day(
     eligible = matrices.signal_np[row] & matrices.lookback_ok_np[row]
     if matrices.filter_np is not None:
         eligible = eligible & matrices.filter_np[row]
-    if exclude:
-        for ticker in exclude:
-            col = matrices.col_by_ticker.get(ticker)
-            if col is not None:
-                eligible[col] = False
     dollar_vol = matrices.dollar_vol_np[row]
     eligible = eligible & ~np.isnan(dollar_vol)
     # Factor portfolios rank by cross-sectional score; everything else keeps the
@@ -447,6 +496,9 @@ def _candidate_rows_for_day(
     if matrices.rank_score_np is not None:
         rank_score = matrices.rank_score_np[row]
         eligible = eligible & ~np.isnan(rank_score)
+        setup_score = _setup_scores(rank_score, eligible)
+        eligible = _apply_min_score(eligible, setup_score, matrices.min_score)
+        _drop_excluded(eligible, matrices.col_by_ticker, exclude)
         eligible_cols = np.nonzero(eligible)[0]
         if eligible_cols.size == 0:
             return [], warnings
@@ -469,6 +521,9 @@ def _candidate_rows_for_day(
             .index.to_numpy()
         )
     else:
+        setup_score = _setup_scores(dollar_vol, eligible)
+        eligible = _apply_min_score(eligible, setup_score, matrices.min_score)
+        _drop_excluded(eligible, matrices.col_by_ticker, exclude)
         eligible_cols = np.nonzero(eligible)[0]
         if eligible_cols.size == 0:
             return [], warnings
@@ -489,6 +544,7 @@ def _candidate_rows_for_day(
                 "as_of_dollar_vol": float(dollar_vol[col]),
                 "rank": rank,
                 "role": "active",
+                "setup_score": float(setup_score[col]),
             }
         )
     return rows, warnings
