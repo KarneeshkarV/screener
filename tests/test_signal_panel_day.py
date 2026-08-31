@@ -19,6 +19,7 @@ from screener.backtester.pine import parse
 from screener.backtester.price_panel import PricePanel
 from screener.backtester.rolling_candidates import _candidate_rows_for_day
 from screener.backtester.signal_panel import (
+    SignalPanel,
     SignalPanelInputs,
     SignalProgram,
     build_day_candidates,
@@ -402,3 +403,93 @@ def test_require_next_bar_changes_nothing_inside_the_window(window) -> None:
         return [c.ticker for c in day_candidates_from_panel(signals, inner).candidates]
 
     assert candidates(require_next_bar=False) == candidates(require_next_bar=True)
+
+
+def _panel_with_partial_session(
+    window: tuple[SignalPanelInputs, PricePanel, SignalProgram],
+) -> tuple[SignalPanel, pd.Timestamp, pd.Timestamp]:
+    """A window whose newest bar only one of four tickers carries.
+
+    This is the live-market shape: the vendor serves the open session's
+    in-progress bar to whichever names it happened to refresh, and the master
+    calendar is a union, so that one name puts the session on the calendar for
+    everybody.
+    """
+    inputs, price_panel, program = window
+    complete = price_panel.master_dates[-1]
+    partial = complete + pd.Timedelta(days=1)
+    bars_by_tv = dict(price_panel.bars_by_tv)
+    only = _TICKERS[0]
+    last_close = float(bars_by_tv[only]["close"].iloc[-1]) * 1.02
+    bars_by_tv[only] = pd.concat(
+        [
+            bars_by_tv[only],
+            pd.DataFrame(
+                {
+                    "open": [last_close],
+                    "high": [last_close],
+                    "low": [last_close],
+                    "close": [last_close],
+                    "volume": [1_000_000.0],
+                },
+                index=pd.DatetimeIndex([partial]),
+            ),
+        ]
+    )
+    partial_panel = PricePanel(
+        tv_symbols=price_panel.tv_symbols,
+        yf_by_tv=price_panel.yf_by_tv,
+        bars_by_tv=bars_by_tv,
+        benchmark=price_panel.benchmark,
+        lookback=price_panel.lookback,
+        master_dates=[*price_panel.master_dates, partial],
+    )
+    signals = build_signal_panel(
+        inputs,
+        partial_panel,
+        program=program,
+        start_ts=price_panel.master_dates[0],
+        end_ts=partial,
+        warnings=[],
+        require_next_bar=False,
+    )
+    return signals, complete, partial
+
+
+def test_min_coverage_refuses_a_session_the_field_has_not_filled(window) -> None:
+    """An as-of lands on the last session the field agrees on, not on a sliver.
+
+    Without the floor the snap takes the partial row and the run ranks the one
+    name that has it - which is how three consecutive live screens of the same
+    India field returned 1200, then 7, then 29 names.
+    """
+    signals, complete, partial = _panel_with_partial_session(window)
+
+    unguarded = day_candidates_from_panel(signals, partial.date())
+    assert unguarded.as_of == partial
+    assert {c.ticker for c in unguarded.candidates} <= {_TICKERS[0]}
+
+    warnings: list[str] = []
+    guarded = day_candidates_from_panel(
+        signals, partial.date(), min_coverage=0.5, warnings=warnings
+    )
+    assert guarded.as_of == complete
+    assert guarded == day_candidates_from_panel(signals, complete, min_coverage=0.5)
+    assert len(warnings) == 1
+    assert str(partial.date()) in warnings[0]
+    assert str(complete.date()) in warnings[0]
+
+
+def test_min_coverage_leaves_a_complete_session_alone(window) -> None:
+    """The floor never moves an as-of the whole field carries, on any day."""
+    signals = _panel(window)
+    for day in signals.candidate_matrices.signal_mat.index:
+        assert day_candidates_from_panel(
+            signals, day, min_coverage=0.5
+        ) == day_candidates_from_panel(signals, day)
+
+
+def test_min_coverage_defaults_off_for_the_rolling_engine(window) -> None:
+    """Not passing the floor keeps the snap the rolling engine has always had."""
+    signals, _complete, partial = _panel_with_partial_session(window)
+    assert day_candidates_from_panel(signals, partial.date()).as_of == partial

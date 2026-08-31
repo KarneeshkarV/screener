@@ -292,6 +292,7 @@ def screen_candidates(
     from screener.backtester.data import build_price_fetcher
     from screener.backtester.price_panel import PricePanelInputs, build_price_panel
     from screener.backtester.signal_panel import (
+        DEFAULT_MIN_AS_OF_COVERAGE,
         SignalPanelInputs,
         build_day_candidates,
         parse_signal_program,
@@ -364,6 +365,14 @@ def screen_candidates(
         end_ts=end_ts,
         warnings=warnings,
         limit=None,
+        # A screen runs against a live market, where the vendor serves a
+        # partial bar for the open session to whichever names it happened to
+        # refresh. That bar is on the master calendar (a union over tickers),
+        # so without this the as-of snaps onto a session almost nobody has and
+        # the run ranks a handful of names against each other - a different
+        # handful every run, as the cache fills. The rolling engine never sees
+        # such a row, which is why the floor is the screen's to set.
+        min_coverage=DEFAULT_MIN_AS_OF_COVERAGE,
         # The screen's as-of bar is the newest bar there is, so the
         # backtester's "a later bar must exist to fill the entry on" rule would
         # reject every name. A screen names today's triggers; the fill is
