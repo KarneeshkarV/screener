@@ -30,10 +30,10 @@ it always took.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
@@ -41,20 +41,24 @@ from screener.criteria import registry as criteria_registry
 from screener.markets import get_market
 from screener.scoring.bar_scores import (
     DEFAULT_PRICE_ADJUSTMENT,
-    PERCENTILE_SCALE,
     PriceAdjustment,
 )
-from screener.scoring.components import percentile
 from screener.strategies.spec import (
     DEFAULT_STRATEGY_PROFILE,
     ExpressionStrategySpec,
+    StrategyProfile,
     StrategySpec,
+    resolve_strategy_profile,
 )
 from screener.strategies.spec import registry as strategy_registry
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from screener.backtester.fundamentals import FundamentalFetcher
     from screener.backtester.signal_panel import Candidate
+
+#: The interval a screen runs at unless asked otherwise. Daily bars are the
+#: only ones the dated inputs (fundamentals, earnings) have a meaning for.
+DEFAULT_INTERVAL = "1d"
 
 #: Calendar days of window handed to the candidate layer. The screen asks for
 #: one date, but that date can be a weekend or a holiday, so the window has to
@@ -153,11 +157,57 @@ def resolve_screen_strategy(names: Sequence[str]) -> ScreenStrategy | None:
     return ScreenStrategy(criterion=name, spec=ensure_screenable(spec))
 
 
+#: Hex digits of the settings fingerprint carried in a bar-rule label. Eight
+#: is short enough to read in a terminal and wide enough that two settings a
+#: user would actually type will not collide.
+_FINGERPRINT_WIDTH = 8
+
+#: Profile fields the fingerprint ignores. ``tv_prefilter`` narrows the field
+#: before bars are fetched and may only ever remove names the bar rule would
+#: have removed anyway, so it cannot change who is a candidate - and a run with
+#: a prefilter must stay diffable against one without.
+_UNFINGERPRINTED_GATES = frozenset({"tv_prefilter"})
+
+
+def settings_fingerprint(
+    gates: StrategyProfile,
+    *,
+    price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
+    interval: str = DEFAULT_INTERVAL,
+) -> str:
+    """A short stable digest of everything that decides who is a candidate.
+
+    Two runs sharing a fingerprint asked the same question, so their
+    added/removed diff is meaningful. Two runs that do not share one did not,
+    and history must not diff across them - which is the whole reason a label
+    carries it.
+
+    Derived from the field list rather than from a hand-written tuple, so a
+    gate added to :class:`~screener.strategies.spec.StrategyProfile` is
+    fingerprinted without anyone remembering to add it here.
+    """
+    import hashlib
+    import json
+
+    payload = {
+        name: value
+        for name, value in sorted(gates.model_dump().items())
+        if name not in _UNFINGERPRINTED_GATES
+    }
+    payload["price_adjustment"] = price_adjustment
+    payload["interval"] = interval
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    return digest[:_FINGERPRINT_WIDTH]
+
+
 def screen_label(
     names: Sequence[str],
     *,
     strategy: ScreenStrategy | None,
     universe: str | None,
+    fingerprint: str | None = None,
 ) -> str:
     """The ``runs.criteria`` label, which records the semantics of the run.
 
@@ -167,11 +217,18 @@ def screen_label(
     in docs/plans/unify-screen-backtest.md). The universe mode is part of the
     label for the same reason: the two modes see different fields, so their
     added/removed diffs are not comparable (D9).
+
+    ``fingerprint`` extends that rule to the gates. A screen run with
+    ``--min-price 50`` is not the same question as one without, so it must not
+    diff against it; the digest from :func:`settings_fingerprint` says so in
+    the label. The universe stays spelled out rather than folded into the
+    digest: it is the part a reader needs to see.
     """
     joined = "+".join(names)
     if strategy is None:
         return joined
-    return f"{joined}@universe:{universe}" if universe else f"{joined}@tv"
+    label = f"{joined}@universe:{universe}" if universe else f"{joined}@tv"
+    return label if fingerprint is None else f"{label}#{fingerprint}"
 
 
 def prefilter_filters(strategy: ScreenStrategy) -> list:
@@ -234,29 +291,6 @@ def _bar_display_row(bars: pd.DataFrame, ticker: str) -> dict[str, object]:
     }
 
 
-def _scores(candidates: Sequence[Candidate]) -> pd.Series:
-    """``setup_score`` for one day's candidates, on the usual 0-100 scale.
-
-    The percentile is of whatever the candidate layer actually ranked on,
-    which :attr:`Candidate.rank_basis` names, so the column keeps agreeing
-    with the ordering instead of asserting a scale of its own.
-
-    It is a percentile *of the field that loaded*: a name's score is its
-    standing among the candidates this run found, so a field short of bars
-    moves every score in it. :func:`_warn_thin_field` is what keeps that
-    visible rather than leaving the number looking absolute.
-    """
-    values = pd.Series(
-        [
-            c.rank_score if c.rank_score is not None else c.as_of_dollar_vol
-            for c in candidates
-        ],
-        index=[c.ticker for c in candidates],
-        dtype=float,
-    )
-    return percentile(values) * PERCENTILE_SCALE
-
-
 #: Share of the requested names that must arrive with bars before the run is
 #: reported without comment. The measure is "any bars at all in the window",
 #: not "a bar on the as-of date": a micro cap that simply did not trade that
@@ -291,6 +325,27 @@ def _warn_thin_field(
     )
 
 
+def resolve_screen_gates(
+    strategy: ScreenStrategy,
+    *,
+    market: str,
+    overrides: Mapping[str, Any] | None = None,
+) -> StrategyProfile:
+    """The candidate gates the screen applies for ``strategy`` on ``market``.
+
+    The mirror of
+    :func:`screener.backtester.workflow.resolve_rolling_gates`: for one
+    strategy and one market the two must return the same gates, or a screen
+    names candidates no backtest would have entered. ``tests/correctness``
+    asserts that equality across the whole strategy registry.
+
+    ``overrides`` are the gate flags the user actually typed, in the same
+    ``resolve_strategy_profile`` form the rolling engine builds - so a typed
+    flag wins here exactly as it wins there.
+    """
+    return resolve_strategy_profile(strategy.spec, overrides, market=market)
+
+
 def screen_candidates(
     strategy: ScreenStrategy,
     *,
@@ -303,6 +358,9 @@ def screen_candidates(
     refresh: bool = False,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
     strict: bool = False,
+    gates: StrategyProfile | None = None,
+    interval: str = DEFAULT_INTERVAL,
+    max_universe: int = 0,
     warnings: list[str],
 ) -> pd.DataFrame:
     """Rank ``tickers`` by ``strategy``'s entry rule as of ``as_of``.
@@ -323,10 +381,17 @@ def screen_candidates(
     no-op, exactly as on the bar-score path.
 
     ``limit`` and ``order_by`` are applied to the finished frame rather than
-    inside the candidate layer, so ``setup_score`` is a percentile of every
-    candidate the rule found instead of a percentile of the top ``limit`` -
-    which would make the same name score differently at ``-n 10`` and
-    ``-n 100``.
+    inside the candidate layer. The candidate layer takes the percentile over
+    the whole eligible field anyway, so the same name scores the same at
+    ``-n 10`` and at ``-n 100``.
+
+    ``gates`` is the resolved candidate gates. ``None`` means "whatever this
+    strategy declares on this market", which is what
+    :func:`resolve_screen_gates` answers and what the rolling backtest would
+    have used; a caller passing a profile is stating the gates outright.
+
+    ``max_universe`` caps the field before bars are fetched, ``0`` meaning no
+    cap. It is run-scoped, like the universe itself, so it is not a gate.
     """
     from screener.backtester.data import build_price_fetcher
     from screener.backtester.price_panel import PricePanelInputs, build_price_panel
@@ -340,14 +405,25 @@ def screen_candidates(
     if not tickers:
         return pd.DataFrame(columns=[*_DISPLAY_COLUMNS, OUTPUT_SCORE_COLUMN])
 
-    profile = strategy.spec.profile or DEFAULT_STRATEGY_PROFILE
+    profile = (
+        gates if gates is not None else resolve_screen_gates(strategy, market=market)
+    )
     venue = get_market(market)
     entry_expr = profile.entry_expr or strategy.spec.entry
     exit_expr = profile.exit_expr or strategy.spec.exit
     fundamental_fetcher, fundamentals_provider = _fundamentals_for(
         entry_expr, exit_expr, market=market, refresh=refresh
     )
-    end_ts = pd.Timestamp(as_of)
+    _check_interval(
+        interval,
+        fundamental_fetcher=fundamental_fetcher,
+        earnings_blackout_days=profile.earnings_blackout_days,
+    )
+    # An intraday screen asks about the last completed bar *of* the as-of date,
+    # so the window has to run to the end of that session rather than to its
+    # midnight - which is where a bare date lands and which would exclude every
+    # bar of the day being asked about.
+    end_ts = _end_of_window(as_of, interval)
     start_ts = end_ts - pd.Timedelta(days=_window_days(fundamental_fetcher))
 
     signal_inputs = SignalPanelInputs(
@@ -360,6 +436,7 @@ def screen_candidates(
         min_price=profile.min_price,
         min_avg_dollar_volume=profile.min_avg_dollar_volume,
         avg_dollar_volume_window=profile.avg_dollar_volume_window,
+        min_score=profile.min_score,
         membership_added=(),
         membership_windows=(),
         dynamic_universe_size=None,
@@ -375,21 +452,29 @@ def screen_candidates(
         universe_file=None,
         membership_windows=(),
         dynamic_universe_size=None,
-        max_universe=len(tickers),
-        interval="1d",
+        max_universe=max_universe,
+        interval=interval,
         price_adjustment=price_adjustment,
         strategy_name=strategy.spec.name,
         fundamentals_provider=fundamentals_provider,
     )
     fetcher = build_price_fetcher(
-        auto_adjust=(price_adjustment == "full"), refresh=refresh, strict=strict
+        auto_adjust=(price_adjustment == "full"),
+        refresh=refresh,
+        strict=strict,
+        interval=interval,
     )
     panel = build_price_panel(
         panel_inputs,
         fetcher,
         entry_ast=program.entry_ast,
         exit_ast=program.exit_ast,
-        lookback=program.lookback,
+        # The liquidity gate is a rolling mean over ``avg_dollar_volume_window``
+        # bars, so the panel has to carry that much history even when the entry
+        # rule itself needs less. A backtest's window is long enough that this
+        # never bites; a screen's window is a fortnight, so without it the gate
+        # would be judged on a handful of bars.
+        lookback=max(program.lookback, profile.avg_dollar_volume_window),
         start_ts=start_ts,
         end_ts=end_ts,
         warnings=warnings,
@@ -452,7 +537,10 @@ def _candidate_frame(
     """
     if not candidates:
         return pd.DataFrame(columns=[*_DISPLAY_COLUMNS, OUTPUT_SCORE_COLUMN])
-    scores = _scores(candidates)
+    # The candidate layer scored these names when it ranked them, over the
+    # whole eligible field and before ``limit``, so there is nothing to
+    # recompute here - and nothing that could disagree with the ranking.
+    scores = {c.ticker: c.setup_score for c in candidates}
     order = [c.ticker for c in candidates]
 
     if scanned is not None and not scanned.empty and "ticker" in scanned.columns:
@@ -497,6 +585,58 @@ def _sorted_rows(
             )
         return rows
     return rows.sort_values(order_by, ascending=False, kind="stable")
+
+
+class IntervalNotScreenableError(ValueError):
+    """Raised when an interval cannot answer the question being asked.
+
+    A domain error, like :class:`UnscreenableStrategyError`: the Click adapter
+    turns it into a ``UsageError`` so this module stays free of the CLI.
+    """
+
+
+def _check_interval(
+    interval: str,
+    *,
+    fundamental_fetcher: FundamentalFetcher | None,
+    earnings_blackout_days: int | None,
+) -> None:
+    """Refuse an intraday interval the rest of the screen cannot honour.
+
+    Both refusals are about dated data meeting undated bars. A fundamental
+    column is stamped with a filing date and forward-filled onto daily bars;
+    an earnings blackout suppresses whole calendar days. Neither has an
+    intraday spelling, so an intraday run would silently apply them to the
+    wrong bars rather than fail. Saying so is the honest answer.
+    """
+    if interval == DEFAULT_INTERVAL:
+        return
+    if fundamental_fetcher is not None:
+        raise IntervalNotScreenableError(
+            f"--interval {interval} cannot be used with a strategy that reads "
+            "fundamental fields: filings are dated to a day and are merged onto "
+            f"daily bars. Screen this strategy at --interval {DEFAULT_INTERVAL}."
+        )
+    if earnings_blackout_days is not None:
+        raise IntervalNotScreenableError(
+            f"--interval {interval} cannot be used with --earnings-blackout: "
+            "the blackout suppresses whole calendar days, which has no intraday "
+            f"meaning. Screen at --interval {DEFAULT_INTERVAL}, or drop the "
+            "blackout."
+        )
+
+
+def _end_of_window(as_of: date, interval: str) -> pd.Timestamp:
+    """The last instant of ``as_of`` the panel should be built through.
+
+    Daily bars are stamped at midnight, so a bare date is already the right
+    end. Intraday bars are stamped through the session, so the window has to
+    run to the end of the day or it would hold none of them.
+    """
+    end = pd.Timestamp(as_of)
+    if interval == DEFAULT_INTERVAL:
+        return end
+    return end + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
 
 
 def _window_days(fundamental_fetcher: FundamentalFetcher | None) -> int:
@@ -550,13 +690,17 @@ def _fundamentals_for(
 
 
 __all__ = [
+    "DEFAULT_INTERVAL",
     "OUTPUT_SCORE_COLUMN",
+    "IntervalNotScreenableError",
     "ScreenStrategy",
     "UnscreenableStrategyError",
     "aliased_strategy",
     "ensure_screenable",
     "prefilter_filters",
+    "resolve_screen_gates",
     "resolve_screen_strategy",
+    "settings_fingerprint",
     "resolve_universe_tickers",
     "screen_candidates",
     "screen_label",

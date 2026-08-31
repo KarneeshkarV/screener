@@ -74,6 +74,9 @@ class SignalPanelInputs:
     dynamic_universe_size: int | None
     dynamic_universe_lookback: int
     dynamic_universe_rebalance: str
+    # Percentile floor on ``setup_score``, 0-100. Defaulted because it is the
+    # newest gate and every existing caller predates it; ``None`` disables it.
+    min_score: float | None = None
 
     @classmethod
     def from_config(cls, cfg: BacktestConfig) -> SignalPanelInputs:
@@ -92,6 +95,7 @@ class SignalPanelInputs:
             dynamic_universe_size=cfg.dynamic_universe_size,
             dynamic_universe_lookback=cfg.dynamic_universe_lookback,
             dynamic_universe_rebalance=cfg.dynamic_universe_rebalance,
+            min_score=cfg.min_score,
         )
 
 
@@ -307,6 +311,7 @@ def build_signal_panel(
         sector_neutral=inputs.sector_neutral,
         sector_by_tv=sector_by_tv,
         require_next_bar=require_next_bar,
+        min_score=inputs.min_score,
     )
     return SignalPanel(
         exit_signals=exit_signals_by_tv,
@@ -324,6 +329,11 @@ class Candidate:
     ranking and ``rank_basis`` names the field the ranking used: ``rank_score``
     when the strategy wrote a cross-sectional factor score into its bars,
     ``as_of_dollar_vol`` otherwise.
+
+    ``setup_score`` is that same basis expressed as a 0-100 cross-sectional
+    percentile over the day's eligible field, taken before ``exclude`` and
+    before ``limit``. It is what ``--min-score`` gates on, so it is computed
+    with the candidate rather than added by a caller afterwards.
     """
 
     ticker: str
@@ -333,6 +343,7 @@ class Candidate:
     as_of_close: float
     as_of_volume: float
     as_of_dollar_vol: float
+    setup_score: float
     signal_idx: int
     role: Literal["active", "reserve"]
 
@@ -522,6 +533,7 @@ def day_candidates_from_panel(
             as_of_close=float(row["as_of_close"]),
             as_of_volume=float(row["as_of_volume"]),
             as_of_dollar_vol=float(row["as_of_dollar_vol"]),
+            setup_score=float(row["setup_score"]),
             signal_idx=int(row["signal_idx"]),
             role=row["role"],
         )

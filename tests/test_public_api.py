@@ -26,6 +26,12 @@ from screener.screen_workflow import ScreenMode, ScreenOutcome, ScreenRequest, S
 _ROOT = Path(__file__).resolve().parents[1]
 
 _PUBLIC_NAMES = {
+    # The bar path's own vocabulary: the gates a screen applies, the interval
+    # it runs at, and the two refusals a caller has to be able to catch.
+    "DEFAULT_INTERVAL",
+    "IntervalNotScreenableError",
+    "StrategyProfile",
+    "UnscreenableStrategyError",
     "ScreenMode",
     "ScreenOutcome",
     "ScreenRequest",
@@ -33,6 +39,7 @@ _PUBLIC_NAMES = {
     "StaleDataError",
     "list_criteria",
     "list_markets",
+    "list_universes",
     "run_screen_workflow",
     "screen",
 }

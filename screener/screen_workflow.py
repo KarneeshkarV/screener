@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -23,13 +23,16 @@ import pandas as pd
 from screener.cache import parse_ttl
 from screener.criteria import resolve_criteria
 from screener.screen_candidates import (
+    DEFAULT_INTERVAL,
     ScreenStrategy,
     UnscreenableStrategyError,
     prefilter_filters,
     resolve_screen_strategy,
+    resolve_screen_gates,
     resolve_universe_tickers,
     screen_candidates,
     screen_label,
+    settings_fingerprint,
 )
 from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from screener.history import diff, previous_run, save_run
@@ -114,6 +117,18 @@ class ScreenRequest:
     # before it can show a result it already has. The CLI sets this and renders
     # after printing; every other caller keeps the report written for it.
     defer_report: bool = False
+    # The candidate gates the user actually typed, as
+    # ``resolve_strategy_profile`` overrides. Empty means "whatever the
+    # strategy declares", which is what the rolling backtest would have used.
+    # Built by ``screener.gate_options.gate_overrides`` so a flag cannot mean
+    # one thing here and another on ``backtest-rolling``.
+    gate_overrides: Mapping[str, Any] = field(default_factory=dict)
+    # Bar interval for the exact path. Only ``1d`` can honour the dated inputs
+    # (fundamentals, earnings), which ``screen_candidates`` enforces.
+    interval: str = DEFAULT_INTERVAL
+    # Cap on the field before bars are fetched; 0 means no cap. Run-scoped,
+    # like the universe itself, so no strategy profile carries it.
+    max_universe: int = 0
 
 
 @dataclass(frozen=True)
@@ -282,6 +297,11 @@ def _run_bar_screen(
         refresh=request.refresh,
         price_adjustment=request.price_adjustment,
         strict=request.strict,
+        gates=resolve_screen_gates(
+            strategy, market=request.market, overrides=request.gate_overrides
+        ),
+        interval=request.interval,
+        max_universe=request.max_universe,
         warnings=warnings,
     )
     for warning in warnings:
@@ -289,9 +309,51 @@ def _run_bar_screen(
     return total, df, fetched_at
 
 
+#: Request fields that only the bar path can honour, mapped to the flag that
+#: sets each. A snapshot screen ranks TradingView columns and never builds a
+#: candidate panel, so there is nothing there for a gate to gate.
+_BAR_PATH_ONLY: tuple[tuple[str, str], ...] = (
+    ("gate_overrides", "gate flags"),
+    ("interval", "--interval"),
+    ("max_universe", "--max-universe"),
+)
+
+
+def _refuse_bar_path_options(request: ScreenRequest) -> None:
+    """Refuse bar-path options on a criteria set that has no bar rule.
+
+    Accepting them quietly would be the worse failure: the user would type
+    ``--min-price`` and get a result that ignored it, with nothing to say so.
+    """
+    empty = ScreenRequest(
+        market=request.market,
+        criteria_names=request.criteria_names,
+        limit=request.limit,
+        order_by=request.order_by,
+        output_csv=request.output_csv,
+        detail=request.detail,
+        refresh=request.refresh,
+        cache_ttl=request.cache_ttl,
+        report_path=request.report_path,
+    )
+    given = [
+        flag
+        for name, flag in _BAR_PATH_ONLY
+        if getattr(request, name) != getattr(empty, name)
+    ]
+    if given:
+        raise UnscreenableStrategyError(
+            f"{', '.join(given)} need a criterion that names a strategy, because "
+            f"only a strategy carries a bar rule to gate; {request.criteria_names} "
+            "names TradingView filters only."
+        )
+
+
 def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
     """Run the full non-Click screen lifecycle and return its outcome."""
     strategy = resolve_screen_strategy(request.criteria_names)
+    if strategy is None:
+        _refuse_bar_path_options(request)
     if request.universe and strategy is None:
         raise UnscreenableStrategyError(
             f"--universe needs a criterion that names a strategy, because only "
@@ -301,7 +363,21 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
         )
     if strategy is not None:
         label = screen_label(
-            request.criteria_names, strategy=strategy, universe=request.universe
+            request.criteria_names,
+            strategy=strategy,
+            universe=request.universe,
+            # The gates are part of the question, so they are part of the
+            # label: history must not diff a screen run with --min-price 50
+            # against one run without it.
+            fingerprint=settings_fingerprint(
+                resolve_screen_gates(
+                    strategy,
+                    market=request.market,
+                    overrides=request.gate_overrides,
+                ),
+                price_adjustment=request.price_adjustment,
+                interval=request.interval,
+            ),
         )
         return _finish_screen(request, label, *_run_bar_screen(request, strategy))
 

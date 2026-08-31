@@ -16,7 +16,13 @@ from screener.screen_workflow import (
     ScreenRequest,
     run_screen_workflow,
 )
-from screener.screen_candidates import UnscreenableStrategyError
+from screener.backtester.models import SUPPORTED_INTERVALS
+from screener.gate_options import gate_options, gate_overrides
+from screener.screen_candidates import (
+    DEFAULT_INTERVAL,
+    IntervalNotScreenableError,
+    UnscreenableStrategyError,
+)
 from screener.scoring import IncompatibleScorerBlendError, PriceAdjustment
 
 
@@ -94,6 +100,24 @@ from screener.scoring import IncompatibleScorerBlendError, PriceAdjustment
         "enrichment."
     ),
 )
+@gate_options()
+@click.option(
+    "--interval",
+    type=click.Choice(list(SUPPORTED_INTERVALS)),
+    default=DEFAULT_INTERVAL,
+    show_default=True,
+    help=(
+        "Bar interval for --universe screens. Names the last completed bar of "
+        "the as-of date. Refused for strategies that read fundamentals or use "
+        "--earnings-blackout, which are dated to a day."
+    ),
+)
+@click.option(
+    "--max-universe",
+    type=int,
+    default=0,
+    help="Cap the field before bars are fetched. Pass 0 to disable.",
+)
 @click.option(
     "--price-adjustment",
     type=click.Choice(["full", "splits_only", "none"]),
@@ -119,11 +143,23 @@ def screen(
     open_report: bool,
     earnings: bool,
     earnings_buffer: int | None,
+    min_price: float | None,
+    min_avg_dollar_volume: float | None,
+    adv_window: int,
+    regime_filter_args: tuple[str, ...],
+    sector_neutral: bool,
+    earnings_blackout_days: int | None,
+    min_score: float | None,
+    interval: str,
+    max_universe: int,
     price_adjustment: PriceAdjustment,
 ) -> None:
     """Screen stocks based on technical criteria."""
+    ctx = click.get_current_context()
     if earnings_buffer is not None and earnings_buffer < 0:
         raise click.UsageError("--earnings-buffer must be >= 0.")
+    if max_universe < 0:
+        raise click.UsageError("--max-universe must be >= 0.")
     request = ScreenRequest(
         market=market,
         criteria_names=criteria_names,
@@ -142,10 +178,31 @@ def screen(
         earnings=earnings,
         earnings_buffer=earnings_buffer,
         price_adjustment=price_adjustment,
+        # The same builder ``backtest-rolling`` uses, so a gate flag typed here
+        # resolves to exactly the gate it resolves to there.
+        gate_overrides=gate_overrides(
+            min_price=min_price,
+            min_avg_dollar_volume=min_avg_dollar_volume,
+            adv_window=adv_window,
+            adv_window_was_explicit=(
+                ctx.get_parameter_source("adv_window")
+                == click.core.ParameterSource.COMMANDLINE
+            ),
+            regime_filter_args=regime_filter_args,
+            earnings_blackout_days=earnings_blackout_days,
+            sector_neutral=sector_neutral,
+            min_score=min_score,
+        ),
+        interval=interval,
+        max_universe=int(max_universe),
     )
     try:
         outcome = run_screen_workflow(request)
-    except (IncompatibleScorerBlendError, UnscreenableStrategyError) as exc:
+    except (
+        IncompatibleScorerBlendError,
+        IntervalNotScreenableError,
+        UnscreenableStrategyError,
+    ) as exc:
         raise click.UsageError(str(exc)) from exc
 
     if outcome.mode is ScreenMode.CSV:

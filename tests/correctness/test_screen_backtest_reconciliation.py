@@ -16,7 +16,7 @@ one-sided on purpose: a wider prefilter is fine, a narrower one is a bug.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 import numpy as np
@@ -30,6 +30,8 @@ from screener.backtester.price_panel import (
     build_price_panel,
 )
 from screener.backtester.rolling_candidates import _candidate_rows_for_day
+from screener.backtester.cli_common import ADV_WINDOW_DEFAULT
+from screener.backtester.workflow import BacktestRequest, resolve_rolling_gates
 from screener.backtester.rolling_simulation import prepare_rolling_backtest
 from screener.backtester.signal_panel import (
     RUN_SCOPED_SIGNAL_PANEL_FIELDS,
@@ -42,9 +44,12 @@ from screener.backtester.signal_panel import (
     day_candidates_from_panel,
     parse_signal_program,
 )
+from screener.gate_options import gate_overrides
+from screener.screen_candidates import ScreenStrategy, resolve_screen_gates
 from screener.criteria import registry as criteria_registry
 from screener.strategies.spec import (
     ExpressionStrategySpec,
+    StrategyProfile,
     StrategySpec,
     discover_plugins,
     registry as strategy_registry,
@@ -170,7 +175,7 @@ def _gate_values(spec: ExpressionStrategySpec) -> dict[str, object]:
     ``BacktestConfig`` shares those field names, which is what lets one mapping
     feed both.
     """
-    profile = resolve_strategy_profile(spec)
+    profile = resolve_strategy_profile(spec, market=_MARKET)
     run_scoped: dict[str, object] = {
         "market": _MARKET,
         "membership_added": (),
@@ -460,7 +465,8 @@ _PREFILTERED_SPECS = [
         id=name,
     )
     for name, spec in _SPECS
-    if spec.kind == "expression" and resolve_strategy_profile(spec).tv_prefilter
+    if spec.kind == "expression"
+    and resolve_strategy_profile(spec, market=_MARKET).tv_prefilter
 ]
 
 # Three strategies declare one today. A drop to zero would make the sweep
@@ -483,7 +489,7 @@ def test_prefilter_keeps_every_bar_rule_candidate(
     inside the band, so one day of one panel is too small a sample.
     """
     start_date, end_date, as_of = window
-    criterion_name = resolve_strategy_profile(spec).tv_prefilter
+    criterion_name = resolve_strategy_profile(spec, market=_MARKET).tv_prefilter
     assert criterion_name is not None
 
     side = _screen_panel(spec, fetcher, start_date, end_date, as_of)
@@ -515,3 +521,173 @@ def test_prefilter_keeps_every_bar_rule_candidate(
         f"{spec.name} bar rules keep ({violations[:10]}): the prefilter is "
         "narrower than the rule it fronts"
     )
+
+
+# ---------------------------------------------------------------------------
+# Criterion 3: the two paths resolve the same gates.
+#
+# Criteria 1 and 2 above hand both sides the same ``_gate_values`` by
+# construction, so they prove the panel agrees once the gates already agree.
+# They cannot see a divergence in how each path *resolves* those gates, which
+# is where the screen and the rolling engine actually drifted: the rolling
+# engine applied the per-market liquidity floor and the screen did not, so a
+# strategy declaring no floor of its own was screened without one and
+# backtested with one.
+# ---------------------------------------------------------------------------
+
+_GATE_MARKETS = ("india", "us")
+
+#: Gate fields both resolvers own. ``entry_expr``/``exit_expr`` are excluded:
+#: they are the rule, not a gate, and the rolling side reads them from the CLI
+#: (``--entry``/``--strategy``) rather than from the profile.
+_RESOLVED_GATE_FIELDS = tuple(
+    sorted(
+        set(StrategyProfile.model_fields) - {"entry_expr", "exit_expr", "tv_prefilter"}
+    )
+)
+
+
+def _rolling_request(spec: ExpressionStrategySpec, market: str) -> BacktestRequest:
+    """A ``BacktestRequest`` carrying nothing but Click's own option defaults.
+
+    Every gate flag is left at its default, which is the "user typed nothing"
+    case: the profile speaks, and then the market floor applies. That is the
+    configuration a screen with no gate flags has to match.
+    """
+    return BacktestRequest(
+        mode="rolling",
+        context_obj=None,
+        market=market,
+        hold=20,
+        top=10,
+        entry_expr=None,
+        exit_expr=None,
+        strategy_name=spec.name,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        cost_model="flat",
+        initial_capital=100_000.0,
+        benchmark=None,
+        tickers=None,
+        universe_file=None,
+        max_universe=0,
+        min_price=None,
+        min_avg_dollar_volume=None,
+        adv_window=ADV_WINDOW_DEFAULT,
+        slippage_model="fixed",
+        half_spread_bps=0.0,
+        vol_impact_k=0.1,
+        no_gap_fills=False,
+        entry_order="moo",
+        entry_limit_bps=None,
+        partial_exit_args=(),
+        price_adjustment="full",
+        interval="1d",
+        output_csv=False,
+        report_path=None,
+        open_report=False,
+        sizing_rule="equal_slot",
+        sizing_risk_pct=0.01,
+        sizing_position_pct=0.10,
+        sizing_atr_window=14,
+        sizing_atr_multiple=2.0,
+        sizing_vol_window=20,
+        intraday_only=False,
+    )
+
+
+@pytest.mark.parametrize("market", _GATE_MARKETS)
+@pytest.mark.parametrize("spec", _EXPRESSION_SPECS)
+def test_screen_and_rolling_resolve_identical_gates(
+    spec: ExpressionStrategySpec, market: str
+) -> None:
+    """With no flags typed, both paths must gate candidates identically."""
+    screen_gates = resolve_screen_gates(
+        ScreenStrategy(criterion=spec.name, spec=spec), market=market
+    )
+    rolling_gates = resolve_rolling_gates(_rolling_request(spec, market))
+
+    mismatched = {
+        field: (getattr(screen_gates, field), getattr(rolling_gates, field))
+        for field in _RESOLVED_GATE_FIELDS
+        if getattr(screen_gates, field) != getattr(rolling_gates, field)
+    }
+    assert not mismatched, (
+        f"{spec.name} on {market}: the screen and the rolling engine resolved "
+        f"different gates {{field: (screen, rolling)}} = {mismatched}. A screen "
+        "that gates differently from the backtest names candidates the backtest "
+        "would never have entered."
+    )
+
+
+#: One value per gate flag, chosen to differ from every profile's default so a
+#: flag that failed to reach one of the two paths shows up as a mismatch rather
+#: than as a coincidence.
+_TYPED_FLAGS = {
+    "min_price": 7.5,
+    "min_avg_dollar_volume": 3_000_000.0,
+    "adv_window": 33,
+    "regime_filter_args": ("bull",),
+    "earnings_blackout_days": 6,
+    "sector_neutral": True,
+    "min_score": 42.0,
+}
+
+
+@pytest.mark.parametrize("market", _GATE_MARKETS)
+@pytest.mark.parametrize("spec", _EXPRESSION_SPECS)
+def test_a_typed_flag_reaches_both_paths_the_same_way(
+    spec: ExpressionStrategySpec, market: str
+) -> None:
+    """The same flags typed on either command must resolve to the same gates.
+
+    Both commands build their overrides with ``gate_overrides``, so this is
+    really asserting that neither path quietly drops or re-interprets one on
+    the way through - which is the failure mode a shared builder cannot catch
+    on its own, because each path still has to pass its values in.
+    """
+    overrides = gate_overrides(**_TYPED_FLAGS)
+    screen_gates = resolve_screen_gates(
+        ScreenStrategy(criterion=spec.name, spec=spec),
+        market=market,
+        overrides=overrides,
+    )
+    rolling_gates = resolve_rolling_gates(
+        replace(_rolling_request(spec, market), **_TYPED_FLAGS)
+    )
+
+    mismatched = {
+        field: (getattr(screen_gates, field), getattr(rolling_gates, field))
+        for field in _RESOLVED_GATE_FIELDS
+        if getattr(screen_gates, field) != getattr(rolling_gates, field)
+    }
+    assert not mismatched, (
+        f"{spec.name} on {market}: the same flags resolved differently "
+        f"{{field: (screen, rolling)}} = {mismatched}."
+    )
+    # And the typed values actually won, rather than both paths agreeing on a
+    # default because neither read the flags.
+    assert screen_gates.min_price == 7.5
+    assert screen_gates.avg_dollar_volume_window == 33
+    assert screen_gates.min_score == 42.0
+
+
+def test_every_gate_flag_is_offered_by_both_commands() -> None:
+    """A gate the screen cannot set is a gate the two paths cannot share.
+
+    Derived from the registry rather than listed, so a gate flag added to
+    ``screener.gate_options`` and wired into only one command fails here.
+    """
+    from click.testing import CliRunner
+
+    from screener.cli import cli
+    from screener.gate_options import GATE_OPTION_NAMES
+
+    runner = CliRunner()
+    for command in ("screen", "backtest-rolling"):
+        help_text = runner.invoke(cli, [command, "--help"]).output
+        missing = [name for name in GATE_OPTION_NAMES if f"--{name}" not in help_text]
+        assert not missing, f"{command} is missing gate flags {missing}"

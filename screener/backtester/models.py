@@ -110,6 +110,9 @@ class BacktestConfig(BaseModel):
     min_price: float | None = None
     min_avg_dollar_volume: float | None = None
     avg_dollar_volume_window: int = 20
+    # Percentile floor on ``setup_score`` (0-100), the same gate the screen's
+    # ``--min-score`` applies. ``None`` disables it.
+    min_score: float | None = Field(default=None, ge=0.0, le=100.0)
     reserve_multiple: int = 3
     reinvest: bool = True
     allow_reentry: bool = False

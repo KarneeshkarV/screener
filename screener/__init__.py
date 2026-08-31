@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         StaleDataError,
         list_criteria,
         list_markets,
+        list_universes,
         run_screen_workflow,
         screen,
     )
@@ -43,13 +44,18 @@ def _version() -> str:
 
 _EXPORTS = frozenset(
     {
+        "DEFAULT_INTERVAL",
+        "IntervalNotScreenableError",
         "ScreenMode",
         "ScreenOutcome",
         "ScreenRequest",
         "SignalRow",
         "StaleDataError",
+        "StrategyProfile",
+        "UnscreenableStrategyError",
         "list_criteria",
         "list_markets",
+        "list_universes",
         "run_screen_workflow",
         "screen",
     }
@@ -71,14 +77,19 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "DEFAULT_INTERVAL",
+    "IntervalNotScreenableError",
     "ScreenMode",
     "ScreenOutcome",
     "ScreenRequest",
     "SignalRow",
     "StaleDataError",
+    "StrategyProfile",
+    "UnscreenableStrategyError",
     "__version__",
     "list_criteria",
     "list_markets",
+    "list_universes",
     "run_screen_workflow",
     "screen",
 ]
