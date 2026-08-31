@@ -26,6 +26,7 @@ import requests
 from requests.adapters import HTTPAdapter
 
 from screener import _optional
+from screener.backtester.sessions import drop_incomplete_sessions
 from screener.backtester.price_cache import (
     CACHE_DIR,
     FMP_CACHE_DIR,
@@ -317,6 +318,18 @@ class YFinancePriceFetcher:
             frames = list(pool.map(read, cache_keys.values()))
         return dict(zip(cache_keys, frames))
 
+    def _complete(self, ticker: str, frame: pd.DataFrame | None) -> pd.DataFrame | None:
+        """``frame`` without the bar of a session that is still trading.
+
+        A daily bar the vendor serves for the open session is a snapshot of the
+        tape, not a summary of the day: it changes on every request, and
+        storing it puts a value in the cache that tomorrow contradicts. It is
+        dropped both on the way in and on the way out, so a run also stops
+        serving one an earlier build already wrote. ``None`` (no cache entry)
+        passes through.
+        """
+        return drop_incomplete_sessions(frame, ticker, interval=self.interval)
+
     def fetch(
         self, tickers: Iterable[str], start: date, end: date
     ) -> dict[str, pd.DataFrame]:
@@ -370,7 +383,10 @@ class YFinancePriceFetcher:
         # field is ~1900 of them. Once the download count came down they cost
         # more than the network did.
         cache_keys = {ticker: self._cache_key(ticker) for ticker in tickers}
-        stored_by_ticker = self._load_cache_entries(cache_keys)
+        stored_by_ticker = {
+            ticker: self._complete(ticker, frame)
+            for ticker, frame in self._load_cache_entries(cache_keys).items()
+        }
 
         for ticker in tickers:
             cache_key = cache_keys[ticker]
@@ -518,6 +534,10 @@ class YFinancePriceFetcher:
                         cache_key, *window_by_ticker[ticker], self.cache_dir
                     )
             stored = cached_by_ticker.get(ticker)
+            # After the bookkeeping above, which is a claim about what the
+            # vendor served and must see the response as it came. From here on
+            # the open session's snapshot is not a bar.
+            norm = drop_incomplete_sessions(norm, ticker, interval=self.interval)
             merged = _merge_cached(stored, norm, self.interval)
             # A failed download is an empty frame, and the merge then returns
             # leftover cache. That is the availability-first default. ``strict``
@@ -703,7 +723,11 @@ class FMPPriceFetcher:
             # Same contract as YFinancePriceFetcher.fetch. The stored frame
             # loads even on a refresh and goes into the save-time merge, so a
             # forced re-download never discards bars outside its window.
-            stored = _load_cached(cache_key, self.cache_dir, self.interval)
+            stored = drop_incomplete_sessions(
+                _load_cached(cache_key, self.cache_dir, self.interval),
+                ticker,
+                interval=self.interval,
+            )
             cached = None if self.refresh else stored
             if (
                 not self.refresh
@@ -766,6 +790,10 @@ class FMPPriceFetcher:
                     _record_empty_history(
                         cache_key, fetch_start, end_ts, self.cache_dir
                     )
+            # Same rule as the yfinance leg, and for the same reason: after
+            # the empty-history bookkeeping, which reads the response, and
+            # before anything stores or serves it.
+            norm = drop_incomplete_sessions(norm, ticker, interval=self.interval)
             leftover_cache = (
                 stored
                 if (

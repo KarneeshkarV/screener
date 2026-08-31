@@ -23,6 +23,7 @@ from screener.criteria import registry as criteria_registry
 from screener.screen_candidates import (
     OUTPUT_SCORE_COLUMN,
     _candidate_frame,
+    _warn_thin_field,
     _fundamentals_for,
     ScreenStrategy,
     UnscreenableStrategyError,
@@ -583,3 +584,58 @@ class TestFundamentalWiring:
         )
 
         assert provider is not None and fetcher is not None
+
+
+class TestThinFieldWarning:
+    """``setup_score`` is a percentile of the names that loaded, so say so.
+
+    A name missing from the panel is not ranked and not shown; nothing else in
+    the output reveals that the field the percentile is over shrank.
+    """
+
+    @staticmethod
+    def _bars(*days: str) -> pd.DataFrame:
+        index = pd.DatetimeIndex([pd.Timestamp(d) for d in days])
+        return pd.DataFrame({"close": [1.0] * len(index)}, index=index)
+
+    def test_a_field_the_vendor_served_nothing_for_is_reported(self) -> None:
+        as_of = pd.Timestamp("2026-08-28")
+        bars_by_tv = {
+            "NSE:AAA": self._bars("2026-08-28"),
+            "NSE:BBB": pd.DataFrame(),
+            "NSE:CCC": pd.DataFrame(),
+        }
+        warnings: list[str] = []
+
+        _warn_thin_field(bars_by_tv, requested=3, as_of=as_of, warnings=warnings)
+
+        assert len(warnings) == 1
+        assert "only 1 of 3" in warnings[0]
+        assert "2026-08-28" in warnings[0]
+
+    def test_a_name_that_simply_did_not_trade_is_not_a_hole(self) -> None:
+        """Illiquid names skip sessions; that is the field, not a failure."""
+        as_of = pd.Timestamp("2026-08-28")
+        bars_by_tv = {f"NSE:{i:03d}": self._bars("2026-08-27") for i in range(19)}
+        bars_by_tv["NSE:AAA"] = self._bars("2026-08-28")
+        warnings: list[str] = []
+
+        _warn_thin_field(bars_by_tv, requested=20, as_of=as_of, warnings=warnings)
+
+        assert warnings == []
+
+    def test_a_field_that_mostly_loaded_says_nothing(self) -> None:
+        as_of = pd.Timestamp("2026-08-28")
+        bars_by_tv = {f"NSE:{i:03d}": self._bars("2026-08-28") for i in range(19)}
+        bars_by_tv["NSE:GAP"] = pd.DataFrame()
+        warnings: list[str] = []
+
+        _warn_thin_field(bars_by_tv, requested=20, as_of=as_of, warnings=warnings)
+
+        assert warnings == []
+
+    def test_no_as_of_bar_is_not_a_coverage_claim(self) -> None:
+        """The empty-window case is already reported; do not report it twice."""
+        warnings: list[str] = []
+        _warn_thin_field({}, requested=10, as_of=None, warnings=warnings)
+        assert warnings == []

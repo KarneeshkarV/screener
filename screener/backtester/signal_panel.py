@@ -22,6 +22,7 @@ from dataclasses import dataclass, fields
 from datetime import date, datetime
 from typing import Literal
 
+import numpy as np
 import pandas as pd
 
 from screener.backtester.core import (
@@ -350,10 +351,88 @@ class DayCandidates:
     candidates: tuple[Candidate, ...]
 
 
+#: Share of the window's fullest session a bar row must carry before an as-of
+#: request may land on it. The master calendar is the *union* of every
+#: ticker's bar stamps, so one name holding a bar for a still-open session
+#: puts that session on the calendar and the snap lands there - where every
+#: other name is NaN and therefore not a candidate. A live India screen showed
+#: 7, then 29, then 29 names out of a 5,000-name field on three consecutive
+#: runs, purely as the vendor served today's partial bar to more of the field.
+#: A completed session covers the field; half of the fullest session is far
+#: below any real session and far above an incomplete one.
+DEFAULT_MIN_AS_OF_COVERAGE = 0.5
+
+
+def _row_coverage(matrices: _RollingCandidateMatrices) -> np.ndarray:
+    """Per-calendar-row count of tickers whose own bar is stamped on that row.
+
+    Read off ``bar_idx_np``, which holds each ticker's last bar position at or
+    before the row: the ticker traded on this row exactly when that position
+    advanced. ``close_np`` cannot answer this - it carries the previous
+    close forward on a row the ticker has no bar for, so every row looks full.
+    """
+    bar_idx = np.asarray(matrices.bar_idx_np)
+    if bar_idx.ndim != 2 or bar_idx.size == 0:
+        return np.zeros(len(matrices.signal_mat.index), dtype=int)
+    fresh = np.empty(bar_idx.shape, dtype=bool)
+    fresh[0] = bar_idx[0] >= 0
+    fresh[1:] = bar_idx[1:] > bar_idx[:-1]
+    return np.asarray(np.count_nonzero(fresh, axis=1))
+
+
+def _last_covered_position(
+    matrices: _RollingCandidateMatrices,
+    position: int,
+    min_coverage: float,
+    warnings: list[str] | None,
+) -> int:
+    """Walk ``position`` back over trailing rows the field has not filled yet.
+
+    Only the trailing rows are walked: an interior row is a session the whole
+    window agrees on, and skipping one would answer a request for one date
+    with a different date for no reason. ``-1`` means every row in the window
+    is incomplete, which the caller reads as "no bar", not as "rank on this".
+    """
+    coverage = _row_coverage(matrices)
+    if coverage.size == 0:
+        return position
+    fullest = int(coverage.max())
+    if fullest <= 0:
+        return position
+    floor = fullest * min_coverage
+    requested = position
+    while position >= 0 and coverage[position] < floor:
+        position -= 1
+    if position == requested or warnings is None:
+        return position
+    calendar = matrices.signal_mat.index
+    skipped = pd.Timestamp(calendar[requested]).date()
+    landed = "no earlier bar in the window"
+    if position >= 0:
+        landed = f"evaluated as of {pd.Timestamp(calendar[position]).date()}"
+    warnings.append(
+        f"the bar dated {skipped} covers only {int(coverage[requested])} of "
+        f"{fullest} names, so it is an in-progress session rather than a "
+        f"thin one; ranking on it would score that handful of names against "
+        f"each other and silently drop the rest, so this run is {landed}."
+    )
+    return position
+
+
 def _resolve_as_of_bar(
-    matrices: _RollingCandidateMatrices, as_of: date | pd.Timestamp
+    matrices: _RollingCandidateMatrices,
+    as_of: date | pd.Timestamp,
+    *,
+    min_coverage: float | None = None,
+    warnings: list[str] | None = None,
 ) -> pd.Timestamp | None:
-    """Snap ``as_of`` back to the last master-calendar bar at or before it."""
+    """Snap ``as_of`` back to the last master-calendar bar at or before it.
+
+    ``min_coverage`` additionally refuses a trailing bar row that only a
+    fraction of the field carries - see :data:`DEFAULT_MIN_AS_OF_COVERAGE`.
+    It defaults to off so the rolling engine, which walks completed sessions
+    it built the calendar from, keeps snapping exactly as it always did.
+    """
     calendar = matrices.signal_mat.index
     if isinstance(as_of, datetime):
         # datetime covers pd.Timestamp too: both carry a time of day, so both
@@ -370,6 +449,10 @@ def _resolve_as_of_bar(
         position = int(calendar.searchsorted(next_midnight, side="left")) - 1
     if position < 0:
         return None
+    if min_coverage is not None:
+        position = _last_covered_position(matrices, position, min_coverage, warnings)
+        if position < 0:
+            return None
     return pd.Timestamp(calendar[position])
 
 
@@ -392,6 +475,7 @@ def day_candidates_from_panel(
     *,
     exclude: Collection[str] = (),
     limit: int | None = None,
+    min_coverage: float | None = None,
     warnings: list[str] | None = None,
 ) -> DayCandidates:
     """Read one day's ranked candidates out of an already-built signal panel.
@@ -406,7 +490,9 @@ def day_candidates_from_panel(
     matrices = signals.candidate_matrices
     if matrices is None:
         return DayCandidates(as_of=None, candidates=())
-    day = _resolve_as_of_bar(matrices, as_of)
+    day = _resolve_as_of_bar(
+        matrices, as_of, min_coverage=min_coverage, warnings=warnings
+    )
     if day is None:
         return DayCandidates(as_of=None, candidates=())
 
@@ -456,6 +542,7 @@ def build_day_candidates(
     earnings_blackout: dict[str, list[date]] | None = None,
     exclude: Collection[str] = (),
     limit: int | None = None,
+    min_coverage: float | None = None,
     require_next_bar: bool = True,
 ) -> DayCandidates:
     """Rank the candidates for a single as-of date.
@@ -490,5 +577,6 @@ def build_day_candidates(
         as_of,
         exclude=exclude,
         limit=limit,
+        min_coverage=min_coverage,
         warnings=warnings,
     )

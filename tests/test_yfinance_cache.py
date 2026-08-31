@@ -156,7 +156,10 @@ def test_yfinance_fetcher_downloads_batches_in_parallel(tmp_path, monkeypatch):
 def test_yfinance_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch):
     import yfinance as yf
 
-    today = date.today()
+    # The newest *complete* session rather than today: a bar for a session
+    # still trading is dropped on the way in and on the way out, so anchoring
+    # this on today would make the test read the clock.
+    today = date.today() - pd.Timedelta(days=1)
     start = today - pd.Timedelta(days=5)
     cached = _plain_bars(start, today + pd.Timedelta(days=1))
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
@@ -575,3 +578,72 @@ def test_the_empty_marker_records_the_ticker_s_own_window_not_the_group_s(
     # unknown and worth a request.
     assert not has_empty_history("AAA", union_start, end, tmp_path)
     assert has_empty_history("AAA", pd.Timestamp("2024-01-22"), end, tmp_path)
+
+
+def test_open_session_bars_are_neither_served_nor_cached(tmp_path, monkeypatch):
+    """A bar for a session that has not closed never reaches the cache.
+
+    The vendor serves the open session's running snapshot as a daily bar. It
+    changes on every request, so storing it writes a value tomorrow's real
+    close contradicts - and a screen that ranks on it ranks on the handful of
+    names that happen to hold one. Dated beyond today, the row is incomplete at
+    every hour of the day, so this pins the rule without pinning a clock.
+    """
+    import yfinance as yf
+
+    today = pd.Timestamp.now(tz="Asia/Kolkata").normalize().tz_localize(None)
+    future = today + pd.Timedelta(days=2)
+
+    def fake_download(tickers, **kwargs):
+        idx = pd.DatetimeIndex([today - pd.Timedelta(days=4), today, future])
+        frame = pd.DataFrame(
+            {
+                "Open": [10.0, 11.0, 12.0],
+                "High": [10.0, 11.0, 12.0],
+                "Low": [10.0, 11.0, 12.0],
+                "Close": [10.0, 11.0, 12.0],
+                "Volume": [100.0, 200.0, 300.0],
+            },
+            index=idx,
+        )
+        return frame
+
+    monkeypatch.setattr(yf, "download", fake_download)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    out = fetcher.fetch(
+        ["AAA.NS"], (today - pd.Timedelta(days=5)).date(), future.date()
+    )
+
+    assert future not in out["AAA.NS"].index
+    assert out["AAA.NS"].index.max() <= today
+    cached = _load_cached("AAA.NS", tmp_path, "1d")
+    assert cached is not None
+    assert future not in cached.index
+
+
+def test_an_already_cached_open_session_bar_stops_being_served(tmp_path, monkeypatch):
+    """A row an earlier build wrote is dropped on the way out too."""
+    import yfinance as yf
+
+    monkeypatch.setattr(yf, "download", lambda *a, **k: pd.DataFrame())
+
+    today = pd.Timestamp.now(tz="Asia/Kolkata").normalize().tz_localize(None)
+    future = today + pd.Timedelta(days=2)
+    poisoned = pd.DataFrame(
+        {
+            "open": [10.0, 12.0],
+            "high": [10.0, 12.0],
+            "low": [10.0, 12.0],
+            "close": [10.0, 12.0],
+            "volume": [100.0, 300.0],
+        },
+        index=pd.DatetimeIndex([today - pd.Timedelta(days=4), future]),
+    )
+    _save_cache("AAA.NS", poisoned, tmp_path)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    out = fetcher.fetch(
+        ["AAA.NS"], (today - pd.Timedelta(days=5)).date(), future.date()
+    )
+    assert future not in out["AAA.NS"].index

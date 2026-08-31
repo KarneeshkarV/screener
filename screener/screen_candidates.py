@@ -240,6 +240,11 @@ def _scores(candidates: Sequence[Candidate]) -> pd.Series:
     The percentile is of whatever the candidate layer actually ranked on,
     which :attr:`Candidate.rank_basis` names, so the column keeps agreeing
     with the ordering instead of asserting a scale of its own.
+
+    It is a percentile *of the field that loaded*: a name's score is its
+    standing among the candidates this run found, so a field short of bars
+    moves every score in it. :func:`_warn_thin_field` is what keeps that
+    visible rather than leaving the number looking absolute.
     """
     values = pd.Series(
         [
@@ -250,6 +255,40 @@ def _scores(candidates: Sequence[Candidate]) -> pd.Series:
         dtype=float,
     )
     return percentile(values) * PERCENTILE_SCALE
+
+
+#: Share of the requested names that must arrive with bars before the run is
+#: reported without comment. The measure is "any bars at all in the window",
+#: not "a bar on the as-of date": a micro cap that simply did not trade that
+#: session is ordinary on a field this wide, while a name the vendor served
+#: nothing for is a hole in the field. ``setup_score`` is a percentile of
+#: whichever names loaded, so a field with holes scores differently from the
+#: same field without them - which is what makes this worth saying.
+_FIELD_COVERAGE_FLOOR = 0.9
+
+
+def _warn_thin_field(
+    bars_by_tv: dict[str, pd.DataFrame],
+    *,
+    requested: int,
+    as_of: pd.Timestamp | None,
+    warnings: list[str],
+) -> None:
+    """Report a field the vendor served nothing for a real share of."""
+    if as_of is None or requested <= 0:
+        return
+    loaded = sum(
+        1 for bars in bars_by_tv.values() if bars is not None and not bars.empty
+    )
+    if loaded >= requested * _FIELD_COVERAGE_FLOOR:
+        return
+    warnings.append(
+        f"only {loaded} of {requested} requested names arrived with bars, so "
+        f"the rule judged that many as of {pd.Timestamp(as_of).date()} and "
+        "setup_score is a percentile of them; the rest served no history at "
+        "all this run (vendor gaps, or downloads that failed). Re-run with "
+        "--refresh to fill them in."
+    )
 
 
 def screen_candidates(
@@ -292,6 +331,7 @@ def screen_candidates(
     from screener.backtester.data import build_price_fetcher
     from screener.backtester.price_panel import PricePanelInputs, build_price_panel
     from screener.backtester.signal_panel import (
+        DEFAULT_MIN_AS_OF_COVERAGE,
         SignalPanelInputs,
         build_day_candidates,
         parse_signal_program,
@@ -364,11 +404,25 @@ def screen_candidates(
         end_ts=end_ts,
         warnings=warnings,
         limit=None,
+        # A screen runs against a live market, where the vendor serves a
+        # partial bar for the open session to whichever names it happened to
+        # refresh. That bar is on the master calendar (a union over tickers),
+        # so without this the as-of snaps onto a session almost nobody has and
+        # the run ranks a handful of names against each other - a different
+        # handful every run, as the cache fills. The rolling engine never sees
+        # such a row, which is why the floor is the screen's to set.
+        min_coverage=DEFAULT_MIN_AS_OF_COVERAGE,
         # The screen's as-of bar is the newest bar there is, so the
         # backtester's "a later bar must exist to fill the entry on" rule would
         # reject every name. A screen names today's triggers; the fill is
         # tomorrow's problem, and tomorrow's bar does not exist yet.
         require_next_bar=False,
+    )
+    _warn_thin_field(
+        panel.bars_by_tv,
+        requested=len(tickers),
+        as_of=day.as_of,
+        warnings=warnings,
     )
     return _candidate_frame(
         day.candidates,
