@@ -17,6 +17,9 @@ so the recipe states it and the registration folds it into the spec's lookback.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+import numpy as np
 import pandas as pd
 
 from screener.indicators.plugins.bollinger_bands import bollinger_bands
@@ -38,7 +41,17 @@ ST_MULT = 3.0
 RECURSIVE_WARMUP = 250
 
 
-@bar_column(RECURSIVE_WARMUP)
+#: The two recursive indicators also take a ``(bars, symbols)`` panel, and the
+#: panel forms below are the same calls on stacked inputs. They are what keeps
+#: the Python-level bar loop off the per-ticker path: see
+#: ``spec.apply_bar_columns_to_panel``.
+def _supertrend_direction_panel(panel: Mapping[str, np.ndarray]) -> np.ndarray:
+    return supertrend_dir(
+        panel["high"], panel["low"], panel["close"], period=ST_PERIOD, mult=ST_MULT
+    )
+
+
+@bar_column(RECURSIVE_WARMUP, panel=_supertrend_direction_panel)
 def supertrend_direction(bars: pd.DataFrame) -> pd.Series:
     """Supertrend direction: negative is an uptrend, positive a downtrend."""
     values = supertrend_dir(
@@ -51,7 +64,11 @@ def supertrend_direction(bars: pd.DataFrame) -> pd.Series:
     return pd.Series(values, index=bars.index, dtype=float)
 
 
-@bar_column(RECURSIVE_WARMUP)
+def _parabolic_sar_panel(panel: Mapping[str, np.ndarray]) -> np.ndarray:
+    return sar(panel["high"], panel["low"], panel["close"])
+
+
+@bar_column(RECURSIVE_WARMUP, panel=_parabolic_sar_panel)
 def parabolic_sar(bars: pd.DataFrame) -> pd.Series:
     return pd.Series(
         sar(

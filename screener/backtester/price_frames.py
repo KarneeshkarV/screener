@@ -11,7 +11,15 @@ CORPORATE_ACTION_COLUMNS = ["dividend", "split_factor", "stock_splits"]
 
 
 def naive_normalized_index(index: pd.Index, interval: str = "1d") -> pd.DatetimeIndex:
-    """Return the canonical tz-naive daily or UTC-intraday index."""
+    """Return the canonical tz-naive daily or UTC-intraday index.
+
+    The result never carries a ``freq``. Under pandas 3 ``normalize`` *infers*
+    one from the values, so an index that had none acquired ``BusinessDay`` or
+    ``Day`` purely from the shape of the data it happened to hold. No price
+    source supplies that, nothing in the codebase reads it, and it is not
+    stored in the parquet cache - so leaving it on made a frame's identity
+    depend on which path it was read through.
+    """
     if not isinstance(index, pd.DatetimeIndex):
         index = pd.to_datetime(index)
     if index.tz is not None:
@@ -19,7 +27,16 @@ def naive_normalized_index(index: pd.Index, interval: str = "1d") -> pd.Datetime
             index = index.tz_localize(None)
         else:
             index = index.tz_convert("UTC").tz_localize(None)
-    return index.normalize() if interval == "1d" else index
+    if interval == "1d":
+        index = index.normalize()
+    return drop_index_freq(index)
+
+
+def drop_index_freq(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Return ``index`` without its inferred frequency, allocating only if set."""
+    if index.freq is None:
+        return index
+    return pd.DatetimeIndex(index.to_numpy(copy=False), name=index.name)
 
 
 def empty_ohlcv_frame() -> pd.DataFrame:
@@ -128,6 +145,58 @@ def inclusive_fetch_bounds(
     return start_timestamp, end_timestamp
 
 
+def _snapped(index: pd.DatetimeIndex, bound: pd.Timestamp, side: str) -> pd.Timestamp:
+    """``bound`` in the index's own datetime resolution, without moving any row.
+
+    ``searchsorted`` refuses a bound it cannot convert losslessly, and an
+    intraday end bound carries a nanosecond offset while a cache entry may be
+    stored in microseconds or seconds. A boolean mask has no such trouble, so
+    the snap has to keep the same rows: ``index >= bound`` is unchanged by
+    rounding the lower bound *up*, and ``index <= bound`` by rounding the upper
+    bound *down*, because the discarded sub-unit part cannot match any row.
+    """
+    if bound.unit == index.unit:
+        return bound
+    snapped = bound.ceil(index.unit) if side == "left" else bound.floor(index.unit)
+    return snapped.as_unit(index.unit)
+
+
+def _range_bounds(
+    index: pd.Index, start: pd.Timestamp, end: pd.Timestamp
+) -> tuple[int, int] | None:
+    """Row positions of ``[start, end]`` in a sorted datetime index, or None.
+
+    None means the caller has to fall back to a boolean mask: the index is not
+    a sorted ``DatetimeIndex``, so a position pair cannot describe the answer.
+    A price frame is sorted by construction - every path that builds one ends
+    in ``sort_index`` - so the fallback is for frames from somewhere else.
+    """
+    if not isinstance(index, pd.DatetimeIndex) or not index.is_monotonic_increasing:
+        return None
+    return (
+        int(index.searchsorted(_snapped(index, start, "left"), side="left")),
+        int(index.searchsorted(_snapped(index, end, "right"), side="right")),
+    )
+
+
+def range_slice(
+    frame: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp
+) -> pd.DataFrame:
+    """Rows of ``frame`` from ``start`` to ``end``, both bounds inclusive.
+
+    The obvious ``frame.loc[(index >= start) & (index <= end)]`` builds two
+    full-length boolean arrays and then gathers the rows one by one. On a
+    sorted index the same rows are a contiguous block, so two binary searches
+    and a slice give the identical frame for a fraction of the work - and a
+    warm fetch takes this slice once per symbol.
+    """
+    bounds = _range_bounds(frame.index, start, end)
+    if bounds is None:
+        return frame.loc[(frame.index >= start) & (frame.index <= end)]
+    first, last = bounds
+    return frame.iloc[first:last]
+
+
 def frame_has_range(
     frame: pd.DataFrame,
     start: pd.Timestamp,
@@ -137,11 +206,23 @@ def frame_has_range(
     del interval  # Range tolerance is identical for daily and intraday frames.
     if frame is None or frame.empty:
         return False
-    in_range = frame.loc[(frame.index >= start) & (frame.index <= end)]
-    return (
-        not in_range.empty
-        and in_range.index.min() <= start + pd.Timedelta(days=3)
-        and in_range.index.max() >= end - pd.Timedelta(days=3)
+    bounds = _range_bounds(frame.index, start, end)
+    if bounds is None:
+        in_range = frame.loc[(frame.index >= start) & (frame.index <= end)]
+        if in_range.empty:
+            return False
+        first_bar = in_range.index.min()
+        last_bar = in_range.index.max()
+    else:
+        first, last = bounds
+        if last <= first:
+            return False
+        # Sorted, so the first and last rows of the block are its min and max.
+        first_bar = frame.index[first]
+        last_bar = frame.index[last - 1]
+    return bool(
+        first_bar <= start + pd.Timedelta(days=3)
+        and last_bar >= end - pd.Timedelta(days=3)
     )
 
 
@@ -181,6 +262,7 @@ __all__ = [
     "merge_price_frames",
     "naive_normalized_index",
     "normalize_price_frame",
+    "range_slice",
     "split_yfinance_download",
     "warn_unadjustable_fmp_frames",
 ]

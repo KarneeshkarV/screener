@@ -136,6 +136,9 @@ def screen(
         cache_ttl=cache_ttl,
         report_path=report_path,
         open_report=open_report,
+        # Print the table first, then render. The report takes about 0.4s that
+        # the terminal spent waiting on a result it already had.
+        defer_report=True,
         earnings=earnings,
         earnings_buffer=earnings_buffer,
         price_adjustment=price_adjustment,
@@ -158,6 +161,8 @@ def screen(
         removed=list(outcome.removed),
         first_run=outcome.first_run,
     )
+    if outcome.render_report is not None:
+        outcome.render_report()
     click.echo(f"Report: {outcome.report_path}")
     if open_report and outcome.report_path is not None:
         from screener.reporting import open_report as open_report_file
