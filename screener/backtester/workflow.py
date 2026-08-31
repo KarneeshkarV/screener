@@ -114,6 +114,9 @@ class BacktestRequest:
     max_reentries: int = 0
     market_was_explicit: bool = False
     top_was_explicit: bool = False
+    # Click source state is required because a typed default value cannot be
+    # distinguished from an omitted option by inspecting ``adv_window``.
+    adv_window_was_explicit: bool = False
     # Percentile floor on ``setup_score`` (0-100). Defaulted because only the
     # rolling command declares ``--min-score``; historical has no candidate
     # layer to gate.
@@ -231,6 +234,7 @@ def _effective_gates(request: BacktestRequest) -> StrategyProfile:
         min_price=request.min_price,
         min_avg_dollar_volume=request.min_avg_dollar_volume,
         adv_window=request.adv_window,
+        adv_window_was_explicit=request.adv_window_was_explicit,
         regime_filter_args=request.regime_filter_args,
         earnings_blackout_days=request.earnings_blackout_days,
         sector_neutral=request.sector_neutral,

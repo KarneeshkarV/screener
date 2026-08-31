@@ -155,6 +155,7 @@ def screen(
     price_adjustment: PriceAdjustment,
 ) -> None:
     """Screen stocks based on technical criteria."""
+    ctx = click.get_current_context()
     if earnings_buffer is not None and earnings_buffer < 0:
         raise click.UsageError("--earnings-buffer must be >= 0.")
     if max_universe < 0:
@@ -183,6 +184,10 @@ def screen(
             min_price=min_price,
             min_avg_dollar_volume=min_avg_dollar_volume,
             adv_window=adv_window,
+            adv_window_was_explicit=(
+                ctx.get_parameter_source("adv_window")
+                == click.core.ParameterSource.COMMANDLINE
+            ),
             regime_filter_args=regime_filter_args,
             earnings_blackout_days=earnings_blackout_days,
             sector_neutral=sector_neutral,

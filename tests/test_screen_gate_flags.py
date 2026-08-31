@@ -56,11 +56,21 @@ class TestTypedFlagsReachTheGates:
 
         assert gates.min_price is None
 
+    def test_an_explicit_default_adv_window_remains_an_override(self) -> None:
+        overrides = gate_overrides(adv_window=20, adv_window_was_explicit=True)
+
+        assert overrides["avg_dollar_volume_window"] == 20
+
 
 class TestRefusals:
     @pytest.mark.parametrize(
         ("flag", "value"),
-        [("--min-price", "5"), ("--min-score", "50"), ("--max-universe", "10")],
+        [
+            ("--min-price", "5"),
+            ("--min-score", "50"),
+            ("--adv-window", "20"),
+            ("--max-universe", "10"),
+        ],
     )
     def test_a_gate_flag_is_refused_on_a_filters_only_criterion(
         self, flag: str, value: str

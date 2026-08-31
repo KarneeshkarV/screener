@@ -318,6 +318,20 @@ def test_a_typed_flag_wins_over_the_declared_gate(probe_strategy):
     assert gates.sector_neutral is True
 
 
+def test_a_typed_default_adv_window_wins_over_the_declared_gate(probe_strategy):
+    from screener.backtester.workflow import _effective_gates
+
+    gates = _effective_gates(
+        _rolling_request(
+            strategy_name=probe_strategy,
+            adv_window=20,
+            adv_window_was_explicit=True,
+        )
+    )
+
+    assert gates.avg_dollar_volume_window == 20
+
+
 def test_a_strategy_without_a_profile_keeps_the_effective_defaults():
     from screener.backtester.workflow import _effective_gates
 

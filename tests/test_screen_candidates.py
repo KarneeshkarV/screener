@@ -383,6 +383,36 @@ class TestCandidateFrame:
         assert "name" in df.columns
         assert OUTPUT_SCORE_COLUMN in df.columns
 
+    def test_an_intraday_screen_builds_an_intraday_price_fetcher(
+        self, monkeypatch
+    ) -> None:
+        from screener.backtester import data as backtest_data
+
+        captured: dict[str, object] = {}
+
+        class FetcherBuilt(Exception):
+            pass
+
+        def capture_fetcher(**kwargs: object) -> None:
+            captured.update(kwargs)
+            raise FetcherBuilt
+
+        monkeypatch.setattr(backtest_data, "build_price_fetcher", capture_fetcher)
+        strategy = resolve_screen_strategy(("breakout",))
+        assert strategy is not None
+
+        with pytest.raises(FetcherBuilt):
+            screen_candidates(
+                strategy,
+                market="india",
+                tickers=["NSE:RELIANCE"],
+                as_of=date(2024, 6, 3),
+                interval="1h",
+                warnings=[],
+            )
+
+        assert captured["interval"] == "1h"
+
 
 def _candidate(
     ticker: str, rank: int, score: float | None, setup_score: float | None = None

@@ -459,7 +459,10 @@ def screen_candidates(
         fundamentals_provider=fundamentals_provider,
     )
     fetcher = build_price_fetcher(
-        auto_adjust=(price_adjustment == "full"), refresh=refresh, strict=strict
+        auto_adjust=(price_adjustment == "full"),
+        refresh=refresh,
+        strict=strict,
+        interval=interval,
     )
     panel = build_price_panel(
         panel_inputs,

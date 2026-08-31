@@ -26,9 +26,7 @@ import click
 
 from screener.regime import TREND_LABELS
 
-#: The ``--adv-window`` option default. Named so a caller can tell "the user
-#: typed a window" from "the option fell back", which is what lets a strategy
-#: profile supply the window instead.
+#: The ``--adv-window`` option default, shared by both Click commands.
 ADV_WINDOW_DEFAULT = 20
 
 OptionDecorator = Callable[[Any], Any]
@@ -141,6 +139,7 @@ def gate_overrides(
     min_price: float | None = None,
     min_avg_dollar_volume: float | None = None,
     adv_window: int = ADV_WINDOW_DEFAULT,
+    adv_window_was_explicit: bool = False,
     regime_filter_args: tuple[str, ...] = (),
     earnings_blackout_days: int | None = None,
     sector_neutral: bool = False,
@@ -150,16 +149,18 @@ def gate_overrides(
     :func:`~screener.strategies.spec.resolve_strategy_profile` overrides.
 
     A flag left at its option default is "not given", so it produces no key and
-    the strategy's own profile supplies the value. Anything typed becomes an
-    override and wins. Both commands build their overrides here so the same
-    flag cannot mean one thing on a screen and another on a backtest.
+    the strategy's own profile supplies the value. ``adv_window_was_explicit``
+    carries Click's parameter source because a typed ``20`` equals the default.
+    Anything typed becomes an override and wins. Both commands build their
+    overrides here so the same flag cannot mean one thing on a screen and
+    another on a backtest.
     """
     overrides: dict[str, Any] = {}
     if min_price is not None:
         overrides["min_price"] = float(min_price)
     if min_avg_dollar_volume is not None:
         overrides["min_avg_dollar_volume"] = float(min_avg_dollar_volume)
-    if int(adv_window) != ADV_WINDOW_DEFAULT:
+    if adv_window_was_explicit or int(adv_window) != ADV_WINDOW_DEFAULT:
         overrides["avg_dollar_volume_window"] = int(adv_window)
     regime_filter = tuple(dict.fromkeys(regime_filter_args))
     if regime_filter:

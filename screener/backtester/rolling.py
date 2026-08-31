@@ -261,6 +261,10 @@ def backtest_rolling(**params: Any) -> None:
     request = BacktestRequest(
         mode="rolling",
         context_obj=ctx.obj,
+        adv_window_was_explicit=(
+            ctx.get_parameter_source("adv_window")
+            == click.core.ParameterSource.COMMANDLINE
+        ),
         **params,
     )
     run = resolve_backtest_run(request)
