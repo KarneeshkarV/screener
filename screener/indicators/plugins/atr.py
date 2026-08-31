@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 import numpy as np
 
 from screener.indicators.plugins.rma import rma
@@ -31,5 +29,4 @@ def atr(
             np.abs(low - prev_close),
         ]
     )
-    # rma is decorated with @indicator -> Callable[..., Any], so cast back.
-    return cast(np.ndarray, rma(tr, n))
+    return rma(tr, n)

@@ -60,7 +60,7 @@ def _canonical_index(index: pd.Index, interval: str) -> pd.Index:
     ticks = _TICKS_PER_DAY.get(index.unit)
     if ticks is None:
         return index.normalize()
-    values = index.asi8
+    values = index.to_numpy().view("i8")
     if values.size and (values % ticks).any():
         return index.normalize()
     return index

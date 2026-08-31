@@ -97,10 +97,10 @@ def ha_momentum(
     both adapters already treat as "not a candidate" - Heikin-Ashi's smoothing
     is the trend-confirmation leg, 12-1 momentum stays the ranking leg.
     """
-    op = pd.to_numeric(open_, errors="coerce").astype(float).to_numpy()
-    hi = pd.to_numeric(high, errors="coerce").astype(float).to_numpy()
-    lo = pd.to_numeric(low, errors="coerce").astype(float).to_numpy()
-    cl = pd.to_numeric(close, errors="coerce").astype(float).to_numpy()
+    op = np.asarray(pd.to_numeric(open_, errors="coerce"), dtype=np.float64)
+    hi = np.asarray(pd.to_numeric(high, errors="coerce"), dtype=np.float64)
+    lo = np.asarray(pd.to_numeric(low, errors="coerce"), dtype=np.float64)
+    cl = np.asarray(pd.to_numeric(close, errors="coerce"), dtype=np.float64)
 
     ha_open, _ha_high, ha_low, ha_close = heikin_ashi_ohlc(op, hi, lo, cl)
     bullish = pd.Series((ha_close > ha_open) & (ha_open == ha_low), index=close.index)
