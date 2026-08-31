@@ -1,8 +1,8 @@
-"""Session-aware intraday exits (--intraday-only)."""
+"""Session-aware intraday exits (--intraday-only) and daily-bar finality."""
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
@@ -202,3 +202,71 @@ def test_cli_intraday_only_flag_accepted_for_intraday():
     # Empty universe prices → clean exit or usage; must not reject the flag itself.
     assert "No such option" not in res.output
     assert "intraday_only requires" not in res.output
+
+
+# --- Daily sessions: when is a bar final? ------------------------------------
+
+
+def _daily(dates: list[str]) -> pd.DataFrame:
+    idx = pd.DatetimeIndex([pd.Timestamp(d) for d in dates])
+    return pd.DataFrame(
+        {
+            "open": 1.0,
+            "high": 1.0,
+            "low": 1.0,
+            "close": 1.0,
+            "volume": 1.0,
+        },
+        index=idx,
+    )
+
+
+def test_last_complete_date_turns_over_at_the_local_close() -> None:
+    """Each venue's own clock decides, so one instant answers two dates."""
+    from zoneinfo import ZoneInfo
+
+    from screener.backtester.sessions import INDIA_SESSION, US_SESSION
+
+    open_session = datetime(2026, 8, 31, 9, 5, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert INDIA_SESSION.last_complete_date(open_session) == date(2026, 8, 30)
+    after_close = datetime(2026, 8, 31, 15, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert INDIA_SESSION.last_complete_date(after_close) == date(2026, 8, 31)
+    # 15:30 IST is 06:00 in New York: the same instant, a session earlier.
+    assert US_SESSION.last_complete_date(after_close) == date(2026, 8, 30)
+
+
+def test_session_for_reads_the_exchange_suffix() -> None:
+    from screener.backtester.sessions import INDIA_SESSION, US_SESSION, session_for
+
+    assert session_for("KMEW.NS") is INDIA_SESSION
+    assert session_for("mrutr.bo") is INDIA_SESSION
+    assert session_for("AAPL") is US_SESSION
+
+
+def test_drop_incomplete_sessions_removes_the_open_session_bar() -> None:
+    """The bar of a session still trading is a snapshot, not a daily bar."""
+    from zoneinfo import ZoneInfo
+
+    from screener.backtester.sessions import drop_incomplete_sessions
+
+    frame = _daily(["2026-08-27", "2026-08-28", "2026-08-31"])
+    mid_session = datetime(2026, 8, 31, 9, 5, tzinfo=ZoneInfo("Asia/Kolkata"))
+    kept = drop_incomplete_sessions(frame, "KMEW.NS", now=mid_session)
+    assert list(kept.index) == [pd.Timestamp("2026-08-27"), pd.Timestamp("2026-08-28")]
+
+    after_close = datetime(2026, 8, 31, 16, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert drop_incomplete_sessions(frame, "KMEW.NS", now=after_close).equals(frame)
+
+
+def test_drop_incomplete_sessions_leaves_intraday_and_missing_frames(tmp_path) -> None:
+    """An intraday stamp is an instant; a caller's empty cache read stays empty."""
+    from zoneinfo import ZoneInfo
+
+    from screener.backtester.sessions import drop_incomplete_sessions
+
+    frame = _daily(["2026-08-31"])
+    mid_session = datetime(2026, 8, 31, 9, 5, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert drop_incomplete_sessions(
+        frame, "KMEW.NS", interval="15m", now=mid_session
+    ).equals(frame)
+    assert drop_incomplete_sessions(None, "KMEW.NS", now=mid_session) is None

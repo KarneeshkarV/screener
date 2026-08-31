@@ -188,7 +188,10 @@ def test_fmp_parallel_fetch_deduplicates_tickers_preserving_order(tmp_path):
 
 
 def test_fmp_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch):
-    today = date.today()
+    # The newest *complete* session rather than today: a daily bar for a
+    # session still trading is dropped before it is cached or served, so
+    # anchoring this on today would make the test read the clock.
+    today = date.today() - pd.Timedelta(days=1)
     initial_payload = {
         "historical": [
             {
