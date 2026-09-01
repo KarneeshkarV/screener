@@ -105,6 +105,19 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
     ("expectancy", "Expectancy", "pct"),
     ("winning_trades", "Winning Trades", "count"),
     ("losing_trades", "Losing Trades", "count"),
+    # Monte Carlo block-bootstrap of the equity curve. Only the
+    # backtest-monte-carlo command populates these; every other run
+    # omits the keys entirely and the rows simply do not render.
+    ("mc_iterations", "MC Iterations", "int"),
+    ("mc_block", "MC Block (bars)", "int"),
+    ("mc_median_return", "MC Median Return", "pct"),
+    ("mc_return_p05", "MC Return p05", "pct"),
+    ("mc_return_p95", "MC Return p95", "pct"),
+    ("mc_median_drawdown", "MC Median Drawdown", "pct"),
+    ("mc_drawdown_p05", "MC Drawdown p05", "pct"),
+    ("mc_worst_drawdown", "MC Worst Drawdown", "pct"),
+    ("mc_probability_of_profit", "MC Probability of Profit", "pct"),
+    ("mc_risk_of_ruin", "MC Risk of Ruin", "pct"),
 )
 _RESULT_VIEW_SPECS = {key: (label, kind) for key, label, kind in _RESULT_VIEW_ORDER}
 

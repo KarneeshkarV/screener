@@ -303,6 +303,28 @@ Two defaults are on and can be turned off:
 - `--point-in-time` (`--no-point-in-time` to disable) gates candidates by the membership they held at each signal date instead of by today's index list. It downgrades itself, with a note, for a universe that carries no membership history. See [docs/universes.md](docs/universes.md).
 - `--compare-reinvestment` (`--no-compare-reinvestment` to disable) replays the same signal panel under the other equal-slot sizing rule and prints both side by side. The default result is unchanged; the second simulation roughly doubles the run time.
 
+### `backtest-monte-carlo`
+
+Runs the same rolling simulation as `backtest-rolling`, then block-bootstraps the resulting equity curve to show what a typical and a bad run of the same strategy look like.
+
+```bash
+uv run screener backtest-monte-carlo -m us --years 2 --strategy rs_breakout --top 10
+uv run screener backtest-monte-carlo -m us --years 2 --strategy rs_breakout --iterations 10000 --block 40 --json mc.json
+```
+
+It accepts every flag that defines a `backtest-rolling` run (window, universe, signals, costs, sizing, `--interval`), plus:
+
+- `--iterations` (default 5000) synthetic equity paths.
+- `--block` (default 20) bars per resampled block. Blocks keep the short-horizon autocorrelation that drives drawdown; `--block 1` makes the draw i.i.d. and understates it.
+- `--seed` (default 42) so a run is reproducible, and `--ruin-threshold` (default 0.5) for the fraction of starting capital that counts as ruin.
+- `--json` to write the raw result next to the usual HTML tear-sheet.
+
+The `MC ...` rows join the realized run's metrics in both the terminal table and the tear-sheet: median/p05/p95 return, the drawdown percentiles, the probability of ending in profit, and the risk of ruin.
+
+The equity curve is resampled rather than the trade list.
+A rolling run holds `--top` positions at once, so its trades overlap in time; chaining them one after another would compound a portfolio that never existed and would misstate the drawdown.
+`screener optimize validate` still bootstraps trades, because it scores a trade ledger on its own.
+
 ### Position sizing (`--sizing`)
 
 Both backtest commands accept rule-based per-entry position sizing. The default `equal_slot` matches the legacy fixed-slot engine bit-for-bit; every other rule sizes down from the slot budget (never above it, never beyond available cash):

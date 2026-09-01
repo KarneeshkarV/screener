@@ -129,6 +129,11 @@ _LAZY_COMMANDS: dict[str, tuple[str, str, str]] = {
         "backtest_rolling",
         "Run a true daily rolling backtest over a date window.",
     ),
+    "backtest-monte-carlo": (
+        "screener.backtester.monte_carlo_cli",
+        "backtest_monte_carlo",
+        "Run a rolling backtest, then block-bootstrap its equity curve.",
+    ),
     "factor-tearsheet": (
         "screener.backtester.factor_tearsheet",
         "factor_tearsheet",

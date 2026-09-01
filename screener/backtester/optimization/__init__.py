@@ -7,7 +7,10 @@ from screener.backtester.optimization.grid import (
 )
 from screener.backtester.optimization.metrics import risk_adjusted_return
 from screener.backtester.optimization.monte_carlo import (
+    EquityMonteCarloResult,
     MonteCarloResult,
+    equity_monte_carlo_metrics,
+    simulate_equity_monte_carlo,
     simulate_monte_carlo,
 )
 from screener.backtester.optimization.research_report import (
@@ -23,17 +26,20 @@ from screener.backtester.optimization.walk_forward import (
 )
 
 __all__ = [
+    "EquityMonteCarloResult",
     "GridSearchResult",
     "MonteCarloResult",
     "WalkForwardResult",
     "WalkForwardSummary",
     "WalkForwardWindow",
     "compute_parameter_stability",
+    "equity_monte_carlo_metrics",
     "generate_walk_forward_windows",
     "grid_search",
     "parameter_combinations",
     "risk_adjusted_return",
     "run_research_report",
+    "simulate_equity_monte_carlo",
     "simulate_monte_carlo",
     "walk_forward_optimize",
 ]
