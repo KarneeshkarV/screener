@@ -425,9 +425,22 @@ def test_rolling_compare_flag_prints_fixed_and_reinvested_slot_comparison():
     )
 
     assert result.exit_code == 0, result.output
-    assert "Fixed slots vs reinvested slots" in result.output
+    assert "Performance" in result.output
     assert "Fixed slots" in result.output
     assert "Reinvested slots" in result.output
+
+
+def test_rolling_comparison_covers_every_performance_metric():
+    """The comparison columns live in the Performance table, not a 5-row digest."""
+    fetcher, bars_a = _stub_env()
+    runner = CliRunner()
+
+    result = runner.invoke(cli, _rolling_argv(bars_a), obj=fetcher)
+
+    assert result.exit_code == 0, result.output
+    # Metrics the old five-row comparison table left out.
+    for label in ("Sortino", "Calmar", "Avg Exposure", "Profit Factor"):
+        assert label in result.output
 
 
 def test_rolling_compares_sizing_rules_by_default():
@@ -437,7 +450,8 @@ def test_rolling_compares_sizing_rules_by_default():
     result = runner.invoke(cli, _rolling_argv(bars_a), obj=fetcher)
 
     assert result.exit_code == 0, result.output
-    assert "Fixed slots vs reinvested slots" in result.output
+    assert "Fixed slots" in result.output
+    assert "Reinvested slots" in result.output
 
 
 def test_rolling_report_carries_the_sizing_comparison(tmp_path):
@@ -485,7 +499,8 @@ def test_rolling_no_compare_flag_runs_one_simulation():
     )
 
     assert result.exit_code == 0, result.output
-    assert "Fixed slots vs reinvested slots" not in result.output
+    assert "Reinvested slots" not in result.output
+    assert "Value" in result.output
 
 
 def test_csv_flag_emits_trade_ledger():

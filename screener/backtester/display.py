@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
+
 import pandas as pd
 from rich.console import Console, JustifyMethod
 from rich.panel import Panel
@@ -10,7 +12,6 @@ from rich.table import Table
 from screener import agentio
 from screener.backtester.metrics import (
     SIZING_COMPARISON_COLUMNS,
-    ResultView,
     result_view,
     sizing_comparison_rows,
 )
@@ -22,32 +23,31 @@ console = Console()
 _ATTRIBUTION_SIDE = 5
 
 
-def _performance_table(view: ResultView) -> Table:
-    """Draw the common result view as a Rich table."""
+def _performance_table(
+    result: BacktestResult,
+    sizing_comparison: tuple[BacktestResult, BacktestResult] | None = None,
+) -> Table:
+    """Draw the result metrics, one value column per sizing rule compared.
+
+    Without a comparison this is the single ``Value`` column. With one, the
+    same metric rows carry a fixed-slot and a reinvested-slot column, so the
+    two sizing rules are read off the one table rather than a narrower table
+    beside it.
+    """
     table = Table(title="Performance", show_header=True, header_style="bold")
     table.add_column("Metric")
-    table.add_column("Value", justify="right")
-    for row in view:
-        table.add_row(row.label, row.formatted)
-    return table
-
-
-def print_reinvestment_comparison(
-    fixed_slots: BacktestResult,
-    reinvested_slots: BacktestResult,
-) -> None:
-    """Print fixed-slot and reinvested-slot results from one signal panel."""
-    table = Table(
-        title="Fixed slots vs reinvested slots",
-        show_header=True,
-        header_style="bold",
-    )
-    table.add_column("Metric")
-    for column in SIZING_COMPARISON_COLUMNS:
-        table.add_column(column, justify="right")
-    for row in sizing_comparison_rows(fixed_slots.metrics, reinvested_slots.metrics):
+    rows: Iterable[Sequence[str]]
+    if sizing_comparison is None:
+        table.add_column("Value", justify="right")
+        rows = [(row.label, row.formatted) for row in result_view(result.metrics)]
+    else:
+        for column in SIZING_COMPARISON_COLUMNS:
+            table.add_column(column, justify="right")
+        fixed_slots, reinvested_slots = sizing_comparison
+        rows = sizing_comparison_rows(fixed_slots.metrics, reinvested_slots.metrics)
+    for row in rows:
         table.add_row(*row)
-    agentio.render_table(table, agentio.get_console(), detail="full")
+    return table
 
 
 def _ledger_table(result: BacktestResult) -> Table:
@@ -107,7 +107,10 @@ def _print_ticker_attribution(trades: pd.DataFrame, out) -> None:
         )
 
 
-def _print_backtest_agent(result: BacktestResult) -> None:
+def _print_backtest_agent(
+    result: BacktestResult,
+    sizing_comparison: tuple[BacktestResult, BacktestResult] | None = None,
+) -> None:
     """Render the same shared metric rows in bounded, plain agent output."""
     cfg = result.config
     sizing_rule = getattr(cfg, "sizing_rule", "equal_slot")
@@ -122,7 +125,7 @@ def _print_backtest_agent(result: BacktestResult) -> None:
     # Metrics are a small, fixed result view. Show all rows so no metric is
     # hidden from an agent digest, while the large trade ledger remains capped.
     agentio.render_table(
-        _performance_table(result_view(result.metrics)), out, detail="full"
+        _performance_table(result, sizing_comparison), out, detail="full"
     )
 
     if not result.trades:
@@ -136,9 +139,13 @@ def _print_backtest_agent(result: BacktestResult) -> None:
     agentio.render_table(_ledger_table(result), out)
 
 
-def print_backtest(result: BacktestResult) -> None:
+def print_backtest(
+    result: BacktestResult,
+    *,
+    sizing_comparison: tuple[BacktestResult, BacktestResult] | None = None,
+) -> None:
     if agentio.is_agent_mode():
-        _print_backtest_agent(result)
+        _print_backtest_agent(result, sizing_comparison)
         return
 
     cfg = result.config
@@ -154,7 +161,7 @@ def print_backtest(result: BacktestResult) -> None:
     for warning in result.warnings:
         console.print(f"[yellow]warning:[/yellow] {warning}")
 
-    console.print(_performance_table(result_view(result.metrics)))
+    console.print(_performance_table(result, sizing_comparison))
     if not result.trades:
         console.print("[dim]No trades.[/dim]")
         return

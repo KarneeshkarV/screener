@@ -18,7 +18,6 @@ from screener.backtester.cli_common import (
 from screener.backtester.display import (
     print_backtest,
     print_ledger_csv,
-    print_reinvestment_comparison,
 )
 from screener.backtester.rolling_simulation import (
     prepare_rolling_backtest,
@@ -335,6 +334,11 @@ def backtest_rolling(**params: Any) -> None:
             end_date=run.end_date,
             fundamental_fetcher=run.fundamental_fetcher,
         )
+    sizing_comparison = (
+        (fixed_result, reinvested_result)
+        if fixed_result is not None and reinvested_result is not None
+        else None
+    )
     generated_report = resolve_report_path(
         params["report_path"], params["output_csv"], "backtest-rolling"
     )
@@ -344,11 +348,7 @@ def backtest_rolling(**params: Any) -> None:
             generated_report,
             title="Rolling Backtest Tear Sheet",
             extra_notes=[run.universe_note] if run.universe_note else [],
-            sizing_comparison=(
-                (fixed_result, reinvested_result)
-                if fixed_result is not None and reinvested_result is not None
-                else None
-            ),
+            sizing_comparison=sizing_comparison,
         )
     if params["output_csv"]:
         print_ledger_csv(result)
@@ -360,9 +360,7 @@ def backtest_rolling(**params: Any) -> None:
     )
     if run.universe_note:
         console.print(f"[dim]Universe: {run.universe_note}[/dim]")
-    print_backtest(result)
-    if fixed_result is not None and reinvested_result is not None:
-        print_reinvestment_comparison(fixed_result, reinvested_result)
+    print_backtest(result, sizing_comparison=sizing_comparison)
     if generated_report:
         console.print(f"[green]Report:[/green] {generated_report}")
         if params["open_report"]:

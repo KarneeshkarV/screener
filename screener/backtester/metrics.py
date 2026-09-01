@@ -108,19 +108,6 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
 )
 _RESULT_VIEW_SPECS = {key: (label, kind) for key, label, kind in _RESULT_VIEW_ORDER}
 
-# Rows shown when one signal panel is replayed under both equal-slot sizing
-# rules. Keys only: the label and the kind come from the result-view schema
-# above, so a rename there cannot leave this table showing the old one, and the
-# CLI table and the HTML tear-sheet still cannot drift apart on which metrics
-# the comparison shows.
-_SIZING_COMPARISON_KEYS: tuple[str, ...] = (
-    "final_equity",
-    "total_return",
-    "cagr",
-    "max_drawdown",
-    "sharpe",
-)
-
 SIZING_COMPARISON_COLUMNS = ("Fixed slots", "Reinvested slots")
 
 
@@ -130,19 +117,29 @@ def sizing_comparison_rows(
 ) -> tuple[tuple[str, ...], ...]:
     """Return ``(label, *cells)`` per metric, one cell per sizing rule.
 
+    Every metric either run computed appears, ordered and labelled by
+    ``result_view``, so a compared run never shows a narrower picture than a
+    single-rule run does and a metric added to the schema reaches both columns
+    with no renderer edit. A metric only one rule produces still gets a row,
+    with ``-`` in the column that lacks it.
+
     Each row is as wide as ``SIZING_COMPARISON_COLUMNS`` plus its label, so a
     renderer can lay the body out from the row itself rather than naming the
     two columns positionally.
     """
+    columns = (fixed, reinvested)
+    merged: dict[str, Any] = {}
+    for metrics in columns:
+        merged.update(metrics)
     return tuple(
         (
-            _RESULT_VIEW_SPECS[key][0],
+            row.label,
             *(
-                format_result_value(metrics.get(key), _RESULT_VIEW_SPECS[key][1])
-                for metrics in (fixed, reinvested)
+                format_result_value(metrics.get(row.key), row.kind)
+                for metrics in columns
             ),
         )
-        for key in _SIZING_COMPARISON_KEYS
+        for row in result_view(merged)
     )
 
 
