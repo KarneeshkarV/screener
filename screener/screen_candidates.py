@@ -1,10 +1,10 @@
 """The screen's half of the unified candidate layer.
 
 A criterion name used to mean two things at once: a set of TradingView filters
-and a ranking recipe over the row those filters returned. For the three names
-that also exist as a strategy - ``breakout``, ``momentum_12_1`` and
-``mark_minervini`` - that meant two implementations of one rule, which is the
-defect this whole line of work removes.
+and a ranking recipe over the row those filters returned. For criterion names
+that also exist as a strategy, such as ``breakout``, ``momentum_12_1`` and
+``mark_minervini``, that meant two implementations of one rule. This module
+removes that duplication.
 
 Those names are now *aliases* onto ``screener.strategies.spec.registry``. The
 rule is the strategy's entry expression, evaluated over local bars through

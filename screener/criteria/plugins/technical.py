@@ -115,6 +115,18 @@ def momentum_12_1() -> list:
     ]
 
 
+@criterion("momentum_12_1_ema10")
+def momentum_12_1_ema10() -> list:
+    """12-1 momentum with a local close-above-EMA10 eligibility gate.
+
+    The strategy evaluates the exact momentum and EMA10 rules from local bars.
+    Its profile declares no TradingView prefilter because calendar performance
+    fields cannot reproduce the session-based momentum rule without false
+    exclusions. This registry entry exposes the strategy to ``screen -c``.
+    """
+    return momentum_12_1()
+
+
 @criterion("mark_minervini")
 def mark_minervini() -> list:
     """Mark Minervini Trend Template (TradingView approximation).

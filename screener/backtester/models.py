@@ -119,8 +119,9 @@ class BacktestConfig(BaseModel):
     max_reentries: int = 0
     max_concurrent_per_ticker: int = 1
     # Rule-based per-entry sizing (see ``screener.backtester.sizing``).
-    # ``equal_slot`` reproduces the legacy fixed-slot budget exactly; every
-    # other rule sizes DOWN from that slot ceiling, never above it.
+    # ``equal_slot`` reproduces the legacy fixed-slot budget exactly.
+    # ``reinvested_equal_slot`` may grow above that initial ceiling; risk rules
+    # only size down from it.
     sizing_rule: str = "equal_slot"
     sizing_risk_pct: float = Field(default=0.01, gt=0.0)
     sizing_position_pct: float = Field(default=0.10, gt=0.0)

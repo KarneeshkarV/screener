@@ -1,17 +1,17 @@
 """Explicit position + cash accounting for the backtester.
 
-Each slot has a fixed ``slot_capital = initial_capital / slot_count`` budget
-ceiling. At each ``open`` we spend up to ``min(slot_capital, current_cash)`` of
-cash to fill shares (the cap prevents negative cash when a slot is reused
-after a losing trade and cumulative losses have eroded the pool). At exit we
-receive ``shares * exit_price - exit_commission`` back into cash.
+By default, each slot has a fixed
+``slot_capital = initial_capital / slot_count`` budget ceiling. At each
+``open`` we spend up to ``min(slot_capital, current_cash)``. A reinvested
+sizing rule can lift the fixed ceiling, but current cash remains the hard cap.
+At exit we receive ``shares * exit_price - exit_commission`` back into cash.
 
 The equity curve is cash + mark-to-market of open positions. When the engine
 uses the event-driven reallocation path, closed-trade proceeds return to
 ``_cash`` and fund subsequent ``open`` calls on the same slot (a reserve
-ticker fills the freed slot). Realized gains that exceed ``slot_capital`` stay
-as idle cash within the slot — per-slot sizing is not compounded, to keep
-sizing balanced across slots regardless of lucky-early-trade effects.
+ticker fills the freed slot). Under fixed sizing, realized gains that exceed
+``slot_capital`` stay as idle cash. Reinvested sizing recalculates equal slots
+from marked portfolio equity before each refill batch.
 
 Concurrent positions per ticker (pyramiding) are supported internally by
 keying ``_open`` on ``(ticker, open_seq)``. Legacy callers that pass ticker
@@ -23,7 +23,7 @@ ticker cannot be opened twice through the legacy API.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime
 from typing import Any, Union, cast
 
@@ -76,6 +76,30 @@ class Portfolio:
     def entry_budget(self) -> float:
         """Cash available to the next slot, before entry price/commission."""
         return min(self.slot_capital, max(self._cash, 0.0))
+
+    def marked_equity(
+        self,
+        mark_prices: Mapping[str, float],
+        *,
+        as_of: _Stamp | None = None,
+    ) -> float:
+        """Return cash plus open positions marked at causal current prices.
+
+        A position whose fill is after ``as_of`` remains cash for this sizing
+        snapshot. Missing marks use the entry fill so a sparse ticker cannot
+        erase capital from the portfolio value.
+        """
+        equity = self._cash
+        as_of_ts = pd.Timestamp(as_of) if as_of is not None else None
+        for (ticker, _), position in self._open.items():
+            if as_of_ts is not None and pd.Timestamp(position.entry_date) > as_of_ts:
+                equity += position.slot_capital
+                continue
+            mark = float(mark_prices.get(ticker, position.entry_fill))
+            if not np.isfinite(mark) or mark <= 0.0:
+                mark = position.entry_fill
+            equity += position.shares * mark
+        return float(equity)
 
     def _charge_fees(
         self,
@@ -133,17 +157,19 @@ class Portfolio:
         raise_if_exists: bool = True,
         budget: float | None = None,
         shares: float | None = None,
+        allow_slot_growth: bool = False,
     ) -> Position:
         """Open a position for ``ticker``. By default raises if the ticker is
         already active (legacy invariant). Pass ``raise_if_exists=False`` to
         allow pyramiding: a new ``open_seq`` is allocated and the position is
         tracked as a distinct concurrent lot.
 
-        ``budget`` lets a sizing rule spend less than the slot budget; it is
-        always clamped to ``entry_budget()`` so a rule can never exceed the
-        slot ceiling or overdraw cash. When ``shares`` is supplied, it is the
-        pre-impact count quoted by ``FillModel`` and is used unchanged. The
-        portfolio remains the authority for the applicable fees and cash debit.
+        ``budget`` lets a sizing rule set the position budget. The default
+        clamps it to ``entry_budget()``. ``allow_slot_growth`` removes only the
+        fixed slot ceiling for a reinvested sizing rule; available cash remains
+        a hard cap. When ``shares`` is supplied, it is the pre-impact count
+        quoted by ``FillModel`` and is used unchanged. The portfolio remains
+        the authority for the applicable fees and cash debit.
 
         Fees come from the cost model owned by this portfolio.
         """
@@ -154,7 +180,7 @@ class Portfolio:
         # cannot overdraw the portfolio.
         # Proportional fee models do not depend on notional; pass budget as a
         # stable reference for any future notional-dependent schedules.
-        cap = self.entry_budget()
+        cap = max(self._cash, 0.0) if allow_slot_growth else self.entry_budget()
         budget = cap if budget is None else min(max(float(budget), 0.0), cap)
         if shares is None:
             c = float(self.cost_model.side_cost_fraction("buy", budget))

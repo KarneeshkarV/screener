@@ -42,7 +42,11 @@ from screener.backtester.models import (
 )
 from screener.backtester.pine import PineError, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
-from screener.backtester.sizing import entry_budget_for
+from screener.backtester.sizing import (
+    entry_budget_for,
+    marked_portfolio_equity,
+    sizing_allows_slot_growth,
+)
 from screener.backtester.warmup import _warmup_days_for_interval
 from screener.options.backtest import merge_referenced_options
 
@@ -179,6 +183,7 @@ class _ReserveRotationSource:
     def before_exits(self, day: pd.Timestamp) -> None:
         cfg = self.cfg
         portfolio = self.portfolio
+        current_equity = marked_portfolio_equity(portfolio, self.bars_by_tv, day)
         if self.pending_reentry:
             for slot_id, ticker in list(self.pending_reentry.items()):
                 slot_frame = self.slot_bars.get(slot_id)
@@ -204,6 +209,7 @@ class _ReserveRotationSource:
                     portfolio,
                     slot_frame,
                     reentry_signal_idx,
+                    current_equity=current_equity,
                     series_cache=self.caches.frame(ticker, slot_frame).sizing_series,
                 )
                 state, warn = _make_slot_state(
@@ -229,6 +235,7 @@ class _ReserveRotationSource:
                     entry_price=state.entry_fill,
                     budget=entry_budget,
                     shares=state.entry_shares,
+                    allow_slot_growth=sizing_allows_slot_growth(cfg.sizing_rule),
                 )
                 self.slot_states[slot_id] = state
                 del self.pending_reentry[slot_id]
@@ -246,6 +253,8 @@ class _ReserveRotationSource:
 
         if not cfg.reinvest or not freed:
             return
+
+        current_equity = marked_portfolio_equity(portfolio, self.bars_by_tv, day)
 
         for slot_id in freed:
             if slot_id in self.pending_reentry:
@@ -274,6 +283,7 @@ class _ReserveRotationSource:
                     portfolio,
                     reserve_bars,
                     reserve_signal_idx,
+                    current_equity=current_equity,
                     series_cache=self.caches.frame(ticker, reserve_bars).sizing_series,
                 )
                 state, warn = _make_slot_state(
@@ -298,6 +308,7 @@ class _ReserveRotationSource:
                     entry_price=state.entry_fill,
                     budget=entry_budget,
                     shares=state.entry_shares,
+                    allow_slot_growth=sizing_allows_slot_growth(cfg.sizing_rule),
                 )
                 self.slot_states[slot_id] = state
                 self.slot_bars[slot_id] = reserve_bars
@@ -332,6 +343,7 @@ def _run_event_driven_sim(
     slot_bars: dict[int, pd.DataFrame] = {}
     reentries_left: dict[int, int] = {}
     pending_reentry: dict[int, str] = {}
+    initial_equity = marked_portfolio_equity(portfolio, bars_by_tv, as_of_ts)
 
     for raw_slot_id, row in actives_df.iterrows():
         slot_id = int(str(raw_slot_id))
@@ -352,6 +364,7 @@ def _run_event_driven_sim(
             portfolio,
             bars,
             signal_idx,
+            current_equity=initial_equity,
             series_cache=caches.frame(ticker, bars).sizing_series,
         )
         state, warn = _make_slot_state(
@@ -377,6 +390,7 @@ def _run_event_driven_sim(
             entry_price=state.entry_fill,
             budget=entry_budget,
             shares=state.entry_shares,
+            allow_slot_growth=sizing_allows_slot_growth(cfg.sizing_rule),
         )
         slot_states[slot_id] = state
         slot_bars[slot_id] = bars

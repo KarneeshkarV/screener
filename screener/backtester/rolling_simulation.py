@@ -55,7 +55,11 @@ from screener.backtester.signal_panel import (
     build_signal_panel,
     parse_signal_program,
 )
-from screener.backtester.sizing import entry_budget_for
+from screener.backtester.sizing import (
+    entry_budget_for,
+    marked_portfolio_equity,
+    sizing_allows_slot_growth,
+)
 
 # The reuse key is derived, not curated: every field either module declares as
 # an input is in it, plus every field no module claims at all. The old
@@ -244,6 +248,8 @@ class _DailyRankingSource:
         if not free_slots:
             return
 
+        current_equity = marked_portfolio_equity(portfolio, self.bars_by_tv, day)
+
         # One active-ticker set for the day: exclude at rank time and keep it
         # updated as slots open so the inner loop is an O(1) membership check
         # instead of rescanning slot_states per candidate.
@@ -287,6 +293,7 @@ class _DailyRankingSource:
                     portfolio,
                     bars,
                     int(row["signal_idx"]),
+                    current_equity=current_equity,
                     series_cache=self.caches.frame(ticker, bars).sizing_series,
                 )
                 state, warn = _make_slot_state(
@@ -317,6 +324,7 @@ class _DailyRankingSource:
                     entry_price=state.entry_fill,
                     budget=entry_budget,
                     shares=state.entry_shares,
+                    allow_slot_growth=sizing_allows_slot_growth(cfg.sizing_rule),
                 )
                 slot_states[slot_id] = state
                 self.slot_bars[slot_id] = bars

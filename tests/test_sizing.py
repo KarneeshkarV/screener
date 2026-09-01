@@ -75,6 +75,39 @@ def test_equal_slot_returns_entry_budget_exactly():
     assert entry_budget_for(cfg, portfolio, bars, 20) == pytest.approx(25_000.0)
 
 
+@pytest.mark.parametrize(
+    ("current_equity", "expected_budget"),
+    [(120_000.0, 30_000.0), (80_000.0, 20_000.0)],
+)
+def test_reinvested_equal_slot_tracks_current_equity(
+    current_equity: float, expected_budget: float
+):
+    portfolio = Portfolio(100_000.0, 4)
+    cfg = _sizing_cfg("reinvested_equal_slot", top=4)
+    bars = _constant_bars(100.0)
+
+    budget = entry_budget_for(cfg, portfolio, bars, 20, current_equity=current_equity)
+
+    assert budget == pytest.approx(expected_budget)
+
+
+def test_reinvested_open_can_grow_above_initial_slot_ceiling():
+    portfolio = Portfolio(100_000.0, 4)
+
+    portfolio.open(
+        "AAA",
+        _INDEX[0].date(),
+        100.0,
+        budget=30_000.0,
+        allow_slot_growth=True,
+    )
+
+    position = portfolio.get_position("AAA")
+    assert position is not None
+    assert position.slot_capital == pytest.approx(30_000.0)
+    assert portfolio.cash() == pytest.approx(70_000.0)
+
+
 def test_fixed_fraction_sizes_by_equity():
     portfolio = Portfolio(100_000.0, 4)
     cfg = _sizing_cfg("fixed_fraction", top=4, sizing_position_pct=0.10)
@@ -228,3 +261,16 @@ def test_rolling_default_matches_legacy_slot_sizing():
     for trade in result.trades:
         # top=2 -> slot_capital = 100_000 / 2 = 50_000, fully spent.
         assert trade.entry_cost == pytest.approx(50_000.0)
+
+
+def test_rolling_reinvested_equal_slot_compounds_later_entry_budgets():
+    fetcher = StubPriceFetcher(_RISING_DATA)
+    cfg = _rolling_cfg(sizing_rule="reinvested_equal_slot")
+
+    result = run_rolling_backtest(
+        cfg, fetcher, start_date=_INDEX[0].date(), end_date=_INDEX[-1].date()
+    )
+
+    entry_costs = [trade.entry_cost for trade in result.trades]
+    assert entry_costs[:2] == pytest.approx([50_000.0, 50_000.0])
+    assert max(entry_costs[2:]) > 50_000.0

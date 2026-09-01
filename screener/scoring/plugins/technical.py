@@ -112,6 +112,13 @@ register_bar_scorer(
 )
 
 register_bar_scorer(
+    "momentum_12_1_ema10",
+    "momentum_12_1",
+    description="12-1 momentum ranking with close-above-EMA10 eligibility "
+    "from the momentum_12_1_ema10 strategy",
+)
+
+register_bar_scorer(
     "ha_momentum",
     "ha_momentum",
     description="12-1 momentum ranked only while Heikin-Ashi confirms an "
