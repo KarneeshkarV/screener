@@ -160,7 +160,10 @@ def backtest_historical(**params: Any) -> None:
         return
     print_backtest(result)
     if generated_report:
-        click.echo(f"Report: {generated_report}")
+        from screener.reporting import report_path_lines
+
+        for line in report_path_lines(generated_report):
+            click.echo(line)
         if params["open_report"]:
             from screener.reporting import open_report as open_report_file
 

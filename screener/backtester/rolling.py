@@ -360,9 +360,16 @@ def backtest_rolling(**params: Any) -> None:
     )
     if run.universe_note:
         console.print(f"[dim]Universe: {run.universe_note}[/dim]")
-    print_backtest(result, sizing_comparison=sizing_comparison)
+    # The trade log is large and always lands in the tear sheet, so keep the
+    # terminal to the header plus metrics.
+    print_backtest(result, sizing_comparison=sizing_comparison, show_ledger=False)
     if generated_report:
+        from screener.reporting import windows_report_path
+
         console.print(f"[green]Report:[/green] {generated_report}")
+        windows_report = windows_report_path(generated_report)
+        if windows_report:
+            console.print(f"[green]Windows:[/green] {windows_report}")
         if params["open_report"]:
             from screener.reporting import open_report as open_report_file
 

@@ -236,7 +236,10 @@ def screen(
     )
     if outcome.render_report is not None:
         outcome.render_report()
-    click.echo(f"Report: {outcome.report_path}")
+    from screener.reporting import report_path_lines
+
+    for line in report_path_lines(outcome.report_path):
+        click.echo(line)
     if open_report and outcome.report_path is not None:
         from screener.reporting import open_report as open_report_file
 

@@ -110,6 +110,8 @@ def _print_ticker_attribution(trades: pd.DataFrame, out) -> None:
 def _print_backtest_agent(
     result: BacktestResult,
     sizing_comparison: tuple[BacktestResult, BacktestResult] | None = None,
+    *,
+    show_ledger: bool = True,
 ) -> None:
     """Render the same shared metric rows in bounded, plain agent output."""
     cfg = result.config
@@ -136,16 +138,23 @@ def _print_backtest_agent(
     path = agentio.spill(trades, f"backtest-{cfg.market}")
     _print_ticker_attribution(trades, out)
     out.print(f"trades: {len(trades)} rows -> {path}")
-    agentio.render_table(_ledger_table(result), out)
+    if show_ledger:
+        agentio.render_table(_ledger_table(result), out)
 
 
 def print_backtest(
     result: BacktestResult,
     *,
     sizing_comparison: tuple[BacktestResult, BacktestResult] | None = None,
+    show_ledger: bool = True,
 ) -> None:
+    """Print the run header, metrics, and (unless suppressed) the trade ledger.
+
+    ``show_ledger=False`` keeps the ledger out of the terminal for callers that
+    always write a tear sheet, where the full trade log already lives.
+    """
     if agentio.is_agent_mode():
-        _print_backtest_agent(result, sizing_comparison)
+        _print_backtest_agent(result, sizing_comparison, show_ledger=show_ledger)
         return
 
     cfg = result.config
@@ -165,7 +174,8 @@ def print_backtest(
     if not result.trades:
         console.print("[dim]No trades.[/dim]")
         return
-    console.print(_ledger_table(result))
+    if show_ledger:
+        console.print(_ledger_table(result))
 
 
 _SERIALIZED_EQUITY_TRADE_COLUMNS = [

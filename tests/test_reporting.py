@@ -17,7 +17,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from screener.reporting import dump_json_file, json_safe, markdown_row
+from screener.reporting import (
+    dump_json_file,
+    json_safe,
+    markdown_row,
+    report_path_lines,
+    windows_report_path,
+)
 
 # ─────────────────────────── json_safe ───────────────────────────
 
@@ -102,3 +108,50 @@ def test_markdown_row_shape():
 
 def test_markdown_row_single_cell():
     assert markdown_row(["x"]) == "| x |"
+
+
+# ─────────────────────── windows_report_path ────────────────────────
+
+
+def test_windows_report_path_is_none_off_wsl(monkeypatch):
+    monkeypatch.setattr("screener.reporting._is_wsl", lambda: False)
+    assert windows_report_path("/tmp/report.html") is None
+
+
+def test_windows_report_path_uses_unc_form_on_wsl(monkeypatch):
+    monkeypatch.setattr("screener.reporting._is_wsl", lambda: True)
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    assert (
+        windows_report_path("/tmp/screener-reports/a.html")
+        == r"\\wsl.localhost\Ubuntu\tmp\screener-reports\a.html"
+    )
+
+
+def test_windows_report_path_maps_drive_mounts(monkeypatch):
+    monkeypatch.setattr("screener.reporting._is_wsl", lambda: True)
+    assert windows_report_path("/mnt/c/Users/me/a.html") == r"C:\Users\me\a.html"
+
+
+def test_windows_report_path_needs_a_distro_name(monkeypatch):
+    monkeypatch.setattr("screener.reporting._is_wsl", lambda: True)
+    monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    assert windows_report_path("/tmp/a.html") is None
+
+
+def test_report_path_lines_off_wsl(monkeypatch):
+    monkeypatch.setattr("screener.reporting._is_wsl", lambda: False)
+    assert report_path_lines("/tmp/a.html") == ["Report: /tmp/a.html"]
+
+
+def test_report_path_lines_adds_windows_line(monkeypatch):
+    monkeypatch.setattr("screener.reporting._is_wsl", lambda: True)
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    assert (
+        report_path_lines("/tmp/a.html")[1]
+        == r"Windows: \\wsl.localhost\Ubuntu\tmp\a.html"
+    )
+
+
+def test_report_path_lines_tolerates_no_report(monkeypatch):
+    monkeypatch.setattr("screener.reporting._is_wsl", lambda: True)
+    assert report_path_lines(None) == ["Report: None"]
