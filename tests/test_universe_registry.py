@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from datetime import date, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -330,3 +331,41 @@ def test_universe_fetch_failure_without_cache_still_raises(
 
     with pytest.raises(RuntimeError, match="constituents unavailable"):
         universes.load_current_universe(name, as_of=date.today())
+
+
+def test_shipped_nifty500_pit_config_yields_delisted_members() -> None:
+    """The committed snapshot history must still resolve into real PIT windows.
+
+    ``nifty500_pit`` exists to undo the survivorship bias of the built-in
+    ``nifty500`` loader, so the guard that matters is that names NSE has since
+    dropped are eligible on the dates they were in the index and closed out
+    afterwards. A regenerated or truncated CSV that quietly collapsed to
+    today's membership would still load; it would just stop being point-in-time.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    config = repo_root / "universes.yaml"
+
+    selection = universes.load_universe_selection(
+        "nifty500_pit",
+        market="india",
+        as_of=date(2026, 9, 1),
+        config_path=config,
+    )
+
+    assert selection.benchmark == "^NSEI"
+    assert all(symbol.endswith(".NS") for symbol in selection.symbols)
+    boundaries = sorted({window[1] for window in selection.membership_windows})
+    assert len(boundaries) >= 10
+    assert boundaries[0].year <= 2019
+
+    open_members = {w[0] for w in selection.membership_windows if w[2] is None}
+    # Ever-members far exceed current members only if delisted and demoted
+    # names survived the reconstruction.
+    assert len(selection.symbols) > len(open_members) + 100
+
+    # Allahabad Bank was merged away in 2020; it must be selectable in 2019 and
+    # never afterwards.
+    albk = [w for w in selection.membership_windows if w[0] == "ALBK.NS"]
+    assert albk, "expected a delisted 2019-era constituent in the history"
+    assert all(window[2] is not None for window in albk)
+    assert min(window[1] for window in albk).year <= 2019
