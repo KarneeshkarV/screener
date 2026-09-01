@@ -59,11 +59,17 @@ class BackfillSource:
     the years. NSE moved between ``www1``, ``archives`` and ``nsearchives``,
     and niftyindices.com serves its own copy; the Internet Archive crawled each
     separately, so all of them have to be swept to recover the full history.
+
+    ``min_symbols`` is the smallest member count that is plausible for this
+    index. A truncated capture that still parses would otherwise be written as
+    a real snapshot and erase most of the index for its whole window, so the
+    floor has to be per-index rather than a global 1.
     """
 
     label: str
     urls: tuple[str, ...]
     suffix: str = ""
+    min_symbols: int = 1
 
 
 BACKFILL_SOURCES: dict[str, BackfillSource] = {
@@ -77,6 +83,7 @@ BACKFILL_SOURCES: dict[str, BackfillSource] = {
             "niftyindices.com/IndexConstituent/ind_nifty50list.csv",
             "www.niftyindices.com/IndexConstituent/ind_nifty50list.csv",
         ),
+        min_symbols=40,
     ),
     "nifty500": BackfillSource(
         label="Nifty 500 constituents",
@@ -89,6 +96,7 @@ BACKFILL_SOURCES: dict[str, BackfillSource] = {
             "www.niftyindices.com/IndexConstituent/ind_nifty500list.csv",
         ),
         suffix=NSE_SYMBOL_SUFFIX,
+        min_symbols=400,
     ),
 }
 
@@ -172,9 +180,12 @@ def list_archived_snapshots(
 ) -> tuple[tuple[ArchivedSnapshot, ...], tuple[str, ...]]:
     """Return ``(snapshots, warnings)`` for one universe, oldest first.
 
-    Crawls are deduped by content digest and by observation date: identical
-    content re-crawled later says nothing new about membership, and two mirrors
-    crawled on the same day would otherwise claim the same date twice.
+    Crawls are deduped by observation date and by consecutive content digest:
+    a date can carry only one membership, and re-crawling unchanged content
+    says nothing new. Both rules are deliberately local - the day keeps its
+    last crawl rather than its first, and a digest is compared only against the
+    crawl before it - so neither a same-day change nor a membership that
+    reverts to an earlier state is collapsed away.
 
     A mirror whose archive index cannot be read yields a warning rather than an
     error - the history is assembled from whichever mirrors do answer, and a
@@ -215,14 +226,21 @@ def list_archived_snapshots(
         if owned:
             session.close()
     candidates.sort(key=lambda snapshot: snapshot.timestamp)
-    seen_digests: set[str] = set()
-    seen_dates: set[date] = set()
-    kept: list[ArchivedSnapshot] = []
+    # One snapshot per calendar day, because a date can carry only one
+    # membership. Keep the *last* crawl of the day: when two mirrors disagree
+    # because NSE published a change partway through, the later crawl is the
+    # one that saw the change, and keeping the earlier one would hold removed
+    # names eligible and new names out until the next crawl.
+    by_date: dict[date, ArchivedSnapshot] = {}
     for snapshot in candidates:
-        if snapshot.digest in seen_digests or snapshot.observed in seen_dates:
+        by_date[snapshot.observed] = snapshot
+    kept: list[ArchivedSnapshot] = []
+    for _observed, snapshot in sorted(by_date.items()):
+        # Drop a crawl only when it repeats the digest immediately before it.
+        # Deduping against every digest ever seen would swallow a genuine
+        # A -> B -> A revert, and the window would then claim B forever.
+        if kept and snapshot.digest == kept[-1].digest:
             continue
-        seen_digests.add(snapshot.digest)
-        seen_dates.add(snapshot.observed)
         kept.append(snapshot)
     return tuple(kept), tuple(warnings)
 
@@ -269,22 +287,31 @@ def backfill_snapshots(
     output: str | Path,
     since: date | None = None,
     until: date | None = None,
-    min_symbols: int = 1,
+    min_symbols: int | None = None,
+    replace_existing: bool = False,
     session: requests.Session | None = None,
     timeout: float = 60.0,
 ) -> BackfillResult:
     """Write a ``symbol,effective_date`` snapshot CSV from archived crawls.
 
-    Rows already in ``output`` are preserved unless the backfill produces the
-    same ``effective_date``, so this composes with ``universes sync``, which
-    appends today's live membership going forward.
+    Rows already in ``output`` are never touched, so this composes with
+    ``universes sync``, which appends today's live membership going forward.
+    A live snapshot is a first-hand observation and an archived crawl of the
+    same day is not, so a date the file already carries is left alone and
+    reported as a conflict. Pass ``replace_existing`` to overwrite those dates
+    instead, which is what you want after a bad backfill wrote wrong rows.
 
-    ``min_symbols`` rejects a crawl that parsed into an implausibly short list.
-    A truncated or error-page capture would otherwise erase most of the index
-    for the entire window that snapshot covers, which reads as a plausible
-    result rather than as the fetch failure it is.
+    ``min_symbols`` rejects a crawl that parsed into an implausibly short list;
+    it defaults to the floor the source declares. A truncated or error-page
+    capture would otherwise erase most of the index for the entire window that
+    snapshot covers, which reads as a plausible result rather than as the fetch
+    failure it is.
     """
     source = get_backfill_source(name)
+    if min_symbols is None:
+        min_symbols = source.min_symbols
+    if min_symbols < 1:
+        raise ValueError(f"min_symbols must be at least 1, got {min_symbols}")
     snapshots, warnings = list_archived_snapshots(
         name, since=since, until=until, session=session, timeout=timeout
     )
@@ -325,6 +352,27 @@ def backfill_snapshots(
         detail = f"; {all_warnings[0]}" if all_warnings else ""
         raise RuntimeError(f"no usable archived snapshots for {name}{detail}")
 
+    path = Path(output).expanduser()
+    existing = _read_existing(path)
+    existing_dates = set(existing["effective_date"]) if not existing.empty else set()
+    if existing_dates and not replace_existing:
+        conflicting = [
+            snapshot
+            for snapshot, _members in accepted
+            if snapshot.observed.isoformat() in existing_dates
+        ]
+        for snapshot in conflicting:
+            all_warnings.append(
+                f"kept the existing snapshot for {snapshot.observed.isoformat()} "
+                f"rather than the crawl {snapshot.timestamp} of {snapshot.url}; "
+                "pass replace_existing to overwrite it"
+            )
+        accepted = [
+            (snapshot, members)
+            for snapshot, members in accepted
+            if snapshot.observed.isoformat() not in existing_dates
+        ]
+
     addition = pd.DataFrame(
         {
             "effective_date": [
@@ -335,13 +383,16 @@ def backfill_snapshots(
             "symbol": [symbol for _snapshot, members in accepted for symbol in members],
         }
     )
-    path = Path(output).expanduser()
-    existing = _read_existing(path)
-    if not existing.empty:
+    if not existing.empty and not addition.empty:
         existing = existing[
             ~existing["effective_date"].isin(set(addition["effective_date"]))
         ]
-    combined = pd.concat([existing, addition], ignore_index=True)
+    frames = [frame for frame in (existing, addition) if not frame.empty]
+    combined = (
+        pd.concat(frames, ignore_index=True)
+        if frames
+        else pd.DataFrame(columns=["effective_date", "symbol"])
+    )
     combined = combined.drop_duplicates(subset=["effective_date", "symbol"])
     combined = combined.sort_values(["effective_date", "symbol"], kind="stable")
     path.parent.mkdir(parents=True, exist_ok=True)

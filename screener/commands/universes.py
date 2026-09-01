@@ -104,17 +104,26 @@ def sync_universe(name: str, output: Path | None, use_cache: bool) -> None:
 )
 @click.option(
     "--min-symbols",
-    type=int,
-    default=1,
-    show_default=True,
-    help="Reject a crawl that parsed into fewer symbols than this.",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Reject a crawl that parsed into fewer symbols than this "
+        "(default: the index's own plausible floor)."
+    ),
+)
+@click.option(
+    "--replace-existing",
+    is_flag=True,
+    default=False,
+    help="Overwrite snapshots the file already carries for the same date.",
 )
 def backfill_universe(
     name: str,
     output: Path | None,
     since: datetime | None,
     until: datetime | None,
-    min_symbols: int,
+    min_symbols: int | None,
+    replace_existing: bool,
 ) -> None:
     """Rebuild dated membership history from Internet Archive crawls.
 
@@ -134,6 +143,7 @@ def backfill_universe(
             since=since.date() if since else None,
             until=until.date() if until else None,
             min_symbols=min_symbols,
+            replace_existing=replace_existing,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc

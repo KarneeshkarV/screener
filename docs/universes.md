@@ -31,16 +31,23 @@ into a dated snapshot.
 
 ```bash
 uv run screener universes backfill nifty500 \
-  --output data/universes/nifty500_pit_snapshots.csv --min-symbols 400
+  --output data/universes/nifty500_pit_snapshots.csv
 ```
 
-Both commands write the same format and merge rather than overwrite, so the
-normal setup is to backfill once and then let `sync` extend the file forward.
+Both commands write the same format, so the normal setup is to backfill once
+and then let `sync` extend the file forward.
+The backfill never touches a date the file already carries; it reports the
+conflict and keeps the existing rows, because a `sync` snapshot is a first-hand
+observation and an archived crawl of the same day is not.
+Pass `--replace-existing` to overwrite those dates, which is what you want
+after a bad backfill wrote wrong rows.
 
 `--min-symbols` rejects a crawl that parsed into an implausibly short list.
 A truncated capture would otherwise erase most of the index for the whole
 window that snapshot covers, which reads as a plausible backtest result rather
 than as the fetch failure it is.
+It defaults to the index's own floor: 400 for the Nifty 500, 40 for the Nifty
+50.
 
 ### What the reconstruction can and cannot tell you
 
@@ -54,6 +61,9 @@ than as the fetch failure it is.
   rather than a bias toward names that turned out well.
 - **Check the printed dates for gaps** before trusting a window. The command
   prints every snapshot it kept with its symbol count and source URL.
+- **A backtest that starts before the first snapshot trades nothing** over that
+  stretch, because no name is eligible yet. The run's universe note says so
+  explicitly rather than letting the gap read as a strategy result.
 
 ## Shipped `nifty500_pit`
 

@@ -79,7 +79,7 @@ def test_parse_nse_index_csv_matches_the_live_nifty500_vocabulary(monkeypatch) -
     assert live == archived == ["RELIANCE.NS", "TCS.NS"]
 
 
-def test_snapshots_are_deduped_by_digest_and_by_observation_date() -> None:
+def test_snapshots_drop_repeat_digests_and_keep_the_last_crawl_of_a_day() -> None:
     mirror_a, mirror_b = _NIFTY500_MIRRORS[0], _NIFTY500_MIRRORS[1]
     captures = {
         mirror_a: [
@@ -87,7 +87,8 @@ def test_snapshots_are_deduped_by_digest_and_by_observation_date() -> None:
             ["20240301120000", f"https://{mirror_a}", "DIGEST1", "200"],
             ["20240601120000", f"https://{mirror_a}", "DIGEST2", "200"],
         ],
-        # Same day as the DIGEST2 crawl: one date must not claim two snapshots.
+        # Same day as the DIGEST2 crawl, and later: one date carries one
+        # membership, and the later crawl is the one that saw the change.
         mirror_b: [["20240601180000", f"https://{mirror_b}", "DIGEST3", "200"]],
     }
     session = _FakeSession(captures, {})
@@ -98,7 +99,27 @@ def test_snapshots_are_deduped_by_digest_and_by_observation_date() -> None:
 
     assert warnings == ()
     assert [s.observed for s in snapshots] == [date(2024, 1, 1), date(2024, 6, 1)]
-    assert [s.digest for s in snapshots] == ["DIGEST1", "DIGEST2"]
+    assert [s.digest for s in snapshots] == ["DIGEST1", "DIGEST3"]
+
+
+def test_a_membership_revert_is_not_deduped_away() -> None:
+    mirror = _NIFTY500_MIRRORS[0]
+    captures = {
+        mirror: [
+            ["20240101120000", f"https://{mirror}", "A", "200"],
+            ["20240201120000", f"https://{mirror}", "B", "200"],
+            # Back to the January membership. Deduping against every digest
+            # ever seen would drop this and leave B eligible forever.
+            ["20240301120000", f"https://{mirror}", "A", "200"],
+        ]
+    }
+    session = _FakeSession(captures, {})
+
+    snapshots, _ = universe_backfill.list_archived_snapshots(
+        "nifty500", session=session
+    )
+
+    assert [s.digest for s in snapshots] == ["A", "B", "A"]
 
 
 def test_unreachable_mirror_warns_and_keeps_the_others() -> None:
@@ -156,7 +177,7 @@ def test_backfill_writes_dated_snapshots_and_skips_unchanged_membership(
     session = _FakeSession(captures, bodies)
 
     result = universe_backfill.backfill_snapshots(
-        "nifty500", output=output, session=session
+        "nifty500", output=output, session=session, min_symbols=1
     )
 
     assert [s.observed for s in result.snapshots] == [
@@ -205,7 +226,9 @@ def test_backfill_preserves_rows_at_dates_it_did_not_produce(tmp_path) -> None:
     bodies = {_replay("20240101120000", mirror): _csv(["AAA"])}
     session = _FakeSession(captures, bodies)
 
-    universe_backfill.backfill_snapshots("nifty500", output=output, session=session)
+    universe_backfill.backfill_snapshots(
+        "nifty500", output=output, session=session, min_symbols=1
+    )
 
     frame = pd.read_csv(output, dtype=str)
     assert set(frame["effective_date"]) == {"2024-01-01", "2026-01-01"}
@@ -242,7 +265,16 @@ def test_backfill_cli_reports_snapshot_dates_and_counts(monkeypatch, tmp_path) -
     output = tmp_path / "snapshots.csv"
 
     result = CliRunner().invoke(
-        cli, ["universes", "backfill", "nifty500", "--output", str(output)]
+        cli,
+        [
+            "universes",
+            "backfill",
+            "nifty500",
+            "--output",
+            str(output),
+            "--min-symbols",
+            "1",
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -275,3 +307,70 @@ def test_backfill_cli_reports_a_dead_archive_as_a_clean_error(
 
     assert result.exit_code != 0
     assert "no usable archived snapshots" in result.output
+
+
+def test_backfill_keeps_an_existing_snapshot_for_a_date_it_also_crawled(
+    tmp_path,
+) -> None:
+    """A live ``sync`` row is first-hand; an archived crawl of that day is not."""
+    output = tmp_path / "snapshots.csv"
+    pd.DataFrame({"effective_date": ["2024-01-01"], "symbol": ["LIVE.NS"]}).to_csv(
+        output, index=False
+    )
+    mirror = _NIFTY500_MIRRORS[0]
+    captures = {mirror: [["20240101120000", f"https://{mirror}", "D1", "200"]]}
+    bodies = {_replay("20240101120000", mirror): _csv(["AAA"])}
+    session = _FakeSession(captures, bodies)
+
+    result = universe_backfill.backfill_snapshots(
+        "nifty500", output=output, session=session, min_symbols=1
+    )
+
+    frame = pd.read_csv(output, dtype=str)
+    assert set(frame["symbol"]) == {"LIVE.NS"}
+    assert any("kept the existing snapshot" in warning for warning in result.warnings)
+
+
+def test_replace_existing_overwrites_a_conflicting_date(tmp_path) -> None:
+    output = tmp_path / "snapshots.csv"
+    pd.DataFrame({"effective_date": ["2024-01-01"], "symbol": ["OLD.NS"]}).to_csv(
+        output, index=False
+    )
+    mirror = _NIFTY500_MIRRORS[0]
+    captures = {mirror: [["20240101120000", f"https://{mirror}", "D1", "200"]]}
+    bodies = {_replay("20240101120000", mirror): _csv(["AAA"])}
+    session = _FakeSession(captures, bodies)
+
+    universe_backfill.backfill_snapshots(
+        "nifty500",
+        output=output,
+        session=session,
+        min_symbols=1,
+        replace_existing=True,
+    )
+
+    frame = pd.read_csv(output, dtype=str)
+    assert set(frame["symbol"]) == {"AAA.NS"}
+
+
+def test_min_symbols_defaults_to_the_index_floor(tmp_path) -> None:
+    """The Nifty 500 floor must reject a two-symbol crawl without being asked."""
+    mirror = _NIFTY500_MIRRORS[0]
+    captures = {mirror: [["20240101120000", f"https://{mirror}", "D1", "200"]]}
+    bodies = {_replay("20240101120000", mirror): _csv(["AAA", "BBB"])}
+    session = _FakeSession(captures, bodies)
+
+    with pytest.raises(RuntimeError, match="no usable archived snapshots"):
+        universe_backfill.backfill_snapshots(
+            "nifty500", output=tmp_path / "snapshots.csv", session=session
+        )
+
+
+def test_min_symbols_must_be_positive(tmp_path) -> None:
+    with pytest.raises(ValueError, match="min_symbols must be at least 1"):
+        universe_backfill.backfill_snapshots(
+            "nifty500",
+            output=tmp_path / "snapshots.csv",
+            session=_FakeSession({}, {}),
+            min_symbols=0,
+        )
