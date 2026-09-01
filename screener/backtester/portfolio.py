@@ -148,6 +148,42 @@ class Portfolio:
             return None
         return fifo[0]
 
+    def _preview_fees(self, side: Side, notional: float, shares: float) -> float:
+        """Total fee for a prospective fill, without recording its breakdown."""
+        breakdown_fn = getattr(self.cost_model, "side_cost_breakdown", None)
+        if callable(breakdown_fn):
+            return sum(
+                max(float(amount), 0.0)
+                for amount in breakdown_fn(side, notional, shares).values()
+            )
+        frac = max(float(self.cost_model.side_cost_fraction(side, notional)), 0.0)
+        return notional * frac
+
+    def _shares_within_cap(
+        self, shares: float, entry_price: float, cap: float
+    ) -> float:
+        """Trim an externally quoted share count so the buy cannot overdraw.
+
+        ``FillModel.entry_quote`` sizes shares off the pre-slippage reference,
+        so a slipped buy fill can cost more than the budget it was quoted
+        against. Scale the count down to ``cap`` and re-check once: fee
+        schedules may be non-proportional, so the second pass prices the fee of
+        the trimmed order.
+        """
+        if shares <= 0.0 or entry_price <= 0.0:
+            return max(shares, 0.0)
+        if cap <= 0.0:
+            return 0.0
+        for _ in range(2):
+            notional = shares * entry_price
+            fees = self._preview_fees("buy", notional, shares)
+            if notional + fees <= cap:
+                break
+            shares = max((cap - fees) / entry_price, 0.0)
+            if shares <= 0.0:
+                return 0.0
+        return shares
+
     def open(
         self,
         ticker: str,
@@ -188,7 +224,7 @@ class Portfolio:
             gross_per_share = entry_price * (1.0 + c)
             shares = budget / gross_per_share if gross_per_share > 0 else 0.0
         else:
-            shares = max(float(shares), 0.0)
+            shares = self._shares_within_cap(max(float(shares), 0.0), entry_price, cap)
         notional = shares * entry_price
         commission = self._charge_fees("buy", notional, shares)
         entry_cost = notional + commission

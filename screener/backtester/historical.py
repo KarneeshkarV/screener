@@ -44,6 +44,7 @@ from screener.backtester.pine import PineError, parse, required_lookback
 from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.backtester.sizing import (
     entry_budget_for,
+    entry_opens_no_shares,
     marked_portfolio_equity,
     sizing_allows_slot_growth,
 )
@@ -183,9 +184,19 @@ class _ReserveRotationSource:
     def before_exits(self, day: pd.Timestamp) -> None:
         cfg = self.cfg
         portfolio = self.portfolio
-        current_equity = marked_portfolio_equity(portfolio, self.bars_by_tv, day)
+        grows_slots = sizing_allows_slot_growth(cfg.sizing_rule)
         if self.pending_reentry:
-            for slot_id, ticker in list(self.pending_reentry.items()):
+            # Only a reinvesting rule reads marked equity; every other rule
+            # sizes off initial capital, so do not pay for the mark otherwise.
+            current_equity = (
+                marked_portfolio_equity(portfolio, self.bars_by_tv, day)
+                if grows_slots
+                else None
+            )
+            pending = list(self.pending_reentry.items())
+            slots_left = len(pending)
+            for slot_id, ticker in pending:
+                slots_left -= 1
                 slot_frame = self.slot_bars.get(slot_id)
                 if (  # pragma: no cover - freed slots always have slot_bars set
                     slot_frame is None or slot_frame.empty
@@ -210,6 +221,7 @@ class _ReserveRotationSource:
                     slot_frame,
                     reentry_signal_idx,
                     current_equity=current_equity,
+                    free_slots=slots_left + 1,
                     series_cache=self.caches.frame(ticker, slot_frame).sizing_series,
                 )
                 state, warn = _make_slot_state(
@@ -227,6 +239,12 @@ class _ReserveRotationSource:
                     if warn:
                         self.warnings.append(f"{ticker} re-entry: {warn}")
                     del self.pending_reentry[slot_id]
+                    continue
+                if grows_slots and entry_opens_no_shares(
+                    entry_budget, state.entry_shares
+                ):
+                    # The budget rounds to no shares; leave the slot pending
+                    # rather than parking an empty position in it.
                     continue
                 portfolio.assign(ticker, new_rank, _bar_label(day, cfg))
                 portfolio.open(
@@ -254,11 +272,17 @@ class _ReserveRotationSource:
         if not cfg.reinvest or not freed:
             return
 
-        current_equity = marked_portfolio_equity(portfolio, self.bars_by_tv, day)
+        grows_slots = sizing_allows_slot_growth(cfg.sizing_rule)
+        current_equity = (
+            marked_portfolio_equity(portfolio, self.bars_by_tv, day)
+            if grows_slots
+            else None
+        )
+        refillable = [s for s in freed if s not in self.pending_reentry]
+        slots_left = len(refillable)
 
-        for slot_id in freed:
-            if slot_id in self.pending_reentry:
-                continue
+        for slot_id in refillable:
+            slots_left -= 1
             while self.reserve_queue:
                 reserve = self.reserve_queue.popleft()
                 ticker = str(reserve["ticker"])
@@ -284,6 +308,7 @@ class _ReserveRotationSource:
                     reserve_bars,
                     reserve_signal_idx,
                     current_equity=current_equity,
+                    free_slots=slots_left + 1,
                     series_cache=self.caches.frame(ticker, reserve_bars).sizing_series,
                 )
                 state, warn = _make_slot_state(
@@ -300,6 +325,10 @@ class _ReserveRotationSource:
                 if state is None:
                     if warn:
                         self.warnings.append(f"{ticker}: {warn}")
+                    continue
+                if grows_slots and entry_opens_no_shares(
+                    entry_budget, state.entry_shares
+                ):
                     continue
                 portfolio.assign(ticker, int(reserve["rank"]), _bar_label(day, cfg))
                 portfolio.open(
@@ -343,9 +372,16 @@ def _run_event_driven_sim(
     slot_bars: dict[int, pd.DataFrame] = {}
     reentries_left: dict[int, int] = {}
     pending_reentry: dict[int, str] = {}
-    initial_equity = marked_portfolio_equity(portfolio, bars_by_tv, as_of_ts)
+    grows_slots = sizing_allows_slot_growth(cfg.sizing_rule)
+    initial_equity = (
+        marked_portfolio_equity(portfolio, bars_by_tv, as_of_ts)
+        if grows_slots
+        else None
+    )
+    slots_left = len(actives_df)
 
     for raw_slot_id, row in actives_df.iterrows():
+        slots_left -= 1
         slot_id = int(str(raw_slot_id))
         ticker = row["ticker"]
         bars = bars_by_tv.get(ticker, pd.DataFrame())
@@ -365,6 +401,7 @@ def _run_event_driven_sim(
             bars,
             signal_idx,
             current_equity=initial_equity,
+            free_slots=slots_left + 1,
             series_cache=caches.frame(ticker, bars).sizing_series,
         )
         state, warn = _make_slot_state(
@@ -381,6 +418,9 @@ def _run_event_driven_sim(
         if state is None:
             if warn:
                 warnings.append(f"{ticker}: {warn}")
+            slot_states[slot_id] = None
+            continue
+        if grows_slots and entry_opens_no_shares(entry_budget, state.entry_shares):
             slot_states[slot_id] = None
             continue
         portfolio.assign(ticker, int(row["rank"]), cfg.as_of)

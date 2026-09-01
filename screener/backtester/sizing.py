@@ -181,6 +181,7 @@ def entry_budget_for(
     signal_idx: int,
     *,
     current_equity: float | None = None,
+    free_slots: int = 1,
     series_cache: dict[tuple[str, int], np.ndarray] | None = None,
 ) -> float:
     """Dollar budget for the next entry under ``cfg.sizing_rule``.
@@ -188,7 +189,11 @@ def entry_budget_for(
     ``equal_slot`` short-circuits to ``portfolio.entry_budget()`` so the
     default path is bit-identical to the pre-sizing engine. Risk rules are
     clamped to ``[0, entry_budget()]``. ``reinvested_equal_slot`` is clamped
-    only by available cash.
+    by this entry's fair share of available cash: ``cash / free_slots``, where
+    ``free_slots`` is the number of slots (this one included) still to be
+    filled from the same cash balance. Without that split the first slot of a
+    batch could absorb the whole balance and leave the rest with a zero
+    budget.
 
     ``series_cache`` is ``_FrameCache.sizing_series`` for this ticker's frame,
     so a run opening many entries on one name computes its ATR once. Omitting
@@ -222,7 +227,10 @@ def entry_budget_for(
     raw = func(ctx)
     if not math.isfinite(raw):
         return base
-    ceiling = max(portfolio.cash(), 0.0) if compounds_slots else base
+    if compounds_slots:
+        ceiling = max(portfolio.cash(), 0.0) / max(int(free_slots), 1)
+    else:
+        ceiling = base
     return min(max(raw, 0.0), ceiling)
 
 
@@ -237,10 +245,25 @@ def marked_portfolio_equity(
         bars = bars_by_ticker.get(ticker)
         if bars is None or bars.empty or "close" not in bars.columns:
             continue
-        known = bars.loc[bars.index <= as_of, "close"]
-        if not known.empty:
-            marks[ticker] = float(known.iloc[-1])
+        # bars.index is a sorted DatetimeIndex; searchsorted is O(log n) where
+        # a boolean mask is O(n) per ticker per simulated day.
+        pos = int(bars.index.searchsorted(as_of, side="right"))
+        if pos > 0:
+            marks[ticker] = float(bars["close"].iloc[pos - 1])
     return portfolio.marked_equity(marks, as_of=as_of)
+
+
+def entry_opens_no_shares(entry_budget: float, entry_shares: float | None) -> bool:
+    """Whether an entry quote would create a position holding no shares.
+
+    ``_SlotState.entry_shares`` is only populated for liquidity-aware fill
+    models; otherwise ``Portfolio.open`` derives the share count from the
+    budget, so a non-positive budget is the empty case. A zero-share position
+    still occupies its slot and consumes the candidate, so callers skip it.
+    """
+    if entry_shares is not None:
+        return float(entry_shares) <= 0.0
+    return float(entry_budget) <= 0.0
 
 
 def sizing_allows_slot_growth(sizing_rule: str) -> bool:
@@ -250,6 +273,7 @@ def sizing_allows_slot_growth(sizing_rule: str) -> bool:
 
 __all__ = [
     "SizingContext",
+    "entry_opens_no_shares",
     "available_sizing_rules",
     "entry_budget_for",
     "marked_portfolio_equity",

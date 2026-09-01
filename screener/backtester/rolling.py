@@ -242,6 +242,15 @@ def _print_candidates(run: Any) -> None:
 )
 @backtest_options("rolling", "csv", "report", "open-report")
 @click.option(
+    "--compare-reinvestment",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also run the same window under the other equal-slot sizing rule and "
+        "print a side-by-side comparison. Doubles the simulation work."
+    ),
+)
+@click.option(
     "--dashboard",
     is_flag=True,
     default=False,
@@ -281,7 +290,8 @@ def backtest_rolling(**params: Any) -> None:
         _print_candidates(run)
         return
     compare_reinvestment = (
-        run.config.sizing_rule in {"equal_slot", "reinvested_equal_slot"}
+        params["compare_reinvestment"]
+        and run.config.sizing_rule in {"equal_slot", "reinvested_equal_slot"}
         and not params["output_csv"]
     )
     fixed_result = None
