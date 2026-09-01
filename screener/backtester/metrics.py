@@ -109,14 +109,16 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
 _RESULT_VIEW_SPECS = {key: (label, kind) for key, label, kind in _RESULT_VIEW_ORDER}
 
 # Rows shown when one signal panel is replayed under both equal-slot sizing
-# rules. Kept here, next to the result-view schema, so the CLI table and the
-# HTML tear-sheet cannot drift apart on which metrics the comparison shows.
-_SIZING_COMPARISON_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
-    ("final_equity", "Final Equity", "money"),
-    ("total_return", "Total Return", "pct"),
-    ("cagr", "CAGR", "pct"),
-    ("max_drawdown", "Max Drawdown", "pct"),
-    ("sharpe", "Sharpe", "ratio"),
+# rules. Keys only: the label and the kind come from the result-view schema
+# above, so a rename there cannot leave this table showing the old one, and the
+# CLI table and the HTML tear-sheet still cannot drift apart on which metrics
+# the comparison shows.
+_SIZING_COMPARISON_KEYS: tuple[str, ...] = (
+    "final_equity",
+    "total_return",
+    "cagr",
+    "max_drawdown",
+    "sharpe",
 )
 
 SIZING_COMPARISON_COLUMNS = ("Fixed slots", "Reinvested slots")
@@ -125,15 +127,22 @@ SIZING_COMPARISON_COLUMNS = ("Fixed slots", "Reinvested slots")
 def sizing_comparison_rows(
     fixed: Mapping[str, Any],
     reinvested: Mapping[str, Any],
-) -> tuple[tuple[str, str, str], ...]:
-    """Return ``(label, fixed_text, reinvested_text)`` for both sizing rules."""
+) -> tuple[tuple[str, ...], ...]:
+    """Return ``(label, *cells)`` per metric, one cell per sizing rule.
+
+    Each row is as wide as ``SIZING_COMPARISON_COLUMNS`` plus its label, so a
+    renderer can lay the body out from the row itself rather than naming the
+    two columns positionally.
+    """
     return tuple(
         (
-            label,
-            format_result_value(fixed.get(key), kind),
-            format_result_value(reinvested.get(key), kind),
+            _RESULT_VIEW_SPECS[key][0],
+            *(
+                format_result_value(metrics.get(key), _RESULT_VIEW_SPECS[key][1])
+                for metrics in (fixed, reinvested)
+            ),
         )
-        for key, label, kind in _SIZING_COMPARISON_ORDER
+        for key in _SIZING_COMPARISON_KEYS
     )
 
 

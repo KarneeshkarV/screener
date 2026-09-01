@@ -377,11 +377,18 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
                 selection = _select(False)
             except (OSError, ValueError, RuntimeError) as fallback_exc:
                 raise click.UsageError(str(fallback_exc)) from fallback_exc
-            point_in_time = False
-            degraded_note = (
-                f"; membership history is unavailable ({exc}), so point-in-time "
-                "is inactive for this run"
-            )
+            degraded_note = f"; membership history is unavailable ({exc})"
+            if resolved_universe == "sp500":
+                # sp500 keeps a second, weaker source: the "date added" column
+                # of today's table, which the branch below reads and which
+                # serves a stale cache when the fetch fails. Leave point-in-time
+                # on so that filter gets its chance. Downgrading here would run
+                # fully survivorship-biased for the very condition the soft
+                # failure (empty windows, no raise) still filters.
+                degraded_note += ", falling back to the 'date added' column"
+            else:
+                point_in_time = False
+                degraded_note += ", so point-in-time is inactive for this run"
         tickers = selection.symbols
         membership_windows = selection.membership_windows
         dynamic_universe_size = selection.dynamic_size
@@ -427,9 +434,19 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
                 # fall back to the weaker "date added" filter: it dates only
                 # today's members, which keeps post-as-of additions out but
                 # cannot bring removed ex-members back.
-                added_by_symbol = load_sp500_membership(
-                    as_of=end_date, use_cache=not request.no_universe_cache
-                )
+                try:
+                    added_by_symbol = load_sp500_membership(
+                        as_of=end_date, use_cache=not request.no_universe_cache
+                    )
+                except (OSError, ValueError, RuntimeError) as exc:
+                    # This call refetches Wikipedia and raises on a cold cache,
+                    # so on the default-on path it would abort a flagless run
+                    # the fallback above exists to keep alive. A typed
+                    # --point-in-time still fails loudly.
+                    if request.point_in_time_was_explicit:
+                        raise click.UsageError(str(exc)) from exc
+                    added_by_symbol = {}
+                    universe_note += f"; 'date added' membership is unavailable ({exc})"
                 membership_added = tuple(
                     (symbol, added)
                     for symbol, added in added_by_symbol.items()

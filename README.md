@@ -298,6 +298,11 @@ just backtest-rolling -m us --years 2 --strategy rs_breakout --top 10
 
 Supports position sizing slots, holding period, stop loss, take profit, trailing stop, slippage/commission, benchmark, liquidity filters, custom tickers, CSV ledger output, and optional dashboard output.
 
+Two defaults are on and can be turned off:
+
+- `--point-in-time` (`--no-point-in-time` to disable) gates candidates by the membership they held at each signal date instead of by today's index list. It downgrades itself, with a note, for a universe that carries no membership history. See [docs/universes.md](docs/universes.md).
+- `--compare-reinvestment` (`--no-compare-reinvestment` to disable) replays the same signal panel under the other equal-slot sizing rule and prints both side by side. The default result is unchanged; the second simulation roughly doubles the run time.
+
 ### Position sizing (`--sizing`)
 
 Both backtest commands accept rule-based per-entry position sizing. The default `equal_slot` matches the legacy fixed-slot engine bit-for-bit; every other rule sizes down from the slot budget (never above it, never beyond available cash):

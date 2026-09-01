@@ -531,8 +531,25 @@ def _sp500_pit_cache_is_reusable(metadata: dict[str, str]) -> bool:
     return bool(metadata.get("sp500_pit_revid"))
 
 
-def _sp500_revision_id_at(as_of: date) -> int | None:
-    """Id of the last article revision saved on or before ``as_of``."""
+def _sp500_revision_id_cache_path(as_of: date) -> Path:
+    return CACHE_DIR / f"sp500_revision_id_{as_of.isoformat()}.json"
+
+
+def _sp500_revision_id_at(as_of: date, *, use_cache: bool = True) -> int | None:
+    """Id of the last article revision saved on or before ``as_of``.
+
+    Cached on disk for a past date, for the same reason a parsed revision is:
+    the last revision on or before a day that has ended never changes. Without
+    it a rolling backtest asks the API once per quarterly sample on every
+    invocation, and point-in-time is now on by default.
+    """
+    cacheable = use_cache and as_of < date.today()
+    path = _sp500_revision_id_cache_path(as_of)
+    if cacheable and path.exists():
+        try:
+            return int(json.loads(path.read_text()))
+        except (OSError, ValueError, TypeError):
+            LOG.debug("sp500 revision id cache at %s unreadable; refetching", path)
     resp = call_with_resilience(
         "wikipedia",
         "sp500 revision id",
@@ -561,7 +578,11 @@ def _sp500_revision_id_at(as_of: date) -> int | None:
     revisions = pages[0].get("revisions") if pages else None
     if not revisions:
         return None
-    return int(revisions[0]["revid"])
+    revid = int(revisions[0]["revid"])
+    if cacheable:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(revid))
+    return revid
 
 
 def _sp500_symbols_from_revision_html(html: str) -> list[str] | None:
@@ -629,7 +650,7 @@ def _fetch_sp500_revision_snapshot(
     Wikipedia hiccup or an unannounced page-shape change.
     """
     try:
-        revid = _sp500_revision_id_at(as_of)
+        revid = _sp500_revision_id_at(as_of, use_cache=use_cache)
         if revid is None:
             return None
         members = _sp500_revision_members(revid, use_cache=use_cache)
@@ -702,10 +723,18 @@ def load_sp500_membership_windows(
         sample_dates.append(end)
     snapshots: list[tuple[date, tuple[str, ...]]] = []
     for sample in sample_dates:
-        pit = _fetch_sp500_pit(sample, use_cache=use_cache)
-        if not pit.point_in_time:
-            continue
-        members = tuple(pit.symbols)
+        # Deliberately not _fetch_sp500_pit: for a past date its fallback to
+        # today's members is discarded here anyway, and that fallback is an
+        # uncached full-table scrape that would otherwise run once per sample
+        # on every invocation. A sample that is not past has no revision
+        # history to prefer, so it keeps the live table.
+        if sample >= date.today():
+            members = tuple(_fetch_sp500()[0])
+        else:
+            snapshot = _fetch_sp500_revision_snapshot(sample, use_cache=use_cache)
+            if snapshot is None:
+                continue
+            members = tuple(snapshot[1])
         if snapshots and snapshots[-1][1] == members:
             continue
         snapshots.append((sample, members))

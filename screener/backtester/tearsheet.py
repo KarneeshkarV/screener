@@ -180,12 +180,11 @@ def _sizing_comparison_html(
         f"<th>{html.escape(name)}</th>" for name in SIZING_COMPARISON_COLUMNS
     )
     rows = "".join(
-        f"<tr><th>{html.escape(label)}</th>"
-        f"<td>{html.escape(fixed_text)}</td>"
-        f"<td>{html.escape(reinvested_text)}</td></tr>"
-        for label, fixed_text, reinvested_text in sizing_comparison_rows(
-            fixed.metrics, reinvested.metrics
+        "<tr><th>{}</th>{}</tr>".format(
+            html.escape(row[0]),
+            "".join(f"<td>{html.escape(cell)}</td>" for cell in row[1:]),
         )
+        for row in sizing_comparison_rows(fixed.metrics, reinvested.metrics)
     )
     return (
         '<section class="panel" id="sizing-comparison">'

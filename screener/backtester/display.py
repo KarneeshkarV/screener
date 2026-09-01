@@ -45,10 +45,8 @@ def print_reinvestment_comparison(
     table.add_column("Metric")
     for column in SIZING_COMPARISON_COLUMNS:
         table.add_column(column, justify="right")
-    for label, fixed_text, reinvested_text in sizing_comparison_rows(
-        fixed_slots.metrics, reinvested_slots.metrics
-    ):
-        table.add_row(label, fixed_text, reinvested_text)
+    for row in sizing_comparison_rows(fixed_slots.metrics, reinvested_slots.metrics):
+        table.add_row(*row)
     agentio.render_table(table, agentio.get_console(), detail="full")
 
 

@@ -206,13 +206,20 @@ def test_point_in_time_rejects_explicit_ticker_universe():
 
 
 def test_default_point_in_time_does_not_reject_ticker_universe():
-    """The flag is on by default, so a ticker list must downgrade, not fail."""
+    """The flag is on by default, so a ticker list must downgrade, not fail.
+
+    Asserting only the absence of the rejection would pass on any other
+    failure, including one that aborts before the downgrade is reached, so the
+    downgrade note itself is what this checks.
+    """
     runner = CliRunner()
     result = runner.invoke(
         backtest_rolling,
         ["--tickers", "AAA", "--entry", "close > sma(close, 3)"],
     )
+    assert result.exit_code == 0, result.output
     assert "--point-in-time is unavailable" not in result.output
+    assert "survivorship bias" in result.output
 
 
 def _request(**overrides):
@@ -309,7 +316,11 @@ def test_a_defaulted_point_in_time_degrades_when_membership_history_fails(monkey
             raise OSError("wikipedia is unreachable")
         return UniverseSelection(name, "us", "SPY", ("AAA", "BBB"), "cached list")
 
+    def no_date_added(**kwargs):
+        raise OSError("wikipedia is unreachable")
+
     monkeypatch.setattr(workflow_mod, "load_universe_selection", flaky)
+    monkeypatch.setattr(workflow_mod, "load_sp500_membership", no_date_added)
 
     run = workflow_mod.resolve_backtest_run(_request(universe="sp500"))
     note = run.universe_note or ""
@@ -317,6 +328,80 @@ def test_a_defaulted_point_in_time_degrades_when_membership_history_fails(monkey
     assert "membership history is unavailable" in note
     assert "wikipedia is unreachable" in note
     assert "point-in-time is inactive" in note
+
+
+def test_sp500_falls_back_to_date_added_when_membership_windows_fail(monkeypatch):
+    """The weaker filter is still worth trying, and it has its own cache.
+
+    A raise from the windows loader and an empty return from it are the same
+    underlying condition, so they must not produce two different universes.
+    """
+    from screener.backtester import workflow as workflow_mod
+    from screener.universes import UniverseSelection
+
+    def flaky(name, **kwargs):
+        if kwargs.get("point_in_time"):
+            raise OSError("wikipedia is unreachable")
+        return UniverseSelection(name, "us", "SPY", ("AAA", "BBB"), "cached list")
+
+    monkeypatch.setattr(workflow_mod, "load_universe_selection", flaky)
+    monkeypatch.setattr(
+        workflow_mod,
+        "load_sp500_membership",
+        lambda **kwargs: {"AAA": date(2024, 2, 1), "BBB": None},
+    )
+
+    run = workflow_mod.resolve_backtest_run(_request(universe="sp500"))
+
+    assert run.config.membership_added == (("AAA", date(2024, 2, 1)),)
+    assert "falling back to the 'date added' column" in (run.universe_note or "")
+
+
+def test_a_date_added_failure_degrades_instead_of_aborting(monkeypatch):
+    """load_sp500_membership refetches Wikipedia and raises on a cold cache.
+
+    It sits outside the fallback that keeps a flagless run alive, so an
+    unreachable Wikipedia used to escape as a bare OSError, not a UsageError.
+    """
+    from screener.backtester import workflow as workflow_mod
+    from screener.universes import UniverseSelection
+
+    def no_windows(name, **kwargs):
+        return UniverseSelection(name, "us", "SPY", ("AAA", "BBB"), "cached list")
+
+    def boom(**kwargs):
+        raise OSError("wikipedia is unreachable")
+
+    monkeypatch.setattr(workflow_mod, "load_universe_selection", no_windows)
+    monkeypatch.setattr(workflow_mod, "load_sp500_membership", boom)
+
+    run = workflow_mod.resolve_backtest_run(_request(universe="sp500"))
+    note = run.universe_note or ""
+
+    assert "'date added' membership is unavailable" in note
+    assert "point-in-time is inactive" in note
+
+
+def test_a_typed_point_in_time_still_fails_when_date_added_fails(monkeypatch):
+    import click
+    import pytest
+
+    from screener.backtester import workflow as workflow_mod
+    from screener.universes import UniverseSelection
+
+    def no_windows(name, **kwargs):
+        return UniverseSelection(name, "us", "SPY", ("AAA", "BBB"), "cached list")
+
+    def boom(**kwargs):
+        raise OSError("wikipedia is unreachable")
+
+    monkeypatch.setattr(workflow_mod, "load_universe_selection", no_windows)
+    monkeypatch.setattr(workflow_mod, "load_sp500_membership", boom)
+
+    with pytest.raises(click.UsageError, match="wikipedia is unreachable"):
+        workflow_mod.resolve_backtest_run(
+            _request(universe="sp500", point_in_time_was_explicit=True)
+        )
 
 
 def test_a_typed_point_in_time_still_fails_when_membership_history_fails(monkeypatch):
