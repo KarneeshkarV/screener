@@ -55,7 +55,12 @@ from screener.backtester.signal_panel import (
     build_signal_panel,
     parse_signal_program,
 )
-from screener.backtester.sizing import entry_budget_for
+from screener.backtester.sizing import (
+    entry_budget_for,
+    entry_opens_no_shares,
+    marked_portfolio_equity,
+    sizing_allows_slot_growth,
+)
 
 # The reuse key is derived, not curated: every field either module declares as
 # an input is in it, plus every field no module claims at all. The old
@@ -244,6 +249,16 @@ class _DailyRankingSource:
         if not free_slots:
             return
 
+        grows_slots = sizing_allows_slot_growth(cfg.sizing_rule)
+        # Only a reinvesting rule reads marked equity; every other rule sizes
+        # off initial capital, so do not pay for the mark otherwise.
+        current_equity = (
+            marked_portfolio_equity(portfolio, self.bars_by_tv, day)
+            if grows_slots
+            else None
+        )
+        slots_left = len(free_slots)
+
         # One active-ticker set for the day: exclude at rank time and keep it
         # updated as slots open so the inner loop is an O(1) membership check
         # instead of rescanning slot_states per candidate.
@@ -266,6 +281,7 @@ class _DailyRankingSource:
         candidate_queue: deque[dict] = deque(candidates)
 
         for slot_id in free_slots:
+            slots_left -= 1
             opened = False
             while candidate_queue and not opened:
                 row = candidate_queue.popleft()
@@ -287,6 +303,8 @@ class _DailyRankingSource:
                     portfolio,
                     bars,
                     int(row["signal_idx"]),
+                    current_equity=current_equity,
+                    free_slots=slots_left + 1,
                     series_cache=self.caches.frame(ticker, bars).sizing_series,
                 )
                 state, warn = _make_slot_state(
@@ -310,6 +328,12 @@ class _DailyRankingSource:
                     pd.Timestamp(state.entry_date) > self.end_ts
                 ):  # pragma: no cover - fetch_end == end_ts
                     continue
+                if grows_slots and entry_opens_no_shares(
+                    entry_budget, state.entry_shares
+                ):
+                    # The budget rounds to no shares; leave the slot free
+                    # rather than parking an empty position in it.
+                    continue
                 portfolio.assign(ticker, int(row["rank"]), _bar_label(day, cfg))
                 portfolio.open(
                     ticker=ticker,
@@ -317,6 +341,7 @@ class _DailyRankingSource:
                     entry_price=state.entry_fill,
                     budget=entry_budget,
                     shares=state.entry_shares,
+                    allow_slot_growth=sizing_allows_slot_growth(cfg.sizing_rule),
                 )
                 slot_states[slot_id] = state
                 self.slot_bars[slot_id] = bars

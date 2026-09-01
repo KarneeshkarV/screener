@@ -35,6 +35,11 @@ Variants
     ``mom_12_1``; the SMA only skips winners that have broken the long-term
     trend.
 
+``momentum_12_1_ema10``
+    Short-term eligibility filter: ``mom_12_1 > 0 and close > ema(close, 10)``.
+    Ranking stays on raw ``mom_12_1``. This blocks names whose current price
+    has broken below its 10-day exponential moving average.
+
 ``momentum_12_1_riskadj``
     Risk-adjusted (Sharpe-like) *ranking* filter: same positive-momentum
     eligibility, but ``rank_score = mom_12_1 / vol_252``. High-vol crashy
@@ -70,6 +75,7 @@ _MOMENTUM_SCORE = get_price_score("momentum_12_1")
 _LOOKBACK = MOMENTUM_LOOKBACK
 _SKIP = MOMENTUM_SKIP
 _TREND_SMA = 200
+_SHORT_TREND_EMA = 10
 
 # Pure JT eligibility vs dual-momentum (absolute trend) eligibility.
 #
@@ -78,6 +84,7 @@ _TREND_SMA = 200
 # declaration after bar scoring) and these entries cannot drift apart.
 ENTRY_PURE = entry_gate_expression(_MOMENTUM_SCORE)
 ENTRY_TREND = f"{ENTRY_PURE} and close > sma(close, {_TREND_SMA})"
+ENTRY_EMA10 = f"{ENTRY_PURE} and close > ema(close, {_SHORT_TREND_EMA})"
 # Risk-adj needs defined vol; vol_252 > 0 is the history/non-degenerate gate.
 ENTRY_RISKADJ = f"{ENTRY_PURE} and vol_252 > 0"
 
@@ -152,6 +159,15 @@ register_expression_strategy(
 register_expression_strategy(
     "momentum_12_1_trend",
     entry=ENTRY_TREND,
+    exit=None,
+    prepare_bars=_prepare_momentum,
+    required_lookback=_momentum_lookback,
+    profile=DEFAULT_STRATEGY_PROFILE,
+)
+
+register_expression_strategy(
+    "momentum_12_1_ema10",
+    entry=ENTRY_EMA10,
     exit=None,
     prepare_bars=_prepare_momentum,
     required_lookback=_momentum_lookback,

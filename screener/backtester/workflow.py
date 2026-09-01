@@ -102,6 +102,7 @@ class BacktestRequest:
     fundamentals_provider: str | None = None
     fundamental_field_args: tuple[str, ...] = ()
     fundamental_lag_days: int | None = None
+    compare_reinvestment: bool = False
     dashboard: bool = False
     dashboard_port: int = 8765
     dashboard_dir: Path = Path(".screener/dashboards")

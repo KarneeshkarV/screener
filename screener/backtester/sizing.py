@@ -1,14 +1,13 @@
 """Rule-based per-entry position sizing.
 
 Each rule maps entry-time context to a dollar budget for the new position.
-The result is always clamped to ``Portfolio.entry_budget()`` — the equal-slot
-ceiling and available cash — so a rule can size *down* from the slot budget
-but never above it, and every existing cash-accounting invariant holds.
+Most results are clamped to ``Portfolio.entry_budget()``. The
+``reinvested_equal_slot`` rule can grow above the initial slot ceiling, but it
+remains capped by available cash.
 
-Sizing equity is deliberately the portfolio's ``initial_capital``
-(non-compounding), matching the equal-slot philosophy documented in
-``screener.backtester.portfolio``: per-position sizing stays balanced across
-the run regardless of lucky-early-trade effects.
+Risk-rule sizing equity remains the portfolio's ``initial_capital``. The
+``reinvested_equal_slot`` rule is the explicit exception and reads current
+marked-to-market equity.
 
 Rules that need bar history (``atr_risk``, ``inverse_vol``) read only data up
 to and including the signal bar. Both indicators are causal, so evaluating
@@ -39,8 +38,8 @@ if TYPE_CHECKING:
 class SizingContext:
     """Entry-time inputs handed to a sizing rule.
 
-    ``base_budget`` is ``Portfolio.entry_budget()`` — the legacy equal-slot
-    budget and the hard cap applied to whatever the rule returns.
+    ``base_budget`` is ``Portfolio.entry_budget()``. It is the hard cap for
+    fixed and risk sizing, but not for ``reinvested_equal_slot``.
     """
 
     equity: float
@@ -105,6 +104,12 @@ def available_sizing_rules() -> tuple[str, ...]:
 @sizer("equal_slot")
 def _equal_slot(ctx: SizingContext) -> float:
     return ctx.base_budget
+
+
+@sizer("reinvested_equal_slot")
+def _reinvested_equal_slot(ctx: SizingContext) -> float:
+    """Allocate one equal slot from current marked-to-market portfolio equity."""
+    return ctx.equity / max(ctx.policy.top, 1)
 
 
 @sizer("fixed_fraction")
@@ -175,13 +180,20 @@ def entry_budget_for(
     bars: pd.DataFrame,
     signal_idx: int,
     *,
+    current_equity: float | None = None,
+    free_slots: int = 1,
     series_cache: dict[tuple[str, int], np.ndarray] | None = None,
 ) -> float:
     """Dollar budget for the next entry under ``cfg.sizing_rule``.
 
     ``equal_slot`` short-circuits to ``portfolio.entry_budget()`` so the
-    default path is bit-identical to the pre-sizing engine. Every other rule
-    is clamped to ``[0, entry_budget()]``.
+    default path is bit-identical to the pre-sizing engine. Risk rules are
+    clamped to ``[0, entry_budget()]``. ``reinvested_equal_slot`` is clamped
+    by this entry's fair share of available cash: ``cash / free_slots``, where
+    ``free_slots`` is the number of slots (this one included) still to be
+    filled from the same cash balance. Without that split the first slot of a
+    batch could absorb the whole balance and leave the rest with a zero
+    budget.
 
     ``series_cache`` is ``_FrameCache.sizing_series`` for this ticker's frame,
     so a run opening many entries on one name computes its ATR once. Omitting
@@ -197,8 +209,14 @@ def entry_budget_for(
             f"unknown sizing rule {rule!r}; expected one of "
             f"{', '.join(available_sizing_rules())}"
         )
+    compounds_slots = rule == "reinvested_equal_slot"
+    sizing_equity = (
+        float(current_equity)
+        if compounds_slots and current_equity is not None
+        else portfolio.initial_capital
+    )
     ctx = SizingContext(
-        equity=portfolio.initial_capital,
+        equity=sizing_equity,
         base_budget=base,
         stop_loss=cfg.stop_loss,
         policy=cfg,
@@ -209,12 +227,56 @@ def entry_budget_for(
     raw = func(ctx)
     if not math.isfinite(raw):
         return base
-    return min(max(raw, 0.0), base)
+    if compounds_slots:
+        ceiling = max(portfolio.cash(), 0.0) / max(int(free_slots), 1)
+    else:
+        ceiling = base
+    return min(max(raw, 0.0), ceiling)
+
+
+def marked_portfolio_equity(
+    portfolio: Portfolio,
+    bars_by_ticker: dict[str, pd.DataFrame],
+    as_of: pd.Timestamp,
+) -> float:
+    """Mark open positions at the last close known on or before ``as_of``."""
+    marks: dict[str, float] = {}
+    for ticker in portfolio.open_tickers():
+        bars = bars_by_ticker.get(ticker)
+        if bars is None or bars.empty or "close" not in bars.columns:
+            continue
+        # bars.index is a sorted DatetimeIndex; searchsorted is O(log n) where
+        # a boolean mask is O(n) per ticker per simulated day.
+        pos = int(bars.index.searchsorted(as_of, side="right"))
+        if pos > 0:
+            marks[ticker] = float(bars["close"].iloc[pos - 1])
+    return portfolio.marked_equity(marks, as_of=as_of)
+
+
+def entry_opens_no_shares(entry_budget: float, entry_shares: float | None) -> bool:
+    """Whether an entry quote would create a position holding no shares.
+
+    ``_SlotState.entry_shares`` is only populated for liquidity-aware fill
+    models; otherwise ``Portfolio.open`` derives the share count from the
+    budget, so a non-positive budget is the empty case. A zero-share position
+    still occupies its slot and consumes the candidate, so callers skip it.
+    """
+    if entry_shares is not None:
+        return float(entry_shares) <= 0.0
+    return float(entry_budget) <= 0.0
+
+
+def sizing_allows_slot_growth(sizing_rule: str) -> bool:
+    """Return whether a sizing rule may exceed the initial fixed slot ceiling."""
+    return sizing_rule == "reinvested_equal_slot"
 
 
 __all__ = [
     "SizingContext",
+    "entry_opens_no_shares",
     "available_sizing_rules",
     "entry_budget_for",
+    "marked_portfolio_equity",
     "sizer",
+    "sizing_allows_slot_growth",
 ]

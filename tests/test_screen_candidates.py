@@ -1,11 +1,10 @@
 """Stage 6 guards: criterion names as aliases onto the strategy registry.
 
-The flip (docs/plans/unify-screen-backtest.md) makes three criterion names -
-``breakout``, ``mark_minervini`` and ``momentum_12_1`` - resolve to a strategy
-whose entry expression is evaluated over local bars, instead of to a set of
-TradingView filters plus a snapshot ranking recipe. These tests pin the
-resolution, the refusals, the run label and the two universe modes. Whether the
-bar path *agrees* with the rolling engine is pinned separately, in
+The flip (docs/plans/unify-screen-backtest.md) makes selected criterion names
+resolve to a strategy whose entry expression is evaluated over local bars,
+instead of to TradingView filters plus a snapshot ranking recipe. These tests
+pin the resolution, the refusals, the run label and the two universe modes.
+Whether the bar path agrees with the rolling engine is pinned separately in
 ``tests/correctness``.
 """
 
@@ -49,7 +48,9 @@ from screener.strategies.spec import (
 
 #: The criterion names that also exist as a strategy. Stage 6 turns exactly
 #: these into aliases; every other criterion keeps its old snapshot path.
-ALIASED = frozenset({"breakout", "mark_minervini", "momentum_12_1"})
+ALIASED = frozenset(
+    {"breakout", "mark_minervini", "momentum_12_1", "momentum_12_1_ema10"}
+)
 
 
 @pytest.fixture(autouse=True)
@@ -179,6 +180,7 @@ _PREFILTER_OF: dict[str, str | None] = {
     "breakout": "above_avg_volume",
     "mark_minervini": "mark_minervini",
     "momentum_12_1": None,
+    "momentum_12_1_ema10": None,
 }
 
 

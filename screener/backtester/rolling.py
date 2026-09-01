@@ -15,8 +15,16 @@ from screener.backtester.cli_common import (
     sizing_options,
     write_tearsheet,
 )
-from screener.backtester.display import print_backtest, print_ledger_csv
-from screener.backtester.rolling_simulation import run_rolling_backtest
+from screener.backtester.display import (
+    print_backtest,
+    print_ledger_csv,
+    print_reinvestment_comparison,
+)
+from screener.backtester.rolling_simulation import (
+    prepare_rolling_backtest,
+    run_prepared_rolling_backtest,
+    run_rolling_backtest,
+)
 from screener.backtester.workflow import BacktestRequest, resolve_backtest_run
 from screener.markets import market_option
 from screener.universes import available_universes
@@ -234,6 +242,15 @@ def _print_candidates(run: Any) -> None:
 )
 @backtest_options("rolling", "csv", "report", "open-report")
 @click.option(
+    "--compare-reinvestment",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also run the same window under the other equal-slot sizing rule and "
+        "print a side-by-side comparison. Doubles the simulation work."
+    ),
+)
+@click.option(
     "--dashboard",
     is_flag=True,
     default=False,
@@ -272,13 +289,40 @@ def backtest_rolling(**params: Any) -> None:
     if params["candidates"]:
         _print_candidates(run)
         return
-    result = run_rolling_backtest(
-        run.config,
-        run.price_fetcher,
-        start_date=run.start_date,
-        end_date=run.end_date,
-        fundamental_fetcher=run.fundamental_fetcher,
+    compare_reinvestment = (
+        params["compare_reinvestment"]
+        and run.config.sizing_rule in {"equal_slot", "reinvested_equal_slot"}
+        and not params["output_csv"]
     )
+    fixed_result = None
+    reinvested_result = None
+    if compare_reinvestment:
+        prepared = prepare_rolling_backtest(
+            run.config,
+            run.price_fetcher,
+            start_date=run.start_date,
+            end_date=run.end_date,
+            fundamental_fetcher=run.fundamental_fetcher,
+        )
+        fixed_config = run.config.model_copy(update={"sizing_rule": "equal_slot"})
+        reinvested_config = run.config.model_copy(
+            update={"sizing_rule": "reinvested_equal_slot"}
+        )
+        fixed_result = run_prepared_rolling_backtest(prepared, fixed_config)
+        reinvested_result = run_prepared_rolling_backtest(prepared, reinvested_config)
+        result = (
+            reinvested_result
+            if run.config.sizing_rule == "reinvested_equal_slot"
+            else fixed_result
+        )
+    else:
+        result = run_rolling_backtest(
+            run.config,
+            run.price_fetcher,
+            start_date=run.start_date,
+            end_date=run.end_date,
+            fundamental_fetcher=run.fundamental_fetcher,
+        )
     generated_report = resolve_report_path(
         params["report_path"], params["output_csv"], "backtest-rolling"
     )
@@ -300,6 +344,8 @@ def backtest_rolling(**params: Any) -> None:
     if run.universe_note:
         console.print(f"[dim]Universe: {run.universe_note}[/dim]")
     print_backtest(result)
+    if fixed_result is not None and reinvested_result is not None:
+        print_reinvestment_comparison(fixed_result, reinvested_result)
     if generated_report:
         console.print(f"[green]Report:[/green] {generated_report}")
         if params["open_report"]:

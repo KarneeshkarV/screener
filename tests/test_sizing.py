@@ -75,6 +75,39 @@ def test_equal_slot_returns_entry_budget_exactly():
     assert entry_budget_for(cfg, portfolio, bars, 20) == pytest.approx(25_000.0)
 
 
+@pytest.mark.parametrize(
+    ("current_equity", "expected_budget"),
+    [(120_000.0, 30_000.0), (80_000.0, 20_000.0)],
+)
+def test_reinvested_equal_slot_tracks_current_equity(
+    current_equity: float, expected_budget: float
+):
+    portfolio = Portfolio(100_000.0, 4)
+    cfg = _sizing_cfg("reinvested_equal_slot", top=4)
+    bars = _constant_bars(100.0)
+
+    budget = entry_budget_for(cfg, portfolio, bars, 20, current_equity=current_equity)
+
+    assert budget == pytest.approx(expected_budget)
+
+
+def test_reinvested_open_can_grow_above_initial_slot_ceiling():
+    portfolio = Portfolio(100_000.0, 4)
+
+    portfolio.open(
+        "AAA",
+        _INDEX[0].date(),
+        100.0,
+        budget=30_000.0,
+        allow_slot_growth=True,
+    )
+
+    position = portfolio.get_position("AAA")
+    assert position is not None
+    assert position.slot_capital == pytest.approx(30_000.0)
+    assert portfolio.cash() == pytest.approx(70_000.0)
+
+
 def test_fixed_fraction_sizes_by_equity():
     portfolio = Portfolio(100_000.0, 4)
     cfg = _sizing_cfg("fixed_fraction", top=4, sizing_position_pct=0.10)
@@ -228,3 +261,67 @@ def test_rolling_default_matches_legacy_slot_sizing():
     for trade in result.trades:
         # top=2 -> slot_capital = 100_000 / 2 = 50_000, fully spent.
         assert trade.entry_cost == pytest.approx(50_000.0)
+
+
+def test_rolling_reinvested_equal_slot_compounds_later_entry_budgets():
+    fetcher = StubPriceFetcher(_RISING_DATA)
+    cfg = _rolling_cfg(sizing_rule="reinvested_equal_slot")
+
+    result = run_rolling_backtest(
+        cfg, fetcher, start_date=_INDEX[0].date(), end_date=_INDEX[-1].date()
+    )
+
+    entry_costs = [trade.entry_cost for trade in result.trades]
+    assert entry_costs[:2] == pytest.approx([50_000.0, 50_000.0])
+    assert max(entry_costs[2:]) > 50_000.0
+
+
+def test_reinvested_budget_splits_cash_across_the_slots_being_refilled():
+    """One refill batch must not let the first slot absorb the whole balance.
+
+    Two of four slots are open and marked far above cost, so ``equity / top``
+    exceeds the cash on hand. Sizing the first of the two free slots against
+    total cash would leave the second with a zero budget (and a zero-share
+    position parked in its slot).
+    """
+    cfg = _rolling_cfg(sizing_rule="reinvested_equal_slot", top=4)
+    portfolio = Portfolio(100_000.0, 4)
+    for ticker in ("AAA", "BBB"):
+        portfolio.assign(ticker, 1, _INDEX[0].date().isoformat())
+        portfolio.open(ticker, _INDEX[0], 100.0, budget=25_000.0)
+    assert portfolio.cash() == pytest.approx(50_000.0)
+    bars = _constant_bars(100.0)
+
+    first = entry_budget_for(
+        cfg, portfolio, bars, len(bars) - 1, current_equity=400_000.0, free_slots=2
+    )
+    assert first == pytest.approx(25_000.0)
+
+    portfolio.assign("CCC", 1, _INDEX[0].date().isoformat())
+    portfolio.open("CCC", _INDEX[0], 100.0, budget=first, allow_slot_growth=True)
+    second = entry_budget_for(
+        cfg, portfolio, bars, len(bars) - 1, current_equity=400_000.0, free_slots=1
+    )
+    assert second == pytest.approx(25_000.0)
+
+
+def test_open_with_quoted_shares_cannot_overdraw_available_cash():
+    """A slipped buy fill priced off the pre-slippage quote must not go negative.
+
+    ``FillModel.entry_quote`` sizes shares against the unslipped reference, so
+    the share count handed to ``Portfolio.open`` costs more than the budget it
+    was quoted for once slippage is applied. The cash cap trims it.
+    """
+    portfolio = Portfolio(100_000.0, 4)
+    quoted_shares = 25_000.0 / 100.0  # sized off a 100.0 reference
+    portfolio.assign("AAA", 1, _INDEX[0].date().isoformat())
+    position = portfolio.open(
+        "AAA",
+        _INDEX[0],
+        110.0,  # slipped fill: 250 shares would cost 27_500
+        budget=25_000.0,
+        shares=quoted_shares,
+    )
+
+    assert position.slot_capital <= 25_000.0 + 1e-9
+    assert portfolio.cash() >= 0.0
