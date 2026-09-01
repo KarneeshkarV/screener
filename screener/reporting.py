@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import tempfile
 import webbrowser
 from collections.abc import Sequence
@@ -95,3 +96,42 @@ def temp_report_path(prefix: str) -> Path:
 def open_report(path: str | Path) -> None:
     """Open a report in the default browser."""
     webbrowser.open(Path(path).resolve().as_uri())
+
+
+def _is_wsl() -> bool:
+    """Detect WSL from the kernel release string (WSL1 and WSL2 both tag it)."""
+    try:
+        release = Path("/proc/sys/kernel/osrelease").read_text()
+    except OSError:
+        return False
+    return "microsoft" in release.lower()
+
+
+def windows_report_path(path: str | Path) -> str | None:
+    """Return the Windows-visible path for ``path``, or ``None`` when there is none.
+
+    A Linux path such as ``/tmp/screener-reports/x.html`` cannot be opened by a
+    Windows browser, so on WSL the CLI prints the UNC form
+    (``\\\\wsl.localhost\\<distro>\\tmp\\...``) beside it. Paths already under a
+    Windows drive mount (``/mnt/c/...``) map to the plain drive letter instead.
+    """
+    if not _is_wsl():
+        return None
+    resolved = Path(path).resolve()
+    parts = resolved.parts
+    if len(parts) > 2 and parts[1] == "mnt" and len(parts[2]) == 1:
+        drive = f"{parts[2].upper()}:"
+        return "\\".join([drive, *parts[3:]]) if len(parts) > 3 else f"{drive}\\"
+    distro = os.environ.get("WSL_DISTRO_NAME")
+    if not distro:
+        return None
+    return "\\\\wsl.localhost\\" + distro + "\\" + "\\".join(parts[1:])
+
+
+def report_path_lines(path: str | Path | None) -> list[str]:
+    """Return the ``Report:`` line, plus the Windows path line when on WSL."""
+    lines = [f"Report: {path}"]
+    windows = windows_report_path(path) if path is not None else None
+    if windows:
+        lines.append(f"Windows: {windows}")
+    return lines
