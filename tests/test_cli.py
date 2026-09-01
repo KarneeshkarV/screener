@@ -391,6 +391,53 @@ def test_offline_run_with_injected_fetcher():
     assert "Performance" in res.output
 
 
+def _rolling_argv(bars_a, *extra: str) -> list[str]:
+    return [
+        "backtest-rolling",
+        "--tickers",
+        "AAA,BBB",
+        "--start",
+        bars_a.index[0].date().isoformat(),
+        "--end",
+        bars_a.index[-1].date().isoformat(),
+        "--hold",
+        "5",
+        "--top",
+        "2",
+        "--entry",
+        "close > sma(close, 3)",
+        "--initial-capital",
+        "10000",
+        *extra,
+    ]
+
+
+def test_rolling_compare_flag_prints_fixed_and_reinvested_slot_comparison():
+    fetcher, bars_a = _stub_env()
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        _rolling_argv(bars_a, "--compare-reinvestment"),
+        obj=fetcher,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Fixed slots vs reinvested slots" in result.output
+    assert "Fixed slots" in result.output
+    assert "Reinvested slots" in result.output
+
+
+def test_rolling_without_compare_flag_runs_one_simulation():
+    fetcher, bars_a = _stub_env()
+    runner = CliRunner()
+
+    result = runner.invoke(cli, _rolling_argv(bars_a), obj=fetcher)
+
+    assert result.exit_code == 0, result.output
+    assert "Fixed slots vs reinvested slots" not in result.output
+
+
 def test_csv_flag_emits_trade_ledger():
     fetcher, bars_a = _stub_env()
     runner = CliRunner()

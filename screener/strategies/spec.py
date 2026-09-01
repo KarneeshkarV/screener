@@ -560,6 +560,7 @@ def discover_plugins() -> None:
         rsi_reversion,
         shooting_star,
         supertrend,
+        supertrend_flip,
         supertrend_rsi,
         vivek_equity_tool,
     )

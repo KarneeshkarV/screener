@@ -11,6 +11,7 @@ from screener.backtester.pine import (
     parse,
     required_lookback,
 )
+from screener.indicators.plugins.supertrend import supertrend_dir
 
 
 def _bars(n: int = 30, seed: int = 0) -> pd.DataFrame:
@@ -84,6 +85,36 @@ def test_atr_length_14():
     # first 13 are NaN (min_periods=14); values are positive after warmup
     assert out.iloc[:13].isna().all()
     assert (out.iloc[14:] > 0).all()
+
+
+def test_supertrend_matches_the_registered_indicator():
+    bars = _bars(120, seed=5)
+    out = evaluate(parse("supertrend(10, 3.0)"), bars)
+    expected = supertrend_dir(
+        bars["high"].to_numpy(),
+        bars["low"].to_numpy(),
+        bars["close"].to_numpy(),
+        10,
+        3.0,
+    )
+    # The expression form and the strategy plugin must never disagree.
+    assert np.array_equal(out.to_numpy(), expected.astype(float))
+
+
+def test_supertrend_lookback_is_its_length():
+    assert required_lookback(parse("supertrend(10, 3.0) < 0")) == 10
+
+
+def test_supertrend_rejects_bad_arguments():
+    bars = _bars(30)
+    with pytest.raises(PineSyntaxError, match="takes 2 arguments"):
+        evaluate(parse("supertrend(10)"), bars)
+    with pytest.raises(PineSyntaxError, match="'length'"):
+        evaluate(parse("supertrend(close, 3.0)"), bars)
+    with pytest.raises(PineSyntaxError, match="'multiplier'"):
+        evaluate(parse("supertrend(10, close)"), bars)
+    with pytest.raises(PineSyntaxError, match="must be positive"):
+        evaluate(parse("supertrend(10, 0)"), bars)
 
 
 # ── no-lookahead properties ────────────────────────────────────────

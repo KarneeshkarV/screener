@@ -143,8 +143,9 @@ def parse_partial_exits(partial_exit_args) -> tuple[tuple[float, float], ...]:
 def sizing_options(command):
     """Attach the shared per-entry position-sizing options to a backtest command.
 
-    All rules size DOWN from the equal-slot budget (never above it); the
-    ``equal_slot`` default reproduces the legacy fixed-slot engine exactly.
+    The ``equal_slot`` default reproduces the legacy fixed-slot engine exactly.
+    ``reinvested_equal_slot`` grows or shrinks slots with current equity. Risk
+    rules size down from the initial equal-slot ceiling.
     """
     from screener.backtester.sizing import available_sizing_rules
 
@@ -157,7 +158,8 @@ def sizing_options(command):
             show_default=True,
             help=(
                 "Per-entry position sizing. 'equal_slot' = legacy fixed slots; "
-                "every other rule sizes down from the slot budget."
+                "'reinvested_equal_slot' = current equity divided by slots; "
+                "risk rules size down from the initial slot budget."
             ),
         ),
         click.option(

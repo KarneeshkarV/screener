@@ -27,6 +27,42 @@ def _performance_table(view: ResultView) -> Table:
     return table
 
 
+def print_reinvestment_comparison(
+    fixed_slots: BacktestResult,
+    reinvested_slots: BacktestResult,
+) -> None:
+    """Print fixed-slot and reinvested-slot results from one signal panel."""
+    table = Table(
+        title="Fixed slots vs reinvested slots",
+        show_header=True,
+        header_style="bold",
+    )
+    table.add_column("Metric")
+    table.add_column("Fixed slots", justify="right")
+    table.add_column("Reinvested slots", justify="right")
+    rows = (
+        ("Final Equity", "final_equity", "money"),
+        ("Total Return", "total_return", "pct"),
+        ("CAGR", "cagr", "pct"),
+        ("Max Drawdown", "max_drawdown", "pct"),
+        ("Sharpe", "sharpe", "float"),
+    )
+    for label, key, kind in rows:
+        fixed = float(fixed_slots.metrics.get(key, 0.0))
+        reinvested = float(reinvested_slots.metrics.get(key, 0.0))
+        if kind == "money":
+            fixed_text = f"{fixed:,.2f}"
+            reinvested_text = f"{reinvested:,.2f}"
+        elif kind == "pct":
+            fixed_text = f"{fixed:+.2%}"
+            reinvested_text = f"{reinvested:+.2%}"
+        else:
+            fixed_text = f"{fixed:+.3f}"
+            reinvested_text = f"{reinvested:+.3f}"
+        table.add_row(label, fixed_text, reinvested_text)
+    agentio.render_table(table, agentio.get_console(), detail="full")
+
+
 def _ledger_table(result: BacktestResult) -> Table:
     """Build the trade ledger independently of the result metric view."""
     ledger = Table(title="Trade Ledger", show_header=True, header_style="bold")
@@ -87,10 +123,11 @@ def _print_ticker_attribution(trades: pd.DataFrame, out) -> None:
 def _print_backtest_agent(result: BacktestResult) -> None:
     """Render the same shared metric rows in bounded, plain agent output."""
     cfg = result.config
+    sizing_rule = getattr(cfg, "sizing_rule", "equal_slot")
     out = agentio.get_console()
     out.print(
         f"backtest {cfg.market} as-of={cfg.as_of} hold={cfg.hold} "
-        f"top={cfg.top} benchmark={cfg.benchmark}"
+        f"top={cfg.top} sizing={sizing_rule} benchmark={cfg.benchmark}"
     )
     for warning in result.warnings:
         out.print(f"warning: {warning}")
@@ -118,11 +155,13 @@ def print_backtest(result: BacktestResult) -> None:
         return
 
     cfg = result.config
+    sizing_rule = getattr(cfg, "sizing_rule", "equal_slot")
     console.print(
         Panel.fit(
             f"[bold]Backtest[/bold] [cyan]{cfg.market.upper()}[/cyan]  "
             f"as-of [yellow]{cfg.as_of}[/yellow]  hold=[green]{cfg.hold}[/green]  "
-            f"top=[green]{cfg.top}[/green]  benchmark=[magenta]{cfg.benchmark}[/magenta]"
+            f"top=[green]{cfg.top}[/green]  sizing=[green]{sizing_rule}[/green]  "
+            f"benchmark=[magenta]{cfg.benchmark}[/magenta]"
         )
     )
     for warning in result.warnings:

@@ -8,6 +8,7 @@ import pandas as pd
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling_simulation import run_rolling_backtest
 from screener.strategies.plugins.momentum_12_1 import (
+    ENTRY_EMA10,
     ENTRY_PURE,
     ENTRY_RISKADJ,
     ENTRY_TREND,
@@ -101,6 +102,14 @@ def test_strategy_registered() -> None:
     assert trend.prepare_bars is pure.prepare_bars
     assert trend.required_lookback is not None
     assert trend.required_lookback() == 252
+
+    ema10 = registry.get_optional("momentum_12_1_ema10")
+    assert ema10 is not None
+    assert ema10.entry == ENTRY_EMA10
+    assert "ema(close, 10)" in ema10.entry
+    assert ema10.prepare_bars is pure.prepare_bars
+    assert ema10.required_lookback is not None
+    assert ema10.required_lookback() == 252
 
     riskadj = registry.get_optional("momentum_12_1_riskadj")
     assert riskadj is not None

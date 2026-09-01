@@ -23,7 +23,7 @@ Supported:
   comparison: > >= < <= == !=
   boolean:    and, or, not
   functions:  sma(s, n), ema(s, n), rsi(s, n), highest(s, n), lowest(s, n),
-              atr(n), crossover(a, b), crossunder(a, b)
+              atr(n), supertrend(n, mult), crossover(a, b), crossunder(a, b)
 
 Causality guarantee: every rolling / shift operation is left-aligned, so the
 value at bar ``i`` depends only on bars ``<= i``. crossover/crossunder use a
@@ -40,6 +40,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict
 
 from screener.indicators.frames import wilder_atr, wilder_rsi
+from screener.indicators.plugins.supertrend import supertrend_dir
 
 
 class PineError(Exception):
@@ -56,7 +57,7 @@ class PineNameError(PineError):
 
 SERIES_NAMES = {"open", "high", "low", "close", "volume", "adj_close"}
 ROLLING_FUNCS = {"sma", "ema", "rsi", "highest", "lowest"}
-FUNC_NAMES = ROLLING_FUNCS | {"atr", "crossover", "crossunder"}
+FUNC_NAMES = ROLLING_FUNCS | {"atr", "supertrend", "crossover", "crossunder"}
 BOOL_KEYWORDS = {"and", "or", "not", "true", "false"}
 
 
@@ -453,6 +454,56 @@ def _atr(bars: pd.DataFrame | PanelBars, length: int) -> Vector:
     )
 
 
+def _require_number_literal(node: Node, func: str, arg: str) -> float:
+    if not isinstance(node, Num):
+        raise PineSyntaxError(f"{func}() argument {arg!r} must be a numeric literal")
+    if node.value <= 0:
+        raise PineSyntaxError(
+            f"{func}() argument {arg!r} must be positive, got {node.value}"
+        )
+    return float(node.value)
+
+
+def _supertrend(bars: pd.DataFrame | PanelBars, period: int, mult: float) -> Vector:
+    """Supertrend direction: ``-1`` while in an uptrend, ``+1`` while down.
+
+    Delegates to the registered ``supertrend_dir`` indicator so the expression
+    language and ``screener.strategies.plugins.supertrend`` cannot disagree.
+    The indicator is a bar-sequential numpy loop (the band carries state), so
+    the panel case runs it once per ticker column rather than vectorising.
+    """
+    high = _as_float(bars["high"])
+    low = _as_float(bars["low"])
+    close = _as_float(bars["close"])
+    if isinstance(bars, PanelBars):
+        high_f = cast(pd.DataFrame, high)
+        low_f = cast(pd.DataFrame, low)
+        close_f = cast(pd.DataFrame, close)
+        high_v = high_f.to_numpy(copy=False)
+        low_v = low_f.to_numpy(copy=False)
+        close_v = close_f.to_numpy(copy=False)
+        out = np.empty(high_v.shape, dtype=np.float64)
+        for column in range(high_v.shape[1]):
+            out[:, column] = supertrend_dir(
+                high_v[:, column],
+                low_v[:, column],
+                close_v[:, column],
+                period=period,
+                mult=mult,
+            )
+        return pd.DataFrame(out, index=high_f.index, columns=high_f.columns)
+    return pd.Series(
+        supertrend_dir(
+            cast(pd.Series, high).to_numpy(copy=False),
+            cast(pd.Series, low).to_numpy(copy=False),
+            cast(pd.Series, close).to_numpy(copy=False),
+            period=period,
+            mult=mult,
+        ).astype(np.float64),
+        index=bars.index,
+    )
+
+
 def _crossover(a: Vector, b: Vector) -> Vector:
     a_now = a
     b_now = b
@@ -631,6 +682,15 @@ def _eval_call(
             )
         length = _require_int_literal(node.args[0], "atr", "length")
         return _atr(bars, length)
+    if name == "supertrend":
+        if len(node.args) != 2:
+            raise PineSyntaxError(
+                f"supertrend() takes 2 arguments (length, multiplier), "
+                f"got {len(node.args)}"
+            )
+        length = _require_int_literal(node.args[0], "supertrend", "length")
+        mult = _require_number_literal(node.args[1], "supertrend", "multiplier")
+        return _supertrend(bars, length, mult)
     if name in {"crossover", "crossunder"}:
         if len(node.args) != 2:
             raise PineSyntaxError(f"{name}() takes 2 arguments, got {len(node.args)}")
@@ -713,7 +773,7 @@ def _panel_column_names(node: Node) -> set[str]:
     if "adj_close" in names:
         # _series_from_name falls back to close when adj_close is absent.
         names.add("close")
-    if "atr" in _call_names(node):
+    if {"atr", "supertrend"} & _call_names(node):
         names |= {"high", "low", "close"}
     return names
 
@@ -992,6 +1052,12 @@ def required_lookback(node: Node) -> int:
             ):
                 max_len = max(max_len, int(n.args[1].value))
             if n.name == "atr" and len(n.args) == 1 and isinstance(n.args[0], Num):
+                max_len = max(max_len, int(n.args[0].value))
+            if (
+                n.name == "supertrend"
+                and len(n.args) == 2
+                and isinstance(n.args[0], Num)
+            ):
                 max_len = max(max_len, int(n.args[0].value))
             if n.name in {"crossover", "crossunder"}:
                 max_len = max(max_len, 1)
