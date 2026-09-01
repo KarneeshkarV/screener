@@ -29,7 +29,7 @@ from screener.screen_candidates import (
     prefilter_filters,
     resolve_screen_strategy,
     resolve_screen_gates,
-    resolve_universe_tickers,
+    resolve_universe_field,
     screen_candidates,
     screen_label,
     settings_fingerprint,
@@ -97,6 +97,11 @@ class ScreenRequest:
     # the TradingView prefilter, which is the default. Only a criterion that
     # aliases a strategy has a bar rule to run, so this is refused otherwise.
     universe: str | None = None
+    # TOML/YAML/JSON definitions for custom static, snapshot, or dynamic
+    # universes, spelled the same as ``backtest-rolling --universe-config``.
+    # A snapshot universe is screened on the membership window that is open
+    # today, so the live screen sees the book the backtest would have held.
+    universe_config: str | None = None
     # Raise StaleDataError instead of serving stale cache when the live scan
     # fails. When ranking by a bar-derived setup_score, the same flag is
     # forwarded to the price fetcher, so a failed bar refresh also raises
@@ -239,7 +244,12 @@ def _run_bar_screen(
     signal_date = date.today()
 
     if request.universe:
-        tickers = resolve_universe_tickers(request.universe, request.market)
+        field = resolve_universe_field(
+            request.universe, request.market, config_path=request.universe_config
+        )
+        tickers = field.tickers
+        if field.note:
+            warnings.append(field.note)
         scanned = None
         total = len(tickers)
         # No vendor payload in this mode, so the freshness the outcome reports

@@ -33,6 +33,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
@@ -112,9 +113,23 @@ class ScreenStrategy:
         return profile.tv_prefilter
 
 
+#: Criteria whose strategy is registered under a different name. Most aliases
+#: are implicit - ``breakout`` the criterion and ``breakout`` the strategy share
+#: a name, so the registry lookup finds them. This table covers the ones where
+#: the strategy earned a more descriptive name than the criterion it implements,
+#: and without it the criterion silently keeps the vendor-snapshot path while a
+#: bar rule for the very same question sits unused in the registry.
+_STRATEGY_ALIASES = {
+    # EMA5 > EMA20 > EMA100 > EMA200, the default screen. `ema` is that stack
+    # as TradingView columns; `ema_stack` is the same stack as an entry
+    # expression, and is what backtest-rolling measures.
+    "ema": "ema_stack",
+}
+
+
 def aliased_strategy(criterion: str) -> StrategySpec | None:
     """The strategy a criterion name aliases, or ``None`` for a filters-only name."""
-    return strategy_registry.get_optional(criterion)
+    return strategy_registry.get_optional(_STRATEGY_ALIASES.get(criterion, criterion))
 
 
 def ensure_screenable(spec: StrategySpec) -> ExpressionStrategySpec:
@@ -243,16 +258,80 @@ def prefilter_filters(strategy: ScreenStrategy) -> list:
     return list(criteria_registry.get(name)())
 
 
-def resolve_universe_tickers(universe: str, market: str) -> list[str]:
-    """Resolve a named universe or a universe file into TradingView symbols."""
+@dataclass(frozen=True)
+class UniverseField:
+    """The names ``--universe`` will screen, and how they were chosen.
+
+    ``note`` is empty for a plain index or file, where the name says everything
+    there is to say. A membership-window universe fills it in, because there
+    the field is a dated answer and the reader has to be told which date.
+    """
+
+    tickers: list[str]
+    note: str = ""
+
+
+def _members_open_on(
+    windows: Sequence[tuple[str, date, date | None]], as_of: date
+) -> list[str]:
+    """Symbols whose half-open ``[start, end)`` window contains ``as_of``.
+
+    A screen is a statement about today, so today's open windows are the whole
+    of the correct field: a name added last month belongs in it, and one
+    dropped last month does not, even though both appear in the snapshot file.
+    Taking the union of every snapshot instead - which is what
+    ``UniverseSelection.symbols`` is - would screen names that have left the
+    index.
+    """
+    return list(
+        dict.fromkeys(
+            symbol
+            for symbol, start, end in windows
+            if start <= as_of and (end is None or as_of < end)
+        )
+    )
+
+
+def resolve_universe_field(
+    universe: str,
+    market: str,
+    *,
+    config_path: str | Path | None = None,
+    as_of: date | None = None,
+) -> UniverseField:
+    """Resolve a named universe, a config-defined universe, or a file.
+
+    Built-ins win, then the ``--universe-config`` definitions, then the name is
+    read as a path. That is the same order :func:`load_universe_selection` uses
+    for ``backtest-rolling``, so one name cannot mean two different books
+    depending on which command asked.
+    """
     from screener.universes import (
         UniverseRequest,
         UniverseSource,
         available_universes,
+        load_universe_selection,
         resolve_universe,
     )
 
     is_index = universe in available_universes()
+    if not is_index and config_path is not None:
+        today = as_of or date.today()
+        selection = load_universe_selection(
+            universe, market=market, as_of=today, config_path=config_path
+        )
+        if selection.membership_windows:
+            tickers = _members_open_on(selection.membership_windows, today)
+            return UniverseField(
+                tickers,
+                f"{selection.name}: {len(tickers)} names in the membership "
+                f"window open on {today.isoformat()} ({selection.source})",
+            )
+        return UniverseField(
+            list(selection.symbols),
+            f"{selection.name}: {len(selection.symbols)} names ({selection.source})",
+        )
+
     source = UniverseSource.INDEX_CURRENT if is_index else UniverseSource.FILE
     request = UniverseRequest(
         source=source,
@@ -261,7 +340,14 @@ def resolve_universe_tickers(universe: str, market: str) -> list[str]:
         file=None if is_index else universe,
         comment_prefixes=("#",),
     )
-    return resolve_universe(request)
+    return UniverseField(resolve_universe(request))
+
+
+def resolve_universe_tickers(
+    universe: str, market: str, *, config_path: str | Path | None = None
+) -> list[str]:
+    """Resolve a named universe or a universe file into TradingView symbols."""
+    return resolve_universe_field(universe, market, config_path=config_path).tickers
 
 
 def _bar_display_row(bars: pd.DataFrame, ticker: str) -> dict[str, object]:
@@ -694,6 +780,7 @@ __all__ = [
     "OUTPUT_SCORE_COLUMN",
     "IntervalNotScreenableError",
     "ScreenStrategy",
+    "UniverseField",
     "UnscreenableStrategyError",
     "aliased_strategy",
     "ensure_screenable",
@@ -701,6 +788,7 @@ __all__ = [
     "resolve_screen_gates",
     "resolve_screen_strategy",
     "settings_fingerprint",
+    "resolve_universe_field",
     "resolve_universe_tickers",
     "screen_candidates",
     "screen_label",

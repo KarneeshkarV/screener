@@ -108,6 +108,14 @@ def _stack_lookback() -> int:
     return _SLOWEST_EMA
 
 
+# No ``tv_prefilter``, deliberately, even though the `ema` criterion spells
+# this very stack in TradingView columns. ``ema()`` seeds at ``out[0] = x[0]``,
+# so an EMA200 read off a warmed-up 500-bar panel and one read off a vendor's
+# full listing history are different numbers, and near a crossing they order
+# the legs differently in *both* directions. A prefilter is only allowed to
+# remove names the bar rule would also remove; this one cannot promise that, so
+# it does not run. The cost is that a default `-c ema` screen fetches bars for
+# the whole universe, which is the price of the two paths agreeing.
 register_expression_strategy(
     "ema_stack",
     entry=ENTRY_STACK,

@@ -480,7 +480,7 @@ def test_screen_sorted_by_a_column_never_resolves_a_scorer(monkeypatch) -> None:
     monkeypatch.setattr(screen_workflow, "scan", fake_scan)
 
     outcome = run_screen_workflow(
-        _request(criteria=("ema", "value"), order_by="volume")
+        _request(criteria=("quality", "value"), order_by="volume")
     )
 
     assert outcome.df["name"].tolist() == ["AAA"]
@@ -503,7 +503,7 @@ def test_screen_refuses_a_strategy_alias_combined_with_a_filter_criterion(
 
     with pytest.raises(UnscreenableStrategyError, match="Screen one at a time"):
         run_screen_workflow(
-            _request(criteria=("momentum_12_1", "ema"), order_by=order_by)
+            _request(criteria=("momentum_12_1", "value"), order_by=order_by)
         )
 
 

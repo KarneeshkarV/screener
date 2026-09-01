@@ -25,11 +25,13 @@ from screener.screen_candidates import (
     _warn_thin_field,
     _fundamentals_for,
     ScreenStrategy,
+    UniverseField,
     UnscreenableStrategyError,
     aliased_strategy,
     ensure_screenable,
     prefilter_filters,
     resolve_screen_strategy,
+    resolve_universe_field,
     resolve_universe_tickers,
     screen_candidates,
     screen_label,
@@ -92,17 +94,30 @@ class TestAliasing:
         assert resolved.spec.name == name
         assert isinstance(resolved.spec, ExpressionStrategySpec)
 
-    @pytest.mark.parametrize("name", ["ema", "value", "near_52_high"])
+    @pytest.mark.parametrize("name", ["value", "near_52_high"])
     def test_a_filters_only_criterion_keeps_the_old_path(self, name: str) -> None:
         assert aliased_strategy(name) is None
         assert resolve_screen_strategy((name,)) is None
 
+    def test_the_default_criterion_aliases_the_rolling_ema_stack(self) -> None:
+        """`-c ema` must run the same rule backtest-rolling measures.
+
+        The criterion is named `ema` and the strategy `ema_stack`, so the
+        registry lookup alone never connected them and the default screen
+        silently ran the TradingView filter set instead of the bar rule.
+        """
+        resolved = resolve_screen_strategy(("ema",))
+
+        assert resolved is not None
+        assert resolved.criterion == "ema"
+        assert resolved.spec.name == "ema_stack"
+
     def test_combining_filters_only_criteria_stays_legal(self) -> None:
-        assert resolve_screen_strategy(("ema", "value")) is None
+        assert resolve_screen_strategy(("value", "near_52_high")) is None
 
     def test_a_strategy_alias_refuses_to_be_combined(self) -> None:
         with pytest.raises(UnscreenableStrategyError, match="Screen one at a time"):
-            resolve_screen_strategy(("breakout", "ema"))
+            resolve_screen_strategy(("breakout", "value"))
 
     def test_two_strategy_aliases_refuse_each_other_too(self) -> None:
         with pytest.raises(UnscreenableStrategyError, match="Screen one at a time"):
@@ -227,6 +242,43 @@ class TestUniverseMode:
             "NSE:TCS",
         ]
 
+    def test_a_snapshot_universe_resolves_to_the_window_open_today(
+        self, tmp_path
+    ) -> None:
+        # The union of every snapshot would screen names that have left the
+        # index. Only the window open today is the live field, so LEFT - which
+        # was dropped in 2021 - must not come back.
+        snapshots = tmp_path / "snaps.csv"
+        snapshots.write_text(
+            "effective_date,symbol\n"
+            "2020-01-01,STAY.NS\n"
+            "2020-01-01,LEFT.NS\n"
+            "2021-01-01,STAY.NS\n"
+            "2021-01-01,JOINED.NS\n",
+            encoding="utf-8",
+        )
+        config = tmp_path / "universes.yaml"
+        config.write_text(
+            "universes:\n"
+            "  book_pit:\n"
+            "    type: snapshots\n"
+            "    market: india\n"
+            '    benchmark: "^NSEI"\n'
+            "    path: snaps.csv\n",
+            encoding="utf-8",
+        )
+
+        field = resolve_universe_field("book_pit", "india", config_path=config)
+
+        assert field.tickers == ["STAY.NS", "JOINED.NS"]
+        assert "book_pit" in field.note
+
+    def test_a_config_universe_needs_its_config(self) -> None:
+        # Without --universe-config the name falls through to the file reader,
+        # which is the honest failure: there is nowhere else it could be.
+        with pytest.raises(FileNotFoundError):
+            resolve_universe_tickers("nifty500_pit", "india")
+
     def test_universe_without_a_strategy_alias_is_refused(self, monkeypatch) -> None:
         # A filters-only criterion has no bar rule, so there is nothing to run
         # against a local universe; failing loudly beats screening on nothing.
@@ -236,7 +288,7 @@ class TestUniverseMode:
         monkeypatch.setattr(screen_workflow, "scan", unexpected_scan)
 
         with pytest.raises(UnscreenableStrategyError, match="--universe needs"):
-            run_screen_workflow(_request(criteria_names=("ema",), universe="nifty50"))
+            run_screen_workflow(_request(criteria_names=("value",), universe="nifty50"))
 
 
 class TestWorkflowWiring:
@@ -350,8 +402,10 @@ class TestWorkflowWiring:
         monkeypatch.setattr(screen_workflow, "screen_candidates", fake_candidates)
         monkeypatch.setattr(
             screen_workflow,
-            "resolve_universe_tickers",
-            lambda universe, market: ["NSE:AAA", "NSE:BBB", "NSE:CCC"],
+            "resolve_universe_field",
+            lambda universe, market, config_path=None: UniverseField(
+                ["NSE:AAA", "NSE:BBB", "NSE:CCC"]
+            ),
         )
 
         outcome = run_screen_workflow(
