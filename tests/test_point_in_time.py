@@ -202,3 +202,13 @@ def test_point_in_time_rejects_explicit_ticker_universe():
     )
     assert result.exit_code != 0
     assert "--point-in-time requires an index universe" in result.output
+
+
+def test_default_point_in_time_does_not_reject_ticker_universe():
+    """The flag is on by default, so a ticker list must downgrade, not fail."""
+    runner = CliRunner()
+    result = runner.invoke(
+        backtest_rolling,
+        ["--tickers", "AAA", "--entry", "close > sma(close, 3)"],
+    )
+    assert "--point-in-time requires an index universe" not in result.output

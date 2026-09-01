@@ -8,7 +8,12 @@ from rich.panel import Panel
 from rich.table import Table
 
 from screener import agentio
-from screener.backtester.metrics import ResultView, result_view
+from screener.backtester.metrics import (
+    SIZING_COMPARISON_COLUMNS,
+    ResultView,
+    result_view,
+    sizing_comparison_rows,
+)
 from screener.backtester.models import BacktestResult
 
 console = Console()
@@ -38,27 +43,11 @@ def print_reinvestment_comparison(
         header_style="bold",
     )
     table.add_column("Metric")
-    table.add_column("Fixed slots", justify="right")
-    table.add_column("Reinvested slots", justify="right")
-    rows = (
-        ("Final Equity", "final_equity", "money"),
-        ("Total Return", "total_return", "pct"),
-        ("CAGR", "cagr", "pct"),
-        ("Max Drawdown", "max_drawdown", "pct"),
-        ("Sharpe", "sharpe", "float"),
-    )
-    for label, key, kind in rows:
-        fixed = float(fixed_slots.metrics.get(key, 0.0))
-        reinvested = float(reinvested_slots.metrics.get(key, 0.0))
-        if kind == "money":
-            fixed_text = f"{fixed:,.2f}"
-            reinvested_text = f"{reinvested:,.2f}"
-        elif kind == "pct":
-            fixed_text = f"{fixed:+.2%}"
-            reinvested_text = f"{reinvested:+.2%}"
-        else:
-            fixed_text = f"{fixed:+.3f}"
-            reinvested_text = f"{reinvested:+.3f}"
+    for column in SIZING_COMPARISON_COLUMNS:
+        table.add_column(column, justify="right")
+    for label, fixed_text, reinvested_text in sizing_comparison_rows(
+        fixed_slots.metrics, reinvested_slots.metrics
+    ):
         table.add_row(label, fixed_text, reinvested_text)
     agentio.render_table(table, agentio.get_console(), detail="full")
 

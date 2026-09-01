@@ -118,6 +118,10 @@ class BacktestRequest:
     # Click source state is required because a typed default value cannot be
     # distinguished from an omitted option by inspecting ``adv_window``.
     adv_window_was_explicit: bool = False
+    # ``--point-in-time`` is on by default, so a universe with no membership
+    # history must fall back quietly instead of failing. Only a typed flag is
+    # a hard requirement the run may refuse.
+    point_in_time_was_explicit: bool = False
     # Percentile floor on ``setup_score`` (0-100). Defaulted because only the
     # rolling command declares ``--min-score``; historical has no candidate
     # layer to gate.
@@ -322,6 +326,9 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
 
     tickers = None
     universe_note = None
+    # Local, because the default-on flag is downgraded for universes that carry
+    # no membership history; the request keeps what the user asked for.
+    point_in_time = bool(request.point_in_time)
     membership_added: tuple[tuple[str, date], ...] = ()
     membership_windows: tuple[tuple[str, date, date | None], ...] = ()
     dynamic_universe_size: int | None = None
@@ -344,7 +351,7 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
                 dynamic_size=int(request.universe_size),
                 dynamic_lookback=int(request.universe_lookback),
                 dynamic_rebalance=str(request.universe_rebalance),
-                point_in_time=bool(request.point_in_time),
+                point_in_time=point_in_time,
                 start=start_date,
             )
         except (OSError, ValueError, RuntimeError) as exc:
@@ -374,12 +381,19 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
                 f"ADV, rebalanced {dynamic_universe_rebalance}; candidate base is an "
                 "as-of-end snapshot and may retain survivorship bias"
             )
-        if request.point_in_time:
+        if point_in_time:
             if membership_windows or dynamic_universe_size is not None:
                 pass
             elif resolved_universe != "sp500":
-                raise click.UsageError(
-                    "--point-in-time requires snapshot history or the sp500 universe."
+                if request.point_in_time_was_explicit:
+                    raise click.UsageError(
+                        "--point-in-time requires snapshot history or the sp500 universe."
+                    )
+                point_in_time = False
+                universe_note += (
+                    "; survivorship bias: today's members applied to history "
+                    f"({resolved_universe} has no membership history, so "
+                    "point-in-time is inactive)"
                 )
             else:
                 # The sp500 selection could not read its revision history, so
@@ -401,18 +415,22 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         elif not membership_windows and dynamic_universe_size is None:
             universe_note += (
                 "; survivorship bias: today's members applied to history "
-                "(pass --point-in-time to filter by 'date added')"
+                "(point-in-time membership is off)"
             )
     if (
-        request.point_in_time
+        point_in_time
         and not membership_added
         and not membership_windows
         and dynamic_universe_size is None
     ):
-        raise click.UsageError(
-            "--point-in-time requires an index universe; it cannot be used with "
-            "--tickers or --universe-file."
-        )
+        if request.point_in_time_was_explicit:
+            raise click.UsageError(
+                "--point-in-time requires an index universe; it cannot be used with "
+                "--tickers or --universe-file."
+            )
+        # An explicit ticker list carries no membership history, so the default
+        # simply does not apply. Failing here would break every --tickers run.
+        point_in_time = False
 
     slippage_model = build_slippage_model(
         request.slippage_model,

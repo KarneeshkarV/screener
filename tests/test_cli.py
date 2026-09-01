@@ -430,11 +430,59 @@ def test_rolling_compare_flag_prints_fixed_and_reinvested_slot_comparison():
     assert "Reinvested slots" in result.output
 
 
-def test_rolling_without_compare_flag_runs_one_simulation():
+def test_rolling_compares_sizing_rules_by_default():
     fetcher, bars_a = _stub_env()
     runner = CliRunner()
 
     result = runner.invoke(cli, _rolling_argv(bars_a), obj=fetcher)
+
+    assert result.exit_code == 0, result.output
+    assert "Fixed slots vs reinvested slots" in result.output
+
+
+def test_rolling_report_carries_the_sizing_comparison(tmp_path):
+    """The HTML report must show the same two sizing columns as the table."""
+    fetcher, bars_a = _stub_env()
+    report = tmp_path / "rolling.html"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        _rolling_argv(bars_a, "--report", str(report)),
+        obj=fetcher,
+    )
+
+    assert result.exit_code == 0, result.output
+    html = report.read_text(encoding="utf-8")
+    assert 'id="sizing-comparison-table"' in html
+    assert "Fixed slots vs reinvested slots" in html
+    assert "Reinvested slots" in html
+
+
+def test_rolling_no_compare_flag_leaves_the_report_single_column(tmp_path):
+    fetcher, bars_a = _stub_env()
+    report = tmp_path / "rolling.html"
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        _rolling_argv(bars_a, "--no-compare-reinvestment", "--report", str(report)),
+        obj=fetcher,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert 'id="sizing-comparison-table"' not in report.read_text(encoding="utf-8")
+
+
+def test_rolling_no_compare_flag_runs_one_simulation():
+    fetcher, bars_a = _stub_env()
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        _rolling_argv(bars_a, "--no-compare-reinvestment"),
+        obj=fetcher,
+    )
 
     assert result.exit_code == 0, result.output
     assert "Fixed slots vs reinvested slots" not in result.output

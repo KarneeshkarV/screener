@@ -108,6 +108,34 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
 )
 _RESULT_VIEW_SPECS = {key: (label, kind) for key, label, kind in _RESULT_VIEW_ORDER}
 
+# Rows shown when one signal panel is replayed under both equal-slot sizing
+# rules. Kept here, next to the result-view schema, so the CLI table and the
+# HTML tear-sheet cannot drift apart on which metrics the comparison shows.
+_SIZING_COMPARISON_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
+    ("final_equity", "Final Equity", "money"),
+    ("total_return", "Total Return", "pct"),
+    ("cagr", "CAGR", "pct"),
+    ("max_drawdown", "Max Drawdown", "pct"),
+    ("sharpe", "Sharpe", "ratio"),
+)
+
+SIZING_COMPARISON_COLUMNS = ("Fixed slots", "Reinvested slots")
+
+
+def sizing_comparison_rows(
+    fixed: Mapping[str, Any],
+    reinvested: Mapping[str, Any],
+) -> tuple[tuple[str, str, str], ...]:
+    """Return ``(label, fixed_text, reinvested_text)`` for both sizing rules."""
+    return tuple(
+        (
+            label,
+            format_result_value(fixed.get(key), kind),
+            format_result_value(reinvested.get(key), kind),
+        )
+        for key, label, kind in _SIZING_COMPARISON_ORDER
+    )
+
 
 def format_result_value(value: Any, kind: MetricKind) -> str:
     """Format a result metric once, independently of its output surface."""

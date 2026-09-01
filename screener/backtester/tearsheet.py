@@ -16,7 +16,11 @@ from screener.backtester.dashboard import (
     metric_cards,
     table_html,
 )
-from screener.backtester.metrics import format_result_value
+from screener.backtester.metrics import (
+    SIZING_COMPARISON_COLUMNS,
+    format_result_value,
+    sizing_comparison_rows,
+)
 from screener.backtester.models import BacktestResult
 from screener.html_report import html_page
 
@@ -167,6 +171,36 @@ def _trade_timeline_html(trades: pd.DataFrame) -> str:
     return figure_html(fig, "tearsheet-trade-timeline")
 
 
+def _sizing_comparison_html(
+    fixed: BacktestResult,
+    reinvested: BacktestResult,
+) -> str:
+    """Render the fixed-slot vs reinvested-slot metric table."""
+    header = "".join(
+        f"<th>{html.escape(name)}</th>" for name in SIZING_COMPARISON_COLUMNS
+    )
+    rows = "".join(
+        f"<tr><th>{html.escape(label)}</th>"
+        f"<td>{html.escape(fixed_text)}</td>"
+        f"<td>{html.escape(reinvested_text)}</td></tr>"
+        for label, fixed_text, reinvested_text in sizing_comparison_rows(
+            fixed.metrics, reinvested.metrics
+        )
+    )
+    return (
+        '<section class="panel" id="sizing-comparison">'
+        "<h2>Fixed slots vs reinvested slots</h2>"
+        '<div class="table-wrap">'
+        '<table class="data-table" id="sizing-comparison-table">'
+        f"<thead><tr><th>Metric</th>{header}</tr></thead>"
+        f"<tbody>{rows}</tbody></table></div>"
+        '<p class="empty">Fixed slots spend a constant '
+        "initial_capital / top per entry, so profits sit as idle cash. Reinvested "
+        "slots size each entry from current marked-to-market equity, so the run "
+        "compounds.</p></section>"
+    )
+
+
 def _config_rows(result: BacktestResult) -> str:
     dump = result.config.model_dump(exclude={"slippage_model"})
     if dump.get("membership_added"):
@@ -189,6 +223,7 @@ def render_tearsheet(
     *,
     title: str = "Backtest Tear Sheet",
     extra_notes: Sequence[str] = (),
+    sizing_comparison: tuple[BacktestResult, BacktestResult] | None = None,
 ) -> Path:
     """Render a static, self-contained HTML tear-sheet and return its path."""
     output_path = Path(output_file)
@@ -200,6 +235,8 @@ def render_tearsheet(
     monthly = frames["monthly"]
 
     sections: list[str] = []
+    if sizing_comparison is not None:
+        sections.append(_sizing_comparison_html(*sizing_comparison))
     ledger_html = (
         '<p class="empty">No trades.</p>'
         if trades.empty
