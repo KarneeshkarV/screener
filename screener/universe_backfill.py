@@ -49,6 +49,10 @@ _CDX_ENDPOINT = "https://web.archive.org/cdx/search/cdx"
 # ``id_`` asks the replay server for the stored bytes rather than a rewritten
 # page, so the CSV comes back exactly as NSE served it on the crawl date.
 _REPLAY_TEMPLATE = "https://web.archive.org/web/{timestamp}id_/{url}"
+# The share of the previous membership a crawl must still contain to be read as
+# the same index. A semiannual Nifty 500 rebalance moves tens of names out of
+# 500, so half is far below any real turnover and only fires on a wrong file.
+_MIN_MEMBERSHIP_OVERLAP = 0.5
 
 
 @dataclass(frozen=True)
@@ -225,7 +229,13 @@ def list_archived_snapshots(
     finally:
         if owned:
             session.close()
-    candidates.sort(key=lambda snapshot: snapshot.timestamp)
+    # The url and digest break a timestamp tie. Two mirrors crawled in the same
+    # second would otherwise be ordered by the order the sources happen to be
+    # listed in, so editing BACKFILL_SOURCES could silently change which
+    # membership a date carries.
+    candidates.sort(
+        key=lambda snapshot: (snapshot.timestamp, snapshot.url, snapshot.digest)
+    )
     # One snapshot per calendar day, because a date can carry only one
     # membership. Keep the *last* crawl of the day: when two mirrors disagree
     # because NSE published a change partway through, the later crawl is the
@@ -305,7 +315,8 @@ def backfill_snapshots(
     it defaults to the floor the source declares. A truncated or error-page
     capture would otherwise erase most of the index for the entire window that
     snapshot covers, which reads as a plausible result rather than as the fetch
-    failure it is.
+    failure it is. A crawl that keeps too little of the previous membership is
+    rejected for the same reason: it is a different document, not a rebalance.
     """
     source = get_backfill_source(name)
     if min_symbols is None:
@@ -319,6 +330,10 @@ def backfill_snapshots(
     owned = session is None
     session = session or requests.Session()
     accepted: list[tuple[ArchivedSnapshot, tuple[str, ...]]] = []
+    # Every date the crawl read a usable membership for, including the dates
+    # dropped below as unchanged. Those dates are covered by the window the
+    # previous snapshot opens, so ``replace_existing`` has to clear them too.
+    covered_dates: set[str] = set()
     previous: frozenset[str] | None = None
     try:
         for snapshot in snapshots:
@@ -338,6 +353,22 @@ def backfill_snapshots(
                 )
                 continue
             current = frozenset(members)
+            # A count check alone accepts a well-formed CSV of the wrong
+            # instruments: the archive can serve a different list of the same
+            # length from the same path. An index does not replace half its
+            # members between two crawls, so a collapse in overlap is a wrong
+            # document rather than a rebalance. The first snapshot has nothing
+            # to compare against and is taken on trust.
+            if previous is not None:
+                overlap = len(current & previous) / len(previous)
+                if overlap < _MIN_MEMBERSHIP_OVERLAP:
+                    all_warnings.append(
+                        f"skipped crawl {snapshot.timestamp} of {snapshot.url}: "
+                        f"only {overlap:.0%} of the previous membership survives, "
+                        "which reads as a different document rather than a rebalance"
+                    )
+                    continue
+            covered_dates.add(snapshot.observed.isoformat())
             # Distinct bytes can still be the same membership (a reordered or
             # recolumned CSV). Only a real change earns a new window boundary.
             if previous is not None and current == previous:
@@ -355,6 +386,13 @@ def backfill_snapshots(
     path = Path(output).expanduser()
     existing = _read_existing(path)
     existing_dates = set(existing["effective_date"]) if not existing.empty else set()
+    # Dates whose existing rows the archive supersedes. Under
+    # ``replace_existing`` that is every date the crawl covered, not only the
+    # dates that survived the unchanged-membership dedupe: a date dropped as
+    # unchanged is still described by the earlier snapshot's window, so leaving
+    # its stale rows in place would let them reopen a membership the archive
+    # says ended.
+    superseded = covered_dates if replace_existing else set()
     if existing_dates and not replace_existing:
         conflicting = [
             snapshot
@@ -383,10 +421,11 @@ def backfill_snapshots(
             "symbol": [symbol for _snapshot, members in accepted for symbol in members],
         }
     )
-    if not existing.empty and not addition.empty:
-        existing = existing[
-            ~existing["effective_date"].isin(set(addition["effective_date"]))
-        ]
+    replaced = superseded | (
+        set(addition["effective_date"]) if not addition.empty else set()
+    )
+    if not existing.empty and replaced:
+        existing = existing[~existing["effective_date"].isin(replaced)]
     frames = [frame for frame in (existing, addition) if not frame.empty]
     combined = (
         pd.concat(frames, ignore_index=True)

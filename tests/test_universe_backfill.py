@@ -374,3 +374,113 @@ def test_min_symbols_must_be_positive(tmp_path) -> None:
             session=_FakeSession({}, {}),
             min_symbols=0,
         )
+
+
+def test_a_timestamp_tie_is_resolved_the_same_way_whatever_the_source_order() -> None:
+    """Two mirrors crawled in the same second must not depend on list order.
+
+    The winner is arbitrary, but it has to be stable: editing BACKFILL_SOURCES
+    must not silently change which membership a date carries.
+    """
+    mirror_a, mirror_b = _NIFTY500_MIRRORS[0], _NIFTY500_MIRRORS[1]
+    captures = {
+        mirror_a: [["20240601120000", f"https://{mirror_a}", "DIGEST_A", "200"]],
+        mirror_b: [["20240601120000", f"https://{mirror_b}", "DIGEST_B", "200"]],
+    }
+    forward, _ = universe_backfill.list_archived_snapshots(
+        "nifty500", session=_FakeSession(captures, {})
+    )
+    reversed_captures = dict(reversed(list(captures.items())))
+    backward, _ = universe_backfill.list_archived_snapshots(
+        "nifty500", session=_FakeSession(reversed_captures, {})
+    )
+
+    assert len(forward) == 1
+    assert [s.digest for s in forward] == [s.digest for s in backward]
+
+
+def test_replace_existing_clears_a_date_the_crawl_saw_but_deduped_away(
+    tmp_path,
+) -> None:
+    """A date dropped as unchanged still has its membership from the archive.
+
+    Its window comes from the earlier snapshot, so a stale row left behind
+    would reopen a membership the archive says had already ended.
+    """
+    output = tmp_path / "snapshots.csv"
+    pd.DataFrame({"effective_date": ["2024-02-01"], "symbol": ["OLD.NS"]}).to_csv(
+        output, index=False
+    )
+    mirror = _NIFTY500_MIRRORS[0]
+    captures = {
+        mirror: [
+            ["20240101120000", f"https://{mirror}", "D1", "200"],
+            ["20240201120000", f"https://{mirror}", "D2", "200"],
+        ]
+    }
+    # Distinct bytes, same membership: the second snapshot is deduped away.
+    bodies = {
+        _replay("20240101120000", mirror): _csv(["AAA"]),
+        _replay("20240201120000", mirror): _csv(["AAA", "AAA"]),
+    }
+    session = _FakeSession(captures, bodies)
+
+    universe_backfill.backfill_snapshots(
+        "nifty500",
+        output=output,
+        session=session,
+        min_symbols=1,
+        replace_existing=True,
+    )
+
+    frame = pd.read_csv(output, dtype=str)
+    assert set(frame["effective_date"]) == {"2024-01-01"}
+    assert set(frame["symbol"]) == {"AAA.NS"}
+
+
+def test_a_crawl_that_replaces_most_of_the_membership_is_rejected(tmp_path) -> None:
+    """A different 500-row CSV passes the count floor but is not the index."""
+    mirror = _NIFTY500_MIRRORS[0]
+    captures = {
+        mirror: [
+            ["20240101120000", f"https://{mirror}", "D1", "200"],
+            ["20240201120000", f"https://{mirror}", "D2", "200"],
+        ]
+    }
+    bodies = {
+        _replay("20240101120000", mirror): _csv(["AAA", "BBB", "CCC", "DDD"]),
+        _replay("20240201120000", mirror): _csv(["WWW", "XXX", "YYY", "ZZZ"]),
+    }
+    session = _FakeSession(captures, bodies)
+
+    result = universe_backfill.backfill_snapshots(
+        "nifty500", output=tmp_path / "snapshots.csv", session=session, min_symbols=1
+    )
+
+    frame = pd.read_csv(tmp_path / "snapshots.csv", dtype=str)
+    assert set(frame["effective_date"]) == {"2024-01-01"}
+    assert any(
+        "reads as a different document" in warning for warning in result.warnings
+    )
+
+
+def test_a_real_rebalance_is_not_rejected_as_a_different_document(tmp_path) -> None:
+    mirror = _NIFTY500_MIRRORS[0]
+    captures = {
+        mirror: [
+            ["20240101120000", f"https://{mirror}", "D1", "200"],
+            ["20240201120000", f"https://{mirror}", "D2", "200"],
+        ]
+    }
+    bodies = {
+        _replay("20240101120000", mirror): _csv(["AAA", "BBB", "CCC", "DDD"]),
+        _replay("20240201120000", mirror): _csv(["AAA", "BBB", "CCC", "NEW"]),
+    }
+    session = _FakeSession(captures, bodies)
+
+    universe_backfill.backfill_snapshots(
+        "nifty500", output=tmp_path / "snapshots.csv", session=session, min_symbols=1
+    )
+
+    frame = pd.read_csv(tmp_path / "snapshots.csv", dtype=str)
+    assert set(frame["effective_date"]) == {"2024-01-01", "2024-02-01"}

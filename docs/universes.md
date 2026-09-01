@@ -49,6 +49,13 @@ than as the fetch failure it is.
 It defaults to the index's own floor: 400 for the Nifty 500, 40 for the Nifty
 50.
 
+A count alone does not prove a crawl is the right document, because the archive
+can serve a different list of the same length from the same path.
+A crawl that keeps less than half of the previous snapshot's membership is
+therefore rejected as well and reported as a warning.
+A real rebalance moves tens of names out of 500, so the check only fires on a
+wrong file.
+
 ### What the reconstruction can and cannot tell you
 
 - **It is lookahead-free.** Each snapshot is dated at the crawl that observed
