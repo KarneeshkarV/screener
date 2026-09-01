@@ -212,7 +212,9 @@ def test_screen_csv_skips_auto_temp_report(tmp_path, monkeypatch):
         workflow_mod, "scan", lambda **kwargs: (2, _screen_df(), _AS_OF)
     )
 
-    res = CliRunner().invoke(cli, ["screen", "-m", "us", "-c", "value", "-n", "2", "--csv"])
+    res = CliRunner().invoke(
+        cli, ["screen", "-m", "us", "-c", "value", "-n", "2", "--csv"]
+    )
 
     assert res.exit_code == 0, res.output
     assert "Report:" not in res.output
