@@ -714,61 +714,70 @@ def load_sp500_membership_windows(
     return _windows_from_snapshots(snapshots)
 
 
+NSE_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+    )
+}
+
+
+def parse_nse_index_csv(text: str, *, label: str, suffix: str = "") -> list[str]:
+    """Return deduped symbols from an NSE index constituent CSV.
+
+    Shared by the live constituent fetchers and by the Wayback backfill in
+    :mod:`screener.universe_backfill`, so an archived snapshot is normalized
+    into exactly the vocabulary the live loader would produce. Letting the two
+    drift would make a point-in-time membership window name a symbol that never
+    matches a price column, silently dropping the name from the backtest.
+    """
+    from io import StringIO
+
+    df = pd.read_csv(StringIO(text))
+    symbol_col = "Symbol" if "Symbol" in df.columns else "SYMBOL"
+    if symbol_col not in df.columns:
+        raise RuntimeError(f"{label} CSV missing Symbol column")
+    symbols = df[symbol_col].dropna().astype(str).str.strip().str.upper().tolist()
+    return _dedupe([f"{symbol}{suffix}" for symbol in symbols])
+
+
 def _fetch_nifty50() -> tuple[list[str], str]:
     source = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "KHTML, like Gecko) Chrome/122.0 Safari/537.36"
-        )
-    }
     resp = call_with_resilience(
         "nse",
         "nifty50 constituents",
-        lambda: requests.get(source, headers=headers, timeout=30),
+        lambda: requests.get(source, headers=NSE_REQUEST_HEADERS, timeout=30),
         fallback=None,
     )
     if resp is None:
         raise RuntimeError("Nifty 50 constituents unavailable")
     resp.raise_for_status()
-    from io import StringIO
-
-    df = pd.read_csv(StringIO(resp.text))
-    symbol_col = "Symbol" if "Symbol" in df.columns else "SYMBOL"
-    if symbol_col not in df.columns:
-        raise RuntimeError("Nifty 50 constituents CSV missing Symbol column")
-    symbols = df[symbol_col].dropna().astype(str).str.strip().str.upper().tolist()
-    return _dedupe(symbols), source
+    return parse_nse_index_csv(resp.text, label="Nifty 50 constituents"), source
 
 
 _NIFTY500_SOURCE = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
 
 
+# The earnings backtest consumes NSE tickers in yfinance form (``.NS``).
+NSE_SYMBOL_SUFFIX = ".NS"
+
+
 def _fetch_nifty500() -> tuple[list[str], str]:
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "KHTML, like Gecko) Chrome/122.0 Safari/537.36"
-        )
-    }
     resp = call_with_resilience(
         "nse",
         "nifty500 constituents",
-        lambda: requests.get(_NIFTY500_SOURCE, headers=headers, timeout=30),
+        lambda: requests.get(_NIFTY500_SOURCE, headers=NSE_REQUEST_HEADERS, timeout=30),
         fallback=None,
     )
     if resp is None:
         raise RuntimeError("Nifty 500 constituents unavailable")
     resp.raise_for_status()
-    from io import StringIO
-
-    df = pd.read_csv(StringIO(resp.text))
-    symbol_col = "Symbol" if "Symbol" in df.columns else "SYMBOL"
-    if symbol_col not in df.columns:
-        raise RuntimeError("Nifty 500 constituents CSV missing Symbol column")
-    symbols = df[symbol_col].dropna().astype(str).str.strip().str.upper().tolist()
-    # The earnings backtest consumes NSE tickers in yfinance form (``.NS``).
-    return _dedupe([f"{s}.NS" for s in symbols]), _NIFTY500_SOURCE
+    symbols = parse_nse_index_csv(
+        resp.text,
+        label="Nifty 500 constituents",
+        suffix=NSE_SYMBOL_SUFFIX,
+    )
+    return symbols, _NIFTY500_SOURCE
 
 
 _SENSEX_SOURCE = "https://en.wikipedia.org/wiki/List_of_BSE_SENSEX_companies"

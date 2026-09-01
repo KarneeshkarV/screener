@@ -359,6 +359,15 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         universe_note = f"{selection.name}: {len(selection.symbols)} candidate symbols from {selection.source}"
         if membership_windows:
             universe_note += f"; point-in-time snapshots ({len(membership_windows)} membership windows)"
+            first_snapshot = min(start for _symbol, start, _end in membership_windows)
+            if start_date < first_snapshot:
+                # Nothing is eligible before the earliest snapshot, so the run
+                # would otherwise report a silent zero-trade stretch that looks
+                # like a strategy result rather than missing membership history.
+                universe_note += (
+                    f"; membership history starts {first_snapshot.isoformat()}, so no "
+                    f"symbol is eligible from {start_date.isoformat()} until then"
+                )
         if dynamic_universe_size is not None:
             universe_note += (
                 f"; top {dynamic_universe_size} by prior {dynamic_universe_lookback}-bar "

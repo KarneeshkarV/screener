@@ -4,6 +4,7 @@ import logging
 import os
 import time
 from datetime import date, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -330,3 +331,120 @@ def test_universe_fetch_failure_without_cache_still_raises(
 
     with pytest.raises(RuntimeError, match="constituents unavailable"):
         universes.load_current_universe(name, as_of=date.today())
+
+
+def test_shipped_nifty500_pit_config_yields_delisted_members() -> None:
+    """The committed snapshot history must still resolve into real PIT windows.
+
+    ``nifty500_pit`` exists to undo the survivorship bias of the built-in
+    ``nifty500`` loader, so the guard that matters is that names NSE has since
+    dropped are eligible on the dates they were in the index and closed out
+    afterwards. A regenerated or truncated CSV that quietly collapsed to
+    today's membership would still load; it would just stop being point-in-time.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    config = repo_root / "universes.yaml"
+
+    selection = universes.load_universe_selection(
+        "nifty500_pit",
+        market="india",
+        as_of=date(2026, 9, 1),
+        config_path=config,
+    )
+
+    assert selection.benchmark == "^NSEI"
+    assert all(symbol.endswith(".NS") for symbol in selection.symbols)
+    boundaries = sorted({window[1] for window in selection.membership_windows})
+    assert len(boundaries) >= 10
+    assert boundaries[0].year <= 2019
+
+    open_members = {w[0] for w in selection.membership_windows if w[2] is None}
+    # Ever-members far exceed current members only if delisted and demoted
+    # names survived the reconstruction.
+    assert len(selection.symbols) > len(open_members) + 100
+
+    # Allahabad Bank was merged away in 2020; it must be selectable in 2019 and
+    # never afterwards.
+    albk = [w for w in selection.membership_windows if w[0] == "ALBK.NS"]
+    assert albk, "expected a delisted 2019-era constituent in the history"
+    assert all(window[2] is not None for window in albk)
+    assert min(window[1] for window in albk).year <= 2019
+
+
+def test_universe_note_flags_a_start_before_the_first_snapshot(tmp_path) -> None:
+    """A run that begins before the history exists trades nothing; say so.
+
+    Without the note the empty stretch reads as a strategy result rather than
+    as missing membership history.
+    """
+    from datetime import datetime
+
+    from screener.backtester.workflow import BacktestRequest, resolve_backtest_run
+
+    snapshots = tmp_path / "snapshots.csv"
+    snapshots.write_text("effective_date,symbol\n2024-01-01,AAA\n2024-01-01,BBB\n")
+    config = tmp_path / "universes.yaml"
+    config.write_text(
+        "universes:\n"
+        "  tiny:\n"
+        "    type: snapshots\n"
+        "    market: us\n"
+        "    benchmark: SPY\n"
+        f"    path: {snapshots}\n"
+    )
+
+    def run_note(start: str) -> str:
+        request = BacktestRequest(
+            mode="rolling",
+            context_obj=None,
+            market="us",
+            hold=20,
+            top=10,
+            entry_expr="close > 0",
+            exit_expr=None,
+            strategy_name=None,
+            stop_loss=None,
+            take_profit=None,
+            trailing_stop=None,
+            slippage_bps=0.0,
+            commission_bps=0.0,
+            cost_model="flat",
+            initial_capital=100_000.0,
+            benchmark=None,
+            tickers=None,
+            universe="tiny",
+            universe_config=config,
+            universe_file=None,
+            max_universe=0,
+            min_price=None,
+            min_avg_dollar_volume=None,
+            adv_window=20,
+            slippage_model="fixed",
+            half_spread_bps=0.0,
+            vol_impact_k=0.1,
+            no_gap_fills=False,
+            entry_order="moo",
+            entry_limit_bps=None,
+            partial_exit_args=(),
+            price_adjustment="full",
+            interval="1d",
+            output_csv=False,
+            report_path=None,
+            open_report=False,
+            sizing_rule="equal_slot",
+            sizing_risk_pct=0.01,
+            sizing_position_pct=0.1,
+            sizing_atr_window=14,
+            sizing_atr_multiple=2.0,
+            sizing_vol_window=20,
+            intraday_only=False,
+            start_arg=datetime.strptime(start, "%Y-%m-%d"),
+            end_arg=datetime(2024, 6, 1),
+        )
+        return resolve_backtest_run(request).universe_note or ""
+
+    early = run_note("2020-01-01")
+    assert "membership history starts 2024-01-01" in early
+    assert "2020-01-01" in early
+    # A start inside the history has nothing to warn about.
+    assert "membership history starts" not in run_note("2024-02-01")

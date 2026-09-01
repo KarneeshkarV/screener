@@ -22,6 +22,74 @@ Run this daily or weekly from cron/CI. It writes a complete snapshot only when
 membership changes, so the resulting CSV becomes point-in-time history without
 manual addition/removal maintenance.
 
+## Backfilling history you did not capture
+
+`universes sync` only builds history forward from the day you start running it.
+To recover history that predates that, `universes backfill` reads the Internet
+Archive's crawls of the same NSE constituent CSV and turns each distinct copy
+into a dated snapshot.
+
+```bash
+uv run screener universes backfill nifty500 \
+  --output data/universes/nifty500_pit_snapshots.csv
+```
+
+Both commands write the same format, so the normal setup is to backfill once
+and then let `sync` extend the file forward.
+The backfill never touches a date the file already carries; it reports the
+conflict and keeps the existing rows, because a `sync` snapshot is a first-hand
+observation and an archived crawl of the same day is not.
+Pass `--replace-existing` to overwrite those dates, which is what you want
+after a bad backfill wrote wrong rows.
+
+`--min-symbols` rejects a crawl that parsed into an implausibly short list.
+A truncated capture would otherwise erase most of the index for the whole
+window that snapshot covers, which reads as a plausible backtest result rather
+than as the fetch failure it is.
+It defaults to the index's own floor: 400 for the Nifty 500, 40 for the Nifty
+50.
+
+A count alone does not prove a crawl is the right document, because the archive
+can serve a different list of the same length from the same path.
+A crawl that keeps less than half of the previous snapshot's membership is
+therefore rejected as well and reported as a warning.
+A real rebalance moves tens of names out of 500, so the check only fires on a
+wrong file.
+
+### What the reconstruction can and cannot tell you
+
+- **It is lookahead-free.** Each snapshot is dated at the crawl that observed
+  it, which is on or after the day NSE published that membership, never before.
+  No name becomes eligible earlier than it really was in the index.
+- **It is only as fine as the crawl cadence.** A membership change is dated at
+  the first crawl that saw it, not at its true effective date. An addition
+  enters late, and a deleted name stays eligible until the next crawl. It was a
+  real, tradeable listing over that stretch, so this is a resolution limit
+  rather than a bias toward names that turned out well.
+- **Check the printed dates for gaps** before trusting a window. The command
+  prints every snapshot it kept with its symbol count and source URL.
+- **A backtest that starts before the first snapshot trades nothing** over that
+  stretch, because no name is eligible yet. The run's universe note says so
+  explicitly rather than letting the gap read as a strategy result.
+
+## Shipped `nifty500_pit`
+
+`universes.yaml` in the repository root defines `nifty500_pit` over a committed
+backfill at `data/universes/nifty500_pit_snapshots.csv`. It carries 13
+snapshots from 2018-10 to 2026-08 and 850 names that were ever members, against
+the 500 the current NSE list reports.
+
+```bash
+uv run screener backtest-rolling -m india \
+  --universe nifty500_pit --universe-config universes.yaml \
+  --strategy rs_breakout
+```
+
+Crawl coverage is uneven: 2018-10, 2019-02, 2020-07, then nothing until
+2022-05, after which snapshots land roughly two to six months apart. Treat the
+2020-07 to 2022-05 stretch as a single frozen membership rather than as
+resolved history.
+
 ## Dynamic universe
 
 Dynamic membership is ranked by average dollar volume calculated from prior
@@ -99,6 +167,9 @@ therefore retains an auditable identity.
 ## Data-source limitations
 
 - Nifty current constituents come from NSE's published index CSV files.
+- Nifty historical constituents come from Internet Archive crawls of those same
+  CSV files, parsed by the same code as the live fetch. NSE publishes no
+  machine-readable membership history.
 - S&P 500 current membership comes from the live Wikipedia constituent table.
 - S&P 500 membership at a past date is reconstructed from the Wikipedia revision
   that was current on that date, read through the MediaWiki API.
