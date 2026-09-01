@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 import pandas as pd
 import requests
@@ -25,7 +25,6 @@ from screener.resilience import call_with_resilience
 LOG = logging.getLogger(__name__)
 
 CACHE_DIR = Path.home() / ".screener" / "universes"
-_SP500_CHANGES_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 # Constituent and membership caches are keyed by ``as_of``, so freshness
 # depends on which day the entry describes rather than on one flat TTL:
@@ -34,8 +33,8 @@ _SP500_CHANGES_CACHE_TTL_SECONDS = 24 * 60 * 60
 #   that entry more correct -- for the non-reconstructable indices a refetch
 #   would just return *today's* list, which is exactly the survivorship bias
 #   the loader already warns about. Such entries are pinned. (S&P 500
-#   point-in-time entries have a second, sharper check against the change log
-#   in ``_sp500_pit_cache_matches_change_log``.)
+#   point-in-time entries have a second, sharper check on the revision they
+#   were reconstructed from, in ``_sp500_pit_cache_is_reusable``.)
 # * A today-dated entry is a live snapshot, so it expires and is refetched -
 #   an index add/remove takes effect intraday, and a long-running process must
 #   not serve this morning's list all day.
@@ -371,12 +370,11 @@ def load_current_universe(
 
     Contract:
 
-    * For indices that publish a machine-readable change log (currently only
-      ``sp500`` via the Wikipedia "changes" table), the returned ``symbols``
-      are *point-in-time*: the constituents that were actually in the index on
-      ``as_of``. Reconstruction starts from today's members, ADDS BACK names
-      removed after ``as_of`` (so delisted/removed tickers are included) and
-      REMOVES names added after ``as_of`` (so post-``as_of`` IPOs are excluded).
+    * For indices whose constituent list can be read as it stood on a past date
+      (currently only ``sp500``, via the revision history of its Wikipedia
+      article), the returned ``symbols`` are *point-in-time*: the constituents
+      that were actually in the index on ``as_of``, including names removed or
+      delisted since, and excluding names added after ``as_of``.
     * For indices without reconstruction data (e.g. ``nifty50``), a past
       ``as_of`` cannot be honoured: the loader returns *today's* membership and
       emits a loud warning that the result is survivorship-biased and NOT
@@ -391,13 +389,9 @@ def load_current_universe(
     cached = _read_cache(name, as_of)
     if use_cache and cached is not None and _universe_cache_is_fresh(name, as_of):
         universe, point_in_time, metadata = cached
-        if (
-            name == "sp500"
-            and is_past
-            and not _sp500_pit_cache_matches_change_log(metadata)
-        ):
+        if name == "sp500" and is_past and not _sp500_pit_cache_is_reusable(metadata):
             LOG.debug(
-                "%s cache for as_of=%s is stale relative to S&P change log",
+                "%s cache for as_of=%s records no source revision; recomputing",
                 name,
                 as_of.isoformat(),
             )
@@ -412,11 +406,12 @@ def load_current_universe(
     definition = (
         None if normalized_name == "sp500" else get_universe_definition(normalized_name)
     )
+    sp500_revid: int | None = None
     try:
         if definition is None:
-            symbols, source, point_in_time = _fetch_sp500_pit(
-                as_of, use_cache=use_cache
-            )
+            pit = _fetch_sp500_pit(as_of, use_cache=use_cache)
+            symbols, source, point_in_time = pit.symbols, pit.source, pit.point_in_time
+            sp500_revid = pit.revid
         else:
             symbols, source = definition.loader()
             point_in_time = not is_past
@@ -437,7 +432,7 @@ def load_current_universe(
     if is_past and not point_in_time:
         _warn_not_point_in_time(name, as_of)
     write_metadata = (
-        _sp500_changes_cache_metadata() if name == "sp500" and is_past else None
+        {"sp500_pit_revid": str(sp500_revid)} if sp500_revid is not None else None
     )
     path = _write_cache(
         name,
@@ -462,6 +457,17 @@ def _warn_not_point_in_time(name: UniverseName, as_of: date) -> None:
 
 
 _SP500_SOURCE = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+_SP500_PAGE_TITLE = "List of S&P 500 companies"
+_WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
+_WIKIPEDIA_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+    )
+}
+# A revision's constituent table is identified by having roughly index-many
+# rows; navboxes and the odd summary table in the same revision are far smaller.
+_SP500_MIN_CONSTITUENT_ROWS = 400
 
 
 def _read_sp500_html() -> list[pd.DataFrame]:
@@ -505,156 +511,207 @@ def _fetch_sp500() -> tuple[list[str], str]:
     return _dedupe(symbols), _SP500_SOURCE
 
 
-def _changes_cache_path() -> Path:
-    return CACHE_DIR / "sp500_changes.json"
+def _sp500_revision_cache_path(revid: int) -> Path:
+    return CACHE_DIR / f"sp500_revision_{revid}.json"
 
 
-def _sp500_changes_cache_metadata() -> dict[str, str] | None:
-    path = _changes_cache_path()
-    try:
-        stat = path.stat()
-    except OSError:
-        return None
-    return {"sp500_changes_mtime_ns": str(stat.st_mtime_ns)}
+def _sp500_revision_source(revid: int) -> str:
+    return f"https://en.wikipedia.org/w/index.php?oldid={revid}"
 
 
-def _sp500_pit_cache_matches_change_log(metadata: dict[str, str]) -> bool:
-    path = _changes_cache_path()
-    if not is_fresh(path, _SP500_CHANGES_CACHE_TTL_SECONDS):
-        return False
-    expected = _sp500_changes_cache_metadata()
-    if expected is None:
-        return False
-    return metadata.get("sp500_changes_mtime_ns") == expected["sp500_changes_mtime_ns"]
+def _sp500_pit_cache_is_reusable(metadata: dict[str, str]) -> bool:
+    """True when a past-date sp500 cache entry can never go out of date.
 
-
-def _fetch_sp500_changes() -> list[tuple[date, str, str]]:
-    """Return the S&P 500 change log as ``(date, added_symbol, removed_symbol)``.
-
-    Mirrors the ``pandas.read_html`` parsing used by :func:`_fetch_sp500_table`.
-    The Wikipedia page exposes a second "Selected changes" table whose columns
-    are a (Date, Added{Ticker,Security}, Removed{Ticker,Security}, Reason)
-    MultiIndex. Either the added or removed ticker may be blank for a given row.
+    An entry reconstructed from a page revision records which revision it came
+    from. The last revision on or before a past date never changes, so such an
+    entry stays correct forever. An entry without a revision id came from the
+    survivorship-biased fallback, so it is always recomputed to give the
+    revision lookup another chance.
     """
-    tables = _read_sp500_html()
-    changes_df: pd.DataFrame | None = None
-    for table in tables[1:]:
-        cols = _flatten_columns(table.columns)
-        if any("date" in c for c in cols) and any("added" in c for c in cols):
-            changes_df = table
-            break
-    if changes_df is None:
-        return []
-
-    flat = [_flatten_columns([col])[0] for col in changes_df.columns]
-    changes_df = changes_df.copy()
-    changes_df.columns = flat
-
-    date_col = next((c for c in flat if "date" in c), None)
-    added_col = next((c for c in flat if "added" in c and "ticker" in c), None)
-    removed_col = next((c for c in flat if "removed" in c and "ticker" in c), None)
-    if date_col is None or (added_col is None and removed_col is None):
-        return []
-
-    parsed_dates = pd.to_datetime(changes_df[date_col], errors="coerce")
-    rows: list[tuple[date, str, str]] = []
-    for idx in range(len(changes_df)):
-        ts = parsed_dates.iloc[idx]
-        if pd.isna(ts):
-            continue
-        added = _clean_change_symbol(
-            changes_df[added_col].iloc[idx] if added_col else ""
-        )
-        removed = _clean_change_symbol(
-            changes_df[removed_col].iloc[idx] if removed_col else ""
-        )
-        if not added and not removed:
-            continue
-        rows.append((ts.date(), added, removed))
-    return rows
+    return bool(metadata.get("sp500_pit_revid"))
 
 
-def _flatten_columns(columns) -> list[str]:
-    flat: list[str] = []
-    for col in columns:
-        if isinstance(col, tuple):
-            text = " ".join(str(part) for part in col)
-        else:
-            text = str(col)
-        flat.append(text.strip().lower())
-    return flat
-
-
-def _clean_change_symbol(value: object) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return ""
-    text = str(value).strip()
-    if not text or text.lower() == "nan":
-        return ""
-    return text.upper().replace(".", "-")
-
-
-def _load_sp500_changes(*, use_cache: bool = True) -> list[tuple[date, str, str]]:
-    path = _changes_cache_path()
-    if use_cache and is_fresh(path, _SP500_CHANGES_CACHE_TTL_SECONDS):
-        try:
-            payload = json.loads(path.read_text())
-            return [
-                (date.fromisoformat(d), added, removed) for d, added, removed in payload
-            ]
-        except (ValueError, OSError):
-            LOG.debug("sp500 changes cache at %s unreadable; refetching", path)
-    elif use_cache and path.exists():
-        LOG.debug("sp500 changes cache at %s is stale; refetching", path)
-
-    changes = _fetch_sp500_changes()
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            [[d.isoformat(), added, removed] for d, added, removed in changes],
-            indent=0,
-        )
+def _sp500_revision_id_at(as_of: date) -> int | None:
+    """Id of the last article revision saved on or before ``as_of``."""
+    resp = call_with_resilience(
+        "wikipedia",
+        "sp500 revision id",
+        lambda: requests.get(
+            _WIKIPEDIA_API,
+            params={
+                "action": "query",
+                "prop": "revisions",
+                "titles": _SP500_PAGE_TITLE,
+                "rvlimit": "1",
+                "rvdir": "older",
+                "rvstart": f"{as_of.isoformat()}T23:59:59Z",
+                "rvprop": "ids",
+                "format": "json",
+                "formatversion": "2",
+            },
+            headers=_WIKIPEDIA_HEADERS,
+            timeout=30,
+        ),
+        fallback=None,
     )
-    return changes
+    if resp is None:
+        return None
+    resp.raise_for_status()
+    pages = cast(list[Any], resp.json()["query"]["pages"])
+    revisions = pages[0].get("revisions") if pages else None
+    if not revisions:
+        return None
+    return int(revisions[0]["revid"])
 
 
-def _fetch_sp500_pit(
+def _sp500_symbols_from_revision_html(html: str) -> list[str] | None:
+    """Constituent symbols in one rendered revision, or None if it has none.
+
+    The table is found by shape rather than by position: a revision also
+    renders navboxes, and revisions before 2022 head the column "Ticker
+    symbol" instead of "Symbol".
+    """
+    from io import StringIO
+
+    for table in pd.read_html(StringIO(html)):
+        columns = {str(column).strip().lower(): column for column in table.columns}
+        column = columns.get("symbol") or columns.get("ticker symbol")
+        if column is None or len(table) < _SP500_MIN_CONSTITUENT_ROWS:
+            continue
+        symbols = _normalize_sp500_symbols(table[column].dropna()).tolist()
+        return _dedupe([symbol for symbol in symbols if symbol and symbol != "NAN"])
+    return None
+
+
+def _sp500_revision_members(revid: int, *, use_cache: bool = True) -> list[str] | None:
+    """Members listed by revision ``revid``, cached because it never changes."""
+    path = _sp500_revision_cache_path(revid)
+    if use_cache and path.exists():
+        try:
+            return cast(list[str], json.loads(path.read_text()))
+        except (OSError, ValueError):
+            LOG.debug("sp500 revision cache at %s unreadable; refetching", path)
+    resp = call_with_resilience(
+        "wikipedia",
+        "sp500 revision constituents",
+        lambda: requests.get(
+            _WIKIPEDIA_API,
+            params={
+                "action": "parse",
+                "oldid": str(revid),
+                "prop": "text",
+                "format": "json",
+                "formatversion": "2",
+            },
+            headers=_WIKIPEDIA_HEADERS,
+            timeout=30,
+        ),
+        fallback=None,
+    )
+    if resp is None:
+        return None
+    resp.raise_for_status()
+    members = _sp500_symbols_from_revision_html(resp.json()["parse"]["text"])
+    if members is None:
+        return None
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(members))
+    return members
+
+
+def _fetch_sp500_revision_snapshot(
     as_of: date, *, use_cache: bool = True
-) -> tuple[list[str], str, bool]:
+) -> tuple[int, list[str]] | None:
+    """``(revid, members)`` as the article stood on ``as_of``, or None.
+
+    Every upstream failure mode collapses to None so the caller can fall back
+    to today's members and warn, rather than aborting a backtest on a
+    Wikipedia hiccup or an unannounced page-shape change.
+    """
+    try:
+        revid = _sp500_revision_id_at(as_of)
+        if revid is None:
+            return None
+        members = _sp500_revision_members(revid, use_cache=use_cache)
+    except Exception as exc:  # noqa: BLE001 - degrade to the warned fallback
+        LOG.warning(
+            "S&P 500 revision snapshot for %s unavailable: %r", as_of.isoformat(), exc
+        )
+        return None
+    if not members:
+        return None
+    return revid, members
+
+
+class _Sp500Pit(NamedTuple):
+    symbols: list[str]
+    source: str
+    point_in_time: bool
+    revid: int | None
+
+
+def _fetch_sp500_pit(as_of: date, *, use_cache: bool = True) -> _Sp500Pit:
     """Reconstruct point-in-time S&P 500 membership as of ``as_of``.
 
-    Start from current members, then walk the change log backwards: for every
-    change dated strictly after ``as_of`` undo it — ADD BACK the removed name
-    and REMOVE the added name. This yields the constituents that were actually
-    in the index on ``as_of``, including names removed/delisted since.
+    Read from the article's own revision history: the revision current on
+    ``as_of`` carries the *whole* constituent table as it stood that day, so
+    names removed or delisted since come back without having to be inferred.
 
-    Returns ``(symbols, source, point_in_time)``. ``point_in_time`` is ``False``
-    when the reconstruction cannot be trusted for a past ``as_of`` — either the
-    change log is empty/unparseable (we fall back to today's members) or it does
-    not reach back as far as ``as_of`` (earlier adds/removes are unknown). In
-    both cases the caller warns rather than silently returning a biased list.
+    This replaced a backwards walk over Wikipedia's "Selected changes" table.
+    That table was deleted from the article, so the walk silently reconstructed
+    nothing and returned today's members for every past date. Reading whole
+    snapshots also needs no change log to be complete, which the delta walk did.
+
+    ``point_in_time`` is False only when the revision lookup fails and the
+    result falls back to today's members; the caller warns in that case.
     """
-    current, _ = _fetch_sp500()
-    members = dict.fromkeys(current)
-    changes = _load_sp500_changes(use_cache=use_cache)
-    for changed_on, added, removed in changes:
-        if changed_on <= as_of:
-            continue
-        if added:
-            members.pop(added, None)
-        if removed:
-            members[removed] = None
+    if as_of >= date.today():
+        symbols, source = _fetch_sp500()
+        return _Sp500Pit(symbols, source, True, None)
+    snapshot = _fetch_sp500_revision_snapshot(as_of, use_cache=use_cache)
+    if snapshot is not None:
+        revid, symbols = snapshot
+        return _Sp500Pit(symbols, _sp500_revision_source(revid), True, revid)
+    symbols, source = _fetch_sp500()
+    return _Sp500Pit(symbols, source, False, None)
 
-    point_in_time = True
-    if as_of < date.today():
-        if not changes:
-            # No change log at all: members is just today's list -> biased.
-            point_in_time = False
-        elif as_of < min(changed_on for changed_on, _, _ in changes):
-            # The log does not extend back to as_of, so adds/removes before the
-            # earliest logged change are missing and the set is incomplete.
-            point_in_time = False
-    return list(members), _SP500_SOURCE, point_in_time
+
+def load_sp500_membership_windows(
+    *, start: date, end: date, use_cache: bool = True
+) -> tuple[tuple[str, date, date | None], ...]:
+    """Point-in-time S&P 500 eligibility windows covering ``start``..``end``.
+
+    Samples the revision history quarterly and turns consecutive snapshots into
+    the same ``(symbol, from, until)`` shape a custom ``snapshots`` universe
+    produces, so the engine gates on one mechanism either way. Quarterly is the
+    index's own scheduled rebalance cadence; an off-cycle change lands at the
+    next sample rather than on its announcement date.
+
+    Returns ``()`` when no revision could be read, which the caller must treat
+    as "no point-in-time history available" rather than "nobody was a member".
+    """
+    if end < start:
+        raise ValueError("membership window end precedes start")
+    sample_dates = [
+        sample.date()
+        for sample in pd.date_range(start, end, freq="QS", inclusive="both")
+    ]
+    if not sample_dates or sample_dates[0] > start:
+        sample_dates.insert(0, start)
+    if sample_dates[-1] < end:
+        sample_dates.append(end)
+    snapshots: list[tuple[date, tuple[str, ...]]] = []
+    for sample in sample_dates:
+        pit = _fetch_sp500_pit(sample, use_cache=use_cache)
+        if not pit.point_in_time:
+            continue
+        members = tuple(pit.symbols)
+        if snapshots and snapshots[-1][1] == members:
+            continue
+        snapshots.append((sample, members))
+    if not snapshots:
+        return ()
+    return _windows_from_snapshots(snapshots)
 
 
 def _fetch_nifty50() -> tuple[list[str], str]:
@@ -1039,8 +1096,16 @@ def load_universe_selection(
     dynamic_size: int = 100,
     dynamic_lookback: int = 60,
     dynamic_rebalance: str = "monthly",
+    point_in_time: bool = False,
+    start: date | None = None,
 ) -> UniverseSelection:
-    """Resolve a built-in, custom, or lagged rule-based universe."""
+    """Resolve a built-in, custom, or lagged rule-based universe.
+
+    ``point_in_time`` asks a built-in index to carry membership windows rather
+    than one flat list. Only ``sp500`` can honour it, and only when ``start`` is
+    given; every other built-in returns its current list unchanged, leaving the
+    caller to reject the combination.
+    """
     key = name.strip().lower()
     if key == "dynamic":
         base = dynamic_base or ("nifty500" if market == "india" else "sp500")
@@ -1062,6 +1127,19 @@ def load_universe_selection(
             raise ValueError(
                 f"universe {key!r} belongs to market {definition.market!r}, not {market!r}"
             )
+        if key == "sp500" and point_in_time and start is not None:
+            windows = load_sp500_membership_windows(
+                start=start, end=as_of, use_cache=use_cache
+            )
+            if windows:
+                return UniverseSelection(
+                    name=key,
+                    market=definition.market,
+                    benchmark=definition.benchmark,
+                    symbols=tuple(dict.fromkeys(symbol for symbol, _, _ in windows)),
+                    source=f"{_SP500_SOURCE} (revision snapshots)",
+                    membership_windows=windows,
+                )
         loaded = load_current_universe(key, as_of=as_of, use_cache=use_cache)
         return UniverseSelection(
             name=key,
