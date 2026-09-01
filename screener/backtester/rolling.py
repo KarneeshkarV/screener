@@ -286,9 +286,13 @@ def backtest_rolling(**params: Any) -> None:
             ctx.get_parameter_source("adv_window")
             == click.core.ParameterSource.COMMANDLINE
         ),
+        # Anything but DEFAULT counts as asked-for. A --config file reaches
+        # Click as DEFAULT_MAP, and a user who turned point-in-time on there
+        # meant it just as much as one who typed the flag; treating that as a
+        # default would silently downgrade the run to a biased one.
         point_in_time_was_explicit=(
             ctx.get_parameter_source("point_in_time")
-            == click.core.ParameterSource.COMMANDLINE
+            is not click.core.ParameterSource.DEFAULT
         ),
         **params,
     )

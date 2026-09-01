@@ -31,7 +31,11 @@ from screener.backtester.fundamentals import (
 from screener.backtester.models import BacktestConfig
 from screener.gate_options import gate_overrides
 from screener.markets import get_market
-from screener.universes import load_sp500_membership, load_universe_selection
+from screener.universes import (
+    UniverseSelection,
+    load_sp500_membership,
+    load_universe_selection,
+)
 
 if TYPE_CHECKING:
     from screener.strategies.spec import StrategyProfile
@@ -340,8 +344,9 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         resolved_universe = str(
             request.universe or market_meta.default_universe
         ).lower()
-        try:
-            selection = load_universe_selection(
+
+        def _select(with_point_in_time: bool) -> UniverseSelection:
+            return load_universe_selection(
                 resolved_universe,
                 market=request.market,
                 as_of=end_date,
@@ -351,11 +356,32 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
                 dynamic_size=int(request.universe_size),
                 dynamic_lookback=int(request.universe_lookback),
                 dynamic_rebalance=str(request.universe_rebalance),
-                point_in_time=point_in_time,
+                point_in_time=with_point_in_time,
                 start=start_date,
             )
+
+        degraded_note = ""
+        try:
+            selection = _select(point_in_time)
         except (OSError, ValueError, RuntimeError) as exc:
-            raise click.UsageError(str(exc)) from exc
+            if not point_in_time or request.point_in_time_was_explicit:
+                raise click.UsageError(str(exc)) from exc
+            # Point-in-time is on by default, so this run never asked for
+            # membership history and must not die for the want of it. sp500
+            # reconstructs its history from dozens of Wikipedia revisions, so
+            # an offline machine or a cold cache would otherwise turn a
+            # flagless `backtest-rolling` into a usage error. Fall back to the
+            # current list and say so; a typed --point-in-time still fails
+            # loudly, because there the user did ask.
+            try:
+                selection = _select(False)
+            except (OSError, ValueError, RuntimeError) as fallback_exc:
+                raise click.UsageError(str(fallback_exc)) from fallback_exc
+            point_in_time = False
+            degraded_note = (
+                f"; membership history is unavailable ({exc}), so point-in-time "
+                "is inactive for this run"
+            )
         tickers = selection.symbols
         membership_windows = selection.membership_windows
         dynamic_universe_size = selection.dynamic_size
@@ -364,6 +390,7 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         if request.benchmark is None and selection.benchmark:
             benchmark = selection.benchmark
         universe_note = f"{selection.name}: {len(selection.symbols)} candidate symbols from {selection.source}"
+        universe_note += degraded_note
         if membership_windows:
             universe_note += f"; point-in-time snapshots ({len(membership_windows)} membership windows)"
             first_snapshot = min(start for _symbol, start, _end in membership_windows)
@@ -408,10 +435,12 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
                     for symbol, added in added_by_symbol.items()
                     if added is not None
                 )
-                universe_note += (
-                    f"; point-in-time entries via 'date added' "
-                    f"({len(membership_added)} dated symbols; removed ex-members not reconstructed)"
-                )
+                if membership_added:
+                    universe_note += (
+                        f"; point-in-time entries via 'date added' "
+                        f"({len(membership_added)} dated symbols; removed "
+                        "ex-members not reconstructed)"
+                    )
         elif not membership_windows and dynamic_universe_size is None:
             universe_note += (
                 "; survivorship bias: today's members applied to history "
@@ -423,14 +452,32 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         and not membership_windows
         and dynamic_universe_size is None
     ):
-        if request.point_in_time_was_explicit:
-            raise click.UsageError(
-                "--point-in-time requires an index universe; it cannot be used with "
-                "--tickers or --universe-file."
+        if request.universe_file:
+            reason = (
+                "--universe-file supplies one fixed list with no membership history"
             )
+        elif request.tickers:
+            reason = "--tickers supplies one fixed list with no membership history"
+        else:
+            reason = "this universe served no dated membership at all"
+        if request.point_in_time_was_explicit:
+            raise click.UsageError(f"--point-in-time is unavailable: {reason}.")
         # An explicit ticker list carries no membership history, so the default
         # simply does not apply. Failing here would break every --tickers run.
         point_in_time = False
+        # The note has to be built None-safely: on the --tickers and
+        # --universe-file paths the universe branch above never ran, so there
+        # is nothing to append to, and the bias would otherwise go unreported
+        # on exactly the paths that cannot detect it themselves.
+        downgrade_note = (
+            "survivorship bias: today's members applied to history "
+            f"({reason}, so point-in-time is inactive)"
+        )
+        universe_note = (
+            downgrade_note
+            if universe_note is None
+            else f"{universe_note}; {downgrade_note}"
+        )
 
     slippage_model = build_slippage_model(
         request.slippage_model,

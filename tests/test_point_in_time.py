@@ -201,7 +201,8 @@ def test_point_in_time_rejects_explicit_ticker_universe():
         ["--tickers", "AAA", "--entry", "close > sma(close, 3)", "--point-in-time"],
     )
     assert result.exit_code != 0
-    assert "--point-in-time requires an index universe" in result.output
+    assert "--point-in-time is unavailable" in result.output
+    assert "--tickers supplies one fixed list" in result.output
 
 
 def test_default_point_in_time_does_not_reject_ticker_universe():
@@ -211,4 +212,126 @@ def test_default_point_in_time_does_not_reject_ticker_universe():
         backtest_rolling,
         ["--tickers", "AAA", "--entry", "close > sma(close, 3)"],
     )
-    assert "--point-in-time requires an index universe" not in result.output
+    assert "--point-in-time is unavailable" not in result.output
+
+
+def _request(**overrides):
+    """A minimal rolling BacktestRequest; overrides name what the test is about."""
+    from datetime import datetime
+
+    from screener.backtester.workflow import BacktestRequest
+
+    params = dict(
+        mode="rolling",
+        context_obj=None,
+        market="us",
+        hold=20,
+        top=10,
+        entry_expr="close > 0",
+        exit_expr=None,
+        strategy_name=None,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        cost_model="flat",
+        initial_capital=100_000.0,
+        benchmark=None,
+        tickers=None,
+        universe=None,
+        universe_config=None,
+        universe_file=None,
+        max_universe=0,
+        min_price=None,
+        min_avg_dollar_volume=None,
+        adv_window=20,
+        slippage_model="fixed",
+        half_spread_bps=0.0,
+        vol_impact_k=0.1,
+        no_gap_fills=False,
+        entry_order="moo",
+        entry_limit_bps=None,
+        partial_exit_args=(),
+        price_adjustment="full",
+        interval="1d",
+        output_csv=False,
+        report_path=None,
+        open_report=False,
+        sizing_rule="equal_slot",
+        sizing_risk_pct=0.01,
+        sizing_position_pct=0.1,
+        sizing_atr_window=14,
+        sizing_atr_multiple=2.0,
+        sizing_vol_window=20,
+        intraday_only=False,
+        start_arg=datetime(2024, 1, 1),
+        end_arg=datetime(2024, 6, 1),
+        point_in_time=True,
+    )
+    params.update(overrides)
+    return BacktestRequest(**params)
+
+
+def test_the_ticker_downgrade_reports_survivorship_bias():
+    """A silent downgrade is the dangerous one: the run still looks unbiased.
+
+    The universe branch never runs for --tickers, so this note has nothing to
+    append to and has to be created. It was missing entirely before.
+    """
+    from screener.backtester.workflow import resolve_backtest_run
+
+    note = resolve_backtest_run(_request(tickers="AAA,BBB")).universe_note or ""
+
+    assert "survivorship bias" in note
+    assert "--tickers" in note
+
+
+def test_the_universe_file_downgrade_names_the_file_not_the_ticker_flag():
+    from screener.backtester.workflow import resolve_backtest_run
+
+    note = resolve_backtest_run(_request(universe_file="names.txt")).universe_note or ""
+
+    assert "--universe-file supplies one fixed list" in note
+
+
+def test_a_defaulted_point_in_time_degrades_when_membership_history_fails(monkeypatch):
+    """sp500 rebuilds history from dozens of web fetches; offline that raises.
+
+    Point-in-time is on by default, so this run never asked for that history
+    and must fall back to the current list instead of aborting.
+    """
+    from screener.backtester import workflow as workflow_mod
+    from screener.universes import UniverseSelection
+
+    def flaky(name, **kwargs):
+        if kwargs.get("point_in_time"):
+            raise OSError("wikipedia is unreachable")
+        return UniverseSelection(name, "us", "SPY", ("AAA", "BBB"), "cached list")
+
+    monkeypatch.setattr(workflow_mod, "load_universe_selection", flaky)
+
+    run = workflow_mod.resolve_backtest_run(_request(universe="sp500"))
+    note = run.universe_note or ""
+
+    assert "membership history is unavailable" in note
+    assert "wikipedia is unreachable" in note
+    assert "point-in-time is inactive" in note
+
+
+def test_a_typed_point_in_time_still_fails_when_membership_history_fails(monkeypatch):
+    """Typing the flag means asking for it, so silently dropping it would lie."""
+    import click
+    import pytest
+
+    from screener.backtester import workflow as workflow_mod
+
+    def always_fails(name, **kwargs):
+        raise OSError("wikipedia is unreachable")
+
+    monkeypatch.setattr(workflow_mod, "load_universe_selection", always_fails)
+
+    with pytest.raises(click.UsageError, match="wikipedia is unreachable"):
+        workflow_mod.resolve_backtest_run(
+            _request(universe="sp500", point_in_time_was_explicit=True)
+        )
