@@ -108,6 +108,40 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
 )
 _RESULT_VIEW_SPECS = {key: (label, kind) for key, label, kind in _RESULT_VIEW_ORDER}
 
+SIZING_COMPARISON_COLUMNS = ("Fixed slots", "Reinvested slots")
+
+
+def sizing_comparison_rows(
+    fixed: Mapping[str, Any],
+    reinvested: Mapping[str, Any],
+) -> tuple[tuple[str, ...], ...]:
+    """Return ``(label, *cells)`` per metric, one cell per sizing rule.
+
+    Every metric either run computed appears, ordered and labelled by
+    ``result_view``, so a compared run never shows a narrower picture than a
+    single-rule run does and a metric added to the schema reaches both columns
+    with no renderer edit. A metric only one rule produces still gets a row,
+    with ``-`` in the column that lacks it.
+
+    Each row is as wide as ``SIZING_COMPARISON_COLUMNS`` plus its label, so a
+    renderer can lay the body out from the row itself rather than naming the
+    two columns positionally.
+    """
+    columns = (fixed, reinvested)
+    merged: dict[str, Any] = {}
+    for metrics in columns:
+        merged.update(metrics)
+    return tuple(
+        (
+            row.label,
+            *(
+                format_result_value(metrics.get(row.key), row.kind)
+                for metrics in columns
+            ),
+        )
+        for row in result_view(merged)
+    )
+
 
 def format_result_value(value: Any, kind: MetricKind) -> str:
     """Format a result metric once, independently of its output surface."""

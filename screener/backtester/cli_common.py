@@ -702,9 +702,20 @@ def resolve_report_path(
 
 
 def write_tearsheet(
-    result: Any, path: Path, *, title: str, extra_notes: Sequence[str]
+    result: Any,
+    path: Path,
+    *,
+    title: str,
+    extra_notes: Sequence[str],
+    sizing_comparison: tuple[Any, Any] | None = None,
 ) -> None:
     """Render the static HTML tear-sheet (thin wrapper for lazy import)."""
     from screener.backtester.tearsheet import render_tearsheet
 
-    render_tearsheet(result, path, title=title, extra_notes=list(extra_notes))
+    render_tearsheet(
+        result,
+        path,
+        title=title,
+        extra_notes=list(extra_notes),
+        sizing_comparison=sizing_comparison,
+    )

@@ -31,7 +31,11 @@ from screener.backtester.fundamentals import (
 from screener.backtester.models import BacktestConfig
 from screener.gate_options import gate_overrides
 from screener.markets import get_market
-from screener.universes import load_sp500_membership, load_universe_selection
+from screener.universes import (
+    UniverseSelection,
+    load_sp500_membership,
+    load_universe_selection,
+)
 
 if TYPE_CHECKING:
     from screener.strategies.spec import StrategyProfile
@@ -118,6 +122,10 @@ class BacktestRequest:
     # Click source state is required because a typed default value cannot be
     # distinguished from an omitted option by inspecting ``adv_window``.
     adv_window_was_explicit: bool = False
+    # ``--point-in-time`` is on by default, so a universe with no membership
+    # history must fall back quietly instead of failing. Only a typed flag is
+    # a hard requirement the run may refuse.
+    point_in_time_was_explicit: bool = False
     # Percentile floor on ``setup_score`` (0-100). Defaulted because only the
     # rolling command declares ``--min-score``; historical has no candidate
     # layer to gate.
@@ -322,6 +330,9 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
 
     tickers = None
     universe_note = None
+    # Local, because the default-on flag is downgraded for universes that carry
+    # no membership history; the request keeps what the user asked for.
+    point_in_time = bool(request.point_in_time)
     membership_added: tuple[tuple[str, date], ...] = ()
     membership_windows: tuple[tuple[str, date, date | None], ...] = ()
     dynamic_universe_size: int | None = None
@@ -333,8 +344,9 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         resolved_universe = str(
             request.universe or market_meta.default_universe
         ).lower()
-        try:
-            selection = load_universe_selection(
+
+        def _select(with_point_in_time: bool) -> UniverseSelection:
+            return load_universe_selection(
                 resolved_universe,
                 market=request.market,
                 as_of=end_date,
@@ -344,11 +356,39 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
                 dynamic_size=int(request.universe_size),
                 dynamic_lookback=int(request.universe_lookback),
                 dynamic_rebalance=str(request.universe_rebalance),
-                point_in_time=bool(request.point_in_time),
+                point_in_time=with_point_in_time,
                 start=start_date,
             )
+
+        degraded_note = ""
+        try:
+            selection = _select(point_in_time)
         except (OSError, ValueError, RuntimeError) as exc:
-            raise click.UsageError(str(exc)) from exc
+            if not point_in_time or request.point_in_time_was_explicit:
+                raise click.UsageError(str(exc)) from exc
+            # Point-in-time is on by default, so this run never asked for
+            # membership history and must not die for the want of it. sp500
+            # reconstructs its history from dozens of Wikipedia revisions, so
+            # an offline machine or a cold cache would otherwise turn a
+            # flagless `backtest-rolling` into a usage error. Fall back to the
+            # current list and say so; a typed --point-in-time still fails
+            # loudly, because there the user did ask.
+            try:
+                selection = _select(False)
+            except (OSError, ValueError, RuntimeError) as fallback_exc:
+                raise click.UsageError(str(fallback_exc)) from fallback_exc
+            degraded_note = f"; membership history is unavailable ({exc})"
+            if resolved_universe == "sp500":
+                # sp500 keeps a second, weaker source: the "date added" column
+                # of today's table, which the branch below reads and which
+                # serves a stale cache when the fetch fails. Leave point-in-time
+                # on so that filter gets its chance. Downgrading here would run
+                # fully survivorship-biased for the very condition the soft
+                # failure (empty windows, no raise) still filters.
+                degraded_note += ", falling back to the 'date added' column"
+            else:
+                point_in_time = False
+                degraded_note += ", so point-in-time is inactive for this run"
         tickers = selection.symbols
         membership_windows = selection.membership_windows
         dynamic_universe_size = selection.dynamic_size
@@ -357,6 +397,7 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         if request.benchmark is None and selection.benchmark:
             benchmark = selection.benchmark
         universe_note = f"{selection.name}: {len(selection.symbols)} candidate symbols from {selection.source}"
+        universe_note += degraded_note
         if membership_windows:
             universe_note += f"; point-in-time snapshots ({len(membership_windows)} membership windows)"
             first_snapshot = min(start for _symbol, start, _end in membership_windows)
@@ -374,44 +415,85 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
                 f"ADV, rebalanced {dynamic_universe_rebalance}; candidate base is an "
                 "as-of-end snapshot and may retain survivorship bias"
             )
-        if request.point_in_time:
+        if point_in_time:
             if membership_windows or dynamic_universe_size is not None:
                 pass
             elif resolved_universe != "sp500":
-                raise click.UsageError(
-                    "--point-in-time requires snapshot history or the sp500 universe."
+                if request.point_in_time_was_explicit:
+                    raise click.UsageError(
+                        "--point-in-time requires snapshot history or the sp500 universe."
+                    )
+                point_in_time = False
+                universe_note += (
+                    "; survivorship bias: today's members applied to history "
+                    f"({resolved_universe} has no membership history, so "
+                    "point-in-time is inactive)"
                 )
             else:
                 # The sp500 selection could not read its revision history, so
                 # fall back to the weaker "date added" filter: it dates only
                 # today's members, which keeps post-as-of additions out but
                 # cannot bring removed ex-members back.
-                added_by_symbol = load_sp500_membership(
-                    as_of=end_date, use_cache=not request.no_universe_cache
-                )
+                try:
+                    added_by_symbol = load_sp500_membership(
+                        as_of=end_date, use_cache=not request.no_universe_cache
+                    )
+                except (OSError, ValueError, RuntimeError) as exc:
+                    # This call refetches Wikipedia and raises on a cold cache,
+                    # so on the default-on path it would abort a flagless run
+                    # the fallback above exists to keep alive. A typed
+                    # --point-in-time still fails loudly.
+                    if request.point_in_time_was_explicit:
+                        raise click.UsageError(str(exc)) from exc
+                    added_by_symbol = {}
+                    universe_note += f"; 'date added' membership is unavailable ({exc})"
                 membership_added = tuple(
                     (symbol, added)
                     for symbol, added in added_by_symbol.items()
                     if added is not None
                 )
-                universe_note += (
-                    f"; point-in-time entries via 'date added' "
-                    f"({len(membership_added)} dated symbols; removed ex-members not reconstructed)"
-                )
+                if membership_added:
+                    universe_note += (
+                        f"; point-in-time entries via 'date added' "
+                        f"({len(membership_added)} dated symbols; removed "
+                        "ex-members not reconstructed)"
+                    )
         elif not membership_windows and dynamic_universe_size is None:
             universe_note += (
                 "; survivorship bias: today's members applied to history "
-                "(pass --point-in-time to filter by 'date added')"
+                "(point-in-time membership is off)"
             )
     if (
-        request.point_in_time
+        point_in_time
         and not membership_added
         and not membership_windows
         and dynamic_universe_size is None
     ):
-        raise click.UsageError(
-            "--point-in-time requires an index universe; it cannot be used with "
-            "--tickers or --universe-file."
+        if request.universe_file:
+            reason = (
+                "--universe-file supplies one fixed list with no membership history"
+            )
+        elif request.tickers:
+            reason = "--tickers supplies one fixed list with no membership history"
+        else:
+            reason = "this universe served no dated membership at all"
+        if request.point_in_time_was_explicit:
+            raise click.UsageError(f"--point-in-time is unavailable: {reason}.")
+        # An explicit ticker list carries no membership history, so the default
+        # simply does not apply. Failing here would break every --tickers run.
+        point_in_time = False
+        # The note has to be built None-safely: on the --tickers and
+        # --universe-file paths the universe branch above never ran, so there
+        # is nothing to append to, and the bias would otherwise go unreported
+        # on exactly the paths that cannot detect it themselves.
+        downgrade_note = (
+            "survivorship bias: today's members applied to history "
+            f"({reason}, so point-in-time is inactive)"
+        )
+        universe_note = (
+            downgrade_note
+            if universe_note is None
+            else f"{universe_note}; {downgrade_note}"
         )
 
     slippage_model = build_slippage_model(

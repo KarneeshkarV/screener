@@ -208,6 +208,57 @@ def test_membership_windows_empty_without_revision_history(monkeypatch, tmp_path
     assert windows == ()
 
 
+def test_revision_id_for_a_past_date_is_cached_and_reused(monkeypatch, tmp_path):
+    """The lookup, not just the parse, has to be cached.
+
+    Point-in-time is on by default and the window loader samples quarterly, so
+    an uncached lookup means one API call per quarter on every single run.
+    """
+    counter = _patch(monkeypatch, tmp_path)
+    first = universes._sp500_revision_id_at(date(2018, 1, 1))
+    second = universes._sp500_revision_id_at(date(2018, 1, 1))
+    assert first == second == _revid(date(2010, 1, 4))
+    assert counter["revision_lookups"] == 1
+
+    universes._sp500_revision_id_at(date(2018, 1, 1), use_cache=False)
+    assert counter["revision_lookups"] == 2
+
+
+def test_revision_id_for_today_is_not_cached(monkeypatch, tmp_path):
+    """Today's newest revision changes during the day, so it must be refetched."""
+    counter = _patch(monkeypatch, tmp_path, history={date.today(): _CURRENT})
+    universes._sp500_revision_id_at(date.today())
+    universes._sp500_revision_id_at(date.today())
+    assert counter["revision_lookups"] == 2
+
+
+def test_membership_windows_do_not_scrape_the_live_table_per_sample(
+    monkeypatch, tmp_path
+):
+    """A sample with no revision is skipped, not filled from today's members.
+
+    The fallback result is discarded by this loop anyway, and fetching it is an
+    uncached full-table scrape once per quarterly sample.
+    """
+    counter = _patch(monkeypatch, tmp_path, history={})
+    scrapes = {"count": 0}
+    original = universes._fetch_sp500
+
+    def counted():
+        scrapes["count"] += 1
+        return original()
+
+    monkeypatch.setattr(universes, "_fetch_sp500", counted)
+    assert (
+        universes.load_sp500_membership_windows(
+            start=date(2018, 1, 1), end=date(2021, 1, 1)
+        )
+        == ()
+    )
+    assert counter["revision_lookups"] > 1
+    assert scrapes["count"] == 0
+
+
 def test_point_in_time_selection_carries_windows(monkeypatch, tmp_path):
     _patch(monkeypatch, tmp_path)
     selection = universes.load_universe_selection(

@@ -18,7 +18,6 @@ from screener.backtester.cli_common import (
 from screener.backtester.display import (
     print_backtest,
     print_ledger_csv,
-    print_reinvestment_comparison,
 )
 from screener.backtester.rolling_simulation import (
     prepare_rolling_backtest,
@@ -148,12 +147,15 @@ def _print_candidates(run: Any) -> None:
     help="Force live constituent refresh instead of today's cache.",
 )
 @click.option(
-    "--point-in-time",
-    is_flag=True,
-    default=False,
+    "--point-in-time/--no-point-in-time",
+    default=True,
+    show_default=True,
     help=(
         "Require point-in-time membership. Custom snapshot universes use full "
-        "membership windows; sp500 uses its available historical additions."
+        "membership windows; sp500 uses its available historical additions. "
+        "On by default, and silently inactive for universes that carry no "
+        "membership history (--tickers, --universe-file); pass it explicitly to "
+        "make those an error instead."
     ),
 )
 @backtest_options(
@@ -242,12 +244,13 @@ def _print_candidates(run: Any) -> None:
 )
 @backtest_options("rolling", "csv", "report", "open-report")
 @click.option(
-    "--compare-reinvestment",
-    is_flag=True,
-    default=False,
+    "--compare-reinvestment/--no-compare-reinvestment",
+    default=True,
+    show_default=True,
     help=(
         "Also run the same window under the other equal-slot sizing rule and "
-        "print a side-by-side comparison. Doubles the simulation work."
+        "show a side-by-side comparison in the table and the HTML report. "
+        "Doubles the simulation work; pass --no-compare-reinvestment to skip it."
     ),
 )
 @click.option(
@@ -281,6 +284,14 @@ def backtest_rolling(**params: Any) -> None:
         adv_window_was_explicit=(
             ctx.get_parameter_source("adv_window")
             == click.core.ParameterSource.COMMANDLINE
+        ),
+        # Anything but DEFAULT counts as asked-for. A --config file reaches
+        # Click as DEFAULT_MAP, and a user who turned point-in-time on there
+        # meant it just as much as one who typed the flag; treating that as a
+        # default would silently downgrade the run to a biased one.
+        point_in_time_was_explicit=(
+            ctx.get_parameter_source("point_in_time")
+            is not click.core.ParameterSource.DEFAULT
         ),
         **params,
     )
@@ -323,6 +334,11 @@ def backtest_rolling(**params: Any) -> None:
             end_date=run.end_date,
             fundamental_fetcher=run.fundamental_fetcher,
         )
+    sizing_comparison = (
+        (fixed_result, reinvested_result)
+        if fixed_result is not None and reinvested_result is not None
+        else None
+    )
     generated_report = resolve_report_path(
         params["report_path"], params["output_csv"], "backtest-rolling"
     )
@@ -332,6 +348,7 @@ def backtest_rolling(**params: Any) -> None:
             generated_report,
             title="Rolling Backtest Tear Sheet",
             extra_notes=[run.universe_note] if run.universe_note else [],
+            sizing_comparison=sizing_comparison,
         )
     if params["output_csv"]:
         print_ledger_csv(result)
@@ -343,9 +360,7 @@ def backtest_rolling(**params: Any) -> None:
     )
     if run.universe_note:
         console.print(f"[dim]Universe: {run.universe_note}[/dim]")
-    print_backtest(result)
-    if fixed_result is not None and reinvested_result is not None:
-        print_reinvestment_comparison(fixed_result, reinvested_result)
+    print_backtest(result, sizing_comparison=sizing_comparison)
     if generated_report:
         console.print(f"[green]Report:[/green] {generated_report}")
         if params["open_report"]:

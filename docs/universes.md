@@ -102,10 +102,19 @@ uv run screener backtest-rolling -m india \
   --universe-rebalance monthly --strategy rs_breakout
 ```
 
-The default candidate pool is the current S&P 500 for US runs and current Nifty
-500 for India runs. Ranking is causal, but that candidate pool remains
-survivorship-biased. For rigorous history, supply dated snapshots containing
-removed and delisted securities.
+## Point-in-time membership
+
+`backtest-rolling` runs with `--point-in-time` on by default, so a US run reconstructs S&P 500 membership from the article revisions current at each quarterly sample and a symbol is a candidate only inside its own membership windows.
+Pass `--no-point-in-time` to run against today's list instead.
+
+The flag downgrades itself rather than aborting when it is not typed.
+A universe that serves no membership history, or a `--tickers` / `--universe-file` list, runs survivorship-biased and says so in the universe note.
+For S&P 500 the first fallback is the weaker "date added" column, which keeps post-as-of additions out but cannot bring removed ex-members back.
+A typed `--point-in-time` fails loudly instead of downgrading.
+
+The default candidate pool is the current Nifty 500 for India runs, which publishes no machine-readable membership history and so remains survivorship-biased.
+Ranking is causal either way.
+For rigorous history on a universe without one, supply dated snapshots containing removed and delisted securities.
 
 ## Custom universes
 
