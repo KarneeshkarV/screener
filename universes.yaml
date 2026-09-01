@@ -1,8 +1,13 @@
-# Custom backtest universes.
+# Custom backtest and screen universes.
 #
 # Pass explicitly with:
 #   screener backtest-rolling --market india \
 #     --universe nifty500_pit --universe-config universes.yaml ...
+#   screener screen --market india -c ema \
+#     --universe nifty500_pit --universe-config universes.yaml
+#
+# The screen reads the membership window that is open today, so it screens the
+# book the point-in-time backtest would have held on its last bar.
 #
 # The built-in `nifty500` universe can only fetch today's constituent list, so
 # any past-dated run over it is survivorship-biased. `nifty500_pit` replaces it

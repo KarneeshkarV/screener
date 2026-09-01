@@ -1,4 +1,8 @@
-"""Shooting Star candlestick pattern strategy."""
+"""Shooting Star candlestick pattern strategy.
+
+The body-size threshold is an expanding mean over bars up to and including the
+star bar, so a signal never reads a bar that follows it.
+"""
 
 from __future__ import annotations
 
@@ -28,7 +32,13 @@ def strat_shooting_star(df: pd.DataFrame) -> list[ResearchTrade]:
     if n_len < 4:
         return _walk(entries, exits, cl, df["date"].values)
 
-    mean_body = np.mean(np.abs(op - cl))
+    # Causal body-size baseline. The whole-series mean this replaced averaged
+    # every bar, so a threshold applied at bar i-1 was set partly by bars that
+    # had not happened yet and every historical signal was contaminated. The
+    # expanding mean below sees only bars 0..i-1, which is exactly what a
+    # trader standing on the star bar knows.
+    body = np.abs(op - cl)
+    mean_body_through = np.cumsum(body) / np.arange(1, n_len + 1, dtype=float)
 
     in_position = False
     entry_pos = 0.0
@@ -45,7 +55,7 @@ def strat_shooting_star(df: pd.DataFrame) -> list[ResearchTrade]:
                 # condition2
                 c2 = (cl[i - 1] - lo[i - 1]) < lower_bound * body_diff
                 # condition3
-                c3 = body_diff < mean_body * body_size
+                c3 = body_diff < mean_body_through[i - 1] * body_size
                 # condition4
                 c4 = (hi[i - 1] - op[i - 1]) >= 2 * body_diff
                 # condition5

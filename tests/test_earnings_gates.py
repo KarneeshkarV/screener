@@ -392,13 +392,13 @@ def test_screen_workflow_earnings_buffer(monkeypatch, tmp_path):
     monkeypatch.setattr(
         sw,
         "resolve_criteria",
-        lambda names: FilterCriteriaSelection(tuple(names), "ema", ["FILTER"]),
+        lambda names: FilterCriteriaSelection(tuple(names), "value", ["FILTER"]),
     )
     monkeypatch.setattr(sw, "scan", lambda **kwargs: (3, frame, _AS_OF))
     monkeypatch.setattr(sw, "enrich_days_to_earnings", fake_enrich)
     request = ScreenRequest(
         market="us",
-        criteria_names=("ema",),
+        criteria_names=("value",),
         limit=5,
         order_by="volume",
         output_csv=True,

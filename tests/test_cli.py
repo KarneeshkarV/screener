@@ -145,7 +145,7 @@ def test_screen_auto_temp_report(tmp_path, monkeypatch):
         workflow_mod, "scan", lambda **kwargs: (2, _screen_df(), _AS_OF)
     )
 
-    res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2"])
+    res = CliRunner().invoke(cli, ["screen", "-m", "us", "-c", "value", "-n", "2"])
 
     assert res.exit_code == 0, res.output
     assert f"Report: {report}" in res.output
@@ -181,7 +181,7 @@ def test_screen_prints_the_table_before_it_renders_the_report(tmp_path, monkeypa
 
     monkeypatch.setattr(screen_mod, "print_results", record)
 
-    res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2"])
+    res = CliRunner().invoke(cli, ["screen", "-m", "us", "-c", "value", "-n", "2"])
 
     assert res.exit_code == 0, res.output
     assert existed == [False]
@@ -196,7 +196,7 @@ def test_screen_refuses_a_strategy_mixed_with_a_criterion_as_usage_error():
     one rule.
     """
     res = CliRunner().invoke(
-        cli, ["screen", "-c", "momentum_12_1", "-c", "ema", "-n", "2"]
+        cli, ["screen", "-c", "momentum_12_1", "-c", "value", "-n", "2"]
     )
 
     assert res.exit_code != 0
@@ -212,7 +212,9 @@ def test_screen_csv_skips_auto_temp_report(tmp_path, monkeypatch):
         workflow_mod, "scan", lambda **kwargs: (2, _screen_df(), _AS_OF)
     )
 
-    res = CliRunner().invoke(cli, ["screen", "-m", "us", "-n", "2", "--csv"])
+    res = CliRunner().invoke(
+        cli, ["screen", "-m", "us", "-c", "value", "-n", "2", "--csv"]
+    )
 
     assert res.exit_code == 0, res.output
     assert "Report:" not in res.output
@@ -233,7 +235,7 @@ def test_screen_earnings_flag_enables_enrichment(monkeypatch):
     )
     monkeypatch.setattr(workflow_mod, "enrich_days_to_earnings", enrich)
 
-    res = CliRunner().invoke(cli, ["screen", "--earnings", "--csv"])
+    res = CliRunner().invoke(cli, ["screen", "-c", "value", "--earnings", "--csv"])
 
     assert res.exit_code == 0, res.output
     assert calls == [(["AAA", "BBB"], "us")]

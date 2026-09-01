@@ -90,6 +90,41 @@ def test_shooting_star_pattern_entry_and_exit():
     assert trades[0].entry_idx <= trades[0].exit_idx
 
 
+def test_shooting_star_signals_never_read_later_bars():
+    """Appending future bars must not create a signal on an earlier bar.
+
+    The body-size threshold (condition 3) was a mean over the whole series, so
+    large-bodied bars arriving later raised the mean, loosened the threshold
+    retroactively, and admitted stars that the data available at the time
+    rejected. The star at index 5 below has a body deliberately sized to sit
+    above the prefix threshold and below the extended one.
+    """
+    close = [98, 98.5, 99, 99, 99.5, 100.0, 99.5, 101, 101.5, 102, 102.5, 103]
+    open_ = [c - 2 for c in close]
+    high = [c + 1 for c in close]
+    low = [c - 3 for c in close]
+    open_[5], high[5], low[5], close[5] = 101.2, 103.7, 99.9, 100.0
+    open_[6], high[6], low[6], close[6] = 97.5, 100.5, 96.5, 99.5
+
+    prefix = STRATEGIES["shooting_star"](_mkdf(open_, high, low, close))
+
+    # Bodies an order of magnitude larger than anything in the prefix.
+    tail = [120.0, 140.0, 160.0, 180.0, 200.0, 220.0]
+    extended = STRATEGIES["shooting_star"](
+        _mkdf(
+            open_ + [c - 20 for c in tail],
+            high + [c + 1 for c in tail],
+            low + [c - 25 for c in tail],
+            close + tail,
+        )
+    )
+
+    within_prefix = [t for t in extended if t.entry_idx < len(close)]
+    assert [(t.entry_idx, t.exit_idx) for t in within_prefix] == [
+        (t.entry_idx, t.exit_idx) for t in prefix
+    ]
+
+
 def test_heikin_ashi_entry_and_exit():
     # A clean HA downtrend (open == high, falling) builds long entries; the
     # following HA uptrend (open == low, rising) closes the position.

@@ -47,7 +47,19 @@ from screener.scoring import IncompatibleScorerBlendError, PriceAdjustment
         "Screen a named universe (nifty50, nifty500, sensex, sp500) or a "
         "universe file, with no TradingView prefilter. This is the exact path: "
         "the answer depends on local bars only. Slower, because every name is "
-        "fetched. Needs a criterion that names a strategy."
+        "fetched. Needs a criterion that names a strategy. A name defined in "
+        "--universe-config is resolved from there instead of from disk."
+    ),
+)
+@click.option(
+    "--universe-config",
+    type=click.Path(dir_okay=False, exists=True),
+    default=None,
+    help=(
+        "TOML/YAML/JSON definitions for custom static, snapshot, or dynamic "
+        "universes, as on backtest-rolling. A snapshot universe such as "
+        "nifty500_pit is screened on the membership window open today, so the "
+        "screen and the point-in-time backtest read the same book."
     ),
 )
 @click.option("-n", "--limit", default=50, help="Number of results.")
@@ -133,6 +145,7 @@ def screen(
     market: str,
     criteria_names: tuple[str, ...],
     universe: str | None,
+    universe_config: str | None,
     limit: int,
     order_by: str,
     output_csv: bool,
@@ -160,10 +173,13 @@ def screen(
         raise click.UsageError("--earnings-buffer must be >= 0.")
     if max_universe < 0:
         raise click.UsageError("--max-universe must be >= 0.")
+    if universe_config and not universe:
+        raise click.UsageError("--universe-config needs --universe.")
     request = ScreenRequest(
         market=market,
         criteria_names=criteria_names,
         universe=universe,
+        universe_config=universe_config,
         limit=int(limit),
         order_by=order_by,
         output_csv=output_csv,

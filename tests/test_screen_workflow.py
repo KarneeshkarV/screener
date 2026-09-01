@@ -26,7 +26,7 @@ def _request(
 ) -> ScreenRequest:
     return ScreenRequest(
         market="us",
-        criteria_names=("ema",),
+        criteria_names=("value",),
         limit=5,
         order_by="setup_score",
         output_csv=output_csv,
@@ -55,7 +55,7 @@ def test_screen_workflow_csv_short_circuits_history_and_report(monkeypatch, tmp_
     _patch(
         monkeypatch,
         resolve_criteria=lambda names: FilterCriteriaSelection(
-            tuple(names), "ema", ["FILTER"]
+            tuple(names), "value", ["FILTER"]
         ),
         scan=lambda **kwargs: calls.append("scan") or (2, frame, _AS_OF),
         save_run=lambda *args: calls.append("save") or 1,
@@ -86,7 +86,7 @@ def test_screen_workflow_skips_earnings_enrichment_by_default(monkeypatch, tmp_p
     _patch(
         monkeypatch,
         resolve_criteria=lambda names: FilterCriteriaSelection(
-            tuple(names), "ema", ["FILTER"]
+            tuple(names), "value", ["FILTER"]
         ),
         scan=lambda **kwargs: (1, frame, _AS_OF),
         enrich_days_to_earnings=unexpected_enrichment,
@@ -112,7 +112,7 @@ def test_screen_workflow_first_run_uses_default_report_path(monkeypatch, tmp_pat
     _patch(
         monkeypatch,
         resolve_criteria=lambda names: FilterCriteriaSelection(
-            tuple(names), "ema", ["FILTER"]
+            tuple(names), "value", ["FILTER"]
         ),
         scan=lambda **kwargs: (1, frame, _AS_OF),
         save_run=lambda *args: 7,
@@ -142,13 +142,13 @@ def test_screen_workflow_forwards_strict_timeout_retries_to_scan(monkeypatch):
     _patch(
         monkeypatch,
         resolve_criteria=lambda names: FilterCriteriaSelection(
-            tuple(names), "ema", ["FILTER"]
+            tuple(names), "value", ["FILTER"]
         ),
         scan=fake_scan,
     )
     request = ScreenRequest(
         market="us",
-        criteria_names=("ema",),
+        criteria_names=("value",),
         limit=5,
         order_by="setup_score",
         output_csv=True,
@@ -178,7 +178,7 @@ def test_screen_workflow_previous_run_diff_uses_explicit_report_path(
     _patch(
         monkeypatch,
         resolve_criteria=lambda names: FilterCriteriaSelection(
-            tuple(names), "ema+value", ["EMA", "VALUE"]
+            tuple(names), "value+quality", ["VALUE", "QUALITY"]
         ),
         scan=lambda **kwargs: (1, frame, _AS_OF),
         save_run=lambda *args: 8,
@@ -191,7 +191,7 @@ def test_screen_workflow_previous_run_diff_uses_explicit_report_path(
 
     outcome = run_screen_workflow(_request(report_path=explicit))
 
-    assert outcome.label == "ema+value"
+    assert outcome.label == "value+quality"
     assert outcome.first_run is False
     assert outcome.added == ("AAA",)
     assert outcome.removed == ("BBB",)
@@ -286,7 +286,7 @@ def test_deferred_report_is_written_only_when_the_caller_asks(monkeypatch, tmp_p
     _patch(
         monkeypatch,
         resolve_criteria=lambda names: FilterCriteriaSelection(
-            tuple(names), "ema", ["FILTER"]
+            tuple(names), "value", ["FILTER"]
         ),
         scan=lambda **kwargs: (1, frame, _AS_OF),
         save_run=lambda *args: 7,
@@ -317,7 +317,7 @@ def test_a_report_written_for_the_caller_leaves_no_render_hook(monkeypatch, tmp_
     _patch(
         monkeypatch,
         resolve_criteria=lambda names: FilterCriteriaSelection(
-            tuple(names), "ema", ["FILTER"]
+            tuple(names), "value", ["FILTER"]
         ),
         scan=lambda **kwargs: (1, frame, _AS_OF),
         save_run=lambda *args: 7,
