@@ -708,6 +708,7 @@ def write_tearsheet(
     title: str,
     extra_notes: Sequence[str],
     sizing_comparison: tuple[Any, Any] | None = None,
+    monte_carlo: tuple[Any, Any] | None = None,
 ) -> None:
     """Render the static HTML tear-sheet (thin wrapper for lazy import)."""
     from screener.backtester.tearsheet import render_tearsheet
@@ -718,4 +719,5 @@ def write_tearsheet(
         title=title,
         extra_notes=list(extra_notes),
         sizing_comparison=sizing_comparison,
+        monte_carlo=monte_carlo,
     )

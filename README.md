@@ -317,9 +317,13 @@ It accepts every flag that defines a `backtest-rolling` run (window, universe, s
 - `--iterations` (default 5000) synthetic equity paths.
 - `--block` (default 20) bars per resampled block. Blocks keep the short-horizon autocorrelation that drives drawdown; `--block 1` makes the draw i.i.d. and understates it.
 - `--seed` (default 42) so a run is reproducible, and `--ruin-threshold` (default 0.5) for the fraction of starting capital that counts as ruin.
+- `--paths` (default 1000) simulated paths kept for the report's fan chart and percentile bands. Higher is smoother but costs memory and HTML size; `0` skips the chart.
 - `--json` to write the raw result next to the usual HTML tear-sheet.
 
 The `MC ...` rows join the realized run's metrics in both the terminal table and the tear-sheet: median/p05/p95 return, the drawdown percentiles, the probability of ending in profit, and the risk of ruin.
+
+The tear-sheet also gets a **Monte Carlo** tab that `backtest-rolling` does not have.
+It shows the fan of simulated equity paths with p05/median/p95 bands and the realized run drawn over them, the terminal-return and max-drawdown distributions with the realized value marked on each, an outcome-percentile table (p01 to p99), and a run summary (iterations, bars, block, seed, probability of profit, risk of ruin).
 
 The equity curve is resampled rather than the trade list.
 A rolling run holds `--top` positions at once, so its trades overlap in time; chaining them one after another would compound a portfolio that never existed and would misstate the drawdown.

@@ -68,6 +68,17 @@ __all__ = ["backtest_monte_carlo"]
     help="Fraction of starting capital that counts as ruin when touched.",
 )
 @click.option(
+    "--paths",
+    "mc_keep_paths",
+    type=int,
+    default=1000,
+    show_default=True,
+    help=(
+        "Simulated paths kept for the report's fan chart and percentile bands. "
+        "Higher is smoother but costs memory and HTML size; 0 skips the chart."
+    ),
+)
+@click.option(
     "--json",
     "json_path",
     type=click.Path(dir_okay=False, path_type=Path),
@@ -78,13 +89,14 @@ def backtest_monte_carlo(**params: Any) -> None:
     """Run a rolling backtest, then block-bootstrap its equity curve."""
     from screener.backtester.optimization.monte_carlo import (
         equity_monte_carlo_metrics,
-        simulate_equity_monte_carlo,
+        simulate_equity_monte_carlo_paths,
     )
 
     iterations = params.pop("mc_iterations")
     block = params.pop("mc_block")
     seed = params.pop("mc_seed")
     ruin_threshold = params.pop("mc_ruin_threshold")
+    keep_paths = params.pop("mc_keep_paths")
     json_path = params.pop("json_path")
 
     ctx = click.get_current_context()
@@ -110,12 +122,13 @@ def backtest_monte_carlo(**params: Any) -> None:
         end_date=run.end_date,
         fundamental_fetcher=run.fundamental_fetcher,
     )
-    mc = simulate_equity_monte_carlo(
+    mc, mc_paths = simulate_equity_monte_carlo_paths(
         result.equity_curve,
         iterations=iterations,
         block=block,
         seed=seed,
         ruin_threshold=ruin_threshold,
+        keep_paths=keep_paths,
     )
     # Merge into the run's own metrics so the terminal table and the tear-sheet
     # show the realized run and its bootstrap side by side, in one place.
@@ -130,6 +143,7 @@ def backtest_monte_carlo(**params: Any) -> None:
             generated_report,
             title="Monte Carlo Backtest Tear Sheet",
             extra_notes=[run.universe_note] if run.universe_note else [],
+            monte_carlo=(mc, mc_paths),
         )
     if json_path:
         from screener.backtester.optimization.reporting import write_json_report

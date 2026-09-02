@@ -13,6 +13,7 @@ from screener.backtester.metrics import result_view
 from screener.backtester.optimization.monte_carlo import (
     equity_monte_carlo_metrics,
     simulate_equity_monte_carlo,
+    simulate_equity_monte_carlo_paths,
 )
 from screener.cli import cli
 from tests.conftest import StubPriceFetcher, make_bars
@@ -141,6 +142,47 @@ def test_metrics_render_with_declared_labels():
     assert kinds["mc_iterations"] == "int"
 
 
+def test_paths_variant_matches_the_summary_only_run():
+    equity = _equity(120, seed=5)
+    summary = simulate_equity_monte_carlo(equity, iterations=100, block=10, seed=7)
+    detailed, paths = simulate_equity_monte_carlo_paths(
+        equity, iterations=100, block=10, seed=7, keep_paths=25
+    )
+
+    assert detailed == summary
+    # Scalars cover every iteration; only the retained curves are capped.
+    assert paths.terminal_returns.shape == (100,)
+    assert paths.drawdowns.shape == (100,)
+    assert paths.paths.shape == (25, summary.bars)
+    assert paths.initial_capital == pytest.approx(float(equity.iloc[0]))
+
+
+def test_retained_paths_are_capped_by_the_iteration_count():
+    _, paths = simulate_equity_monte_carlo_paths(
+        _equity(60, seed=6), iterations=10, block=5, keep_paths=500
+    )
+
+    assert paths.paths.shape[0] == 10
+
+
+def test_retained_paths_reproduce_the_reported_outcomes():
+    equity = _equity(90, seed=8)
+    result, paths = simulate_equity_monte_carlo_paths(
+        equity, iterations=30, block=6, seed=3, keep_paths=30
+    )
+
+    terminal = paths.paths[:, -1] / paths.initial_capital - 1.0
+    assert terminal == pytest.approx(paths.terminal_returns, rel=1e-5)
+    assert float(np.median(paths.terminal_returns)) == pytest.approx(
+        result.median_return
+    )
+
+
+def test_negative_keep_paths_is_rejected():
+    with pytest.raises(ValueError, match="keep_paths"):
+        simulate_equity_monte_carlo_paths(_equity(30), keep_paths=-1)
+
+
 def _stub_fetcher() -> StubPriceFetcher:
     return StubPriceFetcher(
         {
@@ -189,11 +231,90 @@ def test_cli_reports_monte_carlo_rows(tmp_path):
     assert payload["block"] == 5
 
 
+def test_cli_report_has_a_monte_carlo_tab_with_the_paths(tmp_path):
+    report = tmp_path / "mc.html"
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-monte-carlo",
+            "-m",
+            "us",
+            "--tickers",
+            "AAA,BBB",
+            "--entry",
+            "close > 0",
+            "--hold",
+            "5",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-03-01",
+            "--iterations",
+            "40",
+            "--block",
+            "5",
+            "--paths",
+            "20",
+            "--report",
+            str(report),
+        ],
+        obj=_stub_fetcher(),
+    )
+
+    assert res.exit_code == 0, res.output
+    page = report.read_text()
+    assert 'id="tab-montecarlo"' in page
+    assert ">Monte Carlo<" in page
+    for div in (
+        "tearsheet-mc-paths",
+        "tearsheet-mc-returns",
+        "tearsheet-mc-drawdowns",
+        "monte-carlo-percentile-table",
+        "monte-carlo-summary-table",
+    ):
+        assert div in page, f"missing report section: {div}"
+
+
+def test_rolling_report_has_no_monte_carlo_tab(tmp_path):
+    report = tmp_path / "rolling.html"
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-rolling",
+            "-m",
+            "us",
+            "--tickers",
+            "AAA,BBB",
+            "--entry",
+            "close > 0",
+            "--hold",
+            "5",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-03-01",
+            "--report",
+            str(report),
+        ],
+        obj=_stub_fetcher(),
+    )
+
+    assert res.exit_code == 0, res.output
+    assert 'id="tab-montecarlo"' not in report.read_text()
+
+
 def test_cli_help_lists_monte_carlo_and_shared_run_flags():
     res = CliRunner().invoke(cli, ["backtest-monte-carlo", "--help"])
 
     assert res.exit_code == 0
-    for flag in ("--iterations", "--block", "--seed", "--ruin-threshold", "--json"):
+    for flag in (
+        "--iterations",
+        "--block",
+        "--seed",
+        "--ruin-threshold",
+        "--paths",
+        "--json",
+    ):
         assert flag in res.output, f"missing flag in help: {flag}"
     # The command must expose the same run definition as backtest-rolling.
     for flag in ("--universe", "--rank-exit", "--sizing ", "--point-in-time"):

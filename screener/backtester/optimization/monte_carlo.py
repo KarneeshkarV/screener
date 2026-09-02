@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -147,6 +148,24 @@ def _empty_equity_result(
     )
 
 
+@dataclass(frozen=True)
+class EquityMonteCarloPaths:
+    """The raw draws behind an :class:`EquityMonteCarloResult`.
+
+    ``terminal_returns`` and ``drawdowns`` hold one entry per iteration, so any
+    distribution plotted from them is exact. ``paths`` is capped instead:
+    ``iterations x bars`` equity levels is ~100 MB of float64 on a long daily
+    run, and no browser draws 5,000 lines. The cap keeps the first iterations
+    rather than a random subset, so the retained sample is reproducible from
+    ``seed`` alone.
+    """
+
+    initial_capital: float
+    paths: np.ndarray
+    terminal_returns: np.ndarray
+    drawdowns: np.ndarray
+
+
 def simulate_equity_monte_carlo(
     equity: "pd.Series",
     *,
@@ -165,6 +184,32 @@ def simulate_equity_monte_carlo(
     than single days) preserve the short-horizon autocorrelation that drives
     drawdown, so the drawdown percentiles stay honest instead of collapsing
     toward the i.i.d. case.
+    """
+    result, _ = simulate_equity_monte_carlo_paths(
+        equity,
+        iterations=iterations,
+        block=block,
+        seed=seed,
+        ruin_threshold=ruin_threshold,
+        keep_paths=0,
+    )
+    return result
+
+
+def simulate_equity_monte_carlo_paths(
+    equity: "pd.Series",
+    *,
+    iterations: int = 5000,
+    block: int = 20,
+    seed: int = 42,
+    ruin_threshold: float = 0.5,
+    keep_paths: int = 1000,
+) -> tuple[EquityMonteCarloResult, EquityMonteCarloPaths]:
+    """Run the bootstrap and hand back the draws as well as the summary.
+
+    Same simulation as :func:`simulate_equity_monte_carlo`. This variant exists
+    so a report can plot the fan of simulated curves and the outcome
+    distributions, which the summary percentiles alone cannot show.
 
     Iterations are looped rather than vectorized: a fully vectorized draw
     allocates ``iterations x bars`` indices at once, which is hundreds of MB on
@@ -174,6 +219,8 @@ def simulate_equity_monte_carlo(
         raise ValueError("iterations must be positive")
     if block <= 0:
         raise ValueError("block must be positive")
+    if keep_paths < 0:
+        raise ValueError("keep_paths must not be negative")
     initial_capital = float(equity.iloc[0]) if len(equity) else 0.0
     if initial_capital <= 0:
         raise ValueError("equity curve must start above zero")
@@ -181,11 +228,20 @@ def simulate_equity_monte_carlo(
     returns = equity.pct_change().dropna().to_numpy(dtype=float)
     n = int(returns.size)
     if n == 0:
-        return _empty_equity_result(
-            iterations=iterations,
-            seed=seed,
-            block=block,
-            initial_capital=initial_capital,
+        empty = np.empty(0, dtype=float)
+        return (
+            _empty_equity_result(
+                iterations=iterations,
+                seed=seed,
+                block=block,
+                initial_capital=initial_capital,
+            ),
+            EquityMonteCarloPaths(
+                initial_capital=initial_capital,
+                paths=np.empty((0, 0), dtype=np.float32),
+                terminal_returns=empty,
+                drawdowns=empty,
+            ),
         )
 
     rng = np.random.default_rng(seed)
@@ -196,6 +252,9 @@ def simulate_equity_monte_carlo(
 
     terminal_returns = np.empty(iterations, dtype=float)
     drawdowns = np.empty(iterations, dtype=float)
+    kept = min(keep_paths, iterations)
+    # float32 halves the retained sample; a chart cannot resolve more precision.
+    stored = np.empty((kept, n), dtype=np.float32)
     ruin_count = 0
     for i in range(iterations):
         starts = rng.integers(0, n, size=draws)
@@ -206,8 +265,10 @@ def simulate_equity_monte_carlo(
         drawdowns[i] = _drawdown(np.concatenate(([initial_capital], equity_path)))
         if float(equity_path.min()) <= ruin_level:
             ruin_count += 1
+        if i < kept:
+            stored[i] = equity_path
 
-    return EquityMonteCarloResult(
+    result = EquityMonteCarloResult(
         iterations=iterations,
         seed=seed,
         block=span,
@@ -222,6 +283,13 @@ def simulate_equity_monte_carlo(
         probability_of_profit=float(np.mean(terminal_returns > 0)),
         risk_of_ruin=float(ruin_count / iterations),
     )
+    paths = EquityMonteCarloPaths(
+        initial_capital=initial_capital,
+        paths=stored,
+        terminal_returns=terminal_returns,
+        drawdowns=drawdowns,
+    )
+    return result, paths
 
 
 def equity_monte_carlo_metrics(result: EquityMonteCarloResult) -> dict[str, float]:
