@@ -299,17 +299,28 @@ def _distribution_html(
     """Histogram of a per-iteration outcome, with the realized run marked."""
     fig = px.histogram(x=values, nbins=60, labels={"x": label})
     fig.update_traces(marker_color="#0f766e")
-    for name, value, color in (
+    markers = [
         ("p05", float(np.percentile(values, 5)), "#b91c1c"),
         ("median", float(np.median(values)), "#38bdf8"),
         ("p95", float(np.percentile(values, 95)), "#16a34a"),
         ("realized", realized, "#facc15"),
-    ):
+    ]
+    # The realized run usually lands on top of the median, so labels at a single
+    # height overprint each other. Sorting by x and alternating the label row
+    # keeps any two neighbours apart; both rows stay above the plot, inside the
+    # existing top margin, so nothing collides with the axis ticks. Tinting each
+    # label with its own line colour keeps the pairing readable.
+    markers.sort(key=lambda marker: marker[1])
+    for position, (name, value, color) in enumerate(markers):
         fig.add_vline(
             x=value,
             line_color=color,
             line_dash="dot",
-            annotation_text=name,
+            annotation={
+                "text": name,
+                "font": {"color": color, "size": 11},
+                "yshift": 0 if position % 2 == 0 else 15,
+            },
             annotation_position="top",
         )
     fig.update_xaxes(tickformat=".0%")
