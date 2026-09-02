@@ -104,10 +104,21 @@ def test_flat_curve_never_profits_and_never_ruins():
 
 def test_single_point_curve_yields_an_empty_result():
     equity = pd.Series([100_000.0], index=pd.date_range("2024-01-01", periods=1))
-    result = simulate_equity_monte_carlo(equity, iterations=10)
+    result = simulate_equity_monte_carlo(equity, iterations=10, block=500)
 
     assert result.bars == 0
     assert result.median_return == 0.0
+    # No bar was ever drawn, so the reported block must not claim the request.
+    assert result.block == 0
+
+
+def test_the_result_records_the_ruin_threshold_it_used():
+    result = simulate_equity_monte_carlo(
+        _equity(n=60), iterations=20, block=5, ruin_threshold=0.8
+    )
+
+    assert result.ruin_threshold == 0.8
+    assert equity_monte_carlo_metrics(result)["mc_ruin_threshold"] == 0.8
 
 
 @pytest.mark.parametrize(
@@ -115,6 +126,8 @@ def test_single_point_curve_yields_an_empty_result():
     [
         ({"iterations": 0}, "iterations must be positive"),
         ({"block": 0}, "block must be positive"),
+        ({"ruin_threshold": 0.0}, r"ruin_threshold must be in \(0, 1\]"),
+        ({"ruin_threshold": 1.5}, r"ruin_threshold must be in \(0, 1\]"),
     ],
 )
 def test_invalid_arguments_are_rejected(kwargs, message):
@@ -301,6 +314,45 @@ def test_rolling_report_has_no_monte_carlo_tab(tmp_path):
 
     assert res.exit_code == 0, res.output
     assert 'id="tab-montecarlo"' not in report.read_text()
+
+
+@pytest.mark.parametrize(
+    ("flags", "message"),
+    [
+        (["--iterations", "0"], "--iterations must be positive"),
+        (["--block", "0"], "--block must be positive"),
+        (["--paths", "-1"], "--paths must not be negative"),
+        (["--ruin-threshold", "0"], "--ruin-threshold must be a fraction"),
+        (["--ruin-threshold", "2"], "--ruin-threshold must be a fraction"),
+    ],
+)
+def test_cli_rejects_bad_flags_before_running_the_backtest(flags, message):
+    """A bad flag must be a usage error, not a traceback after a long run."""
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-monte-carlo",
+            "-m",
+            "us",
+            "--tickers",
+            "AAA,BBB",
+            "--entry",
+            "close > 0",
+            "--hold",
+            "5",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-03-01",
+            *flags,
+        ],
+        obj=_stub_fetcher(),
+    )
+
+    assert res.exit_code == 2, res.output
+    assert message in res.output
+    # The rolling run never started, so no result line was printed.
+    assert "Monte Carlo:" not in res.output
 
 
 def test_cli_help_lists_monte_carlo_and_shared_run_flags():

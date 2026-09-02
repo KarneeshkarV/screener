@@ -117,6 +117,9 @@ class EquityMonteCarloResult(BaseModel):
     seed: int
     block: int
     bars: int
+    # Carried so a reader can tell which threshold produced ``risk_of_ruin``;
+    # the number is meaningless without it.
+    ruin_threshold: float
     initial_capital: float
     median_return: float
     return_p05: float
@@ -129,13 +132,17 @@ class EquityMonteCarloResult(BaseModel):
 
 
 def _empty_equity_result(
-    *, iterations: int, seed: int, block: int, initial_capital: float
+    *, iterations: int, seed: int, ruin_threshold: float, initial_capital: float
 ) -> EquityMonteCarloResult:
     return EquityMonteCarloResult(
         iterations=iterations,
         seed=seed,
-        block=block,
+        # No bars, so no block was ever drawn. Reporting the requested block
+        # here would claim a span the run did not use, which the normal path
+        # caps at the number of bars.
+        block=0,
         bars=0,
+        ruin_threshold=ruin_threshold,
         initial_capital=initial_capital,
         median_return=0.0,
         return_p05=0.0,
@@ -221,6 +228,8 @@ def simulate_equity_monte_carlo_paths(
         raise ValueError("block must be positive")
     if keep_paths < 0:
         raise ValueError("keep_paths must not be negative")
+    if not 0.0 < ruin_threshold <= 1.0:
+        raise ValueError("ruin_threshold must be in (0, 1]")
     initial_capital = float(equity.iloc[0]) if len(equity) else 0.0
     if initial_capital <= 0:
         raise ValueError("equity curve must start above zero")
@@ -233,7 +242,7 @@ def simulate_equity_monte_carlo_paths(
             _empty_equity_result(
                 iterations=iterations,
                 seed=seed,
-                block=block,
+                ruin_threshold=ruin_threshold,
                 initial_capital=initial_capital,
             ),
             EquityMonteCarloPaths(
@@ -273,6 +282,7 @@ def simulate_equity_monte_carlo_paths(
         seed=seed,
         block=span,
         bars=n,
+        ruin_threshold=ruin_threshold,
         initial_capital=initial_capital,
         median_return=float(np.median(terminal_returns)),
         return_p05=float(np.percentile(terminal_returns, 5)),
@@ -309,4 +319,5 @@ def equity_monte_carlo_metrics(result: EquityMonteCarloResult) -> dict[str, floa
         "mc_worst_drawdown": result.worst_drawdown,
         "mc_probability_of_profit": result.probability_of_profit,
         "mc_risk_of_ruin": result.risk_of_ruin,
+        "mc_ruin_threshold": result.ruin_threshold,
     }

@@ -99,6 +99,19 @@ def backtest_monte_carlo(**params: Any) -> None:
     keep_paths = params.pop("mc_keep_paths")
     json_path = params.pop("json_path")
 
+    # Checked before the backtest, not inside the simulation: the rolling run
+    # takes minutes, and a bad flag must not surface as a traceback after it.
+    if iterations <= 0:
+        raise click.UsageError("--iterations must be positive.")
+    if block <= 0:
+        raise click.UsageError("--block must be positive.")
+    if keep_paths < 0:
+        raise click.UsageError("--paths must not be negative.")
+    if not 0.0 < ruin_threshold <= 1.0:
+        raise click.UsageError(
+            "--ruin-threshold must be a fraction of starting capital in (0, 1]."
+        )
+
     ctx = click.get_current_context()
     request = BacktestRequest(
         mode="rolling",

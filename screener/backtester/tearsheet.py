@@ -393,6 +393,8 @@ def _monte_carlo_sections(
         f"<tr><th>Probability of profit</th>"
         f"<td>{mc.probability_of_profit:+.2%}</td></tr>"
         f"<tr><th>Risk of ruin</th><td>{mc.risk_of_ruin:+.2%}</td></tr>"
+        f"<tr><th>Ruin threshold</th>"
+        f"<td>{mc.ruin_threshold:.2%} of starting capital</td></tr>"
         "</table></div></section>"
     )
 

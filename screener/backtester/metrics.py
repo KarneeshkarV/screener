@@ -118,6 +118,7 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
     ("mc_worst_drawdown", "MC Worst Drawdown", "pct"),
     ("mc_probability_of_profit", "MC Probability of Profit", "pct"),
     ("mc_risk_of_ruin", "MC Risk of Ruin", "pct"),
+    ("mc_ruin_threshold", "MC Ruin Threshold", "pct"),
 )
 _RESULT_VIEW_SPECS = {key: (label, kind) for key, label, kind in _RESULT_VIEW_ORDER}
 
