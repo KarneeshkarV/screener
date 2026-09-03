@@ -18,9 +18,13 @@ This is research, not financial advice.
 from __future__ import annotations
 
 import argparse
+import csv
 import gc
+import io
 import json
 import math
+import os
+import statistics
 import sys
 import time
 import traceback
@@ -208,8 +212,18 @@ def compact_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
 
 
 def write_run(path: Path, payload: dict[str, Any]) -> None:
+    """Write one run's record atomically.
+
+    The resume check is ``path.exists()``, so a file half-written when a worker
+    died (OOM, Ctrl-C, a pool crash) is indistinguishable from a finished one
+    and is skipped forever, while ``load_runs`` drops it from every report.
+    Writing to a sibling and renaming means the path only ever appears once the
+    content behind it is complete.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(jsonable(payload), indent=2, sort_keys=True))
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(jsonable(payload), indent=2, sort_keys=True))
+    os.replace(tmp, path)
 
 
 def expression_strategy_names() -> list[str]:
@@ -379,13 +393,16 @@ def book_overlays() -> list[tuple[str, dict[str, Any]]]:
             {"entry_order_type": "limit", "entry_limit_bps": 20.0},
         ),
         ("partial_exit_10_50", {"partial_exits": ((0.10, 0.50),)}),
-        ("no_reinvest", {"reinvest": False}),
-        (
-            "allow_reentry_3",
-            {"allow_reentry": True, "max_reentries": 3},
-        ),
-        ("reserve_1", {"reserve_multiple": 1}),
-        ("reserve_5", {"reserve_multiple": 5}),
+        # No no_reinvest / allow_reentry_3 / reserve_1 / reserve_5 overlay
+        # here. ``reinvest``, ``allow_reentry``, ``max_reentries`` and
+        # ``reserve_multiple`` are BacktestConfig fields that only
+        # backtester/historical.py reads; rolling_simulation.py, book.py and
+        # sizing.py never touch them. They are in BOOK_CONFIG_FIELDS, so
+        # ``supports()`` passed and the runs completed - reproducing the
+        # baseline byte for byte and publishing in the overlay-delta table as
+        # genuine +0.00 findings. ``fields_to_cli`` already annotates these as
+        # "not on backtest-rolling"; queueing them anyway spends the compute
+        # and prints a measurement of nothing.
         ("capital_500k", {"initial_capital": 500_000.0}),
         (
             "sizing_atr_risk_pct_0.005",
@@ -823,7 +840,34 @@ def sweep_signal_unit(payload: dict[str, Any]) -> dict[str, Any]:
             start = window_start(years)
             sliced = slice_prepared(prepared, start)
             if sliced is None:
-                failed += 1
+                # One unusable year is not one failure: it is every job of that
+                # year. Charging a single count and writing no record left the
+                # totals in sweep_status.json unable to reconcile with runs/,
+                # and nothing on disk explaining the gap.
+                for job in jobs:
+                    path = run_path(out_dir, f"{strategy}__{years}y__{job['variant']}")
+                    if path.exists():
+                        skipped += 1
+                        continue
+                    write_run(
+                        path,
+                        result_record(
+                            strategy=strategy,
+                            years=years,
+                            start=start,
+                            variant=job["variant"],
+                            signal_variant=signal_variant,
+                            cfg=apply_book_update(run.config, job["update"]),
+                            result=None,
+                            error=(
+                                "RuntimeError: prepared panel has no bars on or "
+                                f"after {start.isoformat()}"
+                            ),
+                            elapsed=0.0,
+                            universe_note=run.universe_note,
+                        ),
+                    )
+                    failed += 1
                 continue
             for job in jobs:
                 run_id = f"{strategy}__{years}y__{job['variant']}"
@@ -857,7 +901,11 @@ def sweep_signal_unit(payload: dict[str, Any]) -> dict[str, Any]:
                     universe_note=run.universe_note,
                 )
                 write_run(path, record)
-                done += 1
+                # Only successes. ``done += 1`` unconditionally made a unit
+                # where every run raised report done == failed == len(jobs),
+                # which reads as "all done" in the progress line.
+                if error is None:
+                    done += 1
         del prepared
         gc.collect()
         return {
@@ -926,11 +974,23 @@ def warm_price_cache() -> str:
 
 def load_runs(out_dir: Path) -> list[dict[str, Any]]:
     rows = []
+    unreadable = []
     for path in sorted((out_dir / "runs").glob("*.json")):
         try:
             rows.append(json.loads(path.read_text()))
         except json.JSONDecodeError:
-            continue
+            # Counted and named rather than skipped: a dropped run leaves a
+            # hole in the report that nothing else explains, and the reader
+            # has no way to tell an absent cell from one that never ran.
+            unreadable.append(path.name)
+    if unreadable:
+        shown = ", ".join(unreadable[:5])
+        more = f" (+{len(unreadable) - 5} more)" if len(unreadable) > 5 else ""
+        print(
+            f"WARNING: {len(unreadable)} unreadable run file(s) excluded from "
+            f"the report: {shown}{more}",
+            flush=True,
+        )
     return rows
 
 
@@ -1117,8 +1177,10 @@ def build_markdown(rows: list[dict[str, Any]], universe_note: str) -> str:
         overlay_groups.setdefault(overlay, []).append(float(sharpe) - float(base))
     for overlay, deltas in sorted(overlay_groups.items()):
         improved = sum(1 for d in deltas if d > 0)
-        deltas_sorted = sorted(deltas)
-        mid = deltas_sorted[len(deltas_sorted) // 2]
+        # Not ``sorted(deltas)[len(deltas) // 2]``: for an even count that is
+        # the upper-middle element, so an overlay that helped half the
+        # strategies and hurt the other half published as a clear win.
+        mid = statistics.median(deltas)
         lines.append(
             f"| `{overlay}` | {mid:+.2f} | {improved}/{len(deltas)} | {len(deltas)} |"
         )
@@ -1219,7 +1281,15 @@ def build_csv(rows: list[dict[str, Any]]) -> str:
         "error",
         "elapsed_seconds",
     ]
-    lines = [",".join(fields)]
+    # ``csv.writer`` rather than ``",".join``: the ``error`` column carries
+    # ``f"{type(exc).__name__}: {exc}"``, and a pydantic ValidationError message
+    # is multi-line. Quoting only on a comma split one failed run across
+    # several malformed records, and every reader downstream (the viewer,
+    # pandas) misaligned from that row on. It also removes the ``"`` -> ``'``
+    # substitution, which silently corrupted any value holding a quote.
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(fields)
     for row in rows:
         metrics = row.get("metrics") or {}
         values = []
@@ -1246,30 +1316,41 @@ def build_csv(rows: list[dict[str, Any]]) -> str:
                 raw = row.get(field)
             if isinstance(raw, (list, tuple)):
                 raw = "|".join(str(x) for x in raw)
-            if raw is None:
-                values.append("")
-            else:
-                text = str(raw).replace('"', "'")
-                if "," in text:
-                    values.append(f'"{text}"')
-                else:
-                    values.append(text)
-        lines.append(",".join(values))
-    return "\n".join(lines) + "\n"
+            values.append("" if raw is None else str(raw))
+        writer.writerow(values)
+    return buffer.getvalue()
 
 
 def build_html(rows: list[dict[str, Any]], universe_note: str) -> str:
-    """Copy the static FMP sweep viewer. Rows live in results.csv next to it."""
+    """Copy the static FMP sweep viewer. Rows live in results.csv next to it.
+
+    Returns an empty string when the viewer is missing rather than raising.
+    The viewer is a checked-in source asset, but ``.gitignore`` excludes
+    ``*.html`` wholesale, so it went untracked and every clone raised
+    FileNotFoundError here - at the end of ``main()``, after a multi-hour
+    sweep, and before ``report.md`` and ``results.csv`` were written.
+    """
     _ = (rows, universe_note)
     viewer = Path(__file__).resolve().parent / "nifty500_pit_sweep_viewer.html"
+    if not viewer.is_file():
+        print(
+            f"WARNING: viewer template missing at {viewer}; "
+            f"skipping index.html. report.md and results.csv are unaffected.",
+            flush=True,
+        )
+        return ""
     return viewer.read_text()
 
 
 def write_report(out_dir: Path, universe_note: str) -> None:
     rows = load_runs(out_dir)
+    # report.md and results.csv carry the run data and are ordered first: they
+    # are the outputs a failed sweep cannot reproduce without running again.
     (out_dir / "report.md").write_text(build_markdown(rows, universe_note))
     (out_dir / "results.csv").write_text(build_csv(rows))
-    (out_dir / "index.html").write_text(build_html(rows, universe_note))
+    viewer_html = build_html(rows, universe_note)
+    if viewer_html:
+        (out_dir / "index.html").write_text(viewer_html)
     (out_dir / "configs.json").write_text(
         json.dumps(build_config_catalog(), indent=2) + "\n"
     )
@@ -1390,7 +1471,10 @@ def main() -> int:
         f"units with prepare/run errors: {len(failed_units)} / {len(results)}",
         flush=True,
     )
-    return 1 if failed_units and args.smoke else 0
+    # Not gated on ``--smoke``: a full sweep where every unit failed during
+    # prepare still generated a report from zero runs and exited 0, so a
+    # wrapper script or scheduled job recorded it as a success.
+    return 1 if failed_units else 0
 
 
 if __name__ == "__main__":

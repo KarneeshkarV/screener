@@ -1,0 +1,843 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nifty 500 PIT · FMP sweep</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Red+Hat+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --navy: #1c2438;
+      --slate: #27324a;
+      --ink: #e6e3d4;
+      --mute: #8b93a7;
+      --line: #3a4660;
+      --turmeric: #f0a202;
+      --teal: #5eead4;
+      --rose: #fb7185;
+      --ticket: #2d3a56;
+      --punch: #1c2438;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: var(--navy); color: var(--ink); }
+    body {
+      font-family: "Red Hat Mono", ui-monospace, monospace;
+      min-height: 100vh;
+      background-image:
+        radial-gradient(1200px 500px at 10% -10%, #2a3550 0%, transparent 55%),
+        repeating-linear-gradient(0deg, transparent, transparent 47px, rgba(240,162,2,.04) 48px);
+    }
+    button, select, input { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    a { color: var(--turmeric); }
+    .shell { max-width: 1280px; margin: 0 auto; padding: 28px 20px 96px; }
+    .mast {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 28px;
+    }
+    .kicker {
+      color: var(--turmeric);
+      letter-spacing: .22em;
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+    h1 {
+      font-family: "Bricolage Grotesque", sans-serif;
+      font-size: clamp(2.4rem, 6vw, 4.4rem);
+      line-height: .92;
+      margin: 8px 0 0;
+      letter-spacing: -.04em;
+      font-weight: 700;
+    }
+    .stamp {
+      border: 2px solid var(--rose);
+      color: var(--rose);
+      padding: 8px 12px;
+      transform: rotate(-8deg);
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      opacity: .85;
+      align-self: start;
+    }
+    .lede { color: var(--mute); max-width: 62ch; line-height: 1.55; margin: 14px 0 0; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+      margin: 28px 0;
+    }
+    .stat { background: var(--slate); padding: 14px 16px; }
+    .stat b {
+      display: block;
+      font-family: "Bricolage Grotesque", sans-serif;
+      font-size: 1.7rem;
+      font-weight: 700;
+    }
+    .stat span { color: var(--mute); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+    .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 18px; }
+    .tabs button {
+      background: transparent;
+      border: 1px solid var(--line);
+      padding: 8px 14px;
+      color: var(--mute);
+    }
+    .tabs button[aria-selected="true"] {
+      background: var(--turmeric);
+      color: #1c2438;
+      border-color: var(--turmeric);
+      font-weight: 600;
+    }
+    .filters {
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      background: color-mix(in srgb, var(--navy) 92%, transparent);
+      backdrop-filter: blur(8px);
+      padding: 10px 0 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 16px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+    }
+    .filters label { color: var(--mute); font-size: 11px; display: flex; gap: 8px; align-items: center; }
+    .filters select, .filters input {
+      background: var(--slate);
+      border: 1px solid var(--line);
+      padding: 6px 8px;
+      min-width: 0;
+    }
+    .rail {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin: 22px 0 10px;
+    }
+    .ticket {
+      background: var(--ticket);
+      position: relative;
+      padding: 16px 16px 14px 22px;
+      border: 1px solid var(--line);
+      text-align: left;
+      width: 100%;
+    }
+    .ticket::before {
+      content: "";
+      position: absolute;
+      left: -7px;
+      top: 18px;
+      width: 14px;
+      height: 14px;
+      background: var(--punch);
+      border-radius: 50%;
+      box-shadow: 0 28px 0 var(--punch), 0 56px 0 var(--punch), 0 84px 0 var(--punch);
+    }
+    .ticket .rk {
+      font-family: "Bricolage Grotesque", sans-serif;
+      font-size: 2rem;
+      color: var(--turmeric);
+      line-height: 1;
+    }
+    .ticket .name { font-size: 13px; margin: 6px 0 10px; word-break: break-word; }
+    .ticket .row { display: flex; justify-content: space-between; font-size: 12px; color: var(--mute); }
+    .ticket .row b { color: var(--ink); font-weight: 500; }
+    .ticket:focus-visible, .tabs button:focus-visible, select:focus-visible, input:focus-visible {
+      outline: 2px solid var(--turmeric);
+      outline-offset: 2px;
+    }
+    .up { color: var(--teal); }
+    .down { color: var(--rose); }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { padding: 8px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+    th:nth-child(1), td:nth-child(1), th:nth-child(2), td:nth-child(2),
+    th:nth-child(3), td:nth-child(3) { text-align: left; }
+    th { color: var(--mute); cursor: pointer; font-weight: 500; }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover td { background: #31405c; }
+    .heat { overflow: auto; }
+    .heat table { min-width: 640px; }
+    .cell {
+      display: inline-block;
+      min-width: 64px;
+      padding: 6px 0;
+      text-align: center;
+    }
+    .bars { display: grid; gap: 8px; max-width: 820px; }
+    .bar-row { display: grid; grid-template-columns: 220px 1fr 90px; gap: 10px; align-items: center; font-size: 12px; }
+    .track { height: 10px; background: #1a2234; position: relative; }
+    .fill { height: 100%; }
+    .panel { display: none; }
+    .panel.on { display: block; }
+    .hint { color: var(--mute); font-size: 12px; margin: 8px 0 16px; }
+    .drawer {
+      position: fixed;
+      right: 0; top: 0; bottom: 0;
+      width: min(560px, 100%);
+      background: var(--slate);
+      border-left: 1px solid var(--line);
+      padding: 22px;
+      overflow: auto;
+      transform: translateX(110%);
+      transition: transform .2s ease;
+      z-index: 8;
+    }
+    .cli {
+      color: var(--turmeric);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 11px;
+      line-height: 1.55;
+      background: #1a2234;
+      border: 1px solid var(--line);
+      padding: 12px;
+      margin: 8px 0 16px;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: 148px 1fr;
+      gap: 4px 12px;
+      font-size: 12px;
+      margin: 0 0 16px;
+    }
+    .kv span { color: var(--mute); }
+    .cfg-card {
+      background: var(--ticket);
+      border: 1px solid var(--line);
+      padding: 14px 16px;
+      margin: 0 0 10px;
+      text-align: left;
+      width: 100%;
+    }
+    .cfg-card b { display: block; margin: 0 0 6px; }
+    .cfg-card .kind {
+      color: var(--mute);
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      float: right;
+    }
+    .bar-row { cursor: pointer; }
+    .bar-row:hover .track { outline: 1px solid var(--turmeric); }
+    .drawer.open { transform: none; }
+    .drawer h2 {
+      font-family: "Bricolage Grotesque", sans-serif;
+      margin: 0 0 8px;
+      font-size: 1.6rem;
+    }
+    .close {
+      background: transparent;
+      border: 1px solid var(--line);
+      padding: 4px 10px;
+      float: right;
+    }
+    @media (max-width: 980px) {
+      .mast, .stats, .rail { grid-template-columns: 1fr 1fr; }
+      .stamp { display: none; }
+      .bar-row { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .drawer { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="mast">
+      <div>
+        <div class="kicker">FMP prices · FMP fundamentals · nifty500_pit</div>
+        <h1>Which book<br>survived five years?</h1>
+        <p class="lede">42 expression strategies, point-in-time Nifty 500 membership, trailing 5/4/3/2/1 year windows. Rank tickets are the 5-year baseline: hold 20, top 10, equal slot, zero costs. Research, not advice.</p>
+      </div>
+      <div class="stamp">research<br>not advice</div>
+    </div>
+    <div class="stats" id="stats"></div>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="rank" aria-selected="true">Rank</button>
+      <button type="button" role="tab" data-tab="years" aria-selected="false">Beat Nifty</button>
+      <button type="button" role="tab" data-tab="hold" aria-selected="false">Hold</button>
+      <button type="button" role="tab" data-tab="rebalance" aria-selected="false">Rebalance</button>
+      <button type="button" role="tab" data-tab="flags" aria-selected="false">Flags</button>
+      <button type="button" role="tab" data-tab="config" aria-selected="false">Config</button>
+      <button type="button" role="tab" data-tab="ledger" aria-selected="false">Ledger</button>
+    </div>
+    <div class="filters">
+      <label>years
+        <select id="years">
+          <option value="5">5</option>
+          <option value="4">4</option>
+          <option value="3">3</option>
+          <option value="2">2</option>
+          <option value="1">1</option>
+          <option value="">all</option>
+        </select>
+      </label>
+      <label>hold
+        <select id="hold">
+          <option value="20">20</option>
+          <option value="10">10</option>
+          <option value="63">63</option>
+          <option value="126">126</option>
+          <option value="">all</option>
+        </select>
+      </label>
+      <label>top
+        <select id="top">
+          <option value="10">10</option>
+          <option value="5">5</option>
+          <option value="20">20</option>
+          <option value="">all</option>
+        </select>
+      </label>
+      <label>book
+        <select id="book">
+          <option value="h20_t10">baseline h20 t10</option>
+          <option value="monthly">rank-exit monthly</option>
+          <option value="weekly">rank-exit weekly</option>
+          <option value="costed">India 5+5 bps</option>
+          <option value="core">hold × top grid</option>
+          <option value="all">every run</option>
+        </select>
+      </label>
+      <label>search <input id="q" placeholder="strategy or overlay" autocomplete="off"></label>
+      <span class="kicker" id="shown"></span>
+    </div>
+
+    <section class="panel on" id="rank">
+      <p class="hint">Click a ticket or a row to open every window and flag for that strategy.</p>
+      <div class="rail" id="tickets"></div>
+      <div style="overflow:auto; margin-top:18px">
+        <table id="rank-table"><thead></thead><tbody></tbody></table>
+      </div>
+    </section>
+
+    <section class="panel" id="years">
+      <p class="hint">Does total return beat ^NSEI in that trailing window? Baseline book only.</p>
+      <div style="overflow:auto"><table id="beat-table"><thead></thead><tbody></tbody></table></div>
+    </section>
+
+    <section class="panel" id="hold">
+      <p class="hint">Sharpe at hold 10 / 20 / 63 / 126, top 10, 5-year window.</p>
+      <div class="heat"><table id="hold-table"><thead></thead><tbody></tbody></table></div>
+    </section>
+
+    <section class="panel" id="rebalance">
+      <p class="hint">5-year, top 10. Each hold shows Sharpe with no rank-exit, then `--rank-exit monthly` (21 bars), then `--rank-exit weekly` (5 bars). Green cell is higher Sharpe.</p>
+      <div class="heat"><table id="rebal-table"><thead></thead><tbody></tbody></table></div>
+    </section>
+
+    <section class="panel" id="flags">
+      <p class="hint">Median Sharpe change vs the 5-year h20 t10 baseline. Right is help. Left is hurt. Click a bar for the CLI flags.</p>
+      <div class="bars" id="flag-bars"></div>
+    </section>
+
+    <section class="panel" id="config">
+      <p class="hint">Sweep defaults, then every overlay as the flags that were actually passed. Click a card for the resolved command.</p>
+      <div id="config-baseline"></div>
+      <div id="config-list"></div>
+    </section>
+
+    <section class="panel" id="ledger">
+      <p class="hint">Every matching run. Sort any column. Click a row for that run's command and flags.</p>
+      <div style="overflow:auto"><table id="led-table"><thead></thead><tbody></tbody></table></div>
+    </section>
+  </div>
+
+  <aside class="drawer" id="drawer" aria-hidden="true">
+    <button class="close" type="button" id="close">close</button>
+    <h2 id="d-name"></h2>
+    <p class="hint" id="d-sub"></p>
+    <div id="d-body"></div>
+  </aside>
+
+<script>
+const COLS = [
+  ["strategy","strategy"],["years","y"],["variant","variant"],["hold","h"],["top","top"],
+  ["sharpe","sharpe"],["cagr","cagr"],["total_return","total"],
+  ["excess_return","excess"],["max_drawdown","max dd"],["hit_rate","hit"],
+  ["trade_count","trades"]
+];
+const CSV_FIELDS = [
+  ["hold","hold"],["top","top"],["sizing_rule","sizing"],
+  ["stop_loss","stop-loss"],["take_profit","take-profit"],["trailing_stop","trailing-stop"],
+  ["sector_neutral","sector-neutral"],["regime_filter","regime-filter"],
+  ["rank_exit_every","rank-exit-every"],["cost_model","cost-model"],
+  ["slippage_bps","slippage-bps"],["commission_bps","commission-bps"],
+  ["min_score","min-score"],["earnings_blackout_days","earnings-blackout"]
+];
+let ROWS = [];
+let CATALOG = { baseline: { cli: [], fields: {} }, overlays: [], command_prefix: "uv run screener backtest-rolling" };
+let sortKey = "sharpe";
+let sortDir = -1;
+let tab = "rank";
+
+function num(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function pct(v) {
+  const n = num(v);
+  return n === null ? "—" : (n * 100).toFixed(1) + "%";
+}
+function n2(v) {
+  const n = num(v);
+  return n === null ? "—" : n.toFixed(2);
+}
+function cls(v) {
+  const n = num(v);
+  if (n === null) return "";
+  return n > 0 ? "up" : (n < 0 ? "down" : "");
+}
+function parseCsv(text) {
+  const lines = text.trim().split(/\r?\n/);
+  const head = lines[0].split(",");
+  return lines.slice(1).map(line => {
+    const cells = [];
+    let cur = "";
+    let q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') { q = !q; continue; }
+      if (ch === "," && !q) { cells.push(cur); cur = ""; continue; }
+      cur += ch;
+    }
+    cells.push(cur);
+    const row = {};
+    head.forEach((h, i) => { row[h] = cells[i] ?? ""; });
+    return row;
+  });
+}
+function overlayName(variant) {
+  const i = String(variant || "").indexOf("__");
+  return i === -1 ? "" : variant.slice(i + 2);
+}
+function overlayKey(r) {
+  return overlayName(r.variant) || (r.signal_variant && r.signal_variant !== "gates_default" ? r.signal_variant : "");
+}
+function catalogEntry(name) {
+  return (CATALOG.overlays || []).find(o => o.name === name) || null;
+}
+function isBaseline(r) {
+  return r.variant === "h20_t10" && r.signal_variant === "gates_default";
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+}
+function kvHtml(fields) {
+  if (!fields) return "";
+  return `<div class="kv">${Object.entries(fields).map(([k,v]) => {
+    const val = Array.isArray(v) ? v.join(", ") : (v && typeof v === "object" ? JSON.stringify(v) : String(v));
+    return `<span>${esc(k)}</span><b>${esc(val)}</b>`;
+  }).join("")}</div>`;
+}
+function runCli(r) {
+  const prefix = CATALOG.command_prefix || "uv run screener backtest-rolling";
+  const base = (CATALOG.baseline?.cli || []).filter(f => !f.startsWith("--hold ") && !f.startsWith("--top "));
+  const extra = [`--strategy ${r.strategy}`, `--years ${r.years}`, `--hold ${r.hold}`, `--top ${r.top}`];
+  const ov = catalogEntry(overlayKey(r));
+  const ovFlags = ov ? ov.cli.filter(f => !f.startsWith("--hold ") && !f.startsWith("--top ")) : [];
+  return [prefix, ...base, ...extra, ...ovFlags].join(" \\\n  ");
+}
+function csvFieldsHtml(r) {
+  return `<div class="kv">${CSV_FIELDS.map(([k,label]) => {
+    const v = r[k];
+    if (v === undefined || v === null || v === "") return "";
+    return `<span>${esc(label)}</span><b>${esc(v)}</b>`;
+  }).join("")}</div>`;
+}
+function bookMatch(r) {
+  const book = document.getElementById("book").value;
+  if (book === "h20_t10") return isBaseline(r);
+  if (book === "monthly") {
+    return r.signal_variant === "gates_default" && overlayName(r.variant) === "rank_exit_monthly";
+  }
+  if (book === "weekly") {
+    return r.signal_variant === "gates_default" && overlayName(r.variant) === "rank_exit_weekly";
+  }
+  if (book === "costed") return r.variant === "h20_t10__costs_india_5bps";
+  if (book === "core") return r.signal_variant === "gates_default" && !overlayName(r.variant);
+  return true;
+}
+function filtered() {
+  const y = document.getElementById("years").value;
+  const h = document.getElementById("hold").value;
+  const t = document.getElementById("top").value;
+  const q = document.getElementById("q").value.toLowerCase().trim();
+  return ROWS.filter(r => {
+    if (r.error) return false;
+    if (y && String(r.years) !== y) return false;
+    if (h && String(r.hold) !== h) return false;
+    if (t && String(r.top) !== t) return false;
+    if (!bookMatch(r)) return false;
+    if (q && !r.strategy.includes(q) && !r.variant.includes(q)) return false;
+    return true;
+  });
+}
+function sorted(rows) {
+  return rows.slice().sort((a, b) => {
+    const av = a[sortKey];
+    const bv = b[sortKey];
+    const an = num(av);
+    const bn = num(bv);
+    if (an !== null || bn !== null) {
+      const x = an === null ? -999 : an;
+      const y = bn === null ? -999 : bn;
+      return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
+    }
+    return String(av).localeCompare(String(bv)) * sortDir;
+  });
+}
+function headHtml() {
+  return "<tr>" + COLS.map(c => `<th data-k="${c[0]}">${c[1]}</th>`).join("") + "</tr>";
+}
+function rowHtml(r) {
+  return `<tr data-s="${esc(r.strategy)}" data-y="${esc(r.years)}" data-v="${esc(r.variant)}">
+    <td>${esc(r.strategy)}</td>
+    <td>${esc(r.years)}</td>
+    <td>${esc(r.variant)}</td>
+    <td>${esc(r.hold)}</td>
+    <td>${esc(r.top)}</td>
+    <td>${n2(r.sharpe)}</td>
+    <td class="${cls(r.cagr)}">${pct(r.cagr)}</td>
+    <td class="${cls(r.total_return)}">${pct(r.total_return)}</td>
+    <td class="${cls(r.excess_return)}">${pct(r.excess_return)}</td>
+    <td>${pct(r.max_drawdown)}</td>
+    <td>${pct(r.hit_rate)}</td>
+    <td>${r.trade_count || ""}</td>
+  </tr>`;
+}
+function bindSort(table) {
+  table.querySelectorAll("th").forEach(th => {
+    th.onclick = () => {
+      const k = th.dataset.k;
+      if (sortKey === k) sortDir *= -1;
+      else { sortKey = k; sortDir = k === "strategy" ? 1 : -1; }
+      render();
+    };
+  });
+  table.querySelectorAll("tbody tr").forEach(tr => {
+    tr.onclick = () => {
+      if (tr.dataset.v) openRun(tr.dataset.s, tr.dataset.y, tr.dataset.v);
+      else openDrawer(tr.dataset.s);
+    };
+  });
+}
+function renderStats(all) {
+  const ok = all.filter(r => !r.error);
+  const base = ok.filter(r => r.years === "5" && isBaseline(r));
+  const best = base.slice().sort((a,b) => (num(b.sharpe) ?? -999) - (num(a.sharpe) ?? -999))[0];
+  const beats = base.filter(r => num(r.excess_return) > 0).length;
+  document.getElementById("stats").innerHTML = [
+    ["runs", ok.length],
+    ["strategies", new Set(ok.map(r => r.strategy)).size],
+    ["5y beat Nifty", beats + "/" + base.length],
+    ["best 5y sharpe", best ? n2(best.sharpe) : "—"],
+    ["that book", best ? best.strategy : "—"]
+  ].map(([l,v]) => `<div class="stat"><span>${l}</span><b>${v}</b></div>`).join("");
+}
+function renderRank() {
+  const rows = sorted(filtered());
+  document.getElementById("shown").textContent = rows.length + " rows";
+  const top = rows.slice(0, 8);
+  document.getElementById("tickets").innerHTML = top.map((r, i) => `
+    <button class="ticket" type="button" data-s="${r.strategy}">
+      <div class="rk">0${i+1}</div>
+      <div class="name">${r.strategy}</div>
+      <div class="row"><span>sharpe</span><b>${n2(r.sharpe)}</b></div>
+      <div class="row"><span>cagr</span><b class="${cls(r.cagr)}">${pct(r.cagr)}</b></div>
+      <div class="row"><span>excess</span><b class="${cls(r.excess_return)}">${pct(r.excess_return)}</b></div>
+      <div class="row"><span>max dd</span><b>${pct(r.max_drawdown)}</b></div>
+    </button>`).join("");
+  document.querySelectorAll("#tickets .ticket").forEach(btn => {
+    btn.onclick = () => openDrawer(btn.dataset.s);
+  });
+  const tbl = document.getElementById("rank-table");
+  tbl.querySelector("thead").innerHTML = headHtml();
+  tbl.querySelector("tbody").innerHTML = rows.map(rowHtml).join("");
+  bindSort(tbl);
+}
+function renderBeat() {
+  const names = [...new Set(ROWS.map(r => r.strategy))].sort();
+  const years = [5,4,3,2,1];
+  const head = "<tr><th>strategy</th><th>windows</th>" + years.map(y => `<th>${y}y</th>`).join("") + "</tr>";
+  const body = names.map(name => {
+    const marks = years.map(y => {
+      const r = ROWS.find(x => x.strategy === name && x.years === String(y) && isBaseline(x));
+      const e = r ? num(r.excess_return) : null;
+      if (e === null) return "<td>—</td>";
+      return e > 0 ? `<td class="up">yes</td>` : `<td class="down">no</td>`;
+    });
+    const n = marks.filter(m => m.includes("yes")).length;
+    return `<tr data-s="${name}"><td>${name}</td><td>${n}/5</td>${marks.join("")}</tr>`;
+  }).sort((a,b) => b.includes("/5") - a.includes("/5"));
+  body.sort((a, b) => {
+    const na = Number(a.match(/>(\d)\/5</)?.[1] || 0);
+    const nb = Number(b.match(/>(\d)\/5</)?.[1] || 0);
+    return nb - na;
+  });
+  const tbl = document.getElementById("beat-table");
+  tbl.querySelector("thead").innerHTML = head;
+  tbl.querySelector("tbody").innerHTML = body.join("");
+  tbl.querySelectorAll("tbody tr").forEach(tr => tr.onclick = () => openDrawer(tr.dataset.s));
+}
+function heat(v) {
+  const n = num(v);
+  if (n === null) return "";
+  const t = Math.max(0, Math.min(1, (n + 0.2) / 1.5));
+  const bg = `color-mix(in srgb, #5eead4 ${Math.round(t*70)}%, #27324a)`;
+  return `background:${bg};color:${t > .45 ? "#1c2438" : "#e6e3d4"}`;
+}
+function renderHold() {
+  const holds = [10,20,63,126];
+  const names = [...new Set(ROWS.filter(r => r.years === "5" && r.top === "10" && r.signal_variant === "gates_default" && !overlayName(r.variant)).map(r => r.strategy))].sort();
+  const head = "<tr><th>strategy</th>" + holds.map(h => `<th>h${h}</th>`).join("") + "</tr>";
+  const body = names.map(name => {
+    const cells = holds.map(h => {
+      const r = ROWS.find(x => x.strategy === name && x.years === "5" && x.hold === String(h) && x.top === "10" && x.variant === `h${h}_t10`);
+      return `<td><span class="cell" style="${heat(r && r.sharpe)}">${r ? n2(r.sharpe) : "—"}</span></td>`;
+    }).join("");
+    return `<tr data-s="${name}"><td>${name}</td>${cells}</tr>`;
+  });
+  const tbl = document.getElementById("hold-table");
+  tbl.querySelector("thead").innerHTML = head;
+  tbl.querySelector("tbody").innerHTML = body.join("");
+  tbl.querySelectorAll("tbody tr").forEach(tr => tr.onclick = () => openDrawer(tr.dataset.s));
+}
+function renderRebalance() {
+  const holds = [10, 20, 63, 126];
+  const kinds = [
+    ["plain", "off", h => `h${h}_t10`],
+    ["monthly", "monthly", h => `h${h}_t10__rank_exit_monthly`],
+    ["weekly", "weekly", h => `h${h}_t10__rank_exit_weekly`],
+  ];
+  const names = [...new Set(ROWS.filter(r => r.years === "5" && r.top === "10").map(r => r.strategy))].sort();
+  const head = "<tr><th>strategy</th>" + holds.map(h =>
+    `<th>h${h}</th><th>h${h} mo</th><th>h${h} wk</th>`
+  ).join("") + "</tr>";
+  const body = names.map(name => {
+    const cells = holds.map(h => kinds.map(([, , key]) => {
+      const r = ROWS.find(x => x.strategy === name && x.years === "5" && x.variant === key(h));
+      return `<td><span class="cell" style="${heat(r && r.sharpe)}">${r ? n2(r.sharpe) : "—"}</span></td>`;
+    }).join("")).join("");
+    return `<tr data-s="${name}"><td>${name}</td>${cells}</tr>`;
+  });
+  const tbl = document.getElementById("rebal-table");
+  tbl.querySelector("thead").innerHTML = head;
+  tbl.querySelector("tbody").innerHTML = body.join("");
+  tbl.querySelectorAll("tbody tr").forEach(tr => tr.onclick = () => openDrawer(tr.dataset.s));
+}
+function renderFlags() {
+  const base = {};
+  ROWS.filter(r => r.years === "5" && isBaseline(r)).forEach(r => { base[r.strategy] = num(r.sharpe); });
+  const groups = {};
+  ROWS.filter(r => r.years === "5" && r.hold === "20" && r.top === "10").forEach(r => {
+    const ov = overlayName(r.variant) || (r.signal_variant !== "gates_default" ? r.signal_variant : "");
+    if (!ov) return;
+    const b = base[r.strategy];
+    const s = num(r.sharpe);
+    if (b === null || s === null) return;
+    (groups[ov] ||= []).push(s - b);
+  });
+  const rows = Object.entries(groups).map(([name, ds]) => {
+    const sorted = ds.slice().sort((a,b) => a-b);
+    const mid = sorted[Math.floor(sorted.length / 2)];
+    const win = ds.filter(d => d > 0).length;
+    return { name, mid, win, n: ds.length };
+  }).sort((a,b) => b.mid - a.mid);
+  const max = Math.max(...rows.map(r => Math.abs(r.mid)), 0.01);
+  document.getElementById("flag-bars").innerHTML = rows.map(r => {
+    const w = Math.round((Math.abs(r.mid) / max) * 100);
+    const color = r.mid >= 0 ? "var(--teal)" : "var(--rose)";
+    return `<div class="bar-row" data-ov="${esc(r.name)}" role="button" tabindex="0">
+      <div>${esc(r.name)}</div>
+      <div class="track"><div class="fill" style="width:${w/2}%; background:${color}; position:absolute; ${r.mid>=0?"left:50%":"right:50%"}"></div></div>
+      <div class="${cls(r.mid)}">${r.mid>=0?"+":""}${r.mid.toFixed(2)} · ${r.win}/${r.n}</div>
+    </div>`;
+  }).join("");
+  document.querySelectorAll("#flag-bars .bar-row").forEach(el => {
+    el.onclick = () => openOverlay(el.dataset.ov);
+    el.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openOverlay(el.dataset.ov); } };
+  });
+}
+function renderConfig() {
+  const q = document.getElementById("q").value.toLowerCase().trim();
+  const base = CATALOG.baseline || {};
+  document.getElementById("config-baseline").innerHTML = `
+    <button class="cfg-card" type="button" data-ov="">
+      <span class="kind">baseline</span>
+      <b>${esc(base.name || "h20_t10 / gates_default")}</b>
+      <pre class="cli" style="margin:8px 0 0">${esc((base.cli || []).join(" "))}</pre>
+    </button>`;
+  document.querySelector("#config-baseline .cfg-card").onclick = () => openOverlay("");
+  const items = (CATALOG.overlays || []).filter(o => {
+    if (!q) return true;
+    const blob = `${o.name} ${o.kind} ${(o.cli || []).join(" ")}`.toLowerCase();
+    return blob.includes(q);
+  });
+  document.getElementById("shown").textContent = items.length + " overlays";
+  document.getElementById("config-list").innerHTML = items.map(o => `
+    <button class="cfg-card" type="button" data-ov="${esc(o.name)}">
+      <span class="kind">${esc(o.kind)}</span>
+      <b>${esc(o.name)}</b>
+      <div class="hint" style="margin:0 0 6px">${esc(o.note || "")}</div>
+      <pre class="cli" style="margin:0">${esc((o.cli || []).join(" "))}</pre>
+    </button>`).join("");
+  document.querySelectorAll("#config-list .cfg-card").forEach(btn => {
+    btn.onclick = () => openOverlay(btn.dataset.ov);
+  });
+}
+function renderLedger() {
+  const rows = sorted(filtered());
+  document.getElementById("shown").textContent = rows.length + " rows";
+  const tbl = document.getElementById("led-table");
+  tbl.querySelector("thead").innerHTML = headHtml();
+  tbl.querySelector("tbody").innerHTML = rows.map(rowHtml).join("");
+  bindSort(tbl);
+}
+function showDrawer() {
+  const d = document.getElementById("drawer");
+  d.classList.add("open");
+  d.setAttribute("aria-hidden", "false");
+}
+function openOverlay(name) {
+  const d = document.getElementById("drawer");
+  if (!name) {
+    const base = CATALOG.baseline || {};
+    document.getElementById("d-name").textContent = "baseline";
+    document.getElementById("d-sub").textContent = base.note || "";
+    document.getElementById("d-body").innerHTML = `
+      <p class="kicker">command prefix + defaults</p>
+      <pre class="cli">${esc((CATALOG.command_prefix || "") + " \\\n  " + (base.cli || []).join(" \\\n  "))}</pre>
+      <p class="kicker">fields</p>
+      ${kvHtml(base.fields)}`;
+    showDrawer();
+    return;
+  }
+  const ov = catalogEntry(name);
+  document.getElementById("d-name").textContent = name;
+  document.getElementById("d-sub").textContent = ov ? `${ov.kind} overlay` : "no catalog entry";
+  const body = [];
+  if (ov) {
+    body.push(`<p class="hint">${esc(ov.note || "")}</p>`);
+    body.push(`<p class="kicker">flags</p><pre class="cli">${esc((ov.cli || []).join(" \\\n"))}</pre>`);
+    body.push(`<p class="kicker">fields</p>${kvHtml(ov.fields)}`);
+  }
+  const five = ROWS.filter(r => r.years === "5" && r.hold === "20" && r.top === "10" && overlayKey(r) === name);
+  if (five.length) {
+    const base = {};
+    ROWS.filter(r => r.years === "5" && isBaseline(r)).forEach(r => { base[r.strategy] = num(r.sharpe); });
+    body.push(`<p class="kicker">5y h20 t10 results</p>`);
+    five.sort((a,b) => (num(b.sharpe) ?? -999) - (num(a.sharpe) ?? -999));
+    body.push(five.map(r => {
+      const dlt = (base[r.strategy] != null && num(r.sharpe) != null) ? num(r.sharpe) - base[r.strategy] : null;
+      return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:12px">
+        <span>${esc(r.strategy)}</span>
+        <span class="${cls(dlt)}">${n2(r.sharpe)} ${dlt===null?"":(dlt>=0?"+":"")+dlt.toFixed(2)}</span>
+      </div>`;
+    }).join(""));
+  }
+  document.getElementById("d-body").innerHTML = body.join("");
+  showDrawer();
+}
+function openRun(strategy, years, variant) {
+  const r = ROWS.find(x => x.strategy === strategy && String(x.years) === String(years) && x.variant === variant);
+  if (!r) { openDrawer(strategy); return; }
+  const key = overlayKey(r);
+  const ov = catalogEntry(key);
+  const file = `runs/${r.strategy}__${r.years}y__${r.variant}.json`;
+  document.getElementById("d-name").textContent = r.strategy;
+  document.getElementById("d-sub").textContent = `${r.years}y · ${r.variant} · sharpe ${n2(r.sharpe)}`;
+  document.getElementById("d-body").innerHTML = `
+    <p class="kicker">command</p>
+    <pre class="cli">${esc(runCli(r))}</pre>
+    <p class="kicker">overlay flags</p>
+    <pre class="cli">${esc(ov ? (ov.cli || []).join(" \\\n") : (key || "none (baseline)"))}</pre>
+    <p class="kicker">stored on this run</p>
+    ${csvFieldsHtml(r)}
+    <p class="hint">JSON: ${esc(file)}</p>
+    <p><a href="${esc(file)}" target="_blank" rel="noreferrer">open run file</a></p>`;
+  showDrawer();
+}
+function openDrawer(name) {
+  const base = ROWS.filter(r => r.strategy === name && isBaseline(r));
+  const five = base.find(r => r.years === "5");
+  document.getElementById("d-name").textContent = name;
+  document.getElementById("d-sub").textContent = five
+    ? `5y baseline  sharpe ${n2(five.sharpe)}  ·  cagr ${pct(five.cagr)}  ·  ${five.trade_count} trades`
+    : "no baseline row";
+  const yearRows = [5,4,3,2,1].map(y => {
+    const r = base.find(x => x.years === String(y));
+    if (!r) return "";
+    return `<div class="row" style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)">
+      <span>${y}y</span>
+      <span class="${cls(r.excess_return)}">${n2(r.sharpe)} · ${pct(r.excess_return)}</span>
+    </div>`;
+  }).join("");
+  let cmd = "";
+  if (five) cmd = `<p class="kicker">baseline command</p><pre class="cli">${esc(runCli(five))}</pre>`;
+  const flags = ROWS.filter(r => r.strategy === name && r.years === "5" && overlayKey(r)).map(r => {
+    const b = five ? num(five.sharpe) : null;
+    const s = num(r.sharpe);
+    const dlt = (b !== null && s !== null) ? s - b : null;
+    const label = overlayKey(r);
+    return `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:12px;cursor:pointer" data-ov="${esc(label)}" data-y="${esc(r.years)}" data-v="${esc(r.variant)}" data-s="${esc(name)}">
+      <span>${esc(label)}</span>
+      <span class="${cls(dlt)}">${n2(r.sharpe)} ${dlt===null?"":(dlt>=0?"+":"")+dlt.toFixed(2)}</span>
+    </div>`;
+  }).join("");
+  document.getElementById("d-body").innerHTML = `${cmd}<p class="kicker">windows</p>${yearRows}<p class="kicker" style="margin-top:18px">5y flags</p>${flags}`;
+  document.querySelectorAll("#d-body [data-v]").forEach(el => {
+    el.onclick = () => openRun(el.dataset.s, el.dataset.y, el.dataset.v);
+  });
+  showDrawer();
+}
+function closeDrawer() {
+  const d = document.getElementById("drawer");
+  d.classList.remove("open");
+  d.setAttribute("aria-hidden", "true");
+}
+function render() {
+  if (tab === "rank") renderRank();
+  if (tab === "years") renderBeat();
+  if (tab === "hold") renderHold();
+  if (tab === "rebalance") renderRebalance();
+  if (tab === "flags") renderFlags();
+  if (tab === "config") renderConfig();
+  if (tab === "ledger") renderLedger();
+}
+document.querySelectorAll(".tabs button").forEach(btn => {
+  btn.onclick = () => {
+    tab = btn.dataset.tab;
+    document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", b === btn ? "true" : "false"));
+    document.querySelectorAll(".panel").forEach(p => p.classList.toggle("on", p.id === tab));
+    render();
+  };
+});
+["years","hold","top","book","q"].forEach(id => {
+  document.getElementById(id).addEventListener("input", render);
+});
+document.getElementById("close").onclick = closeDrawer;
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+
+Promise.all([
+  fetch("results.csv").then(r => { if (!r.ok) throw new Error("missing results.csv"); return r.text(); }),
+  fetch("configs.json").then(r => r.ok ? r.json() : CATALOG).catch(() => CATALOG)
+]).then(([text, catalog]) => {
+  ROWS = parseCsv(text);
+  if (catalog && catalog.baseline) CATALOG = catalog;
+  renderStats(ROWS);
+  render();
+}).catch(err => {
+  document.getElementById("tickets").innerHTML = `<p class="hint">Could not load results.csv: ${err.message}. Serve this folder over HTTP.</p>`;
+});
+</script>
+</body>
+</html>

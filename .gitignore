@@ -22,6 +22,10 @@ coverage.xml
 
 # Generated local reports
 *.html
+# Source assets, not generated reports: the sweep script reads this viewer
+# at report time, so a clone without it cannot finish a run.
+!scripts/nifty500_pit_sweep_viewer.html
+!tests/fixtures/*.html
 *_report_*.md
 picks_today.json
 picks_today.md
