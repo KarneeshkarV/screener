@@ -234,6 +234,31 @@ def test_fmp_provider_accepts_india_market(monkeypatch):
     assert run.fundamental_fetcher.market == "india"
 
 
+def test_worker_session_is_per_thread_and_reused(monkeypatch):
+    """One session per worker thread, so HTTP keep-alive survives across tickers.
+
+    The old code built a fresh ``requests.Session`` per ticker, which meant a
+    new TCP connect plus TLS handshake for each of that ticker's five section
+    requests. Reuse within a thread is the whole point of the change, and
+    isolation between threads is what keeps it safe.
+    """
+    import threading
+
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=4)
+
+    assert fetcher._worker_session() is fetcher._worker_session()
+
+    from_other_thread: list[object] = []
+    thread = threading.Thread(
+        target=lambda: from_other_thread.append(fetcher._worker_session())
+    )
+    thread.start()
+    thread.join()
+
+    assert from_other_thread[0] is not fetcher._worker_session()
+
+
 def test_openscreener_provider_rejects_non_india_market():
     res = CliRunner().invoke(
         cli,
@@ -413,6 +438,39 @@ def test_increased_last_n_revenues_none_when_value_missing():
 def test_effective_date_none_when_unparseable():
     assert fundamentals._effective_date({"date": "not-a-date"}, 1) is None
     assert fundamentals._effective_date({}, 1) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2026-06-30",
+        "2026-06-30 00:00:00",
+        "2026-06-30 17:30:12",
+        "2026-06-30T17:30:12",
+        "2026-06-30T17:30:12+05:30",
+        "2026-01-01",
+        "1999-12-31 23:59:59",
+        "not-a-date",
+        "Q2 2026",
+    ],
+)
+def test_filing_timestamp_matches_the_pandas_parse_it_replaced(raw):
+    """The ISO fast path must never disagree with ``pd.to_datetime``.
+
+    ``_filing_timestamp`` short-circuits to ``datetime.fromisoformat`` because
+    the pandas scalar parse costs 207us against 1us. That is only safe while
+    both produce the same stamp, so pin the equivalence on every shape FMP
+    serves plus the junk the fallback still has to absorb.
+    """
+    parsed = pd.to_datetime(raw, errors="coerce")
+    expected = None if pd.isna(parsed) else parsed.tz_localize(None).normalize()
+    assert fundamentals._filing_timestamp(raw) == expected
+
+
+def test_filing_timestamp_falls_back_for_non_string_input():
+    stamp = pd.Timestamp("2026-06-30 08:15:00")
+    assert fundamentals._filing_timestamp(stamp) == pd.Timestamp("2026-06-30")
+    assert fundamentals._filing_timestamp(None) is None
 
 
 def test_parse_india_period_end_handles_empty_iso_and_garbage():

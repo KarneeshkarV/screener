@@ -8,10 +8,11 @@ remain ordinary Pine-like formulas while fundamentals stay point-in-time.
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Protocol, cast
 
 import pandas as pd
@@ -123,14 +124,42 @@ def _row_by_date(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _filing_timestamp(raw: Any) -> pd.Timestamp | None:
+    """Midnight-normalized, tz-naive stamp for one FMP filing date.
+
+    ``pd.to_datetime`` re-runs format inference on every scalar call: 207us
+    per call against 1us for ``datetime.fromisoformat``. A 5-year Nifty 500
+    panel parses ~45k of these, and the inference alone measured ~37% of a
+    cache-warm ``prepare_rolling_backtest``. FMP always serves ISO stamps
+    (``2026-06-30``, ``2026-06-30 00:00:00``), so the fast path covers every
+    real payload.
+
+    Taking the date components matches ``tz_localize(None).normalize()``
+    exactly, including for an offset-bearing stamp: ``tz_localize(None)``
+    keeps wall time rather than converting to UTC. Anything
+    ``fromisoformat`` rejects falls through to the original call, so no
+    input the old path accepted parses differently now.
+    """
+    if isinstance(raw, str):
+        try:
+            parsed = datetime.fromisoformat(raw)
+        except ValueError:
+            pass
+        else:
+            return pd.Timestamp(parsed.year, parsed.month, parsed.day)
+    ts = pd.to_datetime(raw, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return cast(pd.Timestamp, ts).tz_localize(None).normalize()
+
+
 def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | None:
     raw = row.get("acceptedDate") or row.get("fillingDate") or row.get("date")
     if raw is None:
         return None
-    ts = pd.to_datetime(raw, errors="coerce")
-    if pd.isna(ts):
+    ts = _filing_timestamp(raw)
+    if ts is None:
         return None
-    ts = cast(pd.Timestamp, ts).tz_localize(None).normalize()
     if lag_days > 0:
         ts += pd.Timedelta(days=lag_days)
     return ts
@@ -297,8 +326,30 @@ class FMPFundamentalFetcher:
         self.refresh = bool(refresh)
         self.cache_ttl = cache_ttl
         self.session = session or requests.Session()
+        self._thread_local = threading.local()
         self.limit = max(int(limit), 1)
         self.max_workers = max(int(max_workers), 1)
+
+    def _worker_session(self) -> requests.Session:
+        """One session per worker thread, reused across every ticker it handles.
+
+        This used to build a fresh ``requests.Session()`` per ticker whenever
+        ``max_workers > 1``. A fresh session starts with an empty connection
+        pool, so all five section requests for that ticker paid a new TCP
+        connect and a full TLS handshake. On a cold 850-ticker fetch that was
+        24% of wall time doing nothing but opening connections it then threw
+        away (py-spy self-time: 16.1% ``do_handshake``, 8.0%
+        ``create_connection``).
+
+        Per-thread keeps the isolation that motivated the original code,
+        because ``requests.Session`` is not thread-safe, while letting HTTP
+        keep-alive do its job across the ~106 tickers each worker handles.
+        """
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            self._thread_local.session = session
+        return cast(requests.Session, session)
 
     def fetch(
         self,
@@ -325,7 +376,7 @@ class FMPFundamentalFetcher:
                     api_key=cast(str, self.api_key),
                     session=self.session
                     if self.max_workers == 1
-                    else requests.Session(),
+                    else self._worker_session(),
                     limit=self.limit,
                     fields=self.fields,
                 )
