@@ -12,7 +12,8 @@ import threading
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
+from functools import lru_cache
 from typing import Any, Protocol, cast
 
 import pandas as pd
@@ -127,30 +128,38 @@ def _row_by_date(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 def _filing_timestamp(raw: Any) -> pd.Timestamp | None:
     """Midnight-normalized, tz-naive stamp for one FMP filing date.
 
-    ``pd.to_datetime`` re-runs format inference on every scalar call: 207us
-    per call against 1us for ``datetime.fromisoformat``. A 5-year Nifty 500
-    panel parses ~45k of these, and the inference alone measured ~37% of a
-    cache-warm ``prepare_rolling_backtest``. FMP always serves ISO stamps
-    (``2026-06-30``, ``2026-06-30 00:00:00``), so the fast path covers every
-    real payload.
+    ``pd.to_datetime`` re-runs format inference on every scalar call: 151us
+    per call against 3.4us for the ``pd.Timestamp`` constructor. A 5-year
+    Nifty 500 panel parses ~45k of these, and the inference alone measured
+    ~37% of a cache-warm ``prepare_rolling_backtest``.
 
-    Taking the date components matches ``tz_localize(None).normalize()``
-    exactly, including for an offset-bearing stamp: ``tz_localize(None)``
-    keeps wall time rather than converting to UTC. Anything
-    ``fromisoformat`` rejects falls through to the original call, so no
-    input the old path accepted parses differently now.
+    ``pd.Timestamp`` is pandas' own parser, so it accepts and rejects exactly
+    what ``pd.to_datetime`` did. That equivalence is the whole safety
+    argument: an earlier cut of this helper short-circuited to
+    ``datetime.fromisoformat``, which is faster still but admits ISO week
+    dates such as ``2026-W27`` that ``pd.to_datetime`` coerced to NaT. A
+    filing date the caller used to drop would have become a live effective
+    date and been forward-filled onto bars, which is look-ahead.
     """
-    if isinstance(raw, str):
-        try:
-            parsed = datetime.fromisoformat(raw)
-        except ValueError:
-            pass
-        else:
-            return pd.Timestamp(parsed.year, parsed.month, parsed.day)
-    ts = pd.to_datetime(raw, errors="coerce")
+    try:
+        ts = pd.Timestamp(raw)
+    except (ValueError, TypeError, OverflowError):
+        return None
     if pd.isna(ts):
         return None
-    return cast(pd.Timestamp, ts).tz_localize(None).normalize()
+    return ts.tz_localize(None).normalize()
+
+
+@lru_cache(maxsize=1024)
+def _prior_year_key(row_date: str) -> str:
+    """``row_date`` shifted back one year, as the key FMP indexes rows by.
+
+    ``pd.DateOffset(years=1)`` costs ~20us to build and apply, six times the
+    filing-date parse above and the largest remaining per-row cost in
+    ``_normalize_fmp_payload``. FMP serves the same ~20 quarter-end dates to
+    every ticker in the universe, so the cache collapses ~45k calls to ~20.
+    """
+    return (pd.Timestamp(row_date) - pd.DateOffset(years=1)).date().isoformat()
 
 
 def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | None:
@@ -240,8 +249,7 @@ def _normalize_fmp_payload(
         balance = balance_by_date.get(row_date, {})
         enterprise = ev_by_date.get(row_date, {})
 
-        ts = pd.Timestamp(row_date)
-        prior_target = (ts - pd.DateOffset(years=1)).date().isoformat()
+        prior_target = _prior_year_key(row_date)
         prior_income = income_by_date.get(prior_target, {})
         revenue_growth = pct_change(
             first_number(row, "revenue"),
@@ -326,30 +334,12 @@ class FMPFundamentalFetcher:
         self.refresh = bool(refresh)
         self.cache_ttl = cache_ttl
         self.session = session or requests.Session()
-        self._thread_local = threading.local()
+        # An injected session is an explicit request to route every call
+        # through that object (a test double, a proxy, a mounted retry
+        # adapter), so it wins over the per-thread pooling in ``fetch``.
+        self._injected_session = session is not None
         self.limit = max(int(limit), 1)
         self.max_workers = max(int(max_workers), 1)
-
-    def _worker_session(self) -> requests.Session:
-        """One session per worker thread, reused across every ticker it handles.
-
-        This used to build a fresh ``requests.Session()`` per ticker whenever
-        ``max_workers > 1``. A fresh session starts with an empty connection
-        pool, so all five section requests for that ticker paid a new TCP
-        connect and a full TLS handshake. On a cold 850-ticker fetch that was
-        24% of wall time doing nothing but opening connections it then threw
-        away (py-spy self-time: 16.1% ``do_handshake``, 8.0%
-        ``create_connection``).
-
-        Per-thread keeps the isolation that motivated the original code,
-        because ``requests.Session`` is not thread-safe, while letting HTTP
-        keep-alive do its job across the ~106 tickers each worker handles.
-        """
-        session = getattr(self._thread_local, "session", None)
-        if session is None:
-            session = requests.Session()
-            self._thread_local.session = session
-        return cast(requests.Session, session)
 
     def fetch(
         self,
@@ -360,6 +350,39 @@ class FMPFundamentalFetcher:
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
         ticker_list = [t for t in dict.fromkeys(tickers) if t]
+
+        # One session per worker thread, reused across every ticker it
+        # handles. This used to build a fresh ``requests.Session()`` per
+        # ticker, so all five section requests for that ticker paid a new TCP
+        # connect and a full TLS handshake. On a cold 850-ticker fetch that
+        # was 24% of wall time opening connections it then threw away (py-spy
+        # self-time: 16.1% ``do_handshake``, 8.0% ``create_connection``).
+        # Per-thread keeps the isolation that motivated the original code,
+        # because ``requests.Session`` is not thread-safe, while letting HTTP
+        # keep-alive work across the ~106 tickers each worker handles.
+        #
+        # The pool is scoped to this call rather than to the instance: the
+        # executor below is per-call too, so nothing survives to be reused,
+        # holding a ``threading.local`` on the instance made the fetcher
+        # unpicklable, and a local pool can be closed on the way out instead
+        # of leaving its sockets to the collector.
+        shared = (
+            self.session if self._injected_session or self.max_workers == 1 else None
+        )
+        pool_local = threading.local()
+        pooled: list[requests.Session] = []
+        pooled_lock = threading.Lock()
+
+        def worker_session() -> requests.Session:
+            if shared is not None:
+                return shared
+            session = getattr(pool_local, "session", None)
+            if session is None:
+                session = requests.Session()
+                with pooled_lock:
+                    pooled.append(session)
+                pool_local.session = session
+            return cast(requests.Session, session)
 
         def fetch_one(ticker: str) -> tuple[str, pd.DataFrame]:
             # FMP serves NSE/BSE data under the full ``RELIANCE.NS``/``.BO``
@@ -374,9 +397,7 @@ class FMPFundamentalFetcher:
                 return _fetch_fmp_sections(
                     symbol,
                     api_key=cast(str, self.api_key),
-                    session=self.session
-                    if self.max_workers == 1
-                    else self._worker_session(),
+                    session=worker_session(),
                     limit=self.limit,
                     fields=self.fields,
                 )
@@ -400,32 +421,37 @@ class FMPFundamentalFetcher:
             return ticker, frame
 
         out: dict[str, pd.DataFrame] = {}
-        if len(ticker_list) <= 1 or self.max_workers == 1:
-            for ticker in ticker_list:
-                key, frame = fetch_one(ticker)
-                out[key] = frame
-            return out
-
-        with ThreadPoolExecutor(
-            max_workers=min(self.max_workers, len(ticker_list))
-        ) as pool:
-            future_to_ticker = {
-                pool.submit(fetch_one, ticker): ticker for ticker in ticker_list
-            }
-            for future in as_completed(future_to_ticker):
-                ticker = future_to_ticker[future]
-                try:
-                    key, frame = future.result()
-                except Exception:
-                    out[ticker] = pd.DataFrame(columns=list(self.fields))
-                else:
+        try:
+            if len(ticker_list) <= 1 or self.max_workers == 1:
+                for ticker in ticker_list:
+                    key, frame = fetch_one(ticker)
                     out[key] = frame
-        return out
+                return out
+
+            with ThreadPoolExecutor(
+                max_workers=min(self.max_workers, len(ticker_list))
+            ) as pool:
+                future_to_ticker = {
+                    pool.submit(fetch_one, ticker): ticker for ticker in ticker_list
+                }
+                for future in as_completed(future_to_ticker):
+                    ticker = future_to_ticker[future]
+                    try:
+                        key, frame = future.result()
+                    except Exception:
+                        out[ticker] = pd.DataFrame(columns=list(self.fields))
+                    else:
+                        out[key] = frame
+            return out
+        finally:
+            # The executor has joined its threads by here, so every pooled
+            # session is unreachable. Close them rather than leave up to
+            # ``max_workers`` connection pools for the collector to reap.
+            for session in pooled:
+                session.close()
 
 
-def _parse_india_period_end(label: Any) -> pd.Timestamp | None:
-    if not label:
-        return None
+def _india_period_end(label: Any) -> pd.Timestamp | None:
     for fmt in ("%b %Y", "%B %Y"):
         try:
             return pd.to_datetime(str(label), format=fmt) + pd.offsets.MonthEnd(0)
@@ -435,6 +461,27 @@ def _parse_india_period_end(label: Any) -> pd.Timestamp | None:
     if pd.isna(ts):
         return None
     return cast(pd.Timestamp, ts).tz_localize(None).normalize() + pd.offsets.MonthEnd(0)
+
+
+@lru_cache(maxsize=1024)
+def _india_period_end_from_label(label: str) -> pd.Timestamp | None:
+    return _india_period_end(label)
+
+
+def _parse_india_period_end(label: Any) -> pd.Timestamp | None:
+    """Quarter-end stamp for one openscreener or yfinance India period label.
+
+    An ISO label costs ~212us: both ``format=`` parses have to fail before the
+    inferring ``pd.to_datetime`` runs. This is called once per quarterly row
+    on both India fundamentals paths, and the same ~20 quarter-end labels
+    repeat across every ticker in the universe, so cache the string case. A
+    non-string label stays uncached because it need not be hashable.
+    """
+    if not label:
+        return None
+    if isinstance(label, str):
+        return _india_period_end_from_label(label)
+    return _india_period_end(label)
 
 
 def _fetch_openscreener_quarterly(symbol: str) -> dict[str, Any]:  # pragma: no cover

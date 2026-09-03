@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import copy
+import pickle
+import threading
 from collections.abc import Iterable
 from datetime import date
 
 import pandas as pd
 import pytest
+import requests
 from click.testing import CliRunner
 
 from screener.backtester import fundamentals
@@ -234,29 +238,95 @@ def test_fmp_provider_accepts_india_market(monkeypatch):
     assert run.fundamental_fetcher.market == "india"
 
 
-def test_worker_session_is_per_thread_and_reused(monkeypatch):
+def _record_fetch_sessions(monkeypatch, fetcher, tickers):
+    """Run ``fetcher.fetch`` and return the sessions ``_fetch_fmp_sections`` saw."""
+    seen: list[requests.Session] = []
+    lock = threading.Lock()
+
+    def fake_sections(symbol, *, api_key, session, limit, fields):
+        with lock:
+            seen.append(session)
+        return {"income": []}
+
+    monkeypatch.setattr(fundamentals, "_fetch_fmp_sections", fake_sections)
+    monkeypatch.setattr(
+        fundamentals._FMP_PROVIDER,
+        "fetch",
+        lambda key, loader, **kwargs: loader(),
+    )
+    fetcher.fetch(tickers, date(2024, 1, 1), date(2024, 12, 31))
+    return seen
+
+
+def test_fetch_reuses_one_session_per_worker_thread(monkeypatch):
     """One session per worker thread, so HTTP keep-alive survives across tickers.
 
     The old code built a fresh ``requests.Session`` per ticker, which meant a
     new TCP connect plus TLS handshake for each of that ticker's five section
-    requests. Reuse within a thread is the whole point of the change, and
-    isolation between threads is what keeps it safe.
+    requests. Assert on what ``_fetch_fmp_sections`` actually receives: a test
+    that only exercises the accessor stays green if the per-ticker session is
+    reintroduced at the call site.
     """
-    import threading
-
     monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=2)
+    tickers = [f"T{i}" for i in range(12)]
+
+    seen = _record_fetch_sessions(monkeypatch, fetcher, tickers)
+
+    assert len(seen) == len(tickers)
+    assert 0 < len({id(session) for session in seen}) <= fetcher.max_workers
+
+
+def test_fetch_routes_every_call_through_an_injected_session(monkeypatch):
+    """An injected session is an override, not a hint the pool may ignore.
+
+    ``max_workers`` defaults to 8, so routing on ``max_workers == 1`` alone
+    silently dropped a caller-supplied session - a test double, a proxy, or a
+    mounted retry adapter - and used a pooled one instead.
+    """
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    injected = requests.Session()
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", session=injected)
+
+    seen = _record_fetch_sessions(monkeypatch, fetcher, ["AAA", "BBB", "CCC"])
+
+    assert seen and all(session is injected for session in seen)
+
+
+def test_fetch_closes_the_sessions_it_pooled(monkeypatch):
+    """Pooled sessions are closed on the way out, not left to the collector."""
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=2)
+    closed: list[object] = []
+    real_close = requests.Session.close
+    monkeypatch.setattr(
+        requests.Session,
+        "close",
+        lambda self: (closed.append(self), real_close(self))[1],
+    )
+
+    seen = _record_fetch_sessions(monkeypatch, fetcher, ["AAA", "BBB", "CCC", "DDD"])
+
+    assert {id(session) for session in seen} <= {id(session) for session in closed}
+
+
+def test_fetcher_survives_a_process_boundary():
+    """The fetcher must stay picklable so it can travel to a worker process.
+
+    Nothing pickles this fetcher today - ``optimization/grid.py`` is the only
+    ``ProcessPoolExecutor`` in the tree and it ships a ``PriceFetcher``. But
+    ``BacktestRun`` holds a ``fundamental_fetcher`` in the same frozen
+    dataclass that carries the price fetcher, so the day one is submitted the
+    failure lands at submit time with a ``TypeError`` about ``_thread._local``
+    rather than anywhere near the cause. Holding the line is a one-line cost.
+    """
     fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=4)
 
-    assert fetcher._worker_session() is fetcher._worker_session()
+    revived = pickle.loads(pickle.dumps(fetcher))
 
-    from_other_thread: list[object] = []
-    thread = threading.Thread(
-        target=lambda: from_other_thread.append(fetcher._worker_session())
-    )
-    thread.start()
-    thread.join()
-
-    assert from_other_thread[0] is not fetcher._worker_session()
+    assert revived.market == fetcher.market
+    assert revived.max_workers == fetcher.max_workers
+    assert copy.deepcopy(fetcher).fields == fetcher.fields
 
 
 def test_openscreener_provider_rejects_non_india_market():
@@ -452,15 +522,23 @@ def test_effective_date_none_when_unparseable():
         "1999-12-31 23:59:59",
         "not-a-date",
         "Q2 2026",
+        # ISO week and ordinal dates: ``datetime.fromisoformat`` accepts
+        # these, ``pd.to_datetime`` coerces them to NaT. An earlier cut of
+        # ``_filing_timestamp`` used ``fromisoformat`` and turned a row the
+        # caller drops into a live effective date, which is look-ahead.
+        "2026-W27",
+        "2026-W27-1",
+        "2026-181",
     ],
 )
 def test_filing_timestamp_matches_the_pandas_parse_it_replaced(raw):
-    """The ISO fast path must never disagree with ``pd.to_datetime``.
+    """The fast path must never disagree with ``pd.to_datetime``.
 
-    ``_filing_timestamp`` short-circuits to ``datetime.fromisoformat`` because
-    the pandas scalar parse costs 207us against 1us. That is only safe while
-    both produce the same stamp, so pin the equivalence on every shape FMP
-    serves plus the junk the fallback still has to absorb.
+    ``_filing_timestamp`` calls ``pd.Timestamp`` directly because the scalar
+    ``pd.to_datetime`` costs 151us against 3.4us. That is only safe while both
+    produce the same stamp, so pin the equivalence on every shape FMP serves,
+    the junk the parse has to reject, and the ISO spellings that a
+    stdlib-parser shortcut would wrongly admit.
     """
     parsed = pd.to_datetime(raw, errors="coerce")
     expected = None if pd.isna(parsed) else parsed.tz_localize(None).normalize()
