@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -235,8 +236,30 @@ _FAN_LINES = 200
 # here. The bands and the realized run stay at full resolution, because those
 # are the traces a reader takes numbers off.
 _FAN_BAR_POINTS = 400
+# Equity levels are rounded before they reach the HTML because the full float
+# repr of 200 paths dominates the file size. Six significant figures is one
+# part in a million of the starting capital, which no chart pixel resolves.
+_FAN_SIGNIFICANT_DIGITS = 6
+
+
 # Label and colour per percentile, looked up by the band's own percentile so a
 # change to ``band_percentiles`` cannot silently mislabel a line.
+def _fan_decimals(initial_capital: float) -> int:
+    """Decimal places that keep the fan legible at any starting capital.
+
+    Rounding to whole currency units assumes the run started somewhere near
+    100,000. ``--initial-capital`` has no floor, so at 100 that quantizes the
+    fan lines, the three bands and the realized run onto the same handful of
+    integers: the chart shows one staircase where the summary table reports a
+    p05/p95 spread. Scaling the precision to the capital keeps the same six
+    significant figures, and the same HTML size, at every scale.
+    """
+    if not math.isfinite(initial_capital) or initial_capital <= 0:
+        return 0
+    magnitude = int(math.floor(math.log10(initial_capital)))
+    return max(0, _FAN_SIGNIFICANT_DIGITS - 1 - magnitude)
+
+
 _FAN_BAND_STYLE = {
     5: ("p05", "#b91c1c"),
     50: ("median", "#38bdf8"),
@@ -266,6 +289,9 @@ def _fan_chart_html(
         return '<p class="empty">No bars to simulate.</p>'
 
     fig = go.Figure()
+    # Every series on this chart is rounded to the same precision, so the fan,
+    # the bands and the realized run stay comparable at any starting capital.
+    decimals = _fan_decimals(paths.initial_capital)
     sample = paths.paths
     # ``--paths 0`` retains nothing, and that is a request to skip the fan, not
     # to drop the bands with it.
@@ -286,7 +312,7 @@ def _fan_chart_html(
             dx = (bars - 1) / (points - 1)
         else:
             dx = 1.0
-        for row, path in enumerate(np.round(drawn).astype(float)):
+        for row, path in enumerate(np.round(drawn, decimals).astype(float)):
             fig.add_trace(
                 go.Scatter(
                     y=path.tolist(),
@@ -308,7 +334,7 @@ def _fan_chart_html(
         label, color = _FAN_BAND_STYLE.get(pct, (f"p{pct:02d}", "#94a3b8"))
         fig.add_trace(
             go.Scatter(
-                y=np.round(band).tolist(),
+                y=np.round(band, decimals).tolist(),
                 name=f"Simulated {label}",
                 mode="lines",
                 line={"color": color, "width": 2, "dash": "dot"},
@@ -316,7 +342,7 @@ def _fan_chart_html(
         )
     fig.add_trace(
         go.Scatter(
-            y=np.round(equity.to_numpy()).tolist(),
+            y=np.round(equity.to_numpy(), decimals).tolist(),
             name="Realized run",
             mode="lines",
             line={"color": "#facc15", "width": 3},

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Self
@@ -39,22 +40,26 @@ class MonteCarloOutcome(BaseModel):
     risk_of_ruin: float
 
     @classmethod
-    def zeroed(cls, **fields: Any) -> Self:
+    def undefined(cls, **fields: Any) -> Self:
         """Build the result of a run that had nothing to resample.
 
-        Every outcome is zero rather than absent: the caller asked for a
-        distribution and there was none, and a zero reads the same in the
-        metrics table as it does in the JSON payload.
+        Every outcome is NaN rather than zero, because zero is a claim. These
+        metrics are merged into the backtest's own, so a zeroed run prints
+        "MC Probability of Profit 0.00%" and "MC Risk of Ruin 0.00%" beside
+        the realized run's genuine return, asserting a measured 0% chance of
+        profit for a simulation that never drew a path. NaN is what
+        ``format_result_value`` already renders as "-" and what ``_json_safe``
+        already writes as ``null``, so both surfaces say "no distribution".
         """
         return cls(
-            median_return=0.0,
-            return_p05=0.0,
-            return_p95=0.0,
-            median_drawdown=0.0,
-            drawdown_p05=0.0,
-            worst_drawdown=0.0,
-            probability_of_profit=0.0,
-            risk_of_ruin=0.0,
+            median_return=math.nan,
+            return_p05=math.nan,
+            return_p95=math.nan,
+            median_drawdown=math.nan,
+            drawdown_p05=math.nan,
+            worst_drawdown=math.nan,
+            probability_of_profit=math.nan,
+            risk_of_ruin=math.nan,
             **fields,
         )
 
@@ -63,11 +68,27 @@ class MonteCarloResult(MonteCarloOutcome):
     """Bootstrap of a trade list, resampling completed trades with replacement."""
 
 
-# Every message below starts with the field it rejects, so a caller that
-# speaks a different vocabulary can swap that prefix for its own name. The
-# ``backtest-monte-carlo`` CLI does exactly that to turn "block must be ..."
-# into "--block must be ...", which is why there is one list of bounds here
-# and not a second hand-maintained copy in the command.
+class MonteCarloArgumentError(ValueError):
+    """A rejected simulation argument, tagged with the argument it names.
+
+    The bounds live here and not in a second hand-maintained copy inside the
+    ``backtest-monte-carlo`` command, so the command has to restate them in
+    its own vocabulary: the user typed ``--block``, not ``block``. Carrying
+    ``field`` and ``problem`` separately is what makes that restatement a
+    lookup instead of a string-prefix match on the message, which silently
+    reverts to the engine's wording the first time a message is reworded.
+    """
+
+    def __init__(self, field: str, problem: str) -> None:
+        super().__init__(f"{field} {problem}")
+        self.field = field
+        self.problem = problem
+
+    def named(self, name: str) -> str:
+        """Restate the problem using the caller's name for the argument."""
+        return f"{name} {self.problem}"
+
+
 def validate_equity_monte_carlo_flags(
     *,
     iterations: int,
@@ -84,16 +105,16 @@ def validate_equity_monte_carlo_flags(
     minutes of work.
     """
     if iterations <= 0:
-        raise ValueError("iterations must be positive")
+        raise MonteCarloArgumentError("iterations", "must be positive")
     if block <= 0:
-        raise ValueError("block must be positive")
+        raise MonteCarloArgumentError("block", "must be positive")
     if seed < 0:
-        raise ValueError("seed must not be negative")
+        raise MonteCarloArgumentError("seed", "must not be negative")
     if keep_paths < 0:
-        raise ValueError("keep_paths must not be negative")
+        raise MonteCarloArgumentError("keep_paths", "must not be negative")
     if not 0.0 < ruin_threshold <= 1.0:
-        raise ValueError(
-            "ruin_threshold must be a fraction of starting capital in (0, 1]"
+        raise MonteCarloArgumentError(
+            "ruin_threshold", "must be a fraction of starting capital in (0, 1]"
         )
 
 
@@ -149,7 +170,7 @@ def simulate_monte_carlo(
     rng = np.random.default_rng(seed)
     returns = np.array([float(t.return_pct) for t in trades], dtype=float)
     if returns.size == 0:
-        return MonteCarloResult.zeroed(
+        return MonteCarloResult.undefined(
             iterations=iterations,
             seed=seed,
             initial_capital=initial_capital,
@@ -208,7 +229,7 @@ class EquityMonteCarloResult(MonteCarloOutcome):
 def _empty_equity_result(
     *, iterations: int, seed: int, ruin_threshold: float, initial_capital: float
 ) -> EquityMonteCarloResult:
-    return EquityMonteCarloResult.zeroed(
+    return EquityMonteCarloResult.undefined(
         iterations=iterations,
         seed=seed,
         # No bars, so no block was ever drawn. Reporting the requested block
@@ -229,7 +250,13 @@ _BAND_PERCENTILES = (5, 50, 95)
 _BAND_CELL_BUDGET = 25_000_000
 
 
-@dataclass(frozen=True)
+# ``eq=False``: every field is a numpy array, so the generated ``__eq__``
+# would compare field tuples and raise "truth value of an array ... is
+# ambiguous", and the ``frozen=True`` ``__hash__`` built from the same tuple
+# would raise "unhashable type: numpy.ndarray". Inheriting object identity
+# instead keeps ``a == b``, ``x in [...]``, a dict key and ``lru_cache`` from
+# blowing up on a container whose fields have no elementwise truth value.
+@dataclass(frozen=True, eq=False)
 class EquityMonteCarloPaths:
     """The raw draws behind an :class:`EquityMonteCarloResult`.
 
@@ -377,10 +404,11 @@ def simulate_equity_monte_carlo_paths(
         # every path would land on the identical terminal return. Capping the
         # block silently, as this used to, published that point mass as a
         # p05/p95 spread and made a mistyped block read as certainty.
-        raise ValueError(
-            f"block must be shorter than the {n} resampled bars "
+        raise MonteCarloArgumentError(
+            "block",
+            f"must be shorter than the {n} resampled bars "
             f"({len(equity)} bars of equity); a block that long rotates the "
-            f"whole curve, so every path repeats the realized result"
+            f"whole curve, so every path repeats the realized result",
         )
 
     rng = np.random.default_rng(seed)
@@ -391,15 +419,21 @@ def simulate_equity_monte_carlo_paths(
     terminal_returns = np.empty(iterations, dtype=float)
     drawdowns = np.empty(iterations, dtype=float)
     kept = min(keep_paths, iterations)
-    # float32 halves the retained sample; a chart cannot resolve more precision.
-    stored = np.empty((kept, n), dtype=np.float32)
     # The bands come from every iteration, not from the retained sample, so
     # they agree with the summary percentiles. Only a run past the cell budget
     # strides, and ``band_iterations`` then says how many it really used.
     band_rows = min(iterations, max(1, _BAND_CELL_BUDGET // n))
     band_stride = -(-iterations // band_rows)
     band_iterations = -(-iterations // band_stride)
+    # float32 halves both buffers; a chart cannot resolve more precision.
     band_buffer = np.empty((band_iterations, n), dtype=np.float32)
+    # At ``band_stride == 1`` -- the default run, and anything else inside the
+    # cell budget -- the band buffer already holds every path in iteration
+    # order, so the retained sample is exactly its first ``kept`` rows. Writing
+    # them a second time inside the loop copies ~10 MB for nothing. Sliced
+    # after the loop instead, and copied rather than viewed so the far larger
+    # band buffer is freed when this function returns.
+    stored = None if band_stride == 1 else np.empty((kept, n), dtype=np.float32)
     ruin_count = 0
     for i in range(iterations):
         starts = rng.integers(0, n, size=draws)
@@ -410,10 +444,13 @@ def simulate_equity_monte_carlo_paths(
         drawdowns[i] = _drawdown(np.concatenate(([initial_capital], equity_path)))
         if float(equity_path.min()) <= ruin_level:
             ruin_count += 1
-        if i < kept:
+        if stored is not None and i < kept:
             stored[i] = equity_path
         if i % band_stride == 0:
             band_buffer[i // band_stride] = equity_path
+
+    if stored is None:
+        stored = band_buffer[:kept].copy()
 
     bands = np.empty((len(_BAND_PERCENTILES), n + 1), dtype=float)
     # Every path starts at the capital the real run started with, so bar 0 is

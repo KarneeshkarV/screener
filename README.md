@@ -317,7 +317,8 @@ It accepts every flag that defines a `backtest-rolling` run (window, universe, s
 - `--iterations` (default 5000) synthetic equity paths.
 - `--block` (default 20) bars per resampled block. Blocks keep the short-horizon autocorrelation that drives drawdown; `--block 1` makes the draw i.i.d. and understates it.
 - `--seed` (default 42) so a run is reproducible, and `--ruin-threshold` (default 0.5, in `(0, 1]`) for the fraction of starting capital that counts as ruin.
-- `--paths` (default 1000) simulated paths kept for the report's fan chart and percentile bands. Higher is smoother but costs memory and HTML size; `0` skips the chart.
+- `--paths` (default 1000) simulated paths retained for the faint individual lines in the report's fan chart.
+  The p05/median/p95 bands are taken over every iteration rather than over this subset, so raising `--paths` does not tighten them, and `0` still draws the bands and the realized run - it drops only the lines.
 - `--json` to write the raw result next to the usual HTML tear-sheet.
 
 The `MC ...` rows join the realized run's metrics in both the terminal table and the tear-sheet: median/p05/p95 return, the drawdown percentiles, the probability of ending in profit, and the risk of ruin.

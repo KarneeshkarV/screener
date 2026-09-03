@@ -28,10 +28,10 @@ from screener.backtester.workflow import BacktestRequest, resolve_backtest_run
 
 __all__ = ["backtest_monte_carlo"]
 
-# The engine states its bounds in terms of its own argument names, and every
-# message it raises starts with the name it rejected. Swapping that prefix for
-# the flag that carries it is the whole translation, so the bounds themselves
-# live in one place instead of being restated here.
+# The engine states its bounds in terms of its own argument names and tags
+# each rejection with the field it names, so the bounds themselves live in one
+# place instead of being restated here. This is the whole translation: look up
+# the flag that carries the field, and let the error restate itself.
 _FLAG_FOR_FIELD = {
     "iterations": "--iterations",
     "block": "--block",
@@ -42,11 +42,19 @@ _FLAG_FOR_FIELD = {
 
 
 def _flag_message(error: ValueError) -> str:
-    message = str(error)
-    for field, flag in _FLAG_FOR_FIELD.items():
-        if message.startswith(field):
-            return flag + message[len(field) :]
-    return message
+    """Restate an engine rejection in the flag the user actually typed.
+
+    Anything the engine raises that is not about one of these arguments (an
+    unresampleable equity curve, say) has no flag to name and reaches the user
+    unchanged.
+    """
+    from screener.backtester.optimization.monte_carlo import MonteCarloArgumentError
+
+    if isinstance(error, MonteCarloArgumentError):
+        flag = _FLAG_FOR_FIELD.get(error.field)
+        if flag is not None:
+            return error.named(flag)
+    return str(error)
 
 
 @click.command(name="backtest-monte-carlo")
@@ -94,8 +102,11 @@ def _flag_message(error: ValueError) -> str:
     default=1000,
     show_default=True,
     help=(
-        "Simulated paths kept for the report's fan chart and percentile bands. "
-        "Higher is smoother but costs memory and HTML size; 0 skips the chart."
+        "Simulated paths retained for the fan chart's faint individual lines. "
+        "The percentile bands are taken over every iteration rather than over "
+        "these, so raising this does not tighten them and the chart is drawn "
+        "either way; 0 keeps the bands and the realized run and drops only "
+        "the lines."
     ),
 )
 @click.option(

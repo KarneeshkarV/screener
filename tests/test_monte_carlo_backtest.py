@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from unittest.mock import Mock
 
 import numpy as np
@@ -16,6 +17,7 @@ import screener.backtester.tearsheet as tearsheet
 from screener.backtester.metrics import result_view
 from screener.backtester.optimization.monte_carlo import (
     _BAND_PERCENTILES,
+    MonteCarloArgumentError,
     equity_monte_carlo_metrics,
     simulate_equity_monte_carlo,
     simulate_equity_monte_carlo_paths,
@@ -130,7 +132,9 @@ def test_single_point_curve_yields_an_empty_result():
     result = simulate_equity_monte_carlo(equity, iterations=10, block=500)
 
     assert result.bars == 0
-    assert result.median_return == 0.0
+    # Not 0.0: nothing was resampled, so there is no median to report and a
+    # zero would read in the metrics table as a measured zero return.
+    assert math.isnan(result.median_return)
     # No bar was ever drawn, so the reported block must not claim the request.
     assert result.block == 0
 
@@ -142,7 +146,7 @@ def test_empty_equity_curve_yields_an_empty_result():
 
     assert result.bars == 0
     assert result.initial_capital == 0.0
-    assert result.median_return == 0.0
+    assert math.isnan(result.median_return)
     assert paths.paths.shape == (0, 0)
     assert paths.terminal_returns.size == 0
 
@@ -182,9 +186,10 @@ def test_invalid_arguments_are_rejected(kwargs, message):
     ],
 )
 def test_every_flag_message_names_the_field_it_rejects(kwargs, field):
-    """The CLI renames the leading field to the flag that carries it, so a
-    message that does not start with its field would reach the user in the
-    engine's vocabulary instead of the command's.
+    """The CLI restates the rejection in the flag the user typed. It reads
+    ``field`` off the exception rather than matching the message text, so a
+    reworded message cannot silently revert the CLI to the engine's
+    vocabulary.
     """
     valid = {
         "iterations": 10,
@@ -193,10 +198,27 @@ def test_every_flag_message_names_the_field_it_rejects(kwargs, field):
         "keep_paths": 0,
         "ruin_threshold": 0.5,
     }
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(MonteCarloArgumentError) as caught:
         validate_equity_monte_carlo_flags(**{**valid, **kwargs})
 
+    assert caught.value.field == field
     assert str(caught.value).startswith(field)
+    assert caught.value.named("--x") == f"--x {caught.value.problem}"
+
+
+def test_the_command_restates_a_rejection_in_the_flag_that_carries_it():
+    error = MonteCarloArgumentError("keep_paths", "must not be negative")
+
+    assert monte_carlo_cli._flag_message(error) == "--paths must not be negative"
+
+
+def test_an_error_about_no_flag_reaches_the_user_unchanged():
+    """Only the argument rejections have a flag to name. The equity-curve
+    checks describe the data, and renaming anything in them would be a lie.
+    """
+    error = ValueError("equity curve must be positive at every bar: 0.0 at position 3")
+
+    assert monte_carlo_cli._flag_message(error) == str(error)
 
 
 def test_the_engine_rejects_a_negative_seed():
@@ -247,7 +269,33 @@ def test_a_two_point_curve_has_no_distribution_to_report():
 
     assert result.bars == 0
     assert result.block == 0
-    assert result.median_return == 0.0
+    assert math.isnan(result.median_return)
+
+
+def test_an_undefined_run_renders_as_missing_rather_than_as_zero():
+    """A zeroed outcome is a claim: merged into the backtest's metrics it
+    prints a measured 0% chance of profit next to the realized run's genuine
+    return, with nothing to say the simulation never drew a path.
+    """
+    equity = pd.Series([100.0, 110.0], index=pd.date_range("2024-01-01", periods=2))
+    metrics = equity_monte_carlo_metrics(
+        simulate_equity_monte_carlo(equity, iterations=10, block=1)
+    )
+    rendered = {row.key: row.formatted for row in result_view(metrics)}
+
+    assert rendered["mc_probability_of_profit"] == "-"
+    assert rendered["mc_risk_of_ruin"] == "-"
+    assert rendered["mc_median_return"] == "-"
+
+
+def test_an_undefined_run_writes_null_rather_than_a_nan_token(tmp_path):
+    equity = pd.Series([100.0, 110.0], index=pd.date_range("2024-01-01", periods=2))
+    result = simulate_equity_monte_carlo(equity, iterations=10, block=1)
+    path = tmp_path / "mc.json"
+
+    write_json_report(result.model_dump(mode="json"), path)
+
+    assert json.loads(path.read_text())["probability_of_profit"] is None
 
 
 def test_metrics_render_with_declared_labels():
@@ -779,3 +827,90 @@ def test_the_realized_return_row_reads_the_metric_the_overview_tab_prints():
 
     assert "<th>Realized return</th><td>+12.34%</td>" in html
     assert "<th>Realized max drawdown</th><td>-5.67%</td>" in html
+
+
+def test_retained_paths_are_the_first_iterations_under_a_strided_budget(monkeypatch):
+    """The retained sample is the first ``keep_paths`` iterations whether or not
+    the band buffer had to stride, so it stays reproducible from ``seed`` alone.
+    Under a stride the two buffers are filled independently; without one the
+    retained rows are sliced back out of the band buffer, and the two routes
+    must not disagree.
+    """
+    equity = _equity(40, seed=11)
+    _, wide = simulate_equity_monte_carlo_paths(
+        equity, iterations=20, block=5, seed=3, keep_paths=4
+    )
+    monkeypatch.setattr(monte_carlo, "_BAND_CELL_BUDGET", 120)
+    _, strided = simulate_equity_monte_carlo_paths(
+        equity, iterations=20, block=5, seed=3, keep_paths=4
+    )
+
+    assert wide.band_iterations == 20
+    assert strided.band_iterations < 20
+    np.testing.assert_array_equal(wide.paths, strided.paths)
+
+
+def test_the_retained_sample_outlives_the_band_buffer():
+    """Sliced, not viewed. A view would keep the whole band buffer alive for the
+    lifetime of the result, which on a default run is 5x the retained sample.
+    """
+    _, paths = simulate_equity_monte_carlo_paths(
+        _equity(60, seed=6), iterations=40, block=5, keep_paths=4
+    )
+
+    assert paths.paths.base is None
+
+
+def test_the_paths_container_can_be_compared_without_raising():
+    """Every field is a numpy array, so a generated ``__eq__``/``__hash__`` would
+    raise on the first ``assert a == b``, ``x in [...]`` or dict-key use.
+    """
+    _, first = simulate_equity_monte_carlo_paths(
+        _equity(40, seed=2), iterations=10, block=5, keep_paths=2
+    )
+    _, second = simulate_equity_monte_carlo_paths(
+        _equity(40, seed=2), iterations=10, block=5, keep_paths=2
+    )
+
+    assert first != second
+    assert first == first
+    assert first in [first, second]
+    assert {first: "kept"}[first] == "kept"
+
+
+def test_the_fan_chart_keeps_its_spread_at_a_small_starting_capital():
+    """Rounding equity to whole currency units assumes a run near 100,000. At
+    100 it quantized the fan, the bands and the realized run onto the same few
+    integers, so the chart showed one line where the table reported a spread.
+    """
+    equity = _equity(60, seed=4) / 1000.0
+    _, paths = simulate_equity_monte_carlo_paths(
+        equity, iterations=50, block=5, seed=1, keep_paths=5
+    )
+    html_out = tearsheet._fan_chart_html(equity, paths)
+
+    p05, median, p95 = (
+        [round(float(v), tearsheet._fan_decimals(paths.initial_capital)) for v in band]
+        for band in paths.bands
+    )
+    assert len({tuple(p05), tuple(median), tuple(p95)}) == 3
+    assert html_out
+
+
+def test_a_numpy_nan_is_written_as_null_not_as_the_string_nan(tmp_path):
+    """``np.float32`` is not a ``float`` subclass, so it slips past ``_json_safe``
+    and lands in the ``default`` hook. Falling through to ``str(value)`` there
+    put the literal "nan" in the payload instead of a null.
+    """
+    path = tmp_path / "report.json"
+
+    write_json_report({"value": np.float32("nan"), "big": np.float64("inf")}, path)
+
+    payload = json.loads(path.read_text())
+    assert payload["value"] is None
+    assert payload["big"] == "inf"
+
+
+def test_an_unserializable_object_raises_rather_than_being_stringified(tmp_path):
+    with pytest.raises(TypeError, match="cannot serialize"):
+        write_json_report({"array": np.arange(3)}, tmp_path / "report.json")

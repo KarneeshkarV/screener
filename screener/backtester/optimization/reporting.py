@@ -80,12 +80,19 @@ def _json_default(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return _json_safe(value.model_dump())
     # Reached by the numpy scalar types, which are not ``float`` subclasses and
-    # so slip past :func:`_json_safe`.
-    if value == float("inf"):
-        return "inf"
-    if value == float("-inf"):
-        return "-inf"
-    return str(value)
+    # so slip past :func:`_json_safe`. Unwrapping to the Python scalar and
+    # handing it back to ``_json_safe`` is what makes a ``np.float32`` NaN come
+    # out as ``null`` like every other NaN; comparing it against the infinities
+    # here instead let NaN fall through to ``str(value)`` and wrote the literal
+    # string "nan" into the payload. ``ndim == 0`` is the test for a scalar:
+    # ``.item()`` on a real array raises ValueError rather than the TypeError
+    # a ``default`` hook owes ``json.dumps``.
+    if getattr(value, "ndim", None) == 0 and callable(getattr(value, "item", None)):
+        return _json_safe(value.item())
+    raise TypeError(
+        f"cannot serialize {type(value).__name__} to JSON; "
+        f"add a case to _json_safe or _json_default"
+    )
 
 
 def write_json_report(data: Any, path: Path | str) -> None:
