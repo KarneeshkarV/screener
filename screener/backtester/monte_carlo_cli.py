@@ -28,6 +28,26 @@ from screener.backtester.workflow import BacktestRequest, resolve_backtest_run
 
 __all__ = ["backtest_monte_carlo"]
 
+# The engine states its bounds in terms of its own argument names, and every
+# message it raises starts with the name it rejected. Swapping that prefix for
+# the flag that carries it is the whole translation, so the bounds themselves
+# live in one place instead of being restated here.
+_FLAG_FOR_FIELD = {
+    "iterations": "--iterations",
+    "block": "--block",
+    "seed": "--seed",
+    "keep_paths": "--paths",
+    "ruin_threshold": "--ruin-threshold",
+}
+
+
+def _flag_message(error: ValueError) -> str:
+    message = str(error)
+    for field, flag in _FLAG_FOR_FIELD.items():
+        if message.startswith(field):
+            return flag + message[len(field) :]
+    return message
+
 
 @click.command(name="backtest-monte-carlo")
 @rolling_run_options
@@ -90,6 +110,7 @@ def backtest_monte_carlo(**params: Any) -> None:
     from screener.backtester.optimization.monte_carlo import (
         equity_monte_carlo_metrics,
         simulate_equity_monte_carlo_paths,
+        validate_equity_monte_carlo_flags,
     )
 
     iterations = params.pop("mc_iterations")
@@ -101,18 +122,16 @@ def backtest_monte_carlo(**params: Any) -> None:
 
     # Checked before the backtest, not inside the simulation: the rolling run
     # takes minutes, and a bad flag must not surface as a traceback after it.
-    if iterations <= 0:
-        raise click.UsageError("--iterations must be positive.")
-    if block <= 0:
-        raise click.UsageError("--block must be positive.")
-    if seed < 0:
-        raise click.UsageError("--seed must not be negative.")
-    if keep_paths < 0:
-        raise click.UsageError("--paths must not be negative.")
-    if not 0.0 < ruin_threshold <= 1.0:
-        raise click.UsageError(
-            "--ruin-threshold must be a fraction of starting capital in (0, 1]."
+    try:
+        validate_equity_monte_carlo_flags(
+            iterations=iterations,
+            block=block,
+            seed=seed,
+            keep_paths=keep_paths,
+            ruin_threshold=ruin_threshold,
         )
+    except ValueError as exc:
+        raise click.UsageError(f"{_flag_message(exc)}.") from exc
 
     ctx = click.get_current_context()
     request = BacktestRequest(
@@ -137,14 +156,21 @@ def backtest_monte_carlo(**params: Any) -> None:
         end_date=run.end_date,
         fundamental_fetcher=run.fundamental_fetcher,
     )
-    mc, mc_paths = simulate_equity_monte_carlo_paths(
-        result.equity_curve,
-        iterations=iterations,
-        block=block,
-        seed=seed,
-        ruin_threshold=ruin_threshold,
-        keep_paths=keep_paths,
-    )
+    # Whether the block fits, and whether the curve is resampleable at all,
+    # can only be known once the run has produced it. Raised as a plain error
+    # rather than a usage error: the flags were legal, and a usage dump after
+    # a multi-minute backtest buries the one line that says what to change.
+    try:
+        mc, mc_paths = simulate_equity_monte_carlo_paths(
+            result.equity_curve,
+            iterations=iterations,
+            block=block,
+            seed=seed,
+            ruin_threshold=ruin_threshold,
+            keep_paths=keep_paths,
+        )
+    except ValueError as exc:
+        raise click.ClickException(_flag_message(exc)) from exc
     # Merge into the run's own metrics so the terminal table and the tear-sheet
     # show the realized run and its bootstrap side by side, in one place.
     result.metrics.update(equity_monte_carlo_metrics(mc))
@@ -176,7 +202,7 @@ def backtest_monte_carlo(**params: Any) -> None:
     if run.universe_note:
         console.print(f"[dim]Universe: {run.universe_note}[/dim]")
     console.print(
-        f"[dim]Monte Carlo: {mc.iterations:,} paths, {mc.bars:,} bars, "
+        f"[dim]Monte Carlo: {mc.iterations:,} iterations, {mc.bars:,} bars, "
         f"block {mc.block}, seed {mc.seed}[/dim]"
     )
     print_backtest(result, show_ledger=False)

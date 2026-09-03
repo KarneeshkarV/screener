@@ -26,16 +26,18 @@ from screener.backtester.models import BacktestResult
 from screener.html_report import html_page
 
 if TYPE_CHECKING:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from plotly.offline import get_plotlyjs
+
     from screener.backtester.optimization.monte_carlo import (
         EquityMonteCarloPaths,
         EquityMonteCarloResult,
     )
-
-if TYPE_CHECKING:
-    import plotly.express as px
-    import plotly.graph_objects as go
-    from plotly.offline import get_plotlyjs
 else:
+    # Only the plotly names have a runtime counterpart; the Monte Carlo types
+    # are annotations alone, so importing them here would pull the optimization
+    # package into every tear-sheet render for nothing.
     px = _optional.load("plotly.express")
     go = _optional.load("plotly.graph_objects")
     get_plotlyjs = _optional.load("plotly.offline").get_plotlyjs
@@ -223,10 +225,23 @@ def _config_rows(result: BacktestResult) -> str:
     return "".join(rows)
 
 
-# How many simulated curves the fan chart draws. The bootstrap keeps more than
+# How many simulated paths the fan chart draws. The bootstrap keeps more than
 # this so the percentile bands stay smooth, but a browser cannot render (or a
 # reader read) a thousand overlapping lines, and each one costs file size.
 _FAN_LINES = 200
+# How many x positions each drawn path gets. The fan is a texture rather than a
+# readout, so its resolution is bounded by the pixels the chart has, not by the
+# bar count: at 2,520 bars every drawn bar costs 4.4 MB of HTML against 0.7 MB
+# here. The bands and the realized run stay at full resolution, because those
+# are the traces a reader takes numbers off.
+_FAN_BAR_POINTS = 400
+# Label and colour per percentile, looked up by the band's own percentile so a
+# change to ``band_percentiles`` cannot silently mislabel a line.
+_FAN_BAND_STYLE = {
+    5: ("p05", "#b91c1c"),
+    50: ("median", "#38bdf8"),
+    95: ("p95", "#16a34a"),
+}
 
 
 def _fan_chart_html(
@@ -239,38 +254,61 @@ def _fan_chart_html(
     returns out of calendar order, so no bar of it belongs to any date; plotting
     against the real index would also repeat the date array once per line, which
     on its own added ~4 MB to the page.
+
+    The bands come from ``paths.bands``, which the bootstrap took over every
+    iteration. Recomputing them here from the retained sample would answer a
+    different question from the summary table on the same page, and at
+    ``--paths 1`` would collapse all three onto one arbitrary path.
     """
-    sample = paths.paths
-    if sample.size == 0:
-        return '<p class="empty">No simulated paths retained.</p>'
-    # Every synthetic path starts at the same capital as the real run, so
-    # prepending it puts bar 0 of a path on bar 0 of the realized curve.
-    start = np.full((sample.shape[0], 1), paths.initial_capital, dtype=sample.dtype)
-    curves = np.hstack([start, sample])
+    # Empty bands mean the curve had no bar to resample. Retaining no paths is
+    # a different case, and it still has bands to draw.
+    if paths.bands.size == 0:
+        return '<p class="empty">No bars to simulate.</p>'
 
     fig = go.Figure()
-    step = max(1, curves.shape[0] // _FAN_LINES)
-    drawn = np.round(curves[::step][:_FAN_LINES]).astype(float)
-    for row, path in enumerate(drawn):
-        fig.add_trace(
-            go.Scatter(
-                y=path.tolist(),
-                name=f"{drawn.shape[0]} sampled paths",
-                legendgroup="paths",
-                showlegend=row == 0,
-                mode="lines",
-                line={"color": "rgba(148,163,184,.18)", "width": 1},
-                hoverinfo="skip",
+    sample = paths.paths
+    # ``--paths 0`` retains nothing, and that is a request to skip the fan, not
+    # to drop the bands with it.
+    if sample.size:
+        # Every synthetic path starts at the same capital as the real run, so
+        # prepending it puts bar 0 of a path on bar 0 of the realized curve.
+        start = np.full((sample.shape[0], 1), paths.initial_capital, dtype=sample.dtype)
+        curves = np.hstack([start, sample])
+        drawn = curves[:: max(1, curves.shape[0] // _FAN_LINES)][:_FAN_LINES]
+        bars = drawn.shape[1]
+        points = min(_FAN_BAR_POINTS, bars)
+        if points < bars and points > 1:
+            # ``linspace`` keeps the first and last bar exactly, so the fan ends
+            # on the same bar as the realized run. The spacing it samples at is
+            # within one bar of the even ``dx`` grid below, which no reader can
+            # see on a background texture.
+            drawn = drawn[:, np.round(np.linspace(0, bars - 1, points)).astype(int)]
+            dx = (bars - 1) / (points - 1)
+        else:
+            dx = 1.0
+        for row, path in enumerate(np.round(drawn).astype(float)):
+            fig.add_trace(
+                go.Scatter(
+                    y=path.tolist(),
+                    # ``x0``/``dx`` spaces the points without emitting an x
+                    # array. One flat trace with gaps between paths would need
+                    # an explicit x repeated per path, which measured 1.6x
+                    # larger than these per-path traces.
+                    x0=0,
+                    dx=dx,
+                    name=f"{drawn.shape[0]} simulated paths",
+                    legendgroup="paths",
+                    showlegend=row == 0,
+                    mode="lines",
+                    line={"color": "rgba(148,163,184,.18)", "width": 1},
+                    hoverinfo="skip",
+                )
             )
-        )
-    for label, pct, color in (
-        ("p05", 5, "#b91c1c"),
-        ("median", 50, "#38bdf8"),
-        ("p95", 95, "#16a34a"),
-    ):
+    for pct, band in zip(paths.band_percentiles, paths.bands, strict=True):
+        label, color = _FAN_BAND_STYLE.get(pct, (f"p{pct:02d}", "#94a3b8"))
         fig.add_trace(
             go.Scatter(
-                y=np.round(np.percentile(curves, pct, axis=0)).tolist(),
+                y=np.round(band).tolist(),
                 name=f"Simulated {label}",
                 mode="lines",
                 line={"color": color, "width": 2, "dash": "dot"},
@@ -278,7 +316,7 @@ def _fan_chart_html(
         )
     fig.add_trace(
         go.Scatter(
-            y=[round(float(v)) for v in equity.to_numpy()],
+            y=np.round(equity.to_numpy()).tolist(),
             name="Realized run",
             mode="lines",
             line={"color": "#facc15", "width": 3},
@@ -299,10 +337,13 @@ def _distribution_html(
     """Histogram of a per-iteration outcome, with the realized run marked."""
     fig = px.histogram(x=values, nbins=60, labels={"x": label})
     fig.update_traces(marker_color="#0f766e")
+    # One vectorized call rather than three: each ``np.percentile`` sorts the
+    # whole array, and these three want the same sort.
+    p05, median, p95 = (float(v) for v in np.percentile(values, [5, 50, 95]))
     markers = [
-        ("p05", float(np.percentile(values, 5)), "#b91c1c"),
-        ("median", float(np.median(values)), "#38bdf8"),
-        ("p95", float(np.percentile(values, 95)), "#16a34a"),
+        ("p05", p05, "#b91c1c"),
+        ("median", median, "#38bdf8"),
+        ("p95", p95, "#16a34a"),
         ("realized", realized, "#facc15"),
     ]
     # Put labels for the same value on separate rows. Labels for different
@@ -328,15 +369,19 @@ def _distribution_html(
     return figure_html(fig, div_id)
 
 
+_OUTCOME_PERCENTILES = (1, 5, 25, 50, 75, 95, 99)
+
+
 def _monte_carlo_percentile_rows(paths: "EquityMonteCarloPaths") -> str:
-    rows = []
-    for pct in (1, 5, 25, 50, 75, 95, 99):
-        rows.append(
-            f"<tr><th>p{pct:02d}</th>"
-            f"<td>{np.percentile(paths.terminal_returns, pct):+.2%}</td>"
-            f"<td>{np.percentile(paths.drawdowns, pct):+.2%}</td></tr>"
-        )
-    return "".join(rows)
+    # One call per array rather than one per cell: ``np.percentile`` sorts the
+    # array it is given, and the loop sorted the same two 5,000-element arrays
+    # seven times each to fill seven rows.
+    returns = np.percentile(paths.terminal_returns, _OUTCOME_PERCENTILES)
+    drawdowns = np.percentile(paths.drawdowns, _OUTCOME_PERCENTILES)
+    return "".join(
+        f"<tr><th>p{pct:02d}</th><td>{ret:+.2%}</td><td>{dd:+.2%}</td></tr>"
+        for pct, ret, dd in zip(_OUTCOME_PERCENTILES, returns, drawdowns, strict=True)
+    )
 
 
 def _monte_carlo_sections(
@@ -345,22 +390,31 @@ def _monte_carlo_sections(
     paths: "EquityMonteCarloPaths",
 ) -> str:
     """Render the Monte Carlo tab: the fan of paths, the outcome distributions."""
+    if paths.terminal_returns.size == 0:
+        return _empty_section(
+            "monte-carlo-paths", "Simulated Equity Paths", "No equity curve data."
+        )
     equity = result.equity_curve
-    realized_return = (
-        float(equity.iloc[-1]) / float(equity.iloc[0]) - 1.0 if len(equity) else 0.0
-    )
+    # Read rather than recompute: ``metrics`` owns this definition, and the
+    # Overview tab's Total Return row prints the same key. Two formulas here
+    # would let the two rows drift apart.
+    realized_return = float(result.metrics.get("total_return", 0.0))
     realized_drawdown = float(result.metrics.get("max_drawdown", 0.0))
+    strided = (
+        ""
+        if paths.band_iterations >= mc.iterations
+        else (
+            f" The percentile bands are taken over {paths.band_iterations:,} of "
+            f"them, a uniform stride the memory budget forced at this size."
+        )
+    )
     summary = (
         f'<p class="empty">{mc.iterations:,} circular block-bootstrap paths of '
         f"{mc.bars:,} bars, block {mc.block}, seed {mc.seed}. "
         f"Each path resamples the realized daily equity returns, so it keeps the "
         f"run's own concurrency, sizing and costs; only the order of the returns "
-        f"changes.</p>"
+        f"changes.{strided}</p>"
     )
-    if paths.terminal_returns.size == 0:
-        return _empty_section(
-            "monte-carlo-paths", "Simulated Equity Paths", "No equity curve data."
-        )
     return (
         '<section class="panel wide" id="monte-carlo-paths">'
         "<h2>Simulated Equity Paths</h2>"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html as html_lib
 import json
+import math
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
@@ -50,11 +51,36 @@ _REPORT_CSS = """
 """
 
 
+def _json_safe(value: Any) -> Any:
+    """Replace the float values JSON has no syntax for.
+
+    ``json.dumps`` writes ``NaN`` and ``Infinity`` as bare tokens by default,
+    which are not JSON and which strict parsers reject, so a report written
+    that way only loads back in Python. An infinity keeps its sign as a string,
+    which is how :func:`_json_default` already meant to render one; a NaN
+    becomes null, which is what a missing metric means and what the terminal
+    and HTML renderers already show as "-".
+    """
+    if isinstance(value, float):
+        if math.isnan(value):
+            return None
+        if math.isinf(value):
+            return "inf" if value > 0 else "-inf"
+        return value
+    if isinstance(value, Mapping):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, BaseModel):
-        return value.model_dump()
+        return _json_safe(value.model_dump())
+    # Reached by the numpy scalar types, which are not ``float`` subclasses and
+    # so slip past :func:`_json_safe`.
     if value == float("inf"):
         return "inf"
     if value == float("-inf"):
@@ -63,9 +89,17 @@ def _json_default(value: Any) -> Any:
 
 
 def write_json_report(data: Any, path: Path | str) -> None:
+    """Write a report payload as JSON that a strict parser will accept.
+
+    :func:`_json_safe` rewrites the non-finite floats first and ``allow_nan``
+    is off behind it, so anything it missed fails loudly here rather than
+    reaching the file as a bare ``NaN`` token no strict parser accepts.
+    """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, indent=2, default=_json_default))
+    target.write_text(
+        json.dumps(_json_safe(data), indent=2, default=_json_default, allow_nan=False)
+    )
 
 
 def _print_table(table: Table, console: Console) -> None:

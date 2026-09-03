@@ -125,6 +125,15 @@ The standalone commands (`garp`, `conviction`, `rs_breakout`, `mark-minervini`) 
 `trade_return_sharpe_by_holding_period` annualises per-trade returns by average holding period.
 The two numbers are not comparable.
 
+**path** means three things.
+1. A simulated equity trajectory from the Monte Carlo block bootstrap: `EquityMonteCarloPaths`, `keep_paths`, and the `--paths` flag that caps how many are retained for the chart.
+2. A filesystem location: `report_path`, `json_path`, and the `--report` and `--json` flags.
+3. A route through the code, as in the screen/backtest path used elsewhere in this file.
+Say simulated path for sense 1, and never call one a run or an iteration.
+An iteration is one bootstrap draw, so `--iterations` counts every path simulated while `--paths` counts only the subset kept for plotting, and on a default run the two numbers differ.
+Percentiles quoted from the retained subset are not the percentiles of the full simulation.
+Write report path or JSON path in full for sense 2 whenever a simulated path is also in scope.
+
 ## Conventions
 
 Timestamps are canonical naive UTC across providers for intraday data, and tz-naive for daily.

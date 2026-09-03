@@ -227,7 +227,7 @@ def periods_per_year_for_interval(interval: str) -> int:
     return TRADING_DAYS_PER_YEAR * _BARS_PER_SESSION.get(interval, 1)
 
 
-def _daily_returns(equity: pd.Series) -> pd.Series:
+def bar_returns(equity: pd.Series) -> pd.Series:
     if equity.empty or len(equity) < 2:
         return pd.Series(dtype=float)
     return equity.pct_change().dropna()
@@ -542,9 +542,9 @@ def compute_metrics(
     n_trials: int = 1,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> dict:
-    daily = _daily_returns(equity)
+    daily = bar_returns(equity)
     bench_daily = (
-        _daily_returns(benchmark) if not benchmark.empty else pd.Series(dtype=float)
+        bar_returns(benchmark) if not benchmark.empty else pd.Series(dtype=float)
     )
     starting_equity = float(equity.iloc[0]) if not equity.empty else 0.0
     final_equity = float(equity.iloc[-1]) if not equity.empty else 0.0

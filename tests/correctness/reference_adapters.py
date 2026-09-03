@@ -108,7 +108,7 @@ def ddof0_from_ddof1(value: float, n: int) -> float:
 
 
 def equity_to_returns(equity) -> np.ndarray:
-    """Simple period returns from an equity curve, matching ``_daily_returns``."""
+    """Simple period returns from an equity curve, matching ``bar_returns``."""
     import pandas as pd
 
     return pd.Series(equity).pct_change().dropna().to_numpy()

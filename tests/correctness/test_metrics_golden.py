@@ -18,7 +18,7 @@ import pandas as pd
 from screener.backtester.metrics import (
     _cagr,
     _calmar,
-    _daily_returns,
+    bar_returns,
     _max_drawdown,
     _sortino,
     _vol_annual,
@@ -220,12 +220,12 @@ def test_calmar_returns_zero_when_no_drawdown():
 
 
 # ---------------------------------------------------------------------------
-# _daily_returns
+# bar_returns
 # ---------------------------------------------------------------------------
 
 
-def test_daily_returns_pct_change_golden():
-    """_daily_returns([100, 110, 99]) = [0.1, -0.1/1.1]
+def test_bar_returns_pct_change_golden():
+    """bar_returns([100, 110, 99]) = [0.1, -0.1/1.1]
 
     Derivation:
         r[0] = (110 - 100) / 100 = 0.10
@@ -233,7 +233,7 @@ def test_daily_returns_pct_change_golden():
     """
     equity = pd.Series([100.0, 110.0, 99.0])
     expected = [10.0 / 100.0, (99.0 - 110.0) / 110.0]
-    result = _daily_returns(equity).tolist()
+    result = bar_returns(equity).tolist()
 
     assert len(result) == 2
     assert abs(result[0] - expected[0]) < 1e-12

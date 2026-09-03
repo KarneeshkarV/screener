@@ -9,6 +9,7 @@ import click
 
 from screener import agentio
 from screener.backtester.cli_common import (
+    OptionDecorator,
     backtest_options,
     intraday_options,
     resolve_report_path,
@@ -85,7 +86,17 @@ def _print_candidates(run: Any) -> None:
 # identical flags. Options that only shape how ``backtest-rolling``
 # *reports* (--candidates, --compare-reinvestment, --dashboard) stay on
 # that command.
-_RUN_OPTION_DECORATORS: tuple[Any, ...] = (
+#
+# Typed as ``OptionDecorator``, not ``tuple[Any, ...]``: every entry is
+# applied to a command in ``rolling_run_options``, so a non-decorator here
+# is an error mypy can catch now rather than an AttributeError raised the
+# first time the CLI is invoked. Do not widen this back to ``Any``.
+# ``intraday_options`` and ``sizing_options`` are unannotated in
+# ``cli_common`` and still satisfy it; they needed
+# ``# type: ignore[untyped-decorator]`` only while they were applied as
+# ``@`` decorators to a typed function, and mypy now flags those comments
+# as unused.
+_RUN_OPTION_DECORATORS: tuple[OptionDecorator, ...] = (
     market_option(
         default="us",
         help="Market to backtest.",
