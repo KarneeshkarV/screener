@@ -105,6 +105,8 @@ def backtest_monte_carlo(**params: Any) -> None:
         raise click.UsageError("--iterations must be positive.")
     if block <= 0:
         raise click.UsageError("--block must be positive.")
+    if seed < 0:
+        raise click.UsageError("--seed must not be negative.")
     if keep_paths < 0:
         raise click.UsageError("--paths must not be negative.")
     if not 0.0 < ruin_threshold <= 1.0:

@@ -305,13 +305,13 @@ def _distribution_html(
         ("p95", float(np.percentile(values, 95)), "#16a34a"),
         ("realized", realized, "#facc15"),
     ]
-    # The realized run usually lands on top of the median, so labels at a single
-    # height overprint each other. Sorting by x and alternating the label row
-    # keeps any two neighbours apart; both rows stay above the plot, inside the
-    # existing top margin, so nothing collides with the axis ticks. Tinting each
-    # label with its own line colour keeps the pairing readable.
+    # Put labels for the same value on separate rows. Labels for different
+    # values can use the first row because their marker lines separate them.
     markers.sort(key=lambda marker: marker[1])
-    for position, (name, value, color) in enumerate(markers):
+    label_rows_by_value: dict[float, int] = {}
+    for name, value, color in markers:
+        label_row = label_rows_by_value.get(value, 0)
+        label_rows_by_value[value] = label_row + 1
         fig.add_vline(
             x=value,
             line_color=color,
@@ -319,7 +319,7 @@ def _distribution_html(
             annotation={
                 "text": name,
                 "font": {"color": color, "size": 11},
-                "yshift": 0 if position % 2 == 0 else 15,
+                "yshift": label_row * 15,
             },
             annotation_position="top",
         )

@@ -173,6 +173,26 @@ class EquityMonteCarloPaths:
     drawdowns: np.ndarray
 
 
+def _empty_equity_monte_carlo_paths(
+    *, iterations: int, seed: int, ruin_threshold: float, initial_capital: float
+) -> tuple[EquityMonteCarloResult, EquityMonteCarloPaths]:
+    empty = np.empty(0, dtype=float)
+    return (
+        _empty_equity_result(
+            iterations=iterations,
+            seed=seed,
+            ruin_threshold=ruin_threshold,
+            initial_capital=initial_capital,
+        ),
+        EquityMonteCarloPaths(
+            initial_capital=initial_capital,
+            paths=np.empty((0, 0), dtype=np.float32),
+            terminal_returns=empty,
+            drawdowns=empty,
+        ),
+    )
+
+
 def simulate_equity_monte_carlo(
     equity: "pd.Series",
     *,
@@ -230,27 +250,26 @@ def simulate_equity_monte_carlo_paths(
         raise ValueError("keep_paths must not be negative")
     if not 0.0 < ruin_threshold <= 1.0:
         raise ValueError("ruin_threshold must be in (0, 1]")
-    initial_capital = float(equity.iloc[0]) if len(equity) else 0.0
+    if len(equity) == 0:
+        return _empty_equity_monte_carlo_paths(
+            iterations=iterations,
+            seed=seed,
+            ruin_threshold=ruin_threshold,
+            initial_capital=0.0,
+        )
+
+    initial_capital = float(equity.iloc[0])
     if initial_capital <= 0:
         raise ValueError("equity curve must start above zero")
 
     returns = equity.pct_change().dropna().to_numpy(dtype=float)
     n = int(returns.size)
     if n == 0:
-        empty = np.empty(0, dtype=float)
-        return (
-            _empty_equity_result(
-                iterations=iterations,
-                seed=seed,
-                ruin_threshold=ruin_threshold,
-                initial_capital=initial_capital,
-            ),
-            EquityMonteCarloPaths(
-                initial_capital=initial_capital,
-                paths=np.empty((0, 0), dtype=np.float32),
-                terminal_returns=empty,
-                drawdowns=empty,
-            ),
+        return _empty_equity_monte_carlo_paths(
+            iterations=iterations,
+            seed=seed,
+            ruin_threshold=ruin_threshold,
+            initial_capital=initial_capital,
         )
 
     rng = np.random.default_rng(seed)

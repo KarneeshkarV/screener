@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
 import pytest
 from click.testing import CliRunner
 
+import screener.backtester.monte_carlo_cli as monte_carlo_cli
+import screener.backtester.tearsheet as tearsheet
 from screener.backtester.metrics import result_view
 from screener.backtester.optimization.monte_carlo import (
     equity_monte_carlo_metrics,
@@ -110,6 +113,18 @@ def test_single_point_curve_yields_an_empty_result():
     assert result.median_return == 0.0
     # No bar was ever drawn, so the reported block must not claim the request.
     assert result.block == 0
+
+
+def test_empty_equity_curve_yields_an_empty_result():
+    result, paths = simulate_equity_monte_carlo_paths(
+        pd.Series(dtype=float), iterations=10, block=5
+    )
+
+    assert result.bars == 0
+    assert result.initial_capital == 0.0
+    assert result.median_return == 0.0
+    assert paths.paths.shape == (0, 0)
+    assert paths.terminal_returns.size == 0
 
 
 def test_the_result_records_the_ruin_threshold_it_used():
@@ -244,6 +259,33 @@ def test_cli_reports_monte_carlo_rows(tmp_path):
     assert payload["block"] == 5
 
 
+def test_cli_weekend_only_window_reports_no_data(tmp_path):
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-monte-carlo",
+            "-m",
+            "us",
+            "--tickers",
+            "AAA,BBB",
+            "--entry",
+            "close > 0",
+            "--start",
+            "2024-03-02",
+            "--end",
+            "2024-03-03",
+            "--iterations",
+            "10",
+            "--report",
+            str(tmp_path / "weekend.html"),
+        ],
+        obj=_stub_fetcher(),
+    )
+
+    assert res.exit_code == 0, res.output
+    assert "Monte Carlo: 10 paths, 0 bars, block 0" in res.output
+
+
 def test_cli_report_has_a_monte_carlo_tab_with_the_paths(tmp_path):
     report = tmp_path / "mc.html"
     res = CliRunner().invoke(
@@ -353,6 +395,61 @@ def test_cli_rejects_bad_flags_before_running_the_backtest(flags, message):
     assert message in res.output
     # The rolling run never started, so no result line was printed.
     assert "Monte Carlo:" not in res.output
+
+
+def test_cli_rejects_negative_seed_before_resolving_the_backtest(monkeypatch):
+    resolve_backtest_run = Mock()
+    monkeypatch.setattr(monte_carlo_cli, "resolve_backtest_run", resolve_backtest_run)
+
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-monte-carlo",
+            "-m",
+            "us",
+            "--tickers",
+            "AAA,BBB",
+            "--entry",
+            "close > 0",
+            "--start",
+            "2024-01-02",
+            "--end",
+            "2024-03-01",
+            "--seed",
+            "-1",
+        ],
+        obj=_stub_fetcher(),
+    )
+
+    assert res.exit_code == 2, res.output
+    assert "--seed must not be negative" in res.output
+    resolve_backtest_run.assert_not_called()
+
+
+def test_flat_distribution_marker_labels_have_separate_positions(monkeypatch):
+    captured = {}
+
+    def capture_figure(fig, _div_id):
+        captured["figure"] = fig
+        return ""
+
+    monkeypatch.setattr(tearsheet, "figure_html", capture_figure)
+
+    tearsheet._distribution_html(
+        np.zeros(20),
+        "flat-distribution",
+        realized=0.0,
+        label="Return",
+    )
+
+    annotations = captured["figure"].layout.annotations
+    assert {annotation.text for annotation in annotations} == {
+        "p05",
+        "median",
+        "p95",
+        "realized",
+    }
+    assert len({annotation.yshift for annotation in annotations}) == 4
 
 
 def test_cli_help_lists_monte_carlo_and_shared_run_flags():
