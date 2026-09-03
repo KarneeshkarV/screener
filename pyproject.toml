@@ -67,6 +67,10 @@ dev = [
     "pandas-ta-classic>=0.6.20",
     "pytest>=8.0",
     "pytest-cov>=7.1.0",
+    # empyrical imports pytz without declaring it, so a clean
+    # `uv sync --all-groups` collects tests/correctness/test_metrics_vs_empyrical.py
+    # with ModuleNotFoundError until we pin it here ourselves.
+    "pytz>=2024.1",
     "ruff>=0.5",
     "types-requests>=2.31",
 ]
