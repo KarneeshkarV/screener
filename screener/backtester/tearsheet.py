@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+import numpy as np
 import pandas as pd
 
 from screener import _optional
@@ -28,7 +29,15 @@ if TYPE_CHECKING:
     import plotly.express as px
     import plotly.graph_objects as go
     from plotly.offline import get_plotlyjs
+
+    from screener.backtester.optimization.monte_carlo import (
+        EquityMonteCarloPaths,
+        EquityMonteCarloResult,
+    )
 else:
+    # Only the plotly names have a runtime counterpart; the Monte Carlo types
+    # are annotations alone, so importing them here would pull the optimization
+    # package into every tear-sheet render for nothing.
     px = _optional.load("plotly.express")
     go = _optional.load("plotly.graph_objects")
     get_plotlyjs = _optional.load("plotly.offline").get_plotlyjs
@@ -216,6 +225,245 @@ def _config_rows(result: BacktestResult) -> str:
     return "".join(rows)
 
 
+# How many simulated paths the fan chart draws. The bootstrap keeps more than
+# this so the percentile bands stay smooth, but a browser cannot render (or a
+# reader read) a thousand overlapping lines, and each one costs file size.
+_FAN_LINES = 200
+# How many x positions each drawn path gets. The fan is a texture rather than a
+# readout, so its resolution is bounded by the pixels the chart has, not by the
+# bar count: at 2,520 bars every drawn bar costs 4.4 MB of HTML against 0.7 MB
+# here. The bands and the realized run stay at full resolution, because those
+# are the traces a reader takes numbers off.
+_FAN_BAR_POINTS = 400
+# Label and colour per percentile, looked up by the band's own percentile so a
+# change to ``band_percentiles`` cannot silently mislabel a line.
+_FAN_BAND_STYLE = {
+    5: ("p05", "#b91c1c"),
+    50: ("median", "#38bdf8"),
+    95: ("p95", "#16a34a"),
+}
+
+
+def _fan_chart_html(
+    equity: pd.Series,
+    paths: "EquityMonteCarloPaths",
+) -> str:
+    """Draw the simulated equity paths, their percentile bands, and the real run.
+
+    The x axis is the bar number, not the date. A resampled path draws its
+    returns out of calendar order, so no bar of it belongs to any date; plotting
+    against the real index would also repeat the date array once per line, which
+    on its own added ~4 MB to the page.
+
+    The bands come from ``paths.bands``, which the bootstrap took over every
+    iteration. Recomputing them here from the retained sample would answer a
+    different question from the summary table on the same page, and at
+    ``--paths 1`` would collapse all three onto one arbitrary path.
+    """
+    # Empty bands mean the curve had no bar to resample. Retaining no paths is
+    # a different case, and it still has bands to draw.
+    if paths.bands.size == 0:
+        return '<p class="empty">No bars to simulate.</p>'
+
+    fig = go.Figure()
+    sample = paths.paths
+    # ``--paths 0`` retains nothing, and that is a request to skip the fan, not
+    # to drop the bands with it.
+    if sample.size:
+        # Every synthetic path starts at the same capital as the real run, so
+        # prepending it puts bar 0 of a path on bar 0 of the realized curve.
+        start = np.full((sample.shape[0], 1), paths.initial_capital, dtype=sample.dtype)
+        curves = np.hstack([start, sample])
+        drawn = curves[:: max(1, curves.shape[0] // _FAN_LINES)][:_FAN_LINES]
+        bars = drawn.shape[1]
+        points = min(_FAN_BAR_POINTS, bars)
+        if points < bars and points > 1:
+            # ``linspace`` keeps the first and last bar exactly, so the fan ends
+            # on the same bar as the realized run. The spacing it samples at is
+            # within one bar of the even ``dx`` grid below, which no reader can
+            # see on a background texture.
+            drawn = drawn[:, np.round(np.linspace(0, bars - 1, points)).astype(int)]
+            dx = (bars - 1) / (points - 1)
+        else:
+            dx = 1.0
+        for row, path in enumerate(np.round(drawn).astype(float)):
+            fig.add_trace(
+                go.Scatter(
+                    y=path.tolist(),
+                    # ``x0``/``dx`` spaces the points without emitting an x
+                    # array. One flat trace with gaps between paths would need
+                    # an explicit x repeated per path, which measured 1.6x
+                    # larger than these per-path traces.
+                    x0=0,
+                    dx=dx,
+                    name=f"{drawn.shape[0]} simulated paths",
+                    legendgroup="paths",
+                    showlegend=row == 0,
+                    mode="lines",
+                    line={"color": "rgba(148,163,184,.18)", "width": 1},
+                    hoverinfo="skip",
+                )
+            )
+    for pct, band in zip(paths.band_percentiles, paths.bands, strict=True):
+        label, color = _FAN_BAND_STYLE.get(pct, (f"p{pct:02d}", "#94a3b8"))
+        fig.add_trace(
+            go.Scatter(
+                y=np.round(band).tolist(),
+                name=f"Simulated {label}",
+                mode="lines",
+                line={"color": color, "width": 2, "dash": "dot"},
+            )
+        )
+    fig.add_trace(
+        go.Scatter(
+            y=np.round(equity.to_numpy()).tolist(),
+            name="Realized run",
+            mode="lines",
+            line={"color": "#facc15", "width": 3},
+        )
+    )
+    fig.update_xaxes(title="Bar")
+    fig.update_yaxes(title="Equity")
+    return figure_html(fig, "tearsheet-mc-paths", height=420)
+
+
+def _distribution_html(
+    values: np.ndarray,
+    div_id: str,
+    *,
+    realized: float,
+    label: str,
+) -> str:
+    """Histogram of a per-iteration outcome, with the realized run marked."""
+    fig = px.histogram(x=values, nbins=60, labels={"x": label})
+    fig.update_traces(marker_color="#0f766e")
+    # One vectorized call rather than three: each ``np.percentile`` sorts the
+    # whole array, and these three want the same sort.
+    p05, median, p95 = (float(v) for v in np.percentile(values, [5, 50, 95]))
+    markers = [
+        ("p05", p05, "#b91c1c"),
+        ("median", median, "#38bdf8"),
+        ("p95", p95, "#16a34a"),
+        ("realized", realized, "#facc15"),
+    ]
+    # Put labels for the same value on separate rows. Labels for different
+    # values can use the first row because their marker lines separate them.
+    markers.sort(key=lambda marker: marker[1])
+    label_rows_by_value: dict[float, int] = {}
+    for name, value, color in markers:
+        label_row = label_rows_by_value.get(value, 0)
+        label_rows_by_value[value] = label_row + 1
+        fig.add_vline(
+            x=value,
+            line_color=color,
+            line_dash="dot",
+            annotation={
+                "text": name,
+                "font": {"color": color, "size": 11},
+                "yshift": label_row * 15,
+            },
+            annotation_position="top",
+        )
+    fig.update_xaxes(tickformat=".0%")
+    fig.update_layout(showlegend=False)
+    return figure_html(fig, div_id)
+
+
+_OUTCOME_PERCENTILES = (1, 5, 25, 50, 75, 95, 99)
+
+
+def _monte_carlo_percentile_rows(paths: "EquityMonteCarloPaths") -> str:
+    # One call per array rather than one per cell: ``np.percentile`` sorts the
+    # array it is given, and the loop sorted the same two 5,000-element arrays
+    # seven times each to fill seven rows.
+    returns = np.percentile(paths.terminal_returns, _OUTCOME_PERCENTILES)
+    drawdowns = np.percentile(paths.drawdowns, _OUTCOME_PERCENTILES)
+    return "".join(
+        f"<tr><th>p{pct:02d}</th><td>{ret:+.2%}</td><td>{dd:+.2%}</td></tr>"
+        for pct, ret, dd in zip(_OUTCOME_PERCENTILES, returns, drawdowns, strict=True)
+    )
+
+
+def _monte_carlo_sections(
+    result: BacktestResult,
+    mc: "EquityMonteCarloResult",
+    paths: "EquityMonteCarloPaths",
+) -> str:
+    """Render the Monte Carlo tab: the fan of paths, the outcome distributions."""
+    if paths.terminal_returns.size == 0:
+        return _empty_section(
+            "monte-carlo-paths", "Simulated Equity Paths", "No equity curve data."
+        )
+    equity = result.equity_curve
+    # Read rather than recompute: ``metrics`` owns this definition, and the
+    # Overview tab's Total Return row prints the same key. Two formulas here
+    # would let the two rows drift apart.
+    realized_return = float(result.metrics.get("total_return", 0.0))
+    realized_drawdown = float(result.metrics.get("max_drawdown", 0.0))
+    strided = (
+        ""
+        if paths.band_iterations >= mc.iterations
+        else (
+            f" The percentile bands are taken over {paths.band_iterations:,} of "
+            f"them, a uniform stride the memory budget forced at this size."
+        )
+    )
+    summary = (
+        f'<p class="empty">{mc.iterations:,} circular block-bootstrap paths of '
+        f"{mc.bars:,} bars, block {mc.block}, seed {mc.seed}. "
+        f"Each path resamples the realized daily equity returns, so it keeps the "
+        f"run's own concurrency, sizing and costs; only the order of the returns "
+        f"changes.{strided}</p>"
+    )
+    return (
+        '<section class="panel wide" id="monte-carlo-paths">'
+        "<h2>Simulated Equity Paths</h2>"
+        + summary
+        + _fan_chart_html(equity, paths)
+        + "</section>"
+        '<section class="panel" id="monte-carlo-returns">'
+        "<h2>Terminal Return Distribution</h2>"
+        + _distribution_html(
+            paths.terminal_returns,
+            "tearsheet-mc-returns",
+            realized=realized_return,
+            label="Terminal Return",
+        )
+        + "</section>"
+        '<section class="panel" id="monte-carlo-drawdowns">'
+        "<h2>Max Drawdown Distribution</h2>"
+        + _distribution_html(
+            paths.drawdowns,
+            "tearsheet-mc-drawdowns",
+            realized=realized_drawdown,
+            label="Max Drawdown",
+        )
+        + "</section>"
+        '<section class="panel" id="monte-carlo-percentiles">'
+        '<h2>Outcome Percentiles</h2><div class="table-wrap">'
+        '<table class="data-table" id="monte-carlo-percentile-table">'
+        "<tr><th>Percentile</th><th>Terminal Return</th><th>Max Drawdown</th></tr>"
+        + _monte_carlo_percentile_rows(paths)
+        + "</table></div></section>"
+        '<section class="panel" id="monte-carlo-summary">'
+        '<h2>Monte Carlo Summary</h2><div class="table-wrap">'
+        '<table class="data-table" id="monte-carlo-summary-table">'
+        f"<tr><th>Iterations</th><td>{mc.iterations:,}</td></tr>"
+        f"<tr><th>Bars per path</th><td>{mc.bars:,}</td></tr>"
+        f"<tr><th>Block (bars)</th><td>{mc.block}</td></tr>"
+        f"<tr><th>Seed</th><td>{mc.seed}</td></tr>"
+        f"<tr><th>Paths retained</th><td>{paths.paths.shape[0]:,}</td></tr>"
+        f"<tr><th>Realized return</th><td>{realized_return:+.2%}</td></tr>"
+        f"<tr><th>Realized max drawdown</th><td>{realized_drawdown:+.2%}</td></tr>"
+        f"<tr><th>Probability of profit</th>"
+        f"<td>{mc.probability_of_profit:+.2%}</td></tr>"
+        f"<tr><th>Risk of ruin</th><td>{mc.risk_of_ruin:+.2%}</td></tr>"
+        f"<tr><th>Ruin threshold</th>"
+        f"<td>{mc.ruin_threshold:.2%} of starting capital</td></tr>"
+        "</table></div></section>"
+    )
+
+
 def render_tearsheet(
     result: BacktestResult,
     output_file: str | Path,
@@ -223,6 +471,7 @@ def render_tearsheet(
     title: str = "Backtest Tear Sheet",
     extra_notes: Sequence[str] = (),
     sizing_comparison: tuple[BacktestResult, BacktestResult] | None = None,
+    monte_carlo: tuple["EquityMonteCarloResult", "EquityMonteCarloPaths"] | None = None,
 ) -> Path:
     """Render a static, self-contained HTML tear-sheet and return its path."""
     output_path = Path(output_file)
@@ -337,6 +586,24 @@ def render_tearsheet(
         or "<li>No warnings.</li>"
     )
     cfg = result.config
+    monte_carlo_html = (
+        "" if monte_carlo is None else _monte_carlo_sections(result, *monte_carlo)
+    )
+    # The tab only exists on a Monte Carlo run. Its CSS rules stay in the sheet
+    # unconditionally; a selector for an absent id is inert.
+    monte_carlo_input = (
+        ""
+        if monte_carlo is None
+        else '<input class="tab-radio" type="radio" name="report-tab" id="tab-montecarlo">'
+    )
+    monte_carlo_label = (
+        "" if monte_carlo is None else '<label for="tab-montecarlo">Monte Carlo</label>'
+    )
+    monte_carlo_panel = (
+        ""
+        if monte_carlo is None
+        else f'<section class="tab-panel" id="montecarlo-panel">{monte_carlo_html}</section>'
+    )
     _css = """\
     :root {
       --ink: #e5e7eb;
@@ -391,6 +658,7 @@ def render_tearsheet(
       font-size: 13px;
     }
     #tab-overview:checked ~ .tabs label[for="tab-overview"],
+    #tab-montecarlo:checked ~ .tabs label[for="tab-montecarlo"],
     #tab-ledger:checked ~ .tabs label[for="tab-ledger"] {
       color: var(--ink);
       border-color: var(--accent);
@@ -398,6 +666,7 @@ def render_tearsheet(
     }
     .tab-panel { display: none; }
     #tab-overview:checked ~ #overview-panel,
+    #tab-montecarlo:checked ~ #montecarlo-panel,
     #tab-ledger:checked ~ #ledger-panel {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -448,6 +717,7 @@ def render_tearsheet(
     @media (max-width: 900px) {
       header, main { padding-left: 16px; padding-right: 16px; }
       #tab-overview:checked ~ #overview-panel,
+      #tab-montecarlo:checked ~ #montecarlo-panel,
       #tab-ledger:checked ~ #ledger-panel,
       .chart-grid { grid-template-columns: 1fr; }
       .wide, .metrics { grid-column: auto; }
@@ -470,8 +740,10 @@ def render_tearsheet(
   <main>
     <input class="tab-radio" type="radio" name="report-tab" id="tab-overview" checked>
     <input class="tab-radio" type="radio" name="report-tab" id="tab-ledger">
+    {monte_carlo_input}
     <nav class="tabs" aria-label="Backtest report tabs">
       <label for="tab-overview">Overview</label>
+      {monte_carlo_label}
       <label for="tab-ledger">Trade Ledger</label>
     </nav>
     <section class="tab-panel" id="overview-panel">
@@ -483,6 +755,7 @@ def render_tearsheet(
     <section class="tab-panel" id="ledger-panel">
       <section class="panel wide" id="trade-ledger"><h2>Trade Ledger</h2><div class="table-wrap ledger-wrap">{ledger_html}</div></section>
     </section>
+    {monte_carlo_panel}
   </main>""",
         head_extra=f"<script>{get_plotlyjs()}</script>",
     )

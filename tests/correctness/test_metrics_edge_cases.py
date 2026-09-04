@@ -17,7 +17,7 @@ from screener.backtester.metrics import (
     _alpha_beta,
     _cagr,
     _calmar,
-    _daily_returns,
+    bar_returns,
     _dsr,
     _max_drawdown,
     _psr,
@@ -61,9 +61,9 @@ def test_calmar_empty_returns_zero():
     assert _calmar(pd.Series(dtype=float)) == 0.0
 
 
-def test_daily_returns_empty_is_empty():
+def test_bar_returns_empty_is_empty():
     """Guard: `if equity.empty or len(equity) < 2: return pd.Series(dtype=float)`"""
-    result = _daily_returns(pd.Series(dtype=float))
+    result = bar_returns(pd.Series(dtype=float))
     assert isinstance(result, pd.Series)
     assert result.empty
 
@@ -96,9 +96,9 @@ def test_calmar_single_element_equity_returns_zero():
     assert _calmar(pd.Series([100.0])) == 0.0
 
 
-def test_daily_returns_single_element_is_empty():
+def test_bar_returns_single_element_is_empty():
     """Single-bar equity → len < 2 guard → empty Series."""
-    result = _daily_returns(pd.Series([100.0]))
+    result = bar_returns(pd.Series([100.0]))
     assert result.empty
 
 
@@ -217,10 +217,10 @@ def test_calmar_constant_equity_is_zero():
     assert _calmar(equity) == 0.0
 
 
-def test_daily_returns_constant_equity_all_zeros():
+def test_bar_returns_constant_equity_all_zeros():
     """pct_change on constant equity = 0 for every bar."""
     equity = pd.Series([100.0] * 5)
-    result = _daily_returns(equity)
+    result = bar_returns(equity)
     assert len(result) == 4
     assert (result == 0.0).all()
 

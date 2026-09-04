@@ -105,6 +105,20 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
     ("expectancy", "Expectancy", "pct"),
     ("winning_trades", "Winning Trades", "count"),
     ("losing_trades", "Losing Trades", "count"),
+    # Monte Carlo block-bootstrap of the equity curve. Only the
+    # backtest-monte-carlo command populates these; every other run
+    # omits the keys entirely and the rows simply do not render.
+    ("mc_iterations", "MC Iterations", "int"),
+    ("mc_block", "MC Block (bars)", "int"),
+    ("mc_median_return", "MC Median Return", "pct"),
+    ("mc_return_p05", "MC Return p05", "pct"),
+    ("mc_return_p95", "MC Return p95", "pct"),
+    ("mc_median_drawdown", "MC Median Drawdown", "pct"),
+    ("mc_drawdown_p05", "MC Drawdown p05", "pct"),
+    ("mc_worst_drawdown", "MC Worst Drawdown", "pct"),
+    ("mc_probability_of_profit", "MC Probability of Profit", "pct"),
+    ("mc_risk_of_ruin", "MC Risk of Ruin", "pct"),
+    ("mc_ruin_threshold", "MC Ruin Threshold", "pct"),
 )
 _RESULT_VIEW_SPECS = {key: (label, kind) for key, label, kind in _RESULT_VIEW_ORDER}
 
@@ -213,7 +227,7 @@ def periods_per_year_for_interval(interval: str) -> int:
     return TRADING_DAYS_PER_YEAR * _BARS_PER_SESSION.get(interval, 1)
 
 
-def _daily_returns(equity: pd.Series) -> pd.Series:
+def bar_returns(equity: pd.Series) -> pd.Series:
     if equity.empty or len(equity) < 2:
         return pd.Series(dtype=float)
     return equity.pct_change().dropna()
@@ -528,9 +542,9 @@ def compute_metrics(
     n_trials: int = 1,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> dict:
-    daily = _daily_returns(equity)
+    daily = bar_returns(equity)
     bench_daily = (
-        _daily_returns(benchmark) if not benchmark.empty else pd.Series(dtype=float)
+        bar_returns(benchmark) if not benchmark.empty else pd.Series(dtype=float)
     )
     starting_equity = float(equity.iloc[0]) if not equity.empty else 0.0
     final_equity = float(equity.iloc[-1]) if not equity.empty else 0.0
