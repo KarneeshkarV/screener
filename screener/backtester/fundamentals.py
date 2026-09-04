@@ -8,7 +8,6 @@ remain ordinary Pine-like formulas while fundamentals stay point-in-time.
 from __future__ import annotations
 
 import os
-import threading
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -24,6 +23,7 @@ from screener.backtester.data import load_env_file
 from screener.factors.fundamentals import FUNDAMENTAL_COLUMNS, stamp_fundamentals
 from screener.financials import as_percent as _as_percent
 from screener.financials import first_number, pct_change
+from screener.http_pool import pooled_session
 from screener.provider_utils import fmp_get
 from screener.providers import CachedProvider, ProviderSpec
 
@@ -219,6 +219,34 @@ def _fetch_fmp_sections(
     return payload
 
 
+def _frame_by_effective_date(
+    records: list[dict[str, Any]], fields: tuple[str, ...]
+) -> pd.DataFrame:
+    """Index dated records by effective date, the last value for a day winning.
+
+    Every ``effective_date`` reaching here is already a midnight tz-naive
+    ``Timestamp``: the FMP path takes them from ``_effective_date``, the India
+    path from ``_parse_india_period_end`` plus a whole-day lag, and both drop
+    the row when the parse fails. This used to re-run ``pd.to_datetime`` on the
+    column and then ``tz_localize(None).normalize()`` on the result, which were
+    three no-ops on every payload either caller has ever produced.
+
+    Building the index directly is not only cheaper, it fails louder. The
+    ``errors="coerce"`` in that re-parse was the one case where the code was
+    not a no-op, and it did the wrong thing: a value that somehow broke the
+    invariant became ``NaT`` and was quietly dropped by the ``notna`` filter,
+    so a fundamentals row would vanish from the point-in-time frame with
+    nothing logged. ``pd.DatetimeIndex`` raises on it instead.
+    """
+    frame = pd.DataFrame(records)
+    frame.index = pd.DatetimeIndex(frame.pop("effective_date"))
+    for col in fields:
+        if col in frame.columns:
+            frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    frame = frame[~frame.index.duplicated(keep="last")].sort_index()
+    return frame.reindex(columns=list(fields))
+
+
 def _normalize_fmp_payload(
     payload: Mapping[str, Any],
     *,
@@ -291,15 +319,7 @@ def _normalize_fmp_payload(
     if not records:
         return pd.DataFrame(columns=list(fields), index=pd.DatetimeIndex([]))
 
-    frame = pd.DataFrame(records)
-    frame.index = pd.to_datetime(frame.pop("effective_date"), errors="coerce")
-    frame = frame[frame.index.notna()]
-    frame.index = cast(pd.DatetimeIndex, frame.index).tz_localize(None).normalize()
-    for col in fields:
-        if col in frame.columns:
-            frame[col] = pd.to_numeric(frame[col], errors="coerce")
-    frame = frame[~frame.index.duplicated(keep="last")].sort_index()
-    return frame.reindex(columns=list(fields))
+    return _frame_by_effective_date(records, fields)
 
 
 class FMPFundamentalFetcher:
@@ -333,13 +353,12 @@ class FMPFundamentalFetcher:
         self.lag_days = max(int(lag_days), 0)
         self.refresh = bool(refresh)
         self.cache_ttl = cache_ttl
-        self.session = session or requests.Session()
-        # An injected session is an explicit request to route every call
-        # through that object (a test double, a proxy, a mounted retry
-        # adapter), so it wins over the per-thread pooling in ``fetch``.
-        self._injected_session = session is not None
         self.limit = max(int(limit), 1)
         self.max_workers = max(int(max_workers), 1)
+        # One pooled session for every worker, sized to the worker count. See
+        # ``screener/http_pool.py`` for why this is shared rather than
+        # per-thread, and why ``nse_client`` is the one place that differs.
+        self.session = pooled_session(self.max_workers, session=session)
 
     def fetch(
         self,
@@ -350,39 +369,6 @@ class FMPFundamentalFetcher:
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
         ticker_list = [t for t in dict.fromkeys(tickers) if t]
-
-        # One session per worker thread, reused across every ticker it
-        # handles. This used to build a fresh ``requests.Session()`` per
-        # ticker, so all five section requests for that ticker paid a new TCP
-        # connect and a full TLS handshake. On a cold 850-ticker fetch that
-        # was 24% of wall time opening connections it then threw away (py-spy
-        # self-time: 16.1% ``do_handshake``, 8.0% ``create_connection``).
-        # Per-thread keeps the isolation that motivated the original code,
-        # because ``requests.Session`` is not thread-safe, while letting HTTP
-        # keep-alive work across the ~106 tickers each worker handles.
-        #
-        # The pool is scoped to this call rather than to the instance: the
-        # executor below is per-call too, so nothing survives to be reused,
-        # holding a ``threading.local`` on the instance made the fetcher
-        # unpicklable, and a local pool can be closed on the way out instead
-        # of leaving its sockets to the collector.
-        shared = (
-            self.session if self._injected_session or self.max_workers == 1 else None
-        )
-        pool_local = threading.local()
-        pooled: list[requests.Session] = []
-        pooled_lock = threading.Lock()
-
-        def worker_session() -> requests.Session:
-            if shared is not None:
-                return shared
-            session = getattr(pool_local, "session", None)
-            if session is None:
-                session = requests.Session()
-                with pooled_lock:
-                    pooled.append(session)
-                pool_local.session = session
-            return cast(requests.Session, session)
 
         def fetch_one(ticker: str) -> tuple[str, pd.DataFrame]:
             # FMP serves NSE/BSE data under the full ``RELIANCE.NS``/``.BO``
@@ -397,7 +383,7 @@ class FMPFundamentalFetcher:
                 return _fetch_fmp_sections(
                     symbol,
                     api_key=cast(str, self.api_key),
-                    session=worker_session(),
+                    session=self.session,
                     limit=self.limit,
                     fields=self.fields,
                 )
@@ -421,34 +407,27 @@ class FMPFundamentalFetcher:
             return ticker, frame
 
         out: dict[str, pd.DataFrame] = {}
-        try:
-            if len(ticker_list) <= 1 or self.max_workers == 1:
-                for ticker in ticker_list:
-                    key, frame = fetch_one(ticker)
-                    out[key] = frame
-                return out
-
-            with ThreadPoolExecutor(
-                max_workers=min(self.max_workers, len(ticker_list))
-            ) as pool:
-                future_to_ticker = {
-                    pool.submit(fetch_one, ticker): ticker for ticker in ticker_list
-                }
-                for future in as_completed(future_to_ticker):
-                    ticker = future_to_ticker[future]
-                    try:
-                        key, frame = future.result()
-                    except Exception:
-                        out[ticker] = pd.DataFrame(columns=list(self.fields))
-                    else:
-                        out[key] = frame
+        if len(ticker_list) <= 1 or self.max_workers == 1:
+            for ticker in ticker_list:
+                key, frame = fetch_one(ticker)
+                out[key] = frame
             return out
-        finally:
-            # The executor has joined its threads by here, so every pooled
-            # session is unreachable. Close them rather than leave up to
-            # ``max_workers`` connection pools for the collector to reap.
-            for session in pooled:
-                session.close()
+
+        with ThreadPoolExecutor(
+            max_workers=min(self.max_workers, len(ticker_list))
+        ) as pool:
+            future_to_ticker = {
+                pool.submit(fetch_one, ticker): ticker for ticker in ticker_list
+            }
+            for future in as_completed(future_to_ticker):
+                ticker = future_to_ticker[future]
+                try:
+                    key, frame = future.result()
+                except Exception:
+                    out[ticker] = pd.DataFrame(columns=list(self.fields))
+                else:
+                    out[key] = frame
+        return out
 
 
 def _india_period_end(label: Any) -> pd.Timestamp | None:
@@ -549,15 +528,7 @@ def _normalize_openscreener_payload(
             record["revenue_up_3q"] = _increased_last_n_revenues(sorted_rows, pos, 3)
         records.append({key: record.get(key) for key in ("effective_date", *fields)})
 
-    frame = pd.DataFrame(records)
-    frame.index = pd.to_datetime(frame.pop("effective_date"), errors="coerce")
-    frame = frame[frame.index.notna()]
-    frame.index = cast(pd.DatetimeIndex, frame.index).tz_localize(None).normalize()
-    for col in fields:
-        if col in frame.columns:
-            frame[col] = pd.to_numeric(frame[col], errors="coerce")
-    frame = frame[~frame.index.duplicated(keep="last")].sort_index()
-    return frame.reindex(columns=list(fields))
+    return _frame_by_effective_date(records, fields)
 
 
 class OpenScreenerFundamentalFetcher:

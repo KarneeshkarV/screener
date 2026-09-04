@@ -23,7 +23,6 @@ from typing import Protocol, TypeVar, cast
 
 import pandas as pd
 import requests
-from requests.adapters import HTTPAdapter
 
 from screener import _optional
 from screener.backtester.sessions import drop_incomplete_sessions
@@ -55,6 +54,7 @@ from screener.backtester.price_cache import (
 from screener.backtester.price_cache import (
     save_cached_frame as _save_cache,
 )
+from screener.http_pool import pooled_session
 from screener.backtester.price_frames import (
     CORPORATE_ACTION_COLUMNS as CORPORATE_ACTION_COLUMNS,
 )
@@ -694,13 +694,7 @@ class FMPPriceFetcher:
         self.refresh = bool(refresh)
         self.strict = bool(strict)
         self.max_workers = max(1, int(max_workers))
-        self.session = session or requests.Session()
-        if hasattr(self.session, "mount"):
-            adapter = HTTPAdapter(
-                pool_connections=self.max_workers, pool_maxsize=self.max_workers
-            )
-            self.session.mount("http://", adapter)
-            self.session.mount("https://", adapter)
+        self.session = pooled_session(self.max_workers, session=session)
         self.client = FmpClient(
             self.api_key,
             base_url=FMP_V3_BASE_URL,

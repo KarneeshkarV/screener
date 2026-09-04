@@ -258,23 +258,24 @@ def _record_fetch_sessions(monkeypatch, fetcher, tickers):
     return seen
 
 
-def test_fetch_reuses_one_session_per_worker_thread(monkeypatch):
-    """One session per worker thread, so HTTP keep-alive survives across tickers.
+def test_fetch_shares_one_pooled_session_across_every_worker(monkeypatch):
+    """One pooled session serves all workers, so keep-alive spans all tickers.
 
-    The old code built a fresh ``requests.Session`` per ticker, which meant a
-    new TCP connect plus TLS handshake for each of that ticker's five section
-    requests. Assert on what ``_fetch_fmp_sections`` actually receives: a test
-    that only exercises the accessor stays green if the per-ticker session is
-    reintroduced at the call site.
+    The original code built a fresh ``requests.Session`` per ticker, paying a
+    TCP connect and TLS handshake for each of that ticker's five section
+    requests; a later cut kept one per worker thread, which fragmented
+    keep-alive across N pools. Assert on what ``_fetch_fmp_sections`` actually
+    receives, because a test that only exercises an accessor stays green if a
+    per-ticker session is reintroduced at the call site.
     """
     monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
-    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=2)
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=4)
     tickers = [f"T{i}" for i in range(12)]
 
     seen = _record_fetch_sessions(monkeypatch, fetcher, tickers)
 
     assert len(seen) == len(tickers)
-    assert 0 < len({id(session) for session in seen}) <= fetcher.max_workers
+    assert {id(session) for session in seen} == {id(fetcher.session)}
 
 
 def test_fetch_routes_every_call_through_an_injected_session(monkeypatch):
@@ -293,21 +294,19 @@ def test_fetch_routes_every_call_through_an_injected_session(monkeypatch):
     assert seen and all(session is injected for session in seen)
 
 
-def test_fetch_closes_the_sessions_it_pooled(monkeypatch):
-    """Pooled sessions are closed on the way out, not left to the collector."""
-    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
-    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=2)
-    closed: list[object] = []
-    real_close = requests.Session.close
-    monkeypatch.setattr(
-        requests.Session,
-        "close",
-        lambda self: (closed.append(self), real_close(self))[1],
-    )
+def test_fetcher_sizes_its_connection_pool_to_max_workers():
+    """A pool smaller than the worker count re-handshakes on every overflow.
 
-    seen = _record_fetch_sessions(monkeypatch, fetcher, ["AAA", "BBB", "CCC", "DDD"])
+    ``HTTPAdapter`` defaults to 10 connections, so 16 workers on an unsized
+    pool log ``Connection pool is full, discarding connection`` and pay the
+    handshake this fetcher exists to avoid - silently, since it is a warning.
+    """
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=16)
 
-    assert {id(session) for session in seen} <= {id(session) for session in closed}
+    adapter = fetcher.session.get_adapter("https://financialmodelingprep.com")
+
+    assert adapter._pool_maxsize == 16
+    assert adapter._pool_connections == 16
 
 
 def test_fetcher_survives_a_process_boundary():
@@ -543,6 +542,37 @@ def test_filing_timestamp_matches_the_pandas_parse_it_replaced(raw):
     parsed = pd.to_datetime(raw, errors="coerce")
     expected = None if pd.isna(parsed) else parsed.tz_localize(None).normalize()
     assert fundamentals._filing_timestamp(raw) == expected
+
+
+def test_frame_by_effective_date_raises_rather_than_dropping_a_bad_stamp():
+    """A broken effective date must fail loudly, not vanish from the frame.
+
+    The indexing used to re-run ``pd.to_datetime(..., errors="coerce")`` on a
+    column whose every value was already a normalized tz-naive ``Timestamp``.
+    That was a no-op on real payloads, but it meant anything that did break
+    the invariant became ``NaT`` and was silently dropped by the ``notna``
+    filter, so a fundamentals row would disappear with nothing logged.
+    """
+    records = [
+        {"effective_date": pd.Timestamp("2024-03-31"), "roe_ttm": 12.0},
+        {"effective_date": pd.Timestamp("2024-06-30", tz="UTC"), "roe_ttm": 13.0},
+    ]
+
+    with pytest.raises(ValueError):
+        fundamentals._frame_by_effective_date(records, ("roe_ttm",))
+
+
+def test_frame_by_effective_date_keeps_the_last_record_for_a_day():
+    records = [
+        {"effective_date": pd.Timestamp("2024-03-31"), "roe_ttm": 12.0},
+        {"effective_date": pd.Timestamp("2024-03-31"), "roe_ttm": 15.0},
+        {"effective_date": pd.Timestamp("2024-01-31"), "roe_ttm": 9.0},
+    ]
+
+    frame = fundamentals._frame_by_effective_date(records, ("roe_ttm",))
+
+    assert list(frame.index) == [pd.Timestamp("2024-01-31"), pd.Timestamp("2024-03-31")]
+    assert list(frame["roe_ttm"]) == [9.0, 15.0]
 
 
 def test_filing_timestamp_falls_back_for_non_string_input():

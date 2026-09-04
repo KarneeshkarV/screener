@@ -44,9 +44,15 @@ _FEATURE_PACKAGES = (
 # directories by importing the modules that own them (``price_cache``,
 # ``universes``, ``operator.fetch``) lazily inside functions, which is a
 # registry lookup rather than a layering inversion.
+#
+# ``screener/http_pool.py`` joins them as the single pooled-session shape both
+# FMP fetchers now share. It has no screener imports at all and must keep
+# none: the moment it reaches back into ``backtester`` for a worker count or a
+# cache path, the transport depends on one of its callers again.
 _SEAM_MODULES = (
     "screener/config.py",
     "screener/fmp.py",
+    "screener/http_pool.py",
     "screener/resilience.py",
     "screener/providers.py",
 )

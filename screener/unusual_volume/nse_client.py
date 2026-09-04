@@ -73,8 +73,16 @@ def _new_session() -> requests.Session:
 def get_primed_session() -> requests.Session:
     """Return the calling thread's session with NSE cookies seeded (once).
 
-    ``requests.Session`` is not thread-safe, so each worker thread keeps its
-    own homepage-primed session in thread-local storage.
+    This is the one place in the repo that keeps a session per thread rather
+    than sharing a pooled one from ``screener/http_pool.py``, and the reason
+    is cookie state, not thread-safety in the abstract. NSE gates its APIs
+    behind per-session priming, ``_prime_page`` tracks what each session has
+    visited by ``id()``, and ``_reprime`` throws one thread's session away on
+    a soft block while the others keep working. Share the session and a single
+    401 re-primes every worker at once.
+
+    The FMP fetchers have no such state, so they share one pooled session
+    instead. Read ``screener/http_pool.py`` before making these agree.
     """
     session: requests.Session | None = getattr(_tls, "session", None)
     if session is None:
