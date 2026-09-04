@@ -112,8 +112,19 @@ def _signal_mask_matrix(
     """Assemble a master-calendar bool matrix from per-ticker Series or arrays.
 
     Bool ndarrays are assumed aligned to ``bars_by_tv[tv].index`` (the panel
-    evaluator contract). Series keep the historical reindex path so mixed
-    callers stay correct.
+    evaluator contract). Series carry their own index.
+
+    Alignment is by exact label. ``Index.get_indexer`` returns -1 for a master
+    date the ticker has no bar on, and those columns keep the ``False`` the
+    zeroed block already holds, which is what ``reindex(...).fillna(False)``
+    used to produce one Series at a time. Doing it positionally is about 4.5x
+    faster across a 5,000-name field, where the per-ticker Series round trip
+    cost 0.83s.
+
+    Resist the temptation to use ``searchsorted(side="right")`` here, which is
+    what the close and volume matrices below do. Those want the last known
+    bar; a signal must not carry into a session the ticker did not trade, and
+    searchsorted would do exactly that.
     """
     n_days = len(master_ix)
     n_tickers = len(valid_tickers)
@@ -122,23 +133,29 @@ def _signal_mask_matrix(
         signal = signals_by_tv.get(tv)
         if signal is None:
             continue
-        bars = bars_by_tv[tv]
         if isinstance(signal, np.ndarray):
+            index = bars_by_tv[tv].index
             values = signal if signal.dtype == bool else np.asarray(signal, dtype=bool)
-            idx = bars.index
-            if len(values) == n_days and idx.equals(master_ix):
-                block[:, column] = values
-                continue
+        else:
+            index = signal.index
+            values = signal.fillna(False).astype(bool).to_numpy(dtype=bool)
+        if len(values) == n_days and index.equals(master_ix):
+            block[:, column] = values
+            continue
+        if len(values) != len(index) or not index.is_unique:
+            # A length mismatch or a duplicated label is a caller bug, and the
+            # pandas path raises a message that names it. get_indexer would
+            # raise something less useful, or read out of bounds.
             block[:, column] = (
-                pd.Series(values, index=idx, copy=False)
+                pd.Series(values, index=index, copy=False)
                 .reindex(master_ix)
                 .fillna(False)
                 .to_numpy(dtype=bool)
             )
             continue
-        block[:, column] = (
-            signal.reindex(master_ix).fillna(False).astype(bool).to_numpy(dtype=bool)
-        )
+        positions = index.get_indexer(master_ix)
+        found = positions >= 0
+        block[found, column] = values[positions[found]]
     return pd.DataFrame(block, index=master_ix, columns=valid_tickers, copy=False)
 
 
