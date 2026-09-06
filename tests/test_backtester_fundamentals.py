@@ -310,7 +310,7 @@ def test_fetch_closes_the_sessions_it_pooled(monkeypatch):
     assert {id(session) for session in seen} <= {id(session) for session in closed}
 
 
-def test_fetcher_survives_a_process_boundary():
+def test_fetcher_survives_a_process_boundary(monkeypatch):
     """The fetcher must stay picklable so it can travel to a worker process.
 
     Nothing pickles this fetcher today - ``optimization/grid.py`` is the only
@@ -319,7 +319,13 @@ def test_fetcher_survives_a_process_boundary():
     dataclass that carries the price fetcher, so the day one is submitted the
     failure lands at submit time with a ``TypeError`` about ``_thread._local``
     rather than anywhere near the cause. Holding the line is a one-line cost.
+
+    ``load_env_file`` is patched out for the same reason as its three
+    siblings: unpatched it reads the repo's real ``.env`` and, because
+    ``screener.config`` latches ``_DOTENV_LOADED`` for the process, leaves
+    ``FMP_API_KEY`` in ``os.environ`` for every test that runs after it.
     """
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
     fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=4)
 
     revived = pickle.loads(pickle.dumps(fetcher))
@@ -327,6 +333,118 @@ def test_fetcher_survives_a_process_boundary():
     assert revived.market == fetcher.market
     assert revived.max_workers == fetcher.max_workers
     assert copy.deepcopy(fetcher).fields == fetcher.fields
+
+
+def test_normalize_survives_a_row_whose_date_pandas_rejects(monkeypatch):
+    """A good ``acceptedDate`` with a junk ``date`` must not abort the payload.
+
+    Making ``_effective_date`` total moved the failure rather than removing it:
+    such a row clears the ``continue`` guard and then reaches the prior-year
+    lookup, where ``pd.Timestamp("0000-00-00")`` raised ``DateParseError``. On
+    the serial path there is no ``except`` above it, so one bad row killed
+    ``screener backtest --tickers X`` with a traceback.
+    """
+    payload = {
+        "income": [
+            {"date": "0000-00-00", "acceptedDate": "2024-05-15", "revenue": 100.0},
+            {"date": "2024-03-31", "acceptedDate": "2024-05-15", "revenue": 100.0},
+        ]
+    }
+
+    frame = fundamentals._normalize_fmp_payload(
+        payload, fields=("revenue_growth_yoy",), lag_days=0
+    )
+
+    assert len(frame) == 1
+    assert frame.index[0] == pd.Timestamp("2024-05-15")
+
+
+def test_prior_year_key_is_none_for_a_date_pandas_rejects():
+    assert fundamentals._prior_year_key("2024-06-30") == "2023-06-30"
+    assert fundamentals._prior_year_key("0000-00-00") is None
+    assert fundamentals._prior_year_key("not-a-date") is None
+
+
+def test_session_assigned_after_construction_is_routed_through(monkeypatch):
+    """``fetcher.session = double`` must win, not be silently ignored.
+
+    The injected-or-not decision used to live in a second attribute written
+    only in ``__init__``, so a session installed afterwards left the flag
+    false and every worker built a real one and hit the network.
+    """
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=4)
+    double = requests.Session()
+    fetcher.session = double
+
+    seen = _record_fetch_sessions(monkeypatch, fetcher, ["AAA", "BBB", "CCC"])
+
+    assert seen and all(session is double for session in seen)
+
+
+def test_injected_session_pool_is_sized_for_the_fan_out(monkeypatch):
+    """A shared session needs a pool as wide as the fan-out sharing it.
+
+    The default ``HTTPAdapter`` holds 10 connections, so handing an unsized
+    session to 16 workers makes urllib3 discard connections and throws away
+    the keep-alive this fetcher exists to gain.
+    """
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    injected = requests.Session()
+
+    fundamentals.FMPFundamentalFetcher(api_key="x", session=injected, max_workers=16)
+
+    adapter = injected.get_adapter("https://financialmodelingprep.com")
+    assert adapter._pool_connections == 16
+    assert adapter._pool_maxsize == 16
+
+
+def test_no_session_is_allocated_when_the_pool_serves_the_fan_out(monkeypatch):
+    """Without an injected session the instance must not build a dead one.
+
+    ``shared`` was decided by ``max_workers`` while the execution path was
+    decided by the ticker count, so the default 8-worker fetcher allocated a
+    ``requests.Session`` in ``__init__`` that no path ever used or closed.
+    """
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=4)
+
+    assert fetcher._session is None
+
+    _record_fetch_sessions(monkeypatch, fetcher, ["AAA", "BBB", "CCC"])
+
+    assert fetcher._session is None
+
+
+def test_a_failed_ticker_is_logged_and_returns_a_dated_empty_frame(monkeypatch, caplog):
+    """A swallowed per-ticker failure must leave a trace and a usable frame.
+
+    Silent, a systematic parse failure across every ticker reads downstream as
+    a flat strategy with zero trades rather than as the data outage it is. The
+    fallback frame also has to carry the same ``DatetimeIndex`` as every other
+    return path, so a caller can slice it by date before checking ``.empty``.
+    """
+    monkeypatch.setattr(fundamentals, "load_env_file", lambda: None)
+    fetcher = fundamentals.FMPFundamentalFetcher(api_key="x", max_workers=2)
+
+    def boom(symbol, *, api_key, session, limit, fields):
+        raise RuntimeError("upstream is down")
+
+    monkeypatch.setattr(fundamentals, "_fetch_fmp_sections", boom)
+    monkeypatch.setattr(
+        fundamentals._FMP_PROVIDER,
+        "fetch",
+        lambda key, loader, **kwargs: loader(),
+    )
+
+    with caplog.at_level("WARNING", logger=fundamentals.LOG.name):
+        out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 1), date(2024, 12, 31))
+
+    assert set(out) == {"AAA", "BBB"}
+    for frame in out.values():
+        assert frame.empty
+        assert isinstance(frame.index, pd.DatetimeIndex)
+    assert "AAA" in caplog.text and "BBB" in caplog.text
 
 
 def test_openscreener_provider_rejects_non_india_market():

@@ -7,9 +7,10 @@ remain ordinary Pine-like formulas while fundamentals stay point-in-time.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date
@@ -18,6 +19,7 @@ from typing import Any, Protocol, cast
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
 
 from screener import _optional
 from screener.backtester.data import load_env_file
@@ -26,6 +28,8 @@ from screener.financials import as_percent as _as_percent
 from screener.financials import first_number, pct_change
 from screener.provider_utils import fmp_get
 from screener.providers import CachedProvider, ProviderSpec
+
+LOG = logging.getLogger(__name__)
 
 INDIA_FUNDAMENTAL_FILING_LAG_DAYS = 60
 # The default request is the full known vocabulary, which lives in
@@ -151,15 +155,32 @@ def _filing_timestamp(raw: Any) -> pd.Timestamp | None:
 
 
 @lru_cache(maxsize=1024)
-def _prior_year_key(row_date: str) -> str:
+def _prior_year_key(row_date: str) -> str | None:
     """``row_date`` shifted back one year, as the key FMP indexes rows by.
+
+    ``None`` when ``row_date`` is not a date pandas accepts. The parse has to
+    be total for the same reason ``_effective_date`` is: FMP serves rows whose
+    ``acceptedDate`` is good and whose ``date`` is junk (``"0000-00-00"``), and
+    those clear the caller's guard. Raising here aborted the whole
+    normalization, and on the single-ticker path there is no ``except`` above
+    it, so one bad row killed ``screener backtest --tickers X`` outright.
 
     ``pd.DateOffset(years=1)`` costs ~20us to build and apply, six times the
     filing-date parse above and the largest remaining per-row cost in
     ``_normalize_fmp_payload``. FMP serves the same ~20 quarter-end dates to
     every ticker in the universe, so the cache collapses ~45k calls to ~20.
+
+    Known limitation: the caller looks the result up as an exact key, so an
+    issuer on a 52/53-week fiscal calendar never matches. Such a filer reports
+    2024-06-29 against 2023-07-01, the lookup misses, and both YoY growth
+    columns come back ``None`` rather than failing loudly. Fixing that needs a
+    nearest-quarter match, which would move backtest numbers, so it is
+    deliberately not done here.
     """
-    return (pd.Timestamp(row_date) - pd.DateOffset(years=1)).date().isoformat()
+    ts = _filing_timestamp(row_date)
+    if ts is None:
+        return None
+    return (ts - pd.DateOffset(years=1)).date().isoformat()
 
 
 def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | None:
@@ -250,7 +271,7 @@ def _normalize_fmp_payload(
         enterprise = ev_by_date.get(row_date, {})
 
         prior_target = _prior_year_key(row_date)
-        prior_income = income_by_date.get(prior_target, {})
+        prior_income = income_by_date.get(prior_target, {}) if prior_target else {}
         revenue_growth = pct_change(
             first_number(row, "revenue"),
             first_number(prior_income, "revenue"),
@@ -302,6 +323,104 @@ def _normalize_fmp_payload(
     return frame.reindex(columns=list(fields))
 
 
+def _empty_frame(fields: tuple[str, ...]) -> pd.DataFrame:
+    """The empty result a fetcher returns for a ticker it could not resolve.
+
+    Every path in this module has to agree on the index type. The per-ticker
+    error fallback used to build a bare ``RangeIndex`` while the normalizers
+    returned a ``DatetimeIndex``, so the two empties were not interchangeable
+    for a caller that sliced by date before checking ``.empty``.
+    """
+    return pd.DataFrame(columns=list(fields), index=pd.DatetimeIndex([]))
+
+
+def _fan_out(
+    ticker_list: list[str],
+    fetch_one: Callable[[str], tuple[str, pd.DataFrame]],
+    *,
+    fields: tuple[str, ...],
+    max_workers: int,
+) -> dict[str, pd.DataFrame]:
+    """Run ``fetch_one`` over ``ticker_list``, serially or across a pool.
+
+    All three fetchers in this module fan out identically, so they share one
+    implementation. Three byte-identical copies had already started to drift,
+    and the logging below would otherwise have had to land three times.
+
+    The two paths keep the exception semantics they have always had, and the
+    asymmetry is deliberate. A wide fan-out swallows a per-ticker failure
+    because one delisted or malformed symbol should not lose the other 849.
+    The serial path is what ``--tickers X`` takes, where a traceback names the
+    problem instead of hiding it behind an empty result.
+
+    The swallowed exception is logged either way. Silent, a systematic parse
+    failure across every ticker reads downstream as a flat strategy with zero
+    trades rather than as the data outage it is.
+    """
+    out: dict[str, pd.DataFrame] = {}
+    if not ticker_list:
+        return out
+
+    if len(ticker_list) <= 1 or max_workers == 1:
+        for ticker in ticker_list:
+            key, frame = fetch_one(ticker)
+            out[key] = frame
+        return out
+
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(ticker_list))) as pool:
+        future_to_ticker = {
+            pool.submit(fetch_one, ticker): ticker for ticker in ticker_list
+        }
+        for future in as_completed(future_to_ticker):
+            ticker = future_to_ticker[future]
+            try:
+                key, frame = future.result()
+            except Exception:
+                LOG.warning("fundamentals unavailable for %s", ticker, exc_info=True)
+                out[ticker] = _empty_frame(fields)
+            else:
+                out[key] = frame
+    return out
+
+
+class _ThreadSessionPool:
+    """One ``requests.Session`` per worker thread, closed together at the end.
+
+    ``requests.Session`` is not thread-safe, so a fan-out either gives every
+    worker its own session or shares one whose connection pool is sized for the
+    fan-out. Both answers already exist in this tree:
+    ``screener.unusual_volume.nse_client`` takes the first with a module-level
+    ``threading.local``, and ``FMPPriceFetcher`` in ``screener.backtester.data``
+    takes the second. This is the per-call form of the first, extracted so it
+    can be reused and tested on its own rather than living inline in one method.
+
+    Per-call rather than per-instance on purpose: the executor is per-call too,
+    so nothing survives to be reused, holding a ``threading.local`` on the
+    fetcher made it unpicklable, and the sockets can be closed on the way out
+    instead of left for the collector.
+    """
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+        self._sessions: list[requests.Session] = []
+        self._lock = threading.Lock()
+
+    def get(self) -> requests.Session:
+        """Return the calling thread's session, creating it on first use."""
+        session = cast("requests.Session | None", getattr(self._local, "session", None))
+        if session is None:
+            session = requests.Session()
+            with self._lock:
+                self._sessions.append(session)
+            self._local.session = session
+        return session
+
+    def close(self) -> None:
+        """Close every session this pool handed out."""
+        for session in self._sessions:
+            session.close()
+
+
 class FMPFundamentalFetcher:
     """Fetch dated US or India fundamentals from FMP and normalize expression columns."""
 
@@ -333,13 +452,59 @@ class FMPFundamentalFetcher:
         self.lag_days = max(int(lag_days), 0)
         self.refresh = bool(refresh)
         self.cache_ttl = cache_ttl
-        self.session = session or requests.Session()
-        # An injected session is an explicit request to route every call
-        # through that object (a test double, a proxy, a mounted retry
-        # adapter), so it wins over the per-thread pooling in ``fetch``.
-        self._injected_session = session is not None
         self.limit = max(int(limit), 1)
         self.max_workers = max(int(max_workers), 1)
+        self._session: requests.Session | None = None
+        # Whether a session was supplied. Kept in step by the ``session``
+        # setter below, so it cannot drift out of sync with ``_session``.
+        self._session_injected = session is not None
+        if session is not None:
+            self._session = session
+            self._size_session_pool()
+
+    @property
+    def session(self) -> requests.Session:
+        """The session supplied by the caller, or a lazily built own one.
+
+        A property because the routing decision in ``fetch`` needs exactly one
+        source of truth. It used to be mirrored in an ``_injected_session``
+        flag written only in ``__init__``, so assigning ``fetcher.session``
+        after construction - the ordinary way to install a test double or a
+        proxy - was silently ignored and every worker went to the real network.
+
+        Built on demand rather than in ``__init__`` so the fan-out path, which
+        gives each worker thread its own session, does not allocate one it
+        never uses and never closes.
+        """
+        if self._session is None:
+            self._session = requests.Session()
+            self._size_session_pool()
+        return self._session
+
+    @session.setter
+    def session(self, session: requests.Session) -> None:
+        self._session = session
+        self._session_injected = True
+        self._size_session_pool()
+
+    def _size_session_pool(self) -> None:
+        """Size the session's connection pool to this fetcher's fan-out.
+
+        A shared session is only as parallel as its pool. The default
+        ``HTTPAdapter`` holds 10 connections, so sharing an unsized session
+        across more workers than that makes urllib3 discard connections and
+        throws away the keep-alive this fetcher exists to gain.
+        ``FMPPriceFetcher`` in ``screener.backtester.data`` sizes its adapter
+        the same way for the same reason.
+        """
+        session = self._session
+        if session is None or not hasattr(session, "mount"):
+            return
+        adapter = HTTPAdapter(
+            pool_connections=self.max_workers, pool_maxsize=self.max_workers
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
 
     def fetch(
         self,
@@ -361,28 +526,17 @@ class FMPFundamentalFetcher:
         # because ``requests.Session`` is not thread-safe, while letting HTTP
         # keep-alive work across the ~106 tickers each worker handles.
         #
-        # The pool is scoped to this call rather than to the instance: the
-        # executor below is per-call too, so nothing survives to be reused,
-        # holding a ``threading.local`` on the instance made the fetcher
-        # unpicklable, and a local pool can be closed on the way out instead
-        # of leaving its sockets to the collector.
-        shared = (
-            self.session if self._injected_session or self.max_workers == 1 else None
-        )
-        pool_local = threading.local()
-        pooled: list[requests.Session] = []
-        pooled_lock = threading.Lock()
+        # An injected session overrides that: it is an explicit request to
+        # route every call through one object (a test double, a proxy, a
+        # mounted retry adapter), so it is shared across the workers even
+        # though sharing is what the pool exists to avoid. That is the
+        # caller's call to make, and ``_size_session_pool`` gives it a
+        # connection pool wide enough for the fan-out it is about to see.
+        shared = self.session if self._session_injected else None
+        pool = _ThreadSessionPool()
 
         def worker_session() -> requests.Session:
-            if shared is not None:
-                return shared
-            session = getattr(pool_local, "session", None)
-            if session is None:
-                session = requests.Session()
-                with pooled_lock:
-                    pooled.append(session)
-                pool_local.session = session
-            return cast(requests.Session, session)
+            return shared if shared is not None else pool.get()
 
         def fetch_one(ticker: str) -> tuple[str, pd.DataFrame]:
             # FMP serves NSE/BSE data under the full ``RELIANCE.NS``/``.BO``
@@ -420,68 +574,46 @@ class FMPFundamentalFetcher:
                 frame = frame.loc[(frame.index >= start_ts) & (frame.index <= end_ts)]
             return ticker, frame
 
-        out: dict[str, pd.DataFrame] = {}
         try:
-            if len(ticker_list) <= 1 or self.max_workers == 1:
-                for ticker in ticker_list:
-                    key, frame = fetch_one(ticker)
-                    out[key] = frame
-                return out
-
-            with ThreadPoolExecutor(
-                max_workers=min(self.max_workers, len(ticker_list))
-            ) as pool:
-                future_to_ticker = {
-                    pool.submit(fetch_one, ticker): ticker for ticker in ticker_list
-                }
-                for future in as_completed(future_to_ticker):
-                    ticker = future_to_ticker[future]
-                    try:
-                        key, frame = future.result()
-                    except Exception:
-                        out[ticker] = pd.DataFrame(columns=list(self.fields))
-                    else:
-                        out[key] = frame
-            return out
+            return _fan_out(
+                ticker_list,
+                fetch_one,
+                fields=self.fields,
+                max_workers=self.max_workers,
+            )
         finally:
             # The executor has joined its threads by here, so every pooled
             # session is unreachable. Close them rather than leave up to
             # ``max_workers`` connection pools for the collector to reap.
-            for session in pooled:
-                session.close()
+            pool.close()
 
 
-def _india_period_end(label: Any) -> pd.Timestamp | None:
+@lru_cache(maxsize=1024)
+def _parse_india_period_end(label: str | None) -> pd.Timestamp | None:
+    """Quarter-end stamp for one openscreener or yfinance India period label.
+
+    An ISO label costs ~212us: both ``format=`` parses have to fail before the
+    inferring ``pd.to_datetime`` runs. This is called once per quarterly row on
+    both India fundamentals paths, and the same ~20 quarter-end labels repeat
+    across every ticker in the universe, so the result is cached.
+
+    Callers pass ``row.get("date")`` from a JSON payload, or a label the
+    yfinance path built with ``strftime``, so the argument is a string or
+    ``None``. This used to be three functions so that a non-string label could
+    take an uncached branch for ``lru_cache`` hashability; nothing in the tree
+    ever reached it, and both spellings the branch existed for are hashable.
+    """
+    if not label:
+        return None
     for fmt in ("%b %Y", "%B %Y"):
         try:
-            return pd.to_datetime(str(label), format=fmt) + pd.offsets.MonthEnd(0)
+            return pd.to_datetime(label, format=fmt) + pd.offsets.MonthEnd(0)
         except (TypeError, ValueError):
             continue
     ts = pd.to_datetime(label, errors="coerce")
     if pd.isna(ts):
         return None
-    return cast(pd.Timestamp, ts).tz_localize(None).normalize() + pd.offsets.MonthEnd(0)
-
-
-@lru_cache(maxsize=1024)
-def _india_period_end_from_label(label: str) -> pd.Timestamp | None:
-    return _india_period_end(label)
-
-
-def _parse_india_period_end(label: Any) -> pd.Timestamp | None:
-    """Quarter-end stamp for one openscreener or yfinance India period label.
-
-    An ISO label costs ~212us: both ``format=`` parses have to fail before the
-    inferring ``pd.to_datetime`` runs. This is called once per quarterly row
-    on both India fundamentals paths, and the same ~20 quarter-end labels
-    repeat across every ticker in the universe, so cache the string case. A
-    non-string label stays uncached because it need not be hashable.
-    """
-    if not label:
-        return None
-    if isinstance(label, str):
-        return _india_period_end_from_label(label)
-    return _india_period_end(label)
+    return ts.tz_localize(None).normalize() + pd.offsets.MonthEnd(0)
 
 
 def _fetch_openscreener_quarterly(symbol: str) -> dict[str, Any]:  # pragma: no cover
@@ -633,28 +765,12 @@ class OpenScreenerFundamentalFetcher:
                 frame = frame.loc[(frame.index >= start_ts) & (frame.index <= end_ts)]
             return ticker, frame
 
-        out: dict[str, pd.DataFrame] = {}
-        if len(ticker_list) <= 1 or self.max_workers == 1:
-            for ticker in ticker_list:
-                key, frame = fetch_one(ticker)
-                out[key] = frame
-            return out
-
-        with ThreadPoolExecutor(
-            max_workers=min(self.max_workers, len(ticker_list))
-        ) as pool:
-            future_to_ticker = {
-                pool.submit(fetch_one, ticker): ticker for ticker in ticker_list
-            }
-            for future in as_completed(future_to_ticker):
-                ticker = future_to_ticker[future]
-                try:
-                    key, frame = future.result()
-                except Exception:
-                    out[ticker] = pd.DataFrame(columns=list(self.fields))
-                else:
-                    out[key] = frame
-        return out
+        return _fan_out(
+            ticker_list,
+            fetch_one,
+            fields=self.fields,
+            max_workers=self.max_workers,
+        )
 
 
 class YFinanceFundamentalFetcher:
@@ -710,28 +826,12 @@ class YFinanceFundamentalFetcher:
                 frame = frame.loc[(frame.index >= start_ts) & (frame.index <= end_ts)]
             return ticker, frame
 
-        out: dict[str, pd.DataFrame] = {}
-        if len(ticker_list) <= 1 or self.max_workers == 1:
-            for ticker in ticker_list:
-                key, frame = fetch_one(ticker)
-                out[key] = frame
-            return out
-
-        with ThreadPoolExecutor(
-            max_workers=min(self.max_workers, len(ticker_list))
-        ) as pool:
-            future_to_ticker = {
-                pool.submit(fetch_one, ticker): ticker for ticker in ticker_list
-            }
-            for future in as_completed(future_to_ticker):
-                ticker = future_to_ticker[future]
-                try:
-                    key, frame = future.result()
-                except Exception:
-                    out[ticker] = pd.DataFrame(columns=list(self.fields))
-                else:
-                    out[key] = frame
-        return out
+        return _fan_out(
+            ticker_list,
+            fetch_one,
+            fields=self.fields,
+            max_workers=self.max_workers,
+        )
 
 
 @dataclass(frozen=True)
