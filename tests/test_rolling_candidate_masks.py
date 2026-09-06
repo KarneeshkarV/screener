@@ -1,4 +1,4 @@
-"""Exact-label alignment in the rolling entry/exit signal masks.
+"""Exact-label alignment in the rolling entry and liquidity-filter masks.
 
 :func:`~screener.backtester.rolling_candidates._signal_mask_matrix` used to
 build one pandas Series per ticker and reindex it onto the master calendar.
@@ -6,6 +6,12 @@ It now writes positions straight into the block. These tests pin that the two
 agree on every calendar shape the panel actually produces, because the cheap
 wrong version of this change (``searchsorted``) carries a signal forward into
 a session the ticker never traded, which silently invents entries.
+
+Exit signals are deliberately not in scope. They never reach this function:
+``_build_rolling_candidate_matrices`` passes it ``entry_signals_by_tv`` and,
+since the filter mask was moved onto the same path, ``filter_signals_by_tv``.
+Exits travel through ``_RunCaches.exit_signals`` into ``rolling_simulation``
+and are aligned by a different mechanism, so nothing here covers them.
 """
 
 from __future__ import annotations
@@ -30,7 +36,14 @@ def _reindex_reference(
         if signal is None:
             continue
         if isinstance(signal, np.ndarray):
-            values = signal if signal.dtype == bool else np.asarray(signal, dtype=bool)
+            # NaN reads as "no signal" for arrays and Series alike, so the
+            # oracle must not use a plain bool cast here either: it maps NaN
+            # to True and would stop being an oracle for the float case.
+            values = (
+                signal
+                if signal.dtype == bool
+                else pd.Series(signal).fillna(False).astype(bool).to_numpy(dtype=bool)
+            )
             series = pd.Series(values, index=bars_by_tv[tv].index, copy=False)
         else:
             series = signal
@@ -101,3 +114,54 @@ def test_a_duplicated_bar_label_still_raises_the_pandas_message() -> None:
 def test_a_missing_ticker_signal_is_all_false() -> None:
     result = _signal_mask_matrix({}, {"T": _bars(MASTER)}, MASTER, ["T"])
     assert not result["T"].any()
+
+
+def test_a_non_bool_array_is_coerced_like_a_series() -> None:
+    """The array branch's coercion, which the parametrised oracle never takes.
+
+    Every case above builds bool values, so ``signal.dtype == bool`` short
+    circuits and the coercion is never exercised. It has to agree with the
+    Series branch: a plain ``np.asarray(..., dtype=bool)`` turns NaN into
+    True, which invents an entry the caller never signalled.
+    """
+    values = np.array([1.0, np.nan, 0.0, 2.0])
+    bars = {"T": _bars(MASTER[:4])}
+
+    result = _signal_mask_matrix({"T": values}, bars, MASTER, ["T"])
+
+    assert list(result["T"].iloc[:4]) == [True, False, False, True]
+    series = pd.Series(values, index=MASTER[:4])
+    pd.testing.assert_frame_equal(
+        result, _signal_mask_matrix({"T": series}, bars, MASTER, ["T"])
+    )
+
+
+def test_a_duplicated_label_on_a_series_still_raises_the_pandas_message() -> None:
+    """The duplicate guard, reached through ``signal.index`` rather than bars.
+
+    The existing duplicate test passes an ndarray, so the index it checks is
+    ``bars_by_tv[tv].index``. A Series brings its own index, which is the one
+    this change switched to, and only this shape covers that path.
+    """
+    index = pd.DatetimeIndex(list(MASTER[:3]) + [MASTER[2]])
+    series = pd.Series([True, False, True, False], index=index)
+
+    with pytest.raises(ValueError, match="duplicate"):
+        _signal_mask_matrix({"T": series}, {"T": _bars(MASTER[:4])}, MASTER, ["T"])
+
+
+def test_an_array_that_does_not_match_its_bars_is_rejected() -> None:
+    """A length mismatch must fail loudly rather than align to the wrong bars.
+
+    An array carries no labels, so a length that disagrees with the ticker's
+    bars means the caller aligned it to something else. ``get_indexer``
+    neither raises nor reads out of bounds for an over-long array: it silently
+    builds the mask from the first ``len(index)`` entries, so the run would
+    finish and report trades derived from the wrong days.
+    """
+    bars = {"T": _bars(MASTER[:4])}
+
+    with pytest.raises(ValueError, match="6 values against 4 bars"):
+        _signal_mask_matrix({"T": np.ones(6, dtype=bool)}, bars, MASTER, ["T"])
+    with pytest.raises(ValueError, match="2 values against 4 bars"):
+        _signal_mask_matrix({"T": np.ones(2, dtype=bool)}, bars, MASTER, ["T"])

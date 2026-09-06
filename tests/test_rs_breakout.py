@@ -13,6 +13,8 @@ from screener.commands import rs_breakout as rs_breakout_cli
 from screener.indicators.frames import wilder_atr
 from screener.relative_strength import relative_strength_ratio
 from screener.rs_breakout import (
+    SUPERTREND_MULTIPLIER,
+    SUPERTREND_PERIOD,
     build_signal_frame,
     delivery_lookup,
     evaluate_symbol,
@@ -89,13 +91,20 @@ def test_supertrend_bullish_and_bearish_states():
 
 
 def _supertrend_pandas_reference(
-    bars: pd.DataFrame, period: int = 10, multiplier: float = 3.0
+    bars: pd.DataFrame,
+    period: int = SUPERTREND_PERIOD,
+    multiplier: float = SUPERTREND_MULTIPLIER,
 ) -> pd.Series:
     """The Series.iloc recurrence ``supertrend`` was written as.
 
     Kept verbatim so the numpy rewrite has something to be exactly equal to.
     Nothing in the package calls it; if it ever disagrees with
     :func:`~screener.rs_breakout.supertrend`, trades moved.
+
+    The defaults track the production constants rather than restating them.
+    Hardcoded, retuning either one left this oracle validating a
+    parameterisation nothing ships, and every equality test below would have
+    failed pointing at the numpy rewrite instead of at the constant.
     """
     high = bars["high"].astype(float)
     low = bars["low"].astype(float)
@@ -193,10 +202,24 @@ def test_supertrend_matches_the_reference_on_frames_shorter_than_the_atr(
     )
 
 
-def test_supertrend_tolerates_a_gap_in_the_middle_of_the_atr_warmup() -> None:
-    """A NaN high re-seeds the bands; the numpy form must re-seed identically."""
-    bars = _random_walk_bars(7, 120)
-    bars.iloc[40:44, bars.columns.get_loc("high")] = np.nan
+def test_supertrend_re_seeds_the_bands_after_a_mid_frame_gap() -> None:
+    """A NaN gap re-seeds the bands; the numpy form must re-seed identically.
+
+    Blanking only ``high`` does not reach the re-seed branch. Wilder RMA
+    carries an ATR across an interior gap by design, and the carry branch
+    keeps the previous band, so the earlier version of this test seeded once
+    at position 9 (the warmup) and never again. That left
+    ``if i == 0 or np.isnan(final_upper[i - 1])`` - the riskiest line of the
+    ``pd.isna`` to ``np.isnan`` transcription - with no coverage anywhere in
+    this file.
+
+    Blanking ``high`` and ``low`` together takes ``hl2`` to NaN, which takes
+    the bands with it. This input seeds at positions 9, 62, 63 and 64.
+    """
+    bars = _random_walk_bars(5, 150)
+    for column in ("high", "low"):
+        bars.iloc[60:64, bars.columns.get_loc(column)] = np.nan
+
     np.testing.assert_array_equal(
         supertrend(bars).to_numpy(), _supertrend_pandas_reference(bars).to_numpy()
     )

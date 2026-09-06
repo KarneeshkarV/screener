@@ -124,7 +124,17 @@ def supertrend(
     Do not swap this for ``screener.indicators.plugins.supertrend``. That one
     answers a different question (direction, not the band), seeds without
     emitting a value, and compares the close against the *previous* bands
-    where this compares against the current ones.
+    where this compares against the current ones. Its ``_supertrend_dir_panel``
+    is not the panel form of this function for the same three reasons, so
+    routing ``prepare_backtest_frames`` through it would change the indicator,
+    not just its cost.
+
+    What is left on the table is the loop *count*: ``prepare_backtest_frames``
+    calls this once per symbol, so a 503-name panel still runs 503 Python
+    loops. Collapsing those needs a panel form of *this* recurrence, over a
+    ``(bars, symbols)`` block with a per-row validity mask, which is a new
+    implementation rather than a reuse and has to be proved
+    trade-for-trade before it can land.
     """
     if bars.empty:
         return pd.Series(dtype=float)
