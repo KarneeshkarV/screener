@@ -2719,6 +2719,7 @@ dev = [
     { name = "pandas-ta-classic" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "pytz" },
     { name = "ruff" },
     { name = "types-requests" },
 ]
@@ -2756,6 +2757,7 @@ dev = [
     { name = "pandas-ta-classic", specifier = ">=0.6.20" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytz", specifier = ">=2024.1" },
     { name = "ruff", specifier = ">=0.5" },
     { name = "types-requests", specifier = ">=2.31" },
 ]
