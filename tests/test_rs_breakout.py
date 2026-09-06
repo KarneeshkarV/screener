@@ -10,8 +10,11 @@ from click.testing import CliRunner
 
 from screener.cli import cli
 from screener.commands import rs_breakout as rs_breakout_cli
+from screener.indicators.frames import wilder_atr
 from screener.relative_strength import relative_strength_ratio
 from screener.rs_breakout import (
+    SUPERTREND_MULTIPLIER,
+    SUPERTREND_PERIOD,
     build_signal_frame,
     delivery_lookup,
     evaluate_symbol,
@@ -85,6 +88,141 @@ def test_supertrend_bullish_and_bearish_states():
 
     assert bullish["close"].iloc[-1] > supertrend(bullish).iloc[-1]
     assert bearish["close"].iloc[-1] < supertrend(bearish).iloc[-1]
+
+
+def _supertrend_pandas_reference(
+    bars: pd.DataFrame,
+    period: int = SUPERTREND_PERIOD,
+    multiplier: float = SUPERTREND_MULTIPLIER,
+) -> pd.Series:
+    """The Series.iloc recurrence ``supertrend`` was written as.
+
+    Kept verbatim so the numpy rewrite has something to be exactly equal to.
+    Nothing in the package calls it; if it ever disagrees with
+    :func:`~screener.rs_breakout.supertrend`, trades moved.
+
+    The defaults track the production constants rather than restating them.
+    Hardcoded, retuning either one left this oracle validating a
+    parameterisation nothing ships, and every equality test below would have
+    failed pointing at the numpy rewrite instead of at the constant.
+    """
+    high = bars["high"].astype(float)
+    low = bars["low"].astype(float)
+    close = bars["close"].astype(float)
+    atr = wilder_atr(high, low, close, period, min_periods=period)
+    hl2 = (high + low) / 2.0
+    basic_upper = hl2 + multiplier * atr
+    basic_lower = hl2 - multiplier * atr
+
+    final_upper = pd.Series(np.nan, index=bars.index, dtype=float)
+    final_lower = pd.Series(np.nan, index=bars.index, dtype=float)
+    st = pd.Series(np.nan, index=bars.index, dtype=float)
+    for i in range(len(bars)):
+        if pd.isna(atr.iloc[i]):
+            continue
+        if i == 0 or pd.isna(final_upper.iloc[i - 1]):
+            final_upper.iloc[i] = basic_upper.iloc[i]
+            final_lower.iloc[i] = basic_lower.iloc[i]
+            st.iloc[i] = (
+                final_lower.iloc[i]
+                if close.iloc[i] >= hl2.iloc[i]
+                else final_upper.iloc[i]
+            )
+            continue
+        final_upper.iloc[i] = (
+            basic_upper.iloc[i]
+            if basic_upper.iloc[i] < final_upper.iloc[i - 1]
+            or close.iloc[i - 1] > final_upper.iloc[i - 1]
+            else final_upper.iloc[i - 1]
+        )
+        final_lower.iloc[i] = (
+            basic_lower.iloc[i]
+            if basic_lower.iloc[i] > final_lower.iloc[i - 1]
+            or close.iloc[i - 1] < final_lower.iloc[i - 1]
+            else final_lower.iloc[i - 1]
+        )
+        if st.iloc[i - 1] == final_upper.iloc[i - 1]:
+            st.iloc[i] = (
+                final_lower.iloc[i]
+                if close.iloc[i] > final_upper.iloc[i]
+                else final_upper.iloc[i]
+            )
+        else:
+            st.iloc[i] = (
+                final_upper.iloc[i]
+                if close.iloc[i] < final_lower.iloc[i]
+                else final_lower.iloc[i]
+            )
+    st.name = "supertrend"
+    return st
+
+
+def _random_walk_bars(seed: int, n: int) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    close = 100.0 * np.exp(np.cumsum(rng.normal(0.0003, 0.018, n)))
+    idx = pd.bdate_range("2023-01-02", periods=n)
+    span = np.abs(rng.normal(0.0, 0.012, n)) * close
+    openp = close * (1.0 + rng.normal(0.0, 0.004, n))
+    return pd.DataFrame(
+        {
+            "open": openp,
+            "high": np.maximum(openp, close) + span,
+            "low": np.minimum(openp, close) - span,
+            "close": close,
+            "volume": rng.random(n) * 1e6,
+        },
+        index=idx,
+    )
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_supertrend_is_bit_identical_to_the_pandas_recurrence(seed: int) -> None:
+    """Whipsaw walks hit every branch: seeding, both carry-forwards, both flips."""
+    bars = _random_walk_bars(seed, 260)
+    result = supertrend(bars)
+    expected = _supertrend_pandas_reference(bars)
+
+    assert result.name == expected.name
+    assert result.index.equals(expected.index)
+    np.testing.assert_array_equal(result.to_numpy(), expected.to_numpy())
+
+
+@pytest.mark.parametrize("n", [0, 1, 9, 10, 11])
+def test_supertrend_matches_the_reference_on_frames_shorter_than_the_atr(
+    n: int,
+) -> None:
+    """Below ``period`` bars the ATR is all NaN, so every value stays NaN."""
+    bars = _random_walk_bars(99, n) if n else pd.DataFrame()
+    result = supertrend(bars)
+    if n == 0:
+        assert result.empty
+        return
+    np.testing.assert_array_equal(
+        result.to_numpy(), _supertrend_pandas_reference(bars).to_numpy()
+    )
+
+
+def test_supertrend_re_seeds_the_bands_after_a_mid_frame_gap() -> None:
+    """A NaN gap re-seeds the bands; the numpy form must re-seed identically.
+
+    Blanking only ``high`` does not reach the re-seed branch. Wilder RMA
+    carries an ATR across an interior gap by design, and the carry branch
+    keeps the previous band, so the earlier version of this test seeded once
+    at position 9 (the warmup) and never again. That left
+    ``if i == 0 or np.isnan(final_upper[i - 1])`` - the riskiest line of the
+    ``pd.isna`` to ``np.isnan`` transcription - with no coverage anywhere in
+    this file.
+
+    Blanking ``high`` and ``low`` together takes ``hl2`` to NaN, which takes
+    the bands with it. This input seeds at positions 9, 62, 63 and 64.
+    """
+    bars = _random_walk_bars(5, 150)
+    for column in ("high", "low"):
+        bars.iloc[60:64, bars.columns.get_loc(column)] = np.nan
+
+    np.testing.assert_array_equal(
+        supertrend(bars).to_numpy(), _supertrend_pandas_reference(bars).to_numpy()
+    )
 
 
 def test_previous_completed_week_high_excludes_current_week():
