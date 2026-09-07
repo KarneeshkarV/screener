@@ -448,3 +448,45 @@ def test_universe_note_flags_a_start_before_the_first_snapshot(tmp_path) -> None
     assert "2020-01-01" in early
     # A start inside the history has nothing to warn about.
     assert "membership history starts" not in run_note("2024-02-01")
+
+
+def test_the_live_sp500_table_is_scraped_once_a_day(monkeypatch, tmp_path) -> None:
+    """The only reason a fully cached sp500 rolling backtest touched the network.
+
+    ``load_sp500_membership_windows`` reaches ``_fetch_sp500`` for its final,
+    present-dated sample on every run, and that branch had no cache at all.
+    """
+    monkeypatch.setattr(universes, "CACHE_DIR", tmp_path)
+    calls = {"count": 0}
+
+    def fake_table():
+        calls["count"] += 1
+        return pd.DataFrame({"Symbol": ["AAPL", "MSFT", "BRK.B"]})
+
+    monkeypatch.setattr(universes, "_fetch_sp500_table", fake_table)
+
+    first = universes._fetch_sp500()
+    second = universes._fetch_sp500()
+
+    assert calls["count"] == 1
+    assert first == second == (["AAPL", "MSFT", "BRK-B"], universes._SP500_SOURCE)
+
+    # A forced refresh still scrapes.
+    universes._fetch_sp500(use_cache=False)
+    assert calls["count"] == 2
+
+
+def test_a_corrupt_sp500_day_cache_falls_back_to_the_scrape(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(universes, "CACHE_DIR", tmp_path)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    universes._sp500_live_cache_path(date.today()).write_text("{not json")
+
+    monkeypatch.setattr(
+        universes,
+        "_fetch_sp500_table",
+        lambda: pd.DataFrame({"Symbol": ["AAPL"]}),
+    )
+
+    assert universes._fetch_sp500() == (["AAPL"], universes._SP500_SOURCE)
