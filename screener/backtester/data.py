@@ -47,7 +47,13 @@ from screener.backtester.price_cache import (
     load_cached_frame as _load_cached,
 )
 from screener.backtester.price_cache import (
+    load_coverage as _load_coverage,
+)
+from screener.backtester.price_cache import (
     needs_tail_refresh as _needs_tail_refresh,
+)
+from screener.backtester.price_cache import (
+    record_coverage as _record_coverage,
 )
 from screener.backtester.price_cache import (
     record_empty_history as _record_empty_history,
@@ -192,6 +198,31 @@ def _strict_refresh_stale_data_error(
     return StaleDataError(
         "strict refresh could not refresh bars for " + ", ".join(clauses)
     )
+
+
+def _covered_window(
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    coverage: tuple[pd.Timestamp | None, pd.Timestamp | None],
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """``[start, end]`` clipped to the bars the vendor is known to have.
+
+    A cache entry is complete when it holds every bar that exists for the
+    window, which is not the same as holding a bar at each end of it. Clipping
+    the window to the vendor's own limits before the completeness test is what
+    separates the two. An unknown bound clips nothing, so a ticker with no
+    marker is judged exactly as before.
+
+    The clip never widens the window: a bound is only evidence about where the
+    vendor stops, so a first bar earlier than ``start``, or a last bar later
+    than ``end``, says nothing about the range asked for here.
+    """
+    first, last = coverage
+    if first is not None and first > start:
+        start = first
+    if last is not None and last < end:
+        end = max(last, start)
+    return start, end
 
 
 class YFinancePriceFetcher:
@@ -394,10 +425,22 @@ class YFinancePriceFetcher:
             if stored is not None and not stored.empty:
                 cached_by_ticker[ticker] = stored
             cached = None if self.refresh else stored
+            # The completeness test runs against what the vendor has, not
+            # against what the caller asked for. A name that listed inside the
+            # window has no bar at the window's start and never will, so
+            # measuring it against ``start_ts`` re-downloaded a complete,
+            # current cache entry on every single run.
+            covered_start, covered_end = _covered_window(
+                start_ts,
+                end_ts,
+                (None, None)
+                if self.refresh
+                else _load_coverage(cache_key, self.cache_dir),
+            )
             if (
                 not self.refresh
                 and cached is not None
-                and _has_range(cached, start_ts, end_ts, self.interval)
+                and _has_range(cached, covered_start, covered_end, self.interval)
             ):
                 if _needs_tail_refresh(_cache_path(cache_key, self.cache_dir), end_ts):
                     tail_start = cached.index.max() - pd.Timedelta(days=7)
@@ -529,10 +572,37 @@ class YFinancePriceFetcher:
             if ticker not in tail_refresh_tickers:
                 if not norm.empty:
                     _clear_empty_history(cache_key, self.cache_dir)
+                    if download_ok.get(ticker, False):
+                        # Same reasoning as the empty marker, and the same
+                        # window: a batch downloads the union of its group's
+                        # windows, but what this ticker asked for is all this
+                        # ticker's bounds may be inferred from.
+                        _record_coverage(
+                            cache_key,
+                            *window_by_ticker[ticker],
+                            norm.index.min(),
+                            norm.index.max(),
+                            self.cache_dir,
+                        )
                 elif download_ok.get(ticker, False):
                     _record_empty_history(
                         cache_key, *window_by_ticker[ticker], self.cache_dir
                     )
+                    # An empty answer either side of a cache entry bounds the
+                    # vendor just as a short answer does, and this is the case
+                    # that matters: a name cached by an earlier run is never
+                    # downloaded whole again, so its bounds can only ever be
+                    # learned from the "backfill" and "extend" requests that
+                    # probe past its edges and come back with nothing.
+                    stored_frame = cached_by_ticker.get(ticker)
+                    if stored_frame is not None and not stored_frame.empty:
+                        _record_coverage(
+                            cache_key,
+                            *window_by_ticker[ticker],
+                            stored_frame.index.min(),
+                            stored_frame.index.max(),
+                            self.cache_dir,
+                        )
             stored = cached_by_ticker.get(ticker)
             # After the bookkeeping above, which is a claim about what the
             # vendor served and must see the response as it came. From here on
@@ -729,10 +799,19 @@ class FMPPriceFetcher:
                 interval=self.interval,
             )
             cached = None if self.refresh else stored
+            # Same contract as the yfinance leg: measure completeness against
+            # the vendor's known limits, not against the caller's window.
+            covered_start, covered_end = _covered_window(
+                start_ts,
+                end_ts,
+                (None, None)
+                if self.refresh
+                else _load_coverage(cache_key, self.cache_dir),
+            )
             if (
                 not self.refresh
                 and cached is not None
-                and _has_range(cached, start_ts, end_ts, self.interval)
+                and _has_range(cached, covered_start, covered_end, self.interval)
             ):
                 if not _needs_tail_refresh(
                     _cache_path(cache_key, self.cache_dir), end_ts
@@ -786,10 +865,28 @@ class FMPPriceFetcher:
             if not is_tail_refresh:
                 if not norm.empty:
                     _clear_empty_history(cache_key, self.cache_dir)
+                    if ok:
+                        _record_coverage(
+                            cache_key,
+                            fetch_start,
+                            end_ts,
+                            norm.index.min(),
+                            norm.index.max(),
+                            self.cache_dir,
+                        )
                 elif ok:
                     _record_empty_history(
                         cache_key, fetch_start, end_ts, self.cache_dir
                     )
+                    if stored is not None and not stored.empty:
+                        _record_coverage(
+                            cache_key,
+                            fetch_start,
+                            end_ts,
+                            stored.index.min(),
+                            stored.index.max(),
+                            self.cache_dir,
+                        )
             # Same rule as the yfinance leg, and for the same reason: after
             # the empty-history bookkeeping, which reads the response, and
             # before anything stores or serves it.

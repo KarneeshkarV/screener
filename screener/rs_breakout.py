@@ -483,7 +483,12 @@ def _delivery_series_for_symbol(
         "delivery_trend",
         "delivery_spike",
     )
-    empty = pd.DataFrame({c: pd.Series(np.nan, index=index, dtype=float) for c in cols})
+    # One block rather than five Series. Outside India there is no delivery
+    # panel at all, so this padding is what every symbol gets and it is built
+    # once per symbol per run.
+    empty = pd.DataFrame(
+        np.full((len(index), len(cols)), np.nan), index=index, columns=list(cols)
+    )
     if panel is None or panel.empty:
         return empty
     sym = india_symbol(symbol)
@@ -524,7 +529,10 @@ def build_signal_frame(
 ) -> pd.DataFrame:
     if bars is None or bars.empty:
         return pd.DataFrame()
-    df = bars.copy().sort_index()
+    # ``sort_index`` already returns a new frame and nothing below mutates
+    # ``df``, so the extra ``copy`` it used to carry was one full duplicate of
+    # every symbol's bars per run.
+    df = bars.sort_index()
     rs = relative_strength_ratio(df["close"], benchmark_close)
     st = supertrend(df)
     avg_volume = (
@@ -538,17 +546,22 @@ def build_signal_frame(
     delivery = _delivery_series_for_symbol(
         delivery_panel, symbol, cast(pd.DatetimeIndex, df.index)
     )
-    out = df.copy()
-    out["rs_55"] = rs.reindex(df.index)
-    out["supertrend_value"] = st.reindex(df.index)
-    out["avg_volume_20d"] = avg_volume
-    out["volume_ratio"] = df["volume"].astype(float) / avg_volume
-    out["previous_week_high"] = prev_week_high
-    out["delivery_pct"] = delivery["delivery_pct"]
-    out["previous_delivery_pct"] = delivery["previous_delivery_pct"]
-    out["delivery_pct_last"] = delivery["delivery_pct_last"]
-    out["delivery_trend"] = delivery["delivery_trend"]
-    out["delivery_spike"] = delivery["delivery_spike"]
+    # One construction rather than eleven ``out[col] =`` inserts. Each insert
+    # is a BlockManager.insert plus a pandas option lookup, and this function
+    # runs once per symbol: over a 549-name rolling backtest the inserts alone
+    # measured 0.53s against 0.05s for the concat below, and most of the
+    # difference was pandas' own option-registry scanning.
+    derived = pd.DataFrame(
+        {
+            "rs_55": rs.reindex(df.index),
+            "supertrend_value": st.reindex(df.index),
+            "avg_volume_20d": avg_volume,
+            "volume_ratio": df["volume"].astype(float) / avg_volume,
+            "previous_week_high": prev_week_high,
+        },
+        index=df.index,
+    )
+    out = pd.concat([df, derived, delivery], axis=1)
     signals = rs_breakout_signals(out, require_delivery=require_delivery)
     out["rs_breakout_entry"] = signals["rs_breakout_entry"].astype(float)
     return out

@@ -26,6 +26,14 @@ CACHE_DIR = Path.home() / ".screener" / "prices"
 FMP_CACHE_DIR = Path.home() / ".screener" / "fmp_prices"
 PRICE_TAIL_TTL_SECONDS = 60 * 60
 EMPTY_HISTORY_TTL_SECONDS = 24 * 60 * 60
+COVERAGE_TTL_SECONDS = 7 * 24 * 60 * 60
+
+#: How far a served frame may fall short of the window it was asked for before
+#: the shortfall counts as the vendor's own limit rather than a weekend or a
+#: holiday. It matches the slack ``frame_has_range`` allows at each end, so a
+#: coverage bound is only ever written for a gap that check would have failed
+#: on.
+COVERAGE_TOLERANCE = pd.Timedelta(days=3)
 
 
 def cache_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
@@ -277,6 +285,129 @@ def has_empty_history(
     return recorded_first <= first and recorded_last >= last
 
 
+def coverage_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
+    """Sidecar recording where the vendor's own history for a ticker stops."""
+    return cache_path(ticker, cache_dir).with_suffix(".coverage.json")
+
+
+def _read_coverage(path: Path) -> dict[str, str]:
+    try:
+        marker = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return marker if isinstance(marker, dict) else {}
+
+
+def _coverage_bound(marker: dict[str, str], key: str) -> pd.Timestamp | None:
+    raw = marker.get(key)
+    if not raw:
+        return None
+    try:
+        return pd.Timestamp(raw)
+    except (ValueError, TypeError):
+        return None
+
+
+def load_coverage(
+    ticker: str, cache_dir: Path = CACHE_DIR
+) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    """The vendor's known first and last bar for ``ticker``; either may be None.
+
+    ``None`` means "not known", never "no limit". A bound is only recorded once
+    a request reached past it and came back short, so an absent bound licenses
+    nothing.
+
+    The TTL bounds how long a vendor backfill, or a resumed listing, can stay
+    hidden. It is longer than the empty-history TTL because these bounds only
+    ever excuse the *edges* of a window - a run still fetches anything missing
+    inside them - and it is not infinite because a first bar is a fact about
+    the vendor rather than about the market, and vendors do revise it.
+    """
+    path = coverage_path(ticker, cache_dir)
+    marker = _read_coverage(path)
+    if not marker:
+        return None, None
+    try:
+        ttl_seconds = float(
+            os.environ.get("SCREENER_COVERAGE_TTL_SECONDS", COVERAGE_TTL_SECONDS)
+        )
+    except ValueError:
+        ttl_seconds = COVERAGE_TTL_SECONDS
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return None, None
+    if age > max(0.0, ttl_seconds):
+        return None, None
+    return _coverage_bound(marker, "first"), _coverage_bound(marker, "last")
+
+
+def clear_coverage(ticker: str, cache_dir: Path = CACHE_DIR) -> None:
+    """Drop the marker, leaving both bounds unknown again."""
+    try:
+        coverage_path(ticker, cache_dir).unlink(missing_ok=True)
+    except OSError:
+        return
+
+
+def record_coverage(
+    ticker: str,
+    requested_first: pd.Timestamp,
+    requested_last: pd.Timestamp,
+    first_bar: pd.Timestamp,
+    last_bar: pd.Timestamp,
+    cache_dir: Path = CACHE_DIR,
+) -> None:
+    """Learn the vendor's limits from a window it answered short.
+
+    A complete, current cache entry was still re-downloaded on every run when
+    the ticker listed after the window opened, because completeness was judged
+    against the window the caller asked for rather than against what the vendor
+    has. A name that listed inside the window can never have a bar at the
+    window's start, so it failed that test forever - about 15% of the price
+    cache, and most of the wall time of a warm screen.
+
+    A download that reached back past its own first bar settles it: the vendor
+    has nothing earlier, so a cache holding that first bar is as complete as
+    the ticker can be. The same argument runs the other way for a name whose
+    history stops before the window ends.
+
+    Bounds are merged rather than replaced, because a window is only evidence
+    about the edges it actually reached: a short "extend" request landing on
+    today says nothing about a listing date years back. A window that *did*
+    reach past a recorded bound and came back full drops it, which is how a
+    vendor backfill undoes this without waiting for the TTL.
+    """
+    path = coverage_path(ticker, cache_dir)
+    marker = _read_coverage(path)
+    first = _coverage_bound(marker, "first")
+    last = _coverage_bound(marker, "last")
+
+    if first_bar > requested_first + COVERAGE_TOLERANCE:
+        first = first_bar
+    elif first is not None and requested_first < first:
+        first = None
+
+    if last_bar < requested_last - COVERAGE_TOLERANCE:
+        last = last_bar
+    elif last is not None and requested_last > last:
+        last = None
+
+    if first is None and last is None:
+        clear_coverage(ticker, cache_dir)
+        return
+    payload = {
+        key: value.isoformat()
+        for key, value in (("first", first), ("last", last))
+        if value is not None
+    }
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload))
+    except (OSError, ValueError):
+        return
+
+
 def needs_tail_refresh(path: Path, end: pd.Timestamp) -> bool:
     """Return whether a near-present cache is old enough for a tail refresh."""
     if abs((end.date() - date.today()).days) > 2:
@@ -295,15 +426,21 @@ def needs_tail_refresh(path: Path, end: pd.Timestamp) -> bool:
 
 __all__ = [
     "CACHE_DIR",
+    "COVERAGE_TOLERANCE",
+    "COVERAGE_TTL_SECONDS",
     "EMPTY_HISTORY_TTL_SECONDS",
     "FMP_CACHE_DIR",
     "PRICE_TAIL_TTL_SECONDS",
     "cache_path",
+    "clear_coverage",
     "clear_empty_history",
+    "coverage_path",
     "empty_history_path",
     "has_empty_history",
     "load_cached_frame",
+    "load_coverage",
     "needs_tail_refresh",
+    "record_coverage",
     "record_empty_history",
     "save_cached_frame",
 ]

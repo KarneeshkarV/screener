@@ -647,3 +647,201 @@ def test_an_already_cached_open_session_bar_stops_being_served(tmp_path, monkeyp
         ["AAA.NS"], (today - pd.Timedelta(days=5)).date(), future.date()
     )
     assert future not in out["AAA.NS"].index
+
+
+def _late_listing_download(listed_on):
+    """A vendor that has no bars before ``listed_on``, whatever is asked for."""
+
+    def fake_download(tickers, **kwargs):
+        batch = tickers.split() if isinstance(tickers, str) else list(tickers)
+        start = max(pd.Timestamp(kwargs["start"]), pd.Timestamp(listed_on))
+        end = pd.Timestamp(kwargs["end"])
+        if start >= end:
+            return pd.DataFrame()
+        return _download_frame(batch, start, end)
+
+    return fake_download
+
+
+def test_a_late_listing_name_is_downloaded_once_not_on_every_run(tmp_path, monkeypatch):
+    """The cache is complete once it holds every bar the vendor has.
+
+    ``frame_has_range`` measures against the caller's window, so a name that
+    listed inside that window could never satisfy it: its first bar is always
+    later than the window's start. Roughly 15% of a real price cache is in
+    that state, and re-downloading it was most of the wall time of a warm
+    screen. The coverage marker records that the vendor has nothing earlier,
+    which is what makes the second run a cache hit.
+    """
+    import yfinance as yf
+
+    from screener.backtester.price_cache import coverage_path
+
+    calls = []
+
+    def counting_download(tickers, **kwargs):
+        calls.append(pd.Timestamp(kwargs["start"]))
+        return _late_listing_download("2024-01-15")(tickers, **kwargs)
+
+    monkeypatch.setattr(yf, "download", counting_download)
+    monkeypatch.setenv("SCREENER_PRICE_TAIL_TTL_SECONDS", "999999999")
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    first = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
+    assert not first["AAA"].empty
+    assert coverage_path("AAA", tmp_path).exists()
+
+    second = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
+
+    assert len(calls) == 1, "the second run must be served from cache"
+    assert second["AAA"].equals(first["AAA"])
+
+
+def test_a_coverage_bound_never_hides_bars_inside_the_window(tmp_path, monkeypatch):
+    """The marker excuses the window's edges, never a gap the cache really has."""
+    import yfinance as yf
+
+    calls = []
+
+    def counting_download(tickers, **kwargs):
+        calls.append(pd.Timestamp(kwargs["start"]))
+        return _late_listing_download("2024-01-15")(tickers, **kwargs)
+
+    monkeypatch.setattr(yf, "download", counting_download)
+    monkeypatch.setenv("SCREENER_PRICE_TAIL_TTL_SECONDS", "999999999")
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
+
+    # A later window the cache does not reach is still fetched: the bound says
+    # where the vendor starts, not that the cache holds everything after it.
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 2, 29))
+
+    assert len(calls) == 2
+
+
+def test_a_backfilled_vendor_drops_the_coverage_bound(tmp_path, monkeypatch):
+    """A window that reaches past the bound and comes back full retires it."""
+    import yfinance as yf
+
+    from screener.backtester.price_cache import coverage_path, load_coverage
+
+    listing = {"on": "2024-01-15"}
+
+    def fake_download(tickers, **kwargs):
+        return _late_listing_download(listing["on"])(tickers, **kwargs)
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setenv("SCREENER_PRICE_TAIL_TTL_SECONDS", "999999999")
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
+    assert load_coverage("AAA", tmp_path)[0] == pd.Timestamp("2024-01-15")
+
+    listing["on"] = "2020-01-01"
+    refreshing = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True)
+    out = refreshing.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
+
+    assert out["AAA"].index.min() == pd.Timestamp("2024-01-01")
+    assert not coverage_path("AAA", tmp_path).exists()
+
+
+def test_a_failed_download_is_never_recorded_as_a_coverage_bound(tmp_path, monkeypatch):
+    """An outage that truncates a response must not become a listing date."""
+    import yfinance as yf
+
+    from screener.backtester.price_cache import coverage_path
+
+    def failing_download(tickers, **kwargs):
+        raise RuntimeError("429 Too Many Requests")
+
+    monkeypatch.setattr(yf, "download", failing_download)
+
+    _save_cache(
+        "AAA",
+        _plain_bars(date(2024, 1, 15), date(2024, 2, 1)).rename(columns=str.lower),
+        tmp_path,
+    )
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
+
+    assert not coverage_path("AAA", tmp_path).exists()
+
+
+def test_the_coverage_marker_expires(tmp_path, monkeypatch):
+    """The TTL is what bounds how long a vendor backfill can stay hidden."""
+    import yfinance as yf
+
+    calls = []
+
+    def counting_download(tickers, **kwargs):
+        calls.append(pd.Timestamp(kwargs["start"]))
+        return _late_listing_download("2024-01-15")(tickers, **kwargs)
+
+    monkeypatch.setattr(yf, "download", counting_download)
+    monkeypatch.setenv("SCREENER_PRICE_TAIL_TTL_SECONDS", "999999999")
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
+    assert len(calls) == 1
+
+    monkeypatch.setenv("SCREENER_COVERAGE_TTL_SECONDS", "0")
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
+
+    assert len(calls) == 2
+
+
+def test_a_narrow_window_does_not_retire_an_older_coverage_bound(tmp_path):
+    """An "extend" request landing on today says nothing about a listing date."""
+    from screener.backtester.price_cache import load_coverage, record_coverage
+
+    record_coverage(
+        "AAA",
+        pd.Timestamp("2024-01-01"),
+        pd.Timestamp("2024-01-31"),
+        pd.Timestamp("2024-01-15"),
+        pd.Timestamp("2024-01-31"),
+        tmp_path,
+    )
+    assert load_coverage("AAA", tmp_path)[0] == pd.Timestamp("2024-01-15")
+
+    # A tail-shaped window: it never reached back past the recorded bound.
+    record_coverage(
+        "AAA",
+        pd.Timestamp("2024-02-01"),
+        pd.Timestamp("2024-02-28"),
+        pd.Timestamp("2024-02-01"),
+        pd.Timestamp("2024-02-28"),
+        tmp_path,
+    )
+
+    assert load_coverage("AAA", tmp_path)[0] == pd.Timestamp("2024-01-15")
+
+
+def test_an_empty_probe_past_a_cached_edge_records_the_bound(tmp_path, monkeypatch):
+    """The backlog case: a name cached by an earlier run is never re-downloaded whole.
+
+    Its bounds can therefore only be learned from the "backfill" request that
+    probes past its first bar and comes back with nothing. Without this the
+    marker only ever covered names downloaded fresh, which is a small minority
+    of a populated cache.
+    """
+    import yfinance as yf
+
+    from screener.backtester.price_cache import load_coverage
+
+    def empty_download(tickers, **kwargs):
+        return pd.DataFrame()
+
+    monkeypatch.setattr(yf, "download", empty_download)
+    monkeypatch.setenv("SCREENER_PRICE_TAIL_TTL_SECONDS", "999999999")
+
+    _save_cache(
+        "AAA",
+        _plain_bars(date(2024, 1, 15), date(2024, 2, 1)).rename(columns=str.lower),
+        tmp_path,
+    )
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
+
+    assert load_coverage("AAA", tmp_path)[0] == pd.Timestamp("2024-01-15")
