@@ -103,60 +103,86 @@ def supertrend(
     period: int = SUPERTREND_PERIOD,
     multiplier: float = SUPERTREND_MULTIPLIER,
 ) -> pd.Series:
-    """Compute SuperTrend with Wilder/RMA ATR."""
+    """Compute SuperTrend with Wilder/RMA ATR.
+
+    The band recursion reads its own previous value, so it cannot be
+    vectorised along time. What it can avoid is paying pandas scalar-access
+    overhead for every read and write: the loop touches roughly a dozen
+    positions per bar, and ``Series.iloc`` costs about two orders of magnitude
+    more per touch than a float64 array does. Over a 503-name S&P 500 panel
+    that was 5.9 million ``__getitem__`` calls and 97% of a two-year
+    ``backtest-rolling --strategy rs_breakout``. Running the identical
+    recurrence over numpy arrays and building one Series at the end took the
+    whole command from 47.2s to 13.0s with a byte-identical trade ledger.
+
+    ``wilder_atr`` still sees the pandas Series it always did, so the ATR the
+    recursion rests on is unchanged. Every branch below is a transcription of
+    the pandas form, NaN comparisons included: ``nan == nan`` and
+    ``nan < x`` are False either way, so the seeding and carry-forward
+    decisions land on the same bars.
+
+    Do not swap this for ``screener.indicators.plugins.supertrend``. That one
+    answers a different question (direction, not the band), seeds without
+    emitting a value, and compares the close against the *previous* bands
+    where this compares against the current ones. Its ``_supertrend_dir_panel``
+    is not the panel form of this function for the same three reasons, so
+    routing ``prepare_backtest_frames`` through it would change the indicator,
+    not just its cost.
+
+    What is left on the table is the loop *count*: ``prepare_backtest_frames``
+    calls this once per symbol, so a 503-name panel still runs 503 Python
+    loops. Collapsing those needs a panel form of *this* recurrence, over a
+    ``(bars, symbols)`` block with a per-row validity mask, which is a new
+    implementation rather than a reuse and has to be proved
+    trade-for-trade before it can land.
+    """
     if bars.empty:
         return pd.Series(dtype=float)
     high = bars["high"].astype(float)
     low = bars["low"].astype(float)
-    close = bars["close"].astype(float)
-    atr = wilder_atr(high, low, close, period, min_periods=period)
-    hl2 = (high + low) / 2.0
+    close_s = bars["close"].astype(float)
+    atr = wilder_atr(high, low, close_s, period, min_periods=period).to_numpy(
+        dtype=float
+    )
+    hl2 = (high.to_numpy(dtype=float) + low.to_numpy(dtype=float)) / 2.0
+    close = close_s.to_numpy(dtype=float)
     basic_upper = hl2 + multiplier * atr
     basic_lower = hl2 - multiplier * atr
 
-    final_upper = pd.Series(np.nan, index=bars.index, dtype=float)
-    final_lower = pd.Series(np.nan, index=bars.index, dtype=float)
-    st = pd.Series(np.nan, index=bars.index, dtype=float)
+    n = len(bars)
+    final_upper = np.full(n, np.nan, dtype=float)
+    final_lower = np.full(n, np.nan, dtype=float)
+    st_values = np.full(n, np.nan, dtype=float)
 
-    for i in range(len(bars)):
-        if pd.isna(atr.iloc[i]):
+    for i in range(n):
+        if np.isnan(atr[i]):
             continue
-        if i == 0 or pd.isna(final_upper.iloc[i - 1]):
-            final_upper.iloc[i] = basic_upper.iloc[i]
-            final_lower.iloc[i] = basic_lower.iloc[i]
-            st.iloc[i] = (
-                final_lower.iloc[i]
-                if close.iloc[i] >= hl2.iloc[i]
-                else final_upper.iloc[i]
-            )
+        if i == 0 or np.isnan(final_upper[i - 1]):
+            final_upper[i] = basic_upper[i]
+            final_lower[i] = basic_lower[i]
+            st_values[i] = final_lower[i] if close[i] >= hl2[i] else final_upper[i]
             continue
 
-        final_upper.iloc[i] = (
-            basic_upper.iloc[i]
-            if basic_upper.iloc[i] < final_upper.iloc[i - 1]
-            or close.iloc[i - 1] > final_upper.iloc[i - 1]
-            else final_upper.iloc[i - 1]
+        final_upper[i] = (
+            basic_upper[i]
+            if basic_upper[i] < final_upper[i - 1] or close[i - 1] > final_upper[i - 1]
+            else final_upper[i - 1]
         )
-        final_lower.iloc[i] = (
-            basic_lower.iloc[i]
-            if basic_lower.iloc[i] > final_lower.iloc[i - 1]
-            or close.iloc[i - 1] < final_lower.iloc[i - 1]
-            else final_lower.iloc[i - 1]
+        final_lower[i] = (
+            basic_lower[i]
+            if basic_lower[i] > final_lower[i - 1] or close[i - 1] < final_lower[i - 1]
+            else final_lower[i - 1]
         )
 
-        prev_st = st.iloc[i - 1]
-        if prev_st == final_upper.iloc[i - 1]:
-            st.iloc[i] = (
-                final_lower.iloc[i]
-                if close.iloc[i] > final_upper.iloc[i]
-                else final_upper.iloc[i]
+        if st_values[i - 1] == final_upper[i - 1]:
+            st_values[i] = (
+                final_lower[i] if close[i] > final_upper[i] else final_upper[i]
             )
         else:
-            st.iloc[i] = (
-                final_upper.iloc[i]
-                if close.iloc[i] < final_lower.iloc[i]
-                else final_lower.iloc[i]
+            st_values[i] = (
+                final_upper[i] if close[i] < final_lower[i] else final_lower[i]
             )
+    st = pd.Series(st_values, index=bars.index, dtype=float)
     st.name = "supertrend"
     return st
 
