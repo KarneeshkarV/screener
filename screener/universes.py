@@ -505,10 +505,39 @@ def _normalize_sp500_symbols(raw: pd.Series) -> pd.Series:
     return raw.astype(str).str.strip().str.upper().str.replace(".", "-", regex=False)
 
 
-def _fetch_sp500() -> tuple[list[str], str]:
+def _sp500_live_cache_path(as_of: date) -> Path:
+    return CACHE_DIR / f"sp500_live_{as_of.isoformat()}.json"
+
+
+def _fetch_sp500(*, use_cache: bool = True) -> tuple[list[str], str]:
+    """Today's constituent table, cached for the day it was read.
+
+    The list only moves on an index announcement, so re-scraping it inside one
+    day is pure latency - and this was the only reason a fully cached
+    ``backtest-rolling --universe sp500`` still touched the network.
+    ``load_sp500_membership_windows`` reaches here for its final, present-dated
+    sample on every single run, where it measured 0.43-0.47s.
+
+    Keyed by day and kept apart from the ``.v2.txt`` universe cache, which
+    carries point-in-time semantics this list does not have.
+    """
+    path = _sp500_live_cache_path(date.today())
+    if use_cache and path.exists():
+        try:
+            cached = json.loads(path.read_text())
+        except (OSError, ValueError):
+            LOG.debug("sp500 live cache at %s unreadable; refetching", path)
+        else:
+            if isinstance(cached, list) and cached:
+                return cast(list[str], cached), _SP500_SOURCE
     df = _fetch_sp500_table()
-    symbols = _normalize_sp500_symbols(df["Symbol"].dropna()).tolist()
-    return _dedupe(symbols), _SP500_SOURCE
+    symbols = _dedupe(_normalize_sp500_symbols(df["Symbol"].dropna()).tolist())
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(symbols))
+    except (OSError, ValueError):
+        LOG.debug("sp500 live cache at %s not writable", path)
+    return symbols, _SP500_SOURCE
 
 
 def _sp500_revision_cache_path(revid: int) -> Path:
@@ -687,13 +716,13 @@ def _fetch_sp500_pit(as_of: date, *, use_cache: bool = True) -> _Sp500Pit:
     result falls back to today's members; the caller warns in that case.
     """
     if as_of >= date.today():
-        symbols, source = _fetch_sp500()
+        symbols, source = _fetch_sp500(use_cache=use_cache)
         return _Sp500Pit(symbols, source, True, None)
     snapshot = _fetch_sp500_revision_snapshot(as_of, use_cache=use_cache)
     if snapshot is not None:
         revid, symbols = snapshot
         return _Sp500Pit(symbols, _sp500_revision_source(revid), True, revid)
-    symbols, source = _fetch_sp500()
+    symbols, source = _fetch_sp500(use_cache=use_cache)
     return _Sp500Pit(symbols, source, False, None)
 
 
@@ -729,7 +758,7 @@ def load_sp500_membership_windows(
         # on every invocation. A sample that is not past has no revision
         # history to prefer, so it keeps the live table.
         if sample >= date.today():
-            members = tuple(_fetch_sp500()[0])
+            members = tuple(_fetch_sp500(use_cache=use_cache)[0])
         else:
             snapshot = _fetch_sp500_revision_snapshot(sample, use_cache=use_cache)
             if snapshot is None:
