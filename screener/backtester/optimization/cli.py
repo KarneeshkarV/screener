@@ -63,6 +63,20 @@ def _parse_values(
     return values
 
 
+def _validate_hold_values(values: list[Any]) -> list[Any]:
+    """Reject a swept ``hold`` below 1 at parse time, before any bar is fetched.
+
+    ``BacktestConfig`` bounds ``hold`` at ``ge=1``, but the sweep applies each
+    grid point with ``model_copy(update=...)``, which pydantic does not
+    re-validate. Without this check a ``--hold 5,0`` grid would run the whole
+    combination silently as a one-bar hold instead of failing.
+    """
+    for value in values:
+        if value is None or int(value) < 1:
+            raise click.BadParameter(f"{value!r} must be >= 1", param_hint="--hold")
+    return values
+
+
 def _parameter_grid(
     stop_loss, take_profit, trailing_stop, hold
 ) -> dict[str, list[Any]]:
@@ -70,7 +84,7 @@ def _parameter_grid(
         "stop_loss": _parse_values(stop_loss),
         "take_profit": _parse_values(take_profit),
         "trailing_stop": _parse_values(trailing_stop),
-        "hold": _parse_values(hold, int, allow_none=False),
+        "hold": _validate_hold_values(_parse_values(hold, int, allow_none=False)),
     }
     return {key: value for key, value in grid.items() if value}
 
@@ -445,6 +459,8 @@ def _parse_param_specs(params: tuple[str, ...]) -> dict[str, list[Any]]:
         values = _parse_values(raw, cast, allow_none=allow_none)
         if not values:
             raise click.UsageError(f"No values parsed from --param {spec!r}.")
+        if name == "hold":
+            _validate_hold_values(values)
         grid[name] = values
     return grid
 
@@ -551,8 +567,8 @@ def research_report(
             "Empty parameter grid; pass --param and/or hold/stop/take/trail ranges."
         )
 
-    hold_values = parameter_grid.get("hold") or _parse_values(
-        kwargs["hold"], int, allow_none=False
+    hold_values = parameter_grid.get("hold") or _validate_hold_values(
+        _parse_values(kwargs["hold"], int, allow_none=False)
     )
     hold0 = int(hold_values[0])
     top_values = parameter_grid.get("top")
