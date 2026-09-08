@@ -23,6 +23,7 @@ import pandas as pd
 import pytest
 
 from screener.backtester.pine import evaluate, parse
+from screener.factors.fundamentals import stamp_fundamentals
 from screener.strategies.spec import (
     ExpressionStrategySpec,
     PrepareCtx,
@@ -75,7 +76,12 @@ def _bars(seed: int, n: int = _BARS) -> pd.DataFrame:
     )
     for column, value in _FUNDAMENTAL_COLUMNS.items():
         frame[column] = value
-    return frame
+    # A fundamental column on bars without the provenance stamp is lookahead,
+    # and the factor layer refuses to read one. These are constants standing in
+    # for an already-lagged join, so stamp them as the real merge would.
+    return stamp_fundamentals(
+        frame, columns=tuple(_FUNDAMENTAL_COLUMNS), filing_lag_days=0
+    )
 
 
 @pytest.fixture(scope="module")
@@ -155,9 +161,12 @@ def test_required_lookback_is_a_sane_bar_count(spec: ExpressionStrategySpec) -> 
         pytest.skip(f"{spec.name} declares no lookback")
     lookback = spec.required_lookback()
     assert isinstance(lookback, int)
-    # Under one bar cannot warm any rolling window; over the synthetic panel
-    # length would make the evaluation case below vacuous.
-    assert 1 <= lookback <= _BARS
+    # Zero is legal only for a column derived from the bar's own index rather
+    # than from a rolling window (``turn_of_month`` reads the day of month), so
+    # the floor is 0 rather than 1. Over the synthetic panel length would make
+    # the evaluation case below vacuous. That every prepare_bars plugin states
+    # a number at all is enforced by ExpressionStrategySpec, not here.
+    assert 0 <= lookback <= _BARS
 
 
 @pytest.mark.parametrize("spec", _WITH_PREPARE, ids=_ids(_WITH_PREPARE))

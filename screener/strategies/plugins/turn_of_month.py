@@ -52,4 +52,8 @@ register_expression_strategy(
     entry=f"day_of_month >= {_WINDOW_START} or day_of_month <= {_WINDOW_END}",
     exit=f"day_of_month >= {_WINDOW_END + 1} and day_of_month <= {_WINDOW_START - 1}",
     prepare_bars=_prepare_tom,
+    # ``day_of_month`` is read straight off the bar's own index, so the rule
+    # needs no prior bars at all - unlike every other prepare_bars strategy,
+    # whose columns are rolling windows.
+    required_lookback=lambda: 0,
 )
