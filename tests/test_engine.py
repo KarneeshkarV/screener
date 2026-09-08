@@ -479,6 +479,44 @@ def test_rolling_backtest_force_closes_entry_on_window_end(stub_fetcher_factory)
     assert result.equity_curve.index[-1].date() == bars.index[6].date()
 
 
+def test_rolling_window_end_entry_keeps_equity_equal_to_the_ledger(
+    stub_fetcher_factory,
+):
+    """A same-bar force-close must not inflate the final equity point.
+
+    The window's last bar is both the entry and the exit bar, so the round
+    trip settles entirely in cash on that day. Marking it to market as well
+    counted the slot twice and overstated every headline metric derived from
+    the curve (total return, CAGR, Sharpe, drawdown, alpha/beta).
+    """
+    bars = make_bars(n=12, seed=11, open_base=100.0)
+    spy = make_bars(n=12, seed=12, open_base=400.0)
+    bars["entry_signal"] = 0.0
+    bars.iat[5, bars.columns.get_loc("entry_signal")] = 1.0
+    fetcher = stub_fetcher_factory({"AAA": bars, "SPY": spy})
+
+    cfg = _cfg(
+        as_of=bars.index[6].date(),
+        hold=20,
+        top=1,
+        entry_expr="entry_signal > 0",
+        tickers=("AAA",),
+    )
+    result = run_rolling_backtest(
+        cfg,
+        fetcher,
+        start_date=bars.index[0].date(),
+        end_date=bars.index[6].date(),
+    )
+
+    assert [t for t in result.trades if t.exit_date <= t.entry_date]
+    expected = cfg.initial_capital + sum(t.pnl for t in result.trades)
+    assert result.equity_curve.iloc[-1] == pytest.approx(expected, rel=1e-12)
+    assert result.metrics["total_return"] == pytest.approx(
+        expected / cfg.initial_capital - 1.0, rel=1e-9
+    )
+
+
 def test_rolling_rs_breakout_india_delivery_filter(monkeypatch):
     aaa = _trend_bars(end_px=150.0)
     aaa.iloc[69, aaa.columns.get_loc("volume")] = 250_000.0
@@ -599,6 +637,40 @@ def test_cash_stays_cash_after_exit_two_ticker_portfolio():
         else:
             expected = static_cash + b_shares * float(bars_b.loc[day, "close"])
             assert equity.loc[day] == pytest.approx(expected, rel=1e-9)
+
+
+def test_same_bar_trade_is_cash_only_and_never_marked_to_market():
+    # A position opened on the window's last bar is force-closed on that same
+    # bar, so the event loop debits entry_cost and credits exit_value on one
+    # calendar day. Adding shares * close on top would double-count the slot.
+    calendar = pd.bdate_range("2024-01-01", periods=4)
+    panel = {
+        "AAA": pd.DataFrame(
+            {"close": [100.0, 101.0, 102.0, 103.0]},
+            index=calendar,
+        )
+    }
+    trade = Trade(
+        ticker="AAA",
+        rank=1,
+        signal_date=calendar[2].date(),
+        entry_date=calendar[3].date(),
+        entry_price=100.0,
+        exit_date=calendar[3].date(),
+        exit_price=103.0,
+        exit_reason="eod",
+        shares=1_000.0,
+        entry_cost=100_000.0,
+        exit_value=103_000.0,
+        pnl=3_000.0,
+        return_pct=0.03,
+    )
+
+    equity = build_equity_curve(calendar, [trade], panel, initial_capital=100_000.0)
+
+    # Untouched until the trade day, then exactly initial capital + realised pnl.
+    assert equity.iloc[:-1].tolist() == [100_000.0] * 3
+    assert equity.iloc[-1] == pytest.approx(100_000.0 + trade.pnl, rel=1e-12)
 
 
 def _simulate_and_record(
