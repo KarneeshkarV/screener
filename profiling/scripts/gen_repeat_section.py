@@ -52,7 +52,7 @@ for f in glob.glob(f"{RES}/*.csv"):
             n, c = tok.rsplit(":", 1)
             try:
                 namecount[r["mkt"]][n] += int(c)
-            except:
+            except (TypeError, ValueError, KeyError):
                 pass
 
 

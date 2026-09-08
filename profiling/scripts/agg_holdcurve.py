@@ -71,7 +71,7 @@ def num(s):
         return None
     try:
         return float(s)
-    except:
+    except (TypeError, ValueError):
         return None
 
 
@@ -173,8 +173,12 @@ json.dump(
     indent=2,
 )
 
+
 # ================= TEXT REPORT =================
-HL = lambda h: "∞" if h == "inf" else h
+def HL(h):
+    return "∞" if h == "inf" else h
+
+
 print(f"benchmark 5yr:  US {bench['us']:+.2f}%   India {bench['india']:+.2f}%\n")
 
 for m in ("us", "india"):

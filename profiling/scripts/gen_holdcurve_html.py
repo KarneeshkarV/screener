@@ -1,9 +1,9 @@
-import os
-
 #!/usr/bin/env python3
 """Generate a self-contained dark-themed hold-time-curve summary page,
 same style as profiling/webview/index.html. Inline SVG charts, no external assets."""
+
 import json
+import os
 
 SP = os.environ.get("ANALYSIS_DIR", os.path.join(os.getcwd(), "profiling", "_analysis"))
 WEBVIEW = os.environ.get(
@@ -85,7 +85,8 @@ def legend(series):
     return (
         '<div class="legend">'
         + " ".join(
-            f'<span><i style="background:{c}"></i>{l}</span>' for l, c, _ in series
+            f'<span><i style="background:{c}"></i>{label}</span>'
+            for label, c, _ in series
         )
         + "</div>"
     )
