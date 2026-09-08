@@ -322,6 +322,7 @@ class Portfolio:
             pnl=pnl,
             return_pct=return_pct,
             dividend_income=position.dividend_income,
+            open_seq=key[1],
         )
         self._closed.append(trade)
         return trade
@@ -340,6 +341,10 @@ class Portfolio:
         is the pro-rata share of the original entry cost, so ``return_pct`` is
         comparable to a full-close trade. The remaining sleeve continues to
         accrue PnL against its reduced entry_cost.
+
+        Every tranche carries the position's ``open_seq``, so a metric that
+        measures occupied slots rather than fills can collapse them back into
+        one position (see ``metrics._exposure``).
         """
         if not 0.0 < fraction <= 1.0:
             raise ValueError(f"fraction must be in (0, 1]; got {fraction}")
@@ -385,6 +390,7 @@ class Portfolio:
             pnl=pnl,
             return_pct=return_pct,
             dividend_income=pro_rata_div,
+            open_seq=key[1],
         )
         self._closed.append(trade)
         # shrink the remaining sleeve in place

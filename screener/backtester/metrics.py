@@ -305,18 +305,59 @@ def _alpha_beta(
     return annualized_alpha, float(slope)
 
 
+def _position_intervals(
+    trades: Sequence[Trade],
+) -> tuple[list[pd.Timestamp], list[pd.Timestamp]]:
+    """Collapse a trade ledger into one inclusive interval per POSITION.
+
+    ``--partial-exit`` makes a single position emit one ``Trade`` per scale-out
+    tranche: every tranche repeats the position's ``entry_date`` and ends on its
+    own ``exit_date``, so the tranches overlap each other. Slot occupancy is a
+    property of the position, not of the fill, so all tranches of one position
+    collapse into ``[entry_date, last tranche's exit_date]``.
+
+    Tranches are identified by the portfolio lot key ``(ticker, open_seq)``
+    that ``Portfolio`` stamps on every trade it emits. Grouping on the lot -
+    not on the ticker, and not on ``(ticker, entry_date)`` - keeps genuinely
+    separate positions separate: ``--allow-reentry`` re-entries and pyramided
+    lots each own a distinct ``open_seq``.
+
+    ``open_seq == 0`` marks a trade with no lot identity (hand-built, or
+    rebuilt from a CSV ledger that does not carry the column). Those are left
+    one interval each, which is exactly the pre-collapse behaviour.
+    """
+    entries: list[pd.Timestamp] = []
+    exits: list[pd.Timestamp] = []
+    slot_of_lot: dict[tuple[str, int], int] = {}
+    for trade in trades:
+        entry = pd.Timestamp(trade.entry_date)
+        exit_ = pd.Timestamp(trade.exit_date)
+        lot = (trade.ticker, trade.open_seq)
+        slot = slot_of_lot.get(lot) if trade.open_seq else None
+        if slot is not None:
+            entries[slot] = min(entries[slot], entry)
+            exits[slot] = max(exits[slot], exit_)
+            continue
+        if trade.open_seq:
+            slot_of_lot[lot] = len(entries)
+        entries.append(entry)
+        exits.append(exit_)
+    return entries, exits
+
+
 def _exposure(
     equity_index: pd.DatetimeIndex, trades: Iterable[Trade], slot_count: int
 ) -> float:
     trades = list(trades)
     if not trades or len(equity_index) == 0:
         return 0.0
-    # Convert inclusive trade intervals into +1/-1 events, then scan once.
+    # Convert inclusive position intervals into +1/-1 events, then scan once.
     # ``left`` for entries and ``right`` for exits exactly preserve the prior
     # ``entry <= session <= exit`` mask semantics, including off-calendar dates.
     changes = np.zeros(len(equity_index) + 1, dtype=np.int64)
-    entries = pd.DatetimeIndex([pd.Timestamp(t.entry_date) for t in trades])
-    exits = pd.DatetimeIndex([pd.Timestamp(t.exit_date) for t in trades])
+    entry_stamps, exit_stamps = _position_intervals(trades)
+    entries = pd.DatetimeIndex(entry_stamps)
+    exits = pd.DatetimeIndex(exit_stamps)
     starts = equity_index.searchsorted(entries, side="left")
     stops = equity_index.searchsorted(exits, side="right")
     valid = (starts < len(equity_index)) & (stops > 0)

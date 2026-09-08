@@ -12,7 +12,7 @@ from screener.backtester.historical import run_backtest
 from screener.backtester.metrics import _exposure, compute_metrics
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.pine import parse
-from screener.backtester.portfolio import build_equity_curve
+from screener.backtester.portfolio import Portfolio, build_equity_curve
 from screener.backtester.rolling_simulation import run_rolling_backtest
 from tests.backtest_helpers import simulate_single_ticker
 from tests.conftest import StubPriceFetcher, make_bars
@@ -97,6 +97,98 @@ def test_exposure_difference_array_matches_inclusive_trade_masks():
         legacy_counts.loc[mask] += 1
     expected = float(legacy_counts.mean() / 2)
     assert legacy_counts.to_list() == [1, 1, 1, 0, 2]
+    assert _exposure(index, trades, slot_count=2) == expected
+
+
+def _exposure_sessions(index: pd.DatetimeIndex, trades) -> pd.Series:
+    """Legacy per-trade inclusive mask: one +1 interval for every Trade row."""
+    counts = pd.Series(0, index=index, dtype=int)
+    for item in trades:
+        mask = (index >= pd.Timestamp(item.entry_date)) & (
+            index <= pd.Timestamp(item.exit_date)
+        )
+        counts.loc[mask] += 1
+    return counts
+
+
+def test_exposure_collapses_partial_exit_tranches_into_one_position():
+    """A scaled-out position occupies ONE slot until its last tranche closes.
+
+    ``--partial-exit`` emits an extra Trade per tranche, all sharing the
+    position's entry_date and overlapping the runner's span. Counting each
+    tranche as a whole open position inflates Avg Exposure past 1.0, which is
+    arithmetically impossible when concurrent positions never exceed
+    ``slot_count``.
+    """
+    index = pd.date_range("2024-01-02", periods=10, freq="B")
+    portfolio = Portfolio(initial_capital=100_000.0, slot_count=1)
+    portfolio.assign("AAA", rank=1, signal_date=index[0].date())
+    portfolio.open("AAA", index[0].date(), entry_price=100.0)
+    portfolio.partial_close("AAA", index[2].date(), 110.0, "target", fraction=0.5)
+    portfolio.partial_close("AAA", index[4].date(), 120.0, "target", fraction=0.5)
+    runner = portfolio.close("AAA", index[6].date(), 130.0, "time")
+    trades = portfolio.closed_trades()
+
+    assert len(trades) == 3
+    assert {t.open_seq for t in trades} == {1}
+    # The tranches overlap, so the legacy per-row mask double counts the slot.
+    assert _exposure_sessions(index, trades).max() == 3
+
+    exposure = _exposure(index, trades, slot_count=1)
+    # Sessions 0..6 of 10 are occupied by the one position.
+    assert exposure == pytest.approx(0.7)
+    assert exposure <= 1.0
+    # Identical to the answer for the same position held as a single trade.
+    assert exposure == _exposure(index, [runner], slot_count=1)
+
+
+def test_exposure_keeps_reentry_and_pyramided_lots_separate():
+    """Two lots in one ticker are two occupied slots, even when both scale out.
+
+    Guards the collapse against over-merging: ``--allow-reentry`` and
+    pyramiding both put several genuinely separate positions on one ticker.
+    """
+    index = pd.date_range("2024-01-02", periods=10, freq="B")
+    portfolio = Portfolio(initial_capital=100_000.0, slot_count=2)
+    portfolio.assign("AAA", rank=1, signal_date=index[0].date())
+    portfolio.open("AAA", index[0].date(), entry_price=100.0)
+    portfolio.open("AAA", index[1].date(), entry_price=101.0, raise_if_exists=False)
+    # Scale each lot out once, then close it. FIFO: lot 1 first, then lot 2.
+    portfolio.partial_close("AAA", index[2].date(), 110.0, "target", fraction=0.5)
+    portfolio.close("AAA", index[3].date(), 111.0, "time")
+    portfolio.partial_close("AAA", index[5].date(), 120.0, "target", fraction=0.5)
+    portfolio.close("AAA", index[8].date(), 121.0, "time")
+    trades = portfolio.closed_trades()
+
+    assert len(trades) == 4
+    assert sorted(t.open_seq for t in trades) == [1, 1, 2, 2]
+    # Lot 1 spans sessions 0..3 (4), lot 2 spans sessions 1..8 (8).
+    assert _exposure(index, trades, slot_count=2) == pytest.approx((4 + 8) / 10 / 2)
+    # Merging on the ticker alone would collapse both lots to sessions 0..8.
+    assert _exposure(index, trades, slot_count=2) != pytest.approx(9 / 10 / 2)
+
+
+def test_exposure_without_partial_exits_matches_the_legacy_per_trade_mask():
+    """No tranches means nothing to collapse: the number must not move."""
+    index = pd.date_range("2024-01-02", periods=12, freq="B")
+    portfolio = Portfolio(initial_capital=100_000.0, slot_count=2)
+    for ticker, entry, exit_ in (
+        ("AAA", 0, 4),
+        ("BBB", 1, 6),
+        ("AAA", 5, 9),  # re-entry on the same ticker
+        ("CCC", 7, 11),
+    ):
+        portfolio.assign(ticker, rank=1, signal_date=index[entry].date())
+        portfolio.open(
+            ticker,
+            index[entry].date(),
+            entry_price=100.0,
+            raise_if_exists=False,
+        )
+        portfolio.close(ticker, index[exit_].date(), 110.0, "time")
+    trades = portfolio.closed_trades()
+
+    expected = float(_exposure_sessions(index, trades).mean() / 2)
     assert _exposure(index, trades, slot_count=2) == expected
 
 
