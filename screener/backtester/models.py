@@ -75,7 +75,11 @@ class BacktestConfig(BaseModel):
     intraday_only: bool = False
 
     # Execution
-    hold: int
+    # ``ge=1``: the time exit fires at ``entry_idx + hold`` and the exit sweep
+    # never runs before ``entry_idx + 1``, so 0 and negatives all collapse to a
+    # one-bar hold instead of meaning "no time exit". Bounded here as well as on
+    # the CLI so a direct construction cannot smuggle the collapsed value in.
+    hold: int = Field(ge=1)
     stop_loss: float | None
     take_profit: float | None
     trailing_stop: float | None

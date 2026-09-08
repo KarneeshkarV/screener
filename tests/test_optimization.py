@@ -280,3 +280,55 @@ def test_optimize_grid_offline_with_injected_fetcher():
     )
     assert res.exit_code == 0, res.output
     assert "Grid Search Results" in res.output
+
+
+def test_optimize_rejects_a_swept_hold_below_one():
+    """A bad grid point must fail before the sweep, not run as a one-bar hold.
+
+    ``grid_search`` applies each combination with ``model_copy(update=...)``,
+    which pydantic does not re-validate, so the ``hold >= 1`` bound on
+    ``BacktestConfig`` cannot catch it mid-sweep.
+    """
+    runner = CliRunner()
+    bars = make_bars(n=80, seed=21, open_base=100.0)
+    # Injected so a regression fails on the assertion rather than on the
+    # network: without the parse-time check the sweep runs to completion.
+    fetcher = StubPriceFetcher({"AAA": bars, "BBB": bars, "SPY": bars})
+
+    res = runner.invoke(
+        cli,
+        [
+            "optimize",
+            "grid",
+            "--tickers",
+            "AAA,BBB",
+            "--entry",
+            "close > sma(close, 3)",
+            "--hold",
+            "5,0",
+        ],
+        obj=fetcher,
+    )
+    assert res.exit_code == 2, res.output
+    assert "--hold" in res.output
+    assert "must be >= 1" in res.output
+
+    res = runner.invoke(
+        cli,
+        [
+            "optimize",
+            "research-report",
+            "--tickers",
+            "AAA,BBB",
+            "--entry",
+            "close > sma(close, 3)",
+            "--param",
+            "hold=-5",
+            "--out",
+            "unused",
+        ],
+        obj=fetcher,
+    )
+    assert res.exit_code == 2, res.output
+    assert "--hold" in res.output
+    assert "must be >= 1" in res.output

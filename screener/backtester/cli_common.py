@@ -265,8 +265,15 @@ OptionBuilder = Callable[[str], OptionDecorator]
 
 
 def _opt_hold(mode: str) -> OptionDecorator:
+    # ``IntRange(min=1)``: the time exit is ``entry_idx + cfg.hold`` and no exit
+    # check runs before ``entry_idx + 1``, so every value <= 1 collapsed to the
+    # same one-bar trade and a typo like ``--hold -5`` was silently honoured as
+    # ``--hold 1``. There is no "no time exit" sentinel, so 0 is not special.
     return click.option(
-        "--hold", type=int, default=20, help="Holding period (trading days)."
+        "--hold",
+        type=click.IntRange(min=1),
+        default=20,
+        help="Holding period (trading days).",
     )
 
 
@@ -447,8 +454,10 @@ def _opt_candidates(mode: str) -> OptionDecorator:
         default=False,
         help=(
             "Print the ranked candidate set for the last bar of the window and "
-            "stop, running no trades. This is the same answer 'screener screen "
-            "--universe' gives, so the two can be compared directly."
+            "stop, running no trades. Same rule, same code as 'screener screen "
+            "--universe', so the two are comparable, but a backtest only admits "
+            "a signal bar that has a next bar to fill on, so against live data "
+            "it reports one bar behind the screen."
         ),
     )
 

@@ -67,3 +67,19 @@ def test_interval_validation() -> None:
 def test_unknown_flat_field_is_rejected() -> None:
     with pytest.raises(ValidationError, match="bogus_flat_field"):
         BacktestConfig.model_validate({**_flat_dict(), "bogus_flat_field": True})
+
+
+def test_hold_below_one_is_rejected() -> None:
+    """``hold`` has no "no time exit" sentinel, so anything below 1 is a typo.
+
+    The time exit fires at ``entry_idx + hold`` and the exit sweep never runs
+    before ``entry_idx + 1``, so 0 and negatives used to produce exactly the
+    same one-bar trade as ``hold=1`` instead of being reported as an error.
+    """
+    for value in (0, -5):
+        with pytest.raises(ValidationError, match="greater than or equal to 1"):
+            BacktestConfig.model_validate({**_flat_dict(), "hold": value})
+
+
+def test_hold_of_one_is_the_lower_bound() -> None:
+    assert BacktestConfig.model_validate({**_flat_dict(), "hold": 1}).hold == 1

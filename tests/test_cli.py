@@ -720,3 +720,92 @@ optimize:
     assert captured["parameter_grid"]["hold"] == [5, 10]
     assert captured["kwargs"]["metric"] == "total_return"
     assert captured["kwargs"]["top_n"] == 4
+
+
+def test_backtest_commands_reject_a_hold_below_one():
+    """``--hold 0`` and ``--hold -5`` used to run as a silent one-bar hold.
+
+    ``hold_limit_idx = entry_idx + cfg.hold`` and no exit check runs before
+    ``entry_idx + 1``, so every value at or below 1 collapsed to the same
+    trade. Nothing reads 0 as a "no time exit" sentinel, so both values are
+    user error and must fail at parse time on both commands.
+    """
+    fetcher, bars_a = _stub_env()
+    runner = CliRunner()
+    as_of = bars_a.index[39].date().isoformat()
+    argv_by_command = {
+        "backtest-historical": ["backtest-historical", "--as-of", as_of],
+        "backtest-rolling": [
+            "backtest-rolling",
+            "--start",
+            bars_a.index[0].date().isoformat(),
+            "--end",
+            bars_a.index[-1].date().isoformat(),
+        ],
+    }
+    for command, head in argv_by_command.items():
+        for value in ("0", "-5"):
+            res = runner.invoke(
+                cli,
+                [
+                    *head,
+                    "--tickers",
+                    "AAA,BBB",
+                    "--entry",
+                    "close > sma(close, 3)",
+                    "--hold",
+                    value,
+                    "--top",
+                    "2",
+                ],
+                obj=fetcher,
+            )
+            assert res.exit_code == 2, f"{command} --hold {value}: {res.output}"
+            assert (
+                f"Invalid value for '--hold': {value} is not in the range x>=1"
+                in res.output
+            ), f"{command} --hold {value}: {res.output}"
+
+
+def test_backtest_historical_accepts_the_lowest_valid_hold():
+    fetcher, bars_a = _stub_env()
+    res = CliRunner().invoke(
+        cli,
+        [
+            "backtest-historical",
+            "--tickers",
+            "AAA,BBB",
+            "--as-of",
+            bars_a.index[39].date().isoformat(),
+            "--hold",
+            "1",
+            "--top",
+            "2",
+            "--entry",
+            "close > sma(close, 3)",
+            "--initial-capital",
+            "10000",
+        ],
+        obj=fetcher,
+    )
+
+    assert res.exit_code == 0, res.output
+    assert "Total Return" in res.output
+
+
+def test_candidates_help_does_not_claim_the_screen_gives_the_same_answer():
+    """The two paths run the same rule but report different signal bars.
+
+    ``_build_rolling_candidate_matrices`` is called with
+    ``require_next_bar=True`` from a backtest and ``False`` from a screen, so
+    against live data the backtest answers for the newest bar that HAS a next
+    bar to fill on - one behind the screen. The old help called them "the same
+    answer", which is only true on a closed window.
+    """
+    res = CliRunner().invoke(cli, ["backtest-rolling", "--help"])
+    assert res.exit_code == 0
+    help_text = " ".join(res.output.split())
+
+    assert "same answer" not in help_text
+    assert "next bar to fill on" in help_text
+    assert "one bar behind the screen" in help_text
