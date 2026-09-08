@@ -6,7 +6,6 @@ import hashlib
 import math
 import time
 from datetime import date
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -36,8 +35,6 @@ from screener.backtester.rolling_simulation import (
     prepare_rolling_backtest,
 )
 from tests.conftest import StubPriceFetcher, make_bars
-
-BENCHMARK_PATH = Path("/tmp/screener-fixes-20260908/optimizer-prep-benchmark.txt")
 
 
 def _config(**overrides) -> BacktestConfig:
@@ -439,21 +436,7 @@ def test_prep_benchmark_two_groups(tmp_path):
     )
     grid_s = time.perf_counter() - t2
     assert len(grid_results) == 6
-
-    BENCHMARK_PATH.write_text(
-        "\n".join(
-            [
-                f"per_combo_prepare_run_seconds={per_combo_s:.4f}",
-                f"grouped_prepare_run_seconds={grouped_s:.4f}",
-                f"grid_search_grouped_seconds={grid_s:.4f}",
-                "per_combo_prepare_count=6",
-                "grouped_prepare_count=2",
-                f"prepare_run_speedup={per_combo_s / grouped_s if grouped_s else float('inf'):.3f}",
-            ]
-        )
-        + "\n"
-    )
-    assert BENCHMARK_PATH.exists()
+    assert grid_s > 0.0
     assert grouped_s <= per_combo_s * 1.2
 
 
