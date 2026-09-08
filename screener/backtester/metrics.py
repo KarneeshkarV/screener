@@ -413,6 +413,192 @@ def _phi_inv(p: float) -> float:
     return 0.5 * (lo + hi)
 
 
+@dataclass(frozen=True)
+class SharpeMoments:
+    """Moments needed to recompute PSR/DSR without the equity series."""
+
+    sharpe_annual: float
+    sr_per: float
+    skew: float
+    kurt_excess: float
+    n_obs: int
+    periods_per_year: int
+
+    def as_dict(self) -> dict[str, float | int]:
+        return {
+            "sharpe_annual": self.sharpe_annual,
+            "sr_per": self.sr_per,
+            "skew": self.skew,
+            "kurt_excess": self.kurt_excess,
+            "n_obs": self.n_obs,
+            "periods_per_year": self.periods_per_year,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> SharpeMoments:
+        # Strict JSON stores undefined moments as null, not NaN.
+        moments = {
+            key: float(data[key]) if data[key] is not None else float("nan")
+            for key in ("sharpe_annual", "sr_per", "skew", "kurt_excess")
+        }
+        return cls(
+            sharpe_annual=moments["sharpe_annual"],
+            sr_per=moments["sr_per"],
+            skew=moments["skew"],
+            kurt_excess=moments["kurt_excess"],
+            n_obs=int(data["n_obs"]),
+            periods_per_year=int(data["periods_per_year"]),
+        )
+
+
+def sharpe_moments_from_returns(
+    daily: pd.Series,
+    *,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> SharpeMoments | None:
+    """Return Sharpe moments for a return series, or None when empty."""
+    if daily.empty:
+        return None
+    std0 = float(daily.std(ddof=0))
+    sharpe_annual = equity_curve_sharpe(daily, periods_per_year=periods_per_year)
+    sr_per = sharpe_annual / math.sqrt(periods_per_year)
+    if std0 == 0.0:
+        skew = 0.0
+        kurt_excess = 0.0
+    else:
+        skew = float(cast(Any, daily.skew()))
+        kurt_excess = float(cast(Any, daily.kurt()))
+    return SharpeMoments(
+        sharpe_annual=float(sharpe_annual),
+        sr_per=float(sr_per),
+        skew=skew,
+        kurt_excess=kurt_excess,
+        n_obs=len(daily),
+        periods_per_year=periods_per_year,
+    )
+
+
+def sharpe_moments_from_equity(
+    equity: pd.Series,
+    *,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> SharpeMoments | None:
+    """Return Sharpe moments from an equity curve."""
+    return sharpe_moments_from_returns(
+        bar_returns(equity), periods_per_year=periods_per_year
+    )
+
+
+def _psr_from_moments(
+    moments: SharpeMoments,
+    *,
+    sr_benchmark_annual: float = 0.0,
+) -> float:
+    """PSR from precomputed return moments.
+
+    Bailey / López de Prado use raw kurtosis γ₄ (normal = 3). With Fisher excess
+    kurtosis ``k`` from pandas ``.kurt()``, the variance term is ``(k + 2) / 4``.
+    """
+    if moments.n_obs < 30:
+        return 0.0
+    sr_bench_per = sr_benchmark_annual / math.sqrt(moments.periods_per_year)
+    # (γ₄ - 1)/4 with γ₄ = k + 3  =>  (k + 2)/4
+    denom_sq = (
+        1.0
+        - moments.skew * moments.sr_per
+        + ((moments.kurt_excess + 2.0) / 4.0) * moments.sr_per * moments.sr_per
+    )
+    denom = math.sqrt(max(denom_sq, 1e-12))
+    z = (moments.sr_per - sr_bench_per) * math.sqrt(max(moments.n_obs - 1, 1)) / denom
+    return _phi(z)
+
+
+def _validate_trial_args(
+    n_trials: int, sr_trial_std_annual: float | None
+) -> float | None:
+    if not isinstance(n_trials, int) or isinstance(n_trials, bool) or n_trials < 1:
+        raise ValueError("n_trials must be an int >= 1")
+    if sr_trial_std_annual is None:
+        return None
+    value = float(sr_trial_std_annual)
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError("sr_trial_std_annual must be finite and >= 0")
+    return value
+
+
+def dsr_unavailable_reason(
+    moments: SharpeMoments | None,
+    *,
+    n_trials: int,
+    sr_trial_std_annual: float | None,
+) -> str | None:
+    """Explain why search-corrected DSR cannot be computed, or None when ok."""
+    if not isinstance(n_trials, int) or isinstance(n_trials, bool) or n_trials < 1:
+        raise ValueError("n_trials must be an int >= 1")
+    if n_trials == 1:
+        return None
+    if moments is None:
+        return "missing_moments"
+    if moments.n_obs < 30:
+        return "insufficient_observations"
+    if sr_trial_std_annual is None:
+        return "missing_dispersion"
+    value = float(sr_trial_std_annual)
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError("sr_trial_std_annual must be finite and >= 0")
+    return None
+
+
+def dsr_from_moments(
+    moments: SharpeMoments | None,
+    *,
+    n_trials: int,
+    sr_trial_std_annual: float | None,
+) -> float:
+    """Deflated Sharpe from moments and trial context.
+
+    Primary formula: Bailey & López de Prado, "The Deflated Sharpe Ratio:
+    Correcting for Selection Bias, Backtest Overfitting and Non-Normality"
+    (2014), https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf
+    """
+    dispersion = _validate_trial_args(n_trials, sr_trial_std_annual)
+    if moments is None or moments.n_obs < 30:
+        return 0.0 if n_trials == 1 else float("nan")
+    if n_trials == 1:
+        return _psr_from_moments(moments, sr_benchmark_annual=0.0)
+    if dispersion is None:
+        return float("nan")
+    sr0_annual = dispersion * (
+        (1.0 - _EULER_MASCHERONI) * _phi_inv(1.0 - 1.0 / n_trials)
+        + _EULER_MASCHERONI * _phi_inv(1.0 - 1.0 / (n_trials * math.e))
+    )
+    return _psr_from_moments(moments, sr_benchmark_annual=sr0_annual)
+
+
+def apply_trial_context_to_metrics(
+    metrics: Mapping[str, float],
+    moments: SharpeMoments | None,
+    *,
+    n_trials: int,
+    sr_trial_std_annual: float | None,
+) -> dict[str, float]:
+    """Return a copy of ``metrics`` with search-corrected DSR applied.
+
+    One trial cannot be deflated, so ``dsr`` and ``dsr_trials`` are omitted
+    there. A search writes both keys; ``dsr`` may be NaN when dispersion is
+    missing rather than assuming 0.5.
+    """
+    out = {str(k): float(v) for k, v in metrics.items()}
+    out.pop("dsr", None)
+    out.pop("dsr_trials", None)
+    if n_trials > 1:
+        out["dsr"] = dsr_from_moments(
+            moments, n_trials=n_trials, sr_trial_std_annual=sr_trial_std_annual
+        )
+        out["dsr_trials"] = float(n_trials)
+    return out
+
+
 def _psr(
     daily: pd.Series,
     sr_benchmark_annual: float = 0.0,
@@ -424,43 +610,34 @@ def _psr(
     corrected for sample size and non-normality (skew, excess kurtosis). Returns
     a value in [0, 1].
     """
-    if daily.empty or len(daily) < 30:
+    moments = sharpe_moments_from_returns(daily, periods_per_year=periods_per_year)
+    if moments is None:
         return 0.0
-    T = len(daily)
-    sr_per = equity_curve_sharpe(daily, periods_per_year=periods_per_year) / math.sqrt(
-        periods_per_year
-    )
-    sr_bench_per = sr_benchmark_annual / math.sqrt(periods_per_year)
-    skew = float(cast(Any, daily.skew())) if daily.std(ddof=0) else 0.0
-    kurt_excess = float(cast(Any, daily.kurt())) if daily.std(ddof=0) else 0.0
-    denom_sq = 1.0 - skew * sr_per + (kurt_excess / 4.0) * sr_per * sr_per
-    denom = math.sqrt(max(denom_sq, 1e-12))
-    z = (sr_per - sr_bench_per) * math.sqrt(max(T - 1, 1)) / denom
-    return _phi(z)
+    return _psr_from_moments(moments, sr_benchmark_annual=sr_benchmark_annual)
 
 
 def _dsr(
     daily: pd.Series,
     n_trials: int = 1,
-    sr_trial_std_annual: float = 0.5,
+    sr_trial_std_annual: float | None = None,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> float:
-    """Deflated Sharpe Ratio (López de Prado, 2014).
+    """Deflated Sharpe Ratio (Bailey & López de Prado, 2014).
 
-    Like PSR, but the benchmark Sharpe is the *expected maximum* across
-    ``n_trials`` independent strategies under the null — i.e. the bar a random
-    strategy would clear just from multiple-testing luck. ``sr_trial_std_annual``
-    is the cross-trial std of annualized Sharpes (0.5 is a reasonable default
-    for equity strategies); pass the measured value if you have it.
+    Primary formula:
+    https://www.davidhbailey.com/dhbpapers/deflated-sharpe.pdf
+
+    Like PSR, but the benchmark Sharpe is the expected maximum across
+    ``n_trials`` strategies under the null. ``n_trials`` must be an ``int >= 1``
+    (bool rejected). For ``n_trials > 1``, pass the measured cross-trial std of
+    annualized Sharpes; when dispersion is unavailable the result is ``nan``
+    (no silent 0.5 assumption). ``n_trials == 1`` keeps the PSR(benchmark=0)
+    path and ignores dispersion.
     """
-    if n_trials <= 1:
-        return _psr(daily, 0.0, periods_per_year=periods_per_year)
-    sr0_annual = sr_trial_std_annual * (
-        (1.0 - _EULER_MASCHERONI) * _phi_inv(1.0 - 1.0 / n_trials)
-        + _EULER_MASCHERONI * _phi_inv(1.0 - 1.0 / (n_trials * math.e))
-    )
-    return _psr(
-        daily, sr_benchmark_annual=sr0_annual, periods_per_year=periods_per_year
+    return dsr_from_moments(
+        sharpe_moments_from_returns(daily, periods_per_year=periods_per_year),
+        n_trials=n_trials,
+        sr_trial_std_annual=sr_trial_std_annual,
     )
 
 
@@ -473,10 +650,10 @@ def deflated_sharpe(
 ) -> float:
     """Deflated Sharpe of an equity curve, given the size of the search.
 
-    The post-hoc entry point for a caller that already holds a finished curve -
-    the optimizer, which only learns how many configurations it ran after each
-    individual backtest has returned. ``compute_metrics`` covers the case where
-    the trial count is known up front.
+    Post-hoc entry point for a caller that already holds a finished curve.
+    The 0.5 default is the Bailey/López de Prado equity-strategy placeholder
+    when measured cross-trial dispersion is not available. Grid search passes
+    the measured std instead.
     """
     return _dsr(
         bar_returns(equity),
@@ -605,6 +782,7 @@ def compute_metrics(
     slot_count: int,
     n_trials: int = 1,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
+    sr_trial_std_annual: float | None = None,
 ) -> dict:
     daily = bar_returns(equity)
     bench_daily = (
@@ -643,14 +821,15 @@ def compute_metrics(
         "trade_count": len(trades),
         "invested_return": _invested_return(trades),
     }
-    # Only report a Deflated Sharpe when something was actually deflated.
-    # ``_dsr`` degenerates to ``_psr`` at one trial, so emitting the key
-    # unconditionally printed the same number under two names and implied a
-    # multiple-testing correction that had not been applied. ``dsr_trials``
-    # rides along so the reader can see what the bar was raised against.
+    # One trial cannot be deflated. A search reports DSR; missing dispersion
+    # is NaN rather than a silent 0.5. :func:`deflated_sharpe` still uses 0.5
+    # when the caller wants the Bailey placeholder.
     if n_trials > 1:
         metrics["dsr"] = _dsr(
-            daily, n_trials=n_trials, periods_per_year=periods_per_year
+            daily,
+            n_trials=n_trials,
+            sr_trial_std_annual=sr_trial_std_annual,
+            periods_per_year=periods_per_year,
         )
         metrics["dsr_trials"] = n_trials
     metrics.update(_trade_return_stats(trades))

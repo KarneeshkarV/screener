@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from screener.backtester.metrics import (
     _alpha_beta,
@@ -254,27 +255,43 @@ def test_psr_nonzero_when_len_equals_30():
 
 
 def test_dsr_n_trials_1_equals_psr_zero_benchmark():
-    """n_trials <= 1 → `return _psr(daily, 0.0)` directly."""
+    """n_trials == 1 → PSR(daily, 0.0) path."""
     rng = np.random.default_rng(2)
     series = pd.Series(rng.normal(0.001, 0.01, 252))
     assert _dsr(series, n_trials=1) == _psr(series, 0.0)
 
 
-def test_dsr_n_trials_0_equals_psr_zero_benchmark():
-    """n_trials=0 also satisfies n_trials <= 1 → same path."""
+def test_dsr_n_trials_0_rejected():
+    """n_trials must be int >= 1; zero is not accepted."""
     rng = np.random.default_rng(2)
     series = pd.Series(rng.normal(0.001, 0.01, 252))
-    assert _dsr(series, n_trials=0) == _psr(series, 0.0)
+    with pytest.raises(ValueError, match="n_trials must be an int >= 1"):
+        _dsr(series, n_trials=0)
+
+
+def test_dsr_n_trials_bool_rejected():
+    """bool must not pass the int>=1 check."""
+    rng = np.random.default_rng(2)
+    series = pd.Series(rng.normal(0.001, 0.01, 252))
+    with pytest.raises(ValueError, match="n_trials must be an int >= 1"):
+        _dsr(series, n_trials=True)  # type: ignore[arg-type]
 
 
 def test_dsr_n_trials_greater_than_1_uses_higher_benchmark():
-    """n_trials > 1 raises the benchmark SR → DSR < PSR(0.0)."""
+    """n_trials > 1 with measured dispersion raises the benchmark SR → DSR < PSR."""
     rng = np.random.default_rng(2)
     series = pd.Series(rng.normal(0.001, 0.01, 252))
     psr = _psr(series, 0.0)
-    dsr = _dsr(series, n_trials=10)
-    # Higher benchmark → probability of exceeding it is lower
+    dsr = _dsr(series, n_trials=10, sr_trial_std_annual=0.5)
     assert dsr < psr
+
+
+def test_dsr_n_trials_greater_than_1_without_dispersion_is_nan():
+    """n_trials > 1 without dispersion must not assume std=0.5."""
+    rng = np.random.default_rng(2)
+    series = pd.Series(rng.normal(0.001, 0.01, 252))
+    dsr = _dsr(series, n_trials=10)
+    assert dsr != dsr  # NaN
 
 
 # ---------------------------------------------------------------------------
@@ -303,11 +320,16 @@ def test_compute_metrics_deflates_dsr_below_psr_for_many_trials():
     """A real search deflates: the reported DSR is strictly below PSR."""
     equity = _equity()
     metrics = compute_metrics(
-        equity, pd.Series(dtype=float), [], slot_count=1, n_trials=64
+        equity,
+        pd.Series(dtype=float),
+        [],
+        slot_count=1,
+        n_trials=64,
+        sr_trial_std_annual=0.5,
     )
 
     assert metrics["dsr_trials"] == 64
-    assert metrics["dsr"] == _dsr(bar_returns(equity), n_trials=64)
+    assert metrics["dsr"] == deflated_sharpe(equity, n_trials=64)
     assert metrics["dsr"] < metrics["psr"]
 
 
@@ -327,7 +349,9 @@ def test_deflated_sharpe_helper_matches_dsr_on_the_curve_returns():
     """The post-hoc helper is the same statistic, taken from the equity curve."""
     equity = _equity()
 
-    assert deflated_sharpe(equity, n_trials=12) == _dsr(bar_returns(equity), 12)
+    assert deflated_sharpe(equity, n_trials=12) == _dsr(
+        bar_returns(equity), 12, sr_trial_std_annual=0.5
+    )
     assert deflated_sharpe(equity, n_trials=1) == _psr(bar_returns(equity), 0.0)
 
 
