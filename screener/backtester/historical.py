@@ -240,11 +240,8 @@ class _ReserveRotationSource:
                         self.warnings.append(f"{ticker} re-entry: {warn}")
                     del self.pending_reentry[slot_id]
                     continue
-                if grows_slots and entry_opens_no_shares(
-                    entry_budget, state.entry_shares
-                ):
-                    # The budget rounds to no shares; leave the slot pending
-                    # rather than parking an empty position in it.
+                if entry_opens_no_shares(entry_budget, state.entry_shares):
+                    # Zero budget / shares still occupies a slot; leave pending.
                     continue
                 portfolio.assign(ticker, new_rank, _bar_label(day, cfg))
                 portfolio.open(
@@ -326,9 +323,7 @@ class _ReserveRotationSource:
                     if warn:
                         self.warnings.append(f"{ticker}: {warn}")
                     continue
-                if grows_slots and entry_opens_no_shares(
-                    entry_budget, state.entry_shares
-                ):
+                if entry_opens_no_shares(entry_budget, state.entry_shares):
                     continue
                 portfolio.assign(ticker, int(reserve["rank"]), _bar_label(day, cfg))
                 portfolio.open(
@@ -420,7 +415,7 @@ def _run_event_driven_sim(
                 warnings.append(f"{ticker}: {warn}")
             slot_states[slot_id] = None
             continue
-        if grows_slots and entry_opens_no_shares(entry_budget, state.entry_shares):
+        if entry_opens_no_shares(entry_budget, state.entry_shares):
             slot_states[slot_id] = None
             continue
         portfolio.assign(ticker, int(row["rank"]), cfg.as_of)

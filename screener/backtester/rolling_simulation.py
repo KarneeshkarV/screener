@@ -328,11 +328,9 @@ class _DailyRankingSource:
                     pd.Timestamp(state.entry_date) > self.end_ts
                 ):  # pragma: no cover - fetch_end == end_ts
                     continue
-                if grows_slots and entry_opens_no_shares(
-                    entry_budget, state.entry_shares
-                ):
-                    # The budget rounds to no shares; leave the slot free
-                    # rather than parking an empty position in it.
+                if entry_opens_no_shares(entry_budget, state.entry_shares):
+                    # Zero budget / shares still occupies a slot and consumes
+                    # the ticker under equal_slot; leave the slot free instead.
                     continue
                 portfolio.assign(ticker, int(row["rank"]), _bar_label(day, cfg))
                 portfolio.open(
