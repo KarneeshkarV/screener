@@ -1579,3 +1579,25 @@ def test_reject_duplicated_fold_equity(monkeypatch):
             step_days=15,
             min_trades=1,
         )
+
+
+def test_walk_forward_selects_finite_runner_up(tmp_path, monkeypatch):
+    """An infinite winner must not hide an eligible finite training result."""
+    monkeypatch.setenv("SCREENER_OPTIMIZER_TRIALS_DB", str(tmp_path / "trials.db"))
+    bars = make_bars(n=60, seed=2, drift=0.1)
+    summary = walk_forward_optimize(
+        _config(tickers=("AAA",), min_price=None, min_avg_dollar_volume=None),
+        StubPriceFetcher({"AAA": bars, "SPY": bars}),
+        {"hold": [2, 5, 10, 15]},
+        metric="profit_factor",
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 2, 19),
+        train_days=30,
+        test_days=20,
+        max_workers=1,
+    )
+    assert summary.evidence["missing_eligible_folds"] == 0
+    assert len(summary.windows) == 1
+    assert summary.windows[0].best_train.params == {"hold": 2}
+    assert summary.windows[0].best_train.score == pytest.approx(5.674788208448603)
+    assert summary.windows[0].test_trade_count > 0
