@@ -259,7 +259,8 @@ def entry_opens_no_shares(entry_budget: float, entry_shares: float | None) -> bo
     ``_SlotState.entry_shares`` is only populated for liquidity-aware fill
     models; otherwise ``Portfolio.open`` derives the share count from the
     budget, so a non-positive budget is the empty case. A zero-share position
-    still occupies its slot and consumes the candidate, so callers skip it.
+    still occupies its slot and consumes the candidate, so every entry path
+    (including fixed ``equal_slot``) must skip it rather than call ``open``.
     """
     if entry_shares is not None:
         return float(entry_shares) <= 0.0
