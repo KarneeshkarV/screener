@@ -89,6 +89,25 @@ def test_walk_forward_generates_expected_windows():
     assert len(windows) == 5
 
 
+def test_walk_forward_rejects_zero_step_and_overlap():
+    with pytest.raises(ValueError, match="step_days must be positive"):
+        generate_walk_forward_windows(
+            date(2024, 1, 1),
+            date(2024, 6, 1),
+            train_days=30,
+            test_days=20,
+            step_days=0,
+        )
+    with pytest.raises(ValueError, match="overlapping"):
+        generate_walk_forward_windows(
+            date(2024, 1, 1),
+            date(2024, 8, 1),
+            train_days=30,
+            test_days=60,
+            step_days=30,
+        )
+
+
 def test_monte_carlo_reproducible_with_same_seed():
     trades = [_trade(10.0, 0.10), _trade(-5.0, -0.05), _trade(3.0, 0.03)]
     a = simulate_monte_carlo(trades, iterations=100, seed=7)

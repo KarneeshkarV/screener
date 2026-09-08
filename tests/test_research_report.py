@@ -9,17 +9,27 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import click
+import pandas as pd
 import pytest
 from click.testing import CliRunner
 
-from screener.backtester.models import BacktestConfig, Trade
+from screener.backtester.models import BacktestConfig, BacktestResult, Trade
 from screener.backtester.optimization.grid import GridSearchResult
-from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
+from screener.backtester.optimization.monte_carlo import simulate_equity_monte_carlo
 from screener.backtester.optimization.research_report import (
+    EVIDENCE_INTEGRITY_NOTE,
+    INSUFFICIENT_DATA_VERDICT,
+    PASS_VERDICT,
     compute_parameter_stability,
     run_research_report,
 )
-from screener.backtester.optimization.walk_forward import WalkForwardSummary
+from screener.backtester.optimization.walk_forward import (
+    WalkForwardSummary,
+    generate_walk_forward_windows,
+    require_daily_walk_forward_scope,
+    train_result_eligible,
+    walk_forward_optimize,
+)
 from screener.cli import cli
 from tests.conftest import StubPriceFetcher, make_bars
 
@@ -146,7 +156,7 @@ def test_run_research_report_end_to_end_stub(tmp_path, monkeypatch):
     calls = {"grid": 0, "wf": 0, "mc": 0}
     real_grid = grid_mod.grid_search
     real_wf = wf_mod.walk_forward_optimize
-    real_mc = mc_mod.simulate_monte_carlo
+    real_mc = mc_mod.simulate_equity_monte_carlo
 
     def wrapped_grid(*args, **kwargs):
         calls["grid"] += 1
@@ -162,7 +172,7 @@ def test_run_research_report_end_to_end_stub(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rr, "grid_search", wrapped_grid)
     monkeypatch.setattr(rr, "walk_forward_optimize", wrapped_wf)
-    monkeypatch.setattr(rr, "simulate_monte_carlo", wrapped_mc)
+    monkeypatch.setattr(rr, "simulate_equity_monte_carlo", wrapped_mc)
 
     payload = run_research_report(
         cfg,
@@ -205,12 +215,17 @@ def test_run_research_report_end_to_end_stub(tmp_path, monkeypatch):
     assert "degradation" in loaded["summary"]
     assert "mc_return_p05" in loaded["summary"]
     assert "return_p05" in loaded["monte_carlo"]
+    assert loaded["monte_carlo"]["method"] == "equity_block_bootstrap"
+    assert loaded["grid"]["role"] == "descriptive_full_period_only"
+    assert "oos_trades" not in loaded["walk_forward"]
+    assert "oos_equity" not in loaded["walk_forward"]
 
     html = html_path.read_text().lower()
     assert "research report" in html
     assert "parameter stability" in html
     assert "walk-forward" in html
     assert "monte carlo" in html
+    assert "descriptive" in html
 
 
 def test_cli_research_report_offline(tmp_path):
@@ -324,34 +339,57 @@ def test_research_report_helper_edge_cases():
     assert rr._parse_value_key("value") == "value"
     assert rr._degradation_ratio(0.0, 0.0) == 0.0
     assert rr._degradation_ratio(0.0, -1.0) == 1.0
+    assert rr._degradation_ratio(float("-inf"), 0.0) == 1.0
+    assert (
+        rr._verdict(
+            insufficient_data=True,
+            overfit_flag=False,
+            degradation=0.0,
+            mc_return_p05=1.0,
+            oos_metric=1.0,
+        )
+        == INSUFFICIENT_DATA_VERDICT
+    )
     assert rr._verdict(
+        insufficient_data=False,
         overfit_flag=True,
         degradation=0.0,
         mc_return_p05=1.0,
         oos_metric=1.0,
     ).startswith("FAIL: severe")
     assert rr._verdict(
+        insufficient_data=False,
         overfit_flag=False,
         degradation=0.0,
         mc_return_p05=-1.0,
         oos_metric=0.0,
     ).startswith("FAIL: weak")
     assert rr._verdict(
+        insufficient_data=False,
         overfit_flag=False,
         degradation=0.5,
         mc_return_p05=1.0,
         oos_metric=1.0,
     ).startswith("CAUTION")
-    assert rr._verdict(
-        overfit_flag=False,
-        degradation=0.0,
-        mc_return_p05=1.0,
-        oos_metric=1.0,
-    ).startswith("PASS")
+    assert (
+        rr._verdict(
+            insufficient_data=False,
+            overfit_flag=False,
+            degradation=0.0,
+            mc_return_p05=1.0,
+            oos_metric=1.0,
+        )
+        == PASS_VERDICT
+    )
+    assert "descriptive checks passed" in PASS_VERDICT
+    assert "not validated alpha" in PASS_VERDICT.lower()
     assert format_result_value(float("nan"), "ratio") == "-"
+    assert "data-integrity" in EVIDENCE_INTEGRITY_NOTE
 
 
-def test_run_research_report_fallback_ledger_and_empty_grid(tmp_path, monkeypatch):
+def test_run_research_report_empty_oos_is_insufficient_not_full_period(
+    tmp_path, monkeypatch
+):
     import screener.backtester.optimization.research_report as rr
 
     cfg = _config()
@@ -364,30 +402,33 @@ def test_run_research_report_fallback_ledger_and_empty_grid(tmp_path, monkeypatc
     empty_wf = WalkForwardSummary(
         windows=[],
         stability_score=1.0,
-        aggregate_metrics={"sharpe": 0.5},
+        aggregate_metrics={},
         overfit_flag=False,
-        train_test_score_ratio=3.0,
+        train_test_score_ratio=0.0,
+        insufficient_data=True,
+        evidence={"adequate": False, "generated_folds": 0},
     )
     wf_calls = []
 
     monkeypatch.setattr(rr, "grid_search", lambda *args, **kwargs: [best])
 
     def fake_wf(*args, **kwargs):
-        wf_calls.append(kwargs)
+        wf_calls.append((args, kwargs))
         return empty_wf
 
     monkeypatch.setattr(rr, "walk_forward_optimize", fake_wf)
     monkeypatch.setattr(
         rr,
-        "run_rolling_backtest",
-        lambda *args, **kwargs: SimpleNamespace(trades=[_trade(10.0, 0.1)]),
+        "simulate_equity_monte_carlo",
+        lambda *args, **kwargs: pytest.fail(
+            "equity MC must not run without adequate OOS equity"
+        ),
     )
-    monkeypatch.setattr(rr, "simulate_monte_carlo", simulate_monte_carlo)
     progress = []
     payload = run_research_report(
         cfg,
         StubPriceFetcher({}),
-        {"hold": [8]},
+        {"hold": [5, 8]},
         start_date=date(2024, 1, 1),
         end_date=date(2024, 3, 1),
         cache_path=tmp_path / "grid.json",
@@ -397,9 +438,15 @@ def test_run_research_report_fallback_ledger_and_empty_grid(tmp_path, monkeypatc
     )
 
     assert progress == ["grid", "walk_forward", "monte_carlo"]
-    assert wf_calls[0]["cache_path"].name == "grid_research_wf.json"
-    assert payload["summary"]["is_metric"] == 1.5
-    assert payload["monte_carlo"]["trade_source"] == "full_period"
+    assert wf_calls[0][1]["cache_path"].name == "grid_research_wf.json"
+    # Original complete grid reaches walk-forward, not a fixed winner.
+    assert wf_calls[0][0][2] == {"hold": [5, 8]}
+    assert payload["summary"]["verdict"] == INSUFFICIENT_DATA_VERDICT
+    assert payload["summary"]["insufficient_data"] is True
+    assert payload["summary"]["is_metric"] is None
+    assert payload["monte_carlo"]["source"] == "none"
+    assert payload["monte_carlo"]["method"] == "equity_block_bootstrap"
+    assert payload["monte_carlo"]["trade_source"] == "none"
 
     monkeypatch.setattr(rr, "grid_search", lambda *args, **kwargs: [])
     empty = run_research_report(
@@ -412,10 +459,11 @@ def test_run_research_report_fallback_ledger_and_empty_grid(tmp_path, monkeypatc
         out_path=tmp_path / "empty.html",
     )
     assert empty["grid"]["best_params"] == {}
-    assert empty["monte_carlo"]["trade_source"] == "none"
+    assert empty["summary"]["verdict"] == INSUFFICIENT_DATA_VERDICT
+    assert empty["monte_carlo"]["source"] == "none"
 
 
-def test_research_report_reuses_walk_forward_oos_trades(tmp_path, monkeypatch):
+def test_research_report_uses_oos_equity_block_bootstrap(tmp_path, monkeypatch):
     import screener.backtester.optimization.research_report as rr
 
     cfg = _config()
@@ -426,6 +474,12 @@ def test_research_report_reuses_walk_forward_oos_trades(tmp_path, monkeypatch):
         trade_count=1,
     )
     oos_trade = _trade(10.0, 0.1)
+    idx = pd.bdate_range("2024-02-01", periods=40)
+    oos_equity = pd.Series(
+        [100_000.0 * ((1.001) ** i) for i in range(len(idx))],
+        index=idx,
+        dtype=float,
+    )
     walk_forward = WalkForwardSummary(
         windows=[
             {
@@ -445,24 +499,23 @@ def test_research_report_reuses_walk_forward_oos_trades(tmp_path, monkeypatch):
         overfit_flag=False,
         train_test_score_ratio=3.0,
         oos_trades=(oos_trade,),
+        oos_equity=oos_equity,
+        insufficient_data=False,
+        evidence={"adequate": True},
     )
-    captured_trades = []
+    captured: dict[str, object] = {}
 
     monkeypatch.setattr(rr, "grid_search", lambda *args, **kwargs: [best])
     monkeypatch.setattr(
         rr, "walk_forward_optimize", lambda *args, **kwargs: walk_forward
     )
-    monkeypatch.setattr(
-        rr,
-        "run_rolling_backtest",
-        lambda *args, **kwargs: pytest.fail("OOS backtest must not be re-run"),
-    )
 
-    def fake_monte_carlo(trades, **kwargs):
-        captured_trades.extend(trades)
-        return simulate_monte_carlo(trades, **kwargs)
+    def fake_equity_mc(equity, **kwargs):
+        captured["equity"] = equity
+        captured["kwargs"] = kwargs
+        return simulate_equity_monte_carlo(equity, **kwargs)
 
-    monkeypatch.setattr(rr, "simulate_monte_carlo", fake_monte_carlo)
+    monkeypatch.setattr(rr, "simulate_equity_monte_carlo", fake_equity_mc)
     payload = run_research_report(
         cfg,
         StubPriceFetcher({}),
@@ -470,13 +523,367 @@ def test_research_report_reuses_walk_forward_oos_trades(tmp_path, monkeypatch):
         start_date=date(2024, 1, 1),
         end_date=date(2024, 3, 1),
         mc_iterations=2,
+        mc_block=5,
         out_path=tmp_path / "reuse",
     )
 
-    assert captured_trades == [oos_trade]
+    assert isinstance(captured["equity"], pd.Series)
+    assert list(captured["equity"].values) == list(oos_equity.values)
+    assert captured["kwargs"]["block"] == 5
     assert payload["monte_carlo"]["trade_count"] == 1
-    assert payload["monte_carlo"]["trade_source"] == "walk_forward_oos"
+    assert payload["monte_carlo"]["source"] == "walk_forward_oos_equity"
+    assert payload["monte_carlo"]["method"] == "equity_block_bootstrap"
     assert "oos_trades" not in payload["walk_forward"]
+    assert "oos_equity" not in payload["walk_forward"]
+    assert payload["walk_forward"]["oos_equity_meta"]["bars"] == len(oos_equity)
+
+
+def test_cli_zero_trade_research_report_is_insufficient(tmp_path):
+    bars_a = make_bars(n=100, seed=21, open_base=100.0, drift=0.04)
+    bars_b = make_bars(n=100, seed=22, open_base=50.0, drift=0.02)
+    spy = make_bars(n=100, seed=99, open_base=400.0)
+    fetcher = StubPriceFetcher({"AAA": bars_a, "BBB": bars_b, "SPY": spy})
+    out = tmp_path / "zero_trade_report"
+    res = CliRunner().invoke(
+        cli,
+        [
+            "optimize",
+            "research-report",
+            "--tickers",
+            "AAA,BBB",
+            "--start",
+            bars_a.index[8].date().isoformat(),
+            "--end",
+            bars_a.index[90].date().isoformat(),
+            "--entry",
+            "close < 0",
+            "--param",
+            "hold=5,10",
+            "--train-days",
+            "30",
+            "--test-days",
+            "12",
+            "--step-days",
+            "12",
+            "--mc-iterations",
+            "10",
+            "--workers",
+            "1",
+            "--metric",
+            "total_return",
+            "--out",
+            str(out),
+        ],
+        obj=fetcher,
+    )
+    assert res.exit_code == 0, res.output
+    payload = json.loads(Path(str(out) + ".json").read_text())
+    assert payload["summary"]["insufficient_data"] is True
+    assert payload["summary"]["verdict"].startswith("INSUFFICIENT DATA")
+    assert payload["monte_carlo"]["method"] == "equity_block_bootstrap"
+    assert payload["monte_carlo"]["source"] == "none"
+    assert "PASS" not in payload["summary"]["verdict"]
+    plain = _plain(res.output)
+    assert "INSUFFICIENT DATA" in plain
+
+
+def test_full_grid_reaches_each_train_fold(monkeypatch):
+    import screener.backtester.optimization.walk_forward as wf_mod
+
+    cfg = _config()
+    seen_grids: list[dict[str, list[object]]] = []
+
+    def fake_grid(cfg_arg, fetcher, parameter_grid, **kwargs):
+        seen_grids.append(dict(parameter_grid))
+        return [
+            GridSearchResult(
+                params={"hold": 5},
+                score=1.0,
+                metrics={"sharpe": 1.0},
+                trade_count=3,
+            )
+        ]
+
+    def fake_roll(cfg_arg, fetcher, *, start_date, end_date):
+        idx = pd.bdate_range(start_date, end_date)
+        if len(idx) < 3:
+            idx = pd.bdate_range(start_date, periods=5)
+        equity = pd.Series(
+            [
+                float(cfg_arg.initial_capital) * (1.0 + 0.001 * i)
+                for i in range(len(idx))
+            ],
+            index=idx,
+            dtype=float,
+        )
+        trade = _trade(1.0, 0.01)
+        return BacktestResult(
+            config=cfg_arg,
+            trades=[trade],
+            equity_curve=equity,
+            benchmark_curve=equity,
+            metrics={"sharpe": 1.0, "total_return": 0.01, "max_drawdown": -0.01},
+        )
+
+    monkeypatch.setattr(wf_mod, "grid_search", fake_grid)
+    monkeypatch.setattr(wf_mod, "run_rolling_backtest", fake_roll)
+    monkeypatch.setattr(
+        wf_mod,
+        "fetch_benchmark",
+        lambda symbol, start, end, fetcher: pd.Series(
+            400.0, index=pd.bdate_range(start, end), dtype=float
+        ),
+    )
+
+    original_grid = {"hold": [5, 10, 20], "top": [1, 2]}
+    summary = walk_forward_optimize(
+        cfg,
+        StubPriceFetcher({}),
+        original_grid,
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 6, 30),
+        train_days=40,
+        test_days=20,
+        step_days=20,
+        metric="sharpe",
+        min_trades=1,
+    )
+    assert len(seen_grids) == summary.evidence["generated_folds"]
+    assert seen_grids
+    assert all(g == original_grid for g in seen_grids)
+    assert summary.insufficient_data is False
+    assert summary.oos_equity is not None
+    assert len(summary.oos_equity) >= 3
+
+
+def test_nan_inf_train_scores_rejected(monkeypatch):
+    import screener.backtester.optimization.walk_forward as wf_mod
+
+    cfg = _config()
+
+    def fake_grid(*args, **kwargs):
+        return [
+            GridSearchResult(
+                params={"hold": 5},
+                score=float("-inf"),
+                metrics={},
+                trade_count=0,
+            )
+        ]
+
+    monkeypatch.setattr(wf_mod, "grid_search", fake_grid)
+    monkeypatch.setattr(
+        wf_mod,
+        "run_rolling_backtest",
+        lambda *args, **kwargs: pytest.fail("ineligible train must not run OOS test"),
+    )
+    monkeypatch.setattr(
+        wf_mod,
+        "fetch_benchmark",
+        lambda symbol, start, end, fetcher: pd.Series(
+            400.0, index=pd.bdate_range(start, end), dtype=float
+        ),
+    )
+
+    summary = walk_forward_optimize(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [5]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 4, 30),
+        train_days=30,
+        test_days=10,
+        step_days=10,
+        min_trades=1,
+    )
+    assert summary.windows == []
+    assert summary.insufficient_data is True
+    assert summary.evidence["missing_eligible_folds"] > 0
+    assert summary.oos_trades == ()
+    assert not train_result_eligible(
+        GridSearchResult(
+            params={"hold": 5},
+            score=float("nan"),
+            metrics={},
+            trade_count=0,
+        )
+    )
+    assert not train_result_eligible(
+        GridSearchResult(
+            params={"hold": 5},
+            score=1.0,
+            metrics={},
+            trade_count=0,
+            error="boom",
+        )
+    )
+    # Finite score with zero trades is still ineligible (floor max(1, min_trades)).
+    assert not train_result_eligible(
+        GridSearchResult(
+            params={"hold": 5},
+            score=1.5,
+            metrics={"sharpe": 1.5},
+            trade_count=0,
+        )
+    )
+    assert not train_result_eligible(
+        GridSearchResult(
+            params={"hold": 5},
+            score=1.5,
+            metrics={"sharpe": 1.5},
+            trade_count=0,
+        ),
+        min_trades=0,
+    )
+    assert train_result_eligible(
+        GridSearchResult(
+            params={"hold": 5},
+            score=1.2,
+            metrics={"sharpe": 1.2},
+            trade_count=3,
+        )
+    )
+
+
+def test_walk_forward_rejects_overlap_and_zero_step():
+    with pytest.raises(ValueError, match="step_days must be positive"):
+        generate_walk_forward_windows(
+            date(2024, 1, 1),
+            date(2024, 6, 1),
+            train_days=30,
+            test_days=20,
+            step_days=0,
+        )
+    with pytest.raises(ValueError, match="overlapping walk-forward test windows"):
+        generate_walk_forward_windows(
+            date(2024, 1, 1),
+            date(2024, 6, 1),
+            train_days=30,
+            test_days=60,
+            step_days=30,
+        )
+
+
+def test_walk_forward_combined_compounding_and_exposure(monkeypatch):
+    import screener.backtester.optimization.walk_forward as wf_mod
+
+    cfg = _config(top=2, initial_capital=100_000.0)
+    capitals_seen: list[float] = []
+
+    def fake_grid(*args, **kwargs):
+        return [
+            GridSearchResult(
+                params={"hold": 5},
+                score=2.0,
+                metrics={"sharpe": 2.0},
+                trade_count=5,
+            )
+        ]
+
+    def fake_roll(cfg_arg, fetcher, *, start_date, end_date):
+        capitals_seen.append(float(cfg_arg.initial_capital))
+        idx = pd.bdate_range(start_date, end_date)
+        start_cap = float(cfg_arg.initial_capital)
+        # First fold +10%, second fold (on carried capital) -5% end-to-end.
+        if len(capitals_seen) == 1:
+            end_cap = start_cap * 1.10
+        else:
+            end_cap = start_cap * 0.95
+        equity = pd.Series(
+            [
+                start_cap + (end_cap - start_cap) * i / max(len(idx) - 1, 1)
+                for i in range(len(idx))
+            ],
+            index=idx,
+            dtype=float,
+        )
+        # Two overlapping-slot trades so exposure uses slot_count=2.
+        trades = [
+            Trade(
+                ticker="AAA",
+                rank=1,
+                signal_date=start_date,
+                entry_date=start_date,
+                entry_price=100.0,
+                exit_date=end_date,
+                exit_price=110.0,
+                exit_reason="time",
+                shares=10.0,
+                entry_cost=1000.0,
+                exit_value=1100.0,
+                pnl=100.0,
+                return_pct=0.10,
+            ),
+            Trade(
+                ticker="BBB",
+                rank=2,
+                signal_date=start_date,
+                entry_date=start_date,
+                entry_price=50.0,
+                exit_date=end_date,
+                exit_price=55.0,
+                exit_reason="time",
+                shares=10.0,
+                entry_cost=500.0,
+                exit_value=550.0,
+                pnl=50.0,
+                return_pct=0.10,
+            ),
+        ]
+        return BacktestResult(
+            config=cfg_arg,
+            trades=trades,
+            equity_curve=equity,
+            benchmark_curve=equity,
+            metrics={
+                "sharpe": 1.0,
+                "total_return": (end_cap / start_cap) - 1.0,
+                "max_drawdown": min(0.0, (end_cap / start_cap) - 1.0),
+            },
+        )
+
+    monkeypatch.setattr(wf_mod, "grid_search", fake_grid)
+    monkeypatch.setattr(wf_mod, "run_rolling_backtest", fake_roll)
+    monkeypatch.setattr(
+        wf_mod,
+        "fetch_benchmark",
+        lambda symbol, start, end, fetcher: pd.Series(
+            400.0, index=pd.bdate_range(start, end), dtype=float
+        ),
+    )
+
+    summary = walk_forward_optimize(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [5]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 4, 15),
+        train_days=20,
+        test_days=15,
+        step_days=15,
+        metric="total_return",
+        min_trades=1,
+    )
+    assert len(summary.windows) >= 2
+    assert capitals_seen[0] == pytest.approx(100_000.0)
+    assert capitals_seen[1] == pytest.approx(110_000.0)
+    # Combined path compounds fold returns on carried capital (not a trade-weighted mean).
+    expected_end = 100_000.0
+    for i, start_cap in enumerate(capitals_seen):
+        assert start_cap == pytest.approx(expected_end)
+        expected_end = start_cap * (1.10 if i == 0 else 0.95)
+    assert summary.oos_equity is not None
+    assert float(summary.oos_equity.iloc[0]) == pytest.approx(100_000.0)
+    assert float(summary.oos_equity.iloc[-1]) == pytest.approx(expected_end, rel=1e-6)
+    assert summary.aggregate_metrics["total_return"] == pytest.approx(
+        expected_end / 100_000.0 - 1.0, abs=1e-6
+    )
+    # Drawdown/exposure come from the combined chronological path.
+    assert "max_drawdown" in summary.aggregate_metrics
+    assert "exposure" in summary.aggregate_metrics
+    assert summary.aggregate_metrics["exposure"] > 0.0
+    assert summary.fold_boundary_policy.startswith("close_flat")
+    assert summary.capital_policy.startswith("carry_ending")
 
 
 def test_resolve_universe_tickers_branches(monkeypatch):
@@ -525,3 +932,650 @@ def test_resolve_universe_tickers_branches(monkeypatch):
 def test_backtest_config_rejects_unknown_interval():
     with pytest.raises(ValueError, match="unsupported interval"):
         _config(interval="2h")
+
+
+def test_oos_equity_excludes_training_period(monkeypatch):
+    import screener.backtester.optimization.walk_forward as wf_mod
+
+    cfg = _config(initial_capital=100_000.0)
+    first_test_start = date(2024, 1, 21)
+
+    def fake_grid(*args, **kwargs):
+        return [
+            GridSearchResult(
+                params={"hold": 5},
+                score=1.0,
+                metrics={"sharpe": 1.0},
+                trade_count=2,
+            )
+        ]
+
+    def fake_roll(cfg_arg, fetcher, *, start_date, end_date):
+        idx = pd.bdate_range(start_date, end_date)
+        equity = pd.Series(
+            [
+                float(cfg_arg.initial_capital) * (1.0 + 0.001 * i)
+                for i in range(len(idx))
+            ],
+            index=idx,
+            dtype=float,
+        )
+        return BacktestResult(
+            config=cfg_arg,
+            trades=[_trade(1.0, 0.01)],
+            equity_curve=equity,
+            benchmark_curve=equity,
+            metrics={"sharpe": 1.0, "total_return": 0.01},
+        )
+
+    monkeypatch.setattr(wf_mod, "grid_search", fake_grid)
+    monkeypatch.setattr(wf_mod, "run_rolling_backtest", fake_roll)
+    monkeypatch.setattr(
+        wf_mod,
+        "fetch_benchmark",
+        lambda symbol, start, end, fetcher: pd.Series(
+            400.0, index=pd.bdate_range(start, end), dtype=float
+        ),
+    )
+
+    summary = walk_forward_optimize(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [5]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 3, 31),
+        train_days=20,
+        test_days=15,
+        step_days=15,
+        min_trades=1,
+    )
+    assert summary.oos_equity is not None
+    assert summary.evidence["oos_anchor"] is not None
+    assert pd.Timestamp(summary.oos_equity.index[0]).date() < first_test_start
+    assert pd.Timestamp(summary.oos_equity.index[0]).date() >= date(2024, 1, 19)
+    # Training span must not appear in the OOS curve.
+    assert all(ts.date() >= date(2024, 1, 19) for ts in summary.oos_equity.index)
+    assert all(ts.date() <= date(2024, 3, 31) for ts in summary.oos_equity.index)
+    assert float(summary.oos_equity.iloc[0]) == pytest.approx(100_000.0)
+
+
+def test_no_rescale_preserves_fee_drop_and_carries_terminal(monkeypatch):
+    import screener.backtester.optimization.walk_forward as wf_mod
+
+    cfg = _config(initial_capital=100_000.0)
+    capitals_seen: list[float] = []
+
+    def fake_grid(*args, **kwargs):
+        return [
+            GridSearchResult(
+                params={"hold": 5},
+                score=2.0,
+                metrics={"sharpe": 2.0},
+                trade_count=4,
+            )
+        ]
+
+    def fake_roll(cfg_arg, fetcher, *, start_date, end_date):
+        capitals_seen.append(float(cfg_arg.initial_capital))
+        idx = pd.bdate_range(start_date, end_date)
+        start_cap = float(cfg_arg.initial_capital)
+        if len(capitals_seen) == 1:
+            # First bar already below capital due to fees; do not rescale away.
+            values = [start_cap - 100.0]
+            for _ in range(1, len(idx)):
+                values.append(values[-1] * 1.01)
+            dividend = 25.0
+            # Equity terminal includes dividend; pnl excludes it.
+            trades = [
+                Trade(
+                    ticker="AAA",
+                    rank=1,
+                    signal_date=start_date,
+                    entry_date=start_date,
+                    entry_price=100.0,
+                    exit_date=end_date,
+                    exit_price=110.0,
+                    exit_reason="time",
+                    shares=10.0,
+                    entry_cost=1000.0,
+                    exit_value=1100.0,
+                    pnl=float(values[-1] - start_cap - dividend),
+                    return_pct=0.05,
+                    dividend_income=dividend,
+                )
+            ]
+            metrics = {
+                "sharpe": 1.0,
+                "total_return": values[-1] / start_cap - 1.0,
+                "total_fees": 100.0,
+                "fee_brokerage": 100.0,
+            }
+        else:
+            values = [
+                start_cap + (start_cap * 0.02) * i / max(len(idx) - 1, 1)
+                for i in range(len(idx))
+            ]
+            trades = [
+                Trade(
+                    ticker="AAA",
+                    rank=1,
+                    signal_date=start_date,
+                    entry_date=start_date,
+                    entry_price=100.0,
+                    exit_date=end_date,
+                    exit_price=102.0,
+                    exit_reason="time",
+                    shares=1.0,
+                    entry_cost=100.0,
+                    exit_value=102.0,
+                    pnl=float(values[-1] - start_cap),
+                    return_pct=0.02,
+                    dividend_income=0.0,
+                )
+            ]
+            metrics = {
+                "sharpe": 0.8,
+                "total_return": 0.02,
+                "total_fees": 40.0,
+                "fee_brokerage": 40.0,
+            }
+        equity = pd.Series(values, index=idx, dtype=float)
+        return BacktestResult(
+            config=cfg_arg,
+            trades=trades,
+            equity_curve=equity,
+            benchmark_curve=equity,
+            metrics=metrics,
+        )
+
+    monkeypatch.setattr(wf_mod, "grid_search", fake_grid)
+    monkeypatch.setattr(wf_mod, "run_rolling_backtest", fake_roll)
+    monkeypatch.setattr(
+        wf_mod,
+        "fetch_benchmark",
+        lambda symbol, start, end, fetcher: pd.Series(
+            400.0, index=pd.bdate_range(start, end), dtype=float
+        ),
+    )
+
+    summary = walk_forward_optimize(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [5]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 4, 15),
+        train_days=20,
+        test_days=15,
+        step_days=15,
+        metric="total_return",
+        min_trades=1,
+    )
+    assert len(capitals_seen) >= 2
+    assert capitals_seen[0] == pytest.approx(100_000.0)
+    assert summary.oos_equity is not None
+    fee_opens = [
+        float(v) for v in summary.oos_equity.values if abs(float(v) - 99_900.0) < 1e-6
+    ]
+    assert fee_opens, "fee-adjusted first bar must be preserved (no rescaling)"
+    idx0 = pd.bdate_range(
+        summary.windows[0].window.test_start, summary.windows[0].window.test_end
+    )
+    expected_fold1_terminal = 99_900.0
+    for _ in range(1, len(idx0)):
+        expected_fold1_terminal *= 1.01
+    assert capitals_seen[1] == pytest.approx(expected_fold1_terminal)
+    expected_fees = 100.0 + 40.0 * (len(summary.windows) - 1)
+    assert summary.aggregate_metrics["total_fees"] == pytest.approx(expected_fees)
+    assert summary.aggregate_metrics["fee_brokerage"] == pytest.approx(expected_fees)
+    # Trade cash + dividends vs final equity. Engine same-bar paths need PR156.
+    final_eq = float(summary.oos_equity.iloc[-1])
+    ledger = (
+        100_000.0
+        + sum(float(t.pnl) for t in summary.oos_trades)
+        + sum(float(t.dividend_income) for t in summary.oos_trades)
+    )
+    assert final_eq == pytest.approx(ledger, rel=1e-6)
+
+
+def test_walk_forward_rejects_non_daily_interval():
+    cfg = _config(interval="1h")
+    with pytest.raises(ValueError, match="daily interval"):
+        require_daily_walk_forward_scope(cfg, {"hold": [5]})
+    with pytest.raises(ValueError, match="non-daily parameter_grid interval"):
+        require_daily_walk_forward_scope(_config(), {"interval": ["1h", "1d"]})
+    with pytest.raises(ValueError, match="daily interval"):
+        walk_forward_optimize(
+            cfg,
+            StubPriceFetcher({}),
+            {"hold": [5]},
+            start_date=date(2024, 1, 1),
+            end_date=date(2024, 6, 1),
+            train_days=20,
+            test_days=10,
+            step_days=10,
+        )
+
+
+def test_min_trades_zero_never_passes_without_trades(monkeypatch):
+    import screener.backtester.optimization.walk_forward as wf_mod
+
+    cfg = _config()
+
+    def fake_grid(*args, **kwargs):
+        # Stub returns a finite score despite zero trades (cache/stub lie).
+        return [
+            GridSearchResult(
+                params={"hold": 5},
+                score=1.25,
+                metrics={"sharpe": 1.25},
+                trade_count=0,
+            )
+        ]
+
+    monkeypatch.setattr(wf_mod, "grid_search", fake_grid)
+    monkeypatch.setattr(
+        wf_mod,
+        "run_rolling_backtest",
+        lambda *args, **kwargs: pytest.fail("zero-trade train must not run OOS"),
+    )
+    monkeypatch.setattr(
+        wf_mod,
+        "fetch_benchmark",
+        lambda symbol, start, end, fetcher: pd.Series(
+            400.0, index=pd.bdate_range(start, end), dtype=float
+        ),
+    )
+    summary = walk_forward_optimize(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [5]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 4, 30),
+        train_days=30,
+        test_days=10,
+        step_days=10,
+        min_trades=0,
+    )
+    assert summary.insufficient_data is True
+    assert summary.windows == []
+    assert summary.evidence["trade_floor"] == 1
+
+
+def test_missing_oos_objective_is_insufficient(tmp_path, monkeypatch):
+    import screener.backtester.optimization.research_report as rr
+
+    cfg = _config()
+    best = GridSearchResult(
+        params={"hold": 8},
+        score=1.5,
+        metrics={"sharpe": 1.5},
+        trade_count=2,
+    )
+    idx = pd.bdate_range("2024-02-01", periods=40)
+    oos_equity = pd.Series(
+        [100_000.0 * ((1.001) ** i) for i in range(len(idx))],
+        index=idx,
+        dtype=float,
+    )
+    walk_forward = WalkForwardSummary(
+        windows=[
+            {
+                "window": {
+                    "train_start": date(2024, 1, 1),
+                    "train_end": date(2024, 1, 31),
+                    "test_start": date(2024, 2, 1),
+                    "test_end": date(2024, 2, 15),
+                },
+                "best_train": best,
+                "test_metrics": {"sharpe": float("nan")},
+                "test_trade_count": 2,
+            }
+        ],
+        stability_score=1.0,
+        # Selected objective absent / non-finite; other metrics may be NaN.
+        aggregate_metrics={"sharpe": float("nan"), "dsr": float("nan")},
+        overfit_flag=False,
+        train_test_score_ratio=0.0,
+        oos_trades=(_trade(10.0, 0.1), _trade(5.0, 0.05)),
+        oos_equity=oos_equity,
+        insufficient_data=False,
+        evidence={"adequate": True},
+    )
+    monkeypatch.setattr(rr, "grid_search", lambda *args, **kwargs: [best])
+    monkeypatch.setattr(
+        rr, "walk_forward_optimize", lambda *args, **kwargs: walk_forward
+    )
+    monkeypatch.setattr(
+        rr,
+        "simulate_equity_monte_carlo",
+        lambda *args, **kwargs: pytest.fail(
+            "MC must not run without finite OOS objective"
+        ),
+    )
+    payload = run_research_report(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [8]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 3, 1),
+        mc_iterations=2,
+        mc_block=5,
+        out_path=tmp_path / "nan_obj",
+    )
+    assert payload["summary"]["insufficient_data"] is True
+    assert payload["summary"]["oos_metric"] is None
+    assert payload["summary"]["verdict"] == INSUFFICIENT_DATA_VERDICT
+    assert payload["monte_carlo"]["source"] == "none"
+    loaded = json.loads(Path(str(tmp_path / "nan_obj") + ".json").read_text())
+    assert loaded["summary"]["oos_metric"] is None
+    assert "data-integrity" in loaded["summary"]["evidence_integrity_note"]
+
+
+def test_parameter_stability_filters_nan_and_inf():
+    results = [
+        GridSearchResult(
+            params={"hold": 5},
+            score=float("nan"),
+            metrics={},
+            trade_count=3,
+        ),
+        GridSearchResult(
+            params={"hold": 5},
+            score=float("inf"),
+            metrics={},
+            trade_count=3,
+        ),
+        GridSearchResult(
+            params={"hold": 10},
+            score=1.2,
+            metrics={"sharpe": 1.2},
+            trade_count=3,
+        ),
+    ]
+    stability = compute_parameter_stability(results, {"hold": [5, 10]})
+    by_name = {row["parameter"]: row for row in stability}
+    assert by_name["hold"]["values_evaluated"] == 1
+    assert by_name["hold"]["best_value"] == 10
+
+
+def test_mc_block_too_large_is_insufficient(tmp_path, monkeypatch):
+    import screener.backtester.optimization.research_report as rr
+
+    cfg = _config()
+    best = GridSearchResult(
+        params={"hold": 8},
+        score=1.5,
+        metrics={"sharpe": 1.5},
+        trade_count=2,
+    )
+    # 16 bars => 15 returns; default-like block 20 must not silently cap.
+    idx = pd.bdate_range("2024-02-01", periods=16)
+    oos_equity = pd.Series(
+        [100_000.0 * ((1.001) ** i) for i in range(len(idx))],
+        index=idx,
+        dtype=float,
+    )
+    walk_forward = WalkForwardSummary(
+        windows=[
+            {
+                "window": {
+                    "train_start": date(2024, 1, 1),
+                    "train_end": date(2024, 1, 31),
+                    "test_start": date(2024, 2, 1),
+                    "test_end": date(2024, 2, 15),
+                },
+                "best_train": best,
+                "test_metrics": {"sharpe": 0.5},
+                "test_trade_count": 2,
+            }
+        ],
+        stability_score=1.0,
+        aggregate_metrics={"sharpe": 0.5},
+        overfit_flag=False,
+        train_test_score_ratio=3.0,
+        oos_trades=(_trade(10.0, 0.1), _trade(5.0, 0.05)),
+        oos_equity=oos_equity,
+        insufficient_data=False,
+        evidence={"adequate": True},
+    )
+    monkeypatch.setattr(rr, "grid_search", lambda *args, **kwargs: [best])
+    monkeypatch.setattr(
+        rr, "walk_forward_optimize", lambda *args, **kwargs: walk_forward
+    )
+    monkeypatch.setattr(
+        rr,
+        "simulate_equity_monte_carlo",
+        lambda *args, **kwargs: pytest.fail("must not bootstrap when block >= returns"),
+    )
+    payload = run_research_report(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [8]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 3, 1),
+        metric="sharpe",
+        mc_iterations=10,
+        mc_block=20,
+        out_path=tmp_path / "mc_block",
+    )
+    assert payload["summary"]["insufficient_data"] is True
+    assert payload["monte_carlo"]["source"] == "none"
+    assert "mc_block" in str(payload["monte_carlo"]["reason"])
+    assert payload["summary"]["verdict"].startswith("INSUFFICIENT DATA")
+
+
+def test_varying_top_marks_exposure_unavailable(monkeypatch):
+    import screener.backtester.optimization.walk_forward as wf_mod
+
+    cfg = _config(top=2, initial_capital=100_000.0)
+    calls = {"n": 0}
+
+    def fake_grid(*args, **kwargs):
+        calls["n"] += 1
+        top = 1 if calls["n"] == 1 else 3
+        return [
+            GridSearchResult(
+                params={"hold": 5, "top": top},
+                score=1.0,
+                metrics={"sharpe": 1.0},
+                trade_count=2,
+            )
+        ]
+
+    def fake_roll(cfg_arg, fetcher, *, start_date, end_date):
+        idx = pd.bdate_range(start_date, end_date)
+        equity = pd.Series(
+            [
+                float(cfg_arg.initial_capital) * (1.0 + 0.001 * i)
+                for i in range(len(idx))
+            ],
+            index=idx,
+            dtype=float,
+        )
+        return BacktestResult(
+            config=cfg_arg,
+            trades=[_trade(1.0, 0.01)],
+            equity_curve=equity,
+            benchmark_curve=equity,
+            metrics={"sharpe": 1.0, "total_return": 0.01},
+        )
+
+    monkeypatch.setattr(wf_mod, "grid_search", fake_grid)
+    monkeypatch.setattr(wf_mod, "run_rolling_backtest", fake_roll)
+    monkeypatch.setattr(
+        wf_mod,
+        "fetch_benchmark",
+        lambda symbol, start, end, fetcher: pd.Series(
+            400.0, index=pd.bdate_range(start, end), dtype=float
+        ),
+    )
+    summary = walk_forward_optimize(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [5], "top": [1, 3]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 4, 15),
+        train_days=20,
+        test_days=15,
+        step_days=15,
+        min_trades=1,
+    )
+    assert summary.evidence["exposure_unavailable_reason"]
+    assert "top varies" in summary.evidence["exposure_unavailable_reason"]
+    assert (
+        summary.aggregate_metrics["exposure"] != summary.aggregate_metrics["exposure"]
+    )
+
+
+def test_train_test_ratio_uses_aggregate_oos_metric(monkeypatch):
+    import screener.backtester.optimization.walk_forward as wf_mod
+
+    cfg = _config(initial_capital=100_000.0)
+
+    def fake_grid(*args, **kwargs):
+        return [
+            GridSearchResult(
+                params={"hold": 5},
+                score=2.0,
+                metrics={"total_return": 2.0},
+                trade_count=3,
+            )
+        ]
+
+    def fake_roll(cfg_arg, fetcher, *, start_date, end_date):
+        idx = pd.bdate_range(start_date, end_date)
+        start_cap = float(cfg_arg.initial_capital)
+        end_cap = start_cap * 1.10
+        equity = pd.Series(
+            [
+                start_cap + (end_cap - start_cap) * i / max(len(idx) - 1, 1)
+                for i in range(len(idx))
+            ],
+            index=idx,
+            dtype=float,
+        )
+        return BacktestResult(
+            config=cfg_arg,
+            trades=[_trade(1.0, 0.1)],
+            equity_curve=equity,
+            benchmark_curve=equity,
+            metrics={"total_return": 0.10, "sharpe": 1.0},
+        )
+
+    monkeypatch.setattr(wf_mod, "grid_search", fake_grid)
+    monkeypatch.setattr(wf_mod, "run_rolling_backtest", fake_roll)
+    monkeypatch.setattr(
+        wf_mod,
+        "fetch_benchmark",
+        lambda symbol, start, end, fetcher: pd.Series(
+            400.0, index=pd.bdate_range(start, end), dtype=float
+        ),
+    )
+    summary = walk_forward_optimize(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [5]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 4, 15),
+        train_days=20,
+        test_days=15,
+        step_days=15,
+        metric="total_return",
+        min_trades=1,
+    )
+    oos = float(summary.aggregate_metrics["total_return"])
+    assert summary.train_test_score_ratio == pytest.approx(2.0 / max(abs(oos), 1e-9))
+
+
+def test_cli_rejects_bad_step_before_grid(tmp_path):
+    bars_a = make_bars(n=80, seed=3, open_base=100.0)
+    spy = make_bars(n=80, seed=9, open_base=400.0)
+    fetcher = StubPriceFetcher({"AAA": bars_a, "SPY": spy})
+    out = tmp_path / "bad_step"
+    res = CliRunner().invoke(
+        cli,
+        [
+            "optimize",
+            "research-report",
+            "--tickers",
+            "AAA",
+            "--start",
+            bars_a.index[5].date().isoformat(),
+            "--end",
+            bars_a.index[70].date().isoformat(),
+            "--entry",
+            "close > sma(close, 3)",
+            "--param",
+            "hold=5,8",
+            "--train-days",
+            "25",
+            "--test-days",
+            "20",
+            "--step-days",
+            "0",
+            "--mc-iterations",
+            "10",
+            "--workers",
+            "1",
+            "--out",
+            str(out),
+        ],
+        obj=fetcher,
+    )
+    assert res.exit_code != 0
+    assert "step_days" in res.output
+
+
+def test_cli_help_lists_mc_block():
+    res = CliRunner().invoke(cli, ["optimize", "research-report", "--help"])
+    assert res.exit_code == 0
+    assert "--mc-block" in res.output
+
+
+def test_reject_duplicated_fold_equity(monkeypatch):
+    import screener.backtester.optimization.walk_forward as wf_mod
+
+    cfg = _config()
+
+    def fake_grid(*args, **kwargs):
+        return [
+            GridSearchResult(
+                params={"hold": 5},
+                score=1.0,
+                metrics={"sharpe": 1.0},
+                trade_count=2,
+            )
+        ]
+
+    def fake_roll(cfg_arg, fetcher, *, start_date, end_date):
+        idx = pd.DatetimeIndex([pd.Timestamp(start_date), pd.Timestamp(start_date)])
+        equity = pd.Series([100_000.0, 100_100.0], index=idx, dtype=float)
+        return BacktestResult(
+            config=cfg_arg,
+            trades=[_trade(1.0, 0.01)],
+            equity_curve=equity,
+            benchmark_curve=equity,
+            metrics={"sharpe": 1.0},
+        )
+
+    monkeypatch.setattr(wf_mod, "grid_search", fake_grid)
+    monkeypatch.setattr(wf_mod, "run_rolling_backtest", fake_roll)
+    monkeypatch.setattr(
+        wf_mod,
+        "fetch_benchmark",
+        lambda symbol, start, end, fetcher: pd.Series(
+            400.0, index=pd.bdate_range(start, end), dtype=float
+        ),
+    )
+    with pytest.raises(ValueError, match="duplicated timestamps"):
+        walk_forward_optimize(
+            cfg,
+            StubPriceFetcher({}),
+            {"hold": [5]},
+            start_date=date(2024, 1, 1),
+            end_date=date(2024, 3, 31),
+            train_days=20,
+            test_days=15,
+            step_days=15,
+            min_trades=1,
+        )

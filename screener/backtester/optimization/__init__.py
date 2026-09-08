@@ -20,10 +20,12 @@ from screener.backtester.optimization.research_report import (
     run_research_report,
 )
 from screener.backtester.optimization.walk_forward import (
+    OOS_EVIDENCE_CRITERIA,
     WalkForwardResult,
     WalkForwardSummary,
     WalkForwardWindow,
     generate_walk_forward_windows,
+    train_result_eligible,
     walk_forward_optimize,
 )
 
@@ -37,6 +39,7 @@ __all__ = [
     "WalkForwardWindow",
     "compute_parameter_stability",
     "equity_monte_carlo_metrics",
+    "OOS_EVIDENCE_CRITERIA",
     "generate_walk_forward_windows",
     "grid_search",
     "parameter_combinations",
@@ -45,5 +48,6 @@ __all__ = [
     "simulate_equity_monte_carlo",
     "simulate_equity_monte_carlo_paths",
     "simulate_monte_carlo",
+    "train_result_eligible",
     "walk_forward_optimize",
 ]

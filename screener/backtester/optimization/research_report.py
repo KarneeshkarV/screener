@@ -1,13 +1,22 @@
 """One-command research report: grid → walk-forward → Monte Carlo.
 
-Orchestration only — all signal/math work is delegated to
+Orchestration only - all signal/math work is delegated to
 :func:`grid_search`, :func:`walk_forward_optimize`, and
-:func:`simulate_monte_carlo`. Callers inject a :class:`PriceFetcher` so the
+:func:`simulate_equity_monte_carlo`. Callers inject a :class:`PriceFetcher` so the
 same price cache is reused across stages.
+
+The full-period grid stage is descriptive only (parameter stability). Walk-forward
+selects parameters inside each training fold from the original complete grid.
+Monte Carlo resamples the combined walk-forward OOS equity curve with the equity
+block bootstrap; full-period ledgers are never substituted for absent OOS.
+
+Daily interval only. Explicit evidence thresholds are minimum data-integrity
+checks, not statistical proof of alpha or live-trading approval.
 """
 
 from __future__ import annotations
 
+import math
 import statistics
 import time
 from collections.abc import Callable, Sequence
@@ -15,19 +24,21 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
 from screener.backtester.data import PriceFetcher
-from screener.backtester.models import BacktestConfig, Trade
+from screener.backtester.models import BacktestConfig
 from screener.backtester.optimization.grid import (
     GridSearchResult,
     grid_search,
     parameter_combinations,
 )
 from screener.backtester.optimization.monte_carlo import (
-    MonteCarloResult,
-    simulate_monte_carlo,
+    EquityMonteCarloResult,
+    simulate_equity_monte_carlo,
+    validate_equity_monte_carlo_flags,
 )
 from screener.backtester.optimization.reporting import (
     GRID_IN_SAMPLE_DISCLAIMER,
@@ -35,14 +46,35 @@ from screener.backtester.optimization.reporting import (
     write_research_html_report,
 )
 from screener.backtester.optimization.walk_forward import (
-    WalkForwardSummary,
+    OOS_EVIDENCE_CRITERIA,
+    require_daily_walk_forward_scope,
+    train_result_eligible,
     walk_forward_optimize,
 )
-from screener.backtester.rolling_simulation import run_rolling_backtest
 
 # Relative score range below which a parameter optimum is treated as a plateau
 # rather than a narrow spike (range / max(|best|, eps)).
 _PLATEAU_RANGE_FRACTION = 0.15
+
+FULL_PERIOD_GRID_NOTE = (
+    "Full-period grid metrics are descriptive only. Walk-forward selects "
+    "parameters on each training fold from the original complete grid and never "
+    "reuses the full-period winner as OOS evidence."
+)
+
+EVIDENCE_INTEGRITY_NOTE = (
+    "Explicit evidence thresholds are minimum data-integrity checks, not "
+    "statistical proof of alpha or live-trading approval."
+)
+
+INSUFFICIENT_DATA_VERDICT = (
+    "INSUFFICIENT DATA: missing or inadequate out-of-sample evidence"
+)
+
+PASS_VERDICT = (
+    "PASS: descriptive checks passed (OOS vs IS and MC left tail within "
+    "configured thresholds); not validated alpha or live approval"
+)
 
 
 def compute_parameter_stability(
@@ -58,12 +90,22 @@ def compute_parameter_stability(
     combos sharing that value. Report min/max/mean/std/range of those
     best-per-value scores plus a coarse ``shape`` label:
 
-    * ``plateau`` — range of best-per-value scores is small relative to |best|
-    * ``spike`` — one value stands out (wide range)
-    * ``flat`` — fewer than two evaluated values
-    * ``empty`` — no usable results for this parameter
+    * ``plateau`` - range of best-per-value scores is small relative to |best|
+    * ``spike`` - one value stands out (wide range)
+    * ``flat`` - fewer than two evaluated values
+    * ``empty`` - no usable results for this parameter
     """
-    usable = [r for r in results if r.error is None and r.score != float("-inf")]
+    usable: list[GridSearchResult] = []
+    for result in results:
+        if result.error is not None:
+            continue
+        try:
+            score = float(result.score)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(score):
+            continue
+        usable.append(result)
     summaries: list[dict[str, Any]] = []
     for name, values in parameter_grid.items():
         best_by_value: dict[str, float] = {}
@@ -172,16 +214,14 @@ def _stage_done(console: Console, started: float) -> float:
     return elapsed
 
 
-def _fixed_param_grid(params: dict[str, Any]) -> dict[str, list[Any]]:
-    return {key: [value] for key, value in params.items()}
-
-
 def _degradation_ratio(is_metric: float, oos_metric: float) -> float:
     """OOS-vs-IS degradation: 0 means no loss, 1 means OOS fully wiped IS gain.
 
     Defined as ``1 - oos/is`` when ``is > 0``; when IS is non-positive the ratio
     is 0 if OOS >= IS else 1 (cannot interpret relative degradation).
     """
+    if not math.isfinite(is_metric) or not math.isfinite(oos_metric):
+        return 1.0
     if is_metric > 0:
         return float(1.0 - (oos_metric / is_metric))
     if oos_metric >= is_metric:
@@ -191,18 +231,45 @@ def _degradation_ratio(is_metric: float, oos_metric: float) -> float:
 
 def _verdict(
     *,
+    insufficient_data: bool,
     overfit_flag: bool,
     degradation: float,
     mc_return_p05: float,
-    oos_metric: float,
+    oos_metric: float | None,
 ) -> str:
+    if insufficient_data:
+        return INSUFFICIENT_DATA_VERDICT
+    if oos_metric is None or not math.isfinite(float(oos_metric)):
+        return INSUFFICIENT_DATA_VERDICT
     if overfit_flag or degradation >= 0.75:
         return "FAIL: severe IS→OOS degradation / overfit risk"
     if mc_return_p05 < 0 and oos_metric <= 0:
         return "FAIL: weak OOS and left-tail MC returns negative"
     if degradation >= 0.40 or mc_return_p05 < 0:
         return "CAUTION: material degradation or negative MC 5th-percentile"
-    return "PASS: OOS holds reasonably vs IS; MC left tail acceptable"
+    return PASS_VERDICT
+
+
+def _descriptive_grid_best(
+    results: Sequence[GridSearchResult],
+    *,
+    min_trades: int = 1,
+) -> GridSearchResult | None:
+    """Best finite eligible full-period result for descriptive display only."""
+    for result in results:
+        if train_result_eligible(result, min_trades=min_trades):
+            return result
+    return None
+
+
+def _finite_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def run_research_report(
@@ -221,6 +288,7 @@ def run_research_report(
     cache_path: Path | str | None = None,
     mc_iterations: int = 1000,
     mc_seed: int = 42,
+    mc_block: int = 20,
     ruin_threshold: float = 0.5,
     top_n: int = 10,
     out_path: Path | str,
@@ -231,13 +299,28 @@ def run_research_report(
 
     Prices are read only through ``fetcher`` (caller should reuse one instance).
     Returns the JSON payload written to ``<out>.json``.
+
+    Evidence gate (see :data:`OOS_EVIDENCE_CRITERIA`): inadequate OOS yields
+    ``INSUFFICIENT DATA`` rather than PASS/FAIL/CAUTION. Daily interval only.
     """
     console = console or Console()
     out = Path(out_path)
     timings: dict[str, float] = {}
 
-    # ── Stage 1: grid / parameter stability ──────────────────────────────
-    started = _banner(console, "Stage 1/3 — Grid search & parameter stability")
+    require_daily_walk_forward_scope(cfg, parameter_grid)
+    # Validate MC flags before any expensive stage, including empty-evidence paths.
+    validate_equity_monte_carlo_flags(
+        iterations=int(mc_iterations),
+        block=int(mc_block),
+        seed=int(mc_seed),
+        keep_paths=0,
+        ruin_threshold=float(ruin_threshold),
+    )
+
+    # ── Stage 1: descriptive full-period grid / parameter stability ──────
+    started = _banner(
+        console, "Stage 1/3 — Full-period grid (descriptive) & parameter stability"
+    )
     if progress:
         progress("grid")
     n_combos = max(len(parameter_combinations(parameter_grid)), 1)
@@ -255,14 +338,16 @@ def run_research_report(
         end_date=end_date,
     )
     stability = compute_parameter_stability(grid_results, parameter_grid, metric=metric)
-    best = grid_results[0] if grid_results else None
+    best = _descriptive_grid_best(grid_results, min_trades=min_trades)
     best_params: dict[str, Any] = dict(best.params) if best is not None else {}
-    is_metric = float(best.score) if best is not None else 0.0
+    descriptive_score = _finite_or_none(best.score) if best is not None else None
     console.print(
         f"Combos evaluated (returned): {len(grid_results)}  "
-        f"Best params: {best_params}  "
-        f"Best {metric}: {is_metric:.4f}"
+        f"Descriptive best params: {best_params}  "
+        f"Descriptive best {metric}: "
+        f"{descriptive_score if descriptive_score is not None else 'n/a'}"
     )
+    console.print(f"[dim]{FULL_PERIOD_GRID_NOTE}[/dim]")
     for row in stability:
         console.print(
             f"  stability[{row['parameter']}]: shape={row['shape']} "
@@ -270,89 +355,114 @@ def run_research_report(
         )
     timings["grid_seconds"] = _stage_done(console, started)
 
-    # ── Stage 2: walk-forward on best params ─────────────────────────────
-    started = _banner(console, "Stage 2/3 — Walk-forward on best params")
+    # ── Stage 2: walk-forward on the original complete grid ──────────────
+    started = _banner(
+        console, "Stage 2/3 — Walk-forward (per-fold grid on original parameters)"
+    )
     if progress:
         progress("walk_forward")
-    if best_params:
-        wf_grid = _fixed_param_grid(best_params)
-        wf_cache = None
-        if cache_path:
-            base = Path(cache_path)
-            wf_cache = base.with_name(f"{base.stem}_research_wf{base.suffix}")
-        walk_forward = walk_forward_optimize(
-            cfg,
-            fetcher,
-            wf_grid,
-            start_date=start_date,
-            end_date=end_date,
-            train_days=train_days,
-            test_days=test_days,
-            step_days=step_days,
-            metric=metric,
-            min_trades=min_trades,
-            max_workers=max_workers,
-            cache_path=wf_cache,
-        )
-    else:
-        walk_forward = WalkForwardSummary(
-            windows=[],
-            stability_score=1.0,
-            aggregate_metrics={},
-            overfit_flag=False,
-            train_test_score_ratio=0.0,
-        )
-    oos_metric = float(walk_forward.aggregate_metrics.get(metric, 0.0))
-    # Prefer mean IS train score from WF windows when available (true IS on
-    # train folds); fall back to full-sample grid best score.
+    wf_cache = None
+    if cache_path:
+        base = Path(cache_path)
+        wf_cache = base.with_name(f"{base.stem}_research_wf{base.suffix}")
+    walk_forward = walk_forward_optimize(
+        cfg,
+        fetcher,
+        parameter_grid,
+        start_date=start_date,
+        end_date=end_date,
+        train_days=train_days,
+        test_days=test_days,
+        step_days=step_days,
+        metric=metric,
+        min_trades=min_trades,
+        max_workers=max_workers,
+        cache_path=wf_cache,
+    )
+    oos_metric = _finite_or_none(walk_forward.aggregate_metrics.get(metric))
+    # IS metric is the mean of eligible per-fold train scores only.
+    # Full-period grid scores are never used as IS or OOS substitutes.
     if walk_forward.windows:
         is_from_wf = float(
             sum(w.best_train.score for w in walk_forward.windows)
             / len(walk_forward.windows)
         )
     else:
-        is_from_wf = is_metric
-    degradation = _degradation_ratio(is_from_wf, oos_metric)
+        is_from_wf = float("nan")
+    degradation = (
+        _degradation_ratio(is_from_wf, oos_metric)
+        if math.isfinite(is_from_wf) and oos_metric is not None
+        else 1.0
+    )
     console.print(
-        f"Windows: {len(walk_forward.windows)}  "
-        f"IS {metric}: {is_from_wf:.4f}  "
-        f"OOS {metric}: {oos_metric:.4f}  "
+        f"Windows eligible: {len(walk_forward.windows)}  "
+        f"insufficient_data: {walk_forward.insufficient_data}  "
+        f"IS {metric}: "
+        f"{is_from_wf if math.isfinite(is_from_wf) else 'n/a'}  "
+        f"OOS {metric}: "
+        f"{oos_metric if oos_metric is not None else 'n/a'}  "
         f"degradation: {degradation:.3f}  "
         f"overfit_flag: {walk_forward.overfit_flag}"
     )
     timings["walk_forward_seconds"] = _stage_done(console, started)
 
-    # ── Stage 3: Monte Carlo on best-param trade list ────────────────────
-    started = _banner(console, "Stage 3/3 — Monte Carlo bootstrap")
+    # ── Stage 3: equity block bootstrap on combined OOS equity only ──────
+    started = _banner(console, "Stage 3/3 — Monte Carlo (OOS equity block bootstrap)")
     if progress:
         progress("monte_carlo")
-    trades: list[Trade] = []
-    trade_source = "none"
-    if best_params:
-        # Prefer the OOS trades collected by walk-forward; otherwise fall back
-        # to a full-period run (mirrors validate on a full ledger).
-        if walk_forward.windows:
-            trade_source = "walk_forward_oos"
-            trades = list(walk_forward.oos_trades)
-        else:
-            trade_source = "full_period"
-            full_cfg = cfg.model_copy(update=best_params)
-            full_result = run_rolling_backtest(
-                full_cfg,
-                fetcher,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            trades = list(full_result.trades)
-    monte_carlo: MonteCarloResult = simulate_monte_carlo(
-        trades,
-        iterations=int(mc_iterations),
-        seed=int(mc_seed),
-        initial_capital=float(cfg.initial_capital),
-        ruin_threshold=float(ruin_threshold),
+    oos_equity = walk_forward.oos_equity
+    equity_bars = int(len(oos_equity)) if isinstance(oos_equity, pd.Series) else 0
+    n_returns = max(equity_bars - 1, 0)
+    mc_method = "equity_block_bootstrap"
+    mc_reasons: list[str] = []
+    insufficient_data = bool(walk_forward.insufficient_data)
+    if oos_metric is None:
+        insufficient_data = True
+        mc_reasons.append("selected OOS objective missing or non-finite")
+
+    can_run_mc = (
+        oos_equity is not None
+        and not oos_equity.empty
+        and not insufficient_data
+        and n_returns >= 2
     )
+    if can_run_mc and int(mc_block) >= n_returns:
+        insufficient_data = True
+        can_run_mc = False
+        mc_reasons.append(
+            f"mc_block ({int(mc_block)}) >= available OOS returns ({n_returns})"
+        )
+
+    if can_run_mc:
+        assert oos_equity is not None  # narrowed for type checkers
+        mc_source = "walk_forward_oos_equity"
+        monte_carlo: EquityMonteCarloResult = simulate_equity_monte_carlo(
+            oos_equity,
+            iterations=int(mc_iterations),
+            block=int(mc_block),
+            seed=int(mc_seed),
+            ruin_threshold=float(ruin_threshold),
+        )
+    else:
+        # Do not bootstrap idle-cash or missing OOS paths; report an explicit empty source.
+        mc_source = "none"
+        if not mc_reasons:
+            if walk_forward.insufficient_data:
+                mc_reasons.append("walk-forward OOS evidence inadequate")
+            else:
+                mc_reasons.append("OOS equity unavailable for block bootstrap")
+        monte_carlo = EquityMonteCarloResult.zeroed(
+            iterations=int(mc_iterations),
+            seed=int(mc_seed),
+            initial_capital=float(cfg.initial_capital),
+            block=0,
+            bars=0,
+            ruin_threshold=float(ruin_threshold),
+        )
     console.print(
-        f"Trades ({trade_source}): {len(trades)}  "
+        f"OOS equity bars: {equity_bars}  "
+        f"OOS trades: {len(walk_forward.oos_trades)}  "
+        f"MC source: {mc_source}  method: {mc_method}  "
         f"MC p05 return: {monte_carlo.return_p05:.4f}  "
         f"P(profit): {monte_carlo.probability_of_profit:.3f}  "
         f"risk_of_ruin: {monte_carlo.risk_of_ruin:.3f}"
@@ -360,11 +470,43 @@ def run_research_report(
     timings["monte_carlo_seconds"] = _stage_done(console, started)
 
     verdict = _verdict(
+        insufficient_data=insufficient_data,
         overfit_flag=walk_forward.overfit_flag,
         degradation=degradation,
         mc_return_p05=float(monte_carlo.return_p05),
         oos_metric=oos_metric,
     )
+
+    # Prefer fold-selected params when available; else descriptive full-period.
+    summary_best_params = (
+        dict(walk_forward.windows[-1].best_train.params)
+        if walk_forward.windows
+        else best_params
+    )
+
+    wf_payload = walk_forward.model_dump(mode="json")
+    # oos_equity / oos_trades are excluded; expose a compact equity fingerprint.
+    if walk_forward.oos_equity is not None and not walk_forward.oos_equity.empty:
+        eq = walk_forward.oos_equity
+        wf_payload["oos_equity_meta"] = {
+            "bars": int(len(eq)),
+            "start": str(eq.index[0].date())
+            if hasattr(eq.index[0], "date")
+            else str(eq.index[0]),
+            "end": str(eq.index[-1].date())
+            if hasattr(eq.index[-1], "date")
+            else str(eq.index[-1]),
+            "start_equity": _finite_or_none(eq.iloc[0]),
+            "end_equity": _finite_or_none(eq.iloc[-1]),
+        }
+    # Non-finite aggregate metrics become null in JSON via write_json_report;
+    # keep selected-objective evidence explicit when missing.
+    if oos_metric is None:
+        wf_payload.setdefault("evidence", {})
+        if isinstance(wf_payload["evidence"], dict):
+            wf_payload["evidence"]["oos_objective_finite"] = False
+            wf_payload["evidence"]["adequate"] = False
+        wf_payload["insufficient_data"] = True
 
     payload: dict[str, Any] = {
         "config": {
@@ -379,39 +521,59 @@ def run_research_report(
             "step_days": step_days if step_days is not None else test_days,
             "metric": metric,
             "min_trades": min_trades,
+            "interval": cfg.interval,
             "mc_iterations": mc_iterations,
             "mc_seed": mc_seed,
+            "mc_block": mc_block,
             "parameter_grid": parameter_grid,
             "tickers": list(cfg.tickers) if cfg.tickers else None,
             "universe_file": cfg.universe_file,
             "initial_capital": cfg.initial_capital,
+            "oos_evidence_criteria": OOS_EVIDENCE_CRITERIA,
+            "evidence_integrity_note": EVIDENCE_INTEGRITY_NOTE,
         },
         "grid": {
-            "warning": GRID_IN_SAMPLE_DISCLAIMER,
+            "warning": f"{GRID_IN_SAMPLE_DISCLAIMER} {FULL_PERIOD_GRID_NOTE}",
+            "role": "descriptive_full_period_only",
             "results": [r.model_dump(mode="json") for r in grid_results],
             "best_params": best_params,
-            "best_score": is_metric if best is not None else None,
+            "best_score": descriptive_score,
             "stability": stability,
         },
-        "walk_forward": walk_forward.model_dump(mode="json"),
+        "walk_forward": wf_payload,
         "monte_carlo": {
             **monte_carlo.model_dump(mode="json"),
-            "trade_count": len(trades),
-            "trade_source": trade_source,
+            "source": mc_source,
+            "method": mc_method,
+            "equity_bars": equity_bars,
+            "oos_return_count": n_returns,
+            "trade_count": len(walk_forward.oos_trades),
+            "requested_block": int(mc_block),
+            "reason": "; ".join(mc_reasons) if mc_reasons else None,
+            # Compatibility alias: previous payloads used trade_source.
+            "trade_source": mc_source,
         },
         "summary": {
-            "best_params": best_params,
-            "is_metric": is_from_wf,
-            "oos_metric": oos_metric,
-            "degradation": degradation,
+            "best_params": summary_best_params,
+            "is_metric": is_from_wf if math.isfinite(is_from_wf) else None,
+            "oos_metric": oos_metric if not insufficient_data else None,
+            "degradation": degradation if not insufficient_data else None,
             "train_test_score_ratio": walk_forward.train_test_score_ratio,
             "overfit_flag": walk_forward.overfit_flag,
+            "insufficient_data": insufficient_data,
+            "oos_evidence_criteria": OOS_EVIDENCE_CRITERIA,
+            "evidence_integrity_note": EVIDENCE_INTEGRITY_NOTE,
             "mc_return_p05": float(monte_carlo.return_p05),
             "mc_median_return": float(monte_carlo.median_return),
             "mc_probability_of_profit": float(monte_carlo.probability_of_profit),
+            "mc_source": mc_source,
+            "mc_method": mc_method,
+            "mc_reason": "; ".join(mc_reasons) if mc_reasons else None,
             "verdict": verdict,
         },
         "timings": timings,
+        "evidence_integrity_note": EVIDENCE_INTEGRITY_NOTE,
+        "engine_same_bar_dependency": "PR156",
     }
 
     # --out reports/foo → reports/foo.json + reports/foo.html
@@ -437,13 +599,31 @@ def _print_final_summary(
     table.add_column("Field")
     table.add_column("Value")
     table.add_row("Best params", str(summary.get("best_params")))
-    table.add_row(f"IS {metric}", f"{float(summary.get('is_metric', 0.0)):.4f}")
-    table.add_row(f"OOS {metric}", f"{float(summary.get('oos_metric', 0.0)):.4f}")
-    table.add_row("Degradation", f"{float(summary.get('degradation', 0.0)):.3f}")
+    is_metric = summary.get("is_metric")
+    oos_metric = summary.get("oos_metric")
+    table.add_row(
+        f"IS {metric}",
+        f"{float(is_metric):.4f}" if isinstance(is_metric, (int, float)) else "n/a",
+    )
+    table.add_row(
+        f"OOS {metric}",
+        f"{float(oos_metric):.4f}" if isinstance(oos_metric, (int, float)) else "n/a",
+    )
+    degradation = summary.get("degradation")
+    table.add_row(
+        "Degradation",
+        f"{float(degradation):.3f}" if isinstance(degradation, (int, float)) else "n/a",
+    )
     table.add_row(
         "MC 5th-pct return", f"{float(summary.get('mc_return_p05', 0.0)):.4f}"
     )
+    table.add_row("MC source", str(summary.get("mc_source", "")))
+    table.add_row("MC method", str(summary.get("mc_method", "")))
+    table.add_row("Insufficient data", str(summary.get("insufficient_data", False)))
     table.add_row("Verdict", str(summary.get("verdict", "")))
     console.print()
     console.print(table)
     console.print(f"[bold]{summary.get('verdict', '')}[/bold]")
+    note = summary.get("evidence_integrity_note")
+    if note:
+        console.print(f"[dim]{note}[/dim]")

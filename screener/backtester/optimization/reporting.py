@@ -32,6 +32,11 @@ GRID_IN_SAMPLE_DISCLAIMER = (
     "assessment before trusting these parameters."
 )
 
+EVIDENCE_INTEGRITY_NOTE = (
+    "Explicit evidence thresholds are minimum data-integrity checks, not "
+    "statistical proof of alpha or live-trading approval."
+)
+
 _REPORT_CSS = """
     body { font-family: system-ui, sans-serif; margin: 32px; color: #1a1a1a; }
     h1, h2 { margin-top: 1.6em; }
@@ -47,6 +52,7 @@ _REPORT_CSS = """
                border-radius:4px; font-weight:600; }
     .verdict.caution { background:#fff3e0; border-color:#ffe0b2; }
     .verdict.fail { background:#ffebee; border-color:#ffcdd2; }
+    .verdict.insufficient { background:#eceff1; border-color:#cfd8dc; }
     .meta { color: #555; font-size: 13px; }
 """
 
@@ -56,16 +62,13 @@ def _json_safe(value: Any) -> Any:
 
     ``json.dumps`` writes ``NaN`` and ``Infinity`` as bare tokens by default,
     which are not JSON and which strict parsers reject, so a report written
-    that way only loads back in Python. An infinity keeps its sign as a string,
-    which is how :func:`_json_default` already meant to render one; a NaN
-    becomes null, which is what a missing metric means and what the terminal
-    and HTML renderers already show as "-".
+    that way only loads back in Python. Non-finite floats become null, which
+    is what a missing metric means and what the terminal and HTML renderers
+    already show as "-".
     """
     if isinstance(value, float):
-        if math.isnan(value):
+        if not math.isfinite(value):
             return None
-        if math.isinf(value):
-            return "inf" if value > 0 else "-inf"
         return value
     if isinstance(value, Mapping):
         return {key: _json_safe(item) for key, item in value.items()}
@@ -81,10 +84,12 @@ def _json_default(value: Any) -> Any:
         return _json_safe(value.model_dump())
     # Reached by the numpy scalar types, which are not ``float`` subclasses and
     # so slip past :func:`_json_safe`.
-    if value == float("inf"):
-        return "inf"
-    if value == float("-inf"):
-        return "-inf"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not math.isfinite(number):
+        return None
     return str(value)
 
 
@@ -169,8 +174,14 @@ def print_walk_forward_table(
         f"{format_result_value(summary.stability_score, 'ratio')}  "
         "Train/Test score ratio: "
         f"{format_result_value(summary.train_test_score_ratio, 'ratio')}  "
-        f"Overfit flag: {summary.overfit_flag}"
+        f"Overfit flag: {summary.overfit_flag}  "
+        f"Insufficient data: {summary.insufficient_data}"
     )
+    if summary.insufficient_data:
+        console.print(
+            "[bold yellow]INSUFFICIENT DATA[/bold yellow]: combined OOS evidence "
+            "does not meet the minimum criteria."
+        )
 
 
 def write_html_report(
@@ -223,7 +234,9 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
 
     verdict = str(summary.get("verdict") or "")
     verdict_class = "verdict"
-    if verdict.startswith("FAIL"):
+    if verdict.startswith("INSUFFICIENT"):
+        verdict_class += " insufficient"
+    elif verdict.startswith("FAIL"):
         verdict_class += " fail"
     elif verdict.startswith("CAUTION"):
         verdict_class += " caution"
@@ -340,8 +353,11 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
 
     mc_rows = [
         ("Iterations", monte_carlo.get("iterations")),
-        ("Trade count", monte_carlo.get("trade_count")),
-        ("Trade source", monte_carlo.get("trade_source")),
+        ("Source", monte_carlo.get("source") or monte_carlo.get("trade_source")),
+        ("Method", monte_carlo.get("method")),
+        ("Equity bars", monte_carlo.get("equity_bars")),
+        ("Block", monte_carlo.get("block")),
+        ("OOS trade count", monte_carlo.get("trade_count")),
         (
             "Median return",
             format_result_value(monte_carlo.get("median_return"), "ratio"),
@@ -365,6 +381,12 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
     ]
     mc_table = _html_table(["Metric", "Value"], mc_rows)
 
+    integrity_note = str(
+        summary.get("evidence_integrity_note")
+        or data.get("evidence_integrity_note")
+        or config.get("evidence_integrity_note")
+        or EVIDENCE_INTEGRITY_NOTE
+    )
     summary_rows = [
         ("Best params", json.dumps(summary.get("best_params") or {}, sort_keys=True)),
         (f"IS {metric}", format_result_value(summary.get("is_metric"), "ratio")),
@@ -375,38 +397,52 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
             format_result_value(summary.get("train_test_score_ratio"), "ratio"),
         ),
         ("Overfit flag", summary.get("overfit_flag")),
+        ("Insufficient data", summary.get("insufficient_data")),
         (
             "MC 5th-pct return",
             format_result_value(summary.get("mc_return_p05"), "ratio"),
         ),
+        ("MC source", summary.get("mc_source")),
+        ("MC method", summary.get("mc_method")),
+        ("MC reason", summary.get("mc_reason") or monte_carlo.get("reason")),
+        ("Evidence note", integrity_note),
         ("Verdict", verdict),
     ]
     summary_table = _html_table(["Field", "Value"], summary_rows)
 
     disclaimer = grid.get("warning") or GRID_IN_SAMPLE_DISCLAIMER
+    grid_role = grid.get("role") or "descriptive_full_period_only"
+    wf_insufficient = bool(
+        walk_forward.get("insufficient_data") or summary.get("insufficient_data")
+    )
+    wf_evidence = walk_forward.get("evidence") or {}
     body = f"""  <h1>{html_lib.escape(title)}</h1>
   <p class="{verdict_class}">{html_lib.escape(verdict)}</p>
+  <p class="banner">{html_lib.escape(integrity_note)}</p>
 
   <h2>Run config</h2>
   {config_table}
 
-  <h2>Grid search</h2>
+  <h2>Grid search (descriptive full-period only)</h2>
   <p class="banner">{html_lib.escape(str(disclaimer))}</p>
-  <p class="meta">Best params: {html_lib.escape(json.dumps(grid.get("best_params") or {}, sort_keys=True))}
-  &nbsp;|&nbsp; Best score: {html_lib.escape(format_result_value(grid.get("best_score"), "ratio"))}</p>
+  <p class="meta">Role: {html_lib.escape(str(grid_role))}
+  &nbsp;|&nbsp; Descriptive best params: {html_lib.escape(json.dumps(grid.get("best_params") or {}, sort_keys=True))}
+  &nbsp;|&nbsp; Descriptive best score: {html_lib.escape(format_result_value(grid.get("best_score"), "ratio"))}</p>
   {grid_table}
 
   <h2>Parameter stability</h2>
   {stability_table}
 
-  <h2>Walk-forward</h2>
+  <h2>Walk-forward (per-fold selection on original grid)</h2>
   <p class="meta">Stability score: {html_lib.escape(format_result_value(walk_forward.get("stability_score"), "ratio"))}
   &nbsp;|&nbsp; Train/test ratio: {html_lib.escape(format_result_value(walk_forward.get("train_test_score_ratio"), "ratio"))}
   &nbsp;|&nbsp; Overfit flag: {html_lib.escape(str(walk_forward.get("overfit_flag")))}
-  &nbsp;|&nbsp; Degradation: {html_lib.escape(format_result_value(summary.get("degradation"), "ratio"))}</p>
+  &nbsp;|&nbsp; Insufficient data: {html_lib.escape(str(wf_insufficient))}
+  &nbsp;|&nbsp; Boundary: {html_lib.escape(str(walk_forward.get("fold_boundary_policy") or wf_evidence.get("fold_boundary_policy") or ""))}
+  &nbsp;|&nbsp; Capital: {html_lib.escape(str(walk_forward.get("capital_policy") or wf_evidence.get("capital_policy") or ""))}</p>
   {wf_table}
 
-  <h2>Monte Carlo</h2>
+  <h2>Monte Carlo (OOS equity block bootstrap)</h2>
   {mc_table}
 
   <h2>Summary</h2>

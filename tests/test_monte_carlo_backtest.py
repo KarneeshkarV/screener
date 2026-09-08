@@ -391,8 +391,8 @@ def test_the_json_report_holds_no_token_a_strict_parser_rejects(tmp_path):
     )
     assert payload == {
         "median_return": None,
-        "calmar": "inf",
-        "worst": "-inf",
+        "calmar": None,
+        "worst": None,
         "return_p05": -0.24,
     }
 
