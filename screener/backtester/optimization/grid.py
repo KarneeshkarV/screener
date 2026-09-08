@@ -96,6 +96,7 @@ def _cache_key(
     end_date: date | None,
     metric: str,
     min_trades: int,
+    n_trials: int = 1,
 ) -> str:
     payload = {
         "config": _config_fingerprint(cfg),
@@ -105,6 +106,10 @@ def _cache_key(
         "end_date": end_date,
         "metric": metric,
         "min_trades": min_trades,
+        # The cached row carries a Deflated Sharpe that was deflated against
+        # THIS many configurations. Re-using it under a grid of another size
+        # would report a bar the search never cleared.
+        "n_trials": n_trials,
     }
     raw = json.dumps(payload, sort_keys=True, default=_json_default)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -137,6 +142,7 @@ def _run_one(
     end_date: date | None,
     metric: str,
     min_trades: int,
+    n_trials: int = 1,
 ) -> GridSearchResult:
     test_cfg = cfg.model_copy(update=params)
     if runner == "rolling":
@@ -150,7 +156,7 @@ def _run_one(
         )
     else:
         result = run_backtest(test_cfg, fetcher)
-    metrics = optimization_metrics(result)
+    metrics = optimization_metrics(result, n_trials=n_trials)
     trade_count = len(result.trades)
     score = score_result(result, metric) if trade_count >= min_trades else float("-inf")
     return GridSearchResult(
@@ -167,10 +173,11 @@ def _run_one_prepared(
     prepared: PreparedRollingBacktest,
     metric: str,
     min_trades: int,
+    n_trials: int = 1,
 ) -> GridSearchResult:
     test_cfg = cfg.model_copy(update=params)
     result = run_prepared_rolling_backtest(prepared, test_cfg)
-    metrics = optimization_metrics(result)
+    metrics = optimization_metrics(result, n_trials=n_trials)
     trade_count = len(result.trades)
     score = score_result(result, metric) if trade_count >= min_trades else float("-inf")
     return GridSearchResult(
@@ -182,10 +189,28 @@ def _run_one_prepared(
 
 
 def _run_one_safe(args: tuple[Any, ...]) -> GridSearchResult:
-    cfg, params, fetcher, runner, start_date, end_date, metric, min_trades = args
+    (
+        cfg,
+        params,
+        fetcher,
+        runner,
+        start_date,
+        end_date,
+        metric,
+        min_trades,
+        n_trials,
+    ) = args
     try:
         return _run_one(
-            cfg, params, fetcher, runner, start_date, end_date, metric, min_trades
+            cfg,
+            params,
+            fetcher,
+            runner,
+            start_date,
+            end_date,
+            metric,
+            min_trades,
+            n_trials,
         )
     except KeyboardInterrupt:
         raise
@@ -210,6 +235,7 @@ def _run_chunk_safe(args: tuple[Any, ...]) -> list[GridSearchResult]:
         end_date,
         metric,
         min_trades,
+        n_trials,
     ) = args
     prepared: PreparedRollingBacktest | None = None
     if runner == "rolling" and params_chunk:
@@ -242,7 +268,9 @@ def _run_chunk_safe(args: tuple[Any, ...]) -> list[GridSearchResult]:
         if prepared is not None and prepared.supports(test_cfg):
             try:
                 results.append(
-                    _run_one_prepared(cfg, params, prepared, metric, min_trades)
+                    _run_one_prepared(
+                        cfg, params, prepared, metric, min_trades, n_trials
+                    )
                 )
             except KeyboardInterrupt:
                 raise
@@ -268,6 +296,7 @@ def _run_chunk_safe(args: tuple[Any, ...]) -> list[GridSearchResult]:
                         end_date,
                         metric,
                         min_trades,
+                        n_trials,
                     )
                 )
             )
@@ -302,6 +331,10 @@ def grid_search(
     cache_file = Path(cache_path) if cache_path else None
     cache = _load_cache(cache_file)
     combos = parameter_combinations(parameter_grid)
+    # The number of configurations this search evaluates is exactly the
+    # multiple-testing count the Deflated Sharpe deflates against. It is known
+    # only here: an individual backtest cannot see the grid it belongs to.
+    n_trials = len(combos)
     results: list[GridSearchResult] = []
     pending: list[dict[str, Any]] = []
 
@@ -314,6 +347,7 @@ def grid_search(
             end_date=end_date,
             metric=metric,
             min_trades=min_trades,
+            n_trials=n_trials,
         )
         if key in cache:
             results.append(_from_cache(cache[key]))
@@ -321,7 +355,17 @@ def grid_search(
             pending.append(params)
 
     args = [
-        (cfg, params, fetcher, runner, start_date, end_date, metric, min_trades)
+        (
+            cfg,
+            params,
+            fetcher,
+            runner,
+            start_date,
+            end_date,
+            metric,
+            min_trades,
+            n_trials,
+        )
         for params in pending
     ]
     try:
@@ -341,6 +385,7 @@ def grid_search(
                             end_date,
                             metric,
                             min_trades,
+                            n_trials,
                         ),
                     ): chunk
                     for chunk in chunks
@@ -357,6 +402,7 @@ def grid_search(
                             end_date=end_date,
                             metric=metric,
                             min_trades=min_trades,
+                            n_trials=n_trials,
                         )
                         cache[key] = result.model_dump()
                         _save_cache(cache_file, cache)
@@ -385,7 +431,7 @@ def grid_search(
                 if prepared is not None and prepared.supports(test_cfg):
                     try:
                         result = _run_one_prepared(
-                            cfg, params, prepared, metric, min_trades
+                            cfg, params, prepared, metric, min_trades, n_trials
                         )
                     except KeyboardInterrupt:
                         raise
@@ -408,6 +454,7 @@ def grid_search(
                     end_date=end_date,
                     metric=metric,
                     min_trades=min_trades,
+                    n_trials=n_trials,
                 )
                 cache[key] = result.model_dump()
                 _save_cache(cache_file, cache)

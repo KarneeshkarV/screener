@@ -7,6 +7,34 @@ from screener.backtester.metrics import (
 )
 
 
+def test_result_view_omits_the_deflated_sharpe_row_when_it_was_not_deflated():
+    """A single-trial run reports no DSR key, so the table shows no DSR row."""
+    view = result_view({"sharpe": 1.082, "psr": 0.9841})
+
+    assert [row.label for row in view] == ["Sharpe", "Probabilistic Sharpe"]
+
+
+def test_result_view_renders_the_deflated_sharpe_with_its_trial_count():
+    """When a search deflated it, the row appears with the count it used."""
+    view = result_view(
+        {"sharpe": 1.082, "psr": 0.9841, "dsr": 0.7412, "dsr_trials": 48}
+    )
+
+    assert [row.key for row in view] == ["sharpe", "psr", "dsr", "dsr_trials"]
+    assert [row.label for row in view] == [
+        "Sharpe",
+        "Probabilistic Sharpe",
+        "Deflated Sharpe",
+        "DSR Trials",
+    ]
+    assert [row.formatted for row in view] == [
+        "+1.082",
+        "+98.41%",
+        "+74.12%",
+        "48",
+    ]
+
+
 def test_result_view_orders_and_formats_known_metrics():
     view = result_view(
         {
