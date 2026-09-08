@@ -37,7 +37,11 @@ from screener.backtester.metrics import (
     periods_per_year_for_interval,
 )
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
-from screener.backtester.optimization.grid import GridSearchResult, grid_search
+from screener.backtester.optimization.grid import (
+    GridSearchResult,
+    grid_search,
+    parameter_combinations,
+)
 from screener.backtester.optimization.metrics import optimization_metrics
 from screener.backtester.rolling_simulation import run_rolling_backtest
 
@@ -373,6 +377,7 @@ def walk_forward_optimize(
     last_equity_ts: pd.Timestamp | None = None
     oos_anchor: dict[str, Any] | None = None
     calendar = _session_calendar(fetcher, cfg, start_date, end_date)
+    n_combos = len(parameter_combinations(parameter_grid))
 
     for idx, window in enumerate(windows):
         window_cache = None
@@ -384,7 +389,7 @@ def walk_forward_optimize(
             fetcher,
             parameter_grid,
             metric=metric,
-            top_n=1,
+            top_n=n_combos,
             min_trades=trade_floor,
             max_workers=max_workers,
             cache_path=window_cache,
@@ -392,7 +397,15 @@ def walk_forward_optimize(
             start_date=window.train_start,
             end_date=window.train_end,
         )
-        best = ranked[0] if ranked else None
+        # An infinite score can rank first while a lower result is eligible.
+        best = next(
+            (
+                row
+                for row in ranked
+                if train_result_eligible(row, min_trades=min_trades)
+            ),
+            ranked[0] if ranked else None,
+        )
         test_start_ts = pd.Timestamp(window.test_start)
         test_end_ts = pd.Timestamp(window.test_end)
 
