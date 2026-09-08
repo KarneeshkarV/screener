@@ -505,12 +505,12 @@ def build_equity_curve(
         exit_ts = pd.Timestamp(trade.exit_date)
         lo = int(calendar.searchsorted(entry_ts, side="left"))
         if exit_ts <= entry_ts:
-            # Same-day entry and exit (e.g. a force-close of a position opened
-            # on the window's last bar): the event loop orders closes before
-            # opens on the same day, so the close never pops this position and
-            # it stays marked-to-market for every remaining calendar day.
-            # Preserved exactly for bit-identical curves.
-            hi = len(calendar)
+            # Same-bar entry and exit (a force-close of a position opened on
+            # the window's last bar). The cash event loop credits
+            # ``exit_value`` and debits ``entry_cost`` on that one day, so the
+            # round trip is already fully in cash: marking it to market as
+            # well would count the position twice from that day onwards.
+            hi = lo
         else:
             hi = int(calendar.searchsorted(exit_ts, side="left"))
         if lo >= hi:
