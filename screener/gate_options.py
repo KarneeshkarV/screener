@@ -141,6 +141,7 @@ def gate_overrides(
     adv_window: int = ADV_WINDOW_DEFAULT,
     adv_window_was_explicit: bool = False,
     regime_filter_args: tuple[str, ...] = (),
+    breadth_filter_args: tuple[str, ...] = (),
     earnings_blackout_days: int | None = None,
     sector_neutral: bool = False,
     min_score: float | None = None,
@@ -165,6 +166,9 @@ def gate_overrides(
     regime_filter = tuple(dict.fromkeys(regime_filter_args))
     if regime_filter:
         overrides["regime_filter"] = regime_filter
+    breadth_filter = tuple(dict.fromkeys(breadth_filter_args))
+    if breadth_filter:
+        overrides["breadth_filter"] = breadth_filter
     if earnings_blackout_days is not None:
         overrides["earnings_blackout_days"] = int(earnings_blackout_days)
     if sector_neutral:

@@ -336,6 +336,7 @@ class StrategyProfile(BaseModel):
     entry_expr: str | None = None
     exit_expr: str | None = None
     regime_filter: tuple[str, ...] = ()
+    breadth_filter: tuple[str, ...] = ()
     earnings_blackout_days: int | None = None
     sector_neutral: bool = False
     min_price: float | None = None

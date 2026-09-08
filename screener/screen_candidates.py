@@ -517,6 +517,7 @@ def screen_candidates(
         entry_expr=entry_expr,
         exit_expr=exit_expr,
         regime_filter=profile.regime_filter,
+        breadth_filter=profile.breadth_filter,
         earnings_blackout_days=profile.earnings_blackout_days,
         sector_neutral=profile.sector_neutral,
         min_price=profile.min_price,

@@ -13,7 +13,9 @@ from datetime import date
 from screener.backtester.portfolio import Portfolio
 
 
-def _round_trip(portfolio: Portfolio, ticker: str, entry: float, exit_price: float) -> None:
+def _round_trip(
+    portfolio: Portfolio, ticker: str, entry: float, exit_price: float
+) -> None:
     budget = portfolio.entry_budget()
     portfolio.assign(ticker, rank=1, signal_date=date(2024, 1, 1))
     portfolio.open(ticker, date(2024, 1, 1), entry, budget=budget)

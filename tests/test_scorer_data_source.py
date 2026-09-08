@@ -35,6 +35,9 @@ _SNAPSHOT_ONLY = (
     "intraday_breakout",
     "intraday_momentum",
     "mark_minervini",
+    # Both read the TradingView EMA20/EMA200 snapshot columns, same as "ema".
+    "above_20ema",
+    "above_200ema",
 )
 _BAR_DERIVED = ("ha_momentum", "momentum_12_1", "momentum_12_1_ema10")
 

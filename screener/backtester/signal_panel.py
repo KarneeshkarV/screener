@@ -65,7 +65,6 @@ class SignalPanelInputs:
     entry_expr: str
     exit_expr: str | None
     regime_filter: tuple[str, ...]
-    breadth_filter: tuple[str, ...]
     earnings_blackout_days: int | None
     sector_neutral: bool
     min_price: float | None
@@ -79,6 +78,10 @@ class SignalPanelInputs:
     # Percentile floor on ``setup_score``, 0-100. Defaulted because it is the
     # newest gate and every existing caller predates it; ``None`` disables it.
     min_score: float | None = None
+    # Universe-breadth regimes entries are allowed on. Defaulted for the same
+    # reason as ``min_score``: it is newer than every existing caller, and an
+    # empty tuple is the "no breadth gate" the screen path wants.
+    breadth_filter: tuple[str, ...] = ()
 
     @classmethod
     def from_config(cls, cfg: BacktestConfig) -> SignalPanelInputs:

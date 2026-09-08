@@ -193,6 +193,7 @@ def _score_above_ema(df: pd.DataFrame, ema_column: str) -> pd.Series:
     "above_20ema",
     columns=("EMA20", "EMA200"),
     description="Short-term trend stance: liquidity + stack + headroom − overextension",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_above_20ema(df: pd.DataFrame) -> pd.Series:
     return _score_above_ema(df, "EMA20")
@@ -202,6 +203,7 @@ def score_above_20ema(df: pd.DataFrame) -> pd.Series:
     "above_200ema",
     columns=("EMA20", "EMA200"),
     description="Long-term trend stance: liquidity + stack + headroom − overextension",
+    data_source=SNAPSHOT_SOURCE,
 )
 def score_above_200ema(df: pd.DataFrame) -> pd.Series:
     return _score_above_ema(df, "EMA200")
