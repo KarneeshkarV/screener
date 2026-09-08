@@ -23,6 +23,8 @@ from screener.backtester.metrics import (
     _psr,
     _sortino,
     _vol_annual,
+    compute_metrics,
+    deflated_sharpe,
     equity_curve_sharpe,
 )
 
@@ -273,6 +275,60 @@ def test_dsr_n_trials_greater_than_1_uses_higher_benchmark():
     dsr = _dsr(series, n_trials=10)
     # Higher benchmark → probability of exceeding it is lower
     assert dsr < psr
+
+
+# ---------------------------------------------------------------------------
+# compute_metrics only reports a Deflated Sharpe when a search deflated it
+# ---------------------------------------------------------------------------
+
+
+def _equity(n: int = 260, seed: int = 3) -> pd.Series:
+    """A varied equity curve long enough to clear the 30-bar PSR guard."""
+    rng = np.random.default_rng(seed)
+    returns = rng.normal(0.001, 0.01, n)
+    return pd.Series(100_000.0 * np.cumprod(1.0 + returns))
+
+
+def test_compute_metrics_omits_dsr_for_a_single_trial():
+    """One trial cannot be deflated, so no row may claim it was."""
+    equity = _equity()
+    metrics = compute_metrics(equity, pd.Series(dtype=float), [], slot_count=1)
+
+    assert "dsr" not in metrics
+    assert "dsr_trials" not in metrics
+    assert metrics["psr"] == _psr(bar_returns(equity), 0.0)
+
+
+def test_compute_metrics_deflates_dsr_below_psr_for_many_trials():
+    """A real search deflates: the reported DSR is strictly below PSR."""
+    equity = _equity()
+    metrics = compute_metrics(
+        equity, pd.Series(dtype=float), [], slot_count=1, n_trials=64
+    )
+
+    assert metrics["dsr_trials"] == 64
+    assert metrics["dsr"] == _dsr(bar_returns(equity), n_trials=64)
+    assert metrics["dsr"] < metrics["psr"]
+
+
+def test_compute_metrics_psr_is_identical_with_and_without_trials():
+    """Deflation must move DSR only; PSR is unchanged for every existing run."""
+    equity = _equity()
+    single = compute_metrics(equity, pd.Series(dtype=float), [], slot_count=1)
+    searched = compute_metrics(
+        equity, pd.Series(dtype=float), [], slot_count=1, n_trials=25
+    )
+
+    assert searched["psr"] == single["psr"]
+    assert searched["sharpe"] == single["sharpe"]
+
+
+def test_deflated_sharpe_helper_matches_dsr_on_the_curve_returns():
+    """The post-hoc helper is the same statistic, taken from the equity curve."""
+    equity = _equity()
+
+    assert deflated_sharpe(equity, n_trials=12) == _dsr(bar_returns(equity), 12)
+    assert deflated_sharpe(equity, n_trials=1) == _psr(bar_returns(equity), 0.0)
 
 
 # ---------------------------------------------------------------------------

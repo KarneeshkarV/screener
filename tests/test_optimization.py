@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import date
 
+import numpy as np
 import pandas as pd
 import pytest
 from click.testing import CliRunner
 
+from screener.backtester.metrics import compute_metrics, deflated_sharpe
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
 from screener.backtester.optimization import grid as grid_module
 from screener.backtester.optimization.grid import (
@@ -160,6 +162,7 @@ def test_grid_cache_key_includes_slippage_model():
         end_date=None,
         metric="sharpe",
         min_trades=1,
+        n_trials=1,
     )
     half_spread_key = _cache_key(
         half_spread,
@@ -169,9 +172,27 @@ def test_grid_cache_key_includes_slippage_model():
         end_date=None,
         metric="sharpe",
         min_trades=1,
+        n_trials=1,
     )
 
     assert base_key != half_spread_key
+
+
+def test_grid_cache_key_includes_trial_count():
+    """A cached Deflated Sharpe was deflated by the grid that produced it."""
+    cfg = _config()
+    key_args = {
+        "runner": "historical",
+        "start_date": None,
+        "end_date": None,
+        "metric": "sharpe",
+        "min_trades": 1,
+    }
+
+    small = _cache_key(cfg, {"hold": 5}, n_trials=2, **key_args)
+    large = _cache_key(cfg, {"hold": 5}, n_trials=40, **key_args)
+
+    assert small != large
 
 
 def test_rolling_grid_reuses_prepared_data_for_runtime_parameters():
@@ -230,6 +251,56 @@ def test_optimization_metrics_preserve_canonical_values():
     assert metrics["win_rate"] == pytest.approx(0.5)
     assert metrics["risk_adjusted_return"] == pytest.approx(4.4)
     assert metrics["trade_count"] == pytest.approx(2.0)
+    assert "dsr" not in metrics
+
+
+def test_optimization_metrics_deflate_the_sharpe_by_the_trial_count():
+    """The optimizer layer owns the deflation: the engines only ever see 1."""
+    rng = np.random.default_rng(11)
+    equity = pd.Series(100_000.0 * np.cumprod(1.0 + rng.normal(0.001, 0.01, 260)))
+    res = BacktestResult(
+        config=_config(),
+        trades=[_trade(10.0, 0.10)],
+        equity_curve=equity,
+        benchmark_curve=equity,
+        metrics=compute_metrics(equity, pd.Series(dtype=float), [], slot_count=1),
+    )
+
+    single = optimization_metrics(res)
+    searched = optimization_metrics(res, n_trials=32)
+
+    assert "dsr" not in single
+    assert searched["dsr_trials"] == pytest.approx(32.0)
+    assert searched["dsr"] == pytest.approx(deflated_sharpe(equity, n_trials=32))
+    assert searched["dsr"] < searched["psr"]
+    assert searched["psr"] == pytest.approx(single["psr"])
+
+
+def test_grid_search_deflates_every_row_by_the_configurations_it_evaluated():
+    """n_trials is the size of the grid the search actually ran."""
+    # Mild drift: a strongly trending curve saturates PSR at 1.0, which hides
+    # the deflation instead of measuring it.
+    bars = make_bars(n=120, drift=0.03, seed=4)
+    fetcher = StubPriceFetcher({"AAA": bars, "SPY": bars})
+    cfg = _config(tickers=("AAA",), min_price=None, min_avg_dollar_volume=None)
+    parameter_grid = {"hold": [3, 5, 8], "top": [1, 2]}
+
+    results = grid_search(
+        cfg,
+        fetcher,
+        parameter_grid,
+        runner="rolling",
+        start_date=bars.index[0].date(),
+        end_date=bars.index[-1].date(),
+        top_n=6,
+        max_workers=1,
+    )
+
+    expected = len(parameter_combinations(parameter_grid))
+    assert expected == 6
+    for result in results:
+        assert result.metrics["dsr_trials"] == pytest.approx(float(expected))
+        assert result.metrics["dsr"] < result.metrics["psr"]
 
 
 def test_cli_help_includes_optimize_commands():

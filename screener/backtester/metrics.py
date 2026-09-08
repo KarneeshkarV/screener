@@ -89,6 +89,7 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
     ("calmar", "Calmar", "ratio"),
     ("psr", "Probabilistic Sharpe", "pct"),
     ("dsr", "Deflated Sharpe", "pct"),
+    ("dsr_trials", "DSR Trials", "count"),
     ("max_drawdown", "Max Drawdown", "pct"),
     ("hit_rate", "Hit Rate", "pct"),
     ("alpha_annual", "Alpha (ann.)", "pct"),
@@ -422,6 +423,28 @@ def _dsr(
     )
 
 
+def deflated_sharpe(
+    equity: pd.Series,
+    n_trials: int,
+    *,
+    sr_trial_std_annual: float = 0.5,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> float:
+    """Deflated Sharpe of an equity curve, given the size of the search.
+
+    The post-hoc entry point for a caller that already holds a finished curve -
+    the optimizer, which only learns how many configurations it ran after each
+    individual backtest has returned. ``compute_metrics`` covers the case where
+    the trial count is known up front.
+    """
+    return _dsr(
+        bar_returns(equity),
+        n_trials=n_trials,
+        sr_trial_std_annual=sr_trial_std_annual,
+        periods_per_year=periods_per_year,
+    )
+
+
 def _invested_return(trades: Iterable[Trade]) -> float:
     """Capital-deployed-only total return.
 
@@ -570,7 +593,6 @@ def compute_metrics(
         "sortino": _sortino(daily, periods_per_year=periods_per_year),
         "calmar": _calmar(equity, periods_per_year),
         "psr": _psr(daily, sr_benchmark_annual=0.0, periods_per_year=periods_per_year),
-        "dsr": _dsr(daily, n_trials=n_trials, periods_per_year=periods_per_year),
         "max_drawdown": _max_drawdown(equity),
         "hit_rate": hit_rate,
         "alpha_annual": alpha,
@@ -580,6 +602,16 @@ def compute_metrics(
         "trade_count": len(trades),
         "invested_return": _invested_return(trades),
     }
+    # Only report a Deflated Sharpe when something was actually deflated.
+    # ``_dsr`` degenerates to ``_psr`` at one trial, so emitting the key
+    # unconditionally printed the same number under two names and implied a
+    # multiple-testing correction that had not been applied. ``dsr_trials``
+    # rides along so the reader can see what the bar was raised against.
+    if n_trials > 1:
+        metrics["dsr"] = _dsr(
+            daily, n_trials=n_trials, periods_per_year=periods_per_year
+        )
+        metrics["dsr_trials"] = n_trials
     metrics.update(_trade_return_stats(trades))
     return metrics
 
