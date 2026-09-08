@@ -484,6 +484,8 @@ def grid_search(
 
     Reuse the same explicit ``experiment_id`` and ``trial_db_path`` across
     iterative searches when rejected families must accumulate under one history.
+    DSR uses that history's nominal trial count unless the caller supplies an
+    explicit ``n_trials_effective`` estimate.
     """
     if cache_path is not None and frozen_input_identity is None:
         LOG.warning(
@@ -506,8 +508,6 @@ def grid_search(
     combos = parameter_combinations(parameter_grid)
     if not combos:
         return []
-    if n_trials_effective is None:
-        n_trials_effective = len(combos)
     rows: list[tuple[GridSearchResult, SharpeMoments | None]] = []
     pending: list[dict[str, Any]] = []
 
@@ -535,7 +535,6 @@ def grid_search(
                 min_trades=min_trades,
                 frozen_input_identity=frozen_input_identity,
                 code_fp=cache.code_fp,
-                n_trials=n_trials_effective,
             )
             hit = cache.get(key)
             if hit is not None:
@@ -575,7 +574,6 @@ def grid_search(
                 min_trades=min_trades,
                 frozen_input_identity=frozen_input_identity,
                 code_fp=cache.code_fp,
-                n_trials=n_trials_effective,
             )
             cache.put(
                 key,

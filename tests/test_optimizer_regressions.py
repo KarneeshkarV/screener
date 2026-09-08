@@ -740,3 +740,82 @@ def test_strict_json_metrics_use_null_for_nonfinite():
     assert math.isnan(loaded["dsr"])
     assert loaded["sharpe"] == pytest.approx(1.25)
     assert math.isnan(loaded["x"])
+
+
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_search_dsr_counts_prior_trials(tmp_path, use_cache):
+    bars = make_bars(n=120, seed=41, drift=0.08)
+    frames = {"AAA": bars, "SPY": bars}
+    cfg = _config()
+    kwargs = dict(
+        runner="rolling",
+        start_date=bars.index[0].date(),
+        end_date=bars.index[-1].date(),
+        max_workers=1,
+        trial_db_path=tmp_path / "trials.db",
+        experiment_id="iterative-search",
+        cache_path=tmp_path / "cache.db" if use_cache else None,
+        frozen_input_identity=build_frozen_input_identity(cfg, frames)
+        if use_cache
+        else None,
+    )
+    grid_search(cfg, StubPriceFetcher(frames), {"hold": [3, 5, 8]}, **kwargs)
+    grid_search(cfg, StubPriceFetcher(frames), {"hold": [13, 17]}, **kwargs)
+    rows = grid_search(cfg, StubPriceFetcher(frames), {"hold": [13]}, **kwargs)
+    stats = load_trial_search_stats("iterative-search", db_path=tmp_path / "trials.db")
+    assert stats.n_trials_nominal == 5
+    assert rows[0].cached is use_cache
+    assert rows[0].metrics["dsr_trials"] == 5
+    assert math.isfinite(rows[0].metrics["dsr"])
+    explicit = grid_search(
+        cfg, StubPriceFetcher(frames), {"hold": [13]}, n_trials_effective=2, **kwargs
+    )
+    assert explicit[0].metrics["dsr_trials"] == 2
+    assert explicit[0].metrics["dsr"] > rows[0].metrics["dsr"]
+
+
+def test_duplicate_grid_values_do_not_inflate_trial_count(tmp_path):
+    bars = make_bars(n=80, seed=41, drift=0.08)
+    rows = grid_search(
+        _config(),
+        StubPriceFetcher({"AAA": bars, "SPY": bars}),
+        {"hold": [3, 3, 5]},
+        runner="rolling",
+        start_date=bars.index[0].date(),
+        end_date=bars.index[-1].date(),
+        max_workers=1,
+        trial_db_path=tmp_path / "trials.db",
+    )
+    assert len(rows) == 3
+    assert all(row.metrics["dsr_trials"] == 2 for row in rows)
+
+
+def test_short_run_cache_preserves_missing_sharpe_moments(tmp_path):
+    bars = make_bars(n=120, seed=41, drift=0.08)
+    frames = {"AAA": bars, "SPY": bars}
+    cfg = _config()
+    kwargs = dict(
+        runner="rolling",
+        start_date=bars.index[10].date(),
+        end_date=bars.index[12].date(),
+        max_workers=1,
+        cache_path=tmp_path / "cache.db",
+        frozen_input_identity=build_frozen_input_identity(cfg, frames),
+        trial_db_path=tmp_path / "trials.db",
+    )
+    first = grid_search(cfg, StubPriceFetcher(frames), {"hold": [3, 5]}, **kwargs)
+    second = grid_search(cfg, StubPriceFetcher(frames), {"hold": [3, 5]}, **kwargs)
+    for fresh, cached in zip(first, second, strict=True):
+        assert fresh.error is None and cached.error is None
+        assert cached.cached
+        assert cached.params == fresh.params
+        assert cached.score == fresh.score
+        assert cached.trade_count == fresh.trade_count
+        assert cached.dsr_unavailable_reason == "insufficient_observations"
+        assert math.isnan(cached.metrics["dsr"])
+        assert cached.metrics.keys() == fresh.metrics.keys()
+        for name, value in fresh.metrics.items():
+            if not math.isfinite(value):
+                assert math.isnan(cached.metrics[name])
+            else:
+                assert cached.metrics[name] == pytest.approx(value)

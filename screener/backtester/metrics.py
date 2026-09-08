@@ -436,11 +436,16 @@ class SharpeMoments:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> SharpeMoments:
+        # Strict JSON stores undefined moments as null, not NaN.
+        moments = {
+            key: float(data[key]) if data[key] is not None else float("nan")
+            for key in ("sharpe_annual", "sr_per", "skew", "kurt_excess")
+        }
         return cls(
-            sharpe_annual=float(data["sharpe_annual"]),
-            sr_per=float(data["sr_per"]),
-            skew=float(data["skew"]),
-            kurt_excess=float(data["kurt_excess"]),
+            sharpe_annual=moments["sharpe_annual"],
+            sr_per=moments["sr_per"],
+            skew=moments["skew"],
+            kurt_excess=moments["kurt_excess"],
             n_obs=int(data["n_obs"]),
             periods_per_year=int(data["periods_per_year"]),
         )
