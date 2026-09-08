@@ -226,6 +226,14 @@ class EquityLedgerTrade(LifecycleTrade):
     # exposed as a separate field so total-return can be computed when the
     # ``splits_only`` price-adjustment regime is in use.
     dividend_income: float = 0.0
+    # Lot identity: the per-ticker ``open_seq`` that ``Portfolio`` keyed this
+    # position by (see ``Portfolio._open``). Every scale-out tranche of one
+    # ``--partial-exit`` position carries the SAME ``(ticker, open_seq)``,
+    # while a re-entry or a pyramided lot gets a fresh ``open_seq``. Metrics
+    # that measure a POSITION rather than a fill (``metrics._exposure``) group
+    # on it. 0 means "no lot identity": a hand-built or CSV-deserialized trade
+    # that must be treated as a position of its own.
+    open_seq: int = 0
 
 
 # Public compatibility alias. The implementation lives in neutral ledger

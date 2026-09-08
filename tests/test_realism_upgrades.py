@@ -442,6 +442,70 @@ def test_partial_exit_closes_half_at_tier_and_raises_stop_to_break_even(
     assert runner.entry_cost == pytest.approx(total_cost * 0.5, rel=1e-6)
 
 
+def _scale_out_bars() -> pd.DataFrame:
+    """Bars where one position scales out twice and then time-exits.
+
+    Entry fills at 100.0 on bar 4. Bar 5 trades through +3% and bar 6 through
+    +6%, so both partial-exit tiers fire; the rest of the window holds above
+    both tiers so the runner survives to its time exit.
+    """
+    bars = make_bars(n=20, seed=4, open_base=100.0)
+    col = bars.columns
+    for i, (o, h, low, close) in {
+        4: (100.0, 101.0, 99.5, 100.0),
+        5: (101.0, 104.0, 100.5, 103.5),
+        6: (104.0, 107.0, 103.5, 106.5),
+    }.items():
+        bars.iat[i, col.get_loc("open")] = o
+        bars.iat[i, col.get_loc("high")] = h
+        bars.iat[i, col.get_loc("low")] = low
+        bars.iat[i, col.get_loc("close")] = close
+    for i in range(7, 20):
+        bars.iat[i, col.get_loc("open")] = 106.0
+        bars.iat[i, col.get_loc("high")] = 106.5
+        bars.iat[i, col.get_loc("low")] = 105.5
+        bars.iat[i, col.get_loc("close")] = 106.0
+    return bars
+
+
+def test_partial_exit_run_reports_the_same_exposure_as_one_whole_position(
+    stub_fetcher_factory,
+):
+    """Avg Exposure measures occupied slots, so scale-outs must not inflate it.
+
+    The two runs below hold the identical single position over the identical
+    sessions; only the number of ledger rows differs (3 tranches vs 1 trade).
+    Counting each tranche as a whole open position made the metric grow with
+    the tier count and pushed it past the 1.0 ceiling that ``slot_count`` in
+    the denominator implies.
+    """
+    bars = _scale_out_bars()
+    fetcher = stub_fetcher_factory({"AAA": bars, "SPY": bars.copy()})
+    base = dict(
+        as_of=bars.index[3].date(),
+        hold=5,
+        top=1,
+        entry_expr="close > 0",
+        tickers=("AAA",),
+    )
+    whole = run_backtest(_cfg(**base), fetcher)
+    scaled = run_backtest(
+        _cfg(**base, partial_exits=((0.03, 0.34), (0.06, 0.33))), fetcher
+    )
+
+    assert len(whole.trades) == 1
+    assert len(scaled.trades) == 3
+    assert {t.exit_reason for t in scaled.trades} == {"target", "time"}
+    # All three rows are tranches of one lot.
+    assert {t.open_seq for t in scaled.trades} == {1}
+    assert {t.entry_date for t in scaled.trades} == {whole.trades[0].entry_date}
+
+    # 6 of the 17 curve sessions are occupied, with or without the scale-outs.
+    assert scaled.metrics["exposure"] == pytest.approx(6 / 17)
+    assert scaled.metrics["exposure"] == pytest.approx(whole.metrics["exposure"])
+    assert scaled.metrics["exposure"] <= 1.0
+
+
 def test_pyramiding_via_portfolio_tracks_two_concurrent_lots():
     # The Portfolio API supports concurrent lots per ticker when raise_if_exists
     # is False. Verifies independent PnL on each lot and FIFO close ordering.
