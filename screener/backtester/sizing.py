@@ -40,7 +40,7 @@ class SizingContext:
     """Entry-time inputs handed to a sizing rule.
 
     ``base_budget`` is ``Portfolio.entry_budget()``. It is the hard cap for
-    fixed and risk sizing, but not for ``reinvested_equal_slot``.
+    equal-slot and risk sizing, but not for ``reinvested_equal_slot``.
     """
 
     equity: float
@@ -265,7 +265,7 @@ def entry_opens_no_shares(entry_budget: float, entry_shares: float | None) -> bo
     models; otherwise ``Portfolio.open`` derives the share count from the
     budget, so a non-positive budget is the empty case. A zero-share position
     still occupies its slot and consumes the candidate, so every entry path
-    (including fixed ``equal_slot``) must skip it rather than call ``open``.
+    (including ``equal_slot``) must skip it rather than call ``open``.
     """
     if entry_shares is not None:
         return float(entry_shares) <= 0.0
@@ -273,7 +273,7 @@ def entry_opens_no_shares(entry_budget: float, entry_shares: float | None) -> bo
 
 
 def sizing_allows_slot_growth(sizing_rule: str) -> bool:
-    """Return whether a sizing rule may exceed the initial fixed slot ceiling."""
+    """Return whether a sizing rule may exceed the current slot ceiling."""
     return sizing_rule == "reinvested_equal_slot"
 
 

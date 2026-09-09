@@ -80,13 +80,13 @@ class BacktestRequest:
     report_path: Path | None
     open_report: bool
     sizing_rule: str
+    compounding: bool
     sizing_risk_pct: float
     sizing_position_pct: float
     sizing_atr_window: int
     sizing_atr_multiple: float
     sizing_vol_window: int
     intraday_only: bool
-    compounding: bool = True
     start_arg: datetime | None = None
     end_arg: datetime | None = None
     years: int = 1

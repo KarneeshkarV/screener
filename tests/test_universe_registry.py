@@ -432,6 +432,7 @@ def test_universe_note_flags_a_start_before_the_first_snapshot(tmp_path) -> None
             report_path=None,
             open_report=False,
             sizing_rule="equal_slot",
+            compounding=True,
             sizing_risk_pct=0.01,
             sizing_position_pct=0.1,
             sizing_atr_window=14,

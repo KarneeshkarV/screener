@@ -127,7 +127,7 @@ SIZING_COMPARISON_COLUMNS = ("Equal slots", "Reinvested slots")
 
 
 def sizing_comparison_rows(
-    fixed: Mapping[str, Any],
+    equal_slot: Mapping[str, Any],
     reinvested: Mapping[str, Any],
 ) -> tuple[tuple[str, ...], ...]:
     """Return ``(label, *cells)`` per metric, one cell per sizing rule.
@@ -142,7 +142,7 @@ def sizing_comparison_rows(
     renderer can lay the body out from the row itself rather than naming the
     two columns positionally.
     """
-    columns = (fixed, reinvested)
+    columns = (equal_slot, reinvested)
     merged: dict[str, Any] = {}
     for metrics in columns:
         merged.update(metrics)

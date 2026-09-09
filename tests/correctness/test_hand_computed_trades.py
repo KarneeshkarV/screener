@@ -15,9 +15,13 @@ Slippage (_apply_slip with FixedBpsSlippage, verified from core.py lines 32-52):
   buy:  ref * (1 + bps/10_000)
   sell: ref * (1 - bps/10_000)
 
-Portfolio.open (verified from portfolio.py lines 62-100):
+Portfolio.open (verified from portfolio.py Portfolio.open / entry_budget):
   gross_per_share = entry_price * (1 + commission_bps/10_000)
-  budget = min(slot_capital, cash)
+  budget = min(current_slot_capital, cash), where current_slot_capital is
+           realized_equity / slot_count when compounding is on (the default)
+           and the frozen initial_capital / slot_count when it is off. Every
+           scenario below runs top=1 with one lot at a time, so both modes
+           give the same slot and the derivations hold for either.
   shares = budget / gross_per_share
   entry_cost = shares * entry_price + shares * entry_price * (commission_bps/10_000)
              = shares * entry_price * (1 + c)  [i.e. == budget by construction]
@@ -38,6 +42,7 @@ import pytest
 
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
+from screener.backtester.portfolio import Portfolio
 from tests.backtest_helpers import simulate_single_ticker
 from tests.conftest import StubPriceFetcher
 from tests.correctness.fixtures.explicit_bars import (
@@ -579,3 +584,131 @@ class TestS9CommissionSlippage:
         assert tr is not None
         # entry_cost = budget = 100_000 (no commission)
         assert tr.entry_cost == pytest.approx(100_000.0, abs=TOL)
+
+
+# ===========================================================================
+# Scenario 10 — Slot ceiling under compounding vs frozen (Portfolio arithmetic)
+# ===========================================================================
+# The other scenarios all run top=1 with one lot at a time, where both modes
+# give the same slot, so none of them can tell the default apart from the
+# legacy behaviour. This one drives Portfolio directly with two slots.
+#
+# No slippage, no commission. Portfolio(100_000, slot_count=2).
+#
+# Portfolio.realized_equity  = max(cash, 0) + sum(shares * entry_fill)
+# Portfolio.current_slot_capital
+#     compounding : realized_equity / slot_count
+#     frozen      : initial_capital / slot_count
+# Portfolio.entry_budget     = min(current_slot_capital, max(cash, 0))
+#
+# Step 1 — open AAA @ 100.0
+#   realized_equity = 100_000 + 0            = 100_000
+#   slot            = 100_000 / 2            = 50_000
+#   budget          = min(50_000, 100_000)   = 50_000
+#   shares          = 50_000 / 100.0         = 500.0
+#   cash            = 100_000 - 50_000       = 50_000
+#   basis           = 500.0 * 100.0          = 50_000
+#
+# Step 2 — open BBB @ 50.0 (same moment: the second slot must match the first)
+#   realized_equity = 50_000 + 50_000        = 100_000   (unchanged by step 1)
+#   budget          = min(50_000, 50_000)    = 50_000
+#   shares          = 50_000 / 50.0          = 1000.0
+#   cash            = 0 ; basis = 100_000
+#
+# Step 3 — close AAA @ 130.0
+#   proceeds        = 500.0 * 130.0          = 65_000
+#   cash            = 0 + 65_000             = 65_000
+#   basis           = 1000.0 * 50.0          = 50_000   (BBB only)
+#   realized_equity = 65_000 + 50_000        = 115_000  = 100_000 + 15_000 pnl
+#
+# Step 4 — the next slot ceiling
+#   compounding : slot = 115_000 / 2 = 57_500 ; budget = min(57_500, 65_000)
+#                                                      = 57_500
+#   frozen      : slot = 100_000 / 2 = 50_000 ; budget = min(50_000, 65_000)
+#                                                      = 50_000
+#
+# Step 5 — open CCC @ 10.0 with the compounded budget
+#   shares          = 57_500 / 10.0          = 5750.0
+#   cash            = 65_000 - 57_500        = 7_500
+#   basis           = 50_000 + 57_500        = 107_500
+#   realized_equity = 7_500 + 107_500        = 115_000  (unchanged by step 5)
+#   BBB still holds its 50_000 basis while CCC holds 57_500: an open lot keeps
+#   the basis it was bought at, so only the successor slot is resized.
+
+
+class TestS10SlotCeiling:
+    INITIAL = 100_000.0
+    SLOTS = 2
+    FIRST_SLOT = 50_000.0
+    GROWN_SLOT = 57_500.0
+    REALIZED_AFTER_WIN = 115_000.0
+
+    @staticmethod
+    def _book(compounding: bool) -> Portfolio:
+        """Steps 1-3: two equal slots, then the first exits at +30%."""
+        portfolio = Portfolio(
+            TestS10SlotCeiling.INITIAL,
+            TestS10SlotCeiling.SLOTS,
+            compounding=compounding,
+        )
+        for ticker, price in (("AAA", 100.0), ("BBB", 50.0)):
+            portfolio.assign(ticker, rank=1, signal_date=date(2024, 1, 2))
+            portfolio.open(
+                ticker, date(2024, 1, 2), price, budget=portfolio.entry_budget()
+            )
+        portfolio.close("AAA", date(2024, 2, 1), 130.0, "time")
+        return portfolio
+
+    def test_slots_opened_at_the_same_moment_are_equal(self):
+        portfolio = Portfolio(self.INITIAL, self.SLOTS)
+        first = portfolio.entry_budget()
+        portfolio.assign("AAA", rank=1, signal_date=date(2024, 1, 2))
+        portfolio.open("AAA", date(2024, 1, 2), 100.0, budget=first)
+        assert first == pytest.approx(self.FIRST_SLOT, abs=TOL)
+        assert portfolio.entry_budget() == pytest.approx(self.FIRST_SLOT, abs=TOL)
+
+    def test_realized_equity_is_initial_capital_plus_realized_pnl(self):
+        portfolio = self._book(compounding=True)
+        assert portfolio.realized_equity() == pytest.approx(
+            self.REALIZED_AFTER_WIN, abs=TOL
+        )
+        assert portfolio.cash() == pytest.approx(65_000.0, abs=TOL)
+
+    def test_compounded_ceiling_is_realized_equity_over_slots(self):
+        portfolio = self._book(compounding=True)
+        assert portfolio.current_slot_capital() == pytest.approx(
+            self.GROWN_SLOT, abs=TOL
+        )
+        assert portfolio.entry_budget() == pytest.approx(self.GROWN_SLOT, abs=TOL)
+
+    def test_frozen_ceiling_stays_at_day_one_and_leaves_cash_idle(self):
+        portfolio = self._book(compounding=False)
+        # Same realized equity; only the ceiling differs.
+        assert portfolio.realized_equity() == pytest.approx(
+            self.REALIZED_AFTER_WIN, abs=TOL
+        )
+        assert portfolio.current_slot_capital() == pytest.approx(
+            self.FIRST_SLOT, abs=TOL
+        )
+        assert portfolio.entry_budget() == pytest.approx(self.FIRST_SLOT, abs=TOL)
+        # 65_000 came back but only 50_000 can be redeployed.
+        assert portfolio.cash() - portfolio.entry_budget() == pytest.approx(
+            15_000.0, abs=TOL
+        )
+
+    def test_refill_resizes_only_the_successor_slot(self):
+        portfolio = self._book(compounding=True)
+        portfolio.assign("CCC", rank=1, signal_date=date(2024, 2, 1))
+        position = portfolio.open(
+            "CCC", date(2024, 2, 1), 10.0, budget=portfolio.entry_budget()
+        )
+        assert position.shares == pytest.approx(5_750.0, abs=TOL)
+        assert portfolio.cash() == pytest.approx(7_500.0, abs=TOL)
+        # The pool is unchanged by a buy: cash moved into basis, nothing else.
+        assert portfolio.realized_equity() == pytest.approx(
+            self.REALIZED_AFTER_WIN, abs=TOL
+        )
+        # The older lot keeps the smaller basis it was bought at.
+        held = portfolio.get_position("BBB")
+        assert held is not None
+        assert held.shares * held.entry_fill == pytest.approx(self.FIRST_SLOT, abs=TOL)

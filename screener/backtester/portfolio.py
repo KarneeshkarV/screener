@@ -19,11 +19,15 @@ drawdown shrinks for reasons that have nothing to do with the signal.
 **Compounding (the default).** The ceiling is recomputed per entry as
 ``realized_equity / slot_count``, where realized equity is cash plus the cost
 basis of open positions (that is, ``initial_capital`` plus realized P&L net of
-fees). Slots stay equal to each other because they all divide the same pool,
-rather than each compounding independently. Unrealized gains are excluded
-deliberately: including them would size new entries off marks that a later
-exit may not realize. Pass ``compounding=False`` only when a pinned baseline
-depends on the frozen behaviour.
+fees). Every entry made at the same moment draws the same ceiling, because
+they all divide one pool rather than each slot compounding its own history.
+Slots opened at *different* moments do differ: an open lot keeps the basis it
+was bought at, so only the successor slot is resized and a book that has
+realized a gain holds older lots at a smaller basis than newer ones. That
+spread closes as each lot recycles at the current ceiling. Unrealized gains
+are excluded deliberately: including them would size new entries off marks
+that a later exit may not realize. Pass ``compounding=False`` only when a
+pinned baseline depends on the frozen behaviour.
 
 Concurrent positions per ticker (pyramiding) are supported internally by
 keying ``_open`` on ``(ticker, open_seq)``. Legacy callers that pass ticker
@@ -72,6 +76,11 @@ class Portfolio:
         # "taf"). Populated on every buy/sell fill; see ``total_fees_paid``.
         self.fees_paid: dict[str, float] = {}
         self._cash = self.initial_capital
+        # Running sum of ``shares * entry_fill`` over ``_open``. Maintained by
+        # every mutation of an open lot so ``realized_equity`` stays O(1): it
+        # is read two to three times per candidate on the rolling day loop,
+        # where summing the open book per call was O(candidates * open lots).
+        self._basis = 0.0
         # Keyed by (ticker, open_seq). Legacy callers use ticker only; helper
         # methods resolve to the FIFO-oldest open position for that ticker.
         self._open: dict[tuple[str, int], Position] = {}
@@ -95,8 +104,7 @@ class Portfolio:
         current prices, so it can be evaluated at entry time inside the fill
         path where marks are not available for every open ticker.
         """
-        basis = sum(p.shares * p.entry_fill for p in self._open.values())
-        return max(self._cash, 0.0) + basis
+        return max(self._cash, 0.0) + self._basis
 
     def current_slot_capital(self) -> float:
         """Per-slot ceiling for the next entry, honouring the sizing mode."""
@@ -268,6 +276,7 @@ class Portfolio:
             slot_capital=entry_cost,
             peak_price=entry_price,
         )
+        self._basis += notional
         seq = self._open_seq.get(ticker, 0) + 1
         self._open_seq[ticker] = seq
         key = (ticker, seq)
@@ -322,6 +331,7 @@ class Portfolio:
         if key is None:
             raise KeyError(f"No open position for {ticker}")
         position = self._open.pop(key)
+        self._basis -= position.shares * position.entry_fill
         fifo = self._open_fifo[ticker]
         fifo.popleft()
         if not fifo:
@@ -425,6 +435,7 @@ class Portfolio:
         )
         self._closed.append(trade)
         # shrink the remaining sleeve in place
+        self._basis -= close_shares * position.entry_fill
         position.shares = remaining_shares
         position.slot_capital = remaining_cost
         position.dividend_income = remaining_div

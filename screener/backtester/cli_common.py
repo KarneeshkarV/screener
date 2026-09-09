@@ -144,9 +144,10 @@ def sizing_options(command):
     """Attach the shared per-entry position-sizing options to a backtest command.
 
     The ``equal_slot`` default spends one slot of current slot capital.
-    Compounding (on by default) grows that slot with realized equity.
-    ``reinvested_equal_slot`` grows or shrinks slots with marked equity. Risk
-    rules size down from the current equal-slot ceiling.
+    Compounding (on by default) grows that slot, and the equity the risk rules
+    size against, with realized equity. ``reinvested_equal_slot`` grows or
+    shrinks slots with marked equity and ignores ``--compounding``. Risk rules
+    size down from the current equal-slot ceiling.
     """
     from screener.backtester.sizing import available_sizing_rules
 
@@ -168,9 +169,12 @@ def sizing_options(command):
             default=True,
             show_default=True,
             help=(
-                "Grow the per-slot budget with realized equity. Off freezes the "
-                "slot at initial_capital/top, which de-levers a run that "
-                "profits and understates its later volatility and drawdown."
+                "Grow the per-slot budget, and the equity the risk rules size "
+                "against, with realized equity. Off freezes both at "
+                "initial_capital/top and initial_capital, which de-levers a "
+                "run that profits and understates its later volatility and "
+                "drawdown. No effect under --sizing reinvested_equal_slot, "
+                "which always sizes from marked-to-market equity."
             ),
         ),
         click.option(
@@ -180,7 +184,8 @@ def sizing_options(command):
             show_default=True,
             help=(
                 "Fraction of equity risked per trade (fixed_risk/atr_risk) "
-                "or daily volatility target (inverse_vol)."
+                "or daily volatility target (inverse_vol). Equity is realized "
+                "equity, or initial capital under --no-compounding."
             ),
         ),
         click.option(
@@ -188,7 +193,10 @@ def sizing_options(command):
             type=float,
             default=0.10,
             show_default=True,
-            help="Fraction of equity per position (fixed_fraction).",
+            help=(
+                "Fraction of equity per position (fixed_fraction). Equity is "
+                "realized equity, or initial capital under --no-compounding."
+            ),
         ),
         click.option(
             "--sizing-atr-window",

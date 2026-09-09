@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from screener.backtester.models import BacktestConfig
 from screener.backtester.portfolio import Portfolio
 
@@ -72,6 +74,48 @@ def test_slots_stay_equal_to_each_other_under_compounding() -> None:
     # Buying at the ceiling moves cash into basis, so the pool is unchanged and
     # the next slot is offered exactly the same budget.
     assert portfolio.entry_budget() == first
+
+
+def test_basis_accumulator_agrees_with_the_recomputed_sum() -> None:
+    """``realized_equity`` is O(1) off a running basis, so pin it to the sum.
+
+    It is read two to three times per candidate on the rolling day loop, which
+    is why the sum is not recomputed there. The cost of that is an accumulator
+    that every open/close/partial-close has to maintain; drift would move
+    every entry budget silently, so assert it after each mutation.
+    """
+    portfolio = Portfolio(100_000.0, 4)
+
+    def _agrees() -> None:
+        expected = sum(
+            p.shares * p.entry_fill
+            for p in portfolio._open.values()  # noqa: SLF001 - invariant under test
+        )
+        assert portfolio._basis == pytest.approx(expected)  # noqa: SLF001
+        assert portfolio.realized_equity() == pytest.approx(
+            max(portfolio.cash(), 0.0) + expected
+        )
+
+    _agrees()
+    for ticker, price in (("AAA", 10.0), ("BBB", 25.0), ("CCC", 4.0)):
+        portfolio.assign(ticker, rank=1, signal_date=date(2024, 1, 1))
+        portfolio.open(ticker, date(2024, 1, 1), price, budget=portfolio.entry_budget())
+        _agrees()
+    # Pyramid a second lot onto an existing ticker.
+    portfolio.open(
+        "AAA",
+        date(2024, 1, 15),
+        12.0,
+        budget=portfolio.entry_budget(),
+        raise_if_exists=False,
+    )
+    _agrees()
+    portfolio.partial_close("BBB", date(2024, 2, 1), 30.0, "target", 0.4)
+    _agrees()
+    portfolio.close("AAA", date(2024, 2, 5), 14.0, "time")  # FIFO: the first lot
+    _agrees()
+    portfolio.close("CCC", date(2024, 2, 6), 2.0, "stop")
+    _agrees()
 
 
 def test_compounding_is_on_by_default() -> None:

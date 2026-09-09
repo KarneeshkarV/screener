@@ -181,7 +181,7 @@ def _trade_timeline_html(trades: pd.DataFrame) -> str:
 
 
 def _sizing_comparison_html(
-    fixed: BacktestResult,
+    equal_slot: BacktestResult,
     reinvested: BacktestResult,
 ) -> str:
     """Render the equal-slot vs reinvested-slot metric table."""
@@ -193,7 +193,7 @@ def _sizing_comparison_html(
             html.escape(row[0]),
             "".join(f"<td>{html.escape(cell)}</td>" for cell in row[1:]),
         )
-        for row in sizing_comparison_rows(fixed.metrics, reinvested.metrics)
+        for row in sizing_comparison_rows(equal_slot.metrics, reinvested.metrics)
     )
     return (
         '<section class="panel" id="sizing-comparison">'

@@ -335,7 +335,7 @@ def backtest_rolling(**params: Any) -> None:
         and run.config.sizing_rule in {"equal_slot", "reinvested_equal_slot"}
         and not params["output_csv"]
     )
-    fixed_result = None
+    equal_slot_result = None
     reinvested_result = None
     if compare_reinvestment:
         prepared = prepare_rolling_backtest(
@@ -345,16 +345,16 @@ def backtest_rolling(**params: Any) -> None:
             end_date=run.end_date,
             fundamental_fetcher=run.fundamental_fetcher,
         )
-        fixed_config = run.config.model_copy(update={"sizing_rule": "equal_slot"})
+        equal_slot_config = run.config.model_copy(update={"sizing_rule": "equal_slot"})
         reinvested_config = run.config.model_copy(
             update={"sizing_rule": "reinvested_equal_slot"}
         )
-        fixed_result = run_prepared_rolling_backtest(prepared, fixed_config)
+        equal_slot_result = run_prepared_rolling_backtest(prepared, equal_slot_config)
         reinvested_result = run_prepared_rolling_backtest(prepared, reinvested_config)
         result = (
             reinvested_result
             if run.config.sizing_rule == "reinvested_equal_slot"
-            else fixed_result
+            else equal_slot_result
         )
     else:
         result = run_rolling_backtest(
@@ -365,8 +365,8 @@ def backtest_rolling(**params: Any) -> None:
             fundamental_fetcher=run.fundamental_fetcher,
         )
     sizing_comparison = (
-        (fixed_result, reinvested_result)
-        if fixed_result is not None and reinvested_result is not None
+        (equal_slot_result, reinvested_result)
+        if equal_slot_result is not None and reinvested_result is not None
         else None
     )
     generated_report = resolve_report_path(

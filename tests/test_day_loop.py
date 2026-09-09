@@ -40,7 +40,6 @@ def _cfg(**overrides) -> BacktestConfig:
         benchmark="SPY",
         strategy_name=None,
         tickers=None,
-        compounding=False,
     )
     defaults.update(overrides)
     return BacktestConfig(**defaults)
@@ -544,8 +543,13 @@ def _scn_rolling_trailing_stop():
     return cfg, fetcher, bars.index[0].date(), bars.index[14].date()
 
 
-def _scn_rolling_daily_refill():
-    """Rolling-only: a freed slot is refilled from the same-day candidate scan."""
+def _scn_rolling_daily_refill(*, compounding: bool = True):
+    """Rolling-only: a freed slot is refilled from the same-day candidate scan.
+
+    The only scenario here whose numbers depend on the compounding mode: the
+    refill is the moment the slot ceiling is recomputed. Both modes are pinned
+    (see ``daily_refill_frozen``) so a change to either is visible.
+    """
     active = make_bars(n=30, seed=6, open_base=100.0)
     reserve = make_bars(n=30, seed=7, open_base=50.0)
     spy = make_bars(n=30, seed=8, open_base=400.0)
@@ -561,8 +565,14 @@ def _scn_rolling_daily_refill():
         hold=1,
         top=1,
         tickers=("ACTIVE", "RESERVE"),
+        compounding=compounding,
     )
     return cfg, fetcher, active.index[0].date(), active.index[15].date()
+
+
+def _scn_rolling_daily_refill_frozen():
+    """The same refill with --no-compounding, pinning the frozen-slot budget."""
+    return _scn_rolling_daily_refill(compounding=False)
 
 
 def _scn_rolling_dividends():
@@ -574,12 +584,70 @@ ROLLING_SCENARIOS = {
     "partial_exits": _scn_rolling_partial_exits,
     "trailing_stop": _scn_rolling_trailing_stop,
     "daily_refill": _scn_rolling_daily_refill,
+    "daily_refill_frozen": _scn_rolling_daily_refill_frozen,
     "dividends": _scn_rolling_dividends,
 }
 
 
 ROLLING_GOLDEN: dict[str, dict] = {
+    # The default (compounding) refill: the freed slot is re-sized from the
+    # realized equity the first trade produced, so RESERVE enters on 101_062
+    # rather than the day-one 100_000 that "daily_refill_frozen" pins below.
     "daily_refill": {
+        "trades": [
+            [
+                "ACTIVE",
+                1,
+                "2024-01-08",
+                "2024-01-09",
+                101.2521057,
+                "2024-01-10",
+                102.32755881,
+                "time",
+                987.63378117,
+                100000.0,
+                101062.15382989,
+                1062.15382989,
+                0.0106215383,
+                0.0,
+            ],
+            [
+                "RESERVE",
+                1,
+                "2024-01-10",
+                "2024-01-11",
+                49.54464375,
+                "2024-01-12",
+                48.98830304,
+                "time",
+                2039.81997196,
+                101062.15382989,
+                99927.31894008,
+                -1134.83488981,
+                -0.0112290788,
+                0.0,
+            ],
+        ],
+        "equity": [
+            ["2024-01-01", 100000.0],
+            ["2024-01-02", 100000.0],
+            ["2024-01-03", 100000.0],
+            ["2024-01-04", 100000.0],
+            ["2024-01-05", 100000.0],
+            ["2024-01-08", 100000.0],
+            ["2024-01-09", 100322.851747],
+            ["2024-01-10", 101062.15383],
+            ["2024-01-11", 100560.147486],
+            ["2024-01-12", 99927.31894],
+            ["2024-01-15", 99927.31894],
+            ["2024-01-16", 99927.31894],
+            ["2024-01-17", 99927.31894],
+            ["2024-01-18", 99927.31894],
+            ["2024-01-19", 99927.31894],
+            ["2024-01-22", 99927.31894],
+        ],
+    },
+    "daily_refill_frozen": {
         "trades": [
             [
                 "ACTIVE",

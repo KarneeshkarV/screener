@@ -14,6 +14,7 @@ from screener import history as history_mod
 from screener import scanner as scanner_module
 from screener import screen_workflow as workflow_mod
 from screener.backtester import historical as historical_cli
+from screener.backtester.metrics import SIZING_COMPARISON_COLUMNS
 from screener.backtester.models import BacktestResult
 from screener.backtester.optimization import cli as optimize_cli
 from screener.cli import cli
@@ -472,6 +473,10 @@ def test_rolling_report_carries_the_sizing_comparison(tmp_path):
     html = report.read_text(encoding="utf-8")
     assert 'id="sizing-comparison-table"' in html
     assert "Equal slots vs reinvested slots" in html
+    # Both column headers, not just the section heading: a table rendered with
+    # one value column would still match the heading.
+    for column in SIZING_COMPARISON_COLUMNS:
+        assert f"<th>{column}</th>" in html
 
 
 def test_rolling_compounding_is_on_by_default():
@@ -486,6 +491,32 @@ def test_rolling_compounding_is_on_by_default():
 
     assert result.exit_code == 0, result.output
     assert "compounding=on" in result.output
+    assert "compounding=off" not in result.output
+
+
+def test_rolling_header_says_na_when_the_rule_ignores_compounding():
+    """reinvested_equal_slot never reads Portfolio.compounding.
+
+    Printing on/off for it labels a mode the run does not honour, so a reader
+    comparing two tear-sheets would conclude compounding had no effect.
+    """
+    fetcher, bars_a = _stub_env()
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        _rolling_argv(
+            bars_a,
+            "--sizing",
+            "reinvested_equal_slot",
+            "--no-compounding",
+            "--no-compare-reinvestment",
+        ),
+        obj=fetcher,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "compounding=n/a" in result.output
     assert "compounding=off" not in result.output
 
 
@@ -750,6 +781,37 @@ optimize:
     assert captured["parameter_grid"]["hold"] == [5, 10]
     assert captured["kwargs"]["metric"] == "total_return"
     assert captured["kwargs"]["top_n"] == 4
+
+
+def test_optimize_grid_honours_the_compounding_flag(tmp_path, monkeypatch):
+    """The optimizer must be tunable against the same capital model as a run.
+
+    Without a flag here, a baseline pinned with ``backtest-rolling
+    --no-compounding`` could only be tuned against a compounded book.
+    """
+    captured = {}
+
+    def fake_grid_search(cfg, fetcher, parameter_grid, **kwargs):
+        captured["cfg"] = cfg
+        return []
+
+    monkeypatch.setattr(optimize_cli, "grid_search", fake_grid_search)
+    argv = [
+        "optimize",
+        "grid",
+        "--tickers",
+        "AAA,BBB",
+        "--entry",
+        "close > sma(close, 3)",
+        "--hold",
+        "5",
+    ]
+
+    assert CliRunner().invoke(cli, argv).exit_code == 0
+    assert captured["cfg"].compounding is True
+
+    assert CliRunner().invoke(cli, [*argv, "--no-compounding"]).exit_code == 0
+    assert captured["cfg"].compounding is False
 
 
 def test_backtest_commands_reject_a_hold_below_one():
