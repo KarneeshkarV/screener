@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rolling backtester — bottleneck &amp; GPU analysis</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg:#0f1115; --panel:#151821; --panel2:#1a1e28; --border:#262a33;
+    --fg:#e6e6e6; --muted:#9aa4b2; --accent:#5b9bff; --warn:#f0b429;
+    --good:#3fb950; --bad:#f85149; --mono:#20242e;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg:#f6f7f9; --panel:#ffffff; --panel2:#f0f2f5; --border:#d9dee6;
+      --fg:#1b1f27; --muted:#59626f; --accent:#1a5fd0; --warn:#9a6a00;
+      --good:#1a7f37; --bad:#cf222e; --mono:#eef1f5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         margin:0; line-height:1.55; background:var(--bg); color:var(--fg); }
+  a { color:var(--accent); }
+  header { padding:22px 28px; border-bottom:1px solid var(--border); background:var(--panel); }
+  .back { font-size:13px; }
+  h1 { margin:10px 0 4px; font-size:22px; }
+  .sub { color:var(--muted); font-size:13px; }
+  main { padding:8px 28px 60px; max-width:1080px; margin:0 auto; }
+  section { border:1px solid var(--border); border-radius:12px; padding:18px 20px;
+            margin:16px 0; background:var(--panel); }
+  h2 { margin:0 0 10px; font-size:17px; }
+  h3 { margin:16px 0 6px; font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  p { margin:8px 0; }
+  code { background:var(--mono); padding:1px 5px; border-radius:4px; font-size:12.5px;
+         font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  .tablewrap { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:13px; margin:6px 0; }
+  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); }
+  th { color:var(--muted); font-weight:600; white-space:nowrap; }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tr:hover td { background:var(--panel2); }
+  .tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:20px; font-weight:600; }
+  .tag.a { background:rgba(248,81,73,.16); color:var(--bad); }
+  .tag.b { background:rgba(63,185,80,.16); color:var(--good); }
+  .tag.mix { background:rgba(240,180,41,.16); color:var(--warn); }
+  .verdict { border-left:4px solid var(--bad); background:var(--panel2); }
+  .verdict h2 { color:var(--bad); }
+  .callout { border-left:4px solid var(--warn); background:var(--panel2); padding:12px 16px;
+             border-radius:8px; margin:12px 0; font-size:13.5px; }
+  .split { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:680px){ .split{ grid-template-columns:1fr; } }
+  .bignum { font-size:30px; font-weight:700; line-height:1; }
+  .bignum.bad { color:var(--bad); } .bignum.good { color:var(--good); }
+  .metcard { border:1px solid var(--border); border-radius:10px; padding:14px 16px; background:var(--panel2); }
+  ul { margin:8px 0; padding-left:20px; } li { margin:4px 0; }
+  .btn { display:inline-block; text-decoration:none; padding:7px 13px; border-radius:8px;
+         font-size:13px; margin:4px 8px 4px 0; background:var(--panel2); border:1px solid var(--border); color:var(--fg); }
+  footer { color:var(--muted); font-size:12px; padding:20px 28px; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <div class="back"><a href="index.html">&larr; back</a></div>
+  <h1>Rolling backtester &mdash; flamegraph bottleneck &amp; GPU offload analysis</h1>
+  <div class="sub">Rolling engine · 300 synthetic symbols · 3&nbsp;yr / 756 sessions · SMA-crossover, stop&nbsp;0.08, top&nbsp;10 · cProfile <code>rolling_pre_vectorization.prof</code> · 2026-07-25</div>
+</header>
+<main>
+
+<section style="border:1px solid #f0b429;border-radius:10px;padding:14px 18px;background:rgba(240,180,41,0.08)">
+  <h2 style="margin-top:0">⚠️ Superseded — describes the engine before PRs #114–#117</h2>
+  <p>The central finding below (<strong>F-04</strong>, whole-panel Pine evaluation) has since
+  shipped. Pine evaluation is no longer the top bottleneck: it fell from <strong>32.9% to
+  12.9%</strong> of the profile, and <code>_precompute_filter_signals</code> now leads at 21.4%.
+  End-to-end the engine went <strong>4.14&nbsp;s → 2.40&nbsp;s per run (≈1.73×)</strong> on this
+  harness, with identical output (709 trades).</p>
+  <p>This page is kept as the record of the analysis that motivated that work. The profile it
+  was written against is preserved as <code>rolling_pre_vectorization.prof</code>; the
+  <code>rolling.prof</code> and flamegraphs now served from this directory were regenerated on
+  2026-07-28 and no longer match the numbers below. Note also that this run was taken under
+  heavy CPU contention (§1), so its absolute seconds are inflated and are not comparable to the
+  re-run.</p>
+  <p><a href="../flamegraph_analysis_2026_07_28.md">Read the 2026-07-28 re-run &rarr;</a></p>
+</section>
+
+<section>
+  <h2>1 · Environment &amp; method</h2>
+  <p>Source of truth is <code>profiling/webview/rolling.prof</code>:
+  <strong>7,171,660 function calls in 26.974&nbsp;s instrumented</strong> (2 repeats) from
+  <code>harness.py --path rolling --tickers 300 --years 3 --top 10 --repeat 2</code> against a
+  stub fetcher &mdash; pure engine CPU, no network/parquet I/O. Two flamegraphs corroborate:
+  <a href="flamegraph_cprofile.svg">cProfile</a> (authoritative, call-count-weighted) and
+  <a href="flamegraph_pyspy.svg">py-spy</a> (6,427 samples; noisier &mdash; 6.8&nbsp;% is
+  <code>importlib</code> start-up, used for shape only).</p>
+  <p class="callout"><strong>Contention caveat.</strong> A concurrent 280-run backtest sweep on
+  this 4-core box inflates every wall-clock number, so all ranking rests on cProfile
+  <strong>call counts and cumulative-time share</strong> (relative, contention-invariant), not
+  absolute seconds. Tools: <code>cProfile</code>/<code>pstats</code> with targeted
+  <code>print_callers</code>/<code>print_callees</code> cuts, both SVGs, and one isolated
+  <code>perf_counter</code> micro-benchmark.</p>
+  <p><strong>Prior-work delta (verified in source):</strong> July-10 <strong>F-01</strong>
+  (share-aware slippage &mdash; <code>fills.py:124</code> now passes <code>shares</code>, ADV/σ
+  gated behind <code>needs_liquidity_inputs</code>) and <strong>F-03</strong> (exposure
+  difference-array &mdash; <code>metrics.py:118</code> is now <code>searchsorted&nbsp;+&nbsp;np.add.at&nbsp;+&nbsp;cumsum</code>)
+  have shipped and are gone from the top-40. <strong>F-04</strong> (whole-panel Pine evaluation)
+  has <em>not</em> shipped &mdash; <code>pine.py</code> still has no cache/context &mdash; and is
+  the #1 bottleneck here.</p>
+</section>
+
+<section>
+  <h2>2 · Where the time goes</h2>
+  <p>Cumulative-time shares of the 26.974&nbsp;s profile (inclusive stacks overlap by
+  construction). Nature: <span class="tag a">object overhead (a)</span>
+  <span class="tag b">real float math (b)</span> <span class="tag mix">mixed</span>.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr>
+      <th>Function (verified file:line)</th><th class="num">ncalls</th>
+      <th class="num">cumtime</th><th class="num">% of 27&nbsp;s</th><th>nature</th>
+    </tr></thead>
+    <tbody>
+      <tr><td>Pine <code>evaluate</code> · <code>pine.py:479</code></td><td class="num">1,028</td><td class="num">8.874 s</td><td class="num">32.9%</td><td><span class="tag a">a</span></td></tr>
+      <tr><td>&nbsp;&nbsp;↳ <code>_precompute_entry_signals</code> · <code>core.py:810</code></td><td class="num">600</td><td class="num">6.831 s</td><td class="num">25.3%</td><td>prep</td></tr>
+      <tr><td>&nbsp;&nbsp;↳ exit-signal eval in <code>_make_slot_state</code></td><td class="num">428</td><td class="num">2.043 s</td><td class="num">7.6%</td><td>memoized/ticker</td></tr>
+      <tr><td><code>Series.__init__</code> · <code>series.py:392</code></td><td class="num">17,096</td><td class="num">4.957 s</td><td class="num">18.4%</td><td><span class="tag a">a</span></td></tr>
+      <tr><td><code>_make_slot_state</code> · <code>core.py:310</code></td><td class="num">1,418</td><td class="num">5.511 s</td><td class="num">20.4%</td><td><span class="tag mix">mix</span></td></tr>
+      <tr><td><code>astype</code> · <code>generic.py:6485</code></td><td class="num">10,632</td><td class="num">4.155 s</td><td class="num">15.4%</td><td><span class="tag a">a</span></td></tr>
+      <tr><td><code>_construct_result</code> · <code>series.py:6222</code></td><td class="num">7,586</td><td class="num">2.951 s</td><td class="num">10.9%</td><td><span class="tag a">a</span> wraps <span class="tag b">b</span></td></tr>
+      <tr><td><code>rolling.mean</code> · <code>window/rolling.py:2216</code></td><td class="num">2,232</td><td class="num">2.233 s</td><td class="num">8.3%</td><td><span class="tag b">b — the SMA</span></td></tr>
+      <tr><td><code>after_exits</code>→<code>DataFrame.__init__</code> <em>(bug §2.3)</em></td><td class="num">1,418</td><td class="num">2.097 s*</td><td class="num">7.8%*</td><td><span class="tag a">a</span> avoidable</td></tr>
+      <tr><td><code>frame()</code>/<code>_build_frame_cache</code> · <code>core.py:151/110</code></td><td class="num">1,418/428</td><td class="num">2.047 s</td><td class="num">7.6%</td><td><span class="tag a">a</span> 1×/ticker</td></tr>
+      <tr><td><code>_build_rolling_candidate_matrices</code> · <code>:101</code></td><td class="num">2</td><td class="num">1.867 s</td><td class="num">6.9%</td><td>whole-panel</td></tr>
+      <tr><td><code>build_equity_curve</code> · <code>portfolio.py:327</code></td><td class="num">2</td><td class="num">1.667 s</td><td class="num">6.2%</td><td>vectorized</td></tr>
+      <tr><td><code>isinstance</code> (builtin)</td><td class="num">1,440,736</td><td class="num">1.582 s</td><td class="num">5.9%</td><td><span class="tag a">a</span> dispatch</td></tr>
+      <tr><td><code>pandas_dtype</code> · <code>common.py:1606</code></td><td class="num">39,904</td><td class="num">1.470 s</td><td class="num">5.5%</td><td><span class="tag a">a</span></td></tr>
+      <tr><td><code>entry_price</code>→<code>_resolve_entry_fill</code> · <code>fills.py:124/37</code></td><td class="num">1,418</td><td class="num">0.756 s</td><td class="num">2.8%</td><td><span class="tag a">a</span> <code>bars.iloc</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:12.5px;color:var(--muted)">* Item's 7.8&nbsp;% is cProfile <em>cumtime</em>,
+  which over-states recoverable wall-clock &mdash; see §2.3.</p>
+
+  <h3>2.1 · Pine evaluation — 32.9 %, largest single cost</h3>
+  <p><code>pine.py:479 evaluate</code> recursively walks the AST (<code>_eval</code> 7,112 calls →
+  <code>_eval_call</code> 2,656). <code>print_callers</code> confirms two call sites:
+  <code>_precompute_entry_signals</code> (600, once/ticker×2 runs) and the exit-signal
+  <em>cache-miss</em> path in <code>_make_slot_state</code> (428, once per <em>unique ticker</em> &mdash;
+  correctly memoized, <strong>not</strong> per trade). So this is <strong>not a per-bar loop</strong> &mdash;
+  each call is a legitimate whole-history vectorized op over ≤1,200 bars. The cost is
+  <strong>per-ticker amplification of pandas' fixed per-call overhead</strong>: the real SMA
+  compute (<code>rolling.mean</code>) is only 2.233&nbsp;s, while <code>_series_from_name</code>'s
+  unconditional <code>.astype(float)</code> (3,256 calls → 1.320&nbsp;s, on already-<code>float64</code>
+  columns) and <code>_construct_result</code> Series-wrapping (2.951&nbsp;s) are pure overhead.
+  py-spy corroborates: <code>evaluate</code> is 15.4&nbsp;% + 7.1&nbsp;% of samples across two call sites.</p>
+
+  <h3>2.2 · Generic pandas construction tax</h3>
+  <p><code>Series.__init__</code> (17,096 calls, 4.957&nbsp;s) plus <code>isinstance</code>
+  (1.44&nbsp;M, 1.582&nbsp;s), <code>pandas_dtype</code> (39,904), <code>__setattr__</code> (57,500),
+  <code>sanitize_array</code> (17,950), <code>__finalize__</code> (32,524), and ~0.8&nbsp;s of
+  <code>warnings</code> context-manager churn. None of it is arithmetic &mdash; it scales with
+  <strong>call count</strong>, not array size.</p>
+
+  <h3>2.3 · Fixable bug — eager default <code>pd.DataFrame()</code></h3>
+  <p><code>rolling_simulation.py:387</code>: <code>bars = self.bars_by_tv.get(ticker, pd.DataFrame())</code>.
+  <code>dict.get</code> evaluates its default <em>unconditionally</em>, so an empty DataFrame is built
+  and discarded on every candidate popped. <code>print_callees</code> confirms 1,418
+  <code>DataFrame.__init__</code> calls, 2.097&nbsp;s cumtime.</p>
+  <p class="callout"><strong>Right-sizing (correction to prior draft).</strong> That 7.8&nbsp;% is
+  cProfile <em>cumtime</em> and inflates high-call-count paths. An isolated benchmark measured a bare
+  <code>pd.DataFrame()</code> at <strong>477&nbsp;µs</strong> (contended), so the true recoverable work is
+  ≈1,418&nbsp;×&nbsp;477&nbsp;µs ≈ <strong>0.68&nbsp;s (~2–3&nbsp;% of a real run)</strong>, not 7.8&nbsp;%. Still a
+  genuine zero-risk free win &mdash; fix: <code>get(ticker)</code> + existing
+  <code>bars is None or bars.empty</code> guard.</p>
+
+  <h3>2.4 · Per-trade slot setup — <code>_make_slot_state</code> (5.511 s)</h3>
+  <p>Genuinely per-trade (1,418 = 709 trades × 2 runs). <code>print_callees</code>:
+  <code>frame()</code> 2.047&nbsp;s (all from 428 cache-miss <code>_build_frame_cache</code> builds),
+  exit-signal <code>evaluate</code> 2.043&nbsp;s, and <code>entry_price</code> 0.756&nbsp;s &mdash; the last
+  still does <code>bars.iloc[entry_idx]["open"]</code> (<code>fills.py:48</code>) instead of the
+  <code>_FrameCache.open_arr</code> array it already holds. The <strong>one per-trade path missed</strong>
+  when F-03's array cache landed on the exit side.</p>
+
+  <h3>2.5 · Per-bar exit scan — already vectorized</h3>
+  <p><code>_check_exit_at_bar</code> (13,680) and <code>_close_slot_at_day</code> (15,098) read
+  <code>frame_cache</code> NumPy arrays with <code>np.searchsorted</code> &mdash; ~0.5&nbsp;s tot for
+  ~29&nbsp;k calls. This is the F-03 rewrite done; no longer worth optimizing.</p>
+
+  <h3>2.7 · The split — object overhead vs. real math</h3>
+  <div class="split">
+    <div class="metcard"><div class="bignum bad">~2.4%</div><p style="margin:6px 0 0">of tottime is
+    clearly-numeric primitives (<code>ufunc.reduce</code>, <code>roll</code>, <code>clip</code>,
+    <code>ndarray.copy</code>, <code>searchsorted</code>) = <strong>0.642&nbsp;s</strong>.</p></div>
+    <div class="metcard"><div class="bignum good">&lt;10%</div><p style="margin:6px 0 0">real
+    vectorizable float work even if the <em>entire</em> <code>rolling.mean</code> path counts as
+    "math". The other <strong>~90&nbsp;%</strong> is Python control-flow + pandas object/dispatch.</p></div>
+  </div>
+  <p style="margin-top:12px">This is a <strong>latency-bound Python-overhead workload, not a
+  throughput-bound array-math one</strong> &mdash; and even the small math bucket is fragmented into
+  ~300 tiny per-ticker calls. This single fact decides the GPU question.</p>
+</section>
+
+<section class="verdict">
+  <h2>3 · GPU verdict — not worth it as architected</h2>
+  <p>Assuming a GPU is available (this VM has none): the profile is <strong>latency-bound Python/pandas
+  object overhead</strong> inside per-ticker / per-trade / per-bar control-flow-heavy loops &mdash;
+  <strong>not</strong> throughput-bound array math (real float work &lt;10&nbsp;%). The one existing
+  batch op (candidate matrix, ~227&nbsp;k cells / single-digit MB) is far below cuDF/RAPIDS
+  break-even. A naive cuDF/cuPy port of the per-ticker Pine loop pays kernel-launch + PCIe overhead
+  thousands of times on ≤1,200-element arrays and would likely be <strong>slower (~0.3–0.7×)</strong>.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Scenario</th><th class="num">expected</th><th>reason</th></tr></thead>
+    <tbody>
+      <tr><td>Naive GPU port of current per-ticker loop</td><td class="num">0.3–0.7×</td><td>launch/dispatch × thousands of tiny calls + PCIe</td></tr>
+      <tr><td>CPU-side whole-panel Pine rewrite (F-04)</td><td class="num">1.5–3×</td><td>collapse ~300× per-ticker call overhead → panel-wide</td></tr>
+      <tr><td>That batched panel on GPU @ 300-sym/3-yr</td><td class="num">~flat</td><td>MB-scale data below cuDF break-even</td></tr>
+      <tr><td>GPU @ 10k+ symbols or batched sweeps/MC</td><td class="num">5–50×</td><td>genuine SIMT parallel width — a different, larger workload</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p><strong>Precondition to revisit:</strong> first do the whole-panel vectorized Pine rewrite
+  (§4.1) &mdash; the same change that makes it fast on CPU &mdash; then consider GPU only for a
+  workload with real parallel width (much larger universes, or batching many independent backtests:
+  grid search, walk-forward, Monte Carlo, the 280-run sweep) into one <code>numba.cuda</code>/cuDF
+  kernel, never for one backtest's per-bar engine loop. Note: vectorbt (used elsewhere) is already
+  the "batch into one array op" answer, but JITs to CPU via Numba/Rust with no CUDA backend.</p>
+</section>
+
+<section>
+  <h2>4 · CPU-side wins that dominate GPU</h2>
+  <h3>4.1 · Batch Pine across the panel — F-04 (biggest)</h3>
+  <p>Rewrite <code>sma</code>/<code>ema</code>/<code>rsi</code>/<code>crossover</code>/<code>crossunder</code>
+  to run on a ~756×300 <code>DataFrame</code> instead of once per ticker in the AST walk. Collapses
+  2,232 <code>rolling.mean</code> + 3,256 <code>_series_from_name</code> + 7,586 arithmetic dispatches
+  into a handful of panel-wide calls. Pine is 32.9&nbsp;% of cumtime and mostly overhead, not the
+  <code>rolling.mean</code> math. Normalizing to float once also removes the redundant
+  <code>.astype(float)</code> re-casts. July-10's AST-node memo PoC only got 2–10&nbsp;% because it
+  didn't cut per-ticker call <em>shape</em>; this cuts call count by the ticker factor. Plausibly
+  <strong>1.5–3× end-to-end</strong>.</p>
+  <h3>4.2 · Route <code>entry_price</code> through the frame cache</h3>
+  <p><code>fills.py:37–64</code> still does <code>bars.iloc[entry_idx]["open"]</code> though a
+  <code>_FrameCache</code> with <code>open_arr</code>/<code>close_arr</code>/<code>low_arr</code> is
+  already in scope. <strong>~0.756&nbsp;s / 1,418 calls</strong>; mechanical, low-risk.</p>
+  <h3>4.3 · Fix the eager <code>pd.DataFrame()</code> default (§2.3)</h3>
+  <p><code>rolling_simulation.py:387</code> → <code>get(ticker)</code>. <strong>~0.7&nbsp;s recoverable</strong>,
+  one line, zero behavior change.</p>
+  <h3>4.4 · F-01 / F-03 already landed — no action</h3>
+  <p>Share-aware slippage and the exposure difference-array are verified fixed and absent from the
+  top-40. The diffuse <code>isinstance</code>/<code>pandas_dtype</code>/construction tax (§2.2) shrinks
+  proportionally once 4.1 cuts call counts &mdash; re-profile after.</p>
+</section>
+
+<section>
+  <h2>5 · Bottom line</h2>
+  <ul>
+    <li>Profile is dominated by <strong>Python/pandas object &amp; dispatch overhead</strong>; real
+    vectorizable float math is only <strong>~2–10 %</strong>. Latency-bound, not throughput-bound.</li>
+    <li><strong>Pine evaluation is #1 at 32.9 % cumtime</strong> &mdash; overwhelmingly per-ticker call
+    overhead, not the SMA it computes.</li>
+    <li><strong>GPU offload is not worth it for this engine as architected</strong> &mdash; sequential
+    per-bar/per-trade state machines or per-ticker calls on arrays too small to clear PCIe/launch cost;
+    a naive port would likely be <em>slower</em>. The precondition for GPU is the whole-panel rewrite,
+    which is itself the CPU win.</li>
+    <li><strong>Highest-ROI CPU fix: batch Pine across the panel (F-04, §4.1), ~1.5–3×.</strong> Then two
+    cheap wins: frame-cache the entry fill (~0.76 s) and drop the eager <code>pd.DataFrame()</code> (~0.7 s).</li>
+    <li><strong>Corrections to prior draft:</strong> its "7.8 % of runtime" for the DataFrame bug is
+    cProfile cumtime and over-states recoverable wall-clock (real ≈0.7 s / ~2–3 %); it mislabeled
+    <code>_construct_result</code> cumtime as 2.485 s (own cumtime is <strong>2.951 s</strong>).
+    F-01/F-03-shipped and F-04-not-shipped are confirmed correct.</li>
+  </ul>
+</section>
+
+<div style="margin:8px 0 30px">
+  <a class="btn" href="flamegraph_cprofile.svg">cProfile flamegraph</a>
+  <a class="btn" href="flamegraph_pyspy.svg">py-spy flamegraph</a>
+  <a class="btn" href="pstats_cumulative.txt">pstats · cumulative</a>
+  <a class="btn" href="pstats_tottime.txt">pstats · tottime</a>
+  <a class="btn" href="index.html">&larr; back to index</a>
+</div>
+</main>
+<footer>Generated 2026-07-25 · all figures verified against <code>rolling.prof</code> via pstats · wall-clock inflated by concurrent 280-run sweep (rankings are contention-invariant)</footer>
+</body>
+</html>
