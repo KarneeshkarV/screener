@@ -336,6 +336,7 @@ class StrategyProfile(BaseModel):
     entry_expr: str | None = None
     exit_expr: str | None = None
     regime_filter: tuple[str, ...] = ()
+    breadth_filter: tuple[str, ...] = ()
     earnings_blackout_days: int | None = None
     sector_neutral: bool = False
     min_price: float | None = None
@@ -536,11 +537,13 @@ def discover_plugins() -> None:
         bb_pattern,
         breakout,
         donchian_breakout,
+        dual_momentum,
         ema150_200_revenue,
         ema_stack_lowvol,
         ema_trend,
         ha_momentum,
         heikin_ashi,
+        long_only_trend,
         low_volatility,
         ma_cross,
         ma_cross_regime,
@@ -552,6 +555,7 @@ def discover_plugins() -> None:
         minervini_filtered,
         mom_lowvol_combo,
         momentum_12_1,
+        momentum_riskmanaged,
         parabolic_sar,
         rs_breakout,
         rs_momentum_regime,
@@ -562,6 +566,7 @@ def discover_plugins() -> None:
         supertrend,
         supertrend_flip,
         supertrend_rsi,
+        time_series_momentum,
         vivek_equity_tool,
     )
 

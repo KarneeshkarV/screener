@@ -86,6 +86,7 @@ class BacktestRequest:
     sizing_atr_multiple: float
     sizing_vol_window: int
     intraday_only: bool
+    compounding: bool = False
     start_arg: datetime | None = None
     end_arg: datetime | None = None
     years: int = 1
@@ -99,6 +100,7 @@ class BacktestRequest:
     point_in_time: bool = False
     spread_proxy: bool = False
     regime_filter_args: tuple[str, ...] = ()
+    breadth_filter_args: tuple[str, ...] = ()
     sector_neutral: bool = False
     rank_exit: str | None = None
     rank_universe_size: int = 50
@@ -205,6 +207,7 @@ def _build_config(
                 else int(avg_dollar_volume_window)
             ),
             sizing_rule=request.sizing_rule,
+            compounding=bool(request.compounding),
             sizing_risk_pct=float(request.sizing_risk_pct),
             sizing_position_pct=float(request.sizing_position_pct),
             sizing_atr_window=int(request.sizing_atr_window),
@@ -245,6 +248,7 @@ def _effective_gates(request: BacktestRequest) -> StrategyProfile:
         adv_window=request.adv_window,
         adv_window_was_explicit=request.adv_window_was_explicit,
         regime_filter_args=request.regime_filter_args,
+        breadth_filter_args=request.breadth_filter_args,
         earnings_blackout_days=request.earnings_blackout_days,
         sector_neutral=request.sector_neutral,
         min_score=request.min_score,
@@ -524,6 +528,7 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         spread_proxy=bool(request.spread_proxy),
         avg_dollar_volume_window=gates.avg_dollar_volume_window,
         regime_filter=gates.regime_filter,
+        breadth_filter=gates.breadth_filter,
         earnings_blackout_days=gates.earnings_blackout_days,
         fundamentals_provider=provider,
         fundamental_fields=fields,

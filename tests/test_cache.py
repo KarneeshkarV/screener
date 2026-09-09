@@ -71,3 +71,27 @@ def test_cache_area_registry_configures_paths(tmp_path):
         assert cache.panel_path("fii_dii") == panels / "fii_dii.parquet"
     finally:
         cache.reset_cache_area_paths()
+
+
+def test_concurrent_json_writers_do_not_clobber_each_others_temp(tmp_path) -> None:
+    """Parallel study workers cache the same sector key at the same moment.
+
+    With one shared ``<name>.tmp`` the first rename consumed the file and the
+    second writer died on FileNotFoundError, which took six sector-neutral
+    backtests down mid-sweep. Every writer must now finish, and the file must
+    hold one of the written values rather than a partial merge of them.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from screener.cache import read_json, write_json
+
+    path = tmp_path / "SECTOR.json"
+    values = [{"sector": f"s{i}"} for i in range(32)]
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        errors = [
+            f.exception() for f in [pool.submit(write_json, path, v) for v in values]
+        ]
+    assert errors == [None] * len(values)
+    assert read_json(path) in values
+    # No temp files survive a completed write.
+    assert list(tmp_path.glob(".*tmp")) == []

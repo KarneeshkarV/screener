@@ -27,6 +27,7 @@ from screener.backtester.rolling_simulation import (
 )
 from screener.backtester.workflow import BacktestRequest, resolve_backtest_run
 from screener.markets import market_option
+from screener.regime import BREADTH_LABELS
 from screener.universes import available_universes
 
 __all__ = ["backtest_rolling", "rolling_run_options"]
@@ -215,6 +216,18 @@ _RUN_OPTION_DECORATORS: tuple[OptionDecorator, ...] = (
         "interval",
     ),
     backtest_options("rolling", "regime-filter", "sector-neutral"),
+    click.option(
+        "--breadth-regime",
+        "breadth_filter_args",
+        multiple=True,
+        type=click.Choice(list(BREADTH_LABELS)),
+        help=(
+            "Only allow entries on days whose universe BREADTH regime matches "
+            "(repeatable): the share of the universe above its 20/200-day EMA, "
+            "measured on the run's own bars. Days with too little coverage are "
+            "suppressed. Combines with --regime-filter via AND."
+        ),
+    ),
     click.option(
         "--rank-exit",
         "rank_exit",

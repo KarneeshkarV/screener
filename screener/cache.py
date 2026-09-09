@@ -179,11 +179,34 @@ def read_json(path: Path, default: T | None = None) -> Any | T | None:
         return default
 
 
-def write_json(path: Path, value: Any) -> None:
+def _atomic_write(path: Path, emit: Callable[[Path], Any]) -> None:
+    """Write via a per-writer temp file, then rename it into place.
+
+    A fixed ``<name>.tmp`` is not safe when several processes cache the same
+    key: both write the one temp path, the first rename consumes it, and the
+    second raises FileNotFoundError. Parallel study workers hit exactly that on
+    the shared sector cache. ``mkstemp`` gives each writer its own file, so the
+    losers of the race are harmless duplicate writes rather than crashes.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(value, sort_keys=True, default=str))
-    tmp.replace(path)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        emit(tmp)
+        os.replace(tmp, path)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def write_json(path: Path, value: Any) -> None:
+    _atomic_write(
+        path,
+        lambda tmp: tmp.write_text(json.dumps(value, sort_keys=True, default=str)),
+    )
 
 
 def read_frame(path: Path) -> pd.DataFrame | None:
@@ -194,10 +217,7 @@ def read_frame(path: Path) -> pd.DataFrame | None:
 
 
 def write_frame(path: Path, frame: pd.DataFrame) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    frame.to_parquet(tmp)
-    tmp.replace(path)
+    _atomic_write(path, frame.to_parquet)
 
 
 def panel_path(name: str) -> Path:

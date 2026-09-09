@@ -38,6 +38,7 @@ from screener.backtester.rolling_candidates import (
     _candidate_rows_for_day,
     _RollingCandidateMatrices,
 )
+from screener.backtester.breadth import breadth_regime_series
 from screener.regime import classify_regimes
 from screener.strategies.spec import StrategyProfile
 
@@ -77,6 +78,10 @@ class SignalPanelInputs:
     # Percentile floor on ``setup_score``, 0-100. Defaulted because it is the
     # newest gate and every existing caller predates it; ``None`` disables it.
     min_score: float | None = None
+    # Universe-breadth regimes entries are allowed on. Defaulted for the same
+    # reason as ``min_score``: it is newer than every existing caller, and an
+    # empty tuple is the "no breadth gate" the screen path wants.
+    breadth_filter: tuple[str, ...] = ()
 
     @classmethod
     def from_config(cls, cfg: BacktestConfig) -> SignalPanelInputs:
@@ -85,6 +90,7 @@ class SignalPanelInputs:
             entry_expr=cfg.entry_expr,
             exit_expr=cfg.exit_expr,
             regime_filter=cfg.regime_filter,
+            breadth_filter=cfg.breadth_filter,
             earnings_blackout_days=cfg.earnings_blackout_days,
             sector_neutral=cfg.sector_neutral,
             min_price=cfg.min_price,
@@ -275,6 +281,22 @@ def build_signal_panel(
         regime_allowed = classify_regimes(panel.benchmark).isin(
             set(inputs.regime_filter)
         )
+    if inputs.breadth_filter and panel.master_dates:
+        # Breadth is measured on the panel's own bars, so it shares the run's
+        # warmup history and needs no extra fetch. Combined with AND: when both
+        # gates are set a day must clear the benchmark trend *and* breadth.
+        breadth_allowed = breadth_regime_series(
+            bars_by_tv, pd.DatetimeIndex(panel.master_dates)
+        ).isin(set(inputs.breadth_filter))
+        if regime_allowed is None:
+            regime_allowed = breadth_allowed
+        else:
+            regime_allowed = (
+                regime_allowed.reindex(breadth_allowed.index, method="ffill")
+                .fillna(False)
+                .astype(bool)
+                & breadth_allowed
+            )
 
     if not panel.master_dates:
         return SignalPanel(exit_signals={}, candidate_matrices=None)

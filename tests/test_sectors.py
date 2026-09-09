@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from types import SimpleNamespace
 
@@ -200,3 +201,115 @@ def test_sector_neutralize_single_cell_frame():
     # A single name in its (day, sector) group neutralizes to 0.
     assert out.shape == scores.shape
     assert float(out.iloc[0, 0]) == 0.0
+
+
+def test_a_stale_unknown_is_refetched_but_a_real_sector_is_not(tmp_path, monkeypatch):
+    """A provider outage must not pin a universe to one bucket for a month.
+
+    Every failure path - rate limit, network error, missing field - lands on
+    UNKNOWN, so caching it for the full 30 days turns sector-neutral ranking
+    into a silent no-op long after the provider recovers. Real sectors keep the
+    long TTL; UNKNOWN expires within a day.
+    """
+    import time
+
+    monkeypatch.setattr(sectors, "CACHE_DIR", tmp_path)
+    calls: list[str] = []
+
+    def fetcher(symbol: str) -> dict[str, str]:
+        calls.append(symbol)
+        return {"sector": "Technology"}
+
+    # Both cached two days ago: past the negative TTL, inside the positive one.
+    two_days = time.time() - 2 * 24 * 60 * 60
+    for symbol, sector in (("GOOD", "Technology"), ("RATELIMITED", "UNKNOWN")):
+        path = sectors._cache_path(symbol)
+        sectors.write_json(path, {"symbol": symbol, "sector": sector})
+        os.utime(path, (two_days, two_days))
+
+    assert sectors._load_cached_sector("GOOD") == "Technology"
+    assert sectors._load_cached_sector("RATELIMITED") is None
+
+    resolved = sectors.sector_by_ticker(["RATELIMITED"], "us", info_fetcher=fetcher)
+    assert resolved == {"RATELIMITED": "Technology"}
+    assert calls == ["RATELIMITED"]
+
+
+def test_a_fresh_unknown_is_not_refetched(tmp_path, monkeypatch):
+    """Within the negative TTL a sweep must not re-request the same dud symbol."""
+    monkeypatch.setattr(sectors, "CACHE_DIR", tmp_path)
+    sectors.write_json(
+        sectors._cache_path("NOSECTOR"), {"symbol": "NOSECTOR", "sector": "UNKNOWN"}
+    )
+    assert sectors._load_cached_sector("NOSECTOR") == "UNKNOWN"
+
+
+def test_fmp_batches_and_reports_only_what_it_answered(monkeypatch):
+    """An absent symbol is unresolved, not UNKNOWN - the caller must retry it."""
+    from screener import fmp
+
+    seen: list[str] = []
+
+    class FakeClient:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        def get(self, path: str):
+            seen.append(path)
+            symbols = path.removeprefix("profile/").split(",")
+            return [
+                {"symbol": s, "sector": "Technology"} for s in symbols if s != "GHOST"
+            ]
+
+    monkeypatch.setattr(fmp, "resolve_api_key", lambda: "key")
+    monkeypatch.setattr(fmp, "FmpClient", FakeClient)
+    monkeypatch.setattr(sectors, "FMP_PROFILE_BATCH", 2)
+
+    out = sectors.fetch_fmp_sectors(["AAPL", "MSFT", "GHOST", "AAPL"])
+    assert out == {"AAPL": "Technology", "MSFT": "Technology"}
+    # Deduped to three symbols, batched two at a time.
+    assert seen == ["profile/AAPL,MSFT", "profile/GHOST"]
+
+
+def test_fmp_is_skipped_without_a_key(monkeypatch):
+    from screener import fmp
+
+    monkeypatch.setattr(fmp, "resolve_api_key", lambda: None)
+    assert sectors.fetch_fmp_sectors(["AAPL"]) == {}
+
+
+def test_a_failed_fmp_batch_falls_through_to_the_per_symbol_source(monkeypatch):
+    from screener import fmp
+
+    class Boom:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        def get(self, path: str):
+            raise RuntimeError("502")
+
+    monkeypatch.setattr(fmp, "resolve_api_key", lambda: "key")
+    monkeypatch.setattr(fmp, "FmpClient", Boom)
+    assert sectors.fetch_fmp_sectors(["AAPL"]) == {}
+
+
+def test_sector_by_ticker_prefers_fmp_over_the_per_symbol_fetcher(
+    tmp_path, monkeypatch
+):
+    """FMP answers in one batch; yfinance only sees what FMP could not."""
+    monkeypatch.setattr(sectors, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(
+        sectors, "fetch_fmp_sectors", lambda syms: {"AAPL": "Technology"}
+    )
+    fallback_calls: list[str] = []
+
+    def fallback(symbol: str) -> dict[str, str]:
+        fallback_calls.append(symbol)
+        return {"sector": "Energy"}
+
+    monkeypatch.setattr(sectors, "_default_info_fetcher", fallback)
+    out = sector_by_ticker(["AAPL", "XOM"], "us")
+    assert out == {"AAPL": "Technology", "XOM": "Energy"}
+    assert fallback_calls == ["XOM"]
+    # The FMP answer is cached like any other, so the next call skips both.
+    assert sectors._load_cached_sector("AAPL") == "Technology"

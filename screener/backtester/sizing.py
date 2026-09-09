@@ -210,11 +210,15 @@ def entry_budget_for(
             f"{', '.join(available_sizing_rules())}"
         )
     compounds_slots = rule == "reinvested_equal_slot"
-    sizing_equity = (
-        float(current_equity)
-        if compounds_slots and current_equity is not None
-        else portfolio.initial_capital
-    )
+    if compounds_slots and current_equity is not None:
+        sizing_equity = float(current_equity)
+    elif portfolio.compounding:
+        # Under compounding the risk budget has to track the equity the slot
+        # ceiling now tracks, or a rule like inverse_vol keeps sizing off the
+        # day-one account and clamps to the (grown) slot on every entry.
+        sizing_equity = portfolio.realized_equity()
+    else:
+        sizing_equity = portfolio.initial_capital
     ctx = SizingContext(
         equity=sizing_equity,
         base_budget=base,
