@@ -16,7 +16,10 @@ from screener.backtester.cli_common import resolve_min_filters
 from screener.backtester.data import PriceFetcher
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.optimization.grid import grid_search
-from screener.backtester.optimization.monte_carlo import simulate_monte_carlo
+from screener.backtester.optimization.monte_carlo import (
+    simulate_monte_carlo,
+    validate_equity_monte_carlo_flags,
+)
 from screener.backtester.optimization.reporting import (
     GRID_IN_SAMPLE_DISCLAIMER,
     print_grid_table,
@@ -24,7 +27,11 @@ from screener.backtester.optimization.reporting import (
     write_html_report,
     write_json_report,
 )
-from screener.backtester.optimization.walk_forward import walk_forward_optimize
+from screener.backtester.optimization.walk_forward import (
+    generate_walk_forward_windows,
+    require_daily_walk_forward_scope,
+    walk_forward_optimize,
+)
 from screener.ledger import ExitReason
 from screener.markets import get_market, get_price_fetcher, market_option
 from screener.universes import available_universes
@@ -327,7 +334,10 @@ def optimize_grid(**kwargs) -> None:
 @click.option("--test-days", type=int, default=63, show_default=True)
 @click.option("--step-days", type=int, default=None)
 def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
-    """Run rolling train/test walk-forward optimization."""
+    """Run rolling train/test walk-forward optimization.
+
+    Daily interval only. Train/test/step lengths are calendar days.
+    """
     start_date, end_date = _resolve_dates(
         kwargs.pop("start_arg"), kwargs.pop("end_arg"), kwargs.pop("years")
     )
@@ -360,6 +370,17 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
     )
+    try:
+        require_daily_walk_forward_scope(cfg, parameter_grid)
+        generate_walk_forward_windows(
+            start_date,
+            end_date,
+            train_days=train_days,
+            test_days=test_days,
+            step_days=step_days,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     summary = walk_forward_optimize(
         cfg,
         _fetcher(),
@@ -533,6 +554,7 @@ def _resolve_universe_tickers(
 @click.option("--step-days", type=int, default=63, show_default=True)
 @click.option("--mc-iterations", type=int, default=1000, show_default=True)
 @click.option("--mc-seed", type=int, default=42, show_default=True)
+@click.option("--mc-block", type=int, default=20, show_default=True)
 @click.option("--ruin-threshold", type=float, default=0.5, show_default=True)
 @click.option(
     "--out",
@@ -549,11 +571,18 @@ def research_report(
     step_days: int,
     mc_iterations: int,
     mc_seed: int,
+    mc_block: int,
     ruin_threshold: float,
     out_path: Path,
     **kwargs: Any,
 ) -> None:
     """One-command research report: grid → walk-forward → Monte Carlo.
+
+    Full-period grid is descriptive only. Walk-forward selects parameters on
+    each training fold from the original complete grid. Monte Carlo uses the
+    equity block bootstrap on the combined OOS equity path. Inadequate OOS
+    evidence yields INSUFFICIENT DATA rather than PASS. Daily interval only;
+    evidence thresholds are data-integrity checks, not alpha proof.
 
     Reuses a single price fetcher across all stages. Writes ``<out>.json`` and
     ``<out>.html`` plus a concise stdout summary.
@@ -619,6 +648,26 @@ def research_report(
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
     )
+    # Validate window/interval/MC flags before costly grid work. Do not wrap the
+    # full report run: runtime bugs must surface as themselves.
+    try:
+        require_daily_walk_forward_scope(cfg, parameter_grid)
+        generate_walk_forward_windows(
+            start_date,
+            end_date,
+            train_days=train_days,
+            test_days=test_days,
+            step_days=step_days,
+        )
+        validate_equity_monte_carlo_flags(
+            iterations=int(mc_iterations),
+            block=int(mc_block),
+            seed=int(mc_seed),
+            keep_paths=0,
+            ruin_threshold=float(ruin_threshold),
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     run_research_report(
         cfg,
         _fetcher(),
@@ -634,6 +683,7 @@ def research_report(
         cache_path=kwargs["cache_path"],
         mc_iterations=mc_iterations,
         mc_seed=mc_seed,
+        mc_block=mc_block,
         ruin_threshold=ruin_threshold,
         top_n=kwargs["top_n"],
         out_path=out_path,

@@ -87,7 +87,8 @@ def _scipy_psr(daily: pd.Series, sr_benchmark_annual: float = 0.0) -> float:
         sr_per = float(daily.mean()) / std0
         skew = float(scipy.stats.skew(daily.values, bias=False))
         kurt_excess = float(scipy.stats.kurtosis(daily.values, fisher=True, bias=False))
-    denom_sq = 1.0 - skew * sr_per + (kurt_excess / 4.0) * sr_per**2
+    # Bailey / López de Prado: (γ₄ - 1)/4 with γ₄ = excess + 3 => (k + 2)/4
+    denom_sq = 1.0 - skew * sr_per + ((kurt_excess + 2.0) / 4.0) * sr_per**2
     denom = math.sqrt(max(denom_sq, 1e-12))
     z = (sr_per - sr_bench_per) * math.sqrt(max(T - 1, 1)) / denom
     return float(scipy.stats.norm.cdf(z))
@@ -96,7 +97,7 @@ def _scipy_psr(daily: pd.Series, sr_benchmark_annual: float = 0.0) -> float:
 def _scipy_dsr(
     daily: pd.Series,
     n_trials: int = 1,
-    sr_trial_std_annual: float = 0.5,
+    sr_trial_std_annual: float | None = 0.5,
 ) -> float:
     """Independent DSR witness built from scipy primitives.
 
@@ -105,6 +106,8 @@ def _scipy_dsr(
     """
     if n_trials <= 1:
         return _scipy_psr(daily, 0.0)
+    if sr_trial_std_annual is None:
+        return float("nan")
     sr0_annual = sr_trial_std_annual * (
         (1.0 - _EULER_MASCHERONI) * scipy.stats.norm.ppf(1.0 - 1.0 / n_trials)
         + _EULER_MASCHERONI * scipy.stats.norm.ppf(1.0 - 1.0 / (n_trials * math.e))
@@ -278,8 +281,8 @@ def test_dsr_matches_scipy_witness_multiple_trials(
     long_returns: pd.Series, n_trials: int
 ):
     """DSR with multiple trials matches the scipy witness to 1e-9."""
-    impl = _dsr(long_returns, n_trials=n_trials)
-    witness = _scipy_dsr(long_returns, n_trials=n_trials)
+    impl = _dsr(long_returns, n_trials=n_trials, sr_trial_std_annual=0.5)
+    witness = _scipy_dsr(long_returns, n_trials=n_trials, sr_trial_std_annual=0.5)
     assert abs(impl - witness) < 1e-9, (
         f"DSR(n={n_trials}): impl {impl} != witness {witness}"
     )
@@ -289,22 +292,27 @@ def test_dsr_decreases_as_n_trials_increases(long_returns: pd.Series):
     """More trials → higher expected-max benchmark → DSR is monotone non-increasing."""
     prev = _dsr(long_returns, n_trials=1)
     for n in [2, 5, 10, 20, 50]:
-        curr = _dsr(long_returns, n_trials=n)
+        curr = _dsr(long_returns, n_trials=n, sr_trial_std_annual=0.5)
         assert curr <= prev + 1e-12, (
             f"DSR not monotone non-increasing: n={n}, prev={prev}, curr={curr}"
         )
         prev = curr
 
 
-def test_dsr_n_trials_0_equals_psr(long_returns: pd.Series):
-    """n_trials=0 satisfies n_trials <= 1 → same code path as n_trials=1."""
-    dsr_0 = _dsr(long_returns, n_trials=0)
-    psr_0 = _psr(long_returns, 0.0)
-    assert dsr_0 == psr_0  # exact equality — same function call
+def test_dsr_n_trials_0_rejected(long_returns: pd.Series):
+    """n_trials must be int >= 1; zero is not accepted."""
+    with pytest.raises(ValueError, match="n_trials must be an int >= 1"):
+        _dsr(long_returns, n_trials=0)
+
+
+def test_dsr_without_dispersion_returns_nan_for_multi_trial(long_returns: pd.Series):
+    """n_trials>1 with no dispersion must return nan, not assume 0.5."""
+    value = _dsr(long_returns, n_trials=10, sr_trial_std_annual=None)
+    assert value != value
 
 
 def test_dsr_sr0_annual_formula_uses_euler_mascheroni(long_returns: pd.Series):
-    """The sr0_annual benchmark is computed via the Euler–Mascheroni constant.
+    """The sr0_annual benchmark is computed via the Euler-Mascheroni constant.
 
     Verify that the sr0_annual computed inside _dsr (n=10) equals the value
     produced by the scipy witness.  We do this indirectly: the witness gives
@@ -317,9 +325,9 @@ def test_dsr_sr0_annual_formula_uses_euler_mascheroni(long_returns: pd.Series):
         (1.0 - _EULER_MASCHERONI) * scipy.stats.norm.ppf(1.0 - 1.0 / n_trials)
         + _EULER_MASCHERONI * scipy.stats.norm.ppf(1.0 - 1.0 / (n_trials * math.e))
     )
-    # PSR with this benchmark should equal _dsr(daily, n_trials=10)
+    # PSR with this benchmark should equal _dsr(daily, n_trials=10, std=0.5)
     psr_bench = _psr(long_returns, sr_benchmark_annual=sr0)
-    dsr_impl = _dsr(long_returns, n_trials=n_trials)
+    dsr_impl = _dsr(long_returns, n_trials=n_trials, sr_trial_std_annual=sr_std)
     assert abs(dsr_impl - psr_bench) < 1e-12, (
         f"DSR(n=10) {dsr_impl} != PSR(sr0={sr0:.6f}) {psr_bench}"
     )
