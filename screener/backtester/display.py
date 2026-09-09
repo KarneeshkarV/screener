@@ -15,12 +15,25 @@ from screener.backtester.metrics import (
     result_view,
     sizing_comparison_rows,
 )
-from screener.backtester.models import BacktestResult
+from screener.backtester.models import BacktestConfig, BacktestResult
+from screener.backtester.sizing import sizing_allows_slot_growth
 
 console = Console()
 
 
 _ATTRIBUTION_SIDE = 5
+
+
+def _compounding_label(cfg: BacktestConfig) -> str:
+    """How this run's slot ceiling moves, as one word for the run header.
+
+    ``reinvested_equal_slot`` sizes every entry from marked equity and never
+    reads ``Portfolio.compounding``, so printing on/off for it would label a
+    mode the run does not honour. Say so instead.
+    """
+    if sizing_allows_slot_growth(getattr(cfg, "sizing_rule", "equal_slot")):
+        return "n/a"
+    return "on" if getattr(cfg, "compounding", True) else "off"
 
 
 def _performance_table(
@@ -30,7 +43,7 @@ def _performance_table(
     """Draw the result metrics, one value column per sizing rule compared.
 
     Without a comparison this is the single ``Value`` column. With one, the
-    same metric rows carry a fixed-slot and a reinvested-slot column, so the
+    same metric rows carry an equal-slot and a reinvested-slot column, so the
     two sizing rules are read off the one table rather than a narrower table
     beside it.
     """
@@ -116,10 +129,12 @@ def _print_backtest_agent(
     """Render the same shared metric rows in bounded, plain agent output."""
     cfg = result.config
     sizing_rule = getattr(cfg, "sizing_rule", "equal_slot")
+    compounding = _compounding_label(cfg)
     out = agentio.get_console()
     out.print(
         f"backtest {cfg.market} as-of={cfg.as_of} hold={cfg.hold} "
-        f"top={cfg.top} sizing={sizing_rule} benchmark={cfg.benchmark}"
+        f"top={cfg.top} sizing={sizing_rule} compounding={compounding} "
+        f"benchmark={cfg.benchmark}"
     )
     for warning in result.warnings:
         out.print(f"warning: {warning}")
@@ -159,11 +174,13 @@ def print_backtest(
 
     cfg = result.config
     sizing_rule = getattr(cfg, "sizing_rule", "equal_slot")
+    compounding = _compounding_label(cfg)
     console.print(
         Panel.fit(
             f"[bold]Backtest[/bold] [cyan]{cfg.market.upper()}[/cyan]  "
             f"as-of [yellow]{cfg.as_of}[/yellow]  hold=[green]{cfg.hold}[/green]  "
             f"top=[green]{cfg.top}[/green]  sizing=[green]{sizing_rule}[/green]  "
+            f"compounding=[green]{compounding}[/green]  "
             f"benchmark=[magenta]{cfg.benchmark}[/magenta]"
         )
     )

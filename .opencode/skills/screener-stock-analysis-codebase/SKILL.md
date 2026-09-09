@@ -1,5 +1,4 @@
 ---
-name: screener-stock-analysis-codebase
 description: Use when analyzing stocks, portfolios, screens, backtests, or strategy ideas with this workspace. Covers how to use the Python screener CLI without inventing data or bypassing existing providers.
 ---
 
@@ -65,7 +64,7 @@ Use these modules instead of recreating logic:
   The screen consumes it through `screener/screener/scoring/bar_scores.py`: `setup_score` is the within-scan 0-100 percentile of the raw recipe value, and `aux_column` (e.g. `mom_12_1`) carries the raw number. The backtester consumes the same recipe through `screener/screener/strategies/factor_adapter.py` and writes that raw number as `rank_score`. Rank order matches; the units of `setup_score` do not, on purpose, so `execution-trade` `min_score` thresholds stay on the 0-100 scale.
   On this path NaN means ineligible, not "rank last": a name with too little history, or one whose raw value fails the recipe's `eligible_above` floor (`mom_12_1 > 0` for 12-1 momentum), is dropped from the screen result instead of being filled with 0 and sorted to the bottom, so a bar-derived screen can return fewer rows than `-n` asked for.
 - Backtests: `screener/screener/backtester/historical.py`, `rolling.py`, `core.py`, `models.py`, `metrics.py`.
-- Position sizing: `screener/screener/backtester/sizing.py` (`@sizer` registry: `equal_slot`, `fixed_fraction`, `fixed_risk`, `atr_risk`, `inverse_vol`); exposed as `--sizing`/`--sizing-*` on both backtest commands. Default `equal_slot` is bit-identical to the legacy engine; other rules clamp to the slot budget and read only up to the signal bar.
+- Position sizing: `screener/screener/backtester/sizing.py` (`@sizer` registry: `equal_slot`, `fixed_fraction`, `fixed_risk`, `atr_risk`, `inverse_vol`); exposed as `--sizing`/`--sizing-*` on both backtest commands. Default `equal_slot` compounds: each entry spends `realized_equity / top`. `--no-compounding` freezes the slot at `initial_capital / top` (legacy) and also re-bases the risk rules onto `initial_capital`; it has no effect under `reinvested_equal_slot`, which always sizes from marked equity. Other rules clamp to the slot budget and read only up to the signal bar. See `docs/adr/0004-compound-the-equal-slot-budget.md`.
 - Price data: `screener/screener/backtester/data.py`; use `tv_to_yf()` for symbol mapping and injected `PriceFetcher` for tests. Interval-aware: pass `interval=` to the fetcher constructors, never mix intervals in one cache key.
 - Pine-like expressions: `screener/screener/backtester/pine.py`.
 - Named strategies: `screener/screener/strategies/plugins/` with `@strategy(...)`; expressions flow through `screener/strategies/expressions.py`.
@@ -104,7 +103,7 @@ Use these modules instead of recreating logic:
    - Use `backtest-historical` for point-in-time candidate checks.
    - Use `vbt-sweep` for fast triage only; validate promising ideas with rolling backtests.
    - Use `earnings-backtest` / `earnings-pead` for earnings-event claims. `earnings-pead --exit-mode fixed` (default) holds `--hold-days` sessions; `--exit-mode dynamic` holds a beat (`--min-surprise`) until a later report misses, tagging trades with `exit_reason`.
-   - For sizing-sensitive claims, state the `--sizing` rule (default `equal_slot`); risk-based rules (`fixed_risk`, `atr_risk`, `inverse_vol`) change per-trade exposure and drawdown, not just returns.
+   - For sizing-sensitive claims, state the `--sizing` rule (default `equal_slot`, compounding on). `--no-compounding` freezes slots at day-one capital and understates long-window risk. Risk-based rules (`fixed_risk`, `atr_risk`, `inverse_vol`) change per-trade exposure and drawdown, not just returns.
    - Include slippage, commission, liquidity filters, benchmark, and clear start/end dates.
 6. Convert evidence into action levels only after the above:
    - Close-based stop.

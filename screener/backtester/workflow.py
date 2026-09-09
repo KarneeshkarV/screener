@@ -80,6 +80,7 @@ class BacktestRequest:
     report_path: Path | None
     open_report: bool
     sizing_rule: str
+    compounding: bool
     sizing_risk_pct: float
     sizing_position_pct: float
     sizing_atr_window: int
@@ -205,6 +206,7 @@ def _build_config(
                 else int(avg_dollar_volume_window)
             ),
             sizing_rule=request.sizing_rule,
+            compounding=bool(request.compounding),
             sizing_risk_pct=float(request.sizing_risk_pct),
             sizing_position_pct=float(request.sizing_position_pct),
             sizing_atr_window=int(request.sizing_atr_window),

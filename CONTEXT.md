@@ -14,8 +14,14 @@ One execution of a simulation over one config.
 
 **slot**
 A capital compartment, not a position.
-`slot_capital = initial_capital / slot_count`.
-Slot state is keyed by an integer `slot_id`, and slots are not compounded.
+Under compounding (the default) the per-slot ceiling is `realized_equity / slot_count`.
+`--no-compounding` freezes it at `initial_capital / slot_count` for the life of the run, and realized gains above that stay as idle cash.
+Slot state is keyed by an integer `slot_id`.
+
+**realized equity**
+Cash plus the *cost basis* of open positions, which equals `initial_capital` plus realized P&L net of fees.
+It needs no current prices, so it can be read inside the fill path where marks are not available for every open ticker.
+Distinct from **marked equity** (`Portfolio.marked_equity`), which values open positions at their current close and is what the equity curve and `reinvested_equal_slot` use.
 
 **candidate**
 A ticker whose entry signal fired and which passed the entry filters on a given day.
@@ -117,6 +123,12 @@ The first two have stopped being a collision inside the screen/backtest path: an
 Four callable specs remain, whose trade generation is not a per-bar boolean, and the screen rejects them by kind with a clear message.
 
 **screen** means the `screen` command, the standalone feature commands that are not that command, an operator labeller, and an options criterion.
+
+**slot_capital** means three things, and only one of them is the live slot budget.
+1. `Portfolio.current_slot_capital()`: the ceiling the *next* entry is offered. This is the live one.
+2. `Portfolio.slot_capital`: the frozen day-one `initial_capital / slot_count`. Only the ceiling when `compounding=False`; under the default it is a historical constant, not the budget.
+3. `Position.slot_capital`: that lot's actual entry cost, commission included. Not a ceiling at all.
+Read `current_slot_capital()` when you mean the budget.
 Within the `screen` command the word has one meaning again: for an aliased criterion it asks the same question the rolling backtest asks, on the same day, off the same bars.
 The standalone commands (`garp`, `conviction`, `rs_breakout`, `mark-minervini`) still carry their own hand-written definitions and are outside that guarantee.
 

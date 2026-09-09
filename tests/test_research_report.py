@@ -1582,7 +1582,13 @@ def test_reject_duplicated_fold_equity(monkeypatch):
 
 
 def test_walk_forward_selects_finite_runner_up(tmp_path, monkeypatch):
-    """An infinite winner must not hide an eligible finite training result."""
+    """An infinite winner must not hide an eligible finite training result.
+
+    hold=5/10/15 all score an infinite profit_factor here (no losing trade);
+    only hold=2 is finite, so it has to win. The pinned score tracks the
+    compounding default and moves with it: under --no-compounding the same
+    fold scores 5.674788208448603.
+    """
     monkeypatch.setenv("SCREENER_OPTIMIZER_TRIALS_DB", str(tmp_path / "trials.db"))
     bars = make_bars(n=60, seed=2, drift=0.1)
     summary = walk_forward_optimize(
@@ -1599,5 +1605,5 @@ def test_walk_forward_selects_finite_runner_up(tmp_path, monkeypatch):
     assert summary.evidence["missing_eligible_folds"] == 0
     assert len(summary.windows) == 1
     assert summary.windows[0].best_train.params == {"hold": 2}
-    assert summary.windows[0].best_train.score == pytest.approx(5.674788208448603)
+    assert summary.windows[0].best_train.score == pytest.approx(5.614561837546524)
     assert summary.windows[0].test_trade_count > 0

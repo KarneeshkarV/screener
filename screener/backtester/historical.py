@@ -187,7 +187,8 @@ class _ReserveRotationSource:
         grows_slots = sizing_allows_slot_growth(cfg.sizing_rule)
         if self.pending_reentry:
             # Only a reinvesting rule reads marked equity; every other rule
-            # sizes off initial capital, so do not pay for the mark otherwise.
+            # sizes off realized equity (or, frozen, off initial capital),
+            # neither of which needs marks, so do not pay for them otherwise.
             current_equity = (
                 marked_portfolio_equity(portfolio, self.bars_by_tv, day)
                 if grows_slots
@@ -565,7 +566,10 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     reserves_df = selection[selection["role"] == "reserve"].reset_index(drop=True)
     slot_count = max(cfg.top, len(actives_df))
     portfolio = Portfolio(
-        cfg.initial_capital, slot_count, cost_model=cost_model_from_config(cfg)
+        cfg.initial_capital,
+        slot_count,
+        cost_model=cost_model_from_config(cfg),
+        compounding=cfg.compounding,
     )
 
     master_dates = _run_event_driven_sim(

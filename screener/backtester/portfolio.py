@@ -1,17 +1,33 @@
 """Explicit position + cash accounting for the backtester.
 
-By default, each slot has a fixed
-``slot_capital = initial_capital / slot_count`` budget ceiling. At each
-``open`` we spend up to ``min(slot_capital, current_cash)``. A reinvested
-sizing rule can lift the fixed ceiling, but current cash remains the hard cap.
-At exit we receive ``shares * exit_price - exit_commission`` back into cash.
+At each ``open`` we spend up to ``min(current_slot_capital, current_cash)``.
+A reinvested sizing rule can lift that ceiling, but current cash remains the
+hard cap. At exit we receive ``shares * exit_price - exit_commission`` back
+into cash.
 
 The equity curve is cash + mark-to-market of open positions. When the engine
 uses the event-driven reallocation path, closed-trade proceeds return to
 ``_cash`` and fund subsequent ``open`` calls on the same slot (a reserve
-ticker fills the freed slot). Under fixed sizing, realized gains that exceed
-``slot_capital`` stay as idle cash. Reinvested sizing recalculates equal slots
-from marked portfolio equity before each refill batch.
+ticker fills the freed slot).
+
+**Frozen slot capital.** With ``compounding=False`` the per-slot ceiling stays
+at ``initial_capital / slot_count`` for the life of the run: realized gains
+above that stay as idle cash. The book silently de-levers. Over a long window
+the invested fraction falls, measured volatility decays, Sharpe drifts up and
+drawdown shrinks for reasons that have nothing to do with the signal.
+
+**Compounding (the default).** The ceiling is recomputed per entry as
+``realized_equity / slot_count``, where realized equity is cash plus the cost
+basis of open positions (that is, ``initial_capital`` plus realized P&L net of
+fees). Every entry made at the same moment draws the same ceiling, because
+they all divide one pool rather than each slot compounding its own history.
+Slots opened at *different* moments do differ: an open lot keeps the basis it
+was bought at, so only the successor slot is resized and a book that has
+realized a gain holds older lots at a smaller basis than newer ones. That
+spread closes as each lot recycles at the current ceiling. Unrealized gains
+are excluded deliberately: including them would size new entries off marks
+that a later exit may not realize. Pass ``compounding=False`` only when a
+pinned baseline depends on the frozen behaviour.
 
 Concurrent positions per ticker (pyramiding) are supported internally by
 keying ``_open`` on ``(ticker, open_seq)``. Legacy callers that pass ticker
@@ -45,11 +61,14 @@ class Portfolio:
         initial_capital: float,
         slot_count: int,
         cost_model: CostModel | None = None,
+        *,
+        compounding: bool = True,
     ) -> None:
         if slot_count <= 0:
             raise ValueError("slot_count must be > 0")
         self.initial_capital = float(initial_capital)
         self.slot_count = slot_count
+        self.compounding = compounding
         self.slot_capital = self.initial_capital / slot_count
         self.cost_model = cost_model or FlatCommission()
         # Running attribution of statutory/broker fees actually charged, keyed
@@ -57,6 +76,11 @@ class Portfolio:
         # "taf"). Populated on every buy/sell fill; see ``total_fees_paid``.
         self.fees_paid: dict[str, float] = {}
         self._cash = self.initial_capital
+        # Running sum of ``shares * entry_fill`` over ``_open``. Maintained by
+        # every mutation of an open lot so ``realized_equity`` stays O(1): it
+        # is read two to three times per candidate on the rolling day loop,
+        # where summing the open book per call was O(candidates * open lots).
+        self._basis = 0.0
         # Keyed by (ticker, open_seq). Legacy callers use ticker only; helper
         # methods resolve to the FIFO-oldest open position for that ticker.
         self._open: dict[tuple[str, int], Position] = {}
@@ -73,9 +97,24 @@ class Portfolio:
         self._ranks[ticker] = rank
         self._signal_dates[ticker] = signal_date
 
+    def realized_equity(self) -> float:
+        """Cash plus the cost basis of open positions, not their marks.
+
+        Equals ``initial_capital`` plus realized P&L net of fees, and needs no
+        current prices, so it can be evaluated at entry time inside the fill
+        path where marks are not available for every open ticker.
+        """
+        return max(self._cash, 0.0) + self._basis
+
+    def current_slot_capital(self) -> float:
+        """Per-slot ceiling for the next entry, honouring the sizing mode."""
+        if not self.compounding:
+            return self.slot_capital
+        return max(self.realized_equity(), 0.0) / self.slot_count
+
     def entry_budget(self) -> float:
         """Cash available to the next slot, before entry price/commission."""
-        return min(self.slot_capital, max(self._cash, 0.0))
+        return min(self.current_slot_capital(), max(self._cash, 0.0))
 
     def marked_equity(
         self,
@@ -202,8 +241,8 @@ class Portfolio:
 
         ``budget`` lets a sizing rule set the position budget. The default
         clamps it to ``entry_budget()``. ``allow_slot_growth`` removes only the
-        fixed slot ceiling for a reinvested sizing rule; available cash remains
-        a hard cap. When ``shares`` is supplied, it is the pre-impact count
+        slot ceiling for a reinvested sizing rule; available cash remains a
+        hard cap. When ``shares`` is supplied, it is the pre-impact count
         quoted by ``FillModel`` and is used unchanged. The portfolio remains
         the authority for the applicable fees and cash debit.
 
@@ -211,9 +250,9 @@ class Portfolio:
         """
         if raise_if_exists and self._active_keys(ticker):
             raise ValueError(f"Position already open for {ticker}")
-        # spend up to min(slot_capital, current cash); fees reduce shares
-        # acquired. Cap by current cash so reserve promotion after losing trades
-        # cannot overdraw the portfolio.
+        # spend up to min(current_slot_capital, current cash); fees reduce
+        # shares acquired. Cap by current cash so reserve promotion after
+        # losing trades cannot overdraw the portfolio.
         # Proportional fee models do not depend on notional; pass budget as a
         # stable reference for any future notional-dependent schedules.
         cap = max(self._cash, 0.0) if allow_slot_growth else self.entry_budget()
@@ -237,6 +276,7 @@ class Portfolio:
             slot_capital=entry_cost,
             peak_price=entry_price,
         )
+        self._basis += notional
         seq = self._open_seq.get(ticker, 0) + 1
         self._open_seq[ticker] = seq
         key = (ticker, seq)
@@ -291,6 +331,7 @@ class Portfolio:
         if key is None:
             raise KeyError(f"No open position for {ticker}")
         position = self._open.pop(key)
+        self._basis -= position.shares * position.entry_fill
         fifo = self._open_fifo[ticker]
         fifo.popleft()
         if not fifo:
@@ -394,6 +435,7 @@ class Portfolio:
         )
         self._closed.append(trade)
         # shrink the remaining sleeve in place
+        self._basis -= close_shares * position.entry_fill
         position.shares = remaining_shares
         position.slot_capital = remaining_cost
         position.dividend_income = remaining_div

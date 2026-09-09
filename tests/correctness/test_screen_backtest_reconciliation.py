@@ -590,6 +590,7 @@ def _rolling_request(spec: ExpressionStrategySpec, market: str) -> BacktestReque
         report_path=None,
         open_report=False,
         sizing_rule="equal_slot",
+        compounding=True,
         sizing_risk_pct=0.01,
         sizing_position_pct=0.10,
         sizing_atr_window=14,

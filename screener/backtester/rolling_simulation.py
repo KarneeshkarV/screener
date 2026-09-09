@@ -251,7 +251,8 @@ class _DailyRankingSource:
 
         grows_slots = sizing_allows_slot_growth(cfg.sizing_rule)
         # Only a reinvesting rule reads marked equity; every other rule sizes
-        # off initial capital, so do not pay for the mark otherwise.
+        # off realized equity (or, frozen, off initial capital), neither of
+        # which needs marks, so do not pay for them otherwise.
         current_equity = (
             marked_portfolio_equity(portfolio, self.bars_by_tv, day)
             if grows_slots

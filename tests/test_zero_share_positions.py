@@ -4,6 +4,15 @@ Under fixed ``equal_slot``, a refill can see ``entry_budget == 0`` after earlier
 fills consume cash. Opening that lot still occupied a slot and excluded the
 ticker until exit, which blocked later eligible candidates. The zero-share
 guard must apply for every sizing rule, not only ``reinvested_equal_slot``.
+
+Every scenario here therefore runs ``compounding=False`` on purpose, and that
+is not a stale default left behind. Cash exhaustion with a slot still free is
+a frozen-slot artefact: a compounding slot is capped at
+``realized_equity / slot_count`` while cash is ``realized_equity - basis``, so
+a free slot always has cash to draw on and the budget never reaches zero.
+Dropping the flag here does not modernise these tests, it deletes them - the
+ghost lot simply stops being reachable. The guard's mode-independent coverage
+lives in ``tests/test_sizing.test_entry_opens_no_shares_gates_every_empty_quote``.
 """
 
 from __future__ import annotations
@@ -87,6 +96,7 @@ def _rolling_ghost_cfg(**overrides) -> BacktestConfig:
         benchmark="SPY",
         tickers=("AAA", "BBB", "CCC", "DDD"),
         sizing_rule="equal_slot",
+        compounding=False,
         cost_model="flat",
     )
     base.update(overrides)
@@ -124,6 +134,7 @@ def test_cli_rolling_equal_slot_cash_exhaustion_has_no_ghost_trades():
             "30000",
             "--sizing",
             "equal_slot",
+            "--no-compounding",
             "--slippage-bps",
             "0",
             "--commission-bps",
@@ -228,6 +239,7 @@ def test_historical_reserve_refill_skips_zero_share_equal_slot():
         benchmark="SPY",
         tickers=names,
         sizing_rule="equal_slot",
+        compounding=False,
         reserve_multiple=3,
         reinvest=True,
     )

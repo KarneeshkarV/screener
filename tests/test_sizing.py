@@ -15,7 +15,7 @@ from pydantic import ValidationError
 from screener.backtester.models import BacktestConfig
 from screener.backtester.portfolio import Portfolio
 from screener.backtester.rolling_simulation import run_rolling_backtest
-from screener.backtester.sizing import entry_budget_for
+from screener.backtester.sizing import entry_budget_for, entry_opens_no_shares
 from tests.conftest import StubPriceFetcher
 
 _START = "2024-01-01"
@@ -241,7 +241,11 @@ def _rolling_cfg(**overrides) -> BacktestConfig:
 
 def test_rolling_fixed_fraction_spends_configured_budget():
     fetcher = StubPriceFetcher(_RISING_DATA)
-    cfg = _rolling_cfg(sizing_rule="fixed_fraction", sizing_position_pct=0.05)
+    cfg = _rolling_cfg(
+        sizing_rule="fixed_fraction",
+        sizing_position_pct=0.05,
+        compounding=False,
+    )
     result = run_rolling_backtest(
         cfg, fetcher, start_date=_INDEX[0].date(), end_date=_INDEX[-1].date()
     )
@@ -251,9 +255,9 @@ def test_rolling_fixed_fraction_spends_configured_budget():
         assert trade.entry_cost == pytest.approx(5_000.0)
 
 
-def test_rolling_default_matches_legacy_slot_sizing():
+def test_rolling_frozen_slots_match_legacy_when_compounding_is_off():
     fetcher = StubPriceFetcher(_RISING_DATA)
-    cfg = _rolling_cfg()  # equal_slot default
+    cfg = _rolling_cfg(compounding=False)
     result = run_rolling_backtest(
         cfg, fetcher, start_date=_INDEX[0].date(), end_date=_INDEX[-1].date()
     )
@@ -261,6 +265,80 @@ def test_rolling_default_matches_legacy_slot_sizing():
     for trade in result.trades:
         # top=2 -> slot_capital = 100_000 / 2 = 50_000, fully spent.
         assert trade.entry_cost == pytest.approx(50_000.0)
+
+
+def test_rolling_default_compounds_later_entry_budgets():
+    fetcher = StubPriceFetcher(_RISING_DATA)
+    cfg = _rolling_cfg()  # equal_slot + compounding default
+
+    result = run_rolling_backtest(
+        cfg, fetcher, start_date=_INDEX[0].date(), end_date=_INDEX[-1].date()
+    )
+
+    entry_costs = [trade.entry_cost for trade in result.trades]
+    assert entry_costs[:2] == pytest.approx([50_000.0, 50_000.0])
+    assert max(entry_costs[2:]) > 50_000.0
+
+
+def test_entry_opens_no_shares_gates_every_empty_quote():
+    """Direct coverage for the ghost-lot guard, independent of sizing mode.
+
+    Its integration pins in ``tests/test_zero_share_positions`` can only run
+    under ``--no-compounding``: they need cash exhaustion with a free slot,
+    and a compounding equal slot is capped at ``realized_equity / slot_count``
+    while cash is ``realized_equity - basis``, so the budget cannot reach zero
+    while a slot is free. The guard still runs on the default path, so pin it
+    here where the precondition can be stated directly.
+    """
+    # Liquidity-aware fill models quote the share count; it decides alone.
+    assert entry_opens_no_shares(50_000.0, 0.0) is True
+    assert entry_opens_no_shares(50_000.0, -1.0) is True
+    assert entry_opens_no_shares(0.0, 10.0) is False
+    # Without a quote the budget is the empty case.
+    assert entry_opens_no_shares(0.0, None) is True
+    assert entry_opens_no_shares(-1.0, None) is True
+    assert entry_opens_no_shares(1e-9, None) is False
+
+
+def test_risk_rule_sizing_equity_tracks_realized_equity_under_compounding():
+    """A risk rule must risk a fraction of *current* equity, not of day one.
+
+    ``entry_budget_for`` re-bases ``SizingContext.equity`` on
+    ``Portfolio.realized_equity()`` whenever compounding is on. Without that
+    branch a rule like ``fixed_fraction`` keeps sizing off ``initial_capital``
+    while the slot ceiling grows past it, so the rule quietly stops being the
+    binding constraint. Assert the budget itself, so deleting the branch fails
+    here rather than only moving a downstream backtest number.
+    """
+    portfolio = Portfolio(100_000.0, 10)
+    cfg = _sizing_cfg("fixed_fraction", top=10, sizing_position_pct=0.05)
+    bars = _constant_bars(100.0)
+
+    assert entry_budget_for(cfg, portfolio, bars, 20) == pytest.approx(5_000.0)
+
+    portfolio.assign("AAA", rank=1, signal_date=_INDEX[0].date())
+    portfolio.open("AAA", _INDEX[0].date(), 10.0, budget=portfolio.entry_budget())
+    portfolio.close("AAA", _INDEX[1].date(), 20.0, "time")
+    equity = portfolio.realized_equity()
+    assert equity == pytest.approx(110_000.0)
+
+    assert entry_budget_for(cfg, portfolio, bars, 20) == pytest.approx(equity * 0.05)
+
+
+def test_risk_rule_sizing_equity_stays_frozen_without_compounding():
+    """The same rule off day-one capital when the slot ceiling is frozen."""
+    portfolio = Portfolio(100_000.0, 10, compounding=False)
+    cfg = _sizing_cfg(
+        "fixed_fraction", top=10, sizing_position_pct=0.05, compounding=False
+    )
+    bars = _constant_bars(100.0)
+
+    portfolio.assign("AAA", rank=1, signal_date=_INDEX[0].date())
+    portfolio.open("AAA", _INDEX[0].date(), 10.0, budget=portfolio.entry_budget())
+    portfolio.close("AAA", _INDEX[1].date(), 20.0, "time")
+    assert portfolio.realized_equity() > 100_000.0
+
+    assert entry_budget_for(cfg, portfolio, bars, 20) == pytest.approx(5_000.0)
 
 
 def test_rolling_reinvested_equal_slot_compounds_later_entry_budgets():
