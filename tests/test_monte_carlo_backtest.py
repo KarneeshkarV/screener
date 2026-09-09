@@ -691,7 +691,13 @@ def test_cli_help_lists_monte_carlo_and_shared_run_flags():
     ):
         assert flag in res.output, f"missing flag in help: {flag}"
     # The command must expose the same run definition as backtest-rolling.
-    for flag in ("--universe", "--rank-exit", "--sizing ", "--point-in-time"):
+    for flag in (
+        "--universe",
+        "--rank-exit",
+        "--sizing ",
+        "--point-in-time",
+        "--compounding",
+    ):
         assert flag in res.output, f"missing shared flag in help: {flag}"
     # Reporting-only rolling flags stay on backtest-rolling.
     assert "--compare-reinvestment" not in res.output

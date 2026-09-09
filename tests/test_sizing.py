@@ -241,7 +241,11 @@ def _rolling_cfg(**overrides) -> BacktestConfig:
 
 def test_rolling_fixed_fraction_spends_configured_budget():
     fetcher = StubPriceFetcher(_RISING_DATA)
-    cfg = _rolling_cfg(sizing_rule="fixed_fraction", sizing_position_pct=0.05)
+    cfg = _rolling_cfg(
+        sizing_rule="fixed_fraction",
+        sizing_position_pct=0.05,
+        compounding=False,
+    )
     result = run_rolling_backtest(
         cfg, fetcher, start_date=_INDEX[0].date(), end_date=_INDEX[-1].date()
     )
@@ -251,9 +255,9 @@ def test_rolling_fixed_fraction_spends_configured_budget():
         assert trade.entry_cost == pytest.approx(5_000.0)
 
 
-def test_rolling_default_matches_legacy_slot_sizing():
+def test_rolling_frozen_slots_match_legacy_when_compounding_is_off():
     fetcher = StubPriceFetcher(_RISING_DATA)
-    cfg = _rolling_cfg()  # equal_slot default
+    cfg = _rolling_cfg(compounding=False)
     result = run_rolling_backtest(
         cfg, fetcher, start_date=_INDEX[0].date(), end_date=_INDEX[-1].date()
     )
@@ -261,6 +265,19 @@ def test_rolling_default_matches_legacy_slot_sizing():
     for trade in result.trades:
         # top=2 -> slot_capital = 100_000 / 2 = 50_000, fully spent.
         assert trade.entry_cost == pytest.approx(50_000.0)
+
+
+def test_rolling_default_compounds_later_entry_budgets():
+    fetcher = StubPriceFetcher(_RISING_DATA)
+    cfg = _rolling_cfg()  # equal_slot + compounding default
+
+    result = run_rolling_backtest(
+        cfg, fetcher, start_date=_INDEX[0].date(), end_date=_INDEX[-1].date()
+    )
+
+    entry_costs = [trade.entry_cost for trade in result.trades]
+    assert entry_costs[:2] == pytest.approx([50_000.0, 50_000.0])
+    assert max(entry_costs[2:]) > 50_000.0
 
 
 def test_rolling_reinvested_equal_slot_compounds_later_entry_budgets():

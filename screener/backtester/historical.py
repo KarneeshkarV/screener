@@ -565,7 +565,10 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     reserves_df = selection[selection["role"] == "reserve"].reset_index(drop=True)
     slot_count = max(cfg.top, len(actives_df))
     portfolio = Portfolio(
-        cfg.initial_capital, slot_count, cost_model=cost_model_from_config(cfg)
+        cfg.initial_capital,
+        slot_count,
+        cost_model=cost_model_from_config(cfg),
+        compounding=cfg.compounding,
     )
 
     master_dates = _run_event_driven_sim(

@@ -76,6 +76,7 @@ def test_backtest_help_lists_flags():
         "--strategy",
         "--tickers",
         "--open-report",
+        "--compounding",
     ]:
         assert flag in res.output, f"missing flag in help: {flag}"
 
@@ -108,6 +109,7 @@ def test_rolling_backtest_help_lists_core_flags():
         "--dashboard-port",
         "--dashboard-dir",
         "--open-report",
+        "--compounding",
     ]:
         assert flag in res.output, f"missing flag in help: {flag}"
 
@@ -426,7 +428,7 @@ def test_rolling_compare_flag_prints_fixed_and_reinvested_slot_comparison():
 
     assert result.exit_code == 0, result.output
     assert "Performance" in result.output
-    assert "Fixed slots" in result.output
+    assert "Equal slots" in result.output
     assert "Reinvested slots" in result.output
 
 
@@ -450,7 +452,7 @@ def test_rolling_compares_sizing_rules_by_default():
     result = runner.invoke(cli, _rolling_argv(bars_a), obj=fetcher)
 
     assert result.exit_code == 0, result.output
-    assert "Fixed slots" in result.output
+    assert "Equal slots" in result.output
     assert "Reinvested slots" in result.output
 
 
@@ -469,8 +471,36 @@ def test_rolling_report_carries_the_sizing_comparison(tmp_path):
     assert result.exit_code == 0, result.output
     html = report.read_text(encoding="utf-8")
     assert 'id="sizing-comparison-table"' in html
-    assert "Fixed slots vs reinvested slots" in html
-    assert "Reinvested slots" in html
+    assert "Equal slots vs reinvested slots" in html
+
+
+def test_rolling_compounding_is_on_by_default():
+    fetcher, bars_a = _stub_env()
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        _rolling_argv(bars_a, "--no-compare-reinvestment"),
+        obj=fetcher,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "compounding=on" in result.output
+    assert "compounding=off" not in result.output
+
+
+def test_rolling_no_compounding_flag_freezes_slots():
+    fetcher, bars_a = _stub_env()
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli,
+        _rolling_argv(bars_a, "--no-compounding", "--no-compare-reinvestment"),
+        obj=fetcher,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "compounding=off" in result.output
 
 
 def test_rolling_no_compare_flag_leaves_the_report_single_column(tmp_path):

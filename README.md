@@ -298,9 +298,11 @@ just backtest-rolling -m us --years 2 --strategy rs_breakout --top 10
 
 Supports position sizing slots, holding period, stop loss, take profit, trailing stop, slippage/commission, benchmark, liquidity filters, custom tickers, CSV ledger output, and optional dashboard output.
 
-Two defaults are on and can be turned off:
+Three defaults are on and can be turned off:
 
 - `--point-in-time` (`--no-point-in-time` to disable) gates candidates by the membership they held at each signal date instead of by today's index list. It downgrades itself, with a note, for a universe that carries no membership history. See [docs/universes.md](docs/universes.md).
+- `--compounding` (`--no-compounding` to disable) grows each equal slot with realized equity so profits go back to work.
+  Off freezes the slot at `initial_capital / top` and leaves gains as idle cash.
 - `--compare-reinvestment` (`--no-compare-reinvestment` to disable) replays the same signal panel under the other equal-slot sizing rule and prints both side by side. The default result is unchanged; the second simulation roughly doubles the run time.
 
 ### `backtest-monte-carlo`
@@ -331,12 +333,15 @@ A rolling run holds `--top` positions at once, so its trades overlap in time; ch
 
 ### Position sizing (`--sizing`)
 
-Both backtest commands accept rule-based per-entry position sizing. The default `equal_slot` matches the legacy fixed-slot engine bit-for-bit; every other rule sizes down from the slot budget (never above it, never beyond available cash):
+Both backtest commands accept rule-based per-entry position sizing.
+The default `equal_slot` spends `realized_equity / top` per entry (`--compounding` on).
+Pass `--no-compounding` to freeze the slot at `initial_capital / top` for the whole run; that is the legacy behaviour, and it leaves realized gains as idle cash.
+Every other rule sizes down from the current slot budget (never above it, never beyond available cash):
 
-- `fixed_fraction` — `--sizing-position-pct` of initial capital per position (default 0.1).
-- `fixed_risk` — risk `--sizing-risk-pct` of initial capital per trade (default 0.01); requires `--stop-loss`.
-- `atr_risk` — risk budget divided by `--sizing-atr-multiple` × ATR(`--sizing-atr-window`) per share.
-- `inverse_vol` — targets `--sizing-risk-pct` daily volatility using a `--sizing-vol-window` return lookback.
+- `fixed_fraction` - `--sizing-position-pct` of equity per position (default 0.1).
+- `fixed_risk` - risk `--sizing-risk-pct` of equity per trade (default 0.01); requires `--stop-loss`.
+- `atr_risk` - risk budget divided by `--sizing-atr-multiple` × ATR(`--sizing-atr-window`) per share.
+- `inverse_vol` - targets `--sizing-risk-pct` daily volatility using a `--sizing-vol-window` return lookback.
 
 ATR/volatility lookbacks read only up to the signal bar (no lookahead) and fall back to the slot budget during warmup.
 

@@ -15,9 +15,9 @@ from scripts.run_strategy_report import build_report
 
 # (strategy, expected_sharpe, expected_total_return, expected_trades, held)
 _EXPECTED = [
-    ("momentum_12_1", 2.564212, 0.328129, 30, {"MOMA", "MOMB", "WILD"}),
-    ("low_volatility", 7.528227, 0.193363, 30, {"CALM", "MOMB", "STDY"}),
-    ("mom_lowvol_combo", 5.322611, 0.288754, 30, {"MOMA", "MOMB", "STDY"}),
+    ("momentum_12_1", 2.613331, 0.378727, 30, {"MOMA", "MOMB", "WILD"}),
+    ("low_volatility", 7.597750, 0.210954, 30, {"CALM", "MOMB", "STDY"}),
+    ("mom_lowvol_combo", 5.416513, 0.328813, 30, {"MOMA", "MOMB", "STDY"}),
 ]
 
 _BENCHMARK_RETURN = 0.104718
@@ -49,8 +49,8 @@ def test_report_is_reproducible() -> None:
     """The generated markdown contains the pinned headline numbers."""
     report = build_report()
     assert "# Paper-Backed Factor Strategy Report" in report
-    assert "| 12-1 Momentum | 2.56 | 32.81% | 10.47%" in report
-    assert "| Low Volatility | 7.53 | 19.34% | 10.47%" in report
-    assert "| Momentum + Low-Vol Combo | 5.32 | 28.88% | 10.47%" in report
+    assert "| 12-1 Momentum | 2.61 | 37.87% | 10.47%" in report
+    assert "| Low Volatility | 7.60 | 21.10% | 10.47%" in report
+    assert "| Momentum + Low-Vol Combo | 5.42 | 32.88% | 10.47%" in report
     # The skipped fundamentals strategies are documented, not silently dropped.
     assert "Basu 1/PE value (1977)" in report

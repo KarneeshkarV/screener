@@ -114,6 +114,7 @@ def _cfg() -> BacktestConfig:
         initial_capital=100_000.0,
         benchmark="SPY",
         tickers=("AAA", "BBB", "CCC", "DDD"),
+        compounding=False,
     )
 
 
@@ -154,6 +155,29 @@ def test_rolling_backtest_ledger_snapshot():
 
     assert float(result.equity_curve.iloc[-1]) == pytest.approx(_EXPECTED_FINAL_EQUITY)
     assert result.metrics["unique_tickers"] == _EXPECTED_UNIQUE_TICKERS
+
+
+def test_rolling_default_compounding_raises_final_equity_above_frozen():
+    """The default path must put realized gains back to work.
+
+    Frozen slots leave those gains as idle cash, which is the number this
+    snapshot file pins. The default run has to finish richer on the same
+    rising book, or compounding is not actually on.
+    """
+    fetcher = StubPriceFetcher(_DATA)
+    frozen = run_rolling_backtest(
+        _cfg(),
+        fetcher,
+        start_date=_INDEX[0].date(),
+        end_date=_INDEX[-1].date(),
+    )
+    compounded = run_rolling_backtest(
+        _cfg().model_copy(update={"compounding": True}),
+        fetcher,
+        start_date=_INDEX[0].date(),
+        end_date=_INDEX[-1].date(),
+    )
+    assert float(compounded.equity_curve.iloc[-1]) > float(frozen.equity_curve.iloc[-1])
 
 
 def test_rolling_backtest_exercises_all_exit_reasons():

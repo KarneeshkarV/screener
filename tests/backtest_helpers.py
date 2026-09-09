@@ -44,6 +44,7 @@ def simulate_single_ticker(
         cfg.initial_capital,
         slot_count=max(cfg.top, 1),
         cost_model=cost_model_from_config(cfg),
+        compounding=cfg.compounding,
     )
     fill_model = FillModel(cfg, cost_model=portfolio.cost_model)
     entry_budget = portfolio.entry_budget()

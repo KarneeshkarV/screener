@@ -123,7 +123,7 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
 )
 _RESULT_VIEW_SPECS = {key: (label, kind) for key, label, kind in _RESULT_VIEW_ORDER}
 
-SIZING_COMPARISON_COLUMNS = ("Fixed slots", "Reinvested slots")
+SIZING_COMPARISON_COLUMNS = ("Equal slots", "Reinvested slots")
 
 
 def sizing_comparison_rows(

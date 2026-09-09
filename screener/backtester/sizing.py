@@ -2,10 +2,11 @@
 
 Each rule maps entry-time context to a dollar budget for the new position.
 Most results are clamped to ``Portfolio.entry_budget()``. The
-``reinvested_equal_slot`` rule can grow above the initial slot ceiling, but it
+``reinvested_equal_slot`` rule can grow above the slot ceiling, but it
 remains capped by available cash.
 
-Risk-rule sizing equity remains the portfolio's ``initial_capital``. The
+Risk-rule sizing equity tracks realized equity when compounding is on, and
+the portfolio's ``initial_capital`` when it is off. The
 ``reinvested_equal_slot`` rule is the explicit exception and reads current
 marked-to-market equity.
 
@@ -186,8 +187,8 @@ def entry_budget_for(
 ) -> float:
     """Dollar budget for the next entry under ``cfg.sizing_rule``.
 
-    ``equal_slot`` short-circuits to ``portfolio.entry_budget()`` so the
-    default path is bit-identical to the pre-sizing engine. Risk rules are
+    ``equal_slot`` short-circuits to ``portfolio.entry_budget()``, which
+    compounds with realized equity unless compounding is off. Risk rules are
     clamped to ``[0, entry_budget()]``. ``reinvested_equal_slot`` is clamped
     by this entry's fair share of available cash: ``cash / free_slots``, where
     ``free_slots`` is the number of slots (this one included) still to be
@@ -210,11 +211,15 @@ def entry_budget_for(
             f"{', '.join(available_sizing_rules())}"
         )
     compounds_slots = rule == "reinvested_equal_slot"
-    sizing_equity = (
-        float(current_equity)
-        if compounds_slots and current_equity is not None
-        else portfolio.initial_capital
-    )
+    if compounds_slots and current_equity is not None:
+        sizing_equity = float(current_equity)
+    elif portfolio.compounding:
+        # Under compounding the risk budget has to track the equity the slot
+        # ceiling now tracks, or a rule like inverse_vol keeps sizing off the
+        # day-one account and clamps to the (grown) slot on every entry.
+        sizing_equity = portfolio.realized_equity()
+    else:
+        sizing_equity = portfolio.initial_capital
     ctx = SizingContext(
         equity=sizing_equity,
         base_budget=base,

@@ -123,10 +123,17 @@ class BacktestConfig(BaseModel):
     max_reentries: int = 0
     max_concurrent_per_ticker: int = 1
     # Rule-based per-entry sizing (see ``screener.backtester.sizing``).
-    # ``equal_slot`` reproduces the legacy fixed-slot budget exactly.
-    # ``reinvested_equal_slot`` may grow above that initial ceiling; risk rules
-    # only size down from it.
+    # ``equal_slot`` spends one slot of ``current_slot_capital``. With
+    # compounding on (the default) that slot tracks realized equity; with it
+    # off the slot is frozen at ``initial_capital / top``.
+    # ``reinvested_equal_slot`` sizes from marked-to-market equity instead.
+    # Risk rules size down from the current slot ceiling.
     sizing_rule: str = "equal_slot"
+    # Grow the per-slot budget with realized equity instead of freezing it at
+    # ``initial_capital / top``. On by default so a run that profits keeps its
+    # capital deployed rather than drifting into idle cash (see ``Portfolio``).
+    # Off restores the frozen-slot baseline.
+    compounding: bool = True
     sizing_risk_pct: float = Field(default=0.01, gt=0.0)
     sizing_position_pct: float = Field(default=0.10, gt=0.0)
     sizing_atr_window: int = Field(default=14, gt=0)

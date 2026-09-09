@@ -14,8 +14,9 @@ One execution of a simulation over one config.
 
 **slot**
 A capital compartment, not a position.
-`slot_capital = initial_capital / slot_count`.
-Slot state is keyed by an integer `slot_id`, and slots are not compounded.
+Under compounding (the default) the per-slot ceiling is `realized_equity / slot_count`.
+`--no-compounding` freezes it at `initial_capital / slot_count` for the life of the run, and realized gains above that stay as idle cash.
+Slot state is keyed by an integer `slot_id`.
 
 **candidate**
 A ticker whose entry signal fired and which passed the entry filters on a given day.

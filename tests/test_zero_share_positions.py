@@ -87,6 +87,7 @@ def _rolling_ghost_cfg(**overrides) -> BacktestConfig:
         benchmark="SPY",
         tickers=("AAA", "BBB", "CCC", "DDD"),
         sizing_rule="equal_slot",
+        compounding=False,
         cost_model="flat",
     )
     base.update(overrides)
@@ -124,6 +125,7 @@ def test_cli_rolling_equal_slot_cash_exhaustion_has_no_ghost_trades():
             "30000",
             "--sizing",
             "equal_slot",
+            "--no-compounding",
             "--slippage-bps",
             "0",
             "--commission-bps",
@@ -228,6 +230,7 @@ def test_historical_reserve_refill_skips_zero_share_equal_slot():
         benchmark="SPY",
         tickers=names,
         sizing_rule="equal_slot",
+        compounding=False,
         reserve_multiple=3,
         reinvest=True,
     )

@@ -40,6 +40,7 @@ def _cfg(**overrides) -> BacktestConfig:
         benchmark="SPY",
         strategy_name=None,
         tickers=None,
+        compounding=False,
     )
     defaults.update(overrides)
     return BacktestConfig(**defaults)
