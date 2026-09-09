@@ -1,0 +1,12 @@
+india|vwap_reversion|1|20|-|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|vwap_reversion|3|20|-|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|vwap_reversion|5|20|-|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|turtle_breakout|1|250|-|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|turtle_breakout|3|250|-|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|turtle_breakout|5|250|-|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|supertrend_expr|1|250|-|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|supertrend_expr|3|250|-|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|supertrend_expr|5|250|-|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|quality_mom_lowvol|1|63|fmp|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|quality_mom_lowvol|3|63|fmp|r.txt|/home/karneeshkar/screener/findings/new_strategies
+india|quality_mom_lowvol|5|63|fmp|r.txt|/home/karneeshkar/screener/findings/new_strategies
