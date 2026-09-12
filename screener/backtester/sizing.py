@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from screener.indicators.frames import wilder_atr
+from screener.backtester.stops import atr_stop_fraction, atr_stop_params
 
 if TYPE_CHECKING:
     from screener.backtester.models import BacktestConfig
@@ -132,26 +132,28 @@ def _fixed_risk(ctx: SizingContext) -> float:
 def _atr_risk(ctx: SizingContext) -> float:
     # Volatility-normalized risk: treat ``atr_multiple * ATR`` as the expected
     # adverse excursion and risk ``sizing_risk_pct`` of equity against it.
+    #
+    # When ``stop_mode="atr"`` the run has a real ATR stop, and its window and
+    # multiple win over the sizing-only ones: the exit that actually closes the
+    # position is the loss this rule is sizing against. Without that, a run
+    # could size for a 2x ATR excursion and stop out at 1x, risking half of
+    # ``sizing_risk_pct`` on every trade.
     policy = ctx.policy
-    bars = ctx.bars
-    window = policy.sizing_atr_window
-    atr = _cached_series(
-        ctx,
-        "atr",
-        window,
-        lambda: wilder_atr(
-            bars["high"],
-            bars["low"],
-            bars["close"],
-            window,
-            min_periods=window,
-        ),
+    params = atr_stop_params(policy)
+    window, multiple = (
+        params
+        if params is not None
+        else (policy.sizing_atr_window, policy.sizing_atr_multiple)
     )
-    atr_value = float(atr[ctx.signal_idx])
-    close = float(bars["close"].iloc[ctx.signal_idx])
-    if not math.isfinite(atr_value) or atr_value <= 0 or close <= 0:
+    stop_fraction = atr_stop_fraction(
+        ctx.bars,
+        ctx.signal_idx,
+        window=window,
+        multiple=multiple,
+        series_cache=ctx.series_cache,
+    )
+    if not math.isfinite(stop_fraction) or stop_fraction <= 0:
         return math.nan
-    stop_fraction = policy.sizing_atr_multiple * atr_value / close
     return ctx.equity * policy.sizing_risk_pct / stop_fraction
 
 
