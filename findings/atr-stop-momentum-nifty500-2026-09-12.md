@@ -1,7 +1,7 @@
-# ATR stops make momentum worse on Nifty 500, and deepen the drawdown they are meant to prevent
+# Stops make momentum worse on Nifty 500, and how the stop is set barely matters
 
 Date: 2026-09-12.
-Scope: 660 rolling backtests, 0 failures.
+Scope: 960 rolling backtests, 0 failures.
 Universe: `nifty500_pit`, point-in-time membership (850 candidate symbols, 6520 membership windows).
 Reproduce with `uv run python scripts/run_momentum_atr_stop_sweep.py`.
 
@@ -13,7 +13,8 @@ Every momentum-family strategy in the registry (15 of them) against an ATR stop 
 |---|---|
 | Strategies | `bb_breakout`, `breakout`, `donchian_breakout`, `ema_trend`, `ha_momentum`, `mom_lowvol_combo`, `momentum_12_1`, `momentum_12_1_ema10`, `momentum_12_1_riskadj`, `momentum_12_1_trend`, `rs_breakout`, `rs_momentum_regime`, `supertrend`, `supertrend_flip`, `supertrend_rsi` |
 | ATR arms | `--stop-atr` at 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0 (window 14) |
-| Controls | `no_stop`, and flat `--stop-loss` at 8% and 12% |
+| Fixed arms | `--stop-loss` at 4%, 6%, 8%, 10%, 12%, 15%, 20% |
+| Control | `no_stop` |
 | Windows | 1, 2, 3, 5 years, all ending 2026-09-12 |
 
 Fixed: `hold=20`, `top=10`, `equal_slot` sizing, benchmark `^NSEI`, daily bars.
@@ -108,6 +109,71 @@ What rules out the boring explanation - "the stop just reduces exposure" - is th
 
 Beta and volatility both fall, so the stop is genuinely taking risk off. Sharpe still drops, because return falls faster than risk. An exit that merely cut exposure would improve the worst case and leave Sharpe roughly flat; this worsens both. That gap between lower average risk and a deeper worst case is the churn.
 
+## ATR versus a fixed stop: the mechanism is not the variable
+
+The obvious follow-up is whether a flat `--stop-loss` does better. It does, very slightly, and that turns out to be the least interesting thing in the data.
+
+Ranked by median Sharpe per window, averaged over the four windows, with how often each stop actually closed a trade:
+
+| arm | fires | 1y | 2y | 3y | 5y | mean |
+|---|---|---|---|---|---|---|
+| **no_stop** | 0% | 0.367 | -0.229 | 0.562 | 0.578 | **+0.320** |
+| pct_20 | 4% | 0.167 | -0.371 | 0.552 | 0.555 | +0.226 |
+| pct_10 | 27% | 0.341 | -0.219 | 0.312 | 0.304 | +0.185 |
+| atr_3.5 | 20% | 0.203 | -0.326 | 0.299 | 0.461 | +0.159 |
+| atr_3 | 28% | 0.079 | -0.251 | 0.289 | 0.384 | +0.125 |
+| atr_4 | 15% | 0.098 | -0.285 | 0.384 | 0.283 | +0.120 |
+| pct_15 | 12% | -0.010 | -0.190 | 0.365 | 0.300 | +0.116 |
+| pct_08 | 38% | 0.052 | -0.229 | 0.300 | 0.213 | +0.084 |
+| pct_06 | 52% | 0.169 | -0.426 | 0.224 | 0.294 | +0.065 |
+| pct_12 | 19% | 0.081 | -0.388 | 0.278 | 0.219 | +0.048 |
+| atr_2 | 47% | -0.041 | -0.298 | 0.296 | 0.209 | +0.041 |
+| atr_2.5 | 36% | 0.175 | -0.608 | 0.097 | 0.226 | -0.028 |
+| pct_04 | 67% | -0.087 | -0.471 | 0.175 | 0.159 | -0.056 |
+| atr_1 | 72% | 0.189 | -0.574 | -0.005 | 0.148 | -0.060 |
+| atr_1.5 | 60% | -0.148 | -0.481 | 0.106 | 0.115 | -0.102 |
+| atr_0.5 | 83% | -0.776 | -0.816 | -0.036 | 0.097 | -0.383 |
+
+### Matched on firing rate
+
+Comparing the best of eight ATR widths against one fixed level is rigged. Two stops are comparable when they close a similar share of trades, so each fixed level is paired with the ATR width that fires at the same rate:
+
+| fixed | fires | matched ATR | fires | Sharpe fixed | Sharpe ATR | gap |
+|---|---|---|---|---|---|---|
+| pct_04 | 0.67 | atr_1 | 0.72 | -0.056 | -0.060 | -0.004 |
+| pct_06 | 0.52 | atr_2 | 0.47 | +0.065 | +0.041 | -0.024 |
+| pct_08 | 0.38 | atr_2.5 | 0.36 | +0.084 | -0.028 | -0.111 |
+| pct_10 | 0.27 | atr_3 | 0.28 | +0.185 | +0.125 | -0.059 |
+| pct_12 | 0.19 | atr_3.5 | 0.20 | +0.048 | +0.159 | **+0.112** |
+| pct_15 | 0.12 | atr_4 | 0.15 | +0.116 | +0.120 | +0.003 |
+| pct_20 | 0.04 | atr_4 | 0.15 | +0.226 | +0.120 | -0.106 |
+
+ATR wins 2 of 7 pairs. Per-cell across all 60 strategy x window cells the matched pairs split 24, 33, 39, 23, 36, 38 and 26 out of 60 - an average of 52%, a coin flip.
+
+The scale is what settles it. Mean absolute gap between a matched ATR and fixed pair: **0.060 Sharpe**. Gap from no stop to the average stop arm: **0.284**. Choosing the mechanism matters about five times less than choosing to run a stop at all.
+
+### One variable explains it
+
+Pool all 15 stop arms, both families together, and regress mean Sharpe on the share of trades the stop closed:
+
+```
+corr(firing rate, Sharpe) = -0.851        R^2 = 0.724
+  ATR arms only:   -0.888
+  fixed arms only: -0.791
+
+residual once firing rate is accounted for:
+  ATR   -0.017
+  fixed +0.019
+```
+
+Firing rate alone explains 72% of the variance across arms, and the family label adds 0.036 Sharpe on top of it, which is noise. Extrapolating the fit to a stop that never fires gives +0.241; the measured no-stop result is +0.320, better than the trend predicts. The relationship is monotone over the whole grid and the optimum sits at zero.
+
+`pct_20` scoring second is the same point restated: it fires on 4% of trades, so it is nearly the no-stop arm wearing a stop's name.
+
+### ATR's own claim also fails
+
+The case for ATR is not a higher mean, it is that scaling the stop to each name's range should make outcomes more uniform across names. Dispersion of Sharpe across the 15 strategies, matched pairs: ATR tighter in 4, fixed tighter in 3. Wide stops of either family do compress dispersion (`atr_4` 0.449, `pct_12` 0.464, against `no_stop` 0.533), but ATR has no particular claim to the effect.
+
 ## Which strategy, then
 
 The sweep was built to test the stop, but it also ranks the 15 strategies against each other on one consistent setup. Unstopped, `hold=20`, `top=10`, ranked by mean Sharpe over the four windows:
@@ -173,6 +239,8 @@ Even with the selection advantage, 6 of 15 strategies are still worse off.
 
 ## Recommendation
 
-Do not put an ATR stop on these momentum strategies on Nifty 500. The feature is still worth having - it fixes a real disagreement where `atr_risk` sizing assumed a stop the engine never applied - but on this evidence it should stay off by default for momentum, which is what it is.
+Do not put a stop of either kind on these momentum strategies on Nifty 500. The question "ATR or fixed percent" is the wrong one: matched on how often they fire, the two are within 0.06 Sharpe of each other and split the head-to-head cells 52/48, while both give up 0.28 Sharpe against no stop at all. Firing rate is the variable, the relationship is monotone, and the best value is zero.
 
-If someone wants a stop on this book anyway, `atr_2.5` and `atr_3.5` are the least bad widths, and both still lose to no stop at 3 and 5 years.
+The feature is still worth having - it fixes a real disagreement where `atr_risk` sizing assumed a stop the engine never applied - but on this evidence it should stay off by default for momentum, which is what it is.
+
+If a stop is required for reasons outside the backtest (a mandate, a risk limit), take the widest one that satisfies the constraint. `pct_20` and `atr_4` cost the least, and they cost the least precisely because they almost never fire.
