@@ -58,6 +58,8 @@ from screener.markets import as_of_option, market_option
     "exit",
     "strategy",
     "stop-loss",
+    "stop-atr",
+    "stop-atr-window",
     "take-profit",
     "trailing-stop",
     "slippage-bps",
