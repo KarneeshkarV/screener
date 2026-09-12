@@ -21,7 +21,12 @@ from screener.backtester.metrics import (
     result_view_columns,
 )
 from screener.backtester.optimization.grid import GridSearchResult
-from screener.backtester.optimization.walk_forward import WalkForwardSummary
+from screener.backtester.optimization.walk_forward import (
+    CAPITAL_POLICY,
+    FOLD_BOUNDARY_POLICY,
+    WINDOW_LENGTH_UNIT,
+    WalkForwardSummary,
+)
 from screener.html_report import html_page
 
 GRID_IN_SAMPLE_DISCLAIMER = (
@@ -169,6 +174,10 @@ def print_walk_forward_table(
             json.dumps(result.best_train.params, sort_keys=True),
         )
     _print_table(table, console)
+    evidence = summary.evidence or {}
+    window_unit = evidence.get("window_length_unit") or WINDOW_LENGTH_UNIT
+    boundary = summary.fold_boundary_policy or FOLD_BOUNDARY_POLICY
+    capital = summary.capital_policy or CAPITAL_POLICY
     console.print(
         "Stability: "
         f"{format_result_value(summary.stability_score, 'ratio')}  "
@@ -177,11 +186,20 @@ def print_walk_forward_table(
         f"Overfit flag: {summary.overfit_flag}  "
         f"Insufficient data: {summary.insufficient_data}"
     )
+    console.print(
+        f"Window lengths: {window_unit}  Fold boundary: {boundary}  Capital: {capital}"
+    )
     if summary.insufficient_data:
         console.print(
             "[bold yellow]INSUFFICIENT DATA[/bold yellow]: combined OOS evidence "
             "does not meet the minimum criteria."
         )
+    console.print(
+        "[dim]Evidence integrity PASS/FAIL here is a data-adequacy check, "
+        "not validated alpha or live-trading approval.[/dim]"
+    )
+    for warning in evidence.get("holding_period_warnings") or []:
+        console.print(f"[yellow]warning:[/yellow] {warning}")
 
 
 def write_html_report(
@@ -249,12 +267,26 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         ("Start", config.get("start_date")),
         ("End", config.get("end_date")),
         (
-            "Train / test / step days",
+            "Train / test / step (calendar days)",
             (
                 f"{config.get('train_days')} / {config.get('test_days')} / "
                 f"{config.get('step_days')}"
             ),
         ),
+        (
+            "Window length unit",
+            config.get("window_length_unit") or WINDOW_LENGTH_UNIT,
+        ),
+        (
+            "Fold boundary",
+            config.get("fold_boundary_policy") or FOLD_BOUNDARY_POLICY,
+        ),
+        (
+            "Capital policy",
+            config.get("capital_policy") or CAPITAL_POLICY,
+        ),
+        ("Experiment id", config.get("experiment_id")),
+        ("Trial db", config.get("trial_db_path")),
         ("Metric", metric),
         (
             "Parameter grid",
@@ -262,6 +294,10 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         ),
         ("Tickers", config.get("tickers")),
         ("MC iterations", config.get("mc_iterations")),
+        (
+            "Holding-period warnings",
+            "; ".join(config.get("holding_period_warnings") or []) or None,
+        ),
     ]
     config_table = _html_table(
         ["Field", "Value"],
@@ -438,8 +474,12 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
   &nbsp;|&nbsp; Train/test ratio: {html_lib.escape(format_result_value(walk_forward.get("train_test_score_ratio"), "ratio"))}
   &nbsp;|&nbsp; Overfit flag: {html_lib.escape(str(walk_forward.get("overfit_flag")))}
   &nbsp;|&nbsp; Insufficient data: {html_lib.escape(str(wf_insufficient))}
-  &nbsp;|&nbsp; Boundary: {html_lib.escape(str(walk_forward.get("fold_boundary_policy") or wf_evidence.get("fold_boundary_policy") or ""))}
-  &nbsp;|&nbsp; Capital: {html_lib.escape(str(walk_forward.get("capital_policy") or wf_evidence.get("capital_policy") or ""))}</p>
+  &nbsp;|&nbsp; Window unit: {html_lib.escape(str(config.get("window_length_unit") or wf_evidence.get("window_length_unit") or WINDOW_LENGTH_UNIT))}
+  &nbsp;|&nbsp; Boundary: {html_lib.escape(str(walk_forward.get("fold_boundary_policy") or wf_evidence.get("fold_boundary_policy") or FOLD_BOUNDARY_POLICY))}
+  &nbsp;|&nbsp; Capital: {html_lib.escape(str(walk_forward.get("capital_policy") or wf_evidence.get("capital_policy") or CAPITAL_POLICY))}
+  &nbsp;|&nbsp; Trial scope: {html_lib.escape(str(wf_evidence.get("trial_register_scope") or "train_folds_only"))}</p>
+  <p class="banner">Integrity PASS is a minimum data check only; it is not validated alpha or live-trading approval.</p>
+  {"".join(f'<p class="banner">{html_lib.escape(str(w))}</p>' for w in (config.get("holding_period_warnings") or wf_evidence.get("holding_period_warnings") or []))}
   {wf_table}
 
   <h2>Monte Carlo (OOS equity block bootstrap)</h2>

@@ -38,6 +38,7 @@ from screener.backtester.optimization.walk_forward import (
     WalkForwardSummary,
     WalkForwardWindow,
     generate_walk_forward_windows,
+    holding_period_fold_warnings,
     train_result_eligible,
     walk_forward_optimize,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "generate_walk_forward_windows",
     "grid_search",
     "hash_price_frames",
+    "holding_period_fold_warnings",
     "load_trial_search_stats",
     "parameter_combinations",
     "record_trial",

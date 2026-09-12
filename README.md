@@ -455,6 +455,19 @@ uv run python -m screener.research.pine_runner --market us --years 3 --limit 50
 
 ## Optimization
 
+Shared research-control options on `grid`, `walk-forward`, and `research-report`:
+
+- `--experiment-id` — explicit research-family id for the trial register.
+  Reuse it across repeated searches so rejected trials share one history.
+- `--trial-db` — SQLite trial-register path.
+- `--n-trials-effective` — optional correlated-trial count for Deflated Sharpe (int >= 1).
+
+Default compatibility is unchanged when these flags are omitted.
+Train/test/step lengths are calendar days, not sessions.
+Each walk-forward fold force-closes flat at the test boundary.
+Evidence integrity PASS is a minimum data check, not validated alpha.
+The trial register records training searches only; test-fold scores are not written into DSR context.
+
 ### `optimize grid`
 
 Runs exhaustive grid search over backtest parameter ranges.
@@ -462,11 +475,14 @@ Runs exhaustive grid search over backtest parameter ranges.
 ```bash
 uv run screener optimize grid -m us --years 2 --strategy rs_breakout --stop-loss 0.05,0.08 --take-profit 0.1,0.15 --hold 5,10
 just optimize grid -m us --years 2 --strategy rs_breakout --stop-loss 0.05,0.08 --take-profit 0.1,0.15 --hold 5,10
+uv run screener optimize grid -m us --years 2 --strategy rs_breakout --hold 5,10 --experiment-id mom-family --trial-db /tmp/trials.db
 ```
 
 ### `optimize walk-forward`
 
 Runs rolling train/test walk-forward optimization.
+`--train-days`, `--test-days`, and `--step-days` are calendar days.
+Long `hold` values that cannot fit in the calendar test window emit an explicit warning.
 
 ```bash
 uv run screener optimize walk-forward -m india --years 3 --strategy rs_breakout --train-days 252 --test-days 63
@@ -484,12 +500,20 @@ just optimize validate --trades trades.csv --iterations 5000 --json validation.j
 
 ### `optimize research-report`
 
-One-command research pipeline: grid search → walk-forward → Monte Carlo, reusing a single price fetcher across stages. Writes `<out>.json` and `<out>.html` plus a stdout summary.
+One-command research pipeline: grid search → walk-forward → Monte Carlo, reusing a single price fetcher across stages.
+Writes `<out>.json` and `<out>.html` plus a stdout summary.
 
 ```bash
 uv run screener optimize research-report -m us --years 1 --strategy rs_breakout --top 10
 just research-report -m us --years 1 --strategy rs_breakout
 ```
+
+### `factor-tearsheet`
+
+Exploratory factor IC / quantile diagnostics.
+Uses a static universe list and close-to-close forward returns.
+It is not a rolling executable portfolio tearsheet.
+IC reports classical iid `t_stat` and Newey-West `t_stat_hac` with lag `horizon - 1`.
 
 ## Utility Commands
 

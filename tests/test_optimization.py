@@ -422,3 +422,184 @@ def test_optimize_rejects_a_swept_hold_below_one():
     assert res.exit_code == 2, res.output
     assert "--hold" in res.output
     assert "must be >= 1" in res.output
+
+
+def test_cli_help_exposes_trial_identity_options():
+    runner = CliRunner()
+    for command in ("grid", "walk-forward", "research-report"):
+        res = runner.invoke(cli, ["optimize", command, "--help"])
+        assert res.exit_code == 0, res.output
+        assert "--experiment-id" in res.output
+        assert "--trial-db" in res.output
+        assert "--n-trials-effective" in res.output
+        if command in {"walk-forward", "research-report"}:
+            assert "calendar days" in res.output.lower()
+
+
+def test_cli_rejects_invalid_trial_identity_options():
+    runner = CliRunner()
+    bars = make_bars(n=40, seed=3, open_base=100.0)
+    fetcher = StubPriceFetcher({"AAA": bars, "SPY": bars})
+    res = runner.invoke(
+        cli,
+        [
+            "optimize",
+            "grid",
+            "--tickers",
+            "AAA",
+            "--entry",
+            "close > sma(close, 3)",
+            "--hold",
+            "5",
+            "--n-trials-effective",
+            "0",
+        ],
+        obj=fetcher,
+    )
+    assert res.exit_code == 2, res.output
+    assert "--n-trials-effective" in res.output
+
+    res = runner.invoke(
+        cli,
+        [
+            "optimize",
+            "grid",
+            "--tickers",
+            "AAA",
+            "--entry",
+            "close > sma(close, 3)",
+            "--hold",
+            "5",
+            "--experiment-id",
+            "   ",
+        ],
+        obj=fetcher,
+    )
+    assert res.exit_code == 2, res.output
+    assert "--experiment-id" in res.output
+
+
+def test_cli_grid_persists_rejected_trials_under_explicit_family(tmp_path):
+    """End-to-end offline CLI: rejected trials remain in the shared family DB."""
+    import sqlite3
+
+    from screener.backtester.optimization.trials import load_trial_search_stats
+
+    bars_a = make_bars(n=80, seed=21, open_base=100.0)
+    bars_b = make_bars(n=80, seed=22, open_base=50.0)
+    spy = make_bars(n=80, seed=99, open_base=400.0)
+    fetcher = StubPriceFetcher({"AAA": bars_a, "BBB": bars_b, "SPY": spy})
+    trial_db = tmp_path / "family_trials.db"
+    exp = "cli-family-identity"
+    start = bars_a.index[20].date().isoformat()
+    end = bars_a.index[60].date().isoformat()
+    runner = CliRunner()
+
+    # High min-trades forces rejection while still recording the attempt.
+    res = runner.invoke(
+        cli,
+        [
+            "optimize",
+            "grid",
+            "--tickers",
+            "AAA,BBB",
+            "--start",
+            start,
+            "--end",
+            end,
+            "--entry",
+            "close > sma(close, 3)",
+            "--stop-loss",
+            "none",
+            "--take-profit",
+            "none",
+            "--trailing-stop",
+            "none",
+            "--hold",
+            "5,8",
+            "--min-trades",
+            "500",
+            "--top-n",
+            "1",
+            "--workers",
+            "1",
+            "--experiment-id",
+            exp,
+            "--trial-db",
+            str(trial_db),
+        ],
+        obj=fetcher,
+    )
+    assert res.exit_code == 0, res.output
+    assert trial_db.exists()
+
+    conn = sqlite3.connect(trial_db)
+    try:
+        rows = conn.execute(
+            "SELECT status, params_json FROM trials WHERE experiment_id = ?",
+            (exp,),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) >= 2
+    assert any(status == "rejected" for status, _ in rows)
+
+    # Second search under the same family accumulates history.
+    res2 = runner.invoke(
+        cli,
+        [
+            "optimize",
+            "grid",
+            "--tickers",
+            "AAA,BBB",
+            "--start",
+            start,
+            "--end",
+            end,
+            "--entry",
+            "close > sma(close, 3)",
+            "--stop-loss",
+            "none",
+            "--take-profit",
+            "none",
+            "--trailing-stop",
+            "none",
+            "--hold",
+            "5,8,13",
+            "--min-trades",
+            "500",
+            "--top-n",
+            "1",
+            "--workers",
+            "1",
+            "--experiment-id",
+            exp,
+            "--trial-db",
+            str(trial_db),
+            "--n-trials-effective",
+            "2",
+        ],
+        obj=fetcher,
+    )
+    assert res2.exit_code == 0, res2.output
+    stats = load_trial_search_stats(exp, db_path=trial_db, n_trials_effective=2)
+    assert stats.n_trials_nominal >= 3
+    assert stats.n_trials_effective == 2
+
+
+def test_holding_period_fold_warnings_for_long_holds():
+    from screener.backtester.optimization.walk_forward import (
+        HOLDING_PERIOD_FIT_WARNING_PREFIX,
+        holding_period_fold_warnings,
+    )
+
+    assert holding_period_fold_warnings({"hold": [5, 10]}, test_days=63) == []
+    warnings = holding_period_fold_warnings({"hold": [21, 126]}, test_days=63)
+    assert len(warnings) == 1
+    assert warnings[0].startswith(HOLDING_PERIOD_FIT_WARNING_PREFIX)
+    assert "126" in warnings[0] and "63" in warnings[0]
+
+    selected = holding_period_fold_warnings(
+        {"hold": [5]}, test_days=10, selected_holds=[21]
+    )
+    assert selected and "21" in selected[0]

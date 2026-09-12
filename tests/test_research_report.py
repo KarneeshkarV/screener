@@ -1607,3 +1607,84 @@ def test_walk_forward_selects_finite_runner_up(tmp_path, monkeypatch):
     assert summary.windows[0].best_train.params == {"hold": 2}
     assert summary.windows[0].best_train.score == pytest.approx(5.614561837546524)
     assert summary.windows[0].test_trade_count > 0
+
+
+def test_research_report_records_calendar_windows_and_hold_warnings(
+    tmp_path, monkeypatch
+):
+    import screener.backtester.optimization.research_report as rr
+
+    cfg = _config()
+    best = GridSearchResult(
+        params={"hold": 126},
+        score=1.2,
+        metrics={"sharpe": 1.2},
+        trade_count=5,
+    )
+
+    def fake_grid(*args, **kwargs):
+        # Descriptive grid must accept trial identity kwargs without error.
+        assert "experiment_id" in kwargs
+        return [best]
+
+    walk_forward = WalkForwardSummary(
+        windows=[],
+        stability_score=1.0,
+        aggregate_metrics={},
+        overfit_flag=False,
+        train_test_score_ratio=0.0,
+        insufficient_data=True,
+        evidence={
+            "adequate": False,
+            "holding_period_warnings": [
+                "holding period may not fit test fold: max hold=126 sessions "
+                "vs test_days=63 calendar days"
+            ],
+            "window_length_unit": "calendar_days",
+            "fold_boundary_policy": "close_flat_at_fold_boundary_with_configured_costs",
+            "trial_register_scope": "train_folds_only",
+        },
+        fold_boundary_policy="close_flat_at_fold_boundary_with_configured_costs",
+        capital_policy="carry_ending_capital_restart_flat",
+    )
+
+    # Walk-forward must not receive n_trials_effective from research-report.
+    seen: dict[str, object] = {}
+
+    def capture_wf(*args, **kwargs):
+        seen.update(kwargs)
+        return walk_forward
+
+    monkeypatch.setattr(rr, "grid_search", fake_grid)
+    monkeypatch.setattr(rr, "walk_forward_optimize", capture_wf)
+
+    out = tmp_path / "hold_warn"
+    payload = run_research_report(
+        cfg,
+        object(),
+        {"hold": [21, 126]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 12, 31),
+        train_days=252,
+        test_days=63,
+        step_days=63,
+        mc_iterations=10,
+        mc_block=2,
+        out_path=out,
+        experiment_id="family-a",
+        trial_db_path=tmp_path / "trials.db",
+        n_trials_effective=1,
+    )
+    assert payload["config"]["window_length_unit"] == "calendar_days"
+    assert "close_flat" in payload["config"]["fold_boundary_policy"]
+    assert payload["config"]["experiment_id"] == "family-a"
+    assert any("126" in w for w in payload["config"]["holding_period_warnings"])
+    assert "not validated alpha" in payload["summary"]["verdict"].lower() or (
+        "INSUFFICIENT" in payload["summary"]["verdict"]
+    )
+    assert seen.get("experiment_id") == "family-a"
+    assert seen.get("n_trials_effective") is None
+
+    html = (tmp_path / "hold_warn.html").read_text()
+    assert "calendar days" in html.lower()
+    assert "not validated alpha" in html.lower() or "minimum data check" in html.lower()

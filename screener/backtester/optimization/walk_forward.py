@@ -48,6 +48,7 @@ from screener.backtester.rolling_simulation import run_rolling_backtest
 FOLD_BOUNDARY_POLICY = "close_flat_at_fold_boundary_with_configured_costs"
 CAPITAL_POLICY = "carry_ending_capital_restart_flat"
 SUPPORTED_INTERVAL = "1d"
+WINDOW_LENGTH_UNIT = "calendar_days"
 # Same-bar force-close equity accounting lives in portfolio/engine (PR156).
 ENGINE_SAME_BAR_DEPENDENCY = "PR156"
 
@@ -59,8 +60,10 @@ OOS_EVIDENCE_CRITERIA = (
     "equity with at least 2 returns; (4) selected OOS objective is present and "
     "finite. These are minimum data-integrity checks, not statistical proof of "
     "alpha or live-trading approval. Daily interval only; train/test/step lengths "
-    "are calendar days."
+    "are calendar days. Each fold force-closes flat at the test boundary."
 )
+
+HOLDING_PERIOD_FIT_WARNING_PREFIX = "holding period may not fit test fold: "
 
 
 class WalkForwardWindow(BaseModel):
@@ -232,6 +235,53 @@ def require_daily_walk_forward_scope(
             )
 
 
+def _hold_values_from_grid(parameter_grid: dict[str, list[Any]]) -> list[int]:
+    """Collect integer hold values swept in a parameter grid."""
+    values: list[int] = []
+    for raw in parameter_grid.get("hold") or ():
+        if raw is None:
+            continue
+        try:
+            hold = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if hold >= 1:
+            values.append(hold)
+    return values
+
+
+def holding_period_fold_warnings(
+    parameter_grid: dict[str, list[Any]],
+    *,
+    test_days: int,
+    selected_holds: list[int] | None = None,
+) -> list[str]:
+    """Warn when maximum holding periods cannot fit in calendar-day test folds.
+
+    ``hold`` is a session/bar age limit. ``test_days`` is a calendar-day window.
+    Folds force-close flat at the test boundary, so a hold near or above the
+    calendar test length cannot complete a normal full-age exit inside the fold.
+    """
+    if test_days <= 0:
+        return []
+    holds = list(selected_holds or ())
+    holds.extend(_hold_values_from_grid(parameter_grid))
+    if not holds:
+        return []
+    max_hold = max(holds)
+    # Calendar days are an upper bound on sessions in the fold; equality is
+    # already too tight because weekends/holidays shrink available bars.
+    if max_hold < test_days:
+        return []
+    return [
+        (
+            f"{HOLDING_PERIOD_FIT_WARNING_PREFIX}"
+            f"max hold={max_hold} sessions vs test_days={test_days} calendar days; "
+            f"folds use {FOLD_BOUNDARY_POLICY} so long holds cannot behave normally"
+        )
+    ]
+
+
 def _session_calendar(
     fetcher: PriceFetcher,
     cfg: BacktestConfig,
@@ -356,7 +406,17 @@ def walk_forward_optimize(
     max_workers: int | None = None,
     cache_path: Path | str | None = None,
     overfit_ratio: float = 2.0,
+    experiment_id: str | None = None,
+    trial_db_path: Path | str | None = None,
+    n_trials_effective: int | None = None,
 ) -> WalkForwardSummary:
+    """Walk-forward with per-fold train selection only.
+
+    Trial register / DSR context uses training-window ``grid_search`` calls
+    only. Test-fold scores are never written into the trial register.
+    Reuse the same explicit ``experiment_id`` and ``trial_db_path`` across
+    folds and repeated research runs when one family history is required.
+    """
     require_daily_walk_forward_scope(cfg, parameter_grid)
     trade_floor = evidence_trade_floor(min_trades)
     windows = generate_walk_forward_windows(
@@ -384,6 +444,8 @@ def walk_forward_optimize(
         if cache_path:
             base = Path(cache_path)
             window_cache = base.with_name(f"{base.stem}_wf_{idx}{base.suffix}")
+        # Train-window grid only: trial keys include train dates; test scores
+        # never enter the register or DSR denominator.
         ranked = grid_search(
             cfg,
             fetcher,
@@ -396,6 +458,9 @@ def walk_forward_optimize(
             runner="rolling",
             start_date=window.train_start,
             end_date=window.train_end,
+            experiment_id=experiment_id,
+            trial_db_path=trial_db_path,
+            n_trials_effective=n_trials_effective,
         )
         # An infinite score can rank first while a lower result is eligible.
         best = next(
@@ -613,6 +678,16 @@ def walk_forward_optimize(
         generated_folds=len(windows),
         oos_objective=oos_objective,
     )
+    selected_holds = [
+        int(result.best_train.params["hold"])
+        for result in results
+        if result.best_train.params.get("hold") is not None
+    ]
+    hold_fit_warnings = holding_period_fold_warnings(
+        parameter_grid,
+        test_days=test_days,
+        selected_holds=selected_holds,
+    )
     evidence = {
         "criteria": OOS_EVIDENCE_CRITERIA,
         "generated_folds": len(windows),
@@ -629,10 +704,17 @@ def walk_forward_optimize(
         "adequate": adequate,
         "fold_boundary_policy": FOLD_BOUNDARY_POLICY,
         "capital_policy": CAPITAL_POLICY,
+        "window_length_unit": WINDOW_LENGTH_UNIT,
+        "train_days": train_days,
+        "test_days": test_days,
+        "step_days": step_days if step_days is not None else test_days,
         "interval": SUPPORTED_INTERVAL,
         "oos_anchor": oos_anchor,
         "exposure_unavailable_reason": exposure_reason,
         "engine_same_bar_dependency": ENGINE_SAME_BAR_DEPENDENCY,
+        "holding_period_warnings": hold_fit_warnings,
+        "experiment_id": experiment_id,
+        "trial_register_scope": "train_folds_only",
     }
 
     return WalkForwardSummary(
