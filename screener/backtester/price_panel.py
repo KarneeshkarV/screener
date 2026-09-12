@@ -36,7 +36,9 @@ from screener.backtester.fundamentals import (
 )
 from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import Node
+from screener.backtester.rolling_candidates import _preview_warning
 from screener.backtester.warmup import _warmup_days_for_interval
+from screener.factors.fundamentals import EFFECTIVE_DATE_KIND_FILING_TIMESTAMP
 from screener.options.backtest import merge_referenced_options
 
 
@@ -124,6 +126,32 @@ def _master_dates(
     return list(pd.DatetimeIndex(np.unique(np.concatenate(day_arrays))))
 
 
+def _warn_missing_price_history(
+    bars_by_tv: dict[str, pd.DataFrame],
+    warnings: list[str],
+) -> None:
+    """Record symbols the price provider returned with no bars at all.
+
+    Only fully empty series are listed. A mid-window IPO that has any bars is
+    kept quietly; rejecting every short history would discard legitimate
+    listings. This does not fetch replacement prices.
+    """
+    missing = [tv for tv, bars in bars_by_tv.items() if bars is None or bars.empty]
+    if not missing:
+        return
+    warnings.append(
+        _preview_warning(
+            missing,
+            (
+                "{count} requested symbols have no price-provider history in this "
+                "window (vendor gap, delisting, rename, or failed download): "
+                "{preview}. Names with any bars, including mid-window IPOs, are "
+                "kept; only fully empty series are listed."
+            ),
+        )
+    )
+
+
 def build_price_panel(
     inputs: PricePanelInputs,
     fetcher: PriceFetcher,
@@ -181,6 +209,7 @@ def build_price_panel(
     for tv in tv_symbols:
         panel_bars = price_panel.get(yf_by_tv[tv])
         bars_by_tv[tv] = pd.DataFrame() if panel_bars is None else panel_bars
+    _warn_missing_price_history(bars_by_tv, warnings)
     bars_by_tv = prepare_strategy_bars(
         inputs.strategy_name,
         bars_by_tv,
@@ -200,11 +229,17 @@ def build_price_panel(
         fundamentals = fundamental_fetcher.fetch(
             yf_by_tv.values(), fetch_start, fetch_end
         )
+        date_kind = getattr(
+            fundamental_fetcher,
+            "effective_date_kind",
+            EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
+        )
         bars_by_tv = merge_fundamentals_into_bars(
             bars_by_tv,
             fundamentals,
             yf_by_tv,
             filing_lag_days=fundamental_fetcher.lag_days,
+            effective_date_kind=str(date_kind),
         )
 
     bars_by_tv = merge_referenced_options(
