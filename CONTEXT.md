@@ -23,6 +23,20 @@ Cash plus the *cost basis* of open positions, which equals `initial_capital` plu
 It needs no current prices, so it can be read inside the fill path where marks are not available for every open ticker.
 Distinct from **marked equity** (`Portfolio.marked_equity`), which values open positions at their current close and is what the equity curve and `reinvested_equal_slot` use.
 
+**risk-free rate (hurdle)**
+Annual excess-return hurdle on `BacktestConfig.risk_free_rate` (default `0.0`).
+Used by Sharpe, Sortino, PSR, and DSR.
+It is not cash interest credited to idle balances.
+
+**slot occupancy**
+The metric serialized as `exposure`: mean open positions / slot count.
+It is not capital invested.
+Marked capital exposure needs a daily holdings series from the engine and is not computed in `metrics.py` yet.
+
+**calendar CAGR**
+Compound annual growth using wall-clock years between the first and last equity stamp.
+Distinct from bar-count `cagr`, which annualizes over `periods_per_year` (252 for daily).
+
 **candidate**
 A ticker whose entry signal fired and which passed the entry filters on a given day.
 Produced per day by the rolling engine's candidate matrices.

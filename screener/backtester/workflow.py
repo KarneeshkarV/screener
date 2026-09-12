@@ -87,6 +87,9 @@ class BacktestRequest:
     sizing_atr_multiple: float
     sizing_vol_window: int
     intraday_only: bool
+    # Annual excess-return hurdle. Default 0.0 matches BacktestConfig and the
+    # CLI option; not cash interest on idle balances.
+    risk_free_rate: float = 0.0
     start_arg: datetime | None = None
     end_arg: datetime | None = None
     years: int = 1
@@ -212,6 +215,7 @@ def _build_config(
             sizing_atr_window=int(request.sizing_atr_window),
             sizing_atr_multiple=float(request.sizing_atr_multiple),
             sizing_vol_window=int(request.sizing_vol_window),
+            risk_free_rate=float(request.risk_free_rate),
             **extra,
         )
     except ValidationError as exc:

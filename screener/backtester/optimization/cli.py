@@ -119,6 +119,7 @@ def _base_config(
     min_avg_dollar_volume: float | None,
     adv_window: int,
     compounding: bool,
+    risk_free_rate: float = 0.0,
 ) -> BacktestConfig:
     from screener.strategies.expressions import resolve_strategy
 
@@ -161,6 +162,7 @@ def _base_config(
         avg_dollar_volume_window=int(adv_window),
         reinvest=True,
         compounding=bool(compounding),
+        risk_free_rate=float(risk_free_rate),
     )
 
 
@@ -216,6 +218,16 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
         click.option("--slippage-bps", type=float, default=0.0),
         click.option("--commission-bps", type=float, default=0.0),
         click.option("--initial-capital", type=float, default=100_000.0),
+        click.option(
+            "--risk-free-rate",
+            type=float,
+            default=0.0,
+            show_default=True,
+            help=(
+                "Annual risk-free hurdle for excess-return Sharpe/Sortino/PSR/DSR "
+                "(fraction). Default 0.0. Not cash interest on idle balances."
+            ),
+        ),
         click.option(
             "--compounding/--no-compounding",
             default=True,
@@ -296,6 +308,7 @@ def optimize_grid(**kwargs) -> None:
         min_avg_dollar_volume=kwargs["min_avg_dollar_volume"],
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
+        risk_free_rate=kwargs["risk_free_rate"],
     )
     results = grid_search(
         cfg,
@@ -369,6 +382,7 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         min_avg_dollar_volume=kwargs["min_avg_dollar_volume"],
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
+        risk_free_rate=kwargs["risk_free_rate"],
     )
     try:
         require_daily_walk_forward_scope(cfg, parameter_grid)
@@ -647,6 +661,7 @@ def research_report(
         min_avg_dollar_volume=kwargs["min_avg_dollar_volume"],
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
+        risk_free_rate=kwargs["risk_free_rate"],
     )
     # Validate window/interval/MC flags before costly grid work. Do not wrap the
     # full report run: runtime bugs must surface as themselves.

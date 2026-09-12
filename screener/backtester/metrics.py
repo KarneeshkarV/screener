@@ -1,7 +1,17 @@
 """Backtest performance metrics.
 
 All metrics derive from the portfolio equity curve and the aligned benchmark.
-Alpha/beta use a simple OLS fit via ``numpy.polyfit`` — no sklearn.
+Alpha/beta use a simple OLS fit via ``numpy.polyfit`` - no sklearn.
+
+``risk_free_rate`` is an annual *hurdle* for excess-return Sharpe, Sortino,
+PSR, and DSR. It is not cash interest credited to idle balances. The default
+is explicit ``0.0`` so legacy zero-hurdle outputs stay compatible; callers must
+pass a non-zero rate when they want a cash-rate comparison.
+
+``exposure`` remains the serialized key for average slot occupancy (open
+positions / slot count). It is not capital invested. Marked capital exposure
+(holdings mark-to-market / equity) needs a daily holdings series from the
+engine; see the note on :func:`_exposure`.
 """
 
 from __future__ import annotations
@@ -83,18 +93,24 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
     ("total_return", "Total Return", "pct"),
     ("invested_return", "Invested Return", "pct"),
     ("cagr", "CAGR", "pct"),
+    ("calendar_cagr", "Calendar CAGR", "pct"),
     ("vol_annual", "Volatility (ann.)", "pct"),
-    ("sharpe", "Sharpe", "ratio"),
-    ("sortino", "Sortino", "ratio"),
+    ("sharpe", "Sharpe (rf hurdle)", "ratio"),
+    ("sortino", "Sortino (rf hurdle)", "ratio"),
     ("calmar", "Calmar", "ratio"),
     ("psr", "Probabilistic Sharpe", "pct"),
     ("dsr", "Deflated Sharpe", "pct"),
     ("dsr_trials", "DSR Trials", "count"),
     ("max_drawdown", "Max Drawdown", "pct"),
+    ("max_drawdown_duration_days", "Longest Drawdown (days)", "ratio"),
+    ("expected_shortfall_95", "Expected Shortfall 95", "pct"),
     ("hit_rate", "Hit Rate", "pct"),
     ("alpha_annual", "Alpha (ann.)", "pct"),
     ("beta", "Beta", "ratio"),
-    ("exposure", "Avg Exposure", "pct"),
+    # Serialized key stays ``exposure`` for compatibility; the value is slot
+    # occupancy (open positions / slots), not capital invested.
+    ("exposure", "Avg Slot Occupancy", "pct"),
+    ("risk_free_rate", "Risk-Free Hurdle (ann.)", "pct"),
     ("benchmark_return", "Benchmark Return", "pct"),
     ("trade_count", "Trades", "count"),
     ("unique_tickers", "Unique Tickers", "count"),
@@ -185,7 +201,16 @@ def _default_metric_spec(key: str, value: Any) -> tuple[str, MetricKind]:
         or key.endswith("_rate")
         or key.endswith("_pct")
         or "_pct_" in key
-        or key in {"cagr", "vol_annual", "max_drawdown", "exposure"}
+        or key
+        in {
+            "cagr",
+            "calendar_cagr",
+            "vol_annual",
+            "max_drawdown",
+            "exposure",
+            "expected_shortfall_95",
+            "risk_free_rate",
+        }
     ):
         return label, "pct"
     if key.endswith("_equity") or key == "total_fees" or key.startswith("fee_"):
@@ -249,12 +274,86 @@ def _cagr(equity: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> f
     return float((end / start) ** (1.0 / years) - 1.0)
 
 
+def _calendar_cagr(equity: pd.Series) -> float:
+    """CAGR from wall-clock elapsed time between the first and last equity stamp.
+
+    Distinct from :func:`_cagr`, which annualizes over ``periods_per_year`` bars
+    (252 for daily). Use this when comparing against cash rates quoted on a
+    calendar-year basis. Requires a ``DatetimeIndex``; integer/range indexes
+    return ``0.0`` so unit fixtures without dates do not overflow.
+    """
+    if equity.empty or len(equity) < 2:
+        return 0.0
+    if not isinstance(equity.index, pd.DatetimeIndex):
+        return 0.0
+    start = float(equity.iloc[0])
+    end = float(equity.iloc[-1])
+    if start <= 0:
+        return 0.0
+    t0 = pd.Timestamp(equity.index[0])
+    t1 = pd.Timestamp(equity.index[-1])
+    seconds = (t1 - t0).total_seconds()
+    if seconds <= 0:
+        return 0.0
+    years = seconds / (365.25 * 24 * 3600)
+    try:
+        return float((end / start) ** (1.0 / years) - 1.0)
+    except OverflowError:
+        return float("inf") if end > start else float("-inf")
+
+
 def _max_drawdown(equity: pd.Series) -> float:
     if equity.empty:
         return 0.0
     peak = equity.cummax()
     dd = (equity - peak) / peak
     return float(dd.min()) if not dd.empty else 0.0
+
+
+def _max_drawdown_duration_days(equity: pd.Series) -> float:
+    """Longest underwater spell in calendar days (peak to recovery, or to end)."""
+    if equity.empty or len(equity) < 2:
+        return 0.0
+    if not isinstance(equity.index, pd.DatetimeIndex):
+        return 0.0
+    values = equity.to_numpy(dtype=float)
+    times = pd.DatetimeIndex(equity.index)
+    peak = values[0]
+    peak_time = times[0]
+    longest = 0.0
+    in_drawdown = False
+    drawdown_start = peak_time
+    for idx in range(len(values)):
+        value = values[idx]
+        stamp = times[idx]
+        if value >= peak:
+            if in_drawdown:
+                longest = max(
+                    longest, (stamp - drawdown_start).total_seconds() / 86400.0
+                )
+                in_drawdown = False
+            peak = value
+            peak_time = stamp
+            continue
+        if not in_drawdown:
+            in_drawdown = True
+            drawdown_start = peak_time
+    if in_drawdown:
+        longest = max(longest, (times[-1] - drawdown_start).total_seconds() / 86400.0)
+    return float(longest)
+
+
+def _expected_shortfall(daily: pd.Series, *, alpha: float = 0.95) -> float:
+    """Mean of daily returns at or below the ``(1 - alpha)`` quantile (CVaR)."""
+    if daily.empty:
+        return 0.0
+    if not 0.0 < alpha < 1.0:
+        raise ValueError(f"alpha must be in (0, 1), got {alpha!r}")
+    cutoff = float(daily.quantile(1.0 - alpha))
+    tail = daily[daily <= cutoff]
+    if tail.empty:
+        return 0.0
+    return float(tail.mean())
 
 
 def equity_curve_sharpe(
@@ -349,6 +448,16 @@ def _position_intervals(
 def _exposure(
     equity_index: pd.DatetimeIndex, trades: Iterable[Trade], slot_count: int
 ) -> float:
+    """Average slot occupancy: mean open positions / ``slot_count``.
+
+    This is not capital exposure. Marked capital invested / equity needs a
+    daily holdings mark-to-market series. Reconstructing that here from trades
+    alone would either ignore marks or duplicate ``portfolio.build_equity_curve``
+    same-bar, dividend, and forward-fill rules. Required seam for parent:
+    emit ``holdings_value`` alongside the equity curve from
+    ``build_equity_curve`` / ``Portfolio``, then average
+    ``holdings_value / equity`` where equity > 0.
+    """
     trades = list(trades)
     if not trades or len(equity_index) == 0:
         return 0.0
@@ -454,13 +563,19 @@ class SharpeMoments:
 def sharpe_moments_from_returns(
     daily: pd.Series,
     *,
+    rf: float = 0.0,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> SharpeMoments | None:
-    """Return Sharpe moments for a return series, or None when empty."""
+    """Return Sharpe moments for a return series, or None when empty.
+
+    ``rf`` is the annual risk-free *hurdle* (not cash interest). Excess returns
+    feed Sharpe; for a constant hurdle, skew and excess kurtosis match the raw
+    series.
+    """
     if daily.empty:
         return None
     std0 = float(daily.std(ddof=0))
-    sharpe_annual = equity_curve_sharpe(daily, periods_per_year=periods_per_year)
+    sharpe_annual = equity_curve_sharpe(daily, rf=rf, periods_per_year=periods_per_year)
     sr_per = sharpe_annual / math.sqrt(periods_per_year)
     if std0 == 0.0:
         skew = 0.0
@@ -481,11 +596,12 @@ def sharpe_moments_from_returns(
 def sharpe_moments_from_equity(
     equity: pd.Series,
     *,
+    rf: float = 0.0,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> SharpeMoments | None:
     """Return Sharpe moments from an equity curve."""
     return sharpe_moments_from_returns(
-        bar_returns(equity), periods_per_year=periods_per_year
+        bar_returns(equity), rf=rf, periods_per_year=periods_per_year
     )
 
 
@@ -603,14 +719,19 @@ def _psr(
     daily: pd.Series,
     sr_benchmark_annual: float = 0.0,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
+    *,
+    rf: float = 0.0,
 ) -> float:
     """Probabilistic Sharpe Ratio (López de Prado, 2012).
 
     Probability that the *true* annualized Sharpe exceeds ``sr_benchmark_annual``,
     corrected for sample size and non-normality (skew, excess kurtosis). Returns
-    a value in [0, 1].
+    a value in [0, 1]. ``rf`` is the annual excess-return hurdle used when
+    forming the observed Sharpe moments.
     """
-    moments = sharpe_moments_from_returns(daily, periods_per_year=periods_per_year)
+    moments = sharpe_moments_from_returns(
+        daily, rf=rf, periods_per_year=periods_per_year
+    )
     if moments is None:
         return 0.0
     return _psr_from_moments(moments, sr_benchmark_annual=sr_benchmark_annual)
@@ -621,6 +742,8 @@ def _dsr(
     n_trials: int = 1,
     sr_trial_std_annual: float | None = None,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
+    *,
+    rf: float = 0.0,
 ) -> float:
     """Deflated Sharpe Ratio (Bailey & López de Prado, 2014).
 
@@ -632,10 +755,12 @@ def _dsr(
     (bool rejected). For ``n_trials > 1``, pass the measured cross-trial std of
     annualized Sharpes; when dispersion is unavailable the result is ``nan``
     (no silent 0.5 assumption). ``n_trials == 1`` keeps the PSR(benchmark=0)
-    path and ignores dispersion.
+    path and ignores dispersion. ``rf`` matches the hurdle used for the
+    objective Sharpe so search correction and selection use the same excess
+    returns.
     """
     return dsr_from_moments(
-        sharpe_moments_from_returns(daily, periods_per_year=periods_per_year),
+        sharpe_moments_from_returns(daily, rf=rf, periods_per_year=periods_per_year),
         n_trials=n_trials,
         sr_trial_std_annual=sr_trial_std_annual,
     )
@@ -647,19 +772,21 @@ def deflated_sharpe(
     *,
     sr_trial_std_annual: float = 0.5,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
+    rf: float = 0.0,
 ) -> float:
     """Deflated Sharpe of an equity curve, given the size of the search.
 
     Post-hoc entry point for a caller that already holds a finished curve.
     The 0.5 default is the Bailey/López de Prado equity-strategy placeholder
     when measured cross-trial dispersion is not available. Grid search passes
-    the measured std instead.
+    the measured std instead. ``rf`` is the annual risk-free hurdle.
     """
     return _dsr(
         bar_returns(equity),
         n_trials=n_trials,
         sr_trial_std_annual=sr_trial_std_annual,
         periods_per_year=periods_per_year,
+        rf=rf,
     )
 
 
@@ -783,7 +910,16 @@ def compute_metrics(
     n_trials: int = 1,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
     sr_trial_std_annual: float | None = None,
+    *,
+    risk_free_rate: float = 0.0,
 ) -> dict:
+    """Compute portfolio metrics from an equity curve and trade ledger.
+
+    ``risk_free_rate`` is an annual excess-return hurdle for Sharpe, Sortino,
+    PSR, and DSR. It does not credit interest on cash. Default ``0.0`` preserves
+    legacy zero-hurdle numbers. ``cagr`` stays bar-count annualized; see
+    ``calendar_cagr`` for wall-clock years. ``exposure`` is slot occupancy.
+    """
     daily = bar_returns(equity)
     bench_daily = (
         bar_returns(benchmark) if not benchmark.empty else pd.Series(dtype=float)
@@ -802,21 +938,31 @@ def compute_metrics(
         if len(benchmark) >= 2 and benchmark.iloc[0] > 0
         else 0.0
     )
+    rf = float(risk_free_rate)
     metrics = {
         "starting_equity": starting_equity,
         "final_equity": final_equity,
         "total_return": total_return,
         "cagr": _cagr(equity, periods_per_year),
+        "calendar_cagr": _calendar_cagr(equity),
         "vol_annual": _vol_annual(daily, periods_per_year),
-        "sharpe": equity_curve_sharpe(daily, periods_per_year=periods_per_year),
-        "sortino": _sortino(daily, periods_per_year=periods_per_year),
+        "sharpe": equity_curve_sharpe(daily, rf=rf, periods_per_year=periods_per_year),
+        "sortino": _sortino(daily, rf=rf, periods_per_year=periods_per_year),
         "calmar": _calmar(equity, periods_per_year),
-        "psr": _psr(daily, sr_benchmark_annual=0.0, periods_per_year=periods_per_year),
+        "psr": _psr(
+            daily,
+            sr_benchmark_annual=0.0,
+            periods_per_year=periods_per_year,
+            rf=rf,
+        ),
         "max_drawdown": _max_drawdown(equity),
+        "max_drawdown_duration_days": _max_drawdown_duration_days(equity),
+        "expected_shortfall_95": _expected_shortfall(daily, alpha=0.95),
         "hit_rate": hit_rate,
         "alpha_annual": alpha,
         "beta": beta,
         "exposure": _exposure(cast(pd.DatetimeIndex, equity.index), trades, slot_count),
+        "risk_free_rate": rf,
         "benchmark_return": bench_return,
         "trade_count": len(trades),
         "invested_return": _invested_return(trades),
@@ -830,6 +976,7 @@ def compute_metrics(
             n_trials=n_trials,
             sr_trial_std_annual=sr_trial_std_annual,
             periods_per_year=periods_per_year,
+            rf=rf,
         )
         metrics["dsr_trials"] = n_trials
     metrics.update(_trade_return_stats(trades))
@@ -860,6 +1007,7 @@ def no_trades_result(
         [],
         max(cfg.top, 1),
         periods_per_year=periods_per_year_for_interval(cfg.interval),
+        risk_free_rate=float(cfg.risk_free_rate),
     )
     metrics["unique_tickers"] = 0
     return BacktestResult(

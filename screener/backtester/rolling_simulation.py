@@ -391,6 +391,7 @@ def _assemble_results(
         trades,
         max(cfg.top, 1),
         periods_per_year=periods_per_year_for_interval(cfg.interval),
+        risk_free_rate=float(cfg.risk_free_rate),
     )
     metrics["unique_tickers"] = len({trade.ticker for trade in trades})
     metrics.update(compute_regime_metrics(benchmark, trades))

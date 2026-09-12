@@ -565,6 +565,7 @@ def walk_forward_optimize(
             list(oos_trades),
             slot_count,
             periods_per_year=periods_per_year_for_interval(SUPPORTED_INTERVAL),
+            risk_free_rate=float(cfg.risk_free_rate),
         )
         if exposure_reason is not None:
             combined_metrics["exposure"] = float("nan")
