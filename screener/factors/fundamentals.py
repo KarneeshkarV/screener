@@ -42,6 +42,13 @@ FUNDAMENTAL_COLUMNS: tuple[str, ...] = (
 FUNDAMENTAL_PROVENANCE_KEY = "fundamentals"
 
 
+#: Effective dates came from a real accepted/filing publication timestamp.
+EFFECTIVE_DATE_KIND_FILING_TIMESTAMP = "filing_timestamp"
+#: Effective dates are period-end plus a fixed lag (openscreener/yfinance India).
+#: That is an estimate, not actual publication time or restatement-vintage history.
+EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG = "estimated_period_end_lag"
+
+
 @dataclass(frozen=True)
 class FundamentalProvenance:
     """How the fundamental columns on a frame got there."""
@@ -52,6 +59,10 @@ class FundamentalProvenance:
     #: dates before the forward-fill. Recorded so a reader can state the
     #: assumption its scores rest on.
     filing_lag_days: int
+    #: Whether effective dates are real filing/publication timestamps or an
+    #: estimated period-end plus lag. Callers must not treat the estimated kind
+    #: as actual announcement time or original restatement history.
+    effective_date_kind: str = EFFECTIVE_DATE_KIND_FILING_TIMESTAMP
 
 
 def stamp_fundamentals(
@@ -59,6 +70,7 @@ def stamp_fundamentals(
     *,
     columns: tuple[str, ...],
     filing_lag_days: int,
+    effective_date_kind: str = EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
 ) -> pd.DataFrame:
     """Record on ``frame`` that ``columns`` arrived through the lagged join.
 
@@ -69,6 +81,7 @@ def stamp_fundamentals(
     frame.attrs[FUNDAMENTAL_PROVENANCE_KEY] = FundamentalProvenance(
         columns=tuple(columns),
         filing_lag_days=int(filing_lag_days),
+        effective_date_kind=str(effective_date_kind),
     )
     return frame
 
@@ -80,6 +93,8 @@ def fundamental_provenance(frame: pd.DataFrame) -> FundamentalProvenance | None:
 
 
 __all__ = [
+    "EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG",
+    "EFFECTIVE_DATE_KIND_FILING_TIMESTAMP",
     "FUNDAMENTAL_COLUMNS",
     "FUNDAMENTAL_PROVENANCE_KEY",
     "FundamentalProvenance",

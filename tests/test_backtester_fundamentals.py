@@ -629,6 +629,100 @@ def test_effective_date_none_when_unparseable():
     assert fundamentals._effective_date({}, 1) is None
 
 
+def test_effective_date_ignores_period_end_without_filing_timestamp():
+    """Quarter-end ``date`` alone must not become a publication time."""
+    assert fundamentals._effective_date({"date": "2024-03-31"}, lag_days=1) is None
+
+
+def test_effective_date_accepts_filing_date_spelling():
+    assert fundamentals._effective_date(
+        {"filingDate": "2024-05-10"}, lag_days=1
+    ) == pd.Timestamp("2024-05-11")
+    assert fundamentals._effective_date(
+        {"fillingDate": "2024-05-10"}, lag_days=1
+    ) == pd.Timestamp("2024-05-11")
+    assert fundamentals._effective_date(
+        {"acceptedDate": "2024-05-10 16:30:00"}, lag_days=0
+    ) == pd.Timestamp("2024-05-10")
+
+
+def test_normalize_fmp_excludes_period_end_only_rows_and_warns(caplog):
+    payload = {
+        "income": [
+            {"date": "2024-03-31", "revenue": 100.0},
+            {
+                "date": "2024-06-30",
+                "acceptedDate": "2024-08-01",
+                "revenue": 110.0,
+            },
+            {
+                "date": "2024-09-30",
+                "filingDate": "2024-11-02",
+                "revenue": 120.0,
+            },
+        ]
+    }
+    with caplog.at_level("WARNING", logger=fundamentals.LOG.name):
+        frame = fundamentals._normalize_fmp_payload(
+            payload, fields=("revenue_growth_yoy",), lag_days=0
+        )
+    assert list(frame.index) == [
+        pd.Timestamp("2024-08-01"),
+        pd.Timestamp("2024-11-02"),
+    ]
+    assert "Excluded 1 FMP fundamental row" in caplog.text
+    assert "period-end date alone" in caplog.text
+
+
+def test_openscreener_fetcher_warns_estimated_publication_provenance(
+    monkeypatch, fake_provider, caplog
+):
+    monkeypatch.setattr(fundamentals, "_OPENSCREENER_PROVIDER", fake_provider())
+    monkeypatch.setattr(
+        fundamentals,
+        "_fetch_openscreener_quarterly",
+        lambda symbol: {
+            "quarterly_results": [
+                {"date": "Dec 2024", "sales": 130.0},
+                {"date": "Sep 2024", "sales": 120.0},
+                {"date": "Jun 2024", "sales": 100.0},
+            ]
+        },
+    )
+    fetcher = fundamentals.OpenScreenerFundamentalFetcher(
+        fields=("revenue_up_3q",), lag_days=60
+    )
+    with caplog.at_level("WARNING", logger=fundamentals.LOG.name):
+        out = fetcher.fetch(["RELIANCE.NS"], date(2024, 1, 1), date(2025, 12, 31))
+    assert not out["RELIANCE.NS"].empty
+    assert "estimated as period-end" in caplog.text
+    assert fundamentals.EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG in caplog.text
+
+
+def test_merge_fundamentals_records_estimated_effective_date_kind():
+    from screener.factors.fundamentals import (
+        EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG,
+        fundamental_provenance,
+    )
+
+    bars = make_bars(start="2024-02-01", n=8)
+    fundamentals_frame = pd.DataFrame(
+        {"revenue_up_3q": [1.0]},
+        index=pd.DatetimeIndex([pd.Timestamp("2024-02-06")]),
+    )
+    merged = fundamentals.merge_fundamentals_into_bars(
+        {"AAA": bars},
+        {"AAA": fundamentals_frame},
+        {"AAA": "AAA"},
+        filing_lag_days=60,
+        effective_date_kind=EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG,
+    )["AAA"]
+    stamp = fundamental_provenance(merged)
+    assert stamp is not None
+    assert stamp.effective_date_kind == EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
+    assert stamp.filing_lag_days == 60
+
+
 @pytest.mark.parametrize(
     "raw",
     [
