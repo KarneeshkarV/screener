@@ -43,6 +43,9 @@ BOOK_CONFIG_FIELDS = frozenset(
         # Holding rules.
         "hold",
         "stop_loss",
+        "stop_mode",
+        "stop_atr_multiple",
+        "stop_atr_window",
         "take_profit",
         "trailing_stop",
         "partial_exits",
