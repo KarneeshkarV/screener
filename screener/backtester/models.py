@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import date, datetime
 from typing import Any, Literal, TypeAlias, cast
 
@@ -139,6 +140,10 @@ class BacktestConfig(BaseModel):
     sizing_atr_window: int = Field(default=14, gt=0)
     sizing_atr_multiple: float = Field(default=2.0, gt=0.0)
     sizing_vol_window: int = Field(default=20, gt=1)
+    # Annual excess-return hurdle for Sharpe/Sortino/PSR/DSR. Explicit zero
+    # default (not an invented Indian cash rate). This is a research hurdle,
+    # not interest credited to idle cash in the portfolio.
+    risk_free_rate: float = Field(default=0.0, ge=0.0)
 
     @field_validator("interval")
     @classmethod
@@ -170,6 +175,14 @@ class BacktestConfig(BaseModel):
                 f"{', '.join(available_sizing_rules())}"
             )
         return value
+
+    @field_validator("risk_free_rate")
+    @classmethod
+    def _validate_risk_free_rate(cls, value: float) -> float:
+        rate = float(value)
+        if not math.isfinite(rate):
+            raise ValueError("risk_free_rate must be a finite number >= 0")
+        return rate
 
     @model_validator(mode="before")
     @classmethod

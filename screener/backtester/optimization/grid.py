@@ -113,6 +113,7 @@ def _moments_from_result(
 ) -> SharpeMoments | None:
     return sharpe_moments_from_equity(
         result.equity_curve,
+        rf=float(cfg.risk_free_rate),
         periods_per_year=periods_per_year_for_interval(cfg.interval),
     )
 

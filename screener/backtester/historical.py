@@ -627,6 +627,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         trades,
         slot_count,
         periods_per_year=periods_per_year_for_interval(cfg.interval),
+        risk_free_rate=float(cfg.risk_free_rate),
     )
     metrics.update(compute_regime_metrics(benchmark, trades))
     metrics.update(

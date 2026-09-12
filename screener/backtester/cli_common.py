@@ -385,6 +385,21 @@ def _opt_initial_capital(mode: str) -> OptionDecorator:
     return click.option("--initial-capital", type=float, default=100_000.0)
 
 
+def _opt_risk_free_rate(mode: str) -> OptionDecorator:
+    return click.option(
+        "--risk-free-rate",
+        type=float,
+        default=0.0,
+        show_default=True,
+        help=(
+            "Annual risk-free *hurdle* for excess-return Sharpe, Sortino, PSR, "
+            "and DSR (fraction, e.g. 0.06 for 6%). Default 0.0 keeps legacy "
+            "zero-hurdle metrics. This is not cash interest credited to idle "
+            "balances in the backtest."
+        ),
+    )
+
+
 def _opt_benchmark(mode: str) -> OptionDecorator:
     return click.option(
         "--benchmark",
@@ -648,6 +663,7 @@ _OPTION_BUILDERS: dict[str, OptionBuilder] = {
     "commission-bps": _opt_commission_bps,
     "cost-model": _opt_cost_model,
     "initial-capital": _opt_initial_capital,
+    "risk-free-rate": _opt_risk_free_rate,
     "benchmark": _opt_benchmark,
     "tickers": _opt_tickers,
     "universe-file": _opt_universe_file,

@@ -11,7 +11,10 @@ def test_result_view_omits_the_deflated_sharpe_row_when_it_was_not_deflated():
     """A single-trial run reports no DSR key, so the table shows no DSR row."""
     view = result_view({"sharpe": 1.082, "psr": 0.9841})
 
-    assert [row.label for row in view] == ["Sharpe", "Probabilistic Sharpe"]
+    assert [row.label for row in view] == [
+        "Sharpe (rf hurdle)",
+        "Probabilistic Sharpe",
+    ]
 
 
 def test_result_view_renders_the_deflated_sharpe_with_its_trial_count():
@@ -22,7 +25,7 @@ def test_result_view_renders_the_deflated_sharpe_with_its_trial_count():
 
     assert [row.key for row in view] == ["sharpe", "psr", "dsr", "dsr_trials"]
     assert [row.label for row in view] == [
-        "Sharpe",
+        "Sharpe (rf hurdle)",
         "Probabilistic Sharpe",
         "Deflated Sharpe",
         "DSR Trials",
@@ -76,7 +79,7 @@ def test_sizing_comparison_covers_every_metric_in_result_view_order():
     assert [row[0] for row in rows] == [row.label for row in result_view(fixed)]
     assert all(len(row) == 1 + len(SIZING_COMPARISON_COLUMNS) for row in rows)
     assert ("Final Equity", "110,000.00", "125,000.00") in rows
-    assert ("Sortino", "+2.104", "+1.877") in rows
+    assert ("Sortino (rf hurdle)", "+2.104", "+1.877") in rows
 
 
 def test_sizing_comparison_marks_a_metric_only_one_rule_produced():
