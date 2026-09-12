@@ -61,7 +61,7 @@ HOLD = 20
 TOP = 10
 ATR_MULTIPLES = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0)
 ATR_WINDOW = 14
-FLAT_STOPS = (0.08, 0.12)
+FLAT_STOPS = (0.04, 0.06, 0.08, 0.10, 0.12, 0.15, 0.20)
 
 # The momentum family in ``NAMED_STRATEGIES``. Listed rather than pattern
 # matched: "trend" and "breakout" names are momentum in substance, and a
