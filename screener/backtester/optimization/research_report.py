@@ -46,7 +46,11 @@ from screener.backtester.optimization.reporting import (
     write_research_html_report,
 )
 from screener.backtester.optimization.walk_forward import (
+    CAPITAL_POLICY,
+    FOLD_BOUNDARY_POLICY,
     OOS_EVIDENCE_CRITERIA,
+    WINDOW_LENGTH_UNIT,
+    holding_period_fold_warnings,
     require_daily_walk_forward_scope,
     train_result_eligible,
     walk_forward_optimize,
@@ -294,6 +298,9 @@ def run_research_report(
     out_path: Path | str,
     console: Console | None = None,
     progress: Callable[[str], None] | None = None,
+    experiment_id: str | None = None,
+    trial_db_path: Path | str | None = None,
+    n_trials_effective: int | None = None,
 ) -> dict[str, Any]:
     """Run grid → walk-forward → Monte Carlo and write JSON/HTML reports.
 
@@ -301,7 +308,16 @@ def run_research_report(
     Returns the JSON payload written to ``<out>.json``.
 
     Evidence gate (see :data:`OOS_EVIDENCE_CRITERIA`): inadequate OOS yields
-    ``INSUFFICIENT DATA`` rather than PASS/FAIL/CAUTION. Daily interval only.
+    ``INSUFFICIENT DATA`` rather than PASS/FAIL/CAUTION. Daily interval only;
+    train/test/step lengths are calendar days with forced-flat fold boundaries.
+
+    Trial register / DSR: the descriptive full-period grid may record trials
+    under ``experiment_id``. Walk-forward records training-fold searches only.
+    Test-fold scores are never written into the trial register. Pass the same
+    explicit ``experiment_id`` and ``trial_db_path`` to share one family history.
+    ``n_trials_effective`` applies to the descriptive grid stage; walk-forward
+    folds reuse the shared register's nominal count so fold DSR is not forced
+    below the still-growing family size on early folds.
     """
     console = console or Console()
     out = Path(out_path)
@@ -316,6 +332,11 @@ def run_research_report(
         keep_paths=0,
         ruin_threshold=float(ruin_threshold),
     )
+    hold_fit_warnings = holding_period_fold_warnings(
+        parameter_grid, test_days=int(test_days)
+    )
+    for warning in hold_fit_warnings:
+        console.print(f"[yellow]warning:[/yellow] {warning}")
 
     # ── Stage 1: descriptive full-period grid / parameter stability ──────
     started = _banner(
@@ -336,6 +357,9 @@ def run_research_report(
         runner="rolling",
         start_date=start_date,
         end_date=end_date,
+        experiment_id=experiment_id,
+        trial_db_path=trial_db_path,
+        n_trials_effective=n_trials_effective,
     )
     stability = compute_parameter_stability(grid_results, parameter_grid, metric=metric)
     best = _descriptive_grid_best(grid_results, min_trades=min_trades)
@@ -378,6 +402,11 @@ def run_research_report(
         min_trades=min_trades,
         max_workers=max_workers,
         cache_path=wf_cache,
+        experiment_id=experiment_id,
+        trial_db_path=trial_db_path,
+        # Do not force n_trials_effective onto early folds: family nominal may
+        # still be smaller than the caller estimate until trials accumulate.
+        n_trials_effective=None,
     )
     oos_metric = _finite_or_none(walk_forward.aggregate_metrics.get(metric))
     # IS metric is the mean of eligible per-fold train scores only.
@@ -508,6 +537,11 @@ def run_research_report(
             wf_payload["evidence"]["adequate"] = False
         wf_payload["insufficient_data"] = True
 
+    wf_hold_warnings = list(
+        (wf_payload.get("evidence") or {}).get("holding_period_warnings") or []
+    )
+    all_hold_warnings = list(dict.fromkeys([*hold_fit_warnings, *wf_hold_warnings]))
+
     payload: dict[str, Any] = {
         "config": {
             "market": cfg.market,
@@ -519,6 +553,9 @@ def run_research_report(
             "train_days": train_days,
             "test_days": test_days,
             "step_days": step_days if step_days is not None else test_days,
+            "window_length_unit": WINDOW_LENGTH_UNIT,
+            "fold_boundary_policy": FOLD_BOUNDARY_POLICY,
+            "capital_policy": CAPITAL_POLICY,
             "metric": metric,
             "min_trades": min_trades,
             "interval": cfg.interval,
@@ -529,6 +566,10 @@ def run_research_report(
             "tickers": list(cfg.tickers) if cfg.tickers else None,
             "universe_file": cfg.universe_file,
             "initial_capital": cfg.initial_capital,
+            "experiment_id": experiment_id,
+            "trial_db_path": str(trial_db_path) if trial_db_path else None,
+            "n_trials_effective": n_trials_effective,
+            "holding_period_warnings": all_hold_warnings,
             "oos_evidence_criteria": OOS_EVIDENCE_CRITERIA,
             "evidence_integrity_note": EVIDENCE_INTEGRITY_NOTE,
         },
@@ -539,6 +580,7 @@ def run_research_report(
             "best_params": best_params,
             "best_score": descriptive_score,
             "stability": stability,
+            "trial_register_scope": "descriptive_full_period",
         },
         "walk_forward": wf_payload,
         "monte_carlo": {
@@ -563,6 +605,10 @@ def run_research_report(
             "insufficient_data": insufficient_data,
             "oos_evidence_criteria": OOS_EVIDENCE_CRITERIA,
             "evidence_integrity_note": EVIDENCE_INTEGRITY_NOTE,
+            "window_length_unit": WINDOW_LENGTH_UNIT,
+            "fold_boundary_policy": FOLD_BOUNDARY_POLICY,
+            "capital_policy": CAPITAL_POLICY,
+            "holding_period_warnings": all_hold_warnings,
             "mc_return_p05": float(monte_carlo.return_p05),
             "mc_median_return": float(monte_carlo.median_return),
             "mc_probability_of_profit": float(monte_carlo.probability_of_profit),
@@ -620,6 +666,14 @@ def _print_final_summary(
     table.add_row("MC source", str(summary.get("mc_source", "")))
     table.add_row("MC method", str(summary.get("mc_method", "")))
     table.add_row("Insufficient data", str(summary.get("insufficient_data", False)))
+    table.add_row(
+        "Window unit",
+        str(summary.get("window_length_unit") or WINDOW_LENGTH_UNIT),
+    )
+    table.add_row(
+        "Fold boundary",
+        str(summary.get("fold_boundary_policy") or FOLD_BOUNDARY_POLICY),
+    )
     table.add_row("Verdict", str(summary.get("verdict", "")))
     console.print()
     console.print(table)
@@ -627,3 +681,5 @@ def _print_final_summary(
     note = summary.get("evidence_integrity_note")
     if note:
         console.print(f"[dim]{note}[/dim]")
+    for warning in summary.get("holding_period_warnings") or []:
+        console.print(f"[yellow]warning:[/yellow] {warning}")

@@ -474,3 +474,70 @@ def test_load_factor_panels_unknown_strategy() -> None:
             fetcher=None,
             warnings=[],
         )
+
+
+def test_newey_west_lag_tied_to_horizon() -> None:
+    assert ft.newey_west_hac_lag_for_horizon(1) == 0
+    assert ft.newey_west_hac_lag_for_horizon(5) == 4
+    assert ft.newey_west_hac_lag_for_horizon(21) == 20
+    with pytest.raises(ValueError, match="horizon"):
+        ft.newey_west_hac_lag_for_horizon(0)
+
+
+def test_summarize_ic_hac_shrinks_autocorrelated_series() -> None:
+    """Overlapping-style AR(1) IC: classical iid t-stat is larger than HAC."""
+    rng = np.random.default_rng(7)
+    n = 400
+    eps = rng.normal(0.0, 1.0, size=n)
+    ic = np.zeros(n)
+    # Strong positive autocorrelation mimics overlapping multi-day labels.
+    for i in range(1, n):
+        ic[i] = 0.8 * ic[i - 1] + eps[i]
+    ic = ic + 0.15  # mild positive mean
+    series = pd.Series(ic)
+    summary = summarize_ic(series, horizon=5)
+    assert summary.hac_lag == 4
+    assert math.isfinite(summary.t_stat)
+    assert math.isfinite(summary.t_stat_hac)
+    assert abs(summary.t_stat_hac) < abs(summary.t_stat)
+
+    iid = summarize_ic(pd.Series(rng.normal(0.1, 1.0, size=n)), horizon=1)
+    assert iid.hac_lag == 0
+    assert iid.t_stat == pytest.approx(iid.t_stat_hac, rel=1e-9, abs=1e-9)
+
+
+def test_tearsheet_payload_includes_hac_and_limitations() -> None:
+    summaries, quantiles = _sample_results()
+    # Rebuild with HAC fields populated the way summarize_ic does.
+    summaries = [
+        summarize_ic(pd.Series([0.1, 0.2, 0.15, 0.05]), horizon=5),
+        summarize_ic(pd.Series(dtype=float), horizon=1),
+    ]
+    payload = ft.tearsheet_to_dict(
+        strategy="factor",
+        market="us",
+        start=date(2024, 1, 1),
+        end=date(2024, 2, 1),
+        quantiles=2,
+        ic_summaries=summaries,
+        quantile_results=quantiles,
+        warnings=[ft.FACTOR_TEARSHEET_LIMITATIONS],
+    )
+    assert "static universe" in payload["limitations"].lower()
+    assert "close-to-close" in payload["limitations"].lower()
+    assert payload["ic"][0]["hac_lag"] == 4
+    assert payload["ic"][0]["t_stat_hac"] is not None
+    assert payload["ic"][0]["t_stat_iid"] == payload["ic"][0]["t_stat"]
+    assert "point-in-time" in payload["warnings"][0].lower()
+
+    console = Console(record=True, width=140)
+    ft.print_tearsheet(
+        strategy="factor",
+        ic_summaries=summaries,
+        quantile_results=quantiles,
+        warnings=[ft.FACTOR_TEARSHEET_LIMITATIONS],
+        console=console,
+    )
+    rendered = console.export_text()
+    assert "t-stat HAC" in rendered
+    assert "static universe" in rendered.lower()
