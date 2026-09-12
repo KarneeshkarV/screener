@@ -332,6 +332,29 @@ def _opt_stop_loss(mode: str) -> OptionDecorator:
     )
 
 
+def _opt_stop_atr(mode: str) -> OptionDecorator:
+    return click.option(
+        "--stop-atr",
+        type=click.FloatRange(min=0.0, min_open=True),
+        default=None,
+        help=(
+            "Per-ticker stop at N x ATR below the entry fill, replacing the flat "
+            "--stop-loss. Measured at the signal bar; falls back to --stop-loss "
+            "where ATR is undefined."
+        ),
+    )
+
+
+def _opt_stop_atr_window(mode: str) -> OptionDecorator:
+    return click.option(
+        "--stop-atr-window",
+        type=click.IntRange(min=1),
+        default=14,
+        show_default=True,
+        help="ATR lookback for --stop-atr (trading bars).",
+    )
+
+
 def _opt_take_profit(mode: str) -> OptionDecorator:
     return click.option(
         "--take-profit", type=float, default=None, help="Take profit (fraction)."
@@ -642,6 +665,8 @@ _OPTION_BUILDERS: dict[str, OptionBuilder] = {
     "exit": _opt_exit,
     "strategy": _opt_strategy,
     "stop-loss": _opt_stop_loss,
+    "stop-atr": _opt_stop_atr,
+    "stop-atr-window": _opt_stop_atr_window,
     "take-profit": _opt_take_profit,
     "trailing-stop": _opt_trailing_stop,
     "slippage-bps": _opt_slippage_bps,

@@ -101,6 +101,10 @@ class BacktestRequest:
     spread_proxy: bool = False
     regime_filter_args: tuple[str, ...] = ()
     sector_neutral: bool = False
+    # ATR stop knobs. Defaulted so a programmatically built request (tests,
+    # sweeps) keeps the flat --stop-loss behaviour without naming them.
+    stop_atr: float | None = None
+    stop_atr_window: int = 14
     rank_exit: str | None = None
     rank_universe_size: int = 50
     earnings_blackout_days: int | None = None
@@ -186,6 +190,9 @@ def _build_config(
             intraday_only=bool(request.intraday_only),
             hold=int(request.hold),
             stop_loss=request.stop_loss,
+            stop_mode=("atr" if request.stop_atr else "pct"),
+            stop_atr_multiple=request.stop_atr,
+            stop_atr_window=int(request.stop_atr_window),
             take_profit=request.take_profit,
             trailing_stop=request.trailing_stop,
             slippage_bps=float(request.slippage_bps),

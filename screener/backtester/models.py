@@ -81,6 +81,15 @@ class BacktestConfig(BaseModel):
     # the CLI so a direct construction cannot smuggle the collapsed value in.
     hold: int = Field(ge=1)
     stop_loss: float | None
+    # How the initial stop distance is set (see ``screener.backtester.stops``).
+    # ``pct`` puts it a flat ``stop_loss`` below the entry fill, identical for
+    # every ticker. ``atr`` puts it ``stop_atr_multiple * ATR(stop_atr_window)``
+    # below, measured at the signal bar, so a volatile name gets a wider stop
+    # than a quiet one and both risk the same share of the position. A frame
+    # with no defined ATR at the signal bar falls back to ``stop_loss``.
+    stop_mode: Literal["pct", "atr"] = "pct"
+    stop_atr_multiple: float | None = Field(default=None, gt=0.0)
+    stop_atr_window: int = Field(default=14, gt=0)
     take_profit: float | None
     trailing_stop: float | None
     slippage_bps: float
@@ -197,9 +206,15 @@ class BacktestConfig(BaseModel):
                 "spread_proxy and EstimatedHalfSpreadSlippage must be enabled together"
             )
 
+        if self.stop_mode == "atr" and self.stop_atr_multiple is None:
+            raise ValueError("stop_mode 'atr' requires a positive stop_atr_multiple")
+
         if self.sizing_rule == "fixed_risk" and (
             self.stop_loss is None or self.stop_loss <= 0
         ):
+            # 'fixed_risk' divides equity risk by one flat fraction, so an ATR
+            # stop cannot satisfy it. 'atr_risk' is the rule that pairs with
+            # stop_mode='atr' and reads the same per-ticker distance.
             raise ValueError("sizing rule 'fixed_risk' requires a positive stop_loss")
         return self
 
