@@ -570,6 +570,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         slot_count,
         cost_model=cost_model_from_config(cfg),
         compounding=cfg.compounding,
+        whole_shares=cfg.market.lower() == "india",
     )
 
     master_dates = _run_event_driven_sim(

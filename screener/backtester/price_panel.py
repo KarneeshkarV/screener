@@ -60,6 +60,7 @@ class PricePanelInputs:
     price_adjustment: Literal["full", "splits_only", "none"]
     strategy_name: str | None
     fundamentals_provider: str | None
+    membership_added: tuple[tuple[str, date], ...] = ()
 
     @classmethod
     def from_config(cls, cfg: BacktestConfig) -> PricePanelInputs:
@@ -69,6 +70,7 @@ class PricePanelInputs:
             tickers=cfg.tickers,
             universe_file=cfg.universe_file,
             membership_windows=cfg.membership_windows,
+            membership_added=cfg.membership_added,
             dynamic_universe_size=cfg.dynamic_universe_size,
             max_universe=cfg.max_universe,
             interval=cfg.interval,
@@ -190,6 +192,8 @@ def build_price_panel(
         warnings,
         market=inputs.market,
         benchmark=inputs.benchmark,
+        membership_windows=inputs.membership_windows,
+        membership_added=inputs.membership_added,
     )
 
     if fundamental_fetcher is not None:

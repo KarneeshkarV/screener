@@ -30,10 +30,10 @@ drives one ``CandidateSource`` and one ``DayLoop`` over a calendar:
 
 The exit sequence per slot, per day, is invariant:
 
-    dividends → partial exits → (full-close-by-partial check) → exit check
+    dividends → existing protective stops → partial targets → remaining exits
 
-This mirrors the original inline historical loop and ``_close_slot_at_day``
-exactly; :class:`DayLoop` is the single home for it.
+Existing stops win when a daily bar also crosses a target.
+Stops raised by a partial target become active on the next bar.
 """
 
 from __future__ import annotations
@@ -51,6 +51,7 @@ from screener.backtester.core import (
     _fire_partial_exits_at_bar,
     _maybe_credit_dividends,
     _SlotState,
+    refresh_exit_liquidity,
 )
 from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig
@@ -96,14 +97,20 @@ def _close_slot_at_day(
         if isinstance(loc, slice) or not isinstance(loc, int):
             return False
         i = loc
-    if i < state.entry_idx + 1:
+    if i < state.entry_idx:
         return False
-    _maybe_credit_dividends(portfolio, state, bars, i, cfg)
-    _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio, fill_model)
+    entry_bar = i == state.entry_idx
+    if entry_bar and cfg.entry_order_type == "moc":
+        return False
+    # A buyer on the ex-date does not own the prior close's dividend entitlement.
+    if not entry_bar:
+        _maybe_credit_dividends(portfolio, state, bars, i, cfg)
+    refresh_exit_liquidity(state, bars, i, cfg, fill_model)
     position = portfolio.get_position(state.ticker)
     if position is None:
         slot_states[slot_id] = None
         return True
+    targets_allowed = not entry_bar or state.entry_at_open
     exit_ = _check_exit_at_bar(
         state,
         bars,
@@ -111,7 +118,28 @@ def _close_slot_at_day(
         cfg,
         fill_model,
         shares=position.shares,
+        exit_phase="protection",
+        targets_allowed=targets_allowed,
     )
+    if exit_ is None:
+        if targets_allowed:
+            _fire_partial_exits_at_bar(state, bars, i, cfg, portfolio, fill_model)
+        position = portfolio.get_position(state.ticker)
+        if position is None:
+            slot_states[slot_id] = None
+            return True
+        # A stop raised by a partial target becomes active on the next bar.
+        # Reusing this bar's low would invent an intrabar price sequence.
+        exit_ = _check_exit_at_bar(
+            state,
+            bars,
+            i,
+            cfg,
+            fill_model,
+            shares=position.shares,
+            exit_phase="remaining",
+            targets_allowed=targets_allowed,
+        )
     if exit_ is None:
         return False
     fill, reason = exit_
@@ -144,6 +172,9 @@ def _force_close_open_slots(
         if tail.empty:
             continue
         last_bar = tail.iloc[-1]
+        refresh_exit_liquidity(
+            state, bars, int(bars.index.get_loc(tail.index[-1])), cfg, fill_model
+        )
         fill = fill_model.exit_price(
             reason="eod",
             close=float(last_bar["close"]),
@@ -190,7 +221,7 @@ class DayLoop:
         self.fill_model = fill_model if fill_model is not None else FillModel(cfg)
 
     def process_exits_for_day(self, day: pd.Timestamp) -> list[FreedSlot]:
-        """Run dividends → partial exits → exit checks for every live slot.
+        """Run dividends, protection, partial targets, then remaining exits.
 
         Returns the slots that freed on ``day`` (with the state they held at
         close), in slot-id iteration order. Slots whose bars do not include

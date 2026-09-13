@@ -207,12 +207,11 @@ def test_stop_exit_frees_slot_and_records_close():
     assert trades[0].exit_reason == "stop"
 
 
-def test_partial_fire_precedes_and_raises_stop_for_exit_check():
-    """A tier scales out first; the exit check then sees the raised stop."""
+def test_original_stop_precedes_ambiguous_partial_target():
+    """A daily bar cannot prove the target traded before the original stop."""
     cfg = _cfg(stop_loss=0.05, gap_fills=False)
     # Bar 1 both clears the +5% partial target (high 106 >= 105) and pierces the
-    # original 95 stop (low 94). The partial must fire first, raise the stop to
-    # entry (100), and the exit check then closes the remainder at that stop.
+    # original 95 stop (low 94). The conservative fill closes at the stop.
     bars = _frame([_bar(100, 101, 99, 100), _bar(100, 106, 94, 100)])
     state = _state(
         bars,
@@ -234,10 +233,9 @@ def test_partial_fire_precedes_and_raises_stop_for_exit_check():
 
     assert [f.slot_id for f in freed] == [0]
     trades = portfolio.closed_trades()
-    assert [t.exit_reason for t in trades] == ["target", "stop"]
-    assert state.partial_fired == [True]
-    # Stop was ratcheted up to the entry fill by the partial fire.
-    assert state.stop_ref == pytest.approx(100.0)
+    assert [t.exit_reason for t in trades] == ["stop"]
+    assert state.partial_fired == [False]
+    assert trades[0].exit_price == pytest.approx(95.0)
 
 
 def test_partial_full_close_frees_slot_without_exit_trade():

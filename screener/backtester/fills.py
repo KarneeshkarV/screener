@@ -26,6 +26,7 @@ is a single implementation of each primitive.
 
 from __future__ import annotations
 
+from math import floor
 from typing import Protocol
 
 import numpy as np
@@ -233,6 +234,8 @@ class FillModel:
             )
             if shares * entry_ref + fees > budget:
                 shares = max((budget - fees) / entry_ref, 0.0)
+        if self.cfg.market.lower() == "india":
+            shares = float(floor(shares))
         fill = self._apply_slip(
             entry_ref,
             "buy",
@@ -241,6 +244,27 @@ class FillModel:
             sigma_daily=sigma_daily,
             half_spread=half_spread,
         )
+        if self.cfg.market.lower() == "india" and fill > 0:
+            # Keep the quoted conservative impact when affordability trims an
+            # order. Fees and slipped price must fit before the book admits it.
+            while shares > 0:
+                notional = shares * fill
+                fees = (
+                    sum(
+                        max(float(v), 0.0)
+                        for v in breakdown_fn("buy", notional, shares).values()
+                    )
+                    if callable(breakdown_fn)
+                    else notional
+                    * max(
+                        float(self.cost_model.side_cost_fraction("buy", notional)), 0.0
+                    )
+                )
+                if notional + fees <= budget:
+                    break
+                shares = float(
+                    max(0, min(floor(shares) - 1, floor((budget - fees) / fill)))
+                )
         return entry_idx, fill, shares, None
 
     # ── exit side ────────────────────────────────────────────────────
