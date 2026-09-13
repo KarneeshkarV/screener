@@ -958,3 +958,8 @@ def test_merge_fundamentals_skips_empty_or_none_bars():
     )
     assert out["AAA"].empty
     assert out["BBB"] is None
+
+
+def test_invalid_accepted_date_uses_valid_filing_date_without_period_fallback():
+    row = {"acceptedDate": "invalid", "filingDate": "2024-05-10", "date": "2024-03-31"}
+    assert fundamentals._effective_date(row, 1) == pd.Timestamp("2024-05-11")

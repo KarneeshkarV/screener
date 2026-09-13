@@ -39,7 +39,7 @@ from screener.backtester.models import (
     BacktestConfig,
     BacktestResult,
 )
-from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.backtester.portfolio import Portfolio, build_portfolio_curve
 from screener.backtester.price_panel import (
     PRICE_PANEL_CONFIG_FIELDS,
     PricePanelInputs,
@@ -377,13 +377,14 @@ def _assemble_results(
     # already present; rebuilding the same union once per trade only repeats
     # thousands of Index.searchsorted/slice/tolist operations.
     calendar = pd.DatetimeIndex(master_dates)
-    equity = build_equity_curve(
+    portfolio_curve = build_portfolio_curve(
         calendar,
         trades,
         bars_by_tv,
         cfg.initial_capital,
         price_adjustment=cfg.price_adjustment,
     )
+    equity = portfolio_curve["equity"].rename(None)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
     metrics = compute_metrics(
         equity,
@@ -392,6 +393,7 @@ def _assemble_results(
         max(cfg.top, 1),
         periods_per_year=periods_per_year_for_interval(cfg.interval),
         risk_free_rate=float(cfg.risk_free_rate),
+        holdings_value=portfolio_curve["holdings_value"],
     )
     metrics["unique_tickers"] = len({trade.ticker for trade in trades})
     metrics.update(compute_regime_metrics(benchmark, trades))

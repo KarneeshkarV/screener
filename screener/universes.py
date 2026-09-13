@@ -1160,9 +1160,9 @@ def _snapshot_date_column(frame: pd.DataFrame) -> str:
 def _snapshot_date_role(column: str) -> str:
     if column in {"observation_date", "snapshot_date"}:
         return "archive_observation_date"
-    # ``effective_date`` / ``date`` in archive-backed files are still crawl
-    # observation dates unless a separate index-effective column is supplied.
-    return "archive_observation_date_labeled_as_effective_date"
+    # A column name cannot establish whether the source uses official index
+    # effective dates or archive capture dates. Keep that uncertainty explicit.
+    return "declared_date_role_unverified"
 
 
 def report_snapshot_observation_coverage(

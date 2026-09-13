@@ -312,12 +312,14 @@ def run_research_report(
     train/test/step lengths are calendar days with forced-flat fold boundaries.
 
     Trial register / DSR: the descriptive full-period grid may record trials
-    under ``experiment_id``. Walk-forward records training-fold searches only.
+    under a descriptive child of ``experiment_id``. Walk-forward records each
+    training period in a separate child scope.
     Test-fold scores are never written into the trial register. Pass the same
-    explicit ``experiment_id`` and ``trial_db_path`` to share one family history.
+    explicit ``experiment_id`` and ``trial_db_path`` to retain repeated searches
+    within the same training period without using later-period statistics.
     ``n_trials_effective`` applies to the descriptive grid stage; walk-forward
-    folds reuse the shared register's nominal count so fold DSR is not forced
-    below the still-growing family size on early folds.
+    folds use their own nominal count. A full-study effective count is not an
+    estimate for each isolated training period.
     """
     console = console or Console()
     out = Path(out_path)
@@ -357,7 +359,9 @@ def run_research_report(
         runner="rolling",
         start_date=start_date,
         end_date=end_date,
-        experiment_id=experiment_id,
+        experiment_id=(
+            f"{experiment_id}::descriptive" if experiment_id is not None else None
+        ),
         trial_db_path=trial_db_path,
         n_trials_effective=n_trials_effective,
     )
@@ -404,8 +408,7 @@ def run_research_report(
         cache_path=wf_cache,
         experiment_id=experiment_id,
         trial_db_path=trial_db_path,
-        # Do not force n_trials_effective onto early folds: family nominal may
-        # still be smaller than the caller estimate until trials accumulate.
+        # The full-study estimate does not describe each isolated train period.
         n_trials_effective=None,
     )
     oos_metric = _finite_or_none(walk_forward.aggregate_metrics.get(metric))
@@ -566,6 +569,7 @@ def run_research_report(
             "tickers": list(cfg.tickers) if cfg.tickers else None,
             "universe_file": cfg.universe_file,
             "initial_capital": cfg.initial_capital,
+            "risk_free_rate": cfg.risk_free_rate,
             "experiment_id": experiment_id,
             "trial_db_path": str(trial_db_path) if trial_db_path else None,
             "n_trials_effective": n_trials_effective,

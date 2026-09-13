@@ -269,14 +269,16 @@ def holding_period_fold_warnings(
     if not holds:
         return []
     max_hold = max(holds)
-    # Calendar days are an upper bound on sessions in the fold; equality is
-    # already too tight because weekends/holidays shrink available bars.
-    if max_hold < test_days:
+    # Upper bound on weekdays in any window this long; exchange holidays
+    # can reduce it further. Entry also consumes one session before hold age.
+    max_sessions = (test_days // 7) * 5 + min(test_days % 7, 5)
+    if max_hold < max_sessions:
         return []
     return [
         (
             f"{HOLDING_PERIOD_FIT_WARNING_PREFIX}"
-            f"max hold={max_hold} sessions vs test_days={test_days} calendar days; "
+            f"max hold={max_hold} sessions vs test_days={test_days} calendar days "
+            f"(at most {max_sessions} weekdays, fewer with holidays); "
             f"folds use {FOLD_BOUNDARY_POLICY} so long holds cannot behave normally"
         )
     ]
@@ -415,7 +417,8 @@ def walk_forward_optimize(
     Trial register / DSR context uses training-window ``grid_search`` calls
     only. Test-fold scores are never written into the trial register.
     Reuse the same explicit ``experiment_id`` and ``trial_db_path`` across
-    folds and repeated research runs when one family history is required.
+    repeated research runs. Each training period has a separate register scope
+    so later observations cannot alter earlier fold selection or DSR.
     """
     require_daily_walk_forward_scope(cfg, parameter_grid)
     trade_floor = evidence_trade_floor(min_trades)
@@ -458,7 +461,11 @@ def walk_forward_optimize(
             runner="rolling",
             start_date=window.train_start,
             end_date=window.train_end,
-            experiment_id=experiment_id,
+            experiment_id=(
+                f"{experiment_id}::train:{window.train_start}:{window.train_end}"
+                if experiment_id is not None
+                else None
+            ),
             trial_db_path=trial_db_path,
             n_trials_effective=n_trials_effective,
         )
@@ -714,7 +721,7 @@ def walk_forward_optimize(
         "engine_same_bar_dependency": ENGINE_SAME_BAR_DEPENDENCY,
         "holding_period_warnings": hold_fit_warnings,
         "experiment_id": experiment_id,
-        "trial_register_scope": "train_folds_only",
+        "trial_register_scope": "isolated_training_periods",
     }
 
     return WalkForwardSummary(

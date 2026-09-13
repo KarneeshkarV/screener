@@ -594,6 +594,7 @@ def test_holding_period_fold_warnings_for_long_holds():
     )
 
     assert holding_period_fold_warnings({"hold": [5, 10]}, test_days=63) == []
+    assert holding_period_fold_warnings({"hold": [50]}, test_days=63)
     warnings = holding_period_fold_warnings({"hold": [21, 126]}, test_days=63)
     assert len(warnings) == 1
     assert warnings[0].startswith(HOLDING_PERIOD_FIT_WARNING_PREFIX)
@@ -603,3 +604,53 @@ def test_holding_period_fold_warnings_for_long_holds():
         {"hold": [5]}, test_days=10, selected_holds=[21]
     )
     assert selected and "21" in selected[0]
+
+
+def test_research_report_isolates_descriptive_and_each_training_period(tmp_path):
+    import sqlite3
+
+    from screener.backtester.optimization.research_report import run_research_report
+
+    bars = make_bars(n=95, seed=71, open_base=100.0)
+    cfg = BacktestConfig(
+        market="india",
+        as_of=bars.index[0].date(),
+        tickers=("AAA",),
+        benchmark="^NSEI",
+        entry_expr="close > 0",
+        exit_expr=None,
+        hold=3,
+        top=1,
+        initial_capital=100_000,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0,
+        commission_bps=0,
+    )
+    database = tmp_path / "trials.db"
+    run_research_report(
+        cfg,
+        StubPriceFetcher({"AAA": bars, "AAA.NS": bars, "^NSEI": bars}),
+        {"hold": [3, 5]},
+        start_date=bars.index[0].date(),
+        end_date=bars.index[-1].date(),
+        train_days=35,
+        test_days=28,
+        min_trades=1,
+        max_workers=1,
+        mc_iterations=10,
+        mc_block=2,
+        out_path=tmp_path / "report",
+        experiment_id="india-family",
+        trial_db_path=database,
+    )
+    with sqlite3.connect(database) as connection:
+        ids = {
+            row[0]
+            for row in connection.execute("SELECT DISTINCT experiment_id FROM trials")
+        }
+    assert "india-family::descriptive" in ids
+    training_ids = ids - {"india-family::descriptive"}
+    assert len(training_ids) >= 2
+    assert all(value.startswith("india-family::train:") for value in training_ids)

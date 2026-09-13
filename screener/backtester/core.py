@@ -700,19 +700,32 @@ def _check_exit_at_bar(
     )
     trail_hit = trail_ref is not None and low <= trail_ref
 
-    def _sell(reason: ExitReason, level: float | None = None) -> float:
+    def _sell(
+        reason: ExitReason, level: float | None = None, *, at_open: bool = False
+    ) -> float:
         return fill_model.exit_price(
             reason=reason,
             bar_open=bar_open,
             level=level,
-            close=close,
+            close=bar_open if at_open else close,
             shares=shares,
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
             half_spread=state.half_spread,
         )
 
+    india_daily_exit = cfg.market.lower() == "india" and cfg.interval == "1d"
     if exit_phase != "remaining":
+        # An expression using the completed daily bar is actionable at the
+        # next open. Execute it before this bar's intraday range is available.
+        if india_daily_exit and i > state.entry_idx and state.exit_signal is not None:
+            prior_exit = (
+                bool(state.exit_signal_values[i - 1])
+                if state.exit_signal_values is not None
+                else bool(state.exit_signal.iloc[i - 1])
+            )
+            if prior_exit:
+                return _sell("exit_expr", at_open=True), "exit_expr"
         if stop_hit:
             return _sell("stop", state.stop_ref), "stop"
         if trail_hit:
@@ -729,7 +742,7 @@ def _check_exit_at_bar(
 
     state.peak = max(state.peak, high if targets_allowed else close)
 
-    if state.exit_signal is not None:
+    if state.exit_signal is not None and not india_daily_exit:
         fired = (
             bool(state.exit_signal_values[i])
             if state.exit_signal_values is not None

@@ -392,7 +392,7 @@ def test_snapshot_universe_selection_surfaces_coverage_gaps(tmp_path: Path) -> N
     assert any("495d" in warning for warning in selection.warnings)
     assert any("309d" in warning for warning in selection.warnings)
     assert "observation gap" in selection.source
-    assert "archive_observation_date" in selection.source
+    assert "declared_date_role_unverified" in selection.source
 
 
 def test_snapshot_observation_date_column_role_is_preferred(tmp_path: Path) -> None:

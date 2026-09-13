@@ -173,7 +173,7 @@ def _force_close_open_slots(
             continue
         last_bar = tail.iloc[-1]
         refresh_exit_liquidity(
-            state, bars, int(bars.index.get_loc(tail.index[-1])), cfg, fill_model
+            state, bars, int(bars.index.searchsorted(tail.index[-1])), cfg, fill_model
         )
         fill = fill_model.exit_price(
             reason="eod",

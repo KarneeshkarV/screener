@@ -284,10 +284,8 @@ OptionBuilder = Callable[[str], OptionDecorator]
 
 
 def _opt_hold(mode: str) -> OptionDecorator:
-    # ``IntRange(min=1)``: the time exit is ``entry_idx + cfg.hold`` and no exit
-    # check runs before ``entry_idx + 1``, so every value <= 1 collapsed to the
-    # same one-bar trade and a typo like ``--hold -5`` was silently honoured as
-    # ``--hold 1``. There is no "no time exit" sentinel, so 0 is not special.
+    # Time exits use ``entry_idx + cfg.hold``; protective exits can occur on
+    # entry day. There is no "no time exit" sentinel, so 0 is not special.
     return click.option(
         "--hold",
         type=click.IntRange(min=1),
@@ -457,7 +455,7 @@ def _opt_min_avg_dollar_volume(mode: str) -> OptionDecorator:
         "--min-avg-dollar-volume",
         type=float,
         default=None,
-        help="Minimum rolling-mean dollar volume (close*volume) over --adv-window. Default: $1,000 (US) / ₹100,000 (India). Pass 0 to disable.",
+        help="Minimum rolling-mean turnover in market currency (INR for India; close*volume) over --adv-window. Default: $1,000 (US) / ₹100,000 (India). Pass 0 to disable.",
     )
 
 

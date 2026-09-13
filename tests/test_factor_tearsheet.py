@@ -541,3 +541,9 @@ def test_tearsheet_payload_includes_hac_and_limitations() -> None:
     rendered = console.export_text()
     assert "t-stat HAC" in rendered
     assert "static universe" in rendered.lower()
+
+
+def test_newey_west_zero_lag_matches_sample_mean_standard_error():
+    values = pd.Series([0.1, 0.3, -0.2, 0.05, 0.15])
+    expected = values.mean() / (values.std(ddof=1) / math.sqrt(len(values)))
+    assert ft.newey_west_mean_t_stat(values, lag=0) == pytest.approx(expected)

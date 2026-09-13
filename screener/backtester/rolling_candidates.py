@@ -413,11 +413,11 @@ def _build_rolling_candidate_matrices(
                     "sector: {preview}",
                 )
             )
-        eligible = signal_mat & lookback_ok_mat
+        sector_eligible = signal_mat & lookback_ok_mat
         if filter_mat is not None:
-            eligible &= filter_mat
+            sector_eligible &= filter_mat
         rank_score_mat = _sector_neutralize_scores(
-            rank_score_mat.where(eligible), sector_map
+            rank_score_mat.where(sector_eligible), sector_map
         )
     final_rank_score_np = (
         rank_score_mat.to_numpy()

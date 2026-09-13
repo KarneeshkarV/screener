@@ -38,7 +38,7 @@ from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import Node
 from screener.backtester.rolling_candidates import _preview_warning
 from screener.backtester.warmup import _warmup_days_for_interval
-from screener.factors.fundamentals import EFFECTIVE_DATE_KIND_FILING_TIMESTAMP
+from screener.factors.fundamentals import EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
 from screener.options.backtest import merge_referenced_options
 
 
@@ -232,8 +232,13 @@ def build_price_panel(
         date_kind = getattr(
             fundamental_fetcher,
             "effective_date_kind",
-            EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
+            "unknown",
         )
+        if date_kind == EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG:
+            warnings.append(
+                "Fundamental dates are estimated period-end plus lag, not actual "
+                "publication timestamps; original restatement vintages are unavailable."
+            )
         bars_by_tv = merge_fundamentals_into_bars(
             bars_by_tv,
             fundamentals,

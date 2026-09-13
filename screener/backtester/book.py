@@ -35,6 +35,8 @@ BOOK_CONFIG_FIELDS = frozenset(
         # Capital and slots.
         "top",
         "initial_capital",
+        # Metrics-only input; changing it does not rebuild price/signal panels.
+        "risk_free_rate",
         "reserve_multiple",
         "reinvest",
         "allow_reentry",

@@ -468,14 +468,14 @@ class Portfolio:
         return self._cash
 
 
-def build_equity_curve(
+def build_portfolio_curve(
     calendar: pd.DatetimeIndex,
     trades: Iterable[Trade],
     price_panel: dict[str, pd.DataFrame],
     initial_capital: float,
     price_adjustment: str = "full",
-) -> pd.Series:
-    """Reconstruct the equity curve from a list of completed trades.
+) -> pd.DataFrame:
+    """Reconstruct cash, holdings value, and equity from a list of completed trades.
 
     On each calendar date, equity = cash + Σ shares * close for positions that
     are open that day (after applying all trade events dated <= that day, with
@@ -607,4 +607,20 @@ def build_equity_curve(
             dividend_idx += 1
 
         values[day_idx] = cash + mtm[day_idx]
-    return pd.Series(values, index=calendar, dtype=float)
+    return pd.DataFrame(
+        {"equity": values, "holdings_value": mtm, "cash": values - mtm}, index=calendar
+    )
+
+
+def build_equity_curve(
+    calendar: pd.DatetimeIndex,
+    trades: Iterable[Trade],
+    price_panel: dict[str, pd.DataFrame],
+    initial_capital: float,
+    price_adjustment: str = "full",
+) -> pd.Series:
+    """Equity-only view of the shared portfolio valuation calculation."""
+    curve = build_portfolio_curve(
+        calendar, trades, price_panel, initial_capital, price_adjustment
+    )
+    return curve["equity"].rename(None)

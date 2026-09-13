@@ -127,7 +127,7 @@ def newey_west_mean_t_stat(values: pd.Series | np.ndarray, *, lag: int) -> float
         hac += 2.0 * weight * gamma_k
     if not math.isfinite(hac) or hac <= 0.0:
         return float("nan")
-    se = math.sqrt(hac / n)
+    se = math.sqrt(hac / (n - 1))
     if se <= 0.0 or not math.isfinite(se):
         return float("nan")
     return mean / se
@@ -163,8 +163,7 @@ def summarize_ic(ic: pd.Series, *, horizon: int) -> ICSummary:
         if std and std > 0 and math.isfinite(std)
         else float("nan")
     )
-    # lag 0 matches the classical iid t-stat (ddof=1). Positive lags use HAC.
-    t_stat_hac = t_stat if hac_lag == 0 else newey_west_mean_t_stat(clean, lag=hac_lag)
+    t_stat_hac = newey_west_mean_t_stat(clean, lag=hac_lag)
     pct_pos = float((clean > 0).mean())
     return ICSummary(
         horizon=horizon,

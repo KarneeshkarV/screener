@@ -1,5 +1,6 @@
 """Entry-day protection and ambiguous-bar fills through both portfolio engines."""
 
+from dataclasses import dataclass, field
 from datetime import date
 
 import pandas as pd
@@ -22,6 +23,9 @@ def protection_run(
     take_profit=None,
     entry_limit_bps=None,
     slippage_bps=0,
+    exit_expr=None,
+    slippage_model=None,
+    volumes=None,
 ):
     bars = pd.DataFrame(
         {
@@ -35,13 +39,15 @@ def protection_run(
         index=pd.bdate_range("2024-01-01", periods=6),
     )
     bars.loc[bars.index[spike_day], ["high", "low"]] = [120.0, low]
+    if volumes is not None:
+        bars["volume"] = volumes
     cfg = BacktestConfig(
         market="india",
         as_of=date(2024, 1, 1),
         benchmark="^NSEI",
         tickers=("TEST.NS",),
         entry_expr="entry_signal > 0",
-        exit_expr=None,
+        exit_expr=exit_expr,
         hold=2,
         stop_loss=0.1,
         take_profit=take_profit,
@@ -49,6 +55,7 @@ def protection_run(
         top=1,
         initial_capital=capital,
         slippage_bps=slippage_bps,
+        slippage_model=slippage_model,
         commission_bps=0,
         entry_order_type=order,
         partial_exits=partials,
@@ -132,3 +139,39 @@ def test_india_slippage_cannot_create_zero_share_position(engine):
     result = protection_run(engine, capital=100, slippage_bps=10)
     assert not result.trades
     assert result.metrics["final_equity"] == pytest.approx(100)
+
+
+@pytest.mark.parametrize("engine", ["historical", "rolling"])
+def test_india_close_derived_exit_waits_for_next_open(engine):
+    result = protection_run(engine, low=95, exit_expr="high > 110")
+    assert result.trades[0].exit_reason == "exit_expr"
+    assert result.trades[0].exit_date == date(2024, 1, 3)
+
+
+@pytest.mark.parametrize("engine", ["historical", "rolling"])
+def test_capital_exposure_tracks_partial_sale_and_idle_cash(engine):
+    result = protection_run(engine, low=95, capital=350, partials=((0.1, 0.5),))
+    # One share sells at 110; two remain at 100 with cash 160.
+    assert result.metrics["max_capital_exposure"] == pytest.approx(200 / 360)
+    assert result.metrics["avg_capital_exposure"] < result.metrics["exposure"]
+
+
+@pytest.mark.parametrize("engine", ["historical", "rolling"])
+def test_exit_liquidity_uses_prior_completed_bars(engine):
+    @dataclass
+    class RecordingSlippage:
+        observed: list = field(default_factory=list)
+
+        def adverse_fraction(self, side, shares, adv, sigma_daily, half_spread=0):
+            self.observed.append((side, adv, sigma_daily))
+            return 0.0
+
+    model = RecordingSlippage()
+    protection_run(
+        engine,
+        low=95,
+        slippage_model=model,
+        volumes=[1e6, 2e6, 3e6, 999e6, 999e6, 999e6],
+    )
+    assert model.observed[0] == ("buy", 1_000_000, 0)
+    assert model.observed[-1] == ("sell", 2_000_000, 0)

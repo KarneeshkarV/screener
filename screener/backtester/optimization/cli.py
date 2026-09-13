@@ -278,7 +278,12 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
         ),
         click.option("--benchmark", default=None),
         click.option("--min-price", type=float, default=None),
-        click.option("--min-avg-dollar-volume", type=float, default=None),
+        click.option(
+            "--min-avg-dollar-volume",
+            type=float,
+            default=None,
+            help="Minimum rolling turnover in market currency (INR for India; close*volume).",
+        ),
         click.option("--adv-window", type=int, default=20),
         click.option(
             "--metric",

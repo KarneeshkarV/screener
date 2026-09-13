@@ -288,6 +288,7 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         ("Experiment id", config.get("experiment_id")),
         ("Trial db", config.get("trial_db_path")),
         ("Metric", metric),
+        ("Annual risk-free hurdle", config.get("risk_free_rate", 0.0)),
         (
             "Parameter grid",
             json.dumps(config.get("parameter_grid") or {}, sort_keys=True),

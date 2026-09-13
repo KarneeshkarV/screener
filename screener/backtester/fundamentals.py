@@ -215,7 +215,8 @@ def _filing_publication_raw(row: Mapping[str, Any]) -> Any:
             continue
         if isinstance(raw, str) and not raw.strip():
             continue
-        return raw
+        if _filing_timestamp(raw) is not None:
+            return raw
     return None
 
 

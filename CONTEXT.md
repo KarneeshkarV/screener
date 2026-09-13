@@ -31,7 +31,8 @@ It is not cash interest credited to idle balances.
 **slot occupancy**
 The metric serialized as `exposure`: mean open positions / slot count.
 It is not capital invested.
-Marked capital exposure needs a daily holdings series from the engine and is not computed in `metrics.py` yet.
+Marked capital exposure is holdings value divided by equity at each daily close, from `build_portfolio_curve`.
+`avg_capital_exposure` and `max_capital_exposure` summarize that series; intraday peak usage is not measured.
 
 **calendar CAGR**
 Compound annual growth using wall-clock years between the first and last equity stamp.
