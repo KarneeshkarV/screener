@@ -46,7 +46,7 @@ _MIN_AVG_DOLLAR_VOLUME = click.option(
     type=float,
     default=None,
     help=(
-        "Minimum rolling-mean dollar volume (close*volume) over --adv-window. "
+        "Minimum rolling-mean turnover in market currency (INR for India; close*volume) over --adv-window. "
         "Defaults to the market floor ($1,000 US / ₹100,000 India). Pass 0 to "
         "disable."
     ),

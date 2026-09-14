@@ -333,6 +333,117 @@ def test_universe_fetch_failure_without_cache_still_raises(
         universes.load_current_universe(name, as_of=date.today())
 
 
+def test_snapshot_observation_coverage_flags_309_and_495_day_gaps() -> None:
+    """The known India PIT gap pattern must be visible without editing the CSV.
+
+    Offline synthetic dates reproduce the 309-day and 495-day observation gaps
+    measured on the shipped Nifty 500 archive history. The warning threshold is
+    documented as ``SNAPSHOT_OBSERVATION_GAP_WARN_DAYS``; a long gap is incomplete
+    coverage, not a claim the index was wrong.
+    """
+    dates = [
+        date(2023, 4, 4),
+        date(2024, 2, 7),
+        date(2025, 6, 16),
+    ]
+    report = universes.report_snapshot_observation_coverage(
+        dates,
+        as_of=date(2025, 8, 15),
+        date_role="archive_observation_date",
+    )
+    gap_lengths = {gap.gap_days for gap in report.warned_gaps}
+    assert 309 in gap_lengths
+    assert 495 in gap_lengths
+    assert report.warnings
+    assert "309d" in report.warnings[0] or "495d" in report.warnings[0]
+    assert "not guaranteed index effective dates" in report.warnings[0]
+    assert "not proof the index was static or wrong" in report.warnings[0]
+
+
+def test_snapshot_universe_selection_surfaces_coverage_gaps(tmp_path: Path) -> None:
+    snapshots = tmp_path / "gaps.csv"
+    snapshots.write_text(
+        "effective_date,symbol\n"
+        "2023-04-04,AAA.NS\n"
+        "2023-04-04,BBB.NS\n"
+        "2024-02-07,AAA.NS\n"
+        "2024-02-07,CCC.NS\n"
+        "2025-06-16,AAA.NS\n"
+        "2025-06-16,DDD.NS\n"
+    )
+    config = tmp_path / "universes.yaml"
+    config.write_text(
+        "universes:\n"
+        "  gap_probe:\n"
+        "    type: snapshots\n"
+        "    market: india\n"
+        "    benchmark: ^NSEI\n"
+        f"    path: {snapshots.name}\n"
+    )
+
+    selection = universes.load_universe_selection(
+        "gap_probe",
+        market="india",
+        as_of=date(2025, 8, 15),
+        config_path=config,
+    )
+
+    assert selection.warnings
+    assert any("495d" in warning for warning in selection.warnings)
+    assert any("309d" in warning for warning in selection.warnings)
+    assert "observation gap" in selection.source
+    assert "declared_date_role_unverified" in selection.source
+
+
+def test_snapshot_observation_date_column_role_is_preferred(tmp_path: Path) -> None:
+    snapshots = tmp_path / "observed.csv"
+    snapshots.write_text("observation_date,symbol\n2024-01-01,AAA\n2024-02-01,AAA\n")
+    config = tmp_path / "universes.yaml"
+    config.write_text(
+        "universes:\n"
+        "  observed:\n"
+        "    type: snapshots\n"
+        "    market: us\n"
+        "    benchmark: SPY\n"
+        f"    path: {snapshots.name}\n"
+    )
+
+    selection = universes.load_universe_selection(
+        "observed",
+        market="us",
+        as_of=date(2024, 2, 1),
+        config_path=config,
+    )
+    # Gaps below the warning threshold produce no coverage note.
+    assert selection.warnings == ()
+    assert "observation gap" not in selection.source
+
+
+def test_stale_final_snapshot_observation_is_warned(tmp_path: Path) -> None:
+    snapshots = tmp_path / "stale.csv"
+    snapshots.write_text("effective_date,symbol\n2024-01-01,AAA\n2024-01-15,AAA\n")
+    config = tmp_path / "universes.yaml"
+    config.write_text(
+        "universes:\n"
+        "  stale_probe:\n"
+        "    type: snapshots\n"
+        "    market: us\n"
+        "    benchmark: SPY\n"
+        f"    path: {snapshots.name}\n"
+    )
+
+    selection = universes.load_universe_selection(
+        "stale_probe",
+        market="us",
+        as_of=date(2025, 1, 1),
+        config_path=config,
+    )
+    assert any(
+        "final snapshot observation" in warning for warning in selection.warnings
+    )
+    assert "final observation stale" in selection.source
+
+
 def test_shipped_nifty500_pit_config_yields_delisted_members() -> None:
     """The committed snapshot history must still resolve into real PIT windows.
 
@@ -357,6 +468,14 @@ def test_shipped_nifty500_pit_config_yields_delisted_members() -> None:
     boundaries = sorted({window[1] for window in selection.membership_windows})
     assert len(boundaries) >= 10
     assert boundaries[0].year <= 2019
+    # Shipped archive history includes the measured 309d and 495d observation gaps.
+    gap_days = {
+        (boundaries[index + 1] - boundaries[index]).days
+        for index in range(len(boundaries) - 1)
+    }
+    assert {309, 495} <= gap_days
+    assert selection.warnings
+    assert any("495d" in warning for warning in selection.warnings)
 
     open_members = {w[0] for w in selection.membership_windows if w[2] is None}
     # Ever-members far exceed current members only if delisted and demoted

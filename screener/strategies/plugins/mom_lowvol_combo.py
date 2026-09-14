@@ -24,19 +24,10 @@ days of history exist. The entry gate additionally requires positive momentum, s
 the portfolio is "low-volatility *winners*". Each cross-sectional rank at bar ``t``
 uses only bar-``t`` factor values (themselves causal), so the blend is causal.
 
-Ranking-universe note (intentional difference vs the single-factor strategies):
-``momentum_12_1`` and ``low_volatility`` emit a *raw* ``rank_score`` and let the
-rolling backtester do the cross-sectional ordering at selection time over the
-*per-day eligible* subset (post min-price / ADV / membership / regime filters).
-This combo instead bakes the percentile ranks in at prepare time over the *full
-prepared universe* (``ctx.bars_by_tv``), because blending two factors requires a
-common, scale-free scale and the percentile transform must therefore precede the
-weighted sum. A name's combo score consequently reflects percentiles computed
-against names that may later be filtered out. This is a defensible and stable
-definition (the relative ordering of two co-eligible names is unchanged by the
-presence of a third, ineligible name, since both legs are monotonic in the
-percentile rank), but it is deliberately not identical to the other two — noted
-here so the difference is documented rather than surprising.
+Ranking reference: dated index members on each bar, when membership history is
+available; otherwise the explicitly selected fixed universe.
+Price and liquidity gates still control selection after factor construction.
+Names outside dated membership cannot alter the percentile spacing or blend.
 """
 
 from __future__ import annotations
@@ -71,8 +62,8 @@ def _prepare_combo(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     # Cross-sectional percentile ranks: rank across names (axis=1) per day. NaN
     # factor cells are ignored by ``rank`` and stay NaN, so a name is only scored
     # on days where both legs are defined.
-    mom_df = pd.DataFrame(mom_by_tv)
-    invvol_df = -pd.DataFrame(vol_by_tv)
+    mom_df = ctx.mask_rank_reference(pd.DataFrame(mom_by_tv))
+    invvol_df = ctx.mask_rank_reference(-pd.DataFrame(vol_by_tv))
     mom_pct = mom_df.rank(axis=1, pct=True)
     invvol_pct = invvol_df.rank(axis=1, pct=True)
     blended = _MOM_WEIGHT * mom_pct + _VOL_WEIGHT * invvol_pct

@@ -41,6 +41,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime
+from math import floor
 from typing import Any, Union, cast
 
 import numpy as np
@@ -63,12 +64,14 @@ class Portfolio:
         cost_model: CostModel | None = None,
         *,
         compounding: bool = True,
+        whole_shares: bool = False,
     ) -> None:
         if slot_count <= 0:
             raise ValueError("slot_count must be > 0")
         self.initial_capital = float(initial_capital)
         self.slot_count = slot_count
         self.compounding = compounding
+        self.whole_shares = whole_shares
         self.slot_capital = self.initial_capital / slot_count
         self.cost_model = cost_model or FlatCommission()
         # Running attribution of statutory/broker fees actually charged, keyed
@@ -264,6 +267,8 @@ class Portfolio:
             shares = budget / gross_per_share if gross_per_share > 0 else 0.0
         else:
             shares = self._shares_within_cap(max(float(shares), 0.0), entry_price, cap)
+        if self.whole_shares:
+            shares = float(floor(shares))
         notional = shares * entry_price
         commission = self._charge_fees("buy", notional, shares)
         entry_cost = notional + commission
@@ -368,6 +373,11 @@ class Portfolio:
         self._closed.append(trade)
         return trade
 
+    def partial_exit_shares(self, shares: float, fraction: float) -> float:
+        """Order quantity after the portfolio share-unit rule."""
+        quantity = shares * fraction
+        return float(floor(quantity)) if self.whole_shares else quantity
+
     def partial_close(
         self,
         ticker: str,
@@ -400,7 +410,10 @@ class Portfolio:
         if key is None:
             raise KeyError(f"No open position for {ticker}")
         position = self._open[key]
-        close_shares = position.shares * fraction
+        close_shares = self.partial_exit_shares(position.shares, fraction)
+        if close_shares <= 0:
+            raise ValueError("partial exit is smaller than one whole share")
+        fraction = close_shares / position.shares
         remaining_shares = position.shares - close_shares
         pro_rata_cost = position.slot_capital * fraction
         remaining_cost = position.slot_capital - pro_rata_cost
@@ -455,14 +468,14 @@ class Portfolio:
         return self._cash
 
 
-def build_equity_curve(
+def build_portfolio_curve(
     calendar: pd.DatetimeIndex,
     trades: Iterable[Trade],
     price_panel: dict[str, pd.DataFrame],
     initial_capital: float,
     price_adjustment: str = "full",
-) -> pd.Series:
-    """Reconstruct the equity curve from a list of completed trades.
+) -> pd.DataFrame:
+    """Reconstruct cash, holdings value, and equity from a list of completed trades.
 
     On each calendar date, equity = cash + Σ shares * close for positions that
     are open that day (after applying all trade events dated <= that day, with
@@ -594,4 +607,20 @@ def build_equity_curve(
             dividend_idx += 1
 
         values[day_idx] = cash + mtm[day_idx]
-    return pd.Series(values, index=calendar, dtype=float)
+    return pd.DataFrame(
+        {"equity": values, "holdings_value": mtm, "cash": values - mtm}, index=calendar
+    )
+
+
+def build_equity_curve(
+    calendar: pd.DatetimeIndex,
+    trades: Iterable[Trade],
+    price_panel: dict[str, pd.DataFrame],
+    initial_capital: float,
+    price_adjustment: str = "full",
+) -> pd.Series:
+    """Equity-only view of the shared portfolio valuation calculation."""
+    curve = build_portfolio_curve(
+        calendar, trades, price_panel, initial_capital, price_adjustment
+    )
+    return curve["equity"].rename(None)

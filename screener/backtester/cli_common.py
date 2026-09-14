@@ -284,10 +284,8 @@ OptionBuilder = Callable[[str], OptionDecorator]
 
 
 def _opt_hold(mode: str) -> OptionDecorator:
-    # ``IntRange(min=1)``: the time exit is ``entry_idx + cfg.hold`` and no exit
-    # check runs before ``entry_idx + 1``, so every value <= 1 collapsed to the
-    # same one-bar trade and a typo like ``--hold -5`` was silently honoured as
-    # ``--hold 1``. There is no "no time exit" sentinel, so 0 is not special.
+    # Time exits use ``entry_idx + cfg.hold``; protective exits can occur on
+    # entry day. There is no "no time exit" sentinel, so 0 is not special.
     return click.option(
         "--hold",
         type=click.IntRange(min=1),
@@ -385,6 +383,21 @@ def _opt_initial_capital(mode: str) -> OptionDecorator:
     return click.option("--initial-capital", type=float, default=100_000.0)
 
 
+def _opt_risk_free_rate(mode: str) -> OptionDecorator:
+    return click.option(
+        "--risk-free-rate",
+        type=float,
+        default=0.0,
+        show_default=True,
+        help=(
+            "Annual risk-free *hurdle* for excess-return Sharpe, Sortino, PSR, "
+            "and DSR (fraction, e.g. 0.06 for 6%). Default 0.0 keeps legacy "
+            "zero-hurdle metrics. This is not cash interest credited to idle "
+            "balances in the backtest."
+        ),
+    )
+
+
 def _opt_benchmark(mode: str) -> OptionDecorator:
     return click.option(
         "--benchmark",
@@ -442,7 +455,7 @@ def _opt_min_avg_dollar_volume(mode: str) -> OptionDecorator:
         "--min-avg-dollar-volume",
         type=float,
         default=None,
-        help="Minimum rolling-mean dollar volume (close*volume) over --adv-window. Default: $1,000 (US) / ₹100,000 (India). Pass 0 to disable.",
+        help="Minimum rolling-mean turnover in market currency (INR for India; close*volume) over --adv-window. Default: $1,000 (US) / ₹100,000 (India). Pass 0 to disable.",
     )
 
 
@@ -648,6 +661,7 @@ _OPTION_BUILDERS: dict[str, OptionBuilder] = {
     "commission-bps": _opt_commission_bps,
     "cost-model": _opt_cost_model,
     "initial-capital": _opt_initial_capital,
+    "risk-free-rate": _opt_risk_free_rate,
     "benchmark": _opt_benchmark,
     "tickers": _opt_tickers,
     "universe-file": _opt_universe_file,

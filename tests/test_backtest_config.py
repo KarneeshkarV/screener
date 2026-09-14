@@ -83,3 +83,17 @@ def test_hold_below_one_is_rejected() -> None:
 
 def test_hold_of_one_is_the_lower_bound() -> None:
     assert BacktestConfig.model_validate({**_flat_dict(), "hold": 1}).hold == 1
+
+
+def test_risk_free_rate_defaults_to_zero_and_rejects_invalid() -> None:
+    assert _config().risk_free_rate == 0.0
+    assert (
+        BacktestConfig.model_validate(
+            {**_flat_dict(), "risk_free_rate": 0.06}
+        ).risk_free_rate
+        == 0.06
+    )
+    with pytest.raises(ValidationError):
+        BacktestConfig.model_validate({**_flat_dict(), "risk_free_rate": -0.01})
+    with pytest.raises(ValidationError):
+        BacktestConfig.model_validate({**_flat_dict(), "risk_free_rate": float("nan")})

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 import numpy as np
 import pandas as pd
@@ -409,6 +409,8 @@ class _SlotState:
     # ticker left the prior bar's top-N ranking; the shared exit sweep then
     # closes the slot through the normal dividend -> partial -> exit sequence.
     rank_exit: bool = False
+    # An intrabar limit fill cannot claim the bar's earlier high as profit.
+    entry_at_open: bool = True
 
 
 def _half_spread_at_signal(
@@ -544,7 +546,20 @@ def _make_slot_state(
             frame_cache=frame_cache,
             exit_signal_values=exit_signal_values,
             session_last=session_last,
-            entry_shares=(entry_shares if fills.needs_liquidity_inputs else None),
+            entry_shares=(
+                entry_shares
+                if fills.needs_liquidity_inputs or cfg.market.lower() == "india"
+                else None
+            ),
+            entry_at_open=(
+                cfg.entry_order_type == "moo"
+                or (
+                    cfg.entry_order_type == "limit"
+                    and float(bars["open"].iloc[entry_idx])
+                    <= float(bars["close"].iloc[signal_idx])
+                    * (1.0 - float(cfg.entry_limit_bps or 0.0) / 10_000.0)
+                )
+            ),
         ),
         None,
     )
@@ -580,6 +595,27 @@ def _maybe_credit_dividends(
     portfolio.credit_dividends(state.ticker, div)
 
 
+def refresh_exit_liquidity(
+    state: _SlotState,
+    bars: pd.DataFrame,
+    i: int,
+    cfg: BacktestConfig,
+    fill_model: FillModel,
+) -> None:
+    """Use prior completed bars for exit volume, volatility, and spread inputs."""
+    if not fill_model.needs_liquidity_inputs:
+        return
+    prior = i - 1
+    if state.frame_cache is not None:
+        state.adv_shares, state.sigma_daily = _cached_trailing_liquidity(
+            state.frame_cache, bars, prior
+        )
+    else:
+        state.adv_shares, state.sigma_daily = _trailing_liquidity(bars, prior)
+    if prior >= 0:
+        state.half_spread = _half_spread_at_signal(bars, prior, cfg, state.frame_cache)
+
+
 def _fire_partial_exits_at_bar(
     state: _SlotState,
     bars: pd.DataFrame,
@@ -606,11 +642,16 @@ def _fire_partial_exits_at_bar(
     for tier_idx, target_price in enumerate(state.partial_targets):
         if state.partial_fired[tier_idx] or high < target_price:
             continue
+        close_shares = portfolio.partial_exit_shares(
+            pos.shares, state.partial_fractions[tier_idx]
+        )
+        if close_shares <= 0:
+            continue
         fill = fill_model.exit_price(
             reason="target",
             bar_open=bar_open,
             level=target_price,
-            shares=pos.shares * state.partial_fractions[tier_idx],
+            shares=close_shares,
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
             half_spread=state.half_spread,
@@ -634,8 +675,11 @@ def _check_exit_at_bar(
     cfg: BacktestConfig,
     fill_model: FillModel,
     shares: float = 0.0,
+    *,
+    exit_phase: Literal["all", "protection", "remaining"] = "all",
+    targets_allowed: bool = True,
 ) -> tuple[float, ExitReason] | None:
-    """Evaluate exit rules for ``state`` at ``bars[i]``."""
+    """Evaluate protection before partial targets, then remaining exit rules."""
     frame_cache = state.frame_cache
     if frame_cache is not None:
         bar_open = float(frame_cache.open_arr[i])
@@ -651,27 +695,43 @@ def _check_exit_at_bar(
 
     trail_ref = state.peak * (1.0 - cfg.trailing_stop) if cfg.trailing_stop else None
     stop_hit = state.stop_ref is not None and low <= state.stop_ref
-    target_hit = state.target_ref is not None and high >= state.target_ref
+    target_hit = (
+        targets_allowed and state.target_ref is not None and high >= state.target_ref
+    )
     trail_hit = trail_ref is not None and low <= trail_ref
 
-    def _sell(reason: ExitReason, level: float | None = None) -> float:
+    def _sell(
+        reason: ExitReason, level: float | None = None, *, at_open: bool = False
+    ) -> float:
         return fill_model.exit_price(
             reason=reason,
             bar_open=bar_open,
             level=level,
-            close=close,
+            close=bar_open if at_open else close,
             shares=shares,
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
             half_spread=state.half_spread,
         )
 
-    if stop_hit and target_hit:
-        return _sell("stop", state.stop_ref), "stop"
-    if stop_hit:
-        return _sell("stop", state.stop_ref), "stop"
-    if trail_hit:
-        return _sell("trail", trail_ref), "trail"
+    india_daily_exit = cfg.market.lower() == "india" and cfg.interval == "1d"
+    if exit_phase != "remaining":
+        # An expression using the completed daily bar is actionable at the
+        # next open. Execute it before this bar's intraday range is available.
+        if india_daily_exit and i > state.entry_idx and state.exit_signal is not None:
+            prior_exit = (
+                bool(state.exit_signal_values[i - 1])
+                if state.exit_signal_values is not None
+                else bool(state.exit_signal.iloc[i - 1])
+            )
+            if prior_exit:
+                return _sell("exit_expr", at_open=True), "exit_expr"
+        if stop_hit:
+            return _sell("stop", state.stop_ref), "stop"
+        if trail_hit:
+            return _sell("trail", trail_ref), "trail"
+    if exit_phase == "protection":
+        return None
     if target_hit:
         return _sell("target", state.target_ref), "target"
 
@@ -680,9 +740,9 @@ def _check_exit_at_bar(
     if state.rank_exit:
         return _sell("rank"), "rank"
 
-    state.peak = max(state.peak, high)
+    state.peak = max(state.peak, high if targets_allowed else close)
 
-    if state.exit_signal is not None:
+    if state.exit_signal is not None and not india_daily_exit:
         fired = (
             bool(state.exit_signal_values[i])
             if state.exit_signal_values is not None
@@ -788,6 +848,8 @@ def prepare_strategy_bars(
     *,
     market: str,
     benchmark: str,
+    membership_windows: tuple[tuple[str, date, date | None], ...] = (),
+    membership_added: tuple[tuple[str, date], ...] = (),
 ) -> dict[str, pd.DataFrame]:
     """Resolve a strategy and run its bar-preparation hook.
 
@@ -821,6 +883,8 @@ def prepare_strategy_bars(
         end=end,
         fetcher=fetcher,
         warnings=warnings,
+        membership_windows=membership_windows,
+        membership_added=membership_added,
     )
     return spec.prepare_bars(ctx)
 

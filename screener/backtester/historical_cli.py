@@ -64,6 +64,7 @@ from screener.markets import as_of_option, market_option
     "commission-bps",
     "cost-model",
     "initial-capital",
+    "risk-free-rate",
     "benchmark",
     "tickers",
     "universe-file",

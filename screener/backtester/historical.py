@@ -41,7 +41,7 @@ from screener.backtester.models import (
     BacktestResult,
 )
 from screener.backtester.pine import PineError, parse, required_lookback
-from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.backtester.portfolio import Portfolio, build_portfolio_curve
 from screener.backtester.sizing import (
     entry_budget_for,
     entry_opens_no_shares,
@@ -570,6 +570,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         slot_count,
         cost_model=cost_model_from_config(cfg),
         compounding=cfg.compounding,
+        whole_shares=cfg.market.lower() == "india",
     )
 
     master_dates = _run_event_driven_sim(
@@ -610,13 +611,14 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
             ).tolist()
         )
     calendar = pd.DatetimeIndex(sorted(date_set))
-    equity = build_equity_curve(
+    portfolio_curve = build_portfolio_curve(
         calendar,
         trades,
         bars_by_tv,
         cfg.initial_capital,
         price_adjustment=cfg.price_adjustment,
     )
+    equity = portfolio_curve["equity"].rename(None)
 
     benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
@@ -626,6 +628,8 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         trades,
         slot_count,
         periods_per_year=periods_per_year_for_interval(cfg.interval),
+        risk_free_rate=float(cfg.risk_free_rate),
+        holdings_value=portfolio_curve["holdings_value"],
     )
     metrics.update(compute_regime_metrics(benchmark, trades))
     metrics.update(

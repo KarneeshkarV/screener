@@ -35,6 +35,8 @@ BOOK_CONFIG_FIELDS = frozenset(
         # Capital and slots.
         "top",
         "initial_capital",
+        # Metrics-only input; changing it does not rebuild price/signal panels.
+        "risk_free_rate",
         "reserve_multiple",
         "reinvest",
         "allow_reentry",
@@ -90,6 +92,7 @@ def open_book(cfg: BacktestConfig) -> Book:
         max(cfg.top, 1),
         cost_model=cost_model_from_config(cfg),
         compounding=cfg.compounding,
+        whole_shares=cfg.market.lower() == "india",
     )
     slot_states: dict[int, _SlotState | None] = {
         slot_id: None for slot_id in range(max(cfg.top, 1))

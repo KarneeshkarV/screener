@@ -58,14 +58,25 @@ wrong file.
 
 ### What the reconstruction can and cannot tell you
 
-- **It is lookahead-free.** Each snapshot is dated at the crawl that observed
-  it, which is on or after the day NSE published that membership, never before.
-  No name becomes eligible earlier than it really was in the index.
-- **It is only as fine as the crawl cadence.** A membership change is dated at
-  the first crawl that saw it, not at its true effective date. An addition
-  enters late, and a deleted name stays eligible until the next crawl. It was a
-  real, tradeable listing over that stretch, so this is a resolution limit
-  rather than a bias toward names that turned out well.
+- **Eligibility starts at the recorded observation.**
+  Archive observations can lag official index changes.
+  Their dates alone do not prove complete, unbiased historical membership.
+- **Archive observation dates are not index effective dates.** The CSV column
+  may be named `effective_date`, but for archive-backed history that value is
+  the crawl observation day. Prefer an `observation_date` or `snapshot_date`
+  column when you control the file. Membership windows still use those dates
+  as half-open eligibility bounds; they can lag the true index reconstitution.
+- **It is only as fine as the crawl cadence.**
+  A membership change is dated at the first crawl that saw it.
+  An addition can enter late, and a deleted name can stay eligible until the next crawl.
+  This can change selections and returns; it does not establish that the removed name remained tradable.
+- **Observation gaps are warned, not silently trusted.** When consecutive
+  observation dates are at least `SNAPSHOT_OBSERVATION_GAP_WARN_DAYS`
+  (180 calendar days) apart, or the final observation is that stale versus
+  `--end`, `load_universe_selection` records warnings and appends a short note
+  to the universe source string. A long unchanged membership list means
+  incomplete observation coverage. It is not proof the index was static or
+  wrong.
 - **Check the printed dates for gaps** before trusting a window. The command
   prints every snapshot it kept with its symbol count and source URL.
 - **A backtest that starts before the first snapshot trades nothing** over that
@@ -86,9 +97,11 @@ uv run screener backtest-rolling -m india \
 ```
 
 Crawl coverage is uneven: 2018-10, 2019-02, 2020-07, then nothing until
-2022-05, after which snapshots land roughly two to six months apart. Treat the
-2020-07 to 2022-05 stretch as a single frozen membership rather than as
-resolved history.
+2022-05, after which snapshots land roughly two to six months apart.
+Known later gaps include 309 days (2023-04-04 to 2024-02-07) and 495 days
+(2024-02-07 to 2025-06-16). Those intervals trigger the 180-day observation
+coverage warning. Treat each long gap as a single frozen observed membership
+rather than as resolved reconstitution history.
 
 ## Dynamic universe
 

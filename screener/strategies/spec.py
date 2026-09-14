@@ -59,8 +59,35 @@ class PrepareCtx(BaseModel):
     end: date
     fetcher: SkipValidation[PriceFetcher]
     warnings: list[str]
+    membership_windows: tuple[tuple[str, date, date | None], ...] = ()
+    membership_added: tuple[tuple[str, date], ...] = ()
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def mask_rank_reference(self, scores: pd.DataFrame) -> pd.DataFrame:
+        """Exclude names outside dated membership before cross-sectional transforms.
+
+        Preserve all price history so an admitted member has valid indicators.
+        With no dated history, the explicitly selected fixed universe is used.
+        """
+        if self.membership_windows:
+            eligible = pd.DataFrame(False, index=scores.index, columns=scores.columns)
+            for ticker, start, end in self.membership_windows:
+                if ticker not in eligible.columns:
+                    continue
+                active = scores.index >= pd.Timestamp(start)
+                if end is not None:
+                    active &= scores.index < pd.Timestamp(end)
+                eligible.loc[active, ticker] = True
+            scores = scores.where(eligible)
+        if self.membership_added:
+            scores = scores.copy()
+            for ticker, added in self.membership_added:
+                if ticker in scores.columns:
+                    scores.loc[scores.index < pd.Timestamp(added), ticker] = float(
+                        "nan"
+                    )
+        return scores
 
 
 PrepareBarsFn = Callable[[PrepareCtx], dict[str, pd.DataFrame]]

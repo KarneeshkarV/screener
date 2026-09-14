@@ -442,7 +442,12 @@ def test_rolling_comparison_covers_every_performance_metric():
 
     assert result.exit_code == 0, result.output
     # Metrics the old five-row comparison table left out.
-    for label in ("Sortino", "Calmar", "Avg Exposure", "Profit Factor"):
+    for label in (
+        "Sortino (rf hurdle)",
+        "Calmar",
+        "Avg Slot Occupancy",
+        "Profit Factor",
+    ):
         assert label in result.output
 
 

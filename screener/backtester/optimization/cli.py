@@ -28,7 +28,9 @@ from screener.backtester.optimization.reporting import (
     write_json_report,
 )
 from screener.backtester.optimization.walk_forward import (
+    FOLD_BOUNDARY_POLICY,
     generate_walk_forward_windows,
+    holding_period_fold_warnings,
     require_daily_walk_forward_scope,
     walk_forward_optimize,
 )
@@ -84,6 +86,42 @@ def _validate_hold_values(values: list[Any]) -> list[Any]:
     return values
 
 
+def _validate_n_trials_effective(value: int | None) -> int | None:
+    """Require an explicit effective-trial count to be an int >= 1."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or int(value) < 1:
+        raise click.BadParameter(
+            f"{value!r} must be an int >= 1",
+            param_hint="--n-trials-effective",
+        )
+    return int(value)
+
+
+def _validate_experiment_id(value: str | None) -> str | None:
+    """Strip and reject blank experiment ids so family identity stays explicit."""
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        raise click.BadParameter(
+            "must be a non-empty string when provided",
+            param_hint="--experiment-id",
+        )
+    return cleaned
+
+
+def _pop_trial_identity(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Extract validated trial-register options from shared CLI kwargs."""
+    return {
+        "experiment_id": _validate_experiment_id(kwargs.pop("experiment_id", None)),
+        "trial_db_path": kwargs.pop("trial_db_path", None),
+        "n_trials_effective": _validate_n_trials_effective(
+            kwargs.pop("n_trials_effective", None)
+        ),
+    }
+
+
 def _parameter_grid(
     stop_loss, take_profit, trailing_stop, hold
 ) -> dict[str, list[Any]]:
@@ -119,6 +157,7 @@ def _base_config(
     min_avg_dollar_volume: float | None,
     adv_window: int,
     compounding: bool,
+    risk_free_rate: float = 0.0,
 ) -> BacktestConfig:
     from screener.strategies.expressions import resolve_strategy
 
@@ -161,6 +200,7 @@ def _base_config(
         avg_dollar_volume_window=int(adv_window),
         reinvest=True,
         compounding=bool(compounding),
+        risk_free_rate=float(risk_free_rate),
     )
 
 
@@ -217,6 +257,16 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
         click.option("--commission-bps", type=float, default=0.0),
         click.option("--initial-capital", type=float, default=100_000.0),
         click.option(
+            "--risk-free-rate",
+            type=float,
+            default=0.0,
+            show_default=True,
+            help=(
+                "Annual risk-free hurdle for excess-return Sharpe/Sortino/PSR/DSR "
+                "(fraction). Default 0.0. Not cash interest on idle balances."
+            ),
+        ),
+        click.option(
             "--compounding/--no-compounding",
             default=True,
             show_default=True,
@@ -228,7 +278,12 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
         ),
         click.option("--benchmark", default=None),
         click.option("--min-price", type=float, default=None),
-        click.option("--min-avg-dollar-volume", type=float, default=None),
+        click.option(
+            "--min-avg-dollar-volume",
+            type=float,
+            default=None,
+            help="Minimum rolling turnover in market currency (INR for India; close*volume).",
+        ),
         click.option("--adv-window", type=int, default=20),
         click.option(
             "--metric",
@@ -250,6 +305,36 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
             "--cache", "cache_path", type=click.Path(path_type=Path), default=None
         ),
         click.option(
+            "--experiment-id",
+            default=None,
+            help=(
+                "Explicit research-family id for the trial register. Reuse the "
+                "same value across repeated searches so rejected trials share "
+                "one history. Default auto-id fragments when base settings change."
+            ),
+        ),
+        click.option(
+            "--trial-db",
+            "trial_db_path",
+            type=click.Path(path_type=Path),
+            default=None,
+            help=(
+                "SQLite trial-register path. Reuse with --experiment-id for one "
+                "family history. Default: ~/.screener/optimizer_trials.db "
+                "(or SCREENER_OPTIMIZER_TRIALS_DB)."
+            ),
+        ),
+        click.option(
+            "--n-trials-effective",
+            type=int,
+            default=None,
+            help=(
+                "Optional correlated-trial count for Deflated Sharpe (int >= 1). "
+                "Must not exceed registered nominal trials at DSR time. Omit to "
+                "use the register's nominal count."
+            ),
+        ),
+        click.option(
             "--json", "json_path", type=click.Path(path_type=Path), default=None
         ),
         click.option(
@@ -268,6 +353,7 @@ def optimize_grid(**kwargs) -> None:
     start_date, end_date = _resolve_dates(
         kwargs.pop("start_arg"), kwargs.pop("end_arg"), kwargs.pop("years")
     )
+    trial_identity = _pop_trial_identity(kwargs)
     parameter_grid = _parameter_grid(
         kwargs["stop_loss"],
         kwargs["take_profit"],
@@ -296,6 +382,7 @@ def optimize_grid(**kwargs) -> None:
         min_avg_dollar_volume=kwargs["min_avg_dollar_volume"],
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
+        risk_free_rate=kwargs["risk_free_rate"],
     )
     results = grid_search(
         cfg,
@@ -309,6 +396,7 @@ def optimize_grid(**kwargs) -> None:
         runner="rolling",
         start_date=start_date,
         end_date=end_date,
+        **trial_identity,
     )
     print_grid_table(results)
     payload = [result.model_dump(mode="json") for result in results]
@@ -330,17 +418,41 @@ def optimize_grid(**kwargs) -> None:
 
 @optimize.command(name="walk-forward")
 @_common_options
-@click.option("--train-days", type=int, default=252, show_default=True)
-@click.option("--test-days", type=int, default=63, show_default=True)
-@click.option("--step-days", type=int, default=None)
+@click.option(
+    "--train-days",
+    type=int,
+    default=252,
+    show_default=True,
+    help="Training window length in calendar days (not sessions).",
+)
+@click.option(
+    "--test-days",
+    type=int,
+    default=63,
+    show_default=True,
+    help=(
+        "Test window length in calendar days (not sessions). Each fold "
+        f"force-closes flat ({FOLD_BOUNDARY_POLICY})."
+    ),
+)
+@click.option(
+    "--step-days",
+    type=int,
+    default=None,
+    help="Step between folds in calendar days (default: test-days).",
+)
 def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
     """Run rolling train/test walk-forward optimization.
 
     Daily interval only. Train/test/step lengths are calendar days.
+    Each fold force-closes flat at the test boundary; the next fold restarts
+    flat at carried capital. Trial register records training-fold searches
+    only; test scores are not written into DSR context.
     """
     start_date, end_date = _resolve_dates(
         kwargs.pop("start_arg"), kwargs.pop("end_arg"), kwargs.pop("years")
     )
+    trial_identity = _pop_trial_identity(kwargs)
     parameter_grid = _parameter_grid(
         kwargs["stop_loss"],
         kwargs["take_profit"],
@@ -369,6 +481,7 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         min_avg_dollar_volume=kwargs["min_avg_dollar_volume"],
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
+        risk_free_rate=kwargs["risk_free_rate"],
     )
     try:
         require_daily_walk_forward_scope(cfg, parameter_grid)
@@ -381,6 +494,10 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    for warning in holding_period_fold_warnings(
+        parameter_grid, test_days=int(test_days)
+    ):
+        click.echo(f"warning: {warning}", err=True)
     summary = walk_forward_optimize(
         cfg,
         _fetcher(),
@@ -394,6 +511,7 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         min_trades=kwargs["min_trades"],
         max_workers=kwargs["workers"],
         cache_path=kwargs["cache_path"],
+        **trial_identity,
     )
     print_walk_forward_table(summary)
     payload = summary.model_dump(mode="json")
@@ -549,9 +667,30 @@ def _resolve_universe_tickers(
     default=None,
     help="Index universe when --tickers/--universe-file are omitted.",
 )
-@click.option("--train-days", type=int, default=252, show_default=True)
-@click.option("--test-days", type=int, default=63, show_default=True)
-@click.option("--step-days", type=int, default=63, show_default=True)
+@click.option(
+    "--train-days",
+    type=int,
+    default=252,
+    show_default=True,
+    help="Training window length in calendar days (not sessions).",
+)
+@click.option(
+    "--test-days",
+    type=int,
+    default=63,
+    show_default=True,
+    help=(
+        "Test window length in calendar days (not sessions). Each fold "
+        f"force-closes flat ({FOLD_BOUNDARY_POLICY})."
+    ),
+)
+@click.option(
+    "--step-days",
+    type=int,
+    default=63,
+    show_default=True,
+    help="Step between folds in calendar days.",
+)
 @click.option("--mc-iterations", type=int, default=1000, show_default=True)
 @click.option("--mc-seed", type=int, default=42, show_default=True)
 @click.option("--mc-block", type=int, default=20, show_default=True)
@@ -582,7 +721,8 @@ def research_report(
     each training fold from the original complete grid. Monte Carlo uses the
     equity block bootstrap on the combined OOS equity path. Inadequate OOS
     evidence yields INSUFFICIENT DATA rather than PASS. Daily interval only;
-    evidence thresholds are data-integrity checks, not alpha proof.
+    train/test/step are calendar days; folds force-close flat. Evidence
+    thresholds are data-integrity checks, not alpha proof.
 
     Reuses a single price fetcher across all stages. Writes ``<out>.json`` and
     ``<out>.html`` plus a concise stdout summary.
@@ -595,6 +735,7 @@ def research_report(
     # Drop export paths from common options; --out owns artifacts.
     kwargs.pop("json_path", None)
     kwargs.pop("html_path", None)
+    trial_identity = _pop_trial_identity(kwargs)
 
     if param_specs:
         parameter_grid = _parse_param_specs(param_specs)
@@ -647,6 +788,7 @@ def research_report(
         min_avg_dollar_volume=kwargs["min_avg_dollar_volume"],
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
+        risk_free_rate=kwargs["risk_free_rate"],
     )
     # Validate window/interval/MC flags before costly grid work. Do not wrap the
     # full report run: runtime bugs must surface as themselves.
@@ -668,6 +810,10 @@ def research_report(
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    for warning in holding_period_fold_warnings(
+        parameter_grid, test_days=int(test_days)
+    ):
+        click.echo(f"warning: {warning}", err=True)
     run_research_report(
         cfg,
         _fetcher(),
@@ -687,4 +833,5 @@ def research_report(
         ruin_threshold=ruin_threshold,
         top_n=kwargs["top_n"],
         out_path=out_path,
+        **trial_identity,
     )

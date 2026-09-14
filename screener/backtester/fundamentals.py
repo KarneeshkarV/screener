@@ -23,7 +23,12 @@ from requests.adapters import HTTPAdapter
 
 from screener import _optional
 from screener.backtester.data import load_env_file
-from screener.factors.fundamentals import FUNDAMENTAL_COLUMNS, stamp_fundamentals
+from screener.factors.fundamentals import (
+    EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG,
+    EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
+    FUNDAMENTAL_COLUMNS,
+    stamp_fundamentals,
+)
 from screener.financials import as_percent as _as_percent
 from screener.financials import first_number, pct_change
 from screener.provider_utils import fmp_get
@@ -36,6 +41,15 @@ INDIA_FUNDAMENTAL_FILING_LAG_DAYS = 60
 # ``screener.factors`` so the feature layer can check a column against it
 # without importing the backtester.
 DEFAULT_FUNDAMENTAL_FIELDS: tuple[str, ...] = FUNDAMENTAL_COLUMNS
+
+# FMP publication timestamps only. ``date`` is the fiscal period end and must
+# never be promoted to a publication time. ``fillingDate`` is FMP's historical
+# misspelling; ``filingDate`` is the corrected spelling some payloads use.
+_FMP_FILING_PUBLICATION_KEYS: tuple[str, ...] = (
+    "acceptedDate",
+    "fillingDate",
+    "filingDate",
+)
 
 
 _FMP_PROVIDER = CachedProvider(
@@ -65,6 +79,11 @@ class FundamentalFetcher(Protocol):
     #: knowable. Declared on the protocol because the merge records it as the
     #: provenance of every column it writes.
     lag_days: int
+    #: How effective dates were obtained. See
+    #: :data:`~screener.factors.fundamentals.EFFECTIVE_DATE_KIND_FILING_TIMESTAMP`
+    #: and
+    #: :data:`~screener.factors.fundamentals.EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG`.
+    effective_date_kind: str
 
     def fetch(
         self,
@@ -183,8 +202,31 @@ def _prior_year_key(row_date: str) -> str | None:
     return (ts - pd.DateOffset(years=1)).date().isoformat()
 
 
+def _filing_publication_raw(row: Mapping[str, Any]) -> Any:
+    """Return the first real filing/publication timestamp field on ``row``.
+
+    Fiscal period-end ``date`` is intentionally ignored. Promoting quarter-end
+    to a publication time with a one-day lag creates false point-in-time
+    confidence.
+    """
+    for key in _FMP_FILING_PUBLICATION_KEYS:
+        raw = row.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, str) and not raw.strip():
+            continue
+        if _filing_timestamp(raw) is not None:
+            return raw
+    return None
+
+
 def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | None:
-    raw = row.get("acceptedDate") or row.get("fillingDate") or row.get("date")
+    """Knowable date from a real filing/publication timestamp, plus lag.
+
+    Returns ``None`` when no valid ``acceptedDate`` / ``fillingDate`` /
+    ``filingDate`` is present. Does not fall back to period-end ``date``.
+    """
+    raw = _filing_publication_raw(row)
     if raw is None:
         return None
     ts = _filing_timestamp(raw)
@@ -257,12 +299,15 @@ def _normalize_fmp_payload(
     income_by_date = _row_by_date(income_rows)
 
     records: list[dict[str, Any]] = []
+    excluded_no_filing = 0
     for current_pos, row in enumerate(income_rows):
         row_date = row.get("date")
         if not isinstance(row_date, str) or not row_date:
             continue
         effective = _effective_date(row, lag_days)
         if effective is None:
+            # Period-end alone is not a publication time; drop rather than guess.
+            excluded_no_filing += 1
             continue
 
         ratio = ratio_by_date.get(row_date, {})
@@ -308,6 +353,14 @@ def _normalize_fmp_payload(
             "market_cap": first_number(enterprise, "marketCapitalization", "marketCap"),
         }
         records.append({key: record.get(key) for key in ("effective_date", *fields)})
+
+    if excluded_no_filing:
+        LOG.warning(
+            "Excluded %s FMP fundamental row(s) without a valid acceptedDate/"
+            "fillingDate/filingDate publication timestamp; period-end date alone "
+            "is not treated as publication time",
+            excluded_no_filing,
+        )
 
     if not records:
         return pd.DataFrame(columns=list(fields), index=pd.DatetimeIndex([]))
@@ -425,6 +478,7 @@ class FMPFundamentalFetcher:
     """Fetch dated US or India fundamentals from FMP and normalize expression columns."""
 
     markets = frozenset({"us", "india"})
+    effective_date_kind = EFFECTIVE_DATE_KIND_FILING_TIMESTAMP
 
     def __init__(
         self,
@@ -662,13 +716,30 @@ def _normalize_openscreener_payload(
     fields: tuple[str, ...],
     lag_days: int,
 ) -> pd.DataFrame:
+    """Normalize India quarterly rows whose dates are period-end estimates.
+
+    Openscreener and yfinance India rows are keyed by fiscal period end, not
+    by actual announcement time. The effective index is period-end plus
+    ``lag_days``. That estimate is not actual publication time and is not
+    original restatement-vintage history. Missing historical dates are not
+    invented beyond that documented lag.
+    """
     quarterly = _rows(payload, "quarterly_results")
     dated_rows: list[tuple[pd.Timestamp, dict[str, Any]]] = []
+    skipped_undated = 0
     for row in quarterly:
         period_end = _parse_india_period_end(row.get("date"))
-        if period_end is not None:
-            dated_rows.append((period_end, row))
+        if period_end is None:
+            skipped_undated += 1
+            continue
+        dated_rows.append((period_end, row))
     if not dated_rows:
+        if skipped_undated:
+            LOG.warning(
+                "Excluded %s openscreener/yfinance fundamental row(s) with no "
+                "parseable period-end date; missing historical dates are not invented",
+                skipped_undated,
+            )
         return pd.DataFrame(columns=list(fields), index=pd.DatetimeIndex([]))
 
     dated_rows.sort(key=lambda item: item[0], reverse=True)
@@ -680,6 +751,13 @@ def _normalize_openscreener_payload(
         if "revenue_up_3q" in fields:
             record["revenue_up_3q"] = _increased_last_n_revenues(sorted_rows, pos, 3)
         records.append({key: record.get(key) for key in ("effective_date", *fields)})
+
+    if skipped_undated:
+        LOG.warning(
+            "Excluded %s openscreener/yfinance fundamental row(s) with no "
+            "parseable period-end date; missing historical dates are not invented",
+            skipped_undated,
+        )
 
     frame = pd.DataFrame(records)
     frame.index = pd.to_datetime(frame.pop("effective_date"), errors="coerce")
@@ -696,6 +774,7 @@ class OpenScreenerFundamentalFetcher:
     """Fetch India quarterly fundamentals from openscreener/screener.in."""
 
     markets = frozenset({"india"})
+    effective_date_kind = EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
 
     def __init__(
         self,
@@ -721,6 +800,14 @@ class OpenScreenerFundamentalFetcher:
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
         ticker_list = [t for t in dict.fromkeys(tickers) if t]
+        if ticker_list:
+            LOG.warning(
+                "India fundamental effective dates from openscreener are estimated "
+                "as period-end plus %s calendar day(s) (%s); they are not actual "
+                "publication timestamps or original restatement-vintage history",
+                self.lag_days,
+                self.effective_date_kind,
+            )
 
         def fetch_one(ticker: str) -> tuple[str, pd.DataFrame]:
             symbol = ticker.replace(".NS", "").replace(".BO", "").upper()
@@ -777,6 +864,7 @@ class YFinanceFundamentalFetcher:
     """Fetch India quarterly revenue fundamentals from yfinance."""
 
     markets = frozenset({"india"})
+    effective_date_kind = EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
 
     def __init__(
         self,
@@ -802,6 +890,14 @@ class YFinanceFundamentalFetcher:
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
         ticker_list = [t for t in dict.fromkeys(tickers) if t]
+        if ticker_list:
+            LOG.warning(
+                "India fundamental effective dates from yfinance are estimated "
+                "as period-end plus %s calendar day(s) (%s); they are not actual "
+                "publication timestamps or original restatement-vintage history",
+                self.lag_days,
+                self.effective_date_kind,
+            )
 
         def fetch_one(ticker: str) -> tuple[str, pd.DataFrame]:
             fallback: dict[str, Any] = {}
@@ -903,6 +999,7 @@ def merge_fundamentals_into_bars(
     yf_by_tv: Mapping[str, str],
     *,
     filing_lag_days: int,
+    effective_date_kind: str = EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
 ) -> dict[str, pd.DataFrame]:
     """Forward-fill dated fundamentals onto each ticker's OHLCV frame.
 
@@ -917,6 +1014,10 @@ def merge_fundamentals_into_bars(
     frames. That turns "these columns are point-in-time" from a convention into
     something the feature layer checks. The stamp is written *after* the join
     because pandas drops ``attrs`` across ``DataFrame.join``.
+
+    ``effective_date_kind`` records whether those dates are real filing
+    timestamps or estimated period-end plus lag. Estimated dates must not be
+    reported as actual publication time.
     """
     out: dict[str, pd.DataFrame] = {}
     for tv_symbol, bars in bars_by_tv.items():
@@ -933,5 +1034,6 @@ def merge_fundamentals_into_bars(
             merged,
             columns=tuple(aligned.columns),
             filing_lag_days=filing_lag_days,
+            effective_date_kind=effective_date_kind,
         )
     return out

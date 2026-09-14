@@ -186,10 +186,12 @@ def make_combo_prepare(components: Sequence[tuple[str, float]]) -> PrepareBarsFn
                 end=ctx.end,
                 fetcher=ctx.fetcher,
                 warnings=ctx.warnings,
+                membership_windows=ctx.membership_windows,
+                membership_added=ctx.membership_added,
             )
             prepared = spec.prepare_bars(child_ctx)
             prepared_by_factor.append(prepared)
-            score_mat = _component_score_matrix(prepared)
+            score_mat = ctx.mask_rank_reference(_component_score_matrix(prepared))
             if score_mat.empty:
                 ctx.warnings.append(
                     f"combo component {factor_name!r} produced no rank_score values"
