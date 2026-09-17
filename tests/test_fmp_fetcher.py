@@ -242,7 +242,14 @@ def test_fmp_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch)
 
 
 def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_path):
-    """A forced re-download must not replace the stored frame with only its window."""
+    """A forced re-download must not replace the stored frame with only its window.
+
+    The fresh close is a small step off the cached one rather than a multiple
+    of it. A uniform multiple across every shared session is the signature of a
+    split, and split detection discards the stale entry on purpose - see
+    ``test_fmp_rescaled_cache_is_discarded_on_refresh``. This test is about the
+    ordinary case, where the vendor revises values without re-basing them.
+    """
     wide = pd.DataFrame(
         {
             "open": 100.0,
@@ -259,12 +266,12 @@ def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_pat
         "historical": [
             {
                 "date": day.date().isoformat(),
-                "open": 200,
-                "high": 202,
-                "low": 199,
-                "close": 201,
+                "open": 100.2,
+                "high": 101.4,
+                "low": 99.3,
+                "close": 100.9,
                 # adjClose == close so the adjusted close equals the raw one.
-                "adjClose": 201,
+                "adjClose": 100.9,
                 "volume": 2000,
             }
             for day in pd.bdate_range("2023-06-01", "2023-06-30")
@@ -290,8 +297,8 @@ def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_pat
 
     # Overlapping dates carry the freshly downloaded values.
     first_fresh = out.index[0]
-    assert float(out.loc[first_fresh, "close"]) == pytest.approx(201.0)
-    assert float(stored.loc[first_fresh, "close"]) == pytest.approx(201.0)
+    assert float(out.loc[first_fresh, "close"]) == pytest.approx(100.9)
+    assert float(stored.loc[first_fresh, "close"]) == pytest.approx(100.9)
 
     # Bars outside the refreshed window stay as they were.
     sample = wide.index[20]
@@ -699,3 +706,50 @@ def test_an_empty_fmp_payload_is_recorded_as_empty_history(tmp_path):
     before = len(session.calls)
     fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 5))
     assert len(session.calls) == before, "the known-empty window is not re-asked"
+
+
+def test_fmp_rescaled_cache_is_discarded_on_refresh(tmp_path):
+    """A split re-bases FMP's history too, so the stale entry cannot be merged.
+
+    The bars outside the requested window are the ones this throws away, and
+    that is the point: they are the bars still on the abandoned scale. Keeping
+    them is what stitches a fake jump into the series at the seam.
+    """
+    wide = pd.DataFrame(
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1000},
+        index=pd.bdate_range("2023-01-02", "2023-06-30"),
+    )
+    _save_cache("fmp_AAA", wide, tmp_path)
+
+    # Every shared session now prices at exactly 2x: a 1:2 reverse split.
+    payload = {
+        "historical": [
+            {
+                "date": day.date().isoformat(),
+                "open": 200,
+                "high": 202,
+                "low": 199,
+                "close": 201,
+                "adjClose": 201,
+                "volume": 500,
+            }
+            for day in pd.bdate_range("2023-06-01", "2023-06-30")
+        ]
+    }
+    session = DummySession(payload)
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+        refresh=True,
+    )
+
+    out = fetcher.fetch(["AAA"], date(2023, 6, 1), date(2023, 6, 30))["AAA"]
+
+    # No bar on the superseded scale survives, so no seam can be computed across.
+    assert not out.empty
+    assert float(out["close"].min()) == pytest.approx(201.0)
+    stored = _load_cached("fmp_AAA", tmp_path)
+    assert float(stored["close"].min()) == pytest.approx(201.0)
+    # The refresh already asked for the whole window, so no retry was needed.
+    assert len(session.calls) == 1

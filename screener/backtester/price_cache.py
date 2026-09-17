@@ -408,6 +408,32 @@ def record_coverage(
         return
 
 
+def scale_verified_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
+    """Sidecar marking an entry as downloaded whole under split detection."""
+    return cache_path(ticker, cache_dir).with_suffix(".scale.json")
+
+
+def has_scale_verified(ticker: str, cache_dir: Path = CACHE_DIR) -> bool:
+    """Whether this entry's price scale has already been verified against the vendor.
+
+    Entries written before split detection existed may carry a stitched seam
+    that no tail refresh can reveal, so they are re-downloaded whole once. The
+    marker is what makes that *once*: without it, a name whose large jump is a
+    real move (microcaps do quadruple) would re-download on every run forever.
+    """
+    return scale_verified_path(ticker, cache_dir).exists()
+
+
+def record_scale_verified(ticker: str, cache_dir: Path = CACHE_DIR) -> None:
+    """Mark this entry as fully re-downloaded under split detection."""
+    path = scale_verified_path(ticker, cache_dir)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"verified": pd.Timestamp.now("UTC").isoformat()}))
+    except (OSError, ValueError):
+        return
+
+
 def needs_tail_refresh(path: Path, end: pd.Timestamp) -> bool:
     """Return whether a near-present cache is old enough for a tail refresh."""
     if abs((end.date() - date.today()).days) > 2:
@@ -426,6 +452,9 @@ def needs_tail_refresh(path: Path, end: pd.Timestamp) -> bool:
 
 __all__ = [
     "CACHE_DIR",
+    "has_scale_verified",
+    "record_scale_verified",
+    "scale_verified_path",
     "COVERAGE_TOLERANCE",
     "COVERAGE_TTL_SECONDS",
     "EMPTY_HISTORY_TTL_SECONDS",
