@@ -13,15 +13,24 @@ from screener.backtester.data import YFinancePriceFetcher, _load_cached, _save_c
 from screener.providers import StaleDataError
 
 
+#: Anchor for the synthetic series below. Prices are a function of the *date*,
+#: not of the window that asked for them, so the same session carries the same
+#: close through every path: a cached slice, a fresh download, a backfill. A
+#: window-relative ramp made an overlapping session disagree with itself, which
+#: is the exact signature split detection now reads as a re-based history.
+_PRICE_EPOCH = pd.Timestamp("2018-01-01")
+
+
 def _plain_bars(start, end, base: float = 100.0) -> pd.DataFrame:
     idx = pd.bdate_range(pd.Timestamp(start), pd.Timestamp(end) - pd.Timedelta(days=1))
+    steps = [(day - _PRICE_EPOCH).days for day in idx]
     return pd.DataFrame(
         {
-            "Open": [base + i for i in range(len(idx))],
-            "High": [base + i + 1 for i in range(len(idx))],
-            "Low": [base + i - 1 for i in range(len(idx))],
-            "Close": [base + i + 0.5 for i in range(len(idx))],
-            "Volume": [1000 + i for i in range(len(idx))],
+            "Open": [base + i for i in steps],
+            "High": [base + i + 1 for i in steps],
+            "Low": [base + i - 1 for i in steps],
+            "Close": [base + i + 0.5 for i in steps],
+            "Volume": [1000 + i for i in steps],
         },
         index=idx,
     )
@@ -223,7 +232,13 @@ def test_yfinance_refresh_merges_into_stored_history_instead_of_truncating_it(
     """--refresh re-downloads its window but must keep bars outside it on disk."""
     import yfinance as yf
 
-    wide = _plain_bars(date(2018, 1, 1), date(2024, 6, 1)).rename(columns=str.lower)
+    # A few cents off the vendor's current series: a genuine revision, not a
+    # re-basing. Split detection reads a *ratio*, so a small uniform offset on
+    # a four-figure price stays well inside its tolerance and the ordinary
+    # merge runs - which is what this test is about.
+    wide = _plain_bars(date(2018, 1, 1), date(2024, 6, 1), base=96.0).rename(
+        columns=str.lower
+    )
     _save_cache("AAA", wide, tmp_path)
 
     narrow_start, narrow_end = date(2024, 4, 1), date(2024, 4, 30)

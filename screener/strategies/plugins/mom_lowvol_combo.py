@@ -52,7 +52,9 @@ def _prepare_combo(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
     for tv, bars in ctx.bars_by_tv.items():
         if bars is None or bars.empty:
             continue
-        mom_by_tv[tv] = momentum_12_1_score(bars["close"])
+        mom_by_tv[tv] = momentum_12_1_score(
+            bars["close"], bars["volume"] if "volume" in bars.columns else None
+        )
         vol_by_tv[tv] = realized_volatility(bars["close"])
 
     out: dict[str, pd.DataFrame] = {tv: bars for tv, bars in ctx.bars_by_tv.items()}

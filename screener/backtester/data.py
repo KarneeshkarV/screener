@@ -38,10 +38,16 @@ from screener.backtester.price_cache import (
     cache_path as _cache_path,
 )
 from screener.backtester.price_cache import (
+    clear_coverage as _clear_coverage,
+)
+from screener.backtester.price_cache import (
     clear_empty_history as _clear_empty_history,
 )
 from screener.backtester.price_cache import (
     has_empty_history as _has_empty_history,
+)
+from screener.backtester.price_cache import (
+    has_scale_verified as _has_scale_verified,
 )
 from screener.backtester.price_cache import (
     load_cached_frame as _load_cached,
@@ -57,6 +63,9 @@ from screener.backtester.price_cache import (
 )
 from screener.backtester.price_cache import (
     record_empty_history as _record_empty_history,
+)
+from screener.backtester.price_cache import (
+    record_scale_verified as _record_scale_verified,
 )
 from screener.backtester.price_cache import (
     save_cached_frame as _save_cache,
@@ -84,6 +93,12 @@ from screener.backtester.price_frames import (
 )
 from screener.backtester.price_frames import (
     merge_price_frames as _merge_cached,
+)
+from screener.backtester.price_frames import (
+    has_price_seam as _has_price_seam,
+)
+from screener.backtester.price_frames import (
+    overlap_rescaled as _overlap_rescaled,
 )
 from screener.backtester.price_frames import (
     split_yfinance_download as _split_download,
@@ -364,7 +379,38 @@ class YFinancePriceFetcher:
     def fetch(
         self, tickers: Iterable[str], start: date, end: date
     ) -> dict[str, pd.DataFrame]:
+        """Bars for ``tickers``, re-downloading any whose cache was re-based.
+
+        The pass below discards a cache entry the vendor has re-scaled under it
+        (a split; see :func:`~screener.backtester.price_frames.overlap_rescaled`)
+        but can only keep the bars of the window it happened to download, which
+        on a tail refresh is a week. The second pass re-downloads those tickers
+        whole so the caller still gets its full window, now entirely on the
+        vendor's current scale. It is bounded at one retry: the names it asks
+        for have no cache left to disagree with.
+        """
         tickers = [t for t in tickers if t]
+        results, rescaled = self._fetch_pass(tickers, start, end, frozenset())
+        if not rescaled:
+            return results
+        refetched, _ = self._fetch_pass(sorted(rescaled), start, end, rescaled)
+        results.update(refetched)
+        return results
+
+    def _fetch_pass(
+        self,
+        tickers: list[str],
+        start: date,
+        end: date,
+        force_full: frozenset[str],
+    ) -> tuple[dict[str, pd.DataFrame], frozenset[str]]:
+        """One fetch pass; also reports tickers whose cache proved re-scaled.
+
+        ``force_full`` names tickers whose cache must not be trusted for the
+        download decision: they download their whole window regardless of what
+        is stored, which is how the retry pass rebuilds an entry the first pass
+        had to throw away.
+        """
         results: dict[str, pd.DataFrame] = {}
         start_ts, end_ts = _inclusive_fetch_bounds(start, end, self.interval)
         cached_by_ticker: dict[str, pd.DataFrame] = {}
@@ -424,7 +470,42 @@ class YFinancePriceFetcher:
             stored = stored_by_ticker[ticker]
             if stored is not None and not stored.empty:
                 cached_by_ticker[ticker] = stored
-            cached = None if self.refresh else stored
+            # ``distrust_cache`` is the refresh contract widened by one case:
+            # a ticker whose stored bars an earlier pass proved to be on a
+            # superseded price scale. Both mean the same thing to every
+            # decision below - do not let the cache shorten this download.
+            distrust_cache = self.refresh or ticker in force_full
+            # Entries written before split detection existed can already hold
+            # a stitched seam, and no tail refresh reveals it: the fresh week
+            # and the cached week are both on the post-split scale, so they
+            # agree. Only the bars before the seam are on the abandoned one.
+            # Such an entry is re-downloaded whole, once, and the marker keeps
+            # it to once - a microcap whose jump was real must not re-download
+            # forever.
+            if (
+                not distrust_cache
+                and stored is not None
+                and not _has_scale_verified(cache_key, self.cache_dir)
+            ):
+                if _has_price_seam(stored):
+                    from screener.logging_config import get_logger
+
+                    get_logger(__name__).warning(
+                        "price_cache_seam_repair",
+                        ticker=ticker,
+                        reason=(
+                            "cached bars contain a session jump large enough to "
+                            "be a split stitched in before split detection "
+                            "existed; re-downloading the whole window once"
+                        ),
+                    )
+                    distrust_cache = True
+                    stored = None
+                    cached_by_ticker.pop(ticker, None)
+                    _clear_coverage(cache_key, self.cache_dir)
+                else:
+                    _record_scale_verified(cache_key, self.cache_dir)
+            cached = None if distrust_cache else stored
             # The completeness test runs against what the vendor has, not
             # against what the caller asked for. A name that listed inside the
             # window has no bar at the window's start and never will, so
@@ -434,11 +515,11 @@ class YFinancePriceFetcher:
                 start_ts,
                 end_ts,
                 (None, None)
-                if self.refresh
+                if distrust_cache
                 else _load_coverage(cache_key, self.cache_dir),
             )
             if (
-                not self.refresh
+                not distrust_cache
                 and cached is not None
                 and _has_range(cached, covered_start, covered_end, self.interval)
             ):
@@ -452,7 +533,7 @@ class YFinancePriceFetcher:
 
             fetch_start, fetch_end = start_ts, end_ts
             cause = "full"
-            if not self.refresh and cached is not None and not cached.empty:
+            if not distrust_cache and cached is not None and not cached.empty:
                 min_cached = cached.index.min()
                 max_cached = cached.index.max()
                 if min_cached <= start_ts + pd.Timedelta(
@@ -465,7 +546,7 @@ class YFinancePriceFetcher:
                 ) and min_cached > start_ts + pd.Timedelta(days=3):
                     fetch_end = min_cached - pd.Timedelta(days=1)
                     cause = "backfill"
-            if not self.refresh and _has_empty_history(
+            if not distrust_cache and _has_empty_history(
                 cache_key, fetch_start, fetch_end, self.cache_dir
             ):
                 # A recent request for a superset of this window served no
@@ -480,7 +561,7 @@ class YFinancePriceFetcher:
             want(cause, ticker, fetch_start, fetch_end)
 
         if not missing:
-            return results
+            return results, frozenset()
 
         _configure_yfinance()
         yf = _optional.load("yfinance")
@@ -564,6 +645,7 @@ class YFinancePriceFetcher:
                 )
                 download_ok[ticker] = download_ok.get(ticker, True) and ok
         leftover: list[tuple[str, pd.DataFrame]] = []
+        rescaled: set[str] = set()
         for ticker in dict.fromkeys(t for group in missing.values() for t in group):
             cache_key = self._cache_key(ticker)
             norm = downloaded_by_ticker.get(ticker, _empty_ohlcv_frame())
@@ -608,6 +690,38 @@ class YFinancePriceFetcher:
             # vendor served and must see the response as it came. From here on
             # the open session's snapshot is not a bar.
             norm = drop_incomplete_sessions(norm, ticker, interval=self.interval)
+            # A split re-bases the vendor's whole history, so bars cached
+            # before it price the same sessions differently from the ones just
+            # downloaded. Merging the two stitches a fake jump into the series
+            # at the seam, and every return, momentum and volatility figure
+            # computed across that seam is wrong. The stale side loses: the
+            # cache entry is dropped and the ticker re-downloaded whole below.
+            if ticker not in force_full and _overlap_rescaled(
+                stored, norm, self.interval
+            ):
+                # A refresh already asked for the whole window, so only the
+                # stale entry has to go; a retry would repeat that request for
+                # nothing. When the cache *did* shorten the download, the
+                # retry is the point: the fresh bars cover a tail, and the
+                # history they have to be merged with has just been thrown
+                # away.
+                retry = not self.refresh
+                from screener.logging_config import get_logger
+
+                get_logger(__name__).warning(
+                    "price_cache_rescaled",
+                    ticker=ticker,
+                    reason=(
+                        "cached bars price shared sessions differently from the "
+                        "vendor's current series (a split re-based the history); "
+                        "the stale cache entry is discarded and the ticker "
+                        "re-downloaded"
+                    ),
+                )
+                if retry:
+                    rescaled.add(ticker)
+                stored = None
+                _clear_coverage(cache_key, self.cache_dir)
             merged = _merge_cached(stored, norm, self.interval)
             # A failed download is an empty frame, and the merge then returns
             # leftover cache. That is the availability-first default. ``strict``
@@ -626,10 +740,14 @@ class YFinancePriceFetcher:
                 not norm.empty or ticker not in tail_refresh_tickers
             ):
                 _save_cache(cache_key, merged, self.cache_dir)
+                # Whatever is stored now came from this download, not from a
+                # pre-detection entry, so its scale is the vendor's own.
+                if not norm.empty:
+                    _record_scale_verified(cache_key, self.cache_dir)
             results[ticker] = _range_slice(merged, start_ts, end_ts)
         if leftover:
             raise _strict_refresh_stale_data_error(leftover, as_of=end_ts)
-        return results
+        return results, frozenset(rescaled)
 
 
 # FMP spells intraday intervals differently from yfinance; the daily endpoint
@@ -787,8 +905,8 @@ class FMPPriceFetcher:
             return {}
 
         def fetch_ticker(
-            ticker: str,
-        ) -> tuple[str, pd.DataFrame, pd.DataFrame | None]:
+            ticker: str, force_full: bool = False
+        ) -> tuple[str, pd.DataFrame, pd.DataFrame | None, bool]:
             cache_key = _fmp_cache_key(ticker, self.auto_adjust, self.interval)
             # Same contract as YFinancePriceFetcher.fetch. The stored frame
             # loads even on a refresh and goes into the save-time merge, so a
@@ -798,31 +916,34 @@ class FMPPriceFetcher:
                 ticker,
                 interval=self.interval,
             )
-            cached = None if self.refresh else stored
+            # Same widening as the yfinance leg: a re-scaled cache entry is
+            # distrusted exactly as a forced refresh distrusts every entry.
+            distrust_cache = self.refresh or force_full
+            cached = None if distrust_cache else stored
             # Same contract as the yfinance leg: measure completeness against
             # the vendor's known limits, not against the caller's window.
             covered_start, covered_end = _covered_window(
                 start_ts,
                 end_ts,
                 (None, None)
-                if self.refresh
+                if distrust_cache
                 else _load_coverage(cache_key, self.cache_dir),
             )
             if (
-                not self.refresh
+                not distrust_cache
                 and cached is not None
                 and _has_range(cached, covered_start, covered_end, self.interval)
             ):
                 if not _needs_tail_refresh(
                     _cache_path(cache_key, self.cache_dir), end_ts
                 ):
-                    return ticker, _range_slice(cached, start_ts, end_ts), None
+                    return ticker, _range_slice(cached, start_ts, end_ts), None, False
                 fetch_start = cached.index.max() - pd.Timedelta(days=7)
                 is_tail_refresh = True
             else:
                 fetch_start = start_ts
                 is_tail_refresh = False
-                if not self.refresh and _has_empty_history(
+                if not distrust_cache and _has_empty_history(
                     cache_key, start_ts, end_ts, self.cache_dir
                 ):
                     # Same contract as the yfinance fetcher: a recent request
@@ -834,7 +955,7 @@ class FMPPriceFetcher:
                         if cached is not None and not cached.empty
                         else pd.DataFrame(columns=OHLCV_COLUMNS)
                     )
-                    return ticker, in_range, None
+                    return ticker, in_range, None, False
 
             if self.interval == "1d":
                 path = f"{self.daily_path}/{ticker}"
@@ -902,6 +1023,31 @@ class FMPPriceFetcher:
                 )
                 else None
             )
+            # Same split-detection rule as the yfinance leg, for the same
+            # reason: FMP's adjusted daily endpoint also re-bases its whole
+            # history on a split, so a cache entry written before one prices
+            # shared sessions on a scale the vendor has abandoned.
+            rescaled_here = not force_full and _overlap_rescaled(
+                stored, norm, self.interval
+            )
+            # Same reasoning as the yfinance leg: a refresh already requested
+            # the whole window, so it needs the discard but not the retry.
+            was_rescaled = rescaled_here and not self.refresh
+            if rescaled_here:
+                from screener.logging_config import get_logger
+
+                get_logger(__name__).warning(
+                    "price_cache_rescaled",
+                    ticker=ticker,
+                    reason=(
+                        "cached bars price shared sessions differently from the "
+                        "vendor's current series (a split re-based the history); "
+                        "the stale cache entry is discarded and the ticker "
+                        "re-downloaded"
+                    ),
+                )
+                stored = None
+                _clear_coverage(cache_key, self.cache_dir)
             merged = _merge_cached(stored, norm, self.interval)
             if not merged.empty:
                 if not norm.empty or not is_tail_refresh:
@@ -910,22 +1056,48 @@ class FMPPriceFetcher:
                     ticker,
                     _range_slice(merged, start_ts, end_ts),
                     leftover_cache,
+                    was_rescaled,
                 )
-            return ticker, pd.DataFrame(columns=OHLCV_COLUMNS), leftover_cache
+            return (
+                ticker,
+                pd.DataFrame(columns=OHLCV_COLUMNS),
+                leftover_cache,
+                was_rescaled,
+            )
 
-        if len(ticker_list) == 1:
-            fetched = [fetch_ticker(ticker_list[0])]
-        else:
+        def run(
+            names: list[str], force_full: bool
+        ) -> list[tuple[str, pd.DataFrame, pd.DataFrame | None, bool]]:
+            if len(names) == 1:
+                return [fetch_ticker(names[0], force_full)]
             with ThreadPoolExecutor(
-                max_workers=min(self.max_workers, len(ticker_list))
+                max_workers=min(self.max_workers, len(names))
             ) as pool:
-                fetched = list(pool.map(fetch_ticker, ticker_list))
+                return list(
+                    pool.map(lambda name: fetch_ticker(name, force_full), names)
+                )
+
+        fetched = run(ticker_list, False)
+        # A ticker whose cache proved re-scaled kept only the bars of the
+        # window it happened to download, so it is fetched again, whole, with
+        # nothing stale left to merge against. One retry: see
+        # ``YFinancePriceFetcher.fetch``.
+        rescaled = [
+            ticker for ticker, _frame, _cache, was_rescaled in fetched if was_rescaled
+        ]
+        if rescaled:
+            by_ticker = {ticker: row for row in fetched for ticker in (row[0],)}
+            for row in run(sorted(rescaled), True):
+                by_ticker[row[0]] = row
+            fetched = [by_ticker[ticker] for ticker in ticker_list]
         leftover = [
-            (ticker, cache) for ticker, _frame, cache in fetched if cache is not None
+            (ticker, cache)
+            for ticker, _frame, cache, _rescaled in fetched
+            if cache is not None
         ]
         if leftover:
             raise _strict_refresh_stale_data_error(leftover, as_of=end_ts)
-        return {ticker: frame for ticker, frame, _cache in fetched}
+        return {ticker: frame for ticker, frame, _cache, _rescaled in fetched}
 
 
 class ExchangeFallbackPriceFetcher:
