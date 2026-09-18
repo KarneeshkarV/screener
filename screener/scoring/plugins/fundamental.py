@@ -2,7 +2,7 @@
 
 Every recipe here is ``data_source="snapshot"`` and therefore screen-only.
 TradingView returns one current value per fundamental (``price_earnings_ttm``,
-``return_on_equity``, ``debt_to_equity``, ``dividend_yield_recent``) with no
+``return_on_equity``, ``debt_to_equity``, the dividend yield) with no
 history and no point-in-time restatement: you cannot ask it what a company's
 trailing P/E looked like on a date in the past, and the figure you do get
 reflects filings published after many of the days a backtest would rank.
@@ -27,6 +27,7 @@ from screener.scoring.components import (
     rsi_quality,
     trend_stack_strength,
 )
+from screener.vendor_columns import DIVIDEND_YIELD_COLUMN
 
 _VALUE_COLUMNS = ("price_earnings_ttm",)
 _QUALITY_COLUMNS = ("return_on_equity", "debt_to_equity", "EMA20", "EMA200")
@@ -38,7 +39,7 @@ _CHEAP_QUALITY_COLUMNS = (
     "EMA200",
 )
 _DIVIDEND_COLUMNS = (
-    "dividend_yield_recent",
+    DIVIDEND_YIELD_COLUMN,
     "price_earnings_ttm",
     "debt_to_equity",
 )
@@ -138,7 +139,7 @@ def score_cheap_quality(df: pd.DataFrame) -> pd.Series:
 )
 def score_dividend(df: pd.DataFrame) -> pd.Series:
     close = numeric(df, "close")
-    yield_ = numeric(df, "dividend_yield_recent")
+    yield_ = numeric(df, DIVIDEND_YIELD_COLUMN)
     pe = numeric(df, "price_earnings_ttm")
     de = numeric(df, "debt_to_equity")
     volume = numeric(df, "volume")

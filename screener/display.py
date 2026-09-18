@@ -14,6 +14,7 @@ from screener.format import (
     fmt_volume,
     is_missing,
 )
+from screener.vendor_columns import DIVIDEND_YIELD_COLUMN
 
 console = Console()
 
@@ -52,7 +53,7 @@ COLUMNS: dict[str, ColumnSpec] = {
     "EMA200": ColumnSpec("EMA200", "right", fmt_float),
     "price_earnings_ttm": ColumnSpec("P/E", "right", fmt_float),
     "return_on_equity": ColumnSpec("ROE%", "right", fmt_float),
-    "dividend_yield_recent": ColumnSpec("Div%", "right", fmt_float),
+    DIVIDEND_YIELD_COLUMN: ColumnSpec("Div%", "right", fmt_float),
     "debt_to_equity": ColumnSpec("D/E", "right", fmt_float),
     "RSI": ColumnSpec("RSI", "right", fmt_float),
     "P/E": ColumnSpec("P/E", "right", fmt_float),
