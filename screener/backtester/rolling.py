@@ -181,6 +181,8 @@ _RUN_OPTION_DECORATORS: tuple[OptionDecorator, ...] = (
         "universe-file",
         "max-universe",
         "stop-loss",
+        "stop-atr",
+        "stop-atr-window",
         "take-profit",
         "trailing-stop",
         "slippage-bps",
