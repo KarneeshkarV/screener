@@ -15,6 +15,15 @@ backtester fills its ``--top`` slots with the *lowest*-volatility names. The
 entry expression ``vol_252 > 0`` is satisfied for every symbol once 252 days of
 returns exist (realized vol is strictly positive on non-constant prices), so it
 acts purely as a "has enough history" eligibility gate; ranking does the work.
+
+Which is why this factor needs the tradeability gate as badly as momentum does,
+in the mirror direction. A dormant shell carried at a flat $0.0001 stub has a
+realized volatility of *exactly zero* - it is the calmest possible stock - so
+an ungated ranking hands it the first slot every time. Measured on cached US
+bars, the five lowest-volatility names in the whole cache were all stub quotes
+with 93-100% of their sessions at zero volume. ``vol_252`` is therefore NaN
+wherever :func:`screener.tradeable.tradeable_span` says the window is not a
+market, and a NaN fails ``vol_252 > 0``, so those names are not ranked at all.
 """
 
 from __future__ import annotations
@@ -26,14 +35,23 @@ from screener.strategies.spec import (
     PrepareCtx,
     register_expression_strategy,
 )
+from screener.tradeable import tradeable_span
 
 _WINDOW = 252  # ~12 months of trading days
 
 
-def realized_volatility(close: pd.Series) -> pd.Series:
-    """Return the causal trailing-``_WINDOW`` daily-return volatility."""
-    returns = close.astype(float).pct_change()
-    return returns.rolling(_WINDOW, min_periods=_WINDOW).std()
+def realized_volatility(close: pd.Series, volume: pd.Series | None = None) -> pd.Series:
+    """Return the causal trailing-``_WINDOW`` daily-return volatility.
+
+    NaN where the window does not rest on real, traded prices. Unlike a ratio
+    this reads *every* close in the span, so one stub anywhere inside it is
+    enough to corrupt the estimate - hence ``tradeable_span`` rather than
+    ``tradeable_window``.
+    """
+    values = close.astype(float)
+    returns = values.pct_change()
+    vol = returns.rolling(_WINDOW, min_periods=_WINDOW).std()
+    return vol.where(tradeable_span(values, volume, window=_WINDOW))
 
 
 def _prepare_low_vol(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
@@ -43,7 +61,7 @@ def _prepare_low_vol(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
             out[tv] = bars
             continue
         frame = bars.copy()
-        vol = realized_volatility(frame["close"])
+        vol = realized_volatility(frame["close"], frame.get("volume"))
         frame["vol_252"] = vol
         # Lower volatility ranks higher -> negate so the descending ranker picks
         # the calmest names first.

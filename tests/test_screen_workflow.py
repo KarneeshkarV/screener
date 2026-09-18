@@ -329,3 +329,50 @@ def test_a_report_written_for_the_caller_leaves_no_render_hook(monkeypatch, tmp_
     outcome = run_screen_workflow(_request())
 
     assert outcome.render_report is None
+
+
+class TestCriteriaPathPriceFloor:
+    """The TradingView-filter path floors on the venue minimum close.
+
+    The bar path already did, through ``StrategyProfile.min_price`` falling
+    back to ``markets.py`` (D24). This path did not, so a criteria-only screen
+    ranked OTC and grey-market lines carried at a flat sub-cent stub. On
+    ``intraday_breakout`` a halving inside one $0.0001 tick printed as an
+    exact ``change`` of +100.0% and took rank 12 of a 15-name US result.
+    """
+
+    def _captured_filters(self, monkeypatch, *, market: str) -> list:
+        seen: list = []
+
+        def capture(**kwargs):
+            seen.append(kwargs["filters"])
+            return 1, _df("AAA"), _AS_OF
+
+        _patch(
+            monkeypatch,
+            resolve_criteria=lambda names: FilterCriteriaSelection(
+                tuple(names), "value", ["FILTER"]
+            ),
+            scan=capture,
+        )
+        request = _request(output_csv=True)
+        run_screen_workflow(ScreenRequest(**{**request.__dict__, "market": market}))
+        return seen[0]
+
+    def test_the_criteria_filters_are_kept(self, monkeypatch):
+        """The floor is added to the question, it does not replace it."""
+        filters = self._captured_filters(monkeypatch, market="us")
+        assert "FILTER" in filters
+        assert len(filters) == 2
+
+    def test_each_market_gets_its_own_floor(self, monkeypatch):
+        """A $1 floor on an Indian screen would let through every penny name
+        the Rs10 floor exists to cut, so the value has to come from the venue.
+        """
+        from screener.markets import get_market
+
+        for market in ("us", "india"):
+            filters = self._captured_filters(monkeypatch, market=market)
+            rendered = str(filters[-1])
+            assert str(get_market(market).screen_min_close) in rendered
+            assert "close" in rendered

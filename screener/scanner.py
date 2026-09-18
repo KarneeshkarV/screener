@@ -22,6 +22,7 @@ from screener.scoring import (
     get_scorer,
 )
 from screener.scoring.components import log_percentile
+from screener.vendor_columns import DIVIDEND_YIELD_COLUMN
 
 LOG = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ SETUP_SCORE_COLUMNS = list(get_scorer("ema").columns)
 DETAIL_COLUMNS = [
     "price_earnings_ttm",
     "return_on_equity",
-    "dividend_yield_recent",
+    DIVIDEND_YIELD_COLUMN,
     "debt_to_equity",
     "RSI",
 ]

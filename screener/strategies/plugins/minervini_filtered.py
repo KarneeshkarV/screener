@@ -23,21 +23,44 @@ from screener.strategies.spec import (
     PrepareCtx,
     register_expression_strategy,
 )
+from screener.tradeable import tradeable_span, tradeable_window
 
 
 def _add_quality_features(frame: pd.DataFrame) -> pd.DataFrame:
     """Attach trend-quality features. Definitions match the trade-study
-    enrichment exactly so shipped thresholds reproduce the mined win rates."""
+    enrichment exactly so shipped thresholds reproduce the mined win rates.
+
+    Every feature here is a price ratio or a price dispersion, so each carries
+    the tradeability gate of :mod:`screener.tradeable` over its own window. The
+    gate does not change any feature's definition on a real series - it only
+    replaces the value with NaN where the window is not a market, and a NaN
+    fails every comparison in an entry expression. Several mined rules use
+    momentum as an *upper* bound (``mom_63d <= 0.25``), which an ungated stub
+    return would satisfy by being absurd rather than by being good.
+    """
     close = frame["close"].astype(float)
+    volume = frame.get("volume")
     s50 = close.rolling(50).mean()
     s150 = close.rolling(150).mean()
     s200 = close.rolling(200).mean()
-    frame["ext_above_sma50"] = close / s50 - 1.0
-    frame["sma50_150_spread"] = s50 / s150 - 1.0
-    frame["sma150_200_spread"] = s150 / s200 - 1.0
-    frame["mom_63d"] = close / close.shift(63) - 1.0
-    frame["mom_126d"] = close / close.shift(126) - 1.0
-    frame["vol_20d_ann"] = close.pct_change().rolling(20).std() * np.sqrt(252)
+    frame["ext_above_sma50"] = (close / s50 - 1.0).where(
+        tradeable_span(close, volume, window=50)
+    )
+    frame["sma50_150_spread"] = (s50 / s150 - 1.0).where(
+        tradeable_span(close, volume, window=150)
+    )
+    frame["sma150_200_spread"] = (s150 / s200 - 1.0).where(
+        tradeable_span(close, volume, window=200)
+    )
+    frame["mom_63d"] = (close / close.shift(63) - 1.0).where(
+        tradeable_window(close, volume, lookback=63)
+    )
+    frame["mom_126d"] = (close / close.shift(126) - 1.0).where(
+        tradeable_window(close, volume, lookback=126)
+    )
+    frame["vol_20d_ann"] = (close.pct_change().rolling(20).std() * np.sqrt(252)).where(
+        tradeable_span(close, volume, window=20)
+    )
     return frame
 
 

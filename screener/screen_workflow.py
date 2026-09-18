@@ -36,6 +36,7 @@ from screener.screen_candidates import (
 )
 from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from screener.history import diff, previous_run, save_run
+from screener.markets import get_market
 from screener.scanner import scan
 from screener.scoring import (
     DEFAULT_PRICE_ADJUSTMENT,
@@ -329,6 +330,31 @@ _BAR_PATH_ONLY: tuple[tuple[str, str], ...] = (
 )
 
 
+def _with_market_price_floor(filters: list, *, market: str) -> list:
+    """``filters`` plus the venue's minimum close, which is not optional.
+
+    The bar path floors candidates on ``StrategyProfile.min_price``, which
+    falls back to ``markets.py`` when the user types no ``--min-price`` (D24).
+    The TradingView-filter path had no equivalent, so a criteria-only screen
+    ranked whatever the vendor returned - including OTC and grey-market lines
+    carried at a flat sub-cent stub, where a halving inside one $0.0001 tick
+    prints as an exact ``change`` of +100.0% and takes a top slot on
+    ``intraday_breakout``. That is the same defect
+    :mod:`screener.tradeable` gates on the bar path, arriving through the
+    vendor's own daily-change column rather than through a ratio this package
+    computes, so no factor-level gate can reach it: the floor has to be part
+    of the question asked of the vendor.
+
+    Applied as a vendor-side filter rather than a post-scan cut so the field
+    the scan returns is already floored, and the ``-n`` rows reported are
+    ``-n`` real names instead of ``-n`` minus however many stubs matched.
+    """
+    from tradingview_screener import col
+
+    floor = get_market(market).screen_min_close
+    return [*filters, col("close") >= floor]
+
+
 def _refuse_bar_path_options(request: ScreenRequest) -> None:
     """Refuse bar-path options on a criteria set that has no bar rule.
 
@@ -392,6 +418,7 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
         return _finish_screen(request, label, *_run_bar_screen(request, strategy))
 
     selection = resolve_criteria(request.criteria_names)
+    filters = _with_market_price_floor(selection.filters, market=request.market)
     # Only the ``setup_score`` ranking consumes a scorer, and resolving one can
     # refuse a criteria combination whose scores are incomparable. Skip the
     # resolution when the run sorts by a TradingView column, so a refusal fires
@@ -404,7 +431,7 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
 
     total, df, as_of = scan(
         market=request.market,
-        filters=selection.filters,
+        filters=filters,
         limit=request.limit,
         order_by=request.order_by,
         detail=request.detail,

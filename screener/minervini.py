@@ -53,11 +53,20 @@ def add_rs_rank_column(
     bars_by_symbol: dict[str, pd.DataFrame],
 ) -> dict[str, pd.DataFrame]:
     """Add 12-month relative-strength percentile, 0-100, across the universe."""
+    usable = {
+        symbol: bars
+        for symbol, bars in bars_by_symbol.items()
+        if bars is not None and not bars.empty and "close" in bars
+    }
     ranks = relative_strength_rank(
-        {
-            symbol: bars["close"]
-            for symbol, bars in bars_by_symbol.items()
-            if bars is not None and not bars.empty and "close" in bars
+        {symbol: bars["close"] for symbol, bars in usable.items()},
+        # Volume is what separates a dormant shell the vendor carries forward
+        # from a thinly traded real name, and rs_rank is a percentile, so a
+        # shell that scores also displaces. Pass it wherever the frame has it.
+        volumes_by_symbol={
+            symbol: bars["volume"]
+            for symbol, bars in usable.items()
+            if "volume" in bars
         },
         window=RS_RANK_WINDOW,
     )

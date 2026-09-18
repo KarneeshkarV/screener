@@ -27,6 +27,11 @@ import pandas as pd
 from screener.factors import BarFeatures, price_score
 from screener.indicators.plugins.heikin_ashi import heikin_ashi_ohlc
 from screener.indicators.plugins.rsi import rsi as _wilder_rsi
+from screener.tradeable import (
+    MIN_TRADEABLE_PRICE,
+    MIN_TRADED_FRACTION,
+    tradeable_window,
+)
 
 # Trading-day windows. 252 ~ 12 months, 21 ~ 1 month (the skipped reversal leg).
 MOMENTUM_LOOKBACK = 252
@@ -42,23 +47,6 @@ RVOL_WINDOW = 10
 #: TradingView's ``Perf.Y`` is a trailing one-year return.
 PERF_Y_LOOKBACK = 252
 
-#: Smallest close a momentum leg may sit on. Below one cent a quote is not a
-#: price: US OTC and grey-market lines are carried at a flat $0.0001 stub for
-#: months at a time, volume zero, and that stub becomes the denominator of a
-#: 12-1 ratio ``close[t-21] / close[t-252] - 1``. One observed name divided a
-#: $4.26 close by a $0.0001 stub and scored +4,259,800%, the top of a 13,326
-#: name field. A cent is also the minimum tick on both markets this screener
-#: covers, so no real quote is excluded by the floor.
-MIN_TRADEABLE_PRICE = 0.01
-
-#: Fraction of the sessions spanned by a momentum window that must have traded
-#: before the window's endpoints count as prices. A series the vendor carries
-#: forward through months of no trading has closes at every bar, so bar count
-#: alone cannot tell it from a liquid name; the volume column can. Half is
-#: deliberately permissive - it keeps thinly traded but real names and cuts
-#: only series that are mostly not a market.
-MIN_TRADED_FRACTION = 0.5
-
 
 def tradeable_momentum_window(
     close: pd.Series,
@@ -69,34 +57,12 @@ def tradeable_momentum_window(
 ) -> pd.Series:
     """Boolean mask: bars whose 12-1 window rests on real, traded prices.
 
-    A momentum ratio is only a return when both of its legs are prices a
-    market actually set. Two ways that fails, and neither shows up as missing
-    data - the frame is full-length and every bar carries a close:
-
-    * **A stub quote.** A venue carries a dormant line at a flat sub-cent
-      value. As the ratio's denominator it manufactures a five-figure return.
-      :data:`MIN_TRADEABLE_PRICE` rejects both legs below one tick.
-    * **A series that is mostly not trading.** The vendor repeats the last
-      close through months of no trades, so the endpoints are stale marks
-      rather than prices. :data:`MIN_TRADED_FRACTION` of the sessions the
-      window spans must carry non-zero volume.
-
-    ``volume`` may be ``None`` - a close-only frame cannot answer the second
-    question, so only the price floor applies there. That is stated rather
-    than assumed away: the gate is as strong as the columns allow.
+    The 12-1 spelling of :func:`screener.tradeable.tradeable_window`, which is
+    where the rules and the reasoning behind them live. Kept as a named
+    function because the momentum window's ``skip`` leg is particular to this
+    recipe and the name says what the mask means here.
     """
-    prices = pd.to_numeric(close, errors="coerce").astype(float)
-    floor = MIN_TRADEABLE_PRICE
-    eligible = (prices.shift(skip) >= floor) & (prices.shift(lookback) >= floor)
-    if volume is None:
-        return eligible
-    traded = (pd.to_numeric(volume, errors="coerce").astype(float) > 0).astype(float)
-    # Sessions strictly inside the window, i.e. the ones the return is made
-    # of. ``shift(skip)`` puts the near leg at bar ``t``; the window then
-    # reaches back ``lookback - skip`` sessions to the far leg.
-    span = max(int(lookback) - int(skip), 1)
-    fraction = traded.shift(skip).rolling(span).mean()
-    return eligible & (fraction >= MIN_TRADED_FRACTION)
+    return tradeable_window(close, volume, lookback=lookback, skip=skip)
 
 
 def momentum_12_1(
@@ -237,10 +203,23 @@ def relative_volume_10d(volume: pd.Series, *, window: int = RVOL_WINDOW) -> pd.S
     return values / average.where(average > 0)
 
 
-def perf_y(close: pd.Series, *, lookback: int = PERF_Y_LOOKBACK) -> pd.Series:
-    """Trailing one-year return in *percent*, the unit ``Perf.Y`` reports."""
+def perf_y(
+    close: pd.Series,
+    volume: pd.Series | None = None,
+    *,
+    lookback: int = PERF_Y_LOOKBACK,
+) -> pd.Series:
+    """Trailing one-year return in *percent*, the unit ``Perf.Y`` reports.
+
+    Same ratio shape as :func:`momentum_12_1` with no skipped leg, so it takes
+    the same tradeability gate: a sub-cent stub denominator turns this into a
+    five-figure percentage exactly as it did for momentum. NaN wherever the
+    window does not rest on real prices, which both adapters already read as
+    "not a candidate".
+    """
     values = pd.to_numeric(close, errors="coerce").astype(float)
-    return (values / values.shift(lookback) - 1.0) * 100.0
+    raw = (values / values.shift(lookback) - 1.0) * 100.0
+    return raw.where(tradeable_window(values, volume, lookback=lookback))
 
 
 @price_score(
@@ -275,7 +254,7 @@ def score_relative_volume_10d(features: BarFeatures) -> pd.Series:
     aux_column="perf_y",
 )
 def score_perf_y(features: BarFeatures) -> pd.Series:
-    return perf_y(features.close)
+    return perf_y(features.close, features.volume)
 
 
 __all__ = [
