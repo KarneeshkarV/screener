@@ -290,7 +290,9 @@ def evaluate_symbol(
     if len(df) < max(RS_WINDOW + 1, VOLUME_WINDOW + 1, SUPERTREND_PERIOD + 1):
         return None
 
-    rs = relative_strength_ratio(df["close"], benchmark_close)
+    rs = relative_strength_ratio(
+        df["close"], benchmark_close, stock_volume=df["volume"]
+    )
     st = supertrend(df)
     vol_avg = (
         df["volume"].rolling(VOLUME_WINDOW, min_periods=VOLUME_WINDOW).mean().shift(1)
@@ -533,7 +535,9 @@ def build_signal_frame(
     # ``df``, so the extra ``copy`` it used to carry was one full duplicate of
     # every symbol's bars per run.
     df = bars.sort_index()
-    rs = relative_strength_ratio(df["close"], benchmark_close)
+    rs = relative_strength_ratio(
+        df["close"], benchmark_close, stock_volume=df["volume"].astype(float)
+    )
     st = supertrend(df)
     avg_volume = (
         df["volume"]
