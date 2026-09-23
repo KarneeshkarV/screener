@@ -34,7 +34,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
@@ -350,7 +350,9 @@ def resolve_universe_tickers(
     return resolve_universe_field(universe, market, config_path=config_path).tickers
 
 
-def _bar_display_row(bars: pd.DataFrame, ticker: str) -> dict[str, object]:
+def _bar_display_row(
+    bars: pd.DataFrame, ticker: str, as_of: pd.Timestamp | None = None
+) -> dict[str, object]:
     """Display columns for a ticker the TradingView scan never returned.
 
     ``--universe`` mode runs no scan, so there is no snapshot row to show. The
@@ -358,6 +360,8 @@ def _bar_display_row(bars: pd.DataFrame, ticker: str) -> dict[str, object]:
     honest source: ``market_cap_basic`` has no bar equivalent and stays NaN
     rather than being invented.
     """
+    if as_of is not None:
+        bars = bars.loc[bars.index <= as_of]
     close = float(bars["close"].iloc[-1])
     previous = float(bars["close"].iloc[-2]) if len(bars) > 1 else close
     change = (close / previous - 1.0) * 100.0 if previous else float("nan")
@@ -599,6 +603,7 @@ def screen_candidates(
         day.candidates,
         panel.bars_by_tv,
         scanned,
+        as_of=day.as_of,
         limit=limit,
         order_by=order_by,
         warnings=warnings,
@@ -613,6 +618,7 @@ def _candidate_frame(
     limit: int | None = None,
     order_by: str | None = None,
     warnings: list[str] | None = None,
+    as_of: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Render candidates as the screen's result frame, in rank order.
 
@@ -631,10 +637,18 @@ def _candidate_frame(
 
     if scanned is not None and not scanned.empty and "ticker" in scanned.columns:
         rows = scanned.set_index("ticker").reindex(order).reset_index()
+        if as_of is not None:
+            for row_index, ticker in enumerate(order):
+                bars = bars_by_tv.get(ticker)
+                if bars is None or bars.empty:
+                    continue
+                display = _bar_display_row(bars, ticker, as_of)
+                for column in ("close", "change", "volume"):
+                    rows.at[row_index, column] = cast(float, display[column])
     else:
         rows = pd.DataFrame(
             [
-                _bar_display_row(bars_by_tv[t], t)
+                _bar_display_row(bars_by_tv[t], t, as_of)
                 for t in order
                 if t in bars_by_tv and not bars_by_tv[t].empty
             ]

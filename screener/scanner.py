@@ -78,6 +78,7 @@ class ScannerPlan:
     query_order_by: str
     fetch_limit: int
     scorer: ScoreSpec | None = None
+    offset: int = 0
 
 
 def build_scanner_plan(
@@ -97,15 +98,10 @@ def build_scanner_plan(
     if order_by == OUTPUT_SCORE_COLUMN:
         active_scorer = scorer if scorer is not None else default_scorer()
         columns.extend(c for c in active_scorer.columns if c not in columns)
-        # Over-fetch so the rows lost before ``.head(limit)`` still leave
-        # more than ``limit`` to rank. Three cuts happen after the fetch: the
-        # recipe's eligibility floor, names whose price fetch came back empty,
-        # and ``_dedupe_listings`` collapsing NSE/BSE dual listings. What that
-        # headroom costs depends on the recipe. A snapshot recipe ranks on
-        # columns the one TradingView request already returned, so spare rows
-        # are free. A bar-derived recipe downloads daily OHLCV per surviving
-        # ticker, so every spare row is another network fetch. 5x covers the
-        # three drops. The snapshot path can afford 10x.
+        # The fetch limit is a page size. ``scan`` requests every page before
+        # scoring so a high-scoring, low-volume name cannot be cut by the
+        # vendor's volume sort. Bar-derived scores download bars for every
+        # matching name, so their pages stay smaller than snapshot pages.
         if active_scorer.bar_score is not None:
             fetch_limit = max(limit * 5, 200)
         else:
@@ -147,6 +143,8 @@ class TradingViewScannerAdapter:
             .order_by(plan.query_order_by, ascending=False)
             .limit(plan.fetch_limit)
         )
+        if plan.offset:
+            query = query.offset(plan.offset)
 
         return _scanner_entry(
             query,
@@ -160,6 +158,7 @@ class TradingViewScannerAdapter:
                 plan.columns,
                 plan.order_by,
                 plan.fetch_limit,
+                plan.offset,
             ),
             columns=plan.columns,
             cache_ttl=cache_ttl,
@@ -462,6 +461,37 @@ def scan(
         retries=retries,
         strict=strict,
     )
+    if order_by == OUTPUT_SCORE_COLUMN:
+        pages = [df]
+        fetched = len(df)
+        while fetched < count:
+            next_plan = ScannerPlan(
+                market=plan.market,
+                filters=plan.filters,
+                columns=plan.columns,
+                order_by=plan.order_by,
+                query_order_by=plan.query_order_by,
+                fetch_limit=plan.fetch_limit,
+                scorer=plan.scorer,
+                offset=fetched,
+            )
+            _page_total, page, _page_as_of = TRADINGVIEW_SCANNER.fetch(
+                next_plan,
+                cache_ttl=cache_ttl,
+                refresh=refresh,
+                timeout=timeout,
+                retries=retries,
+                strict=strict,
+            )
+            if page.empty:
+                raise RuntimeError(
+                    f"TradingView score scan incomplete: fetched {fetched} of "
+                    f"{count} matching rows"
+                )
+            pages.append(page)
+            fetched += len(page)
+        if len(pages) > 1:
+            df = pd.concat(pages, ignore_index=True)
     shaped = shape_scan_results(
         df,
         limit=limit,

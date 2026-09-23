@@ -210,6 +210,45 @@ def test_unscored_order_keeps_its_own_over_fetch():
     assert _plan_limit(None, limit=5, order_by="volume") == 100
 
 
+def test_score_scan_ranks_all_vendor_matches_across_pages(monkeypatch):
+    rows = pd.DataFrame(
+        {
+            "ticker": [f"NSE:T{i}" for i in range(501)],
+            "name": [f"T{i}" for i in range(501)],
+            "description": [f"Company {i}" for i in range(501)],
+            "volume": list(range(501, 0, -1)),
+            "market_cap_basic": [1.0] * 500 + [1_000.0],
+        }
+    )
+    offsets: list[int] = []
+
+    def fake_fetch(
+        plan: scanner_module.ScannerPlan, **kwargs: object
+    ) -> tuple[int, pd.DataFrame, datetime]:
+        offsets.append(plan.offset)
+        return (
+            len(rows),
+            rows.iloc[plan.offset : plan.offset + plan.fetch_limit],
+            _AS_OF,
+        )
+
+    def fake_apply_score(
+        frame: pd.DataFrame, spec: ScoreSpec, **kwargs: object
+    ) -> pd.DataFrame:
+        return frame.assign(setup_score=frame["market_cap_basic"])
+
+    monkeypatch.setattr(scanner_module.TRADINGVIEW_SCANNER, "fetch", fake_fetch)
+    monkeypatch.setattr(scanner_module, "apply_score", fake_apply_score)
+
+    total, ranked, _ = scanner_module.scan(
+        "india", [], limit=5, order_by=OUTPUT_SCORE_COLUMN, scorer=get_scorer("ema")
+    )
+
+    assert total == 501
+    assert offsets == [0, 500]
+    assert ranked.iloc[0]["ticker"] == "NSE:T500"
+
+
 def test_raw_aux_column_is_hidden_unless_detail(monkeypatch):
     """``mom_12_1`` is a diagnostic; the default table already has setup_score."""
 

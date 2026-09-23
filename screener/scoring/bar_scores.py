@@ -22,14 +22,11 @@ are dropped, so a name nobody can trade never moves an eligible name's score.
 
 Two deliberate properties:
 
-* **Bars are fetched only for rows the TradingView filters already returned.**
-  The adapter runs inside ``scanner.shape_scan_results``, after the scan, so
-  the field is already cut to the scan's fetch limit rather than the whole
-  market. For a bar-derived scorer that ceiling is ``max(limit * 5, 200)``,
-  set in ``scanner.build_scanner_plan``. The extra rows exist so the
-  eligibility floor, price-fetch outages, and NSE/BSE dedupe still leave
-  ``limit`` names. A default screen downloads at most 200 tickers of daily
-  bars. The fetcher's on-disk parquet cache is reused as-is. ``refresh``
+* **Bars are fetched for every row the TradingView filters match.**
+  The adapter runs inside ``scanner.shape_scan_results`` after ``scan`` has
+  paged through the full vendor match set. The result limit applies only
+  after scoring, so a low-volume name can still rank first. The fetcher's
+  on-disk parquet cache is reused as-is. ``refresh``
   asks that cache to update; a failed download still merges leftover
   parquet so the ranking stays available. When the caller asked for
   ``strict`` and ``refresh`` together, that merge is refused:

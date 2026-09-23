@@ -54,6 +54,7 @@ def _resolve_entry_fill(
     signal_idx: int,
     cfg: BacktestConfig,
     arrays: PriceArrays | None = None,
+    limit_bar_idx: int | None = None,
 ) -> tuple[int | None, float | None, str | None]:
     """Resolve entry bar index and reference fill price from order settings.
 
@@ -83,6 +84,22 @@ def _resolve_entry_fill(
         else:
             signal_close = float(bars.iloc[signal_idx]["close"])
         limit_price = signal_close * (1.0 - bps_fraction(cfg.entry_limit_bps))
+        if limit_bar_idx is not None:
+            if limit_bar_idx <= signal_idx or limit_bar_idx >= len(bars):
+                return None, None, "limit order has no current bar"
+            low = (
+                float(arrays.low_arr[limit_bar_idx])
+                if arrays is not None
+                else float(bars.iloc[limit_bar_idx]["low"])
+            )
+            if low > limit_price:
+                return None, None, "limit order not touched on current bar"
+            bar_open = (
+                float(arrays.open_arr[limit_bar_idx])
+                if arrays is not None
+                else float(bars.iloc[limit_bar_idx]["open"])
+            )
+            return limit_bar_idx, min(bar_open, limit_price), None
         if arrays is not None:
             for i in range(signal_idx + 1, len(bars)):
                 if float(arrays.low_arr[i]) <= limit_price:
@@ -204,6 +221,7 @@ class FillModel:
         sigma_daily: float = 0.0,
         half_spread: float = 0.0,
         arrays: PriceArrays | None = None,
+        limit_bar_idx: int | None = None,
     ) -> tuple[int | None, float | None, float, str | None]:
         """Return entry index, slipped fill, pre-impact shares, and warning.
 
@@ -214,7 +232,7 @@ class FillModel:
         recomputed from ``fill``.
         """
         entry_idx, entry_ref, warn = _resolve_entry_fill(
-            bars, signal_idx, self.cfg, arrays
+            bars, signal_idx, self.cfg, arrays, limit_bar_idx
         )
         if entry_idx is None or entry_ref is None:
             return None, None, 0.0, warn

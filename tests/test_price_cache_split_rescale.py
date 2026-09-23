@@ -20,6 +20,10 @@ from screener.backtester.price_cache import has_scale_verified, scale_verified_p
 from screener.backtester.price_frames import has_price_seam, overlap_rescaled
 
 
+def _full_key(ticker: str) -> str:
+    return YFinancePriceFetcher()._cache_key(ticker)
+
+
 def _frame(start: str, periods: int, price: float) -> pd.DataFrame:
     idx = pd.bdate_range(pd.Timestamp(start), periods=periods)
     return pd.DataFrame(
@@ -97,8 +101,8 @@ def test_rescaled_cache_is_discarded_not_merged(tmp_path, monkeypatch) -> None:
     ticker = "SPLITCO"
     # Cached on the pre-split scale, and already scale-verified so the legacy
     # seam repair is not what this test exercises.
-    _save_cache(ticker, _frame("2026-01-05", 40, 2.0), tmp_path)
-    scale_verified_path(ticker, tmp_path).write_text("{}")
+    _save_cache(_full_key(ticker), _frame("2026-01-05", 40, 2.0), tmp_path)
+    scale_verified_path(_full_key(ticker), tmp_path).write_text("{}")
 
     windows: list[tuple] = []
 
@@ -133,8 +137,8 @@ def test_unchanged_scale_keeps_the_ordinary_merge(tmp_path, monkeypatch) -> None
     import yfinance as yf
 
     ticker = "CALMCO"
-    _save_cache(ticker, _frame("2026-01-05", 40, 10.0), tmp_path)
-    scale_verified_path(ticker, tmp_path).write_text("{}")
+    _save_cache(_full_key(ticker), _frame("2026-01-05", 40, 10.0), tmp_path)
+    scale_verified_path(_full_key(ticker), tmp_path).write_text("{}")
 
     calls: list[tuple] = []
 
@@ -162,8 +166,8 @@ def test_legacy_seam_entry_is_repaired_once(tmp_path, monkeypatch) -> None:
     stitched = pd.concat(
         [_frame("2026-01-05", 20, 2.0), _frame("2026-02-02", 20, 250.0)]
     )
-    _save_cache(ticker, stitched, tmp_path)
-    assert not has_scale_verified(ticker, tmp_path)
+    _save_cache(_full_key(ticker), stitched, tmp_path)
+    assert not has_scale_verified(_full_key(ticker), tmp_path)
 
     calls: list[tuple] = []
 
@@ -176,7 +180,7 @@ def test_legacy_seam_entry_is_repaired_once(tmp_path, monkeypatch) -> None:
 
     frames = fetcher.fetch([ticker], date(2026, 1, 5), date(2026, 3, 2))
     assert (frames[ticker]["close"] == 250.0).all()
-    assert has_scale_verified(ticker, tmp_path)
+    assert has_scale_verified(_full_key(ticker), tmp_path)
     first_calls = len(calls)
     assert first_calls >= 1
 
