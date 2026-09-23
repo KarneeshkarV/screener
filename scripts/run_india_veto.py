@@ -208,7 +208,9 @@ def _book_record(
     }
 
 
-def run_one(strategy: str, years: int, variant: str, extra: dict[str, Any]) -> dict[str, Any]:
+def run_one(
+    strategy: str, years: int, variant: str, extra: dict[str, Any]
+) -> dict[str, Any]:
     from screener.backtester.optimization.monte_carlo import (
         equity_monte_carlo_metrics,
         simulate_equity_monte_carlo,

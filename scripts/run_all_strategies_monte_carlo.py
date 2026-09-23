@@ -424,7 +424,8 @@ def build_html(rows: list[dict[str, Any]], *, total_planned: int) -> str:
                 "run_id": row.get("run_id"),
                 "market": row.get("market"),
                 "strategy": row.get("strategy"),
-                "family": row.get("family") or FAMILIES.get(str(row.get("strategy")), "other"),
+                "family": row.get("family")
+                or FAMILIES.get(str(row.get("strategy")), "other"),
                 "universe": row.get("universe"),
                 "benchmark": row.get("benchmark"),
                 "start": row.get("start"),
@@ -543,9 +544,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"unknown market {market!r}. known: {sorted(MARKETS)}")
 
     configure_fmp_sources()
-    strategies = (
-        [args.strategy] if args.strategy else expression_strategy_names()
-    )
+    strategies = [args.strategy] if args.strategy else expression_strategy_names()
     jobs = planned_jobs(strategies, markets)
     out_dir = args.out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -583,7 +582,9 @@ def main(argv: list[str] | None = None) -> int:
 
     done = len(jobs) - len(pending)
     failed = 0
-    print(f"queued {len(pending)} / {len(jobs)} runs, workers={args.workers}", flush=True)
+    print(
+        f"queued {len(pending)} / {len(jobs)} runs, workers={args.workers}", flush=True
+    )
     if pending:
         with ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:
             futures = {pool.submit(run_one, job): job for job in pending}
@@ -635,7 +636,10 @@ def main(argv: list[str] | None = None) -> int:
             "current": None,
         },
     )
-    print(f"done. {done} recorded, {failed} failed. page: {out_dir / 'index.html'}", flush=True)
+    print(
+        f"done. {done} recorded, {failed} failed. page: {out_dir / 'index.html'}",
+        flush=True,
+    )
     return 0 if failed == 0 else 1
 
 
