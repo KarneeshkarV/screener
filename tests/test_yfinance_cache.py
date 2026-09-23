@@ -13,6 +13,10 @@ from screener.backtester.data import YFinancePriceFetcher, _load_cached, _save_c
 from screener.providers import StaleDataError
 
 
+def _full_key(ticker: str) -> str:
+    return YFinancePriceFetcher()._cache_key(ticker)
+
+
 #: Anchor for the synthetic series below. Prices are a function of the *date*,
 #: not of the window that asked for them, so the same session carries the same
 #: close through every path: a cached slice, a fresh download, a backfill. A
@@ -68,6 +72,35 @@ def test_yfinance_fetcher_batches_uncached_tickers(tmp_path, monkeypatch):
     assert set(out) == {"AAA", "BBB"}
     assert not out["AAA"].empty
     assert not out["BBB"].empty
+
+
+def test_full_adjustment_keeps_raw_turnover_from_yfinance(tmp_path, monkeypatch):
+    import yfinance as yf
+
+    calls: list[dict] = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append(kwargs)
+        return pd.DataFrame(
+            {
+                "Open": [100.0],
+                "High": [102.0],
+                "Low": [99.0],
+                "Close": [100.0],
+                "Adj Close": [90.0],
+                "Volume": [100.0],
+            },
+            index=pd.DatetimeIndex(["2024-01-02"]),
+        )
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    frame = YFinancePriceFetcher(cache_dir=tmp_path).fetch(
+        ["AAA"], date(2024, 1, 2), date(2024, 1, 2)
+    )["AAA"]
+
+    assert calls[0]["auto_adjust"] is False
+    assert frame.iloc[0]["close"] == 90.0
+    assert frame.iloc[0]["dollar_volume"] == 10_000.0
 
 
 def test_yfinance_fetcher_uses_full_cache_hit(tmp_path, monkeypatch):
@@ -172,8 +205,8 @@ def test_yfinance_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeyp
     start = today - pd.Timedelta(days=5)
     cached = _plain_bars(start, today + pd.Timedelta(days=1))
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
-    _save_cache("AAA", cached.rename(columns=str.lower), tmp_path)
-    cache_path = tmp_path / "AAA.parquet"
+    _save_cache(_full_key("AAA"), cached.rename(columns=str.lower), tmp_path)
+    cache_path = tmp_path / (_full_key("AAA") + ".parquet")
     old_mtime = time.time() - 7200
     os.utime(cache_path, (old_mtime, old_mtime))
     calls = []
@@ -211,16 +244,16 @@ def test_yfinance_tail_refresh_skips_fresh_and_historical_caches(tmp_path, monke
     today = date.today()
     recent_start = today - pd.Timedelta(days=5)
     recent = _plain_bars(recent_start, today + pd.Timedelta(days=1))
-    _save_cache("RECENT", recent.rename(columns=str.lower), tmp_path)
+    _save_cache(_full_key("RECENT"), recent.rename(columns=str.lower), tmp_path)
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
     fetcher.fetch(["RECENT"], recent_start, today)
 
     historical_start = date(2024, 1, 1)
     historical_end = date(2024, 1, 5)
     historical = _plain_bars(historical_start, date(2024, 1, 6))
-    _save_cache("OLD", historical.rename(columns=str.lower), tmp_path)
+    _save_cache(_full_key("OLD"), historical.rename(columns=str.lower), tmp_path)
     old_mtime = time.time() - 7200
-    os.utime(tmp_path / "OLD.parquet", (old_mtime, old_mtime))
+    os.utime(tmp_path / (_full_key("OLD") + ".parquet"), (old_mtime, old_mtime))
     fetcher.fetch(["OLD"], historical_start, historical_end)
 
     assert calls == []
@@ -239,7 +272,7 @@ def test_yfinance_refresh_merges_into_stored_history_instead_of_truncating_it(
     wide = _plain_bars(date(2018, 1, 1), date(2024, 6, 1), base=96.0).rename(
         columns=str.lower
     )
-    _save_cache("AAA", wide, tmp_path)
+    _save_cache(_full_key("AAA"), wide, tmp_path)
 
     narrow_start, narrow_end = date(2024, 4, 1), date(2024, 4, 30)
     calls = []
@@ -260,7 +293,7 @@ def test_yfinance_refresh_merges_into_stored_history_instead_of_truncating_it(
         pd.Timestamp(narrow_end) + pd.Timedelta(days=1),
     )
 
-    stored = _load_cached("AAA", tmp_path)
+    stored = _load_cached(_full_key("AAA"), tmp_path)
     assert stored.index.min() == wide.index.min()
     assert stored.index.max() == wide.index.max()
 
@@ -284,8 +317,8 @@ def _empty_download(tmp_path, monkeypatch):
 
     monkeypatch.setattr(yf, "download", lambda *args, **kwargs: pd.DataFrame())
     cached = _plain_bars(date(2024, 1, 2), date(2024, 1, 20)).rename(columns=str.lower)
-    _save_cache("AAA", cached, tmp_path)
-    _save_cache("BBB", cached, tmp_path)
+    _save_cache(_full_key("AAA"), cached, tmp_path)
+    _save_cache(_full_key("BBB"), cached, tmp_path)
     return cached
 
 
@@ -340,7 +373,7 @@ def test_yfinance_strict_refresh_returns_fresh_bars_when_download_works(
     import yfinance as yf
 
     cached = _plain_bars(date(2024, 1, 2), date(2024, 1, 20)).rename(columns=str.lower)
-    _save_cache("AAA", cached, tmp_path)
+    _save_cache(_full_key("AAA"), cached, tmp_path)
 
     def fake_download(tickers, **kwargs):
         return _download_frame(tickers, kwargs["start"], kwargs["end"])
@@ -424,12 +457,12 @@ def test_yfinance_fetcher_coalesces_partial_windows_into_one_download(
 
     # Two caches that start late, at different dates: both want older history.
     _save_cache(
-        "AAA",
+        _full_key("AAA"),
         _plain_bars(date(2024, 1, 15), date(2024, 1, 31)).rename(columns=str.lower),
         tmp_path,
     )
     _save_cache(
-        "BBB",
+        _full_key("BBB"),
         _plain_bars(date(2024, 1, 22), date(2024, 1, 31)).rename(columns=str.lower),
         tmp_path,
     )
@@ -508,14 +541,14 @@ def test_empty_history_marker_is_ignored_by_refresh_and_cleared_by_bars(
 
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
     fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 10))
-    assert empty_history_path("AAA", tmp_path).exists()
+    assert empty_history_path(_full_key("AAA"), tmp_path).exists()
 
     payloads["empty"] = False
     refreshing = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True)
     out = refreshing.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 10))
 
     assert not out["AAA"].empty
-    assert not empty_history_path("AAA", tmp_path).exists()
+    assert not empty_history_path(_full_key("AAA"), tmp_path).exists()
 
 
 def test_a_failed_download_is_never_recorded_as_empty_history(tmp_path, monkeypatch):
@@ -543,7 +576,7 @@ def test_a_failed_download_is_never_recorded_as_empty_history(tmp_path, monkeypa
     first = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 10))
 
     assert first["AAA"].empty
-    assert not empty_history_path("AAA", tmp_path).exists()
+    assert not empty_history_path(_full_key("AAA"), tmp_path).exists()
 
     before = attempts["count"]
     fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 10))
@@ -572,12 +605,12 @@ def test_the_empty_marker_records_the_ticker_s_own_window_not_the_group_s(
 
     # Same cause ("extend"), different windows: AAA wants ten days, BBB six weeks.
     _save_cache(
-        "AAA",
+        _full_key("AAA"),
         _plain_bars(date(2023, 12, 1), date(2024, 1, 21)).rename(columns=str.lower),
         tmp_path,
     )
     _save_cache(
-        "BBB",
+        _full_key("BBB"),
         _plain_bars(date(2023, 12, 1), date(2023, 12, 16)).rename(columns=str.lower),
         tmp_path,
     )
@@ -588,11 +621,13 @@ def test_the_empty_marker_records_the_ticker_s_own_window_not_the_group_s(
     union_start = pd.Timestamp("2023-12-16")
     end = pd.Timestamp("2024-01-31")
     # BBB asked for the union window, so the union window is known empty.
-    assert has_empty_history("BBB", union_start, end, tmp_path)
+    assert has_empty_history(_full_key("BBB"), union_start, end, tmp_path)
     # AAA never asked past its own cache edge, so that older stretch is still
     # unknown and worth a request.
-    assert not has_empty_history("AAA", union_start, end, tmp_path)
-    assert has_empty_history("AAA", pd.Timestamp("2024-01-22"), end, tmp_path)
+    assert not has_empty_history(_full_key("AAA"), union_start, end, tmp_path)
+    assert has_empty_history(
+        _full_key("AAA"), pd.Timestamp("2024-01-22"), end, tmp_path
+    )
 
 
 def test_open_session_bars_are_neither_served_nor_cached(tmp_path, monkeypatch):
@@ -632,7 +667,7 @@ def test_open_session_bars_are_neither_served_nor_cached(tmp_path, monkeypatch):
 
     assert future not in out["AAA.NS"].index
     assert out["AAA.NS"].index.max() <= today
-    cached = _load_cached("AAA.NS", tmp_path, "1d")
+    cached = _load_cached(_full_key("AAA.NS"), tmp_path, "1d")
     assert cached is not None
     assert future not in cached.index
 
@@ -655,7 +690,7 @@ def test_an_already_cached_open_session_bar_stops_being_served(tmp_path, monkeyp
         },
         index=pd.DatetimeIndex([today - pd.Timedelta(days=4), future]),
     )
-    _save_cache("AAA.NS", poisoned, tmp_path)
+    _save_cache(_full_key("AAA.NS"), poisoned, tmp_path)
 
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
     out = fetcher.fetch(
@@ -704,7 +739,7 @@ def test_a_late_listing_name_is_downloaded_once_not_on_every_run(tmp_path, monke
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
     first = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
     assert not first["AAA"].empty
-    assert coverage_path("AAA", tmp_path).exists()
+    assert coverage_path(_full_key("AAA"), tmp_path).exists()
 
     second = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
 
@@ -751,14 +786,14 @@ def test_a_backfilled_vendor_drops_the_coverage_bound(tmp_path, monkeypatch):
 
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
     fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
-    assert load_coverage("AAA", tmp_path)[0] == pd.Timestamp("2024-01-15")
+    assert load_coverage(_full_key("AAA"), tmp_path)[0] == pd.Timestamp("2024-01-15")
 
     listing["on"] = "2020-01-01"
     refreshing = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True)
     out = refreshing.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
 
     assert out["AAA"].index.min() == pd.Timestamp("2024-01-01")
-    assert not coverage_path("AAA", tmp_path).exists()
+    assert not coverage_path(_full_key("AAA"), tmp_path).exists()
 
 
 def test_a_failed_download_is_never_recorded_as_a_coverage_bound(tmp_path, monkeypatch):
@@ -773,14 +808,14 @@ def test_a_failed_download_is_never_recorded_as_a_coverage_bound(tmp_path, monke
     monkeypatch.setattr(yf, "download", failing_download)
 
     _save_cache(
-        "AAA",
+        _full_key("AAA"),
         _plain_bars(date(2024, 1, 15), date(2024, 2, 1)).rename(columns=str.lower),
         tmp_path,
     )
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
     fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
 
-    assert not coverage_path("AAA", tmp_path).exists()
+    assert not coverage_path(_full_key("AAA"), tmp_path).exists()
 
 
 def test_the_coverage_marker_expires(tmp_path, monkeypatch):
@@ -852,11 +887,11 @@ def test_an_empty_probe_past_a_cached_edge_records_the_bound(tmp_path, monkeypat
     monkeypatch.setenv("SCREENER_PRICE_TAIL_TTL_SECONDS", "999999999")
 
     _save_cache(
-        "AAA",
+        _full_key("AAA"),
         _plain_bars(date(2024, 1, 15), date(2024, 2, 1)).rename(columns=str.lower),
         tmp_path,
     )
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
     fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 31))
 
-    assert load_coverage("AAA", tmp_path)[0] == pd.Timestamp("2024-01-15")
+    assert load_coverage(_full_key("AAA"), tmp_path)[0] == pd.Timestamp("2024-01-15")

@@ -55,6 +55,8 @@ def normalize_price_frame(df: pd.DataFrame, interval: str = "1d") -> pd.DataFram
     rename = {column: column.lower().replace(" ", "_") for column in df.columns}
     df = df.rename(columns=rename)
     out = df[[column for column in OHLCV_COLUMNS if column in df.columns]].copy()
+    if "adj_close" in df.columns and "close" in out.columns and "volume" in out.columns:
+        out["dollar_volume"] = out["close"] * out["volume"]
     if "adj_close" in df.columns:
         out["adj_close"] = df["adj_close"]
     if "dividends" in df.columns:
@@ -70,6 +72,18 @@ def normalize_price_frame(df: pd.DataFrame, interval: str = "1d") -> pd.DataFram
     out = out[~out.index.duplicated(keep="last")].sort_index()
     price_columns = [column for column in OHLCV_COLUMNS if column in out.columns]
     return out.dropna(subset=price_columns) if price_columns else out
+
+
+def apply_full_price_adjustment(frame: pd.DataFrame) -> pd.DataFrame:
+    """Adjust OHLC for dividends while retaining raw daily dollar volume."""
+    if frame.empty or "adj_close" not in frame.columns:
+        return frame
+    raw_close = frame["close"].replace(0.0, float("nan"))
+    factor = (frame["adj_close"] / raw_close).astype(float)
+    adjusted = frame.copy()
+    for column in ("open", "high", "low", "close"):
+        adjusted[column] = adjusted[column] * factor
+    return adjusted
 
 
 def apply_splits_only_adjustment(

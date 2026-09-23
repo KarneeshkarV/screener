@@ -308,6 +308,7 @@ def _build_rolling_candidate_matrices(
     lookback_ok_np = np.empty((n_days, n_tickers), dtype=bool)
     close_np = np.empty((n_days, n_tickers), dtype=float)
     volume_np = np.empty((n_days, n_tickers), dtype=float)
+    dollar_vol_np = np.empty((n_days, n_tickers), dtype=float)
     # Cross-sectional factor scores (as-of the signal bar), only populated for
     # tickers whose prepared bars carry a ``rank_score`` column.
     rank_score_np = np.full((n_days, n_tickers), np.nan, dtype=float)
@@ -322,6 +323,11 @@ def _build_rolling_candidate_matrices(
         bars = bars_by_tv[tv]
         close = bars["close"].astype(float).to_numpy()
         volume = bars["volume"].astype(float).to_numpy()
+        dollar_volume = (
+            bars["dollar_volume"].astype(float).to_numpy()
+            if "dollar_volume" in bars.columns
+            else close * volume
+        )
         pos = bars.index.searchsorted(master_ix, side="right") - 1
         pos = np.where(pos < 0, -1, pos)
         n = len(bars)
@@ -333,9 +339,10 @@ def _build_rolling_candidate_matrices(
         )
         close_np[:, column] = np.where(has_bar, close[pos], np.nan)
         volume_np[:, column] = np.where(has_bar, volume[pos], np.nan)
+        dollar_vol_np[:, column] = np.where(has_bar, dollar_volume[pos], np.nan)
         if dynamic_universe_size is not None:
             lagged_adv = (
-                (bars["close"].astype(float) * bars["volume"].astype(float))
+                pd.Series(dollar_volume, index=bars.index)
                 .shift(1)
                 .rolling(
                     dynamic_universe_lookback, min_periods=dynamic_universe_lookback
@@ -377,7 +384,6 @@ def _build_rolling_candidate_matrices(
     volume_mat = pd.DataFrame(
         volume_np, index=master_ix, columns=valid_tickers, copy=False
     )
-    dollar_vol_np = close_np * volume_np
     dollar_vol_mat = pd.DataFrame(
         dollar_vol_np, index=master_ix, columns=valid_tickers, copy=False
     )

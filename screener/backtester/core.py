@@ -65,6 +65,16 @@ class LiquidityFilterSpec(Protocol):
     def avg_dollar_volume_window(self) -> int: ...
 
 
+@dataclass(frozen=True)
+class PendingLimitOrder:
+    """A limit order awaiting a future bar, with no fill or cash debit yet."""
+
+    ticker: str
+    signal_idx: int
+    rank: int
+    signal_date: date | datetime
+
+
 def _bar_label(ts, cfg: BacktestConfig) -> date | datetime:
     """Return the trade/position stamp for a bar timestamp.
 
@@ -367,7 +377,12 @@ def _passes_entry_filters(
         tail = bars.iloc[start:pos]
         if tail.empty:  # pragma: no cover - pos>0 guarantees a non-empty tail
             return False, "no volume history"
-        adv = float((tail["close"] * tail["volume"]).mean())
+        turnover = (
+            tail["dollar_volume"]
+            if "dollar_volume" in tail.columns
+            else tail["close"] * tail["volume"]
+        )
+        adv = float(turnover.mean())
         if not np.isfinite(adv) or adv < cfg.min_avg_dollar_volume:
             return False, f"adv {adv:.0f} < {cfg.min_avg_dollar_volume}"
     return True, None
@@ -455,6 +470,7 @@ def _make_slot_state(
     fill_model: FillModel | None = None,
     caches: _RunCaches | None = None,
     entry_budget: float | None = None,
+    limit_bar_idx: int | None = None,
 ) -> tuple[_SlotState | None, str | None]:
     """Build the per-slot state used by both historical and rolling flows."""
     fills = fill_model if fill_model is not None else FillModel(cfg)
@@ -476,6 +492,7 @@ def _make_slot_state(
         sigma_daily=sigma_daily,
         half_spread=half_spread,
         arrays=frame_cache,
+        limit_bar_idx=limit_bar_idx,
     )
     if entry_idx is None or entry_fill is None:
         return None, entry_warn
@@ -1116,8 +1133,15 @@ def _filter_signals_for_group(
     if cfg.min_avg_dollar_volume is not None:
         dollar_vol = np.empty((n_bars, n_tickers), dtype=float)
         for position, frame in enumerate(frames):
-            dollar_vol[:, position] = frame["volume"].to_numpy(dtype=float, copy=False)
-        dollar_vol *= close_block
+            if "dollar_volume" in frame.columns:
+                dollar_vol[:, position] = frame["dollar_volume"].to_numpy(
+                    dtype=float, copy=False
+                )
+            else:
+                dollar_vol[:, position] = (
+                    frame["volume"].to_numpy(dtype=float, copy=False)
+                    * close_block[:, position]
+                )
         # One columnwise rolling pass for the whole group; arithmetic matches
         # pandas ``rolling(window, min_periods=1).mean()`` (skipna).
         adv = _rolling_mean_min_periods_1(dollar_vol, window)

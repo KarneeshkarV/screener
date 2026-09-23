@@ -19,6 +19,7 @@ from screener.backtester.core import (
     _make_slot_state,
     _RunCaches,
     _SlotState,
+    PendingLimitOrder,
 )
 from screener.backtester.data import PriceFetcher
 from screener.backtester.day_loop import (
@@ -198,6 +199,7 @@ class _DailyRankingSource:
         # membership is judged on the prior completed bar, fires every Nth bar.
         self._day_count = 0
         self._prev_day: pd.Timestamp | None = None
+        self.pending_limit_orders: dict[int, PendingLimitOrder] = {}
         # Per-run memo: exit-AST evaluations and frame primitives are computed
         # once per ticker instead of once per slot open. Exit signals are filled
         # up front in one panel pass rather than one interpreted AST walk per
@@ -215,6 +217,73 @@ class _DailyRankingSource:
         )
 
     def before_exits(self, day: pd.Timestamp) -> None:
+        for slot_id, order in list(self.pending_limit_orders.items()):
+            bars = self.bars_by_tv[order.ticker]
+            entry_idx = bars.index.get_indexer(pd.DatetimeIndex([day]))[0]
+            if entry_idx <= order.signal_idx:
+                continue
+            current_equity = (
+                marked_portfolio_equity(
+                    self.portfolio,
+                    self.bars_by_tv,
+                    day - pd.Timedelta(nanoseconds=1),
+                )
+                if sizing_allows_slot_growth(self.cfg.sizing_rule)
+                else None
+            )
+            entry_budget = entry_budget_for(
+                self.cfg,
+                self.portfolio,
+                bars,
+                order.signal_idx,
+                current_equity=current_equity,
+                free_slots=1,
+                series_cache=self.caches.frame(order.ticker, bars).sizing_series,
+            )
+            state, _warn = _make_slot_state(
+                order.ticker,
+                bars,
+                order.signal_idx,
+                self.cfg,
+                self.exit_ast,
+                order.rank,
+                self.fill_model,
+                caches=self.caches,
+                entry_budget=entry_budget,
+                limit_bar_idx=int(entry_idx),
+            )
+            if state is None or entry_opens_no_shares(entry_budget, state.entry_shares):
+                continue
+            self.portfolio.assign(order.ticker, order.rank, order.signal_date)
+            self.portfolio.open(
+                ticker=order.ticker,
+                entry_date=state.entry_date,
+                entry_price=state.entry_fill,
+                budget=entry_budget,
+                shares=state.entry_shares,
+                allow_slot_growth=sizing_allows_slot_growth(self.cfg.sizing_rule),
+            )
+            self.slot_states[slot_id] = state
+            self.slot_bars[slot_id] = bars
+            self.selection_rows.append(
+                {
+                    "ticker": order.ticker,
+                    "signal_date": order.signal_date,
+                    "as_of_close": float(bars["close"].iloc[order.signal_idx]),
+                    "as_of_volume": float(bars["volume"].iloc[order.signal_idx]),
+                    "as_of_dollar_vol": float(
+                        self.candidate_matrices.dollar_vol_np[
+                            self.candidate_matrices.row_by_day[
+                                pd.Timestamp(order.signal_date)
+                            ],
+                            self.candidate_matrices.col_by_ticker[order.ticker],
+                        ]
+                    ),
+                    "rank": order.rank,
+                    "role": "active",
+                }
+            )
+            del self.pending_limit_orders[slot_id]
         if self.cfg.rank_exit_every is not None:
             self._day_count += 1
             if (
@@ -243,7 +312,9 @@ class _DailyRankingSource:
         # today) as available for refill. Order is slot-id ascending, matching
         # the original interleaved loop.
         free_slots: list[int] = [
-            slot_id for slot_id, state in slot_states.items() if state is None
+            slot_id
+            for slot_id, state in slot_states.items()
+            if state is None and slot_id not in self.pending_limit_orders
         ]
 
         if not free_slots:
@@ -264,6 +335,9 @@ class _DailyRankingSource:
         # updated as slots open so the inner loop is an O(1) membership check
         # instead of rescanning slot_states per candidate.
         active_tickers = _active_or_pending_tickers(slot_states)
+        active_tickers.update(
+            order.ticker for order in self.pending_limit_orders.values()
+        )
 
         # Rank the full eligible set but only materialise top-N plus a small
         # overfetch for open failures (session-last, quote gaps). Without the
@@ -308,6 +382,18 @@ class _DailyRankingSource:
                     free_slots=slots_left + 1,
                     series_cache=self.caches.frame(ticker, bars).sizing_series,
                 )
+                if cfg.entry_order_type == "limit":
+                    if entry_budget <= 0:
+                        continue
+                    self.pending_limit_orders[slot_id] = PendingLimitOrder(
+                        ticker=ticker,
+                        signal_idx=int(row["signal_idx"]),
+                        rank=int(row["rank"]),
+                        signal_date=_bar_label(day, cfg),
+                    )
+                    active_tickers.add(ticker)
+                    opened = True
+                    continue
                 state, warn = _make_slot_state(
                     ticker,
                     bars,

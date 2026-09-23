@@ -326,7 +326,7 @@ def test_bar_scores_strict_refresh_raises_instead_of_ranking_on_cache(
     import yfinance as yf
 
     cached = _bars(100.0, 0.002)
-    _save_cache("ALPHA.NS", cached, tmp_path)
+    _save_cache(YFinancePriceFetcher()._cache_key("ALPHA.NS"), cached, tmp_path)
     monkeypatch.setattr(yf, "download", lambda *args, **kwargs: pd.DataFrame())
 
     def _builder(**kwargs: object) -> YFinancePriceFetcher:
@@ -360,7 +360,7 @@ def test_bar_scores_refresh_without_strict_still_ranks_on_cache(
     import yfinance as yf
 
     cached = _bars(100.0, 0.002)
-    _save_cache("ALPHA.NS", cached, tmp_path)
+    _save_cache(YFinancePriceFetcher()._cache_key("ALPHA.NS"), cached, tmp_path)
     monkeypatch.setattr(yf, "download", lambda *args, **kwargs: pd.DataFrame())
 
     def _builder(**kwargs: object) -> YFinancePriceFetcher:

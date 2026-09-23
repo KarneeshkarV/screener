@@ -570,6 +570,21 @@ class TestResultFrame:
         assert row["volume"] == pytest.approx(2_000.0)
         assert pd.isna(row["market_cap_basic"])
 
+    def test_display_prices_use_the_candidate_day_when_newer_bars_exist(self) -> None:
+        candidates = [_candidate("NSE:AAA", 1, 5.0)]
+        bars = {"NSE:AAA": _bars(close=120.0, previous=100.0, volume=2_000.0)}
+        as_of = bars["NSE:AAA"].index[0]
+        scanned = pd.DataFrame(
+            {"ticker": ["NSE:AAA"], "close": [120.0], "volume": [2_000.0]}
+        )
+
+        universe = _candidate_frame(candidates, bars, None, as_of=as_of)
+        vendor = _candidate_frame(candidates, bars, scanned, as_of=as_of)
+
+        for result in (universe, vendor):
+            assert result.iloc[0]["close"] == pytest.approx(100.0)
+            assert result.iloc[0]["change"] == pytest.approx(0.0)
+
     def test_sort_reorders_the_finished_rows_by_a_display_column(self) -> None:
         # Membership still comes from the rule; only the presentation order
         # changes, exactly as --sort re-sorts a snapshot scan.

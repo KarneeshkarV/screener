@@ -81,6 +81,7 @@ from screener.backtester.price_frames import (
 from screener.backtester.price_frames import (
     apply_splits_only_adjustment as apply_splits_only_adjustment,
 )
+from screener.backtester.price_frames import apply_full_price_adjustment
 from screener.backtester.price_frames import (
     empty_ohlcv_frame as _empty_ohlcv_frame,
 )
@@ -245,19 +246,18 @@ class YFinancePriceFetcher:
 
     Two regimes are supported:
 
-      * ``auto_adjust=True`` (default, legacy) — yfinance back-propagates
-        dividends and splits into the OHLC columns. Volume is left raw so a
-        downstream ``close * volume`` screen is biased; dividends are
-        silently folded into price returns. Matches the historical behaviour
-        of the backtester.
+      * ``auto_adjust=True`` (default) — download raw OHLC and adjusted close,
+        then adjust OHLC while keeping raw close times volume as
+        ``dollar_volume``. Signals retain the historical adjusted-price scale;
+        liquidity gates and candidate ranking use actual turnover.
       * ``auto_adjust=False`` — raw OHLC are preserved and the separate
         ``Dividends`` / ``Stock Splits`` columns are retained so the engine
         can credit cash dividends explicitly and compute split-adjusted
         prices on demand via ``_normalize_frame``.
 
-    Cached parquet files are keyed by ticker name; switching regimes will not
-    collide because the regime is encoded in an optional ``_meta`` suffix
-    when ``auto_adjust=False`` is selected.
+    Full-adjustment cache keys carry a version suffix because older entries
+    lack raw turnover and cannot recover it from adjusted closes. Raw entries
+    keep their separate suffix.
 
     ``refresh=True`` forces a download of the requested window even when a
     covering parquet already exists. A failed download is an empty frame,
@@ -291,7 +291,7 @@ class YFinancePriceFetcher:
         # Intraday intervals get their own cache namespace so the existing daily
         # parquet files stay valid and are never polluted with 15m/1h bars.
         base = ticker if self.interval == "1d" else f"{ticker}__{self.interval}"
-        return base if self.auto_adjust else f"{base}__raw"
+        return f"{base}__full_turnover_v2" if self.auto_adjust else f"{base}__raw"
 
     # Approximate yfinance intraday history caps, in calendar days.
     _INTRADAY_CAP_DAYS = {
@@ -591,14 +591,13 @@ class YFinancePriceFetcher:
                 # intraday; keep the +1 day so the last requested bar is included.
                 end=download_end,
                 interval=self.interval,
-                auto_adjust=self.auto_adjust,
+                auto_adjust=False,
                 progress=False,
                 threads=True,
                 group_by="ticker",
                 timeout=YFINANCE_TIMEOUT_SECONDS,
             )
-            if not self.auto_adjust:
-                download_kwargs["actions"] = True
+            download_kwargs["actions"] = True
             target = " ".join(batch) if len(batch) > 1 else batch[0]
             # The fallback is indistinguishable from a successful empty
             # download, so the success flag rides along with it: an outage,
@@ -640,6 +639,8 @@ class YFinancePriceFetcher:
             downloaded = _split_download(raw, batch, self.interval)
             for ticker in batch:
                 norm = downloaded.get(ticker, _empty_ohlcv_frame())
+                if self.auto_adjust:
+                    norm = apply_full_price_adjustment(norm)
                 downloaded_by_ticker[ticker] = _merge_cached(
                     downloaded_by_ticker.get(ticker), norm, self.interval
                 )
@@ -764,7 +765,7 @@ _FMP_INTRADAY_INTERVALS = {
 def _fmp_cache_key(ticker: str, auto_adjust: bool, interval: str = "1d") -> str:
     suffix = "" if auto_adjust else "__raw"
     base = ticker if interval == "1d" else f"{ticker}__{interval}"
-    return f"fmp_{base}{suffix}"
+    return f"fmp_{base}__full_turnover_v2" if auto_adjust else f"fmp_{base}{suffix}"
 
 
 def _normalize_fmp_historical(
@@ -814,12 +815,18 @@ def _normalize_fmp_historical(
     for col in [*OHLCV_COLUMNS, "adj_close"]:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
+    if "close" in out.columns and "volume" in out.columns:
+        out["dollar_volume"] = out["close"] * out["volume"]
     if auto_adjust and "adj_close" in out.columns and "close" in out.columns:
         factor = out["adj_close"] / out["close"].replace(0, pd.NA)
         for col in ["open", "high", "low", "close"]:
             if col in out.columns:
                 out[col] = out[col] * factor
-    keep_cols = [col for col in [*OHLCV_COLUMNS, "adj_close"] if col in out.columns]
+    keep_cols = [
+        col
+        for col in [*OHLCV_COLUMNS, "adj_close", "dollar_volume"]
+        if col in out.columns
+    ]
     out = out[keep_cols].dropna(
         subset=[col for col in OHLCV_COLUMNS if col in out.columns]
     )
