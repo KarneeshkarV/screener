@@ -124,12 +124,31 @@ def _validate_equity_curve(equity: "pd.Series") -> None:
         )
 
 
-def _drawdown(equity: np.ndarray) -> float:
-    if equity.size == 0:
-        return 0.0
-    peak = np.maximum.accumulate(equity)
-    dd = (equity - peak) / peak
-    return float(dd.min())
+# Cells (iterations x bars) simulated per vectorized chunk. ~8 MB per float64
+# buffer: large enough that NumPy, not the Python loop, sets the pace, small
+# enough that a 5,000 x 2,520 run never holds its whole draw at once.
+_CHUNK_CELLS = 1_000_000
+
+
+def _chunk_rows(bars: int) -> int:
+    """Iterations per chunk for paths of ``bars`` bars."""
+    return max(1, _CHUNK_CELLS // max(bars, 1))
+
+
+def _path_drawdowns(paths: np.ndarray, initial_capital: float) -> np.ndarray:
+    """Max drawdown of each row of ``paths``, starting from ``initial_capital``.
+
+    Row-wise twin of the per-path loop this replaced, which prepended the
+    starting capital and took ``min((equity - peak) / peak)``. Folding the
+    starting capital into the running peak instead gives every later bar the
+    same peak, and the prepended bar's own drawdown is exactly ``0.0``, so the
+    result is the same bit for bit without copying each path to prepend it.
+    """
+    peak = np.maximum.accumulate(paths, axis=1)
+    np.maximum(peak, initial_capital, out=peak)
+    drawdown = paths - peak
+    drawdown /= peak
+    return np.asarray(np.minimum(drawdown.min(axis=1), 0.0), dtype=float)
 
 
 def simulate_monte_carlo(
@@ -155,22 +174,22 @@ def simulate_monte_carlo(
             initial_capital=initial_capital,
         )
 
-    terminal_returns: list[float] = []
-    drawdowns: list[float] = []
-    ruin_count = 0
     ruin_level = initial_capital * ruin_threshold
     sample_size = int(returns.size)
-    for _ in range(iterations):
-        sampled = rng.choice(returns, size=sample_size, replace=True)
-        equity = initial_capital * np.cumprod(1.0 + sampled)
-        terminal_returns.append(float(equity[-1] / initial_capital - 1.0))
-        dd = _drawdown(np.concatenate(([initial_capital], equity)))
-        drawdowns.append(dd)
-        if float(equity.min()) <= ruin_level:
-            ruin_count += 1
-
-    terminal = np.array(terminal_returns)
-    dds = np.array(drawdowns)
+    terminal = np.empty(iterations, dtype=float)
+    dds = np.empty(iterations, dtype=float)
+    ruin_count = 0
+    # Drawn a chunk of iterations at a time. ``Generator.choice`` of shape
+    # ``(k, n)`` consumes the stream exactly as ``k`` draws of ``n`` do, so a
+    # seed reproduces the same paths it did when this looped per iteration.
+    chunk = _chunk_rows(sample_size)
+    for lo in range(0, iterations, chunk):
+        hi = min(lo + chunk, iterations)
+        sampled = rng.choice(returns, size=(hi - lo, sample_size), replace=True)
+        equity = initial_capital * np.cumprod(1.0 + sampled, axis=1)
+        terminal[lo:hi] = equity[:, -1] / initial_capital - 1.0
+        dds[lo:hi] = _path_drawdowns(equity, initial_capital)
+        ruin_count += int(np.count_nonzero(equity.min(axis=1) <= ruin_level))
     return MonteCarloResult(
         iterations=iterations,
         seed=seed,
@@ -334,9 +353,11 @@ def simulate_equity_monte_carlo_paths(
     so a report can plot the fan of simulated curves and the outcome
     distributions, which the summary percentiles alone cannot show.
 
-    Iterations are looped rather than vectorized: a fully vectorized draw
-    allocates ``iterations x bars`` indices at once, which is hundreds of MB on
-    a multi-year daily run.
+    Iterations are drawn in chunks of about a million cells rather than all
+    at once: a fully vectorized draw allocates ``iterations x bars`` indices,
+    which is hundreds of MB on a multi-year daily run. A chunk draws its block
+    starts as one ``(k, draws)`` array, which consumes the generator exactly as
+    ``k`` per-iteration draws do, so a seed gives the paths it always gave.
     """
     validate_equity_monte_carlo_flags(
         iterations=iterations,
@@ -399,27 +420,40 @@ def simulate_equity_monte_carlo_paths(
     band_rows = min(iterations, max(1, _BAND_CELL_BUDGET // n))
     band_stride = -(-iterations // band_rows)
     band_iterations = -(-iterations // band_stride)
-    band_buffer = np.empty((band_iterations, n), dtype=np.float32)
+    # Bar-major, so each bar's percentile below partitions one contiguous row
+    # rather than a column strided across every iteration.
+    band_buffer = np.empty((n, band_iterations), dtype=np.float32)
+    # ``returns`` with its first ``block - 1`` bars appended: a block starting
+    # at ``j`` reads ``wrapped[j : j + block]``, which is the circular read
+    # ``returns[(j + offsets) % n]`` without a modulo over every drawn cell.
+    wrapped = np.concatenate((returns, returns[: block - 1]))
     ruin_count = 0
-    for i in range(iterations):
-        starts = rng.integers(0, n, size=draws)
-        index = (starts[:, None] + offsets) % n
-        sampled = returns[index.reshape(-1)[:n]]
-        equity_path = initial_capital * np.cumprod(1.0 + sampled)
-        terminal_returns[i] = equity_path[-1] / initial_capital - 1.0
-        drawdowns[i] = _drawdown(np.concatenate(([initial_capital], equity_path)))
-        if float(equity_path.min()) <= ruin_level:
-            ruin_count += 1
-        if i < kept:
-            stored[i] = equity_path
-        if i % band_stride == 0:
-            band_buffer[i // band_stride] = equity_path
+    chunk = _chunk_rows(n)
+    for lo in range(0, iterations, chunk):
+        hi = min(lo + chunk, iterations)
+        rows = hi - lo
+        starts = rng.integers(0, n, size=(rows, draws))
+        index = (starts[:, :, None] + offsets).reshape(rows, -1)[:, :n]
+        equity_paths = initial_capital * np.cumprod(1.0 + wrapped[index], axis=1)
+        terminal_returns[lo:hi] = equity_paths[:, -1] / initial_capital - 1.0
+        drawdowns[lo:hi] = _path_drawdowns(equity_paths, initial_capital)
+        ruin_count += int(np.count_nonzero(equity_paths.min(axis=1) <= ruin_level))
+        if lo < kept:
+            stored[lo : min(hi, kept)] = equity_paths[: min(hi, kept) - lo]
+        # Iterations ``i`` in this chunk with ``i % band_stride == 0``.
+        first = -(-lo // band_stride) * band_stride
+        banded = np.arange(first, hi, band_stride)
+        band_buffer[:, banded // band_stride] = equity_paths[banded - lo].T
 
     bands = np.empty((len(_BAND_PERCENTILES), n + 1), dtype=float)
     # Every path starts at the capital the real run started with, so bar 0 is
     # that level for all three bands rather than a percentile of nothing.
     bands[:, 0] = initial_capital
-    bands[:, 1:] = np.percentile(band_buffer, _BAND_PERCENTILES, axis=0)
+    # The buffer is scratch from here on, so let the percentile partition it in
+    # place instead of copying up to ``_BAND_CELL_BUDGET`` cells first.
+    bands[:, 1:] = np.percentile(
+        band_buffer, _BAND_PERCENTILES, axis=1, overwrite_input=True
+    )
 
     result = EquityMonteCarloResult(
         iterations=iterations,

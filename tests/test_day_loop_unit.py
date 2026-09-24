@@ -122,7 +122,8 @@ def _open(portfolio: Portfolio, state: _SlotState, cfg: BacktestConfig) -> None:
 
 def test_slot_with_no_bar_for_day_is_skipped():
     cfg = _cfg(stop_loss=0.05)
-    bars = _frame([_bar(100, 101, 99, 100), _bar(100, 101, 99, 100)])
+    # Mon 2024-01-01 .. Fri 2024-01-12: the weekend between is inside the span.
+    bars = _frame([_bar(100, 101, 99, 100)] * 10)
     state = _state(bars, stop_ref=95.0)
     portfolio = Portfolio(100_000.0, 1)
     _open(portfolio, state, cfg)
@@ -134,12 +135,41 @@ def test_slot_with_no_bar_for_day_is_skipped():
         fill_model=FillModel(cfg),
     )
 
-    # A calendar day the slot's frame does not contain: no close, not freed.
-    freed = loop.process_exits_for_day(pd.Timestamp("2024-06-01"))
+    # A day inside the frame's span that it has no bar for (a halt, a holiday
+    # on this venue): no close, not freed - the ticker trades again later.
+    freed = loop.process_exits_for_day(pd.Timestamp("2024-01-06"))
 
     assert freed == []
     assert portfolio.closed_trades() == []
     assert loop.slot_states[0] is state
+
+
+def test_slot_past_the_last_bar_is_closed_at_that_bars_close():
+    cfg = _cfg(stop_loss=0.05)
+    bars = _frame([_bar(100, 101, 99, 100), _bar(100, 104, 99, 103)])
+    state = _state(bars, stop_ref=95.0)
+    portfolio = Portfolio(100_000.0, 1)
+    _open(portfolio, state, cfg)
+    loop = DayLoop(
+        portfolio=portfolio,
+        cfg=cfg,
+        slot_states={0: state},
+        slot_bars={0: bars},
+        fill_model=FillModel(cfg),
+    )
+
+    # The frame ends on 2024-01-02 (a delisting, or a feed that stopped). No
+    # later bar will ever reach the exit checks, so the first day past it
+    # closes the position at the last close, stamped with the last bar, and
+    # frees the slot rather than holding it to the end of the window.
+    freed = loop.process_exits_for_day(pd.Timestamp("2024-06-03"))
+
+    assert freed == [FreedSlot(slot_id=0, state=state)]
+    assert loop.slot_states[0] is None
+    [trade] = portfolio.closed_trades()
+    assert trade.exit_reason == "eod"
+    assert trade.exit_date == date(2024, 1, 2)
+    assert trade.exit_price == pytest.approx(103.0)
 
 
 def test_pre_entry_bar_is_skipped():

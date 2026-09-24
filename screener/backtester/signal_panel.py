@@ -577,7 +577,14 @@ def build_day_candidates(
     signals = build_signal_panel(
         inputs,
         panel,
-        program=program,
+        # A day's candidates are decided by the entry rule and the gates alone.
+        # The exit expression only matters to a position already held, which a
+        # one-day read never opens, so evaluating it over every ticker was
+        # thrown away. ``lookback`` is kept: it is the warmup the panel was
+        # fetched with, and the candidate matrices read it from the panel.
+        program=SignalProgram(
+            entry_ast=program.entry_ast, exit_ast=None, lookback=program.lookback
+        ),
         start_ts=start_ts,
         end_ts=end_ts,
         warnings=warnings,
