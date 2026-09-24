@@ -521,6 +521,20 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         write_html_report(payload, kwargs["html_path"], "Walk-Forward Report")
 
 
+def _ledger_stamp(value: object) -> date | datetime:
+    """A ledger's trade stamp: a ``date`` for daily runs, else a ``datetime``.
+
+    An intraday ledger stamps every fill with a time of day, which
+    ``date.fromisoformat`` rejects, so ``optimize validate`` could not read the
+    ledger an intraday backtest had just written.
+    """
+    text = str(value).strip()
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return datetime.fromisoformat(text)
+
+
 def _load_trades(path: Path) -> list[Trade]:
     rows: list[dict[str, Any]]
     if path.suffix.lower() == ".json":
@@ -535,12 +549,12 @@ def _load_trades(path: Path) -> list[Trade]:
             Trade(
                 ticker=str(row.get("ticker", "")),
                 rank=int(row.get("rank") or idx),
-                signal_date=date.fromisoformat(
-                    str(row.get("signal_date") or row.get("entry_date"))
+                signal_date=_ledger_stamp(
+                    row.get("signal_date") or row.get("entry_date")
                 ),
-                entry_date=date.fromisoformat(str(row.get("entry_date"))),
+                entry_date=_ledger_stamp(row.get("entry_date")),
                 entry_price=float(row.get("entry_price") or 0.0),
-                exit_date=date.fromisoformat(str(row.get("exit_date"))),
+                exit_date=_ledger_stamp(row.get("exit_date")),
                 exit_price=float(row.get("exit_price") or 0.0),
                 # Trade (pydantic) re-validates this Literal at construction.
                 exit_reason=type_cast(

@@ -104,6 +104,74 @@ def _sector_neutralize_scores(
     )
 
 
+def _comparable_ticks(index: pd.Index, like: pd.DatetimeIndex) -> np.ndarray | None:
+    """``index`` as int64 ticks directly comparable with ``like``'s, else None.
+
+    Only a sorted, tz-naive numpy-datetime index of exactly ``like``'s dtype
+    qualifies: then the ticks of both share one unit and one clock, and a
+    plain ``np.searchsorted`` answers what ``Index.get_indexer`` and
+    ``Index.searchsorted`` answer. Those two pay pandas' per-call validation
+    and casting, about 0.1 ms a ticker, which on a 3,000-name screen was a
+    third of the whole candidate build. Anything else (tz-aware, mixed units,
+    unsorted) returns None and the caller keeps the pandas call.
+    """
+    if (
+        isinstance(index, pd.DatetimeIndex)
+        and isinstance(index.dtype, np.dtype)
+        and index.dtype == like.dtype
+        and index.is_monotonic_increasing
+    ):
+        return index.to_numpy().view("i8")
+    return None
+
+
+def _master_ticks(master_ix: pd.DatetimeIndex) -> np.ndarray | None:
+    """The master calendar's int64 ticks, or None when it has no numpy dtype."""
+    if isinstance(master_ix.dtype, np.dtype):
+        return master_ix.to_numpy().view("i8")
+    return None
+
+
+def _exact_positions(
+    index: pd.Index,
+    master_ix: pd.DatetimeIndex,
+    master_ticks: np.ndarray | None,
+) -> np.ndarray:
+    """``index.get_indexer(master_ix)`` for a unique ``index``: -1 where absent."""
+    ticks = _comparable_ticks(index, master_ix) if master_ticks is not None else None
+    if ticks is None or master_ticks is None:
+        return index.get_indexer(master_ix)
+    if ticks.size == 0:
+        return np.full(master_ticks.size, -1, dtype=np.intp)
+    positions = np.minimum(np.searchsorted(ticks, master_ticks), ticks.size - 1)
+    return np.where(ticks[positions] == master_ticks, positions, -1)
+
+
+def _last_positions(
+    index: pd.Index,
+    master_ix: pd.DatetimeIndex,
+    master_ticks: np.ndarray | None,
+) -> np.ndarray:
+    """Position of the last bar at or before each master day; -1 before any."""
+    ticks = _comparable_ticks(index, master_ix) if master_ticks is not None else None
+    if ticks is None or master_ticks is None:
+        return index.searchsorted(master_ix, side="right") - 1
+    return np.searchsorted(ticks, master_ticks, side="right") - 1
+
+
+def _float_values(column: pd.Series) -> np.ndarray:
+    """``column.astype(float).to_numpy()`` without the intermediate Series.
+
+    A numpy-backed column converts straight to an array (a view when it is
+    already float64); the ``astype`` round trip built and discarded a Series
+    per column per ticker. Extension dtypes keep ``astype``, which is what
+    turns a nullable ``<NA>`` into NaN.
+    """
+    if isinstance(column.dtype, np.dtype):
+        return column.to_numpy(dtype=float)
+    return column.astype(float).to_numpy()
+
+
 def _signal_mask_matrix(
     signals_by_tv: Mapping[str, pd.Series | np.ndarray],
     bars_by_tv: dict[str, pd.DataFrame],
@@ -111,6 +179,25 @@ def _signal_mask_matrix(
     valid_tickers: list[str],
 ) -> pd.DataFrame:
     """Assemble a master-calendar bool matrix from per-ticker Series or arrays.
+
+    The DataFrame spelling of :func:`_signal_mask_block`, which documents the
+    alignment rules.
+    """
+    return pd.DataFrame(
+        _signal_mask_block(signals_by_tv, bars_by_tv, master_ix, valid_tickers),
+        index=master_ix,
+        columns=valid_tickers,
+        copy=False,
+    )
+
+
+def _signal_mask_block(
+    signals_by_tv: Mapping[str, pd.Series | np.ndarray],
+    bars_by_tv: dict[str, pd.DataFrame],
+    master_ix: pd.DatetimeIndex,
+    valid_tickers: list[str],
+) -> np.ndarray:
+    """Assemble a master-calendar bool block from per-ticker Series or arrays.
 
     Bool ndarrays are assumed aligned to ``bars_by_tv[tv].index`` (the panel
     evaluator contract). Series carry their own index.
@@ -136,6 +223,7 @@ def _signal_mask_matrix(
     n_days = len(master_ix)
     n_tickers = len(valid_tickers)
     block = np.zeros((n_days, n_tickers), dtype=bool)
+    master_ticks = _master_ticks(master_ix)
     for column, tv in enumerate(valid_tickers):
         signal = signals_by_tv.get(tv)
         if signal is None:
@@ -162,7 +250,13 @@ def _signal_mask_matrix(
                 )
         else:
             index = signal.index
-            values = signal.fillna(False).astype(bool).to_numpy(dtype=bool)
+            if signal.dtype == np.dtype(bool):
+                # A numpy-bool Series cannot hold NaN, so there is nothing for
+                # ``fillna`` to fill; the filter panel hands every ticker over
+                # in this form, and the round trip cost ~50 us a name.
+                values = signal.to_numpy(dtype=bool)
+            else:
+                values = signal.fillna(False).astype(bool).to_numpy(dtype=bool)
         if len(values) == n_days and index.equals(master_ix):
             block[:, column] = values
             continue
@@ -178,10 +272,10 @@ def _signal_mask_matrix(
                 .to_numpy(dtype=bool)
             )
             continue
-        positions = index.get_indexer(master_ix)
+        positions = _exact_positions(index, master_ix, master_ticks)
         found = positions >= 0
         block[found, column] = values[positions[found]]
-    return pd.DataFrame(block, index=master_ix, columns=valid_tickers, copy=False)
+    return block
 
 
 def _build_rolling_candidate_matrices(
@@ -217,28 +311,33 @@ def _build_rolling_candidate_matrices(
     valid_tickers = [
         tv for tv, bars in bars_by_tv.items() if bars is not None and not bars.empty
     ]
-    signal_mat = _signal_mask_matrix(
+    # Every gate below edits this raw block and the DataFrame is built once at
+    # the end. Gating through ``signal_mat.loc[mask, tv] = False`` paid a
+    # pandas setitem per ticker (per membership window, for a point-in-time
+    # universe), which on a 500-name history is thousands of them.
+    signal_np = _signal_mask_block(
         entry_signals_by_tv, bars_by_tv, master_ix, valid_tickers
     )
+    col_by_ticker = {tv: j for j, tv in enumerate(valid_tickers)}
     # Point-in-time eligibility: suppress entry signals before a symbol's
     # index "date added" so today's constituents are not backtested through
     # history they were never selectable in.
     if membership_added:
         for tv, added in membership_added.items():
-            if tv in signal_mat.columns:
-                signal_mat.loc[master_ix < pd.Timestamp(added), tv] = False
+            column = col_by_ticker.get(tv)
+            if column is not None:
+                signal_np[np.asarray(master_ix < pd.Timestamp(added)), column] = False
     if membership_windows:
-        membership_mask = pd.DataFrame(
-            False, index=master_ix, columns=valid_tickers, dtype=bool
-        )
+        membership_mask = np.zeros(signal_np.shape, dtype=bool)
         for tv, effective_from, effective_to in membership_windows:
-            if tv not in membership_mask.columns:
+            column = col_by_ticker.get(tv)
+            if column is None:
                 continue
-            eligible = master_ix >= pd.Timestamp(effective_from)
+            eligible = np.asarray(master_ix >= pd.Timestamp(effective_from))
             if effective_to is not None:
-                eligible &= master_ix < pd.Timestamp(effective_to)
-            membership_mask.loc[eligible, tv] = True
-        signal_mat &= membership_mask
+                eligible &= np.asarray(master_ix < pd.Timestamp(effective_to))
+            membership_mask[eligible, column] = True
+        signal_np &= membership_mask
     # Benchmark-regime gate: suppress every entry signal on days whose
     # benchmark regime is not allowed (days missing from the benchmark
     # calendar inherit the most recent prior regime; warmup days are blocked).
@@ -246,7 +345,7 @@ def _build_rolling_candidate_matrices(
         allowed = (
             regime_allowed.reindex(master_ix, method="ffill").fillna(False).astype(bool)
         )
-        signal_mat.loc[~allowed.to_numpy(), :] = False
+        signal_np[~allowed.to_numpy(dtype=bool), :] = False
     # Earnings blackout gate: suppress entries on calendar days within N days
     # before (and including) a known earnings date for that ticker. Tickers with
     # no known earnings dates are left untouched (and warned about below).
@@ -254,7 +353,7 @@ def _build_rolling_candidate_matrices(
         earnings_blackout is not None
         and earnings_blackout_days is not None
         and earnings_blackout_days >= 0
-        and not signal_mat.empty
+        and signal_np.size
     ):
         day_ord = master_ix.map(pd.Timestamp.toordinal).to_numpy(dtype=np.int64)
         missing_earnings: list[str] = []
@@ -271,8 +370,7 @@ def _build_rolling_candidate_matrices(
             # In blackout when some earnings date E satisfies 0 <= E - day <= N.
             diffs = ed_ord[None, :] - day_ord[:, None]
             in_blackout = ((diffs >= 0) & (diffs <= earnings_blackout_days)).any(axis=1)
-            if in_blackout.any():
-                signal_mat.loc[in_blackout, tv] = False
+            signal_np[in_blackout, col_by_ticker[tv]] = False
         if missing_earnings and warnings is not None:
             warnings.append(
                 _preview_warning(
@@ -319,16 +417,17 @@ def _build_rolling_candidate_matrices(
     )
     any_score = False
     missing_score: list[str] = []
+    master_ticks = _master_ticks(master_ix)
     for column, tv in enumerate(valid_tickers):
         bars = bars_by_tv[tv]
-        close = bars["close"].astype(float).to_numpy()
-        volume = bars["volume"].astype(float).to_numpy()
+        close = _float_values(bars["close"])
+        volume = _float_values(bars["volume"])
         dollar_volume = (
-            bars["dollar_volume"].astype(float).to_numpy()
+            _float_values(bars["dollar_volume"])
             if "dollar_volume" in bars.columns
             else close * volume
         )
-        pos = bars.index.searchsorted(master_ix, side="right") - 1
+        pos = _last_positions(bars.index, master_ix, master_ticks)
         pos = np.where(pos < 0, -1, pos)
         n = len(bars)
         has_bar = pos >= 0
@@ -351,10 +450,18 @@ def _build_rolling_candidate_matrices(
                 .to_numpy()
             )
             assert dynamic_score_np is not None
-            dynamic_score_np[:, column] = np.where(has_bar, lagged_adv[pos], np.nan)
+            # ``pos`` carries the last bar forward, which is right for a price
+            # and wrong for membership: a name whose history has ended (a
+            # delisting, or a feed that stopped) kept its final lagged ADV
+            # forever and held a top-N seat no candidate could ever use. It
+            # is in the dynamic universe only while it still has bars.
+            still_listed = has_bar & np.asarray(master_ix <= bars.index.max())
+            dynamic_score_np[:, column] = np.where(
+                still_listed, lagged_adv[pos], np.nan
+            )
         if "rank_score" in bars.columns:
             any_score = True
-            score = bars["rank_score"].astype(float).to_numpy()
+            score = _float_values(bars["rank_score"])
             rank_score_np[:, column] = np.where(has_bar, score[pos], np.nan)
         else:
             missing_score.append(tv)
@@ -392,11 +499,14 @@ def _build_rolling_candidate_matrices(
         dynamic_score_mat = pd.DataFrame(
             dynamic_score_np, index=master_ix, columns=valid_tickers, copy=False
         )
-        signal_mat &= _dynamic_eligibility_mask(
+        signal_np &= _dynamic_eligibility_mask(
             dynamic_score_mat,
             size=dynamic_universe_size,
             rebalance=dynamic_universe_rebalance,
-        )
+        ).to_numpy(dtype=bool)
+    signal_mat = pd.DataFrame(
+        signal_np, index=master_ix, columns=valid_tickers, copy=False
+    )
     rank_score_mat = (
         pd.DataFrame(rank_score_np, index=master_ix, columns=valid_tickers, copy=False)
         if any_score
@@ -441,8 +551,8 @@ def _build_rolling_candidate_matrices(
         rank_score_mat=rank_score_mat,
         tickers=tuple(valid_tickers),
         row_by_day={ts: i for i, ts in enumerate(master_ix)},
-        col_by_ticker={tv: j for j, tv in enumerate(valid_tickers)},
-        signal_np=signal_mat.to_numpy(),
+        col_by_ticker=col_by_ticker,
+        signal_np=signal_np,
         lookback_ok_np=lookback_ok_np,
         filter_np=filter_mat.to_numpy() if filter_mat is not None else None,
         dollar_vol_np=dollar_vol_np,
@@ -457,10 +567,15 @@ def _build_rolling_candidate_matrices(
 def _dynamic_eligibility_mask(
     scores: pd.DataFrame, *, size: int, rebalance: str
 ) -> pd.DataFrame:
-    """Select the top lagged scores on each rebalance date and hold membership."""
-    mask = pd.DataFrame(False, index=scores.index, columns=scores.columns, dtype=bool)
+    """Select the top lagged scores on each rebalance date and hold membership.
+
+    Membership is written one rebalance period at a time into a raw block. The
+    old row-by-row ``mask.iloc[row] = selected`` assignment cost a pandas
+    setitem per master day, half a second on a ten-year daily-rebalanced run.
+    """
+    mask = np.zeros(scores.shape, dtype=bool)
     if scores.empty:
-        return mask
+        return pd.DataFrame(mask, index=scores.index, columns=scores.columns)
     if rebalance == "daily":
         rebalance_rows = np.arange(len(scores), dtype=int)
     else:
@@ -469,18 +584,14 @@ def _dynamic_eligibility_mask(
         rebalance_rows = np.flatnonzero(
             np.r_[True, periods[1:].to_numpy() != periods[:-1].to_numpy()]
         )
-    selected = np.zeros(len(scores.columns), dtype=bool)
-    rebalance_set = set(int(row) for row in rebalance_rows)
     raw = scores.to_numpy(dtype=float)
-    for row in range(len(scores)):
-        if row in rebalance_set:
-            finite = np.flatnonzero(np.isfinite(raw[row]))
-            selected = np.zeros(len(scores.columns), dtype=bool)
-            if finite.size:
-                order = np.argsort(-raw[row, finite], kind="stable")
-                selected[finite[order[:size]]] = True
-        mask.iloc[row] = selected
-    return mask
+    period_ends = np.r_[rebalance_rows[1:], len(scores)]
+    for row, period_end in zip(rebalance_rows, period_ends, strict=True):
+        finite = np.flatnonzero(np.isfinite(raw[row]))
+        if finite.size:
+            order = np.argsort(-raw[row, finite], kind="stable")
+            mask[row:period_end, finite[order[:size]]] = True
+    return pd.DataFrame(mask, index=scores.index, columns=scores.columns)
 
 
 #: ``setup_score`` runs 0-100, like every other percentile the project reports.
@@ -502,9 +613,27 @@ def _setup_scores(values: np.ndarray, eligible: np.ndarray) -> np.ndarray:
     cols = np.nonzero(eligible)[0]
     if cols.size == 0:
         return scores
-    ranked = pd.Series(values[cols]).rank(pct=True).to_numpy(dtype=float)
-    scores[cols] = ranked * _PERCENTILE_SCALE
+    scores[cols] = _average_rank_pct(values[cols]) * _PERCENTILE_SCALE
     return scores
+
+
+def _average_rank_pct(values: np.ndarray) -> np.ndarray:
+    """``pd.Series(values).rank(pct=True)`` for NaN-free ``values``, in NumPy.
+
+    Runs once per scanned day, where the pandas call's fixed cost (Series
+    construction, dispatch into the rank kernel) was most of the scan. Same
+    numbers bit for bit: a tie group spanning sorted positions ``[s, e)``
+    takes the average 1-based rank ``(s + 1 + e) / 2``, which is exact in
+    float, and is then divided by the count exactly as pandas divides it.
+    """
+    count = values.size
+    order = np.argsort(values, kind="mergesort")
+    ordered = values[order]
+    bounds = np.flatnonzero(np.r_[True, ordered[1:] != ordered[:-1], True])
+    starts, ends = bounds[:-1], bounds[1:]
+    ranks = np.empty(count, dtype=float)
+    ranks[order] = np.repeat((starts + 1 + ends) / 2.0, ends - starts)
+    return ranks / count
 
 
 def _apply_min_score(
@@ -567,21 +696,11 @@ def _candidate_rows_for_day(
         # Rank by cross-sectional factor score (descending), breaking ties by
         # signal-day dollar volume so equal-score names resolve by liquidity -
         # a principled deterministic fallback - rather than by arbitrary
-        # universe/column insertion order. The DataFrame rows are in ascending
-        # column order (``eligible_cols``), so a stable mergesort reproduces the
-        # legacy pandas ranking byte-for-byte.
-        order = (
-            pd.DataFrame(
-                {
-                    "rank_score": rank_score[eligible_cols],
-                    "dollar_vol": dollar_vol[eligible_cols],
-                }
-            )
-            .sort_values(
-                ["rank_score", "dollar_vol"], ascending=False, kind="mergesort"
-            )
-            .index.to_numpy()
-        )
+        # universe/column insertion order. ``np.lexsort`` is stable, so names
+        # tied on both keys keep ascending column order, which is what the
+        # multi-key pandas ``sort_values(ascending=False)`` this replaces
+        # produced; it skips building a DataFrame on every scanned day.
+        order = np.lexsort((-dollar_vol[eligible_cols], -rank_score[eligible_cols]))
     else:
         setup_score = _setup_scores(dollar_vol, eligible)
         eligible = _apply_min_score(eligible, setup_score, matrices.min_score)

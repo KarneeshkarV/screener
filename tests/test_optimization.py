@@ -126,6 +126,51 @@ def test_monte_carlo_bootstrap_has_terminal_return_distribution():
     assert result.return_p05 < result.return_p95
 
 
+@pytest.mark.parametrize("chunk_cells", [1, 7, 1_000_000])
+def test_monte_carlo_chunked_draw_matches_per_iteration_draw(monkeypatch, chunk_cells):
+    from screener.backtester.optimization import monte_carlo
+
+    monkeypatch.setattr(monte_carlo, "_CHUNK_CELLS", chunk_cells)
+    returns = [0.10, -0.05, 0.03, -0.02, -0.30]
+    trades = [_trade(100.0 * r, r) for r in returns]
+
+    result = simulate_monte_carlo(trades, iterations=23, seed=4, ruin_threshold=0.8)
+
+    # The loop this replaced: one ``choice`` per iteration from one generator.
+    rng = np.random.default_rng(4)
+    terminal, drawdowns, ruined = [], [], 0
+    for _ in range(23):
+        path = 100_000.0 * np.cumprod(1.0 + rng.choice(returns, size=len(returns)))
+        levels = np.concatenate(([100_000.0], path))
+        peak = np.maximum.accumulate(levels)
+        terminal.append(path[-1] / 100_000.0 - 1.0)
+        drawdowns.append(((levels - peak) / peak).min())
+        ruined += bool(path.min() <= 80_000.0)
+    assert result.median_return == float(np.median(terminal))
+    assert result.return_p05 == float(np.percentile(terminal, 5))
+    assert result.worst_drawdown == float(np.min(drawdowns))
+    assert result.drawdown_p05 == float(np.percentile(drawdowns, 5))
+    assert result.risk_of_ruin == ruined / 23
+
+
+def test_optimize_validate_reads_an_intraday_ledger(tmp_path):
+    ledger = tmp_path / "ledger.csv"
+    ledger.write_text(
+        "ticker,rank,signal_date,entry_date,entry_price,exit_date,exit_price,"
+        "exit_reason,shares,entry_cost,exit_value,pnl,return_pct\n"
+        "AAA,1,2024-03-04 14:30:00,2024-03-04 14:45:00,100,2024-03-04 15:45:00,"
+        "101,time,1,100,101,1,0.01\n"
+        "BBB,2,2024-03-04,2024-03-05,50,2024-03-06,49,stop,2,100,98,-2,-0.02\n"
+    )
+
+    res = CliRunner().invoke(
+        cli, ["optimize", "validate", "--trades", str(ledger), "--iterations", "20"]
+    )
+
+    assert res.exit_code == 0, res.output
+    assert "Monte Carlo Validation" in res.output
+
+
 def test_grid_cache_key_includes_min_trades(monkeypatch, tmp_path):
     calls = 0
 

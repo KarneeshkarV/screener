@@ -14,7 +14,6 @@ from screener.backtester.book import BOOK_CONFIG_FIELDS, open_book
 from screener.backtester.core import (
     _active_or_pending_tickers,
     _bar_label,
-    _build_frame_cache,
     _FrameCache,
     _make_slot_state,
     _RunCaches,
@@ -219,6 +218,12 @@ class _DailyRankingSource:
     def before_exits(self, day: pd.Timestamp) -> None:
         for slot_id, order in list(self.pending_limit_orders.items()):
             bars = self.bars_by_tv[order.ticker]
+            if day > bars.index[-1]:
+                # The ticker has no bar left to fill on, so the order can never
+                # execute; kept, it reserved its slot for the rest of the run.
+                # Dropping it frees the slot for today's refill.
+                del self.pending_limit_orders[slot_id]
+                continue
             entry_idx = bars.index.get_indexer(pd.DatetimeIndex([day]))[0]
             if entry_idx <= order.signal_idx:
                 continue
@@ -573,15 +578,12 @@ def prepare_rolling_backtest(
     prepared_warnings = (
         tuple(early_result.warnings) if early_result is not None else tuple(warnings)
     )
-    # Prebuild frame primitives once for the whole universe. Sequential runs that
-    # reuse this prepared object (parameter sweeps) then skip the lazy first-open
-    # construction, and the first simulation no longer pays for it on the hot day
-    # path either.
-    frame_caches = {
-        tv: _build_frame_cache(bars)
-        for tv, bars in panel.bars_by_tv.items()
-        if bars is not None and not bars.empty
-    }
+    # Frame primitives are built on a ticker's first slot open, not here. The
+    # dictionary is shared by reference with every run's ``_RunCaches``, so a
+    # sweep reusing this prepared object still builds each frame once; what
+    # prebuilding added was ~0.7 ms for every name in the universe, traded or
+    # not, which on a 2,000-name field was more than the simulation itself.
+    frame_caches: dict[str, _FrameCache] = {}
     return PreparedRollingBacktest(
         config_fingerprint=_preparation_fingerprint(cfg),
         start_ts=start_ts,

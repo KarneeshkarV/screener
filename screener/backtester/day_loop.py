@@ -87,11 +87,31 @@ def _close_slot_at_day(
     if frame_cache is not None and frame_cache.index_i8 is not None:
         index_i8 = frame_cache.index_i8
         pos = int(np.searchsorted(index_i8, day.value))
-        if pos >= index_i8.size or index_i8[pos] != day.value:
+        if pos >= index_i8.size:
+            return _close_ended_slot(
+                slot_id=slot_id,
+                state=state,
+                bars=bars,
+                cfg=cfg,
+                portfolio=portfolio,
+                slot_states=slot_states,
+                fill_model=fill_model,
+            )
+        if index_i8[pos] != day.value:
             return False
         i: int = pos
     else:
         if day not in bars.index:
+            if _history_ended(bars, day):
+                return _close_ended_slot(
+                    slot_id=slot_id,
+                    state=state,
+                    bars=bars,
+                    cfg=cfg,
+                    portfolio=portfolio,
+                    slot_states=slot_states,
+                    fill_model=fill_model,
+                )
             return False
         loc = bars.index.get_loc(day)
         if isinstance(loc, slice) or not isinstance(loc, int):
@@ -153,6 +173,82 @@ def _close_slot_at_day(
     return True
 
 
+def _history_ended(bars: pd.DataFrame, day: pd.Timestamp) -> bool:
+    """Whether ``bars`` holds no bar on or after ``day``."""
+    if bars.empty or not bars.index.is_monotonic_increasing:
+        return False
+    try:
+        return bool(day > bars.index[-1])
+    except TypeError:  # pragma: no cover - naive day against a tz-aware frame
+        return False
+
+
+def _close_at_last_bar(
+    *,
+    state: _SlotState,
+    bars: pd.DataFrame,
+    last_idx: int,
+    cfg: BacktestConfig,
+    portfolio: Portfolio,
+    fill_model: FillModel,
+) -> None:
+    """Close ``state``'s position at the close of bar ``last_idx`` as ``eod``."""
+    refresh_exit_liquidity(state, bars, last_idx, cfg, fill_model)
+    fill = fill_model.exit_price(
+        reason="eod",
+        close=float(bars["close"].iloc[last_idx]),
+        shares=(
+            position.shares
+            if (position := portfolio.get_position(state.ticker)) is not None
+            else 0.0
+        ),
+        adv_shares=state.adv_shares,
+        sigma_daily=state.sigma_daily,
+        half_spread=state.half_spread,
+    )
+    portfolio.close(
+        ticker=state.ticker,
+        exit_date=_bar_label(bars.index[last_idx], cfg),
+        exit_price=fill,
+        reason="eod",
+    )
+
+
+def _close_ended_slot(
+    *,
+    slot_id: int,
+    state: _SlotState,
+    bars: pd.DataFrame,
+    cfg: BacktestConfig,
+    portfolio: Portfolio,
+    slot_states: dict[int, _SlotState | None],
+    fill_model: FillModel,
+) -> bool:
+    """Free a slot whose ticker has no bar on or after the current day.
+
+    The ticker's history has ended (a delisting, a merger, a feed that
+    stopped), so no bar will ever again reach the exit checks. Left alone the
+    position held its slot and its capital to the end of the window, starving
+    every later candidate, and was then force-closed with an exit stamp months
+    in the past. It is closed instead on the first master day past its last
+    bar, at that bar's close - the same price and stamp the end-of-window
+    force close would have used, but with the slot released when it happened.
+    """
+    if state.entry_idx >= len(bars):  # pragma: no cover - entry is a real bar
+        return False
+    if portfolio.get_position(state.ticker) is not None:
+        _close_at_last_bar(
+            state=state,
+            bars=bars,
+            last_idx=len(bars) - 1,
+            cfg=cfg,
+            portfolio=portfolio,
+            fill_model=fill_model,
+        )
+    slot_states[slot_id] = None
+    return True
+
+
 def _force_close_open_slots(
     *,
     slot_states: dict[int, _SlotState | None],
@@ -171,27 +267,13 @@ def _force_close_open_slots(
         ]
         if tail.empty:
             continue
-        last_bar = tail.iloc[-1]
-        refresh_exit_liquidity(
-            state, bars, int(bars.index.searchsorted(tail.index[-1])), cfg, fill_model
-        )
-        fill = fill_model.exit_price(
-            reason="eod",
-            close=float(last_bar["close"]),
-            shares=(
-                position.shares
-                if (position := portfolio.get_position(state.ticker)) is not None
-                else 0.0
-            ),
-            adv_shares=state.adv_shares,
-            sigma_daily=state.sigma_daily,
-            half_spread=state.half_spread,
-        )
-        portfolio.close(
-            ticker=state.ticker,
-            exit_date=_bar_label(tail.index[-1], cfg),
-            exit_price=fill,
-            reason="eod",
+        _close_at_last_bar(
+            state=state,
+            bars=bars,
+            last_idx=int(bars.index.searchsorted(tail.index[-1])),
+            cfg=cfg,
+            portfolio=portfolio,
+            fill_model=fill_model,
         )
         slot_states[slot_id] = None
 
