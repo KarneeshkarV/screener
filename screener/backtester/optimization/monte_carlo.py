@@ -68,6 +68,14 @@ class MonteCarloResult(MonteCarloOutcome):
 # ``backtest-monte-carlo`` CLI does exactly that to turn "block must be ..."
 # into "--block must be ...", which is why there is one list of bounds here
 # and not a second hand-maintained copy in the command.
+def validate_ruin_threshold(ruin_threshold: float) -> None:
+    """Require a finite starting-capital fraction in ``(0, 1]``."""
+    if not np.isfinite(ruin_threshold) or not 0.0 < ruin_threshold <= 1.0:
+        raise ValueError(
+            "ruin_threshold must be a fraction of starting capital in (0, 1] and finite"
+        )
+
+
 def validate_equity_monte_carlo_flags(
     *,
     iterations: int,
@@ -91,10 +99,7 @@ def validate_equity_monte_carlo_flags(
         raise ValueError("seed must not be negative")
     if keep_paths < 0:
         raise ValueError("keep_paths must not be negative")
-    if not 0.0 < ruin_threshold <= 1.0:
-        raise ValueError(
-            "ruin_threshold must be a fraction of starting capital in (0, 1]"
-        )
+    validate_ruin_threshold(ruin_threshold)
 
 
 def _validate_equity_curve(equity: "pd.Series") -> None:
@@ -165,6 +170,7 @@ def simulate_monte_carlo(
         raise ValueError("seed must not be negative")
     if initial_capital <= 0:
         raise ValueError("initial_capital must be positive")
+    validate_ruin_threshold(ruin_threshold)
     rng = np.random.default_rng(seed)
     returns = np.array([float(t.return_pct) for t in trades], dtype=float)
     if returns.size == 0:
@@ -327,13 +333,14 @@ def simulate_equity_monte_carlo(
     drawdown, so the drawdown percentiles stay honest instead of collapsing
     toward the i.i.d. case.
     """
-    result, _ = simulate_equity_monte_carlo_paths(
+    result, _ = _simulate_equity_monte_carlo(
         equity,
         iterations=iterations,
         block=block,
         seed=seed,
         ruin_threshold=ruin_threshold,
         keep_paths=0,
+        collect_chart_data=False,
     )
     return result
 
@@ -347,17 +354,34 @@ def simulate_equity_monte_carlo_paths(
     ruin_threshold: float = 0.5,
     keep_paths: int = 1000,
 ) -> tuple[EquityMonteCarloResult, EquityMonteCarloPaths]:
-    """Run the bootstrap and hand back the draws as well as the summary.
+    """Run the bootstrap and hand back the draws as well as the summary."""
+    result, paths = _simulate_equity_monte_carlo(
+        equity,
+        iterations=iterations,
+        block=block,
+        seed=seed,
+        ruin_threshold=ruin_threshold,
+        keep_paths=keep_paths,
+        collect_chart_data=True,
+    )
+    assert paths is not None
+    return result, paths
 
-    Same simulation as :func:`simulate_equity_monte_carlo`. This variant exists
-    so a report can plot the fan of simulated curves and the outcome
-    distributions, which the summary percentiles alone cannot show.
 
-    Iterations are drawn in chunks of about a million cells rather than all
-    at once: a fully vectorized draw allocates ``iterations x bars`` indices,
-    which is hundreds of MB on a multi-year daily run. A chunk draws its block
-    starts as one ``(k, draws)`` array, which consumes the generator exactly as
-    ``k`` per-iteration draws do, so a seed gives the paths it always gave.
+def _simulate_equity_monte_carlo(
+    equity: "pd.Series",
+    *,
+    iterations: int,
+    block: int,
+    seed: int,
+    ruin_threshold: float,
+    keep_paths: int,
+    collect_chart_data: bool,
+) -> tuple[EquityMonteCarloResult, EquityMonteCarloPaths | None]:
+    """Run one bootstrap, optionally collecting simulated paths and bands.
+
+    The collection switch changes only chart allocations and percentiles.
+    It does not change RNG draws or summary calculations.
     """
     validate_equity_monte_carlo_flags(
         iterations=iterations,
@@ -367,11 +391,21 @@ def simulate_equity_monte_carlo_paths(
         ruin_threshold=ruin_threshold,
     )
     if len(equity) == 0:
-        return _empty_equity_monte_carlo_paths(
-            iterations=iterations,
-            seed=seed,
-            ruin_threshold=ruin_threshold,
-            initial_capital=0.0,
+        if collect_chart_data:
+            return _empty_equity_monte_carlo_paths(
+                iterations=iterations,
+                seed=seed,
+                ruin_threshold=ruin_threshold,
+                initial_capital=0.0,
+            )
+        return (
+            _empty_equity_result(
+                iterations=iterations,
+                seed=seed,
+                ruin_threshold=ruin_threshold,
+                initial_capital=0.0,
+            ),
+            None,
         )
 
     _validate_equity_curve(equity)
@@ -386,11 +420,21 @@ def simulate_equity_monte_carlo_paths(
         # One return resamples to itself however it is blocked, so there is no
         # distribution to report. Handled like an absent curve rather than as
         # an error: a window this short is a thin backtest, not a bad flag.
-        return _empty_equity_monte_carlo_paths(
-            iterations=iterations,
-            seed=seed,
-            ruin_threshold=ruin_threshold,
-            initial_capital=initial_capital,
+        if collect_chart_data:
+            return _empty_equity_monte_carlo_paths(
+                iterations=iterations,
+                seed=seed,
+                ruin_threshold=ruin_threshold,
+                initial_capital=initial_capital,
+            )
+        return (
+            _empty_equity_result(
+                iterations=iterations,
+                seed=seed,
+                ruin_threshold=ruin_threshold,
+                initial_capital=initial_capital,
+            ),
+            None,
         )
     if block >= n:
         # A circular block as long as the series is a rotation of it, and the
@@ -411,18 +455,20 @@ def simulate_equity_monte_carlo_paths(
 
     terminal_returns = np.empty(iterations, dtype=float)
     drawdowns = np.empty(iterations, dtype=float)
-    kept = min(keep_paths, iterations)
+    kept = min(keep_paths, iterations) if collect_chart_data else 0
     # float32 halves the retained sample; a chart cannot resolve more precision.
-    stored = np.empty((kept, n), dtype=np.float32)
-    # The bands come from every iteration, not from the retained sample, so
-    # they agree with the summary percentiles. Only a run past the cell budget
-    # strides, and ``band_iterations`` then says how many it really used.
-    band_rows = min(iterations, max(1, _BAND_CELL_BUDGET // n))
-    band_stride = -(-iterations // band_rows)
-    band_iterations = -(-iterations // band_stride)
-    # Bar-major, so each bar's percentile below partitions one contiguous row
-    # rather than a column strided across every iteration.
-    band_buffer = np.empty((n, band_iterations), dtype=np.float32)
+    stored = np.empty((kept, n), dtype=np.float32) if collect_chart_data else None
+    # The paths API computes bands from every iteration. The summary API skips
+    # this chart-only buffer and its percentile calculation.
+    if collect_chart_data:
+        band_rows = min(iterations, max(1, _BAND_CELL_BUDGET // n))
+        band_stride = -(-iterations // band_rows)
+        band_iterations = -(-iterations // band_stride)
+        band_buffer = np.empty((n, band_iterations), dtype=np.float32)
+    else:
+        band_stride = 0
+        band_iterations = 0
+        band_buffer = None
     # ``returns`` with its first ``block - 1`` bars appended: a block starting
     # at ``j`` reads ``wrapped[j : j + block]``, which is the circular read
     # ``returns[(j + offsets) % n]`` without a modulo over every drawn cell.
@@ -438,22 +484,15 @@ def simulate_equity_monte_carlo_paths(
         terminal_returns[lo:hi] = equity_paths[:, -1] / initial_capital - 1.0
         drawdowns[lo:hi] = _path_drawdowns(equity_paths, initial_capital)
         ruin_count += int(np.count_nonzero(equity_paths.min(axis=1) <= ruin_level))
-        if lo < kept:
-            stored[lo : min(hi, kept)] = equity_paths[: min(hi, kept) - lo]
-        # Iterations ``i`` in this chunk with ``i % band_stride == 0``.
-        first = -(-lo // band_stride) * band_stride
-        banded = np.arange(first, hi, band_stride)
-        band_buffer[:, banded // band_stride] = equity_paths[banded - lo].T
-
-    bands = np.empty((len(_BAND_PERCENTILES), n + 1), dtype=float)
-    # Every path starts at the capital the real run started with, so bar 0 is
-    # that level for all three bands rather than a percentile of nothing.
-    bands[:, 0] = initial_capital
-    # The buffer is scratch from here on, so let the percentile partition it in
-    # place instead of copying up to ``_BAND_CELL_BUDGET`` cells first.
-    bands[:, 1:] = np.percentile(
-        band_buffer, _BAND_PERCENTILES, axis=1, overwrite_input=True
-    )
+        if collect_chart_data:
+            assert stored is not None
+            assert band_buffer is not None
+            if lo < kept:
+                stored[lo : min(hi, kept)] = equity_paths[: min(hi, kept) - lo]
+            # Iterations ``i`` in this chunk with ``i % band_stride == 0``.
+            first = -(-lo // band_stride) * band_stride
+            banded = np.arange(first, hi, band_stride)
+            band_buffer[:, banded // band_stride] = equity_paths[banded - lo].T
 
     result = EquityMonteCarloResult(
         iterations=iterations,
@@ -471,7 +510,19 @@ def simulate_equity_monte_carlo_paths(
         probability_of_profit=float(np.mean(terminal_returns > 0)),
         risk_of_ruin=float(ruin_count / iterations),
     )
-    paths = EquityMonteCarloPaths(
+    if not collect_chart_data:
+        return result, None
+
+    assert stored is not None
+    assert band_buffer is not None
+    bands = np.empty((len(_BAND_PERCENTILES), n + 1), dtype=float)
+    # Every simulated path starts at the realized starting capital.
+    bands[:, 0] = initial_capital
+    # The buffer is scratch from here on, so percentile can partition in place.
+    bands[:, 1:] = np.percentile(
+        band_buffer, _BAND_PERCENTILES, axis=1, overwrite_input=True
+    )
+    return result, EquityMonteCarloPaths(
         initial_capital=initial_capital,
         paths=stored,
         terminal_returns=terminal_returns,
@@ -480,7 +531,6 @@ def simulate_equity_monte_carlo_paths(
         bands=bands,
         band_iterations=band_iterations,
     )
-    return result, paths
 
 
 def equity_monte_carlo_metrics(result: EquityMonteCarloResult) -> dict[str, float]:

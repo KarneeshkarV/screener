@@ -264,6 +264,34 @@ def test_metrics_render_with_declared_labels():
     assert kinds["mc_iterations"] == "int"
 
 
+def test_summary_run_skips_chart_only_band_percentiles(monkeypatch):
+    equity = _equity(120, seed=5)
+    percentile = np.percentile
+    input_dimensions: list[int] = []
+
+    def recording_percentile(values, *args, **kwargs):
+        input_dimensions.append(np.asarray(values).ndim)
+        return percentile(values, *args, **kwargs)
+
+    monkeypatch.setattr(monte_carlo.np, "percentile", recording_percentile)
+
+    simulate_equity_monte_carlo(equity, iterations=100, block=10, seed=7)
+
+    assert input_dimensions == [1, 1, 1]
+
+
+def test_paths_api_keep_paths_zero_keeps_band_output_contract():
+    equity = _equity(120, seed=5)
+
+    result, paths = simulate_equity_monte_carlo_paths(
+        equity, iterations=100, block=10, seed=7, keep_paths=0
+    )
+
+    assert paths.paths.shape == (0, result.bars)
+    assert paths.bands.shape == (len(_BAND_PERCENTILES), result.bars + 1)
+    assert paths.band_iterations == 100
+
+
 def test_paths_variant_matches_the_summary_only_run():
     equity = _equity(120, seed=5)
     summary = simulate_equity_monte_carlo(equity, iterations=100, block=10, seed=7)
