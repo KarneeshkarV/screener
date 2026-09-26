@@ -115,6 +115,14 @@ def test_monte_carlo_reproducible_with_same_seed():
     assert a == b
 
 
+@pytest.mark.parametrize("ruin_threshold", [0.0, -0.1, 1.5, float("nan"), float("inf")])
+def test_trade_monte_carlo_rejects_invalid_ruin_threshold(ruin_threshold):
+    with pytest.raises(ValueError, match="ruin_threshold must be a fraction"):
+        simulate_monte_carlo(
+            [_trade(10.0, 0.10)], ruin_threshold=ruin_threshold, iterations=10
+        )
+
+
 def test_monte_carlo_bootstrap_has_terminal_return_distribution():
     trades = [
         _trade(10.0, 0.10),
@@ -151,6 +159,35 @@ def test_monte_carlo_chunked_draw_matches_per_iteration_draw(monkeypatch, chunk_
     assert result.worst_drawdown == float(np.min(drawdowns))
     assert result.drawdown_p05 == float(np.percentile(drawdowns, 5))
     assert result.risk_of_ruin == ruined / 23
+
+
+@pytest.mark.parametrize("ruin_threshold", ["0", "-0.1", "1.5", "nan", "inf"])
+def test_optimize_validate_rejects_ruin_threshold_before_reading_trades(
+    tmp_path, monkeypatch, ruin_threshold
+):
+    ledger = tmp_path / "ledger.csv"
+    ledger.write_text("not,a,valid,ledger\n")
+
+    def unexpected_load(_path):
+        raise AssertionError("trade file must not be loaded for an invalid threshold")
+
+    monkeypatch.setattr(
+        "screener.backtester.optimization.cli._load_trades", unexpected_load
+    )
+    res = CliRunner().invoke(
+        cli,
+        [
+            "optimize",
+            "validate",
+            "--trades",
+            str(ledger),
+            "--ruin-threshold",
+            ruin_threshold,
+        ],
+    )
+
+    assert res.exit_code == 2
+    assert "--ruin-threshold must be a fraction" in res.output
 
 
 def test_optimize_validate_reads_an_intraday_ledger(tmp_path):

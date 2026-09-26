@@ -343,27 +343,43 @@ class _DailyRankingSource:
         active_tickers.update(
             order.ticker for order in self.pending_limit_orders.values()
         )
+        # Keep the rank field fixed across batches. Newly opened names are in
+        # already-consumed prefixes, so excluding them from later batches would
+        # shift every offset and skip one unconsumed candidate per open.
+        rank_exclude = set(active_tickers)
 
-        # Rank the full eligible set but only materialise top-N plus a small
-        # overfetch for open failures (session-last, quote gaps). Without the
-        # cap every free day built list[dict] for the whole universe.
-        overfetch = max(8, int(cfg.top))
-        materialise_limit = max(len(free_slots), int(cfg.top)) + overfetch
-        candidates, day_warnings = _candidate_rows_for_day(
-            day,
-            self.candidate_matrices,
-            exclude=active_tickers,
-            limit=materialise_limit,
-        )
-        self.warnings.extend(day_warnings)
-        if not candidates:
-            return
-        candidate_queue: deque[dict] = deque(candidates)
+        # Rank the full eligible set but materialise dictionaries in stable
+        # batches. Most days need only one batch; failed opens can continue
+        # through every lower rank without imposing full-universe dict work on
+        # the normal large-universe path.
+        batch_size = max(len(free_slots), int(cfg.top), 8)
+        candidate_offset = 0
+        candidate_queue: deque[dict] = deque()
+        candidates_exhausted = False
+
+        def fill_candidate_queue() -> None:
+            nonlocal candidate_offset, candidates_exhausted
+            if candidate_queue or candidates_exhausted:
+                return
+            candidates, day_warnings = _candidate_rows_for_day(
+                day,
+                self.candidate_matrices,
+                exclude=rank_exclude,
+                limit=batch_size,
+                offset=candidate_offset,
+            )
+            self.warnings.extend(day_warnings)
+            candidate_queue.extend(candidates)
+            candidate_offset += len(candidates)
+            candidates_exhausted = len(candidates) < batch_size
 
         for slot_id in free_slots:
             slots_left -= 1
             opened = False
-            while candidate_queue and not opened:
+            while not opened:
+                fill_candidate_queue()
+                if not candidate_queue:
+                    break
                 row = candidate_queue.popleft()
                 ticker = str(row["ticker"])
                 if (

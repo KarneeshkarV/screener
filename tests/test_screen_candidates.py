@@ -22,6 +22,7 @@ from screener.criteria import registry as criteria_registry
 from screener.screen_candidates import (
     OUTPUT_SCORE_COLUMN,
     _candidate_frame,
+    _screen_window_start,
     _warn_thin_field,
     _fundamentals_for,
     ScreenStrategy,
@@ -273,6 +274,27 @@ class TestUniverseMode:
         assert field.tickers == ["STAY.NS", "JOINED.NS"]
         assert "book_pit" in field.note
 
+    def test_a_dynamic_universe_keeps_its_selection_policy(self, tmp_path) -> None:
+        config = tmp_path / "universes.yaml"
+        config.write_text(
+            "universes:\n"
+            "  liquid_one:\n"
+            "    type: dynamic\n"
+            "    market: us\n"
+            "    symbols: [AAA, BBB]\n"
+            "    size: 1\n"
+            "    lookback: 20\n"
+            "    rebalance: quarterly\n",
+            encoding="utf-8",
+        )
+
+        field = resolve_universe_field("liquid_one", "us", config_path=config)
+
+        assert field.tickers == ["AAA", "BBB"]
+        assert field.dynamic_size == 1
+        assert field.dynamic_lookback == 20
+        assert field.dynamic_rebalance == "quarterly"
+
     def test_a_config_universe_needs_its_config(self) -> None:
         # Without --universe-config the name falls through to the file reader,
         # which is the honest failure: there is nowhere else it could be.
@@ -418,6 +440,69 @@ class TestWorkflowWiring:
         # `total` is the field the rule judged, which in this mode is the whole
         # universe rather than a vendor-narrowed slice.
         assert outcome.total == 3
+
+    def test_universe_mode_forwards_the_dynamic_selection_policy(
+        self, monkeypatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_candidates(strategy, **kwargs: object) -> pd.DataFrame:
+            captured.update(kwargs)
+            return pd.DataFrame({"name": ["AAA"], OUTPUT_SCORE_COLUMN: [100.0]})
+
+        monkeypatch.setattr(screen_workflow, "screen_candidates", fake_candidates)
+        monkeypatch.setattr(
+            screen_workflow,
+            "resolve_universe_field",
+            lambda universe, market, config_path=None: UniverseField(
+                ["AAA", "BBB"],
+                dynamic_size=1,
+                dynamic_lookback=20,
+                dynamic_rebalance="quarterly",
+            ),
+        )
+
+        run_screen_workflow(
+            _request(criteria_names=("breakout",), universe="liquid_one")
+        )
+
+        assert captured["dynamic_universe_size"] == 1
+        assert captured["dynamic_universe_lookback"] == 20
+        assert captured["dynamic_universe_rebalance"] == "quarterly"
+
+
+class TestScreenWindow:
+    @pytest.mark.parametrize(
+        ("rebalance", "expected"),
+        [
+            ("weekly", "2024-06-05"),
+            ("monthly", "2024-06-01"),
+            ("quarterly", "2024-04-01"),
+        ],
+    )
+    def test_dynamic_window_includes_the_active_rebalance_period(
+        self, rebalance, expected
+    ) -> None:
+        start = _screen_window_start(
+            pd.Timestamp("2024-06-20"),
+            fundamental_fetcher=None,
+            dynamic_universe_size=1,
+            dynamic_universe_rebalance=rebalance,
+        )
+
+        assert start == pd.Timestamp(expected)
+
+    def test_daily_dynamic_window_keeps_the_normal_screen_span(self) -> None:
+        end = pd.Timestamp("2024-06-20")
+
+        start = _screen_window_start(
+            end,
+            fundamental_fetcher=None,
+            dynamic_universe_size=1,
+            dynamic_universe_rebalance="daily",
+        )
+
+        assert start == end - pd.Timedelta(days=15)
 
 
 class TestCandidateFrame:
@@ -608,6 +693,43 @@ class TestResultFrame:
 
         assert df["ticker"].tolist() == ["NSE:AAA"]
         assert any("market_cap_basic" in w for w in warnings)
+
+    def test_rank_order_limit_only_builds_display_rows_for_the_result(
+        self, monkeypatch
+    ) -> None:
+        candidates = [
+            _candidate(f"NSE:TICKER{i}", i, float(20 - i)) for i in range(1, 11)
+        ]
+        bars = {
+            candidate.ticker: _bars(close=100.0, previous=99.0, volume=1_000.0)
+            for candidate in candidates
+        }
+        rendered: list[str] = []
+
+        def count_display_rows(frame, ticker, as_of=None):
+            rendered.append(ticker)
+            return {
+                "ticker": ticker,
+                "name": ticker.split(":", 1)[-1],
+                "description": "",
+                "close": 100.0,
+                "change": 0.0,
+                "volume": 1_000.0,
+                "market_cap_basic": float("nan"),
+            }
+
+        monkeypatch.setattr(
+            "screener.screen_candidates._bar_display_row", count_display_rows
+        )
+
+        result = _candidate_frame(candidates, bars, None, limit=3)
+
+        assert result["ticker"].tolist() == [
+            "NSE:TICKER1",
+            "NSE:TICKER2",
+            "NSE:TICKER3",
+        ]
+        assert rendered == result["ticker"].tolist()
 
     def test_the_score_does_not_depend_on_the_result_limit(self) -> None:
         # setup_score used to be a percentile of the truncated top-N, so the

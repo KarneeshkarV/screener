@@ -19,6 +19,7 @@ from screener.backtester.optimization.grid import grid_search
 from screener.backtester.optimization.monte_carlo import (
     simulate_monte_carlo,
     validate_equity_monte_carlo_flags,
+    validate_ruin_threshold,
 )
 from screener.backtester.optimization.reporting import (
     GRID_IN_SAMPLE_DISCLAIMER,
@@ -588,6 +589,12 @@ def optimize_validate(
     """Run Monte Carlo stress testing on an existing trade ledger."""
     from rich.console import Console
     from rich.table import Table
+
+    try:
+        validate_ruin_threshold(float(ruin_threshold))
+    except ValueError as exc:
+        message = str(exc).replace("ruin_threshold", "--ruin-threshold", 1)
+        raise click.UsageError(message) from exc
 
     result = simulate_monte_carlo(
         _load_trades(trades_path),

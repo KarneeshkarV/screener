@@ -25,6 +25,7 @@ from screener.criteria import resolve_criteria
 from screener.screen_candidates import (
     DEFAULT_INTERVAL,
     ScreenStrategy,
+    UniverseField,
     UnscreenableStrategyError,
     prefilter_filters,
     resolve_screen_strategy,
@@ -244,6 +245,7 @@ def _run_bar_screen(
     warnings: list[str] = []
     signal_date = date.today()
 
+    field: UniverseField | None = None
     if request.universe:
         field = resolve_universe_field(
             request.universe, request.market, config_path=request.universe_config
@@ -313,6 +315,12 @@ def _run_bar_screen(
         ),
         interval=request.interval,
         max_universe=request.max_universe,
+        benchmark=field.benchmark if field is not None else None,
+        dynamic_universe_size=field.dynamic_size if field is not None else None,
+        dynamic_universe_lookback=(field.dynamic_lookback if field is not None else 60),
+        dynamic_universe_rebalance=(
+            field.dynamic_rebalance if field is not None else "monthly"
+        ),
         warnings=warnings,
     )
     for warning in warnings:

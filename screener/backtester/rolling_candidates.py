@@ -665,14 +665,15 @@ def _candidate_rows_for_day(
     *,
     exclude: set[str],
     limit: int | None = None,
+    offset: int = 0,
 ) -> tuple[list[dict], list[str]]:
     """Evaluate entry signals for the full universe on one trading day.
 
     ``limit`` caps how many ranked candidates are materialised into ``list[dict]``.
-    Ranking still considers the whole eligible set, so ranks 1..limit match the
-    uncapped path; only the dict-building tail is skipped. Pass ``None`` (the
-    default) to materialise every eligible name — used by tests that assert on
-    full-day rankings.
+    ``offset`` skips that many ranked candidates first, so a caller can consume
+    stable batches without building the full eligible set as dictionaries.
+    Ranking and setup scores still consider the whole eligible set. Pass
+    ``None`` and offset 0 to materialise every eligible name.
     """
     warnings: list[str] = []
     row = matrices.row_by_day[day]
@@ -712,10 +713,11 @@ def _candidate_rows_for_day(
         # reverses the stable ascending order, so ties land in reversed column
         # order (see pandas ``nargsort``).
         order = dollar_vol[eligible_cols].argsort(kind="mergesort")[::-1]
-    if limit is not None and limit >= 0:
-        order = order[:limit]
+    rank_start = max(offset, 0)
+    rank_end = None if limit is None or limit < 0 else rank_start + limit
+    order = order[rank_start:rank_end]
     rows: list[dict] = []
-    for rank, col in enumerate(eligible_cols[order], start=1):
+    for rank, col in enumerate(eligible_cols[order], start=rank_start + 1):
         rows.append(
             {
                 "ticker": matrices.tickers[col],
