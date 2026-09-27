@@ -476,8 +476,8 @@ class TestScreenWindow:
         ("rebalance", "expected"),
         [
             ("weekly", "2024-06-05"),
-            ("monthly", "2024-06-01"),
-            ("quarterly", "2024-04-01"),
+            ("monthly", "2024-05-01"),
+            ("quarterly", "2024-01-01"),
         ],
     )
     def test_dynamic_window_includes_the_active_rebalance_period(
@@ -491,6 +491,31 @@ class TestScreenWindow:
         )
 
         assert start == pd.Timestamp(expected)
+
+    @pytest.mark.parametrize(
+        ("end", "rebalance", "snapped_period_start"),
+        [
+            # A Sunday the 1st snaps back to Friday Oct 30, in October.
+            ("2026-11-01", "monthly", "2026-10-01"),
+            # New Year's Day snaps to Dec 31, in the October quarter.
+            ("2027-01-01", "quarterly", "2026-10-01"),
+        ],
+    )
+    def test_dynamic_window_covers_the_period_of_a_snapped_as_of_bar(
+        self, end, rebalance, snapped_period_start
+    ) -> None:
+        # The screened bar is the last trading bar on or before ``end``. When
+        # it falls in the previous period, that period's first bar must be in
+        # the window or membership is selected on a later bar than the
+        # rolling engine uses.
+        start = _screen_window_start(
+            pd.Timestamp(end),
+            fundamental_fetcher=None,
+            dynamic_universe_size=1,
+            dynamic_universe_rebalance=rebalance,
+        )
+
+        assert start <= pd.Timestamp(snapped_period_start)
 
     def test_daily_dynamic_window_keeps_the_normal_screen_span(self) -> None:
         end = pd.Timestamp("2024-06-20")

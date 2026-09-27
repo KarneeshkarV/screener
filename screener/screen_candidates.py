@@ -796,6 +796,12 @@ def _screen_window_start(
     or quarterly anchor and select from a later ADV observation instead.
     Extending the master calendar to the period boundary reproduces the held
     membership, while price-panel warmup supplies the lagged ADV lookback.
+
+    The window reaches back to the start of the period *before* ``end_ts``'s.
+    The bar actually screened is the last trading bar on or before ``end_ts``,
+    and on a weekend, a holiday, or a run before the day's bar exists, that
+    bar snaps back into the previous period. The trading calendar is not
+    known until the panel is built, so the extra period covers the snap.
     """
     ordinary = end_ts - pd.Timedelta(days=_window_days(fundamental_fetcher))
     if dynamic_universe_size is None or dynamic_universe_rebalance == "daily":
@@ -805,7 +811,7 @@ def _screen_window_start(
         "monthly": "M",
         "quarterly": "Q",
     }[dynamic_universe_rebalance]
-    period_start = end_ts.normalize().to_period(period_frequency).start_time
+    period_start = (end_ts.normalize().to_period(period_frequency) - 1).start_time
     return min(ordinary, period_start)
 
 
