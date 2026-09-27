@@ -25,6 +25,7 @@ from screener.criteria import resolve_criteria
 from screener.screen_candidates import (
     DEFAULT_INTERVAL,
     ScreenStrategy,
+    UniverseField,
     UnscreenableStrategyError,
     prefilter_filters,
     resolve_screen_strategy,
@@ -103,6 +104,13 @@ class ScreenRequest:
     # A snapshot universe is screened on the membership window that is open
     # today, so the live screen sees the book the backtest would have held.
     universe_config: str | None = None
+    # Selection policy for ``--universe dynamic``, spelled and defaulted as on
+    # ``backtest-rolling`` so the screen holds the book the backtest would.
+    # Ignored by every other universe, as it is there.
+    dynamic_base: str | None = None
+    dynamic_size: int = 100
+    dynamic_lookback: int = 60
+    dynamic_rebalance: str = "monthly"
     # Raise StaleDataError instead of serving stale cache when the live scan
     # fails. When ranking by a bar-derived setup_score, the same flag is
     # forwarded to the price fetcher, so a failed bar refresh also raises
@@ -244,9 +252,16 @@ def _run_bar_screen(
     warnings: list[str] = []
     signal_date = date.today()
 
+    field: UniverseField | None = None
     if request.universe:
         field = resolve_universe_field(
-            request.universe, request.market, config_path=request.universe_config
+            request.universe,
+            request.market,
+            config_path=request.universe_config,
+            dynamic_base=request.dynamic_base,
+            dynamic_size=request.dynamic_size,
+            dynamic_lookback=request.dynamic_lookback,
+            dynamic_rebalance=request.dynamic_rebalance,
         )
         tickers = field.tickers
         if field.note:
@@ -313,6 +328,12 @@ def _run_bar_screen(
         ),
         interval=request.interval,
         max_universe=request.max_universe,
+        benchmark=field.benchmark if field is not None else None,
+        dynamic_universe_size=field.dynamic_size if field is not None else None,
+        dynamic_universe_lookback=(field.dynamic_lookback if field is not None else 60),
+        dynamic_universe_rebalance=(
+            field.dynamic_rebalance if field is not None else "monthly"
+        ),
         warnings=warnings,
     )
     for warning in warnings:

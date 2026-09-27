@@ -507,15 +507,29 @@ def build_portfolio_curve(
     # ``dividend_income``. Skipped entirely in full mode.
     dividend_cash_by_day: dict[pd.Timestamp, float] = {}
     if credit_dividends:
+        dividend_series_by_ticker: dict[str, pd.Series] = {}
         for t in trades:
-            frame = price_panel.get(t.ticker)
-            if frame is None or frame.empty or "dividend" not in frame.columns:
-                continue
+            series = dividend_series_by_ticker.get(t.ticker)
+            if series is None:
+                frame = price_panel.get(t.ticker)
+                if frame is None or frame.empty or "dividend" not in frame.columns:
+                    continue
+                dividends = frame["dividend"]
+                series = dividends.loc[dividends.notna() & (dividends > 0)]
+                dividend_series_by_ticker[t.ticker] = series
             entry_ts = pd.Timestamp(t.entry_date)
             exit_ts = pd.Timestamp(t.exit_date)
-            window = frame.loc[
-                (frame.index > entry_ts) & (frame.index <= exit_ts), "dividend"
-            ]
+            if series.index.is_monotonic_increasing:
+                left = int(series.index.searchsorted(entry_ts, side="right"))
+                right = int(series.index.searchsorted(exit_ts, side="right"))
+                window = series.iloc[left:right]
+            else:
+                # Public callers can supply an unsorted frame. Preserve the
+                # existing label-mask result rather than applying searchsorted
+                # to an index for which it has no ordering meaning.
+                window = series.loc[
+                    (series.index > entry_ts) & (series.index <= exit_ts)
+                ]
             for ex_day, div in window.items():
                 div = float(cast(Any, div))
                 if pd.isna(div) or div <= 0:

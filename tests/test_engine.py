@@ -12,7 +12,11 @@ from screener.backtester.historical import run_backtest
 from screener.backtester.metrics import _exposure, compute_metrics
 from screener.backtester.models import BacktestConfig, Trade
 from screener.backtester.pine import parse
-from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.backtester.portfolio import (
+    Portfolio,
+    build_equity_curve,
+    build_portfolio_curve,
+)
 from screener.backtester.rolling_simulation import run_rolling_backtest
 from tests.backtest_helpers import simulate_single_ticker
 from tests.conftest import StubPriceFetcher, make_bars
@@ -190,6 +194,83 @@ def test_exposure_without_partial_exits_matches_the_legacy_per_trade_mask():
 
     expected = float(_exposure_sessions(index, trades).mean() / 2)
     assert _exposure(index, trades, slot_count=2) == expected
+
+
+def test_portfolio_curve_dividends_preserve_trade_windows_and_tranches():
+    index = pd.date_range("2024-01-02 10:00", periods=6, freq="h")
+    frame = pd.DataFrame(
+        {
+            "close": [100.0] * 6,
+            "dividend": [1.0, 2.0, np.nan, 0.0, np.inf, 3.0],
+        },
+        index=index,
+    )
+
+    def dividend_trade(
+        entry: int, exit_: int, shares: float, *, open_seq: int
+    ) -> Trade:
+        return Trade(
+            ticker="AAA",
+            rank=1,
+            signal_date=index[entry],
+            entry_date=index[entry],
+            entry_price=100.0,
+            exit_date=index[exit_],
+            exit_price=100.0,
+            exit_reason="time",
+            shares=shares,
+            entry_cost=shares * 100.0,
+            exit_value=shares * 100.0,
+            pnl=0.0,
+            return_pct=0.0,
+            open_seq=open_seq,
+        )
+
+    # Two rows with one lot identity model partial exits. The existing curve
+    # contract accumulates each trade row independently, so pin that order and
+    # the strict entry / inclusive exit dividend window while indexing events.
+    trades = [
+        dividend_trade(0, 3, 1.0, open_seq=1),
+        dividend_trade(0, 5, 1.0, open_seq=1),
+    ]
+    curve = build_portfolio_curve(
+        index, trades, {"AAA": frame}, 1_000.0, price_adjustment="splits_only"
+    )
+
+    assert curve["equity"].tolist() == [
+        1_000.0,
+        1_004.0,
+        1_004.0,
+        1_004.0,
+        float("inf"),
+        float("inf"),
+    ]
+
+
+def test_portfolio_curve_without_dividends_is_unchanged():
+    index = pd.date_range("2024-01-02", periods=3, freq="D")
+    trade = Trade(
+        ticker="AAA",
+        rank=1,
+        signal_date=index[0].date(),
+        entry_date=index[0].date(),
+        entry_price=100.0,
+        exit_date=index[2].date(),
+        exit_price=100.0,
+        exit_reason="time",
+        shares=1.0,
+        entry_cost=100.0,
+        exit_value=100.0,
+        pnl=0.0,
+        return_pct=0.0,
+    )
+    frame = pd.DataFrame({"close": [100.0] * 3}, index=index)
+
+    curve = build_portfolio_curve(
+        index, [trade, trade], {"AAA": frame}, 1_000.0, price_adjustment="none"
+    )
+
+    assert curve["equity"].tolist() == [1_000.0, 1_000.0, 1_000.0]
 
 
 # ── entry/exit mechanics ──────────────────────────────────────────────
@@ -511,6 +592,54 @@ def test_rolling_backtest_refills_freed_slot_from_same_day_signal(stub_fetcher_f
     assert by_ticker["ACTIVE"].exit_date == active.index[7].date()
     assert by_ticker["RESERVE"].signal_date == by_ticker["ACTIVE"].exit_date
     assert by_ticker["RESERVE"].entry_date == reserve.index[8].date()
+
+
+def test_rolling_refill_continues_past_unaffordable_higher_ranks(
+    stub_fetcher_factory,
+):
+    index = pd.bdate_range("2023-01-02", "2024-01-05")
+
+    def flat_bars(price: float, volume: float) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": volume,
+            },
+            index=index,
+        )
+
+    expensive = [f"EXP{i}" for i in range(9)]
+    data = {
+        f"{ticker}.NS": flat_bars(2_000.0, 1_000_000.0 + i)
+        for i, ticker in enumerate(expensive)
+    }
+    data["CHEAP.NS"] = flat_bars(100.0, 10_000.0)
+    data["^NSEI"] = flat_bars(100.0, 1_000_000.0)
+    cfg = _cfg(
+        market="india",
+        benchmark="^NSEI",
+        as_of=date(2024, 1, 5),
+        hold=10,
+        top=1,
+        initial_capital=1_000.0,
+        entry_expr="close > 0",
+        tickers=tuple([*expensive, "CHEAP"]),
+        min_price=0.0,
+        min_avg_dollar_volume=0.0,
+    )
+
+    result = run_rolling_backtest(
+        cfg,
+        stub_fetcher_factory(data),
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 5),
+    )
+
+    assert [trade.ticker for trade in result.trades] == ["CHEAP"]
+    assert result.selection.iloc[0]["rank"] == 10
 
 
 def test_historical_backtest_force_closes_entry_on_last_available_bar(

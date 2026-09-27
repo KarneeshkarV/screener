@@ -15,8 +15,10 @@ import pytest
 
 from screener.backtester.rolling_candidates import (
     _average_rank_pct,
+    _candidate_rows_for_day,
     _last_positions,
     _master_ticks,
+    _RollingCandidateMatrices,
     _signal_mask_matrix,
 )
 
@@ -49,6 +51,53 @@ def test_lexsort_ranking_matches_the_pandas_multi_key_sort(seed: int) -> None:
     )
 
     assert np.array_equal(np.lexsort((-dollar_vol, -score)), expected)
+
+
+def test_candidate_batches_keep_full_field_ranks_without_overlap() -> None:
+    day = pd.Timestamp("2026-01-05")
+    tickers = ("AAA", "BBB", "CCC", "DDD", "EEE")
+    columns = list(tickers)
+    signal = np.ones((1, 5), dtype=bool)
+    values = np.array([[500.0, 400.0, 300.0, 200.0, 100.0]])
+    frame = pd.DataFrame(values, index=[day], columns=columns)
+    bool_frame = pd.DataFrame(signal, index=[day], columns=columns)
+    matrices = _RollingCandidateMatrices(
+        signal_mat=bool_frame,
+        lookback_ok_mat=bool_frame,
+        filter_mat=None,
+        dollar_vol_mat=frame,
+        close_mat=frame,
+        volume_mat=frame,
+        bar_idx_mat=pd.DataFrame(
+            np.zeros((1, 5), dtype=int), index=[day], columns=columns
+        ),
+        rank_score_mat=None,
+        tickers=tickers,
+        row_by_day={day: 0},
+        col_by_ticker={ticker: index for index, ticker in enumerate(tickers)},
+        signal_np=signal,
+        lookback_ok_np=signal,
+        filter_np=None,
+        dollar_vol_np=values,
+        close_np=values,
+        volume_np=values,
+        bar_idx_np=np.zeros((1, 5), dtype=int),
+        rank_score_np=None,
+    )
+
+    first, first_warnings = _candidate_rows_for_day(
+        day, matrices, exclude=set(), limit=2
+    )
+    second, second_warnings = _candidate_rows_for_day(
+        day, matrices, exclude=set(), limit=2, offset=2
+    )
+    tail, tail_warnings = _candidate_rows_for_day(
+        day, matrices, exclude=set(), limit=2, offset=4
+    )
+
+    assert [row["ticker"] for row in [*first, *second, *tail]] == list(tickers)
+    assert [row["rank"] for row in [*first, *second, *tail]] == [1, 2, 3, 4, 5]
+    assert first_warnings == second_warnings == tail_warnings == []
 
 
 MASTER = pd.bdate_range("2026-01-05", periods=20)
