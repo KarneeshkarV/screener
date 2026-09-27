@@ -44,8 +44,8 @@ from screener.scoring import IncompatibleScorerBlendError, PriceAdjustment
     "--universe",
     default=None,
     help=(
-        "Screen a named universe (nifty50, nifty500, sensex, sp500) or a "
-        "universe file, with no TradingView prefilter. This is the exact path: "
+        "Screen a named universe (nifty50, nifty500, sensex, sp500, dynamic) or "
+        "a universe file, with no TradingView prefilter. This is the exact path: "
         "the answer depends on local bars only. Slower, because every name is "
         "fetched. Needs a criterion that names a strategy. A name defined in "
         "--universe-config is resolved from there instead of from disk."
@@ -61,6 +61,32 @@ from screener.scoring import IncompatibleScorerBlendError, PriceAdjustment
         "nifty500_pit is screened on the membership window open today, so the "
         "screen and the point-in-time backtest read the same book."
     ),
+)
+@click.option(
+    "--dynamic-base",
+    default=None,
+    help="Candidate index for --universe dynamic (default: sp500 or nifty500).",
+)
+@click.option(
+    "--universe-size",
+    type=click.IntRange(min=1),
+    default=100,
+    show_default=True,
+    help="Number of highest lagged-ADV names in a dynamic universe.",
+)
+@click.option(
+    "--universe-lookback",
+    type=click.IntRange(min=2),
+    default=60,
+    show_default=True,
+    help="Trailing bars used for dynamic-universe ADV ranking.",
+)
+@click.option(
+    "--universe-rebalance",
+    type=click.Choice(["daily", "weekly", "monthly", "quarterly"]),
+    default="monthly",
+    show_default=True,
+    help="Dynamic-universe membership refresh frequency.",
 )
 @click.option("-n", "--limit", default=50, help="Number of results.")
 @click.option(
@@ -146,6 +172,10 @@ def screen(
     criteria_names: tuple[str, ...],
     universe: str | None,
     universe_config: str | None,
+    dynamic_base: str | None,
+    universe_size: int,
+    universe_lookback: int,
+    universe_rebalance: str,
     limit: int,
     order_by: str,
     output_csv: bool,
@@ -180,6 +210,10 @@ def screen(
         criteria_names=criteria_names,
         universe=universe,
         universe_config=universe_config,
+        dynamic_base=dynamic_base,
+        dynamic_size=universe_size,
+        dynamic_lookback=universe_lookback,
+        dynamic_rebalance=universe_rebalance,
         limit=int(limit),
         order_by=order_by,
         output_csv=output_csv,

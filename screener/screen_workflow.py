@@ -104,6 +104,13 @@ class ScreenRequest:
     # A snapshot universe is screened on the membership window that is open
     # today, so the live screen sees the book the backtest would have held.
     universe_config: str | None = None
+    # Selection policy for ``--universe dynamic``, spelled and defaulted as on
+    # ``backtest-rolling`` so the screen holds the book the backtest would.
+    # Ignored by every other universe, as it is there.
+    dynamic_base: str | None = None
+    dynamic_size: int = 100
+    dynamic_lookback: int = 60
+    dynamic_rebalance: str = "monthly"
     # Raise StaleDataError instead of serving stale cache when the live scan
     # fails. When ranking by a bar-derived setup_score, the same flag is
     # forwarded to the price fetcher, so a failed bar refresh also raises
@@ -248,7 +255,13 @@ def _run_bar_screen(
     field: UniverseField | None = None
     if request.universe:
         field = resolve_universe_field(
-            request.universe, request.market, config_path=request.universe_config
+            request.universe,
+            request.market,
+            config_path=request.universe_config,
+            dynamic_base=request.dynamic_base,
+            dynamic_size=request.dynamic_size,
+            dynamic_lookback=request.dynamic_lookback,
+            dynamic_rebalance=request.dynamic_rebalance,
         )
         tickers = field.tickers
         if field.note:

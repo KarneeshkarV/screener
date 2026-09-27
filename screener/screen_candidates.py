@@ -302,13 +302,19 @@ def resolve_universe_field(
     *,
     config_path: str | Path | None = None,
     as_of: date | None = None,
+    dynamic_base: str | None = None,
+    dynamic_size: int = 100,
+    dynamic_lookback: int = 60,
+    dynamic_rebalance: str = "monthly",
 ) -> UniverseField:
     """Resolve a named universe, a config-defined universe, or a file.
 
     Built-ins win, then the ``--universe-config`` definitions, then the name is
     read as a path. That is the same order :func:`load_universe_selection` uses
     for ``backtest-rolling``, so one name cannot mean two different books
-    depending on which command asked.
+    depending on which command asked. The built-in ``dynamic`` universe goes
+    through that loader too, with the same ``dynamic_*`` policy arguments, so
+    the screen selects its lagged-ADV membership the way the backtest does.
     """
     from screener.universes import (
         UniverseRequest,
@@ -319,10 +325,18 @@ def resolve_universe_field(
     )
 
     is_index = universe in available_universes()
-    if not is_index and config_path is not None:
+    is_dynamic = universe.strip().lower() == "dynamic"
+    if is_dynamic or (not is_index and config_path is not None):
         today = as_of or date.today()
         selection = load_universe_selection(
-            universe, market=market, as_of=today, config_path=config_path
+            universe,
+            market=market,
+            as_of=today,
+            config_path=config_path,
+            dynamic_base=dynamic_base,
+            dynamic_size=dynamic_size,
+            dynamic_lookback=dynamic_lookback,
+            dynamic_rebalance=dynamic_rebalance,
         )
         if selection.membership_windows:
             tickers = _members_open_on(selection.membership_windows, today)

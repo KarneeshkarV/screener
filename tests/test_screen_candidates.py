@@ -295,6 +295,39 @@ class TestUniverseMode:
         assert field.dynamic_lookback == 20
         assert field.dynamic_rebalance == "quarterly"
 
+    def test_the_built_in_dynamic_universe_keeps_its_selection_policy(
+        self, monkeypatch
+    ) -> None:
+        # ``--universe dynamic`` is a built-in on backtest-rolling. Read as a
+        # file path here, it crashed, and a screen could not hold the book the
+        # backtest selects.
+        from types import SimpleNamespace
+
+        from screener import universes
+
+        bases: list[str] = []
+
+        def fake_current(name: str, **kwargs: object) -> SimpleNamespace:
+            bases.append(name)
+            return SimpleNamespace(symbols=("AAA.NS", "BBB.NS"), source="fake")
+
+        monkeypatch.setattr(universes, "load_current_universe", fake_current)
+
+        field = resolve_universe_field(
+            "dynamic",
+            "india",
+            dynamic_size=1,
+            dynamic_lookback=20,
+            dynamic_rebalance="weekly",
+        )
+
+        assert bases == ["nifty500"]
+        assert field.tickers == ["AAA.NS", "BBB.NS"]
+        assert field.benchmark == "^NSEI"
+        assert field.dynamic_size == 1
+        assert field.dynamic_lookback == 20
+        assert field.dynamic_rebalance == "weekly"
+
     def test_a_config_universe_needs_its_config(self) -> None:
         # Without --universe-config the name falls through to the file reader,
         # which is the honest failure: there is nowhere else it could be.
@@ -425,7 +458,7 @@ class TestWorkflowWiring:
         monkeypatch.setattr(
             screen_workflow,
             "resolve_universe_field",
-            lambda universe, market, config_path=None: UniverseField(
+            lambda universe, market, **kwargs: UniverseField(
                 ["NSE:AAA", "NSE:BBB", "NSE:CCC"]
             ),
         )
@@ -454,7 +487,7 @@ class TestWorkflowWiring:
         monkeypatch.setattr(
             screen_workflow,
             "resolve_universe_field",
-            lambda universe, market, config_path=None: UniverseField(
+            lambda universe, market, **kwargs: UniverseField(
                 ["AAA", "BBB"],
                 dynamic_size=1,
                 dynamic_lookback=20,
@@ -469,6 +502,40 @@ class TestWorkflowWiring:
         assert captured["dynamic_universe_size"] == 1
         assert captured["dynamic_universe_lookback"] == 20
         assert captured["dynamic_universe_rebalance"] == "quarterly"
+
+    def test_universe_mode_forwards_the_dynamic_flags_to_the_resolver(
+        self, monkeypatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_field(universe: str, market: str, **kwargs: object) -> UniverseField:
+            captured.update(kwargs)
+            return UniverseField(["AAA"])
+
+        monkeypatch.setattr(
+            screen_workflow,
+            "screen_candidates",
+            lambda strategy, **kwargs: pd.DataFrame(
+                {"name": ["AAA"], OUTPUT_SCORE_COLUMN: [100.0]}
+            ),
+        )
+        monkeypatch.setattr(screen_workflow, "resolve_universe_field", fake_field)
+
+        run_screen_workflow(
+            _request(
+                criteria_names=("breakout",),
+                universe="dynamic",
+                dynamic_base="nifty50",
+                dynamic_size=7,
+                dynamic_lookback=30,
+                dynamic_rebalance="weekly",
+            )
+        )
+
+        assert captured["dynamic_base"] == "nifty50"
+        assert captured["dynamic_size"] == 7
+        assert captured["dynamic_lookback"] == 30
+        assert captured["dynamic_rebalance"] == "weekly"
 
 
 class TestScreenWindow:
