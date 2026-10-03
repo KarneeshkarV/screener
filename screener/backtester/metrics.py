@@ -320,6 +320,23 @@ def _max_drawdown_duration_days(equity: pd.Series) -> float:
         return 0.0
     values = equity.to_numpy(dtype=float)
     times = pd.DatetimeIndex(equity.index)
+    if (
+        np.isfinite(values).all()
+        and times.is_monotonic_increasing
+        and not times.hasnans
+    ):
+        # Each new or equal high resets the peak timestamp. A completed
+        # drawdown ends at its recovery bar, not at its last underwater bar.
+        at_peak = values >= np.maximum.accumulate(values)
+        peak_positions = np.flatnonzero(at_peak)
+        next_positions = np.append(peak_positions[1:], len(values) - 1)
+        underwater = np.append(np.diff(peak_positions) > 1, not at_peak[-1])
+        if not underwater.any():
+            return 0.0
+        durations = times.take(next_positions[underwater]) - times.take(
+            peak_positions[underwater]
+        )
+        return float(durations.max().total_seconds() / 86400.0)
     peak = values[0]
     peak_time = times[0]
     longest = 0.0
