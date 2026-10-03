@@ -135,7 +135,7 @@ class _FrameCache:
     let the per-bar hot loops (``_check_exit_at_bar``, ``_close_slot_at_day``,
     ``_fire_partial_exits_at_bar``) run on integer positions instead of the
     pandas scalar-access family (``bars.iloc[i]`` / ``Index.get_loc``). The
-    float volume Series and precomputed close-to-close returns back
+    Float volume and precomputed close-to-close returns back
     :func:`_cached_trailing_liquidity` so per-slot liquidity stats reuse the
     exact original arithmetic without re-slicing the frame. Built lazily by
     :meth:`_RunCaches.frame`.
@@ -151,10 +151,10 @@ class _FrameCache:
     # None otherwise; callers keep ``Index.get_loc`` (duplicates, tz-aware,
     # exotic dtypes). Non-ns resolutions are converted via ``as_unit("ns")``.
     index_i8: np.ndarray | None
-    volume_f: pd.Series
+    volume_arr: np.ndarray
     # close[i] / close[i-1] - 1: the exact ``pct_change`` arithmetic for
     # NaN-free windows (NaN-containing windows fall back to the original).
-    rets_f: pd.Series
+    rets_arr: np.ndarray
     liquidity_by_idx: dict[tuple[int, int], tuple[float, float]] = field(
         default_factory=dict
     )
@@ -181,6 +181,8 @@ def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
         and isinstance(index.dtype, np.dtype)
         and np.issubdtype(index.dtype, np.datetime64)
         and index.is_unique
+        and index.is_monotonic_increasing
+        and not index.hasnans
     ):
         # day_loop compares against Timestamp.value, which is always nanoseconds.
         # Pandas 3 defaults many calendars to datetime64[us]; viewing those as i8
@@ -200,8 +202,8 @@ def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
             bars["dividend"].to_numpy() if "dividend" in bars.columns else None
         ),
         index_i8=index_i8,
-        volume_f=bars["volume"].astype(float),
-        rets_f=pd.Series(rets, index=bars.index),
+        volume_arr=bars["volume"].to_numpy(dtype=float),
+        rets_arr=rets,
     )
 
 
@@ -307,10 +309,9 @@ def _cached_trailing_liquidity(
 ) -> tuple[float, float]:
     """:func:`_trailing_liquidity` backed by a :class:`_FrameCache`.
 
-    Identical arithmetic: the volume mean and return std run over the same
-    float values in the same order (pandas ``Series.mean``/``std``), just
-    without re-slicing the frame and re-converting dtypes per slot open, and
-    memoised per ``(signal_idx, window)``.
+    The volume mean and pandas return std use the same float values in the
+    same order, without slicing pandas indexes or converting dtypes per bar.
+    Results are memoised per ``(signal_idx, window)``.
     """
     if signal_idx < 0 or window <= 0:
         return 0.0, 0.0
@@ -323,18 +324,26 @@ def _cached_trailing_liquidity(
     if close_win.size == 0:
         result = (0.0, 0.0)
     elif np.isnan(close_win).any():
-        # A NaN close inside the window changes ``pct_change``'s pad-fill
-        # across the window boundary; defer to the original slice-based
-        # computation for exact parity.
+        # Keep the original slice-based handling for missing close values.
         result = _trailing_liquidity(bars, signal_idx, window)
     else:
-        vol = frame_cache.volume_f.iloc[start : signal_idx + 1]
-        adv = float(vol.mean()) if vol.size else 0.0
+        vol = frame_cache.volume_arr[start : signal_idx + 1]
+        if vol.size:
+            valid_volume = ~np.isnan(vol)
+            count = int(valid_volume.sum())
+            adv = (
+                float(np.where(valid_volume, vol, 0.0).sum() / count) if count else 0.0
+            )
+        else:
+            adv = 0.0
         if close_win.size < 2:
             sigma = 0.0
         else:
-            rets = frame_cache.rets_f.iloc[start + 1 : signal_idx + 1].dropna()
-            sigma = float(rets.std()) if rets.size else 0.0
+            rets = frame_cache.rets_arr[start + 1 : signal_idx + 1]
+            # Keep pandas' reduction so optional bottleneck and ddof behavior
+            # remain exact, without index slicing or a dropna frame copy.
+            rets = rets[~np.isnan(rets)]
+            sigma = float(pd.Series(rets, copy=False).std()) if rets.size else 0.0
         if not np.isfinite(adv):
             adv = 0.0
         if not np.isfinite(

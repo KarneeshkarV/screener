@@ -16,7 +16,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from screener.backtester.core import _build_frame_cache
+from screener.backtester.core import (
+    _build_frame_cache,
+    _cached_trailing_liquidity,
+    _trailing_liquidity,
+)
 
 
 def _bars(n: int = 10, close: np.ndarray | None = None, **kwargs) -> pd.DataFrame:
@@ -42,8 +46,8 @@ def _reference(bars: pd.DataFrame) -> dict:
         "high_arr": bars["high"].astype(float).to_numpy(),
         "low_arr": bars["low"].astype(float).to_numpy(),
         "close_arr": close_f.to_numpy(),
-        "volume_f": bars["volume"].astype(float),
-        "rets_f": close_f / close_f.shift(1) - 1,
+        "volume_arr": bars["volume"].astype(float).to_numpy(),
+        "rets_arr": (close_f / close_f.shift(1) - 1).to_numpy(),
     }
 
 
@@ -82,23 +86,17 @@ def test_matches_the_pandas_reference(label):
         assert actual.dtype == expected[field].dtype, field
         assert np.array_equal(actual, expected[field], equal_nan=True), field
 
-    # These two must stay Series -- _cached_trailing_liquidity calls
-    # .iloc[...].mean() and .iloc[...].dropna().std() on them.
-    for field in ("volume_f", "rets_f"):
+    for field in ("volume_arr", "rets_arr"):
         actual = getattr(cache, field)
-        assert isinstance(actual, pd.Series), field
         assert actual.dtype == expected[field].dtype, field
-        assert actual.index.equals(expected[field].index), field
-        assert np.array_equal(
-            actual.to_numpy(), expected[field].to_numpy(), equal_nan=True
-        ), field
+        assert np.array_equal(actual, expected[field], equal_nan=True), field
 
 
 def test_empty_frame_does_not_raise():
     """``rets[0] = nan`` on a zero-length array is an IndexError."""
     cache = _build_frame_cache(_bars(0))
     assert len(cache.close_arr) == 0
-    assert len(cache.rets_f) == 0
+    assert len(cache.rets_arr) == 0
 
 
 def test_building_the_cache_does_not_mutate_the_source_frame():
@@ -144,6 +142,41 @@ def test_index_i8_matches_timestamp_value_for_every_naive_unit(unit):
         found = int(np.searchsorted(cache.index_i8, stamp.value))
         assert found == position
         assert cache.index_i8[found] == stamp.value
+
+
+@pytest.mark.parametrize("window", [1, 2, 20, 100])
+@pytest.mark.parametrize("label", sorted(CASES))
+def test_cached_liquidity_matches_original_reductions(label, window):
+    bars = CASES[label]
+    cache = _build_frame_cache(bars)
+    for position in range(-1, len(bars)):
+        assert _cached_trailing_liquidity(cache, bars, position, window) == (
+            _trailing_liquidity(bars, position, window)
+        )
+
+
+@pytest.mark.parametrize("use_bottleneck", [False, True])
+def test_cached_liquidity_preserves_optional_reduction_behavior(use_bottleneck):
+    rng = np.random.default_rng(42)
+    bars = _bars(200, close=100 + rng.normal(size=200).cumsum())
+    bars.loc[bars.index[::7], "volume"] = np.nan
+    with pd.option_context("compute.use_bottleneck", use_bottleneck):
+        cache = _build_frame_cache(bars)
+        for position in range(len(bars)):
+            assert _cached_trailing_liquidity(cache, bars, position) == (
+                _trailing_liquidity(bars, position)
+            )
+
+
+@pytest.mark.parametrize(
+    "index",
+    [
+        pd.DatetimeIndex(["2024-01-03", "2024-01-01", "2024-01-02"]),
+        pd.DatetimeIndex(["2024-01-01", None, "2024-01-03"]),
+    ],
+)
+def test_index_search_shortcut_requires_sorted_valid_dates(index):
+    assert _build_frame_cache(_bars(3, index=index)).index_i8 is None
 
 
 def test_index_i8_disabled_for_tz_aware_and_duplicates():

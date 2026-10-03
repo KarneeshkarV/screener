@@ -60,11 +60,26 @@ def label(df: pd.DataFrame) -> pd.DataFrame:
     and return the frame.
     """
     df = df.copy()
-    # Built explicitly as object dtype: ``DataFrame.apply`` infers a string
-    # dtype on pandas >= 3 and would coerce the unlabelled ``None`` rows to NaN.
-    df["Operator_Action"] = pd.Series(
-        [_classify(row) for _, row in df.iterrows()], index=df.index, dtype=object
-    )
+    # Keep unlabelled values as None, including on pandas 3.
+    actions = pd.Series([None] * len(df), index=df.index, dtype=object)
+    price = df.get("%_Change_Price", pd.Series(float("nan"), index=df.index))
+    oi = df.get("%_Change_OI", pd.Series(float("nan"), index=df.index))
+    delivery = df.get("%_Change_Delivery", pd.Series(float("nan"), index=df.index))
+    eligible = df.get("_is_fno", pd.Series(False, index=df.index)).fillna(False).astype(
+        bool
+    ) & delivery.gt(100).fillna(False)
+    for price_up, oi_up, action in (
+        (True, True, "Long Build-up"),
+        (True, False, "Short Covering"),
+        (False, True, "Short Build-up"),
+        (False, False, "Long Unwinding"),
+    ):
+        price_match = price.gt(0) if price_up else price.lt(0)
+        oi_match = oi.gt(0) if oi_up else oi.lt(0)
+        actions.loc[eligible & price_match.fillna(False) & oi_match.fillna(False)] = (
+            action
+        )
+    df["Operator_Action"] = actions
     # High Momentum Watch: Long Build-up + within 15% of 52-week high.
     # NaN dist (cache miss) is treated as not-near-high.
     near_high = df["Dist_From_52W_High"].le(15.0).fillna(False)
