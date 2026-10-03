@@ -44,6 +44,22 @@ def _screen_df(tickers):
 # --- A. Local SQLite hardening -------------------------------------------------
 
 
+def test_save_run_skips_missing_symbols_without_changing_ranks(history_db):
+    frame = pd.DataFrame(
+        {
+            "name": [" AAA ", None, pd.NA, "", "BBB"],
+            "close": [10.0, 20.0, 30.0, 40.0, 50.0],
+        }
+    )
+    run_id = history_mod.save_run("us", "ema", 5, frame)
+    snapshot = history_mod.load_run(run_id)
+    assert snapshot is not None
+    assert snapshot.tickers == ["AAA", "BBB"]
+    assert snapshot.rows["rank"].tolist() == [1, 5]
+    assert snapshot.rows["close"].tolist() == [10.0, 50.0]
+    assert snapshot.rows["name"].isna().all()
+
+
 def test_delete_run_cascades_to_rows(history_db):
     run_id = history_mod.save_run("us", "ema", 2, _screen_df(["AAA", "BBB"]))
 

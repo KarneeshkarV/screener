@@ -179,11 +179,26 @@ def read_json(path: Path, default: T | None = None) -> Any | T | None:
         return default
 
 
-def write_json(path: Path, value: Any) -> None:
+@contextlib.contextmanager
+def _atomic_cache_write(path: Path) -> Iterator[Path]:
+    """Commit one cache entry atomically from a writer-owned temporary file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(value, sort_keys=True, default=str))
-    tmp.replace(path)
+    fd, temporary = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    os.close(fd)
+    tmp = Path(temporary)
+    try:
+        yield tmp
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def write_json(path: Path, value: Any) -> None:
+    """Atomically save JSON without sharing temporary files with other writers."""
+    with _atomic_cache_write(path) as tmp:
+        tmp.write_text(json.dumps(value, sort_keys=True, default=str))
 
 
 def read_frame(path: Path) -> pd.DataFrame | None:
@@ -194,10 +209,9 @@ def read_frame(path: Path) -> pd.DataFrame | None:
 
 
 def write_frame(path: Path, frame: pd.DataFrame) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    frame.to_parquet(tmp)
-    tmp.replace(path)
+    """Atomically save parquet without sharing temporary files with other writers."""
+    with _atomic_cache_write(path) as tmp:
+        frame.to_parquet(tmp)
 
 
 def panel_path(name: str) -> Path:
@@ -282,18 +296,7 @@ def append_panel_snapshot(
         )
         merged = merged.drop_duplicates(subset=dedupe_keys, keep="last")
         merged = merged.sort_values(dedupe_keys).reset_index(drop=True)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_name = tempfile.mkstemp(
-            dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-        )
-        os.close(fd)
-        tmp = Path(tmp_name)
-        try:
-            merged.to_parquet(tmp)
-            os.replace(tmp, path)
-        finally:
-            with contextlib.suppress(OSError):
-                tmp.unlink()
+        write_frame(path, merged)
     return merged
 
 

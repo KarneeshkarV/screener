@@ -202,6 +202,57 @@ def test_max_drawdown_duration_open_at_end_runs_to_last_bar():
     assert _max_drawdown_duration_days(equity) == 4.0
 
 
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ([100.0, 100.0, 110.0], 0.0),
+        ([100.0, 90.0, 100.0, 90.0, 100.0], 2.0),
+        ([100.0, 100.0, 90.0, 95.0], 2.0),
+        ([100.0, 110.0, 90.0], 1.0),
+    ],
+)
+def test_drawdown_duration_resets_only_at_peaks(values, expected):
+    equity = pd.Series(values, index=pd.date_range("2024-01-01", periods=len(values)))
+    assert _max_drawdown_duration_days(equity) == expected
+
+
+@pytest.mark.parametrize(
+    "dates",
+    [
+        ["2024-01-03", "2024-01-02", "2024-01-01"],
+        ["2024-01-01", None, None],
+    ],
+)
+def test_drawdown_duration_preserves_invalid_calendar_behavior(dates):
+    equity = pd.Series([100.0, 90.0, 80.0], index=pd.to_datetime(dates))
+    assert _max_drawdown_duration_days(equity) == 0.0
+
+
+@pytest.mark.parametrize("timezone", [None, "America/New_York"])
+def test_drawdown_duration_matches_scalar_reference(timezone):
+    """Preserve peak-to-recovery timing on irregular and DST-crossing curves."""
+    rng = np.random.default_rng(42)
+    for _ in range(30):
+        dates = pd.date_range("2024-03-01", periods=200, freq="6h", tz=timezone)
+        dates = dates[rng.random(len(dates)) > 0.3]
+        values = 100.0 + rng.integers(-2, 3, size=len(dates)).cumsum()
+        peak = values[0]
+        peak_time = dates[0]
+        longest = 0.0
+        for value, stamp in zip(values, dates):
+            if value >= peak:
+                peak = value
+                peak_time = stamp
+            else:
+                # An underwater observation includes the recovery bar when
+                # one follows it. This is a scalar, independent reference.
+                position = dates.get_loc(stamp)
+                end = dates[min(position + 1, len(dates) - 1)]
+                longest = max(longest, (end - peak_time).total_seconds() / 86400.0)
+        equity = pd.Series(values, index=dates)
+        assert _max_drawdown_duration_days(equity) == longest
+
+
 def test_expected_shortfall_95_mean_of_left_tail():
     """Ten sorted daily returns; 5% tail is the lowest observation.
 

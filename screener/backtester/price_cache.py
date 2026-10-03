@@ -131,6 +131,7 @@ def _frame_from_table(table: pa.Table) -> pd.DataFrame:
         described = json.loads(metadata)
         index_columns = described["index_columns"]
         column_indexes = described.get("column_indexes") or [{}]
+        column_metadata = described["columns"]
     except (ValueError, KeyError, TypeError):
         return cast(pd.DataFrame, table.to_pandas())
     if len(index_columns) != 1 or len(column_indexes) != 1:
@@ -138,6 +139,26 @@ def _frame_from_table(table: pa.Table) -> pd.DataFrame:
     index_name = index_columns[0]
     if not isinstance(index_name, str) or index_name not in table.column_names:
         return cast(pd.DataFrame, table.to_pandas())
+
+    # Arrow buffers alone do not retain time zones, extension dtypes, or
+    # non-string column labels. Let pandas restore these from its metadata.
+    if column_indexes[0].get("pandas_type") != "unicode":
+        return cast(pd.DataFrame, table.to_pandas())
+    index_metadata = next(
+        (column for column in column_metadata if column["field_name"] == index_name),
+        None,
+    )
+    if index_metadata is None or index_metadata.get("pandas_type") != "datetime":
+        return cast(pd.DataFrame, table.to_pandas())
+    for column in column_metadata:
+        if column["field_name"] == index_name:
+            continue
+        try:
+            dtype = np.dtype(column["numpy_type"])
+        except (TypeError, ValueError):
+            return cast(pd.DataFrame, table.to_pandas())
+        if dtype.kind not in "fi":
+            return cast(pd.DataFrame, table.to_pandas())
 
     index: np.ndarray | None = None
     columns: dict[str, np.ndarray] = {}
@@ -155,7 +176,9 @@ def _frame_from_table(table: pa.Table) -> pd.DataFrame:
     frame = pd.DataFrame(columns, copy=False)
     # An unnamed index is stored under pandas' own placeholder name, which
     # ``to_pandas`` strips back off on the way out.
-    restored = None if index_name.startswith("__index_level_") else index_name
+    restored = index_metadata["name"]
+    if restored == "__index_level_0__":
+        restored = None
     frame.index = pd.DatetimeIndex(index, name=restored)
     frame.columns.name = column_indexes[0].get("name")
     return frame

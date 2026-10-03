@@ -101,6 +101,62 @@ def test_top_quantile_turnover_full_churn() -> None:
     assert turnover == pytest.approx(1.0)
 
 
+def test_batch_spearman_matches_pairwise_rank_reference() -> None:
+    rng = np.random.default_rng(42)
+    scores = pd.DataFrame(rng.integers(-3, 4, size=(100, 20)), dtype=float)
+    returns = pd.DataFrame(rng.normal(size=scores.shape))
+    scores = scores.mask(rng.random(scores.shape) < 0.3)
+    returns = returns.mask(rng.random(returns.shape) < 0.3)
+    scores.iloc[0] = 1.0
+    scores.iloc[1, 2:] = np.nan
+    expected = []
+    for position in range(len(scores)):
+        score = scores.iloc[position]
+        forward = returns.iloc[position]
+        paired = score.notna() & forward.notna()
+        expected.append(
+            score[paired].rank().corr(forward[paired].rank())
+            if paired.sum() >= 3 and score[paired].nunique() > 1
+            else np.nan
+        )
+    pd.testing.assert_series_equal(
+        daily_spearman_ic(scores, returns),
+        pd.Series(expected, name="ic"),
+        atol=1e-14,
+        rtol=1e-14,
+    )
+
+
+@pytest.mark.parametrize("n_quantiles", [2, 3, 5, 7, 10])
+def test_batch_quantiles_match_qcut_with_ties_and_missing_scores(n_quantiles) -> None:
+    rng = np.random.default_rng(42)
+    scores = pd.DataFrame(rng.integers(-3, 4, size=(100, 35)), dtype=float)
+    scores = scores.mask(rng.random(scores.shape) < 0.3)
+    scores.iloc[0] = np.nan
+    scores.iloc[1, n_quantiles - 1 :] = np.nan
+    expected = scores.apply(lambda row: ft._quantile_labels(row, n_quantiles), axis=1)
+    pd.testing.assert_frame_equal(
+        ft._quantile_label_matrix(scores, n_quantiles), expected
+    )
+
+
+@pytest.mark.parametrize("n_quantiles", [2, 5])
+def test_batch_turnover_matches_set_reference(n_quantiles) -> None:
+    rng = np.random.default_rng(42)
+    scores = pd.DataFrame(rng.normal(size=(40, 20)))
+    scores.iloc[::7] = np.nan
+    scores = scores.mask(rng.random(scores.shape) < 0.2)
+    labels = scores.apply(lambda row: ft._quantile_labels(row, n_quantiles), axis=1)
+    prior = set()
+    turnovers = []
+    for row in labels.to_numpy():
+        members = set(scores.columns[row == n_quantiles].astype(str))
+        if members and prior:
+            turnovers.append(1 - len(members & prior) / len(members))
+        prior = members
+    assert top_quantile_turnover(scores, n_quantiles=n_quantiles) == np.mean(turnovers)
+
+
 def test_analyze_horizon_bundle() -> None:
     idx = _dates(20)
     close = pd.DataFrame(
