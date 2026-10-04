@@ -71,8 +71,10 @@ def export_blog_comparison() -> Path:
             for _, row in (
                 pd.concat([best, references]).drop_duplicates("strategy").iterrows()
             ):
+
                 def fmt(value: float) -> str:
                     return "n/a" if pd.isna(value) else f"{value:.2f} pp"
+
                 lines.append(
                     f"| {window} | {market} | {asset} | {row.strategy} | {row.calendar_cagr * 100:.2f}% | {row.max_drawdown * 100:.2f}% | {fmt(row.delta_momentum_12_1_pp)} | {fmt(row.delta_mark_minervini_pp)} | {row.status} |"
                 )
