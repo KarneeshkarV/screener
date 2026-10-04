@@ -40,6 +40,14 @@ def run_blog_comparison(years: list[int]) -> None:
     for year in years:
         out = base / f"window_{year}y"
         out.mkdir(parents=True, exist_ok=True)
+        summary = out / "summary.json"
+        if summary.exists():
+            saved = json.loads(summary.read_text())
+            if len(saved) == len(STRATEGIES) * 4 and all(
+                row["status"] in ("completed", "provisional") for row in saved
+            ):
+                print(f"SKIP verified existing window {year}y", flush=True)
+                continue
         for market in ("us", "india"):
             for asset in ("stocks", "etfs"):
                 link = out / f"{market}_{asset}_bars"

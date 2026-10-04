@@ -95,11 +95,13 @@ def build_blog_dashboard() -> Path:
             rows.append(row)
     template = (ROOT / "scripts/blog_dashboard.html").read_text()
     output = ROOT / "reports/blog_momentum/index.html"
-    output.write_text(
+    temporary = output.with_suffix(".html.tmp")
+    temporary.write_text(
         template.replace(
             "__RESULTS__", json.dumps(rows, allow_nan=False).replace("</", "<\\/")
         )
     )
+    temporary.replace(output)
     print(f"{len(rows)} cells: {output}")
     return output
 
