@@ -41,3 +41,14 @@ Run `uv run python -m scripts.export_blog_comparison` to publish compact metrics
 Raw frozen bars and trade exports stay machine-local and are not included in the PR.
 The published HTML embeds all chart data and works without network access.
 Its theme follows the operating system by default and a user's explicit light/dark choice is saved locally.
+
+## Final verification
+
+All 420 cells completed, including 336 requested-window cells and 84 original six-year cells.
+There are 98 provisional cells across all windows.
+All 420 trade ledgers reconcile with final equity and have no zero-volume entry or exit fills.
+Rotation checks reject same-day expression exits.
+The full offline suite passed with 2,952 tests passed and 17 skipped, using `--no-cov`.
+Repository-wide Ruff lint and format checks passed, along with core mypy and research-script mypy.
+The first PR CI run failed on one formatter difference in the export script; that was fixed and the next run passed.
+Desktop and mobile browser checks passed for both themes, window filters, unique test IDs, reference tables, and year-specific heatmaps.
