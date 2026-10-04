@@ -14,6 +14,7 @@ def verify_blog_backtests() -> None:
     """Reject zero-volume fills or unreconciled ledgers in any completed cell."""
     root = Path(__file__).resolve().parent.parent / "reports/blog_momentum"
     checks = []
+    bar_cache: dict[Path, pd.DataFrame] = {}
     for summary in sorted(root.glob("*/summary.json")):
         if summary.parent.name.endswith("_repeat"):
             continue
@@ -21,7 +22,10 @@ def verify_blog_backtests() -> None:
             if row["status"] not in ("completed", "provisional"):
                 raise ValueError(f"Blog verification incomplete cell: {row}")
             trades = pd.read_csv(summary.parent / row["cell"] / "trades.csv")
-            if summary.parent.name == "monthly_rotation":
+            if (
+                "rotation_roc" in row["strategy"]
+                or row["strategy"] == "alvarez_three_factor"
+            ):
                 normal = trades.loc[trades.exit_reason.eq("expr")]
                 if (
                     not normal.empty
@@ -39,7 +43,10 @@ def verify_blog_backtests() -> None:
                     / f"{row['market']}_{row['asset']}_bars"
                     / f"{tv_to_yf(str(symbol), row['market'])}.parquet"
                 )
-                bars = pd.read_parquet(path)
+                resolved = path.resolve()
+                if resolved not in bar_cache:
+                    bar_cache[resolved] = pd.read_parquet(resolved)
+                bars = bar_cache[resolved]
                 for column in ("entry_date", "exit_date"):
                     if (
                         not bars.loc[pd.to_datetime(group[column]), "volume"]
@@ -59,6 +66,7 @@ def verify_blog_backtests() -> None:
             checks.append(
                 {
                     "cell": row["cell"],
+                    "batch": summary.parent.name,
                     "trades": len(trades),
                     "zero_volume_fills": 0,
                     "pnl_reconciliation_error": delta,
