@@ -87,23 +87,26 @@ def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
         conn.execute("DELETE FROM run_rows WHERE run_id = ?", (run_id,))
 
         rows = []
-        for rank, (_, row) in enumerate(df.iterrows(), start=1):
-            ticker = str(row.get("name") or "").strip()
+        columns = [
+            "name",
+            "description",
+            "close",
+            "change",
+            "volume",
+            "market_cap_basic",
+            "setup_score",
+        ]
+        records = df.reindex(columns=columns).itertuples(index=False, name=None)
+        for rank, (symbol, description, *values) in enumerate(records, start=1):
+            ticker = "" if pd.isna(symbol) else str(symbol).strip()
             if not ticker:
                 continue
             rows.append(
                 (
                     run_id,
                     ticker,
-                    str(row["description"])
-                    if row.get("description") is not None
-                    and not pd.isna(row.get("description"))
-                    else None,
-                    _to_float(row.get("close")),
-                    _to_float(row.get("change")),
-                    _to_float(row.get("volume")),
-                    _to_float(row.get("market_cap_basic")),
-                    _to_float(row.get("setup_score")),
+                    None if pd.isna(description) else str(description),
+                    *(_to_float(value) for value in values),
                     rank,
                 )
             )

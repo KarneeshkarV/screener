@@ -62,17 +62,12 @@ def daily_spearman_ic(scores: pd.DataFrame, fwd_returns: pd.DataFrame) -> pd.Ser
     if aligned_scores.empty:
         return pd.Series(dtype=float, name="ic")
 
-    def _day_ic(row_score: pd.Series) -> float:
-        day = row_score.name
-        s = row_score
-        r = cast("pd.Series[Any]", aligned_fwd.loc[cast(Any, day)])
-        mask = s.notna() & r.notna()
-        if int(mask.sum()) < 3:
-            return float("nan")
-        # Spearman = Pearson of ranks.
-        return float(s[mask].rank().corr(r[mask].rank()))
-
-    ic = aligned_scores.apply(_day_ic, axis=1)
+    paired = aligned_scores.notna() & aligned_fwd.notna()
+    score_ranks = aligned_scores.where(paired).rank(axis=1)
+    return_ranks = aligned_fwd.where(paired).rank(axis=1)
+    # Rank only paired observations. Ranking each unmasked matrix first would
+    # let a missing forward return change the cross-sectional correlation.
+    ic = score_ranks.corrwith(return_ranks, axis=1).where(paired.sum(axis=1) >= 3)
     ic.name = "ic"
     return ic
 
@@ -210,6 +205,25 @@ def _quantile_labels(row: pd.Series, n_quantiles: int) -> pd.Series:
     return out
 
 
+def _quantile_label_matrix(scores: pd.DataFrame, n_quantiles: int) -> pd.DataFrame:
+    """Batch qcut-equivalent score bins, with column-order tie breaking."""
+    ranks = scores.rank(axis=1, method="first").to_numpy(dtype=float)
+    counts = scores.notna().sum(axis=1).to_numpy()
+    quantiles = np.linspace(0.0, 1.0, n_quantiles + 1)
+    # Match qcut's upward rounding at fractions not exactly representable.
+    quantiles = np.where(
+        n_quantiles * quantiles != np.arange(n_quantiles + 1),
+        np.nextafter(quantiles, 1.0),
+        quantiles,
+    )
+    labels = np.ones(ranks.shape, dtype=float)
+    for quantile in quantiles[1:-1]:
+        boundary = 1.0 + (counts - 1) * quantile
+        labels += ranks > boundary[:, None]
+    labels[np.isnan(ranks) | (counts[:, None] < n_quantiles)] = np.nan
+    return pd.DataFrame(labels, index=scores.index, columns=scores.columns)
+
+
 def quantile_mean_returns(
     scores: pd.DataFrame,
     fwd_returns: pd.DataFrame,
@@ -220,9 +234,7 @@ def quantile_mean_returns(
     if n_quantiles < 2:
         raise ValueError(f"n_quantiles must be >= 2, got {n_quantiles}")
     aligned_scores, aligned_fwd = scores.align(fwd_returns, join="inner")
-    labels = aligned_scores.apply(
-        lambda row: _quantile_labels(row, n_quantiles), axis=1
-    )
+    labels = _quantile_label_matrix(aligned_scores, n_quantiles)
     # Per-quantile pooled mean of all (day, name) cells.
     means: dict[int, float] = {}
     for q in range(1, n_quantiles + 1):
@@ -246,22 +258,26 @@ def top_quantile_turnover(scores: pd.DataFrame, *, n_quantiles: int) -> float:
     """
     if n_quantiles < 2:
         raise ValueError(f"n_quantiles must be >= 2, got {n_quantiles}")
-    labels = scores.apply(lambda row: _quantile_labels(row, n_quantiles), axis=1)
-    turnovers: list[float] = []
-    prev: set[str] | None = None
-    for day in labels.index:
-        row = labels.loc[day]
-        members = set(row.index[row == n_quantiles].astype(str))
-        if not members:
-            prev = None
-            continue
-        if prev is not None and prev:
-            overlap = len(members & prev)
-            turnovers.append(1.0 - overlap / len(members))
-        prev = members
-    if not turnovers:
+    # The old set-based calculation identifies members by string label.
+    # Preserve that behavior for unusual duplicate or colliding labels.
+    names = scores.columns.astype(str)
+    if not names.is_unique:
+        labels = _quantile_label_matrix(scores, n_quantiles)
+        turnovers: list[float] = []
+        prev: set[str] | None = None
+        for row in labels.to_numpy():
+            members = set(names[row == n_quantiles])
+            if members and prev:
+                turnovers.append(1.0 - len(members & prev) / len(members))
+            prev = members or None
+        return float(np.mean(turnovers)) if turnovers else float("nan")
+    top = _quantile_label_matrix(scores, n_quantiles).to_numpy() == n_quantiles
+    counts = top.sum(axis=1)
+    valid = (counts[1:] > 0) & (counts[:-1] > 0)
+    if not valid.any():
         return float("nan")
-    return float(np.mean(turnovers))
+    overlap = (top[1:] & top[:-1]).sum(axis=1)
+    return float(np.mean(1.0 - overlap[valid] / counts[1:][valid]))
 
 
 def analyze_horizon(

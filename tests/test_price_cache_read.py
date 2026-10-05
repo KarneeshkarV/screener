@@ -47,6 +47,22 @@ def _ohlcv(bars: int = 8) -> pd.DataFrame:
             id="multi-index-falls-back",
         ),
         pytest.param(_ohlcv().iloc[:0], id="empty"),
+        pytest.param(_ohlcv().tz_localize("Asia/Kolkata"), id="timezone-falls-back"),
+        pytest.param(
+            _ohlcv().astype({"volume": "Int64"}), id="nullable-integer-falls-back"
+        ),
+        pytest.param(
+            _ohlcv().astype({"close": "Float64"}), id="nullable-float-falls-back"
+        ),
+        pytest.param(
+            _ohlcv().set_axis(range(5), axis="columns"), id="numeric-labels-fall-back"
+        ),
+        pytest.param(
+            _ohlcv().rename_axis("__index_level_custom__"), id="placeholder-like-name"
+        ),
+        pytest.param(
+            _ohlcv().rename_axis("__index_level_0__"), id="reserved-placeholder-name"
+        ),
     ],
 )
 def test_shortcut_matches_to_pandas(frame, tmp_path):
@@ -65,6 +81,21 @@ def test_round_trip_through_the_cache(tmp_path):
     frame = _ohlcv()
     save_cached_frame("TEST", frame, cache_dir=tmp_path)
     pd.testing.assert_frame_equal(load_cached_frame("TEST", cache_dir=tmp_path), frame)
+
+
+@pytest.mark.parametrize("interval", ["1d", "15m"])
+def test_timezone_cache_read_uses_canonical_dates(tmp_path, interval):
+    """Daily dates use local midnight; intraday stamps use naive UTC."""
+    frame = _ohlcv().tz_localize("Asia/Kolkata")
+    save_cached_frame("TZ", frame, cache_dir=tmp_path)
+    expected = frame.copy()
+    if interval == "1d":
+        expected.index = frame.index.tz_localize(None)
+    else:
+        expected.index = frame.index.tz_convert("UTC").tz_localize(None)
+    pd.testing.assert_frame_equal(
+        load_cached_frame("TZ", cache_dir=tmp_path, interval=interval), expected
+    )
 
 
 def test_null_rows_are_dropped_on_read(tmp_path):
