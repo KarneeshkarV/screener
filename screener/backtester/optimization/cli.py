@@ -4,18 +4,32 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 from typing import cast as type_cast
 
 import click
+from pydantic import ValidationError
 
-from screener.backtester.cli_common import resolve_min_filters
+from screener.backtester.cli_common import (
+    referenced_fundamental_fields,
+    resolve_min_filters,
+)
 from screener.backtester.data import PriceFetcher
+from screener.backtester.fundamentals import (
+    FundamentalFetcher,
+    resolve_fundamental_provider,
+)
 from screener.backtester.models import BacktestConfig, Trade
-from screener.backtester.optimization.grid import grid_search
+from screener.backtester.optimization.grid import (
+    grid_search,
+    parameter_combinations,
+    validate_optimization_grid,
+)
 from screener.backtester.optimization.monte_carlo import (
     simulate_monte_carlo,
     validate_equity_monte_carlo_flags,
@@ -30,6 +44,7 @@ from screener.backtester.optimization.reporting import (
 )
 from screener.backtester.optimization.walk_forward import (
     FOLD_BOUNDARY_POLICY,
+    RiskFreeHurdleAmbiguity,
     generate_walk_forward_windows,
     holding_period_fold_warnings,
     require_daily_walk_forward_scope,
@@ -62,6 +77,10 @@ def _parse_values(
             start = float(pieces[0])
             end = float(pieces[1])
             step = float(pieces[2]) if len(pieces) == 3 else 1.0
+            if not all(math.isfinite(value) for value in (start, end, step)):
+                raise click.UsageError(
+                    "Parameter range bounds and step must be finite."
+                )
             if step <= 0:
                 raise click.UsageError("Range step must be positive.")
             current = start
@@ -76,10 +95,8 @@ def _parse_values(
 def _validate_hold_values(values: list[Any]) -> list[Any]:
     """Reject a swept ``hold`` below 1 at parse time, before any bar is fetched.
 
-    ``BacktestConfig`` bounds ``hold`` at ``ge=1``, but the sweep applies each
-    grid point with ``model_copy(update=...)``, which pydantic does not
-    re-validate. Without this check a ``--hold 5,0`` grid would run the whole
-    combination silently as a one-bar hold instead of failing.
+    The API validates every derived config with ``validated_update``.
+    This parse-time check gives CLI users a direct ``--hold`` error.
     """
     for value in values:
         if value is None or int(value) < 1:
@@ -202,7 +219,53 @@ def _base_config(
         reinvest=True,
         compounding=bool(compounding),
         risk_free_rate=float(risk_free_rate),
+        fundamental_fields=tuple(
+            sorted(referenced_fundamental_fields(entry_expr, exit_expr))
+        ),
     )
+
+
+def _optimization_collaborators(
+    cfg: BacktestConfig,
+    parameter_grid: dict[str, list[Any]],
+    provider: str | None,
+    lag_days: int,
+) -> tuple[BacktestConfig, FundamentalFetcher | None]:
+    """Resolve opt-in fundamentals and validate all CLI configs before price fetches."""
+    try:
+        resolved = resolve_fundamental_provider(provider)
+        fields = set(cfg.fundamental_fields)
+        for params in parameter_combinations(parameter_grid):
+            test_cfg = cfg.validated_update(params)
+            fields |= referenced_fundamental_fields(
+                test_cfg.entry_expr, test_cfg.exit_expr
+            )
+        if fields and resolved is None:
+            raise ValueError(
+                "Fundamental optimization requires --fundamentals-provider; "
+                "no provider is enabled by default"
+            )
+        cfg = cfg.validated_update(
+            {
+                "fundamentals_provider": resolved,
+                "fundamental_fields": tuple(sorted(fields)),
+                "fundamental_lag_days": lag_days,
+            }
+        )
+        from screener.backtester.fundamentals import build_fundamental_fetcher
+
+        collaborator = build_fundamental_fetcher(
+            resolved,
+            market=cfg.market,
+            fields=cfg.fundamental_fields,
+            lag_days=lag_days,
+        )
+        validate_optimization_grid(
+            cfg, parameter_grid, fundamental_fetcher=collaborator
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    return cfg, collaborator
 
 
 def _resolve_dates(start_arg, end_arg, years) -> tuple[date, date]:
@@ -247,6 +310,17 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
         click.option("--entry", "entry_expr", default=None),
         click.option("--exit", "exit_expr", default=None),
         click.option("--strategy", "strategy_name", default=None),
+        click.option(
+            "--fundamentals-provider",
+            default=None,
+            help="Explicit fundamental provider; disabled by default.",
+        ),
+        click.option(
+            "--fundamental-lag-days",
+            type=click.IntRange(min=0),
+            default=1,
+            show_default=True,
+        ),
         click.option("--tickers", default=None),
         click.option("--universe-file", default=None),
         click.option("--max-universe", type=int, default=200, show_default=True),
@@ -342,9 +416,20 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
             "--html", "html_path", type=click.Path(path_type=Path), default=None
         ),
     ]
+
+    @wraps(fn)
+    def checked_command(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return fn(*args, **kwargs)
+        except RiskFreeHurdleAmbiguity as exc:
+            raise click.ClickException(str(exc)) from exc
+        except ValidationError as exc:
+            raise click.UsageError(str(exc)) from exc
+
+    wrapped = checked_command
     for option in reversed(options):
-        fn = option(fn)
-    return fn
+        wrapped = option(wrapped)
+    return wrapped
 
 
 @optimize.command(name="grid")
@@ -385,6 +470,12 @@ def optimize_grid(**kwargs) -> None:
         compounding=kwargs["compounding"],
         risk_free_rate=kwargs["risk_free_rate"],
     )
+    cfg, fundamental_fetcher = _optimization_collaborators(
+        cfg,
+        parameter_grid,
+        kwargs["fundamentals_provider"],
+        kwargs["fundamental_lag_days"],
+    )
     results = grid_search(
         cfg,
         _fetcher(),
@@ -397,6 +488,7 @@ def optimize_grid(**kwargs) -> None:
         runner="rolling",
         start_date=start_date,
         end_date=end_date,
+        fundamental_fetcher=fundamental_fetcher,
         **trial_identity,
     )
     print_grid_table(results)
@@ -499,6 +591,12 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         parameter_grid, test_days=int(test_days)
     ):
         click.echo(f"warning: {warning}", err=True)
+    cfg, fundamental_fetcher = _optimization_collaborators(
+        cfg,
+        parameter_grid,
+        kwargs["fundamentals_provider"],
+        kwargs["fundamental_lag_days"],
+    )
     summary = walk_forward_optimize(
         cfg,
         _fetcher(),
@@ -512,6 +610,7 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         min_trades=kwargs["min_trades"],
         max_workers=kwargs["workers"],
         cache_path=kwargs["cache_path"],
+        fundamental_fetcher=fundamental_fetcher,
         **trial_identity,
     )
     print_walk_forward_table(summary)
@@ -628,6 +727,8 @@ def _parse_param_specs(params: tuple[str, ...]) -> dict[str, list[Any]]:
         name = name.strip()
         if not name:
             raise click.UsageError(f"Invalid --param {spec!r}; missing name.")
+        if name not in BacktestConfig.model_fields:
+            raise click.UsageError(f"Unknown optimization parameter {name!r}.")
         cast: type = int if name in {"hold", "top"} else float
         allow_none = name not in {"hold", "top"}
         values = _parse_values(raw, cast, allow_none=allow_none)
@@ -779,14 +880,33 @@ def research_report(
     top_values = parameter_grid.get("top")
     top0 = int(top_values[0]) if top_values else int(kwargs["top"])
 
-    tickers_csv, universe_file = _resolve_universe_tickers(
-        market=kwargs["market"],
-        tickers=kwargs["tickers"],
-        universe_file=kwargs["universe_file"],
-        universe=universe,
-        end_date=end_date,
-        max_universe=int(kwargs["max_universe"]),
-    )
+    membership_windows: tuple[tuple[str, date, date | None], ...] = ()
+    universe_warnings: tuple[str, ...] = ()
+    tickers_csv, universe_file = kwargs["tickers"], kwargs["universe_file"]
+    if universe and not tickers_csv and not universe_file:
+        from screener.universes import load_universe_selection
+
+        selection = load_universe_selection(
+            universe,
+            market=kwargs["market"],
+            as_of=end_date,
+            start=start_date,
+            point_in_time=True,
+        )
+        symbols = selection.symbols
+        if int(kwargs["max_universe"]) > 0:
+            symbols = symbols[: int(kwargs["max_universe"])]
+        if not symbols:
+            raise click.UsageError(f"Universe {universe!r} resolved to zero symbols.")
+        tickers_csv = ",".join(symbols)
+        membership_windows = tuple(
+            w for w in selection.membership_windows if w[0] in symbols
+        )
+        universe_warnings = selection.warnings
+        if not membership_windows:
+            universe_warnings += (
+                "Point-in-time membership unavailable; using a static universe with survivorship bias.",
+            )
     cfg = _base_config(
         market=kwargs["market"],
         end_date=end_date,
@@ -810,6 +930,13 @@ def research_report(
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
         risk_free_rate=kwargs["risk_free_rate"],
+    )
+    cfg = cfg.validated_update({"membership_windows": membership_windows})
+    cfg, fundamental_fetcher = _optimization_collaborators(
+        cfg,
+        parameter_grid,
+        kwargs["fundamentals_provider"],
+        kwargs["fundamental_lag_days"],
     )
     # Validate window/interval/MC flags before costly grid work. Do not wrap the
     # full report run: runtime bugs must surface as themselves.
@@ -852,6 +979,8 @@ def research_report(
         mc_seed=mc_seed,
         mc_block=mc_block,
         ruin_threshold=ruin_threshold,
+        fundamental_fetcher=fundamental_fetcher,
+        universe_warnings=universe_warnings,
         top_n=kwargs["top_n"],
         out_path=out_path,
         **trial_identity,
