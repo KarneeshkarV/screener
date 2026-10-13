@@ -77,6 +77,15 @@ The independent integration review also found and fixed same-publication-date fu
 When several fiscal periods publish a field on the same date, the latest fiscal period takes priority.
 Fundamental result caching is disabled when the frozen input identity does not authenticate fundamental data.
 
+## Verification
+
+The final combined offline suite passed 3,099 tests with 17 skips.
+Coverage was 92.17%, above the 90% floor.
+The skips comprise 14 live-network checks and three optional TA-Lib comparisons.
+Ruff lint and format passed for all 415 tracked Python files.
+Mypy passed for all 240 source files.
+The public rolling CLI reproduction now succeeds with its default reinvestment comparison.
+
 ## Research impact
 
 Backtest numbers are expected to change where the old behavior affected signals, prices, fills, sizing, fees, or membership.
