@@ -73,6 +73,8 @@ The history comparison must not silently choose an exchange in that case.
 
 A slippage-bps update with an ambiguous custom model requires an explicit replacement model.
 Fundamental collaborators must match the configured market and publication lag.
+The independent integration review also found and fixed same-publication-date fundamental collisions.
+When several fiscal periods publish a field on the same date, the latest fiscal period takes priority.
 Fundamental result caching is disabled when the frozen input identity does not authenticate fundamental data.
 
 ## Research impact
@@ -80,4 +82,10 @@ Fundamental result caching is disabled when the frozen input identity does not a
 Backtest numbers are expected to change where the old behavior affected signals, prices, fills, sizing, fees, or membership.
 Re-run affected research before using its results.
 This includes split-crossing windows, warm-cache runs, Minervini studies, fundamental strategies, partial exits, reinvested pending orders, and optimization reports.
+The deterministic offline matrix completed all 48 cells without skips.
+Compared with the pre-fix matrix, 37 cells changed, but all trade identities, entry dates, exit dates, exit reasons, and trade counts stayed the same.
+The largest final-equity change was 0.430732 on initial capital of 100,000.
+The differences include exact-fee affordability and longer benchmark warmup for regime classification.
+A repeated comparison against the corrected matrix was identical across all 48 cells.
+
 Passing regression tests does not validate live provider availability or establish that a strategy will be profitable.
