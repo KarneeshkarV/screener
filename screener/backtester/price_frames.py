@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
 import pandas as pd
 
@@ -46,8 +47,19 @@ def empty_ohlcv_frame() -> pd.DataFrame:
     )
 
 
-def normalize_price_frame(df: pd.DataFrame, interval: str = "1d") -> pd.DataFrame:
-    """Normalize one provider frame to the backtester's canonical schema."""
+def normalize_price_frame(
+    df: pd.DataFrame,
+    interval: str = "1d",
+    *,
+    source_adjustment: Literal["unadjusted", "splits", "full"] = "unadjusted",
+) -> pd.DataFrame:
+    """Normalize prices with an explicit provider adjustment contract.
+
+    ``split_factor`` is the adjustment still required by OHLC, volume, and
+    dividends, not a second copy of the provider's historical split events.
+    Providers that already adjust splits must pass ``source_adjustment``.
+    ``stock_splits`` always retains the events for audit.
+    """
     if df is None or df.empty:
         return empty_ohlcv_frame()
     if isinstance(df.columns, pd.MultiIndex):
@@ -66,7 +78,9 @@ def normalize_price_frame(df: pd.DataFrame, interval: str = "1d") -> pd.DataFram
     if "stock_splits" in df.columns:
         splits = df["stock_splits"].fillna(0.0).astype(float)
         factor = splits.replace(0.0, 1.0)[::-1].cumprod()[::-1].shift(-1).fillna(1.0)
-        out["split_factor"] = factor.astype(float)
+        out["split_factor"] = (
+            factor.astype(float) if source_adjustment == "unadjusted" else 1.0
+        )
         out["stock_splits"] = splits
     out.index = naive_normalized_index(out.index, interval)
     out = out[~out.index.duplicated(keep="last")].sort_index()
@@ -89,7 +103,11 @@ def apply_full_price_adjustment(frame: pd.DataFrame) -> pd.DataFrame:
 def apply_splits_only_adjustment(
     bars_by_ticker: dict[str, pd.DataFrame],
 ) -> dict[str, pd.DataFrame]:
-    """Back-adjust OHLC, volume, and dividends using explicit split factors."""
+    """Apply pending split factors once to OHLC, volume, and dividends.
+
+    The input contract defines ``split_factor`` as the remaining adjustment.
+    Yahoo frames carry 1.0 because Yahoo already adjusts for splits.
+    """
     adjusted_by_ticker: dict[str, pd.DataFrame] = {}
     for ticker, frame in bars_by_ticker.items():
         if frame is None or frame.empty or "split_factor" not in frame.columns:
@@ -105,6 +123,7 @@ def apply_splits_only_adjustment(
                 adjusted[column] = adjusted[column].astype(float) / factor
         if "volume" in adjusted.columns:
             adjusted["volume"] = adjusted["volume"].astype(float) * factor
+        adjusted["split_factor"] = 1.0
         adjusted_by_ticker[ticker] = adjusted
     return adjusted_by_ticker
 
@@ -231,6 +250,21 @@ def overlap_rescaled(
     return bool((ratio - 1.0).abs().max() > RESCALE_TOLERANCE)
 
 
+def cache_merge_needs_full_download(
+    existing: pd.DataFrame | None, new: pd.DataFrame
+) -> bool:
+    """Reject a partial cache merge without enough shared prices to verify scale."""
+    if existing is None or existing.empty or new.empty:
+        return False
+    if existing.index.difference(new.index).empty:
+        return False  # Every old row is replaced, so no old scale survives.
+    shared = existing.index.intersection(new.index)
+    old = existing["close"].reindex(shared)
+    fresh = new["close"].reindex(shared)
+    usable = old.notna() & fresh.notna() & (old > 0) & (fresh > 0)
+    return int(usable.sum()) < RESCALE_MIN_OVERLAP
+
+
 def merge_price_frames(
     existing: pd.DataFrame | None, new: pd.DataFrame, interval: str = "1d"
 ) -> pd.DataFrame:
@@ -345,7 +379,9 @@ def split_yfinance_download(
         return {ticker: empty_ohlcv_frame() for ticker in tickers}
     if not isinstance(raw.columns, pd.MultiIndex):
         ticker = tickers[0] if tickers else ""
-        return {ticker: normalize_price_frame(raw, interval)}
+        return {
+            ticker: normalize_price_frame(raw, interval, source_adjustment="splits")
+        }
 
     frames: dict[str, pd.DataFrame] = {}
     level_values = [
@@ -359,7 +395,9 @@ def split_yfinance_download(
             selected = raw.xs(ticker, level=level, axis=1, drop_level=True)
             frame = selected.to_frame() if isinstance(selected, pd.Series) else selected
             break
-        frames[ticker] = normalize_price_frame(frame, interval)
+        frames[ticker] = normalize_price_frame(
+            frame, interval, source_adjustment="splits"
+        )
     return frames
 
 
@@ -367,6 +405,7 @@ __all__ = [
     "CORPORATE_ACTION_COLUMNS",
     "OHLCV_COLUMNS",
     "apply_splits_only_adjustment",
+    "cache_merge_needs_full_download",
     "empty_ohlcv_frame",
     "frame_has_range",
     "has_price_seam",

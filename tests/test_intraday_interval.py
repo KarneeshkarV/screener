@@ -101,16 +101,16 @@ def test_normalize_frame_does_not_collapse_intraday_bars():
 
 def test_cache_key_namespaces_intraday_but_not_daily():
     daily = YFinancePriceFetcher(interval="1d")
-    assert daily._cache_key("AAPL") == "AAPL__full_turnover_v2"
+    assert daily._cache_key("AAPL") == "AAPL__full_turnover_v3"
 
     daily_raw = YFinancePriceFetcher(interval="1d", auto_adjust=False)
-    assert daily_raw._cache_key("AAPL") == "AAPL__raw"
+    assert daily_raw._cache_key("AAPL") == "AAPL__raw_split_contract_v3"
 
     intraday = YFinancePriceFetcher(interval="15m")
-    assert intraday._cache_key("AAPL") == "AAPL__15m__full_turnover_v2"
+    assert intraday._cache_key("AAPL") == "AAPL__15m__full_turnover_v3"
 
     intraday_raw = YFinancePriceFetcher(interval="15m", auto_adjust=False)
-    assert intraday_raw._cache_key("AAPL") == "AAPL__15m__raw"
+    assert intraday_raw._cache_key("AAPL") == "AAPL__15m__raw_split_contract_v3"
 
 
 def test_yfinance_intraday_fetch_includes_whole_end_date_from_cache(tmp_path):

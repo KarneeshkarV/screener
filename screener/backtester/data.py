@@ -75,6 +75,7 @@ from screener.backtester.price_frames import (
 )
 from screener.backtester.price_frames import (
     OHLCV_COLUMNS,
+    cache_merge_needs_full_download,
     naive_normalized_index,
     normalize_price_frame,
 )
@@ -185,6 +186,10 @@ class PriceFetcher(Protocol):
 
         Frames must have lowercase columns: open, high, low, close, volume.
         ``adj_close`` is optional; absent means ``close`` is already adjusted.
+        ``split_factor`` means the pending adjustment to OHLC, volume, and
+        dividends. Use 1.0 when the provider already adjusts splits, and retain
+        split events separately as ``stock_splits``. Never infer this contract
+        from return magnitudes.
         """
 
 
@@ -250,14 +255,12 @@ class YFinancePriceFetcher:
         then adjust OHLC while keeping raw close times volume as
         ``dollar_volume``. Signals retain the historical adjusted-price scale;
         liquidity gates and candidate ranking use actual turnover.
-      * ``auto_adjust=False`` — raw OHLC are preserved and the separate
-        ``Dividends`` / ``Stock Splits`` columns are retained so the engine
-        can credit cash dividends explicitly and compute split-adjusted
-        prices on demand via ``_normalize_frame``.
+      * ``auto_adjust=False`` - Yahoo's split-adjusted OHLC, volume, and
+        dividends are preserved. Stock split events are retained, but the
+        pending ``split_factor`` is 1.0. No further split adjustment is needed.
 
-    Full-adjustment cache keys carry a version suffix because older entries
-    lack raw turnover and cannot recover it from adjusted closes. Raw entries
-    keep their separate suffix.
+    Cache version 3 records this contract and rejects older entries, which may
+    contain non-overlapping price scales or ambiguous split factors.
 
     ``refresh=True`` forces a download of the requested window even when a
     covering parquet already exists. A failed download is an empty frame,
@@ -291,7 +294,11 @@ class YFinancePriceFetcher:
         # Intraday intervals get their own cache namespace so the existing daily
         # parquet files stay valid and are never polluted with 15m/1h bars.
         base = ticker if self.interval == "1d" else f"{ticker}__{self.interval}"
-        return f"{base}__full_turnover_v2" if self.auto_adjust else f"{base}__raw"
+        return (
+            f"{base}__full_turnover_v3"
+            if self.auto_adjust
+            else f"{base}__raw_split_contract_v3"
+        )
 
     # Approximate yfinance intraday history caps, in calendar days.
     _INTRADAY_CAP_DAYS = {
@@ -539,12 +546,13 @@ class YFinancePriceFetcher:
                 if min_cached <= start_ts + pd.Timedelta(
                     days=3
                 ) and max_cached < end_ts - pd.Timedelta(days=3):
-                    fetch_start = max_cached + pd.Timedelta(days=1)
+                    # Include stored bars so a provider rebase is observable.
+                    fetch_start = cached.index[max(0, len(cached) - 5)]
                     cause = "extend"
                 elif max_cached >= end_ts - pd.Timedelta(
                     days=3
                 ) and min_cached > start_ts + pd.Timedelta(days=3):
-                    fetch_end = min_cached - pd.Timedelta(days=1)
+                    fetch_end = cached.index[min(4, len(cached) - 1)]
                     cause = "backfill"
             if not distrust_cache and _has_empty_history(
                 cache_key, fetch_start, fetch_end, self.cache_dir
@@ -697,8 +705,9 @@ class YFinancePriceFetcher:
             # at the seam, and every return, momentum and volatility figure
             # computed across that seam is wrong. The stale side loses: the
             # cache entry is dropped and the ticker re-downloaded whole below.
-            if ticker not in force_full and _overlap_rescaled(
-                stored, norm, self.interval
+            if ticker not in force_full and (
+                _overlap_rescaled(stored, norm, self.interval)
+                or cache_merge_needs_full_download(stored, norm)
             ):
                 # A refresh already asked for the whole window, so only the
                 # stale entry has to go; a retry would repeat that request for
@@ -723,6 +732,9 @@ class YFinancePriceFetcher:
                     rescaled.add(ticker)
                 stored = None
                 _clear_coverage(cache_key, self.cache_dir)
+            # A forced retry must not merge an unverified partial first pass.
+            if ticker in force_full and not norm.empty:
+                stored = None
             merged = _merge_cached(stored, norm, self.interval)
             # A failed download is an empty frame, and the merge then returns
             # leftover cache. That is the availability-first default. ``strict``
@@ -763,9 +775,9 @@ _FMP_INTRADAY_INTERVALS = {
 
 
 def _fmp_cache_key(ticker: str, auto_adjust: bool, interval: str = "1d") -> str:
-    suffix = "" if auto_adjust else "__raw"
+    # Version 3 excludes old provisional bars and unverified scale merges.
     base = ticker if interval == "1d" else f"{ticker}__{interval}"
-    return f"fmp_{base}__full_turnover_v2" if auto_adjust else f"fmp_{base}{suffix}"
+    return f"fmp_{base}__full_turnover_v3" if auto_adjust else f"fmp_{base}__raw_v3"
 
 
 def _normalize_fmp_historical(
@@ -837,7 +849,9 @@ class FMPPriceFetcher:
     """Fetch OHLCV from Financial Modeling Prep.
 
     Daily bars come from ``historical-price-full`` (dividend/split adjusted via
-    ``adjClose`` when ``auto_adjust`` is set). Intraday bars come from
+    ``adjClose`` when ``auto_adjust`` is set). Without that adjustment, split
+    status is unknown: no pending split factor is invented and the engine warns
+    when asked for splits-only adjustment. Intraday bars come from
     ``historical-chart/{interval}`` and are always raw — FMP publishes no
     adjusted intraday prices, which is acceptable inside the short history
     windows intraday backtests use.
@@ -1034,8 +1048,9 @@ class FMPPriceFetcher:
             # reason: FMP's adjusted daily endpoint also re-bases its whole
             # history on a split, so a cache entry written before one prices
             # shared sessions on a scale the vendor has abandoned.
-            rescaled_here = not force_full and _overlap_rescaled(
-                stored, norm, self.interval
+            rescaled_here = not force_full and (
+                _overlap_rescaled(stored, norm, self.interval)
+                or cache_merge_needs_full_download(stored, norm)
             )
             # Same reasoning as the yfinance leg: a refresh already requested
             # the whole window, so it needs the discard but not the retry.
@@ -1055,6 +1070,8 @@ class FMPPriceFetcher:
                 )
                 stored = None
                 _clear_coverage(cache_key, self.cache_dir)
+            if force_full and not norm.empty:
+                stored = None
             merged = _merge_cached(stored, norm, self.interval)
             if not merged.empty:
                 if not norm.empty or not is_tail_refresh:
