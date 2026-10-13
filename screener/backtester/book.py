@@ -17,12 +17,116 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from screener.backtester.core import _SlotState
+from screener.backtester.core import (
+    PendingEntryOrder,
+    _make_slot_state,
+    _RunCaches,
+    _SlotState,
+)
 from screener.backtester.costs import cost_model_from_config
 from screener.backtester.day_loop import DayLoop
-from screener.backtester.fills import FillModel
+from screener.backtester.fills import FillModel, _resolve_entry_fill
 from screener.backtester.models import BacktestConfig
 from screener.backtester.portfolio import Portfolio
+from screener.backtester.sizing import (
+    entry_budget_for,
+    entry_opens_no_shares,
+    marked_portfolio_equity,
+    sizing_allows_slot_growth,
+)
+
+
+def fill_pending_entries(
+    *,
+    day: pd.Timestamp,
+    at_close: bool,
+    pending_orders: dict[int, PendingEntryOrder],
+    bars_by_ticker: dict[str, pd.DataFrame],
+    cfg: BacktestConfig,
+    portfolio: Portfolio,
+    slot_states: dict[int, _SlotState | None],
+    slot_bars: dict[int, pd.DataFrame],
+    fill_model: FillModel,
+    caches: _RunCaches,
+    exit_ast,
+    warnings: list[str],
+) -> list[PendingEntryOrder]:
+    """Fill only current-bar orders, sharing cash among fillable orders.
+
+    Market-on-close orders run after exits; open and limit orders run before.
+    Untouched limits reserve slots, but do not reduce this batch's cash share.
+    """
+    if at_close != (cfg.entry_order_type == "moc"):
+        return []
+    fillable: list[tuple[int, PendingEntryOrder, int]] = []
+    for slot_id, order in list(pending_orders.items()):
+        bars = bars_by_ticker[order.ticker]
+        if day > bars.index[-1]:
+            del pending_orders[slot_id]
+            continue
+        entry_idx = int(bars.index.get_indexer(pd.DatetimeIndex([day]))[0])
+        if day <= pd.Timestamp(order.signal_date) or entry_idx <= order.signal_idx:
+            continue
+        index, reference, _warn = _resolve_entry_fill(
+            bars, order.signal_idx, cfg, caches.frame(order.ticker, bars), entry_idx
+        )
+        if index is not None and reference is not None and 0 < reference < float("inf"):
+            fillable.append((slot_id, order, entry_idx))
+        elif cfg.entry_order_type != "limit":
+            del pending_orders[slot_id]
+    grows_slots = sizing_allows_slot_growth(cfg.sizing_rule)
+    current_equity = (
+        marked_portfolio_equity(portfolio, bars_by_ticker, day, inclusive=at_close)
+        if grows_slots
+        else None
+    )
+    filled: list[PendingEntryOrder] = []
+    for offset, (slot_id, order, entry_idx) in enumerate(fillable):
+        bars = bars_by_ticker[order.ticker]
+        budget = entry_budget_for(
+            cfg,
+            portfolio,
+            bars,
+            order.signal_idx,
+            current_equity=current_equity,
+            free_slots=len(fillable) - offset,
+            series_cache=caches.frame(order.ticker, bars).sizing_series,
+        )
+        state, warn = _make_slot_state(
+            order.ticker,
+            bars,
+            order.signal_idx,
+            cfg,
+            exit_ast,
+            order.rank,
+            fill_model,
+            caches=caches,
+            entry_budget=budget,
+            limit_bar_idx=entry_idx,
+        )
+        if state is None or entry_opens_no_shares(budget, state.entry_shares):
+            if warn:
+                warnings.append(f"{order.ticker}: {warn}")
+            if cfg.entry_order_type != "limit":
+                del pending_orders[slot_id]
+            continue
+        portfolio.assign(order.ticker, order.rank, order.signal_date)
+        position = portfolio.open(
+            order.ticker,
+            state.entry_date,
+            state.entry_fill,
+            budget=budget,
+            shares=state.entry_shares,
+            allow_slot_growth=grows_slots,
+        )
+        if position.shares <= 0:
+            raise RuntimeError("Pending entry fill created an empty position")
+        slot_states[slot_id] = state
+        slot_bars[slot_id] = bars
+        del pending_orders[slot_id]
+        filled.append(order)
+    return filled
+
 
 BOOK_CONFIG_FIELDS = frozenset(
     {
