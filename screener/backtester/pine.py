@@ -511,7 +511,7 @@ def _crossover(a: Vector, b: Vector) -> Vector:
     b_prev = b.shift(1)
     known = a_now.notna() & b_now.notna() & a_prev.notna() & b_prev.notna()
     cond = (a_now > b_now) & (a_prev <= b_prev)
-    return cond.astype("boolean").where(known)
+    return cond.astype("boolean").where(known.to_numpy())
 
 
 def _crossunder(a: Vector, b: Vector) -> Vector:
@@ -521,7 +521,7 @@ def _crossunder(a: Vector, b: Vector) -> Vector:
     b_prev = b.shift(1)
     known = a_now.notna() & b_now.notna() & a_prev.notna() & b_prev.notna()
     cond = (a_now < b_now) & (a_prev >= b_prev)
-    return cond.astype("boolean").where(known)
+    return cond.astype("boolean").where(known.to_numpy())
 
 
 def _finite_expression_values(values: Vector) -> Vector:
@@ -677,6 +677,8 @@ def _eval(
         raise PineSyntaxError(  # pragma: no cover - all Node variants handled above
             f"Unknown AST node: {type(node).__name__}"
         )
+    if isinstance(node, BinOp) and isinstance(result, (pd.Series, pd.DataFrame)):
+        result = _finite_expression_values(result)
     cache[key] = result
     return result
 
@@ -918,7 +920,7 @@ def _bool_array_from_series(series: pd.Series) -> np.ndarray:
         if not series.hasnans:
             return series.to_numpy(dtype=bool, copy=False)
         return series.fillna(False).to_numpy(dtype=bool)
-    return series.fillna(False).astype(bool).to_numpy(dtype=bool)
+    return _expression_truth(series).fillna(False).to_numpy(dtype=bool)
 
 
 def _bool_block_from_frame(frame: pd.DataFrame) -> np.ndarray:
@@ -930,7 +932,7 @@ def _bool_block_from_frame(frame: pd.DataFrame) -> np.ndarray:
         if not frame.isna().any().any():
             return frame.to_numpy(dtype=bool, copy=False)
         return frame.fillna(False).to_numpy(dtype=bool)
-    return frame.fillna(False).astype(bool).to_numpy(dtype=bool)
+    return _expression_truth(frame).fillna(False).to_numpy(dtype=bool)
 
 
 def evaluate_panel(

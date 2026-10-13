@@ -82,6 +82,29 @@ def test_missing_operands_preserve_unknown_until_final_signal(expression, expect
         assert arrays[ticker].tolist() == expected
 
 
+def test_nonfinite_arithmetic_is_unknown_before_crossovers_and_signal_casts():
+    frame = _bars()
+    frame["denominator"] = [1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    ast = parse("crossover(1 / denominator, 2)")
+    assert evaluate(ast, frame).tolist() == [False] * len(frame)
+    arrays = evaluate_panel_many(
+        (parse("1 / denominator"),),
+        {"AAA": frame, "BBB": frame.copy()},
+        as_bool_array=True,
+    )[0]
+    for ticker in ("AAA", "BBB"):
+        assert arrays[ticker].tolist() == [
+            True,
+            False,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+        ]
+
+
 def test_missing_fundamental_never_creates_prepublication_trade():
     frame = _bars()
     frame["revenue_up_3q"] = [np.nan, np.nan, np.nan, 1.0, 1.0, 1.0, 1.0, 1.0]
