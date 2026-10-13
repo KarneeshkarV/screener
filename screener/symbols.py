@@ -54,6 +54,7 @@ def tv_to_yf(symbol: str, market: str) -> str:
       'NSE:RELIANCE' + india → 'RELIANCE.NS'
       'BSE:TCS'     + india → 'TCS.BO'
       'NASDAQ:AAPL' + us    → 'AAPL'
+      'NYSE:BRK.B'  + us    → 'BRK-B'
       'AAPL'        + us    → 'AAPL'
       'RELIANCE'    + india → 'RELIANCE.NS'
       'M_M'         + india → 'M&M.NS'
@@ -66,12 +67,12 @@ def tv_to_yf(symbol: str, market: str) -> str:
             return f"{restore_india_separator(rest)}.NS"
         if exch == "BSE":
             return f"{restore_india_separator(rest)}.BO"
-        return rest
+        return rest.replace(".", "-") if market == "us" else rest
     if market == "india":
         base, dot, suffix = sym.partition(".")
         base = restore_india_separator(base)
         return f"{base}{dot}{suffix}" if dot else f"{base}.NS"
-    return sym
+    return sym.replace(".", "-") if market == "us" else sym
 
 
 def tv_to_nse(symbol: str, *, strip_suffix: bool = False) -> str:

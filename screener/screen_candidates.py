@@ -10,15 +10,13 @@ Those names are now *aliases* onto ``screener.strategies.spec.registry``. The
 rule is the strategy's entry expression, evaluated over local bars through
 :func:`screener.backtester.signal_panel.build_day_candidates` - the same
 function, over the same matrices, that the rolling backtester ranks with. The
-TradingView filters survive only as the strategy's declared
-``profile.tv_prefilter``: a field cut that runs before bars are downloaded and
-may only ever remove names the bar rule would have removed anyway.
+strategy's declared ``profile.tv_prefilter`` is retained as metadata, but live
+snapshot filters cannot safely cut a completed-bar screen or its rank reference.
 
 Two universe modes, and the mode is recorded in the run label:
 
-* **default** - TradingView answers "which names are worth downloading", then
-  the bar rule decides which of them are candidates. Fast, and the field cut
-  is the vendor's.
+* **default** - TradingView supplies the unfiltered ticker field and display
+  columns, then the local bar rule decides which names are candidates.
 * **``--universe``** - the exact path. The universe comes from
   ``screener.universes`` and no prefilter runs, so the answer depends on no
   vendor field at all. Slower, because every name in the universe is fetched.
@@ -38,7 +36,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
-from screener.criteria import registry as criteria_registry
 from screener.markets import get_market
 from screener.scoring.bar_scores import (
     DEFAULT_PRICE_ADJUSTMENT,
@@ -73,8 +70,8 @@ _WINDOW_SLACK_DAYS = 15
 #: Five quarters always contains at least one filing.
 _FUNDAMENTAL_WINDOW_DAYS = 460
 
-#: Names a bar-path screen must produce for history and display. ``save_run``
-#: reads ``name`` as the ticker, so it is not optional.
+#: Names a bar-path screen must produce for display. History keys on the
+#: canonical ``ticker`` column; ``name`` remains the plain display symbol.
 _DISPLAY_COLUMNS = (
     "name",
     "description",
@@ -189,6 +186,7 @@ def settings_fingerprint(
     *,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
     interval: str = DEFAULT_INTERVAL,
+    universe_policy: Mapping[str, Any] | None = None,
 ) -> str:
     """A short stable digest of everything that decides who is a candidate.
 
@@ -211,6 +209,8 @@ def settings_fingerprint(
     }
     payload["price_adjustment"] = price_adjustment
     payload["interval"] = interval
+    if universe_policy is not None:
+        payload["universe_policy"] = dict(universe_policy)
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, default=str).encode()
     ).hexdigest()
@@ -247,15 +247,14 @@ def screen_label(
 
 
 def prefilter_filters(strategy: ScreenStrategy) -> list:
-    """The TradingView filters that cut the field for ``strategy``.
+    """Return no live field cuts for a completed-bar strategy screen.
 
-    Empty when the strategy declares no prefilter, which means the scan is
-    unfiltered and the bar rule does all the work.
+    Vendor snapshots have no completed-session timestamp contract.
+    Even a locally wider filter can drop yesterday's valid candidate today,
+    and cross-sectional strategies must retain their full rank reference.
+    Keep profile declarations for compatibility, but do not apply them here.
     """
-    name = strategy.tv_prefilter
-    if name is None:
-        return []
-    return list(criteria_registry.get(name)())
+    return []
 
 
 @dataclass(frozen=True)
@@ -273,6 +272,7 @@ class UniverseField:
     dynamic_size: int | None = None
     dynamic_lookback: int = 60
     dynamic_rebalance: str = "monthly"
+    policy: Mapping[str, Any] | None = None
 
 
 def _members_open_on(
@@ -346,6 +346,40 @@ def resolve_universe_field(
                 f"window open on {today.isoformat()} ({selection.source})",
                 benchmark=selection.benchmark,
             )
+        policy = None
+        if selection.dynamic_size is not None:
+            if is_dynamic:
+                base = (
+                    (dynamic_base or ("nifty500" if market == "india" else "sp500"))
+                    .strip()
+                    .lower()
+                )
+                definition_policy: Mapping[str, Any] = {"base": base}
+            else:
+                # Hash the selected definition, not the file digest or today's
+                # selected members. Other books and index churn are irrelevant.
+                from screener.universes import _config_entry
+
+                assert config_path is not None
+                entry, _ = _config_entry(universe.strip().lower(), Path(config_path))
+                if entry.get("symbols") is not None:
+                    definition_policy = {"symbols": sorted(selection.symbols)}
+                elif entry.get("path"):
+                    source_path = Path(str(entry["path"]))
+                    if not source_path.is_absolute():
+                        source_path = Path(config_path).parent / source_path
+                    definition_policy = {"path": str(source_path.resolve())}
+                else:
+                    definition_policy = {"base": str(entry["base"]).strip().lower()}
+            policy = {
+                "kind": "dynamic",
+                "market": selection.market,
+                "benchmark": selection.benchmark,
+                "size": selection.dynamic_size,
+                "lookback": selection.dynamic_lookback,
+                "rebalance": selection.dynamic_rebalance,
+                "definition": definition_policy,
+            }
         return UniverseField(
             list(selection.symbols),
             f"{selection.name}: {len(selection.symbols)} names ({selection.source})",
@@ -353,6 +387,7 @@ def resolve_universe_field(
             dynamic_size=selection.dynamic_size,
             dynamic_lookback=selection.dynamic_lookback,
             dynamic_rebalance=selection.dynamic_rebalance,
+            policy=policy,
         )
 
     source = UniverseSource.INDEX_CURRENT if is_index else UniverseSource.FILE
@@ -390,11 +425,7 @@ def _bar_display_row(
     change = (close / previous - 1.0) * 100.0 if previous else float("nan")
     return {
         "ticker": ticker,
-        # ``name`` is the plain symbol everywhere else - history keys on it and
-        # both enrichment paths look it up by it - so the exchange prefix that
-        # only the bar path carries has to come off here, or ``--earnings``
-        # answers None for every row and saved runs key differently from every
-        # other screen.
+        # Enrichment uses the plain symbol; persistence uses canonical ticker.
         "name": ticker.split(":", 1)[-1],
         "description": "",
         "close": close,
