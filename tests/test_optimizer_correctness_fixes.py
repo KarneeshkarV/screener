@@ -117,6 +117,27 @@ def test_invalid_grid_rejected_before_fetch_or_trial_register(tmp_path, params):
     assert not trial_db.exists()
 
 
+def test_optimizer_rejects_fetcher_configured_for_another_market(tmp_path):
+    from screener.backtester.fundamentals import FMPFundamentalFetcher
+
+    class NoFetch:
+        def fetch(self, *args, **kwargs):
+            pytest.fail("incompatible collaborator fetched bars")
+
+    trial_db = tmp_path / "wrong-market.db"
+    fetcher = FMPFundamentalFetcher(market="us", api_key="offline")
+    with pytest.raises(ValueError, match="configured market"):
+        grid_search(
+            _config(market="india", fundamentals_provider="fmp"),
+            NoFetch(),
+            {"hold": [2]},
+            runner="rolling",
+            fundamental_fetcher=fetcher,
+            trial_db_path=trial_db,
+        )
+    assert not trial_db.exists()
+
+
 class FundamentalStub:
     markets = frozenset({"us"})
     lag_days = 1

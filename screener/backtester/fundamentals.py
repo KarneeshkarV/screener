@@ -303,7 +303,11 @@ def _normalize_fmp_payload(
         if not dates or any(stamp is None for stamp in dates):
             return
         records.append(
-            {"effective_date": max(cast(list[pd.Timestamp], dates)), field: value}
+            {
+                "effective_date": max(cast(list[pd.Timestamp], dates)),
+                "fiscal_period": str(sources[0].get("date", "")),
+                field: value,
+            }
         )
 
     # Income publication is not evidence of another section's availability.
@@ -346,7 +350,7 @@ def _normalize_fmp_payload(
             excluded_no_filing += 1
             continue
         # Keep the income event even when the requested derived value is missing.
-        records.append({"effective_date": effective})
+        records.append({"effective_date": effective, "fiscal_period": row_date})
 
         prior_target = _prior_year_key(row_date)
         prior_income = income_by_date.get(prior_target, {}) if prior_target else {}
@@ -379,7 +383,9 @@ def _normalize_fmp_payload(
     if not records:
         return pd.DataFrame(columns=list(fields), index=pd.DatetimeIndex([]))
 
-    frame = pd.DataFrame(records)
+    # Latest fiscal periods win same-date collisions, not provider row order.
+    frame = pd.DataFrame(records).sort_values("fiscal_period", kind="stable")
+    frame = frame.drop(columns="fiscal_period")
     frame.index = pd.to_datetime(frame.pop("effective_date"), errors="coerce")
     frame = frame[frame.index.notna()]
     frame.index = cast(pd.DatetimeIndex, frame.index).tz_localize(None).normalize()

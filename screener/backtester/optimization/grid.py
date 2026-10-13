@@ -113,6 +113,11 @@ def validate_optimization_grid(
                 raise ValueError(
                     "Cannot sweep fundamentals_provider with one resolved FundamentalFetcher"
                 )
+            configured_market = getattr(fundamental_fetcher, "market", test_cfg.market)
+            if configured_market != test_cfg.market:
+                raise ValueError(
+                    "FundamentalFetcher configured market must match the selected market"
+                )
             if test_cfg.market not in fundamental_fetcher.markets:
                 raise ValueError(
                     "FundamentalFetcher does not support the selected market"
