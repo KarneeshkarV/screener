@@ -33,7 +33,7 @@ single ``.shift(1)`` and so compare only bars ``i`` and ``i-1``.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Literal, Union, cast
+from typing import Any, Literal, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -509,8 +509,9 @@ def _crossover(a: Vector, b: Vector) -> Vector:
     b_now = b
     a_prev = a.shift(1)
     b_prev = b.shift(1)
+    known = a_now.notna() & b_now.notna() & a_prev.notna() & b_prev.notna()
     cond = (a_now > b_now) & (a_prev <= b_prev)
-    return cond.fillna(False)
+    return cond.astype("boolean").where(known)
 
 
 def _crossunder(a: Vector, b: Vector) -> Vector:
@@ -518,22 +519,51 @@ def _crossunder(a: Vector, b: Vector) -> Vector:
     b_now = b
     a_prev = a.shift(1)
     b_prev = b.shift(1)
+    known = a_now.notna() & b_now.notna() & a_prev.notna() & b_prev.notna()
     cond = (a_now < b_now) & (a_prev >= b_prev)
-    return cond.fillna(False)
+    return cond.astype("boolean").where(known)
+
+
+def _finite_expression_values(values: Vector) -> Vector:
+    """Keep non-finite expression inputs unknown, including through arithmetic."""
+    invalid = ~np.isfinite(values.to_numpy(dtype=float))
+    return values.mask(invalid) if invalid.any() else values
+
+
+def _expression_truth(values: Vector) -> Vector:
+    """Retain unknown operands for logical negation and Kleene boolean operators."""
+    if isinstance(values, pd.Series) and str(values.dtype) == "boolean":
+        return values
+    if isinstance(values, pd.DataFrame) and all(
+        str(dt) == "boolean" for dt in values.dtypes
+    ):
+        return values
+    finite = np.isfinite(values.to_numpy(dtype=float, na_value=np.nan))
+    return values.ne(0).astype("boolean").where(finite)
+
+
+def _completed_expression_result(value: Any) -> Any:
+    """Unknown boolean results are no signal, only at the expression boundary."""
+    if isinstance(value, pd.Series) and str(value.dtype) == "boolean":
+        return value.fillna(False).astype(bool)
+    if isinstance(value, pd.DataFrame) and all(
+        str(dt) == "boolean" for dt in value.dtypes
+    ):
+        return value.fillna(False).astype(bool)
+    return value
 
 
 def _series_from_name(name: str, bars: pd.DataFrame | PanelBars) -> Vector:
     if name == "adj_close":
         # with auto_adjust=True, close IS adjusted; alias them
-        if "adj_close" in bars.columns:
-            return _as_float(bars["adj_close"])
-        return _as_float(bars["close"])
+        column = "adj_close" if "adj_close" in bars.columns else "close"
+        return _finite_expression_values(_as_float(bars[column]))
     if name in SERIES_NAMES:
         if name not in bars.columns:
             raise PineNameError(f"Series {name!r} not available in bars DataFrame")
-        return _as_float(bars[name])
+        return _finite_expression_values(_as_float(bars[name]))
     if name in bars.columns:
-        return _to_numeric(bars[name])
+        return _finite_expression_values(_to_numeric(bars[name]))
     raise PineNameError(f"Unknown identifier: {name!r}")
 
 
@@ -600,7 +630,7 @@ def _eval(
         else:
             result = val
     elif isinstance(node, Not):
-        val = _broadcast(_eval(node.operand, bars, cache), bars).astype(bool)
+        val = _expression_truth(_broadcast(_eval(node.operand, bars, cache), bars))
         result = ~val
     elif isinstance(node, BinOp):
         left = _eval(node.left, bars, cache)
@@ -628,14 +658,15 @@ def _eval(
             "==": lambda a, b: a == b,
             "!=": lambda a, b: a != b,
         }
-        out = ops[node.op](left, right)
-        if isinstance(out, (pd.Series, pd.DataFrame)):
-            result = out.fillna(False)
-        else:
-            result = bool(out)
+        left = _broadcast(left, bars)
+        right = _broadcast(right, bars)
+        known = np.isfinite(left.to_numpy(dtype=float, na_value=np.nan)) & np.isfinite(
+            right.to_numpy(dtype=float, na_value=np.nan)
+        )
+        result = ops[node.op](left, right).astype("boolean").where(known)
     elif isinstance(node, BoolOp):
-        left = _broadcast(_eval(node.left, bars, cache), bars).astype(bool)
-        right = _broadcast(_eval(node.right, bars, cache), bars).astype(bool)
+        left = _expression_truth(_broadcast(_eval(node.left, bars, cache), bars))
+        right = _expression_truth(_broadcast(_eval(node.right, bars, cache), bars))
         if node.op == "and":
             result = left & right
         else:
@@ -714,7 +745,7 @@ def evaluate(node: Node, bars: pd.DataFrame) -> pd.Series:
     missing = required - set(bars.columns)
     if missing:
         raise PineError(f"bars DataFrame missing columns: {sorted(missing)}")
-    result = _eval(node, bars)
+    result = _completed_expression_result(_eval(node, bars))
     if isinstance(result, pd.Series):
         return result
     return _as_series(result, bars.index)
@@ -732,7 +763,7 @@ def evaluate_many(nodes: Iterable[Node], bars: pd.DataFrame) -> list[pd.Series]:
     cache: dict[tuple, object] = {}
     out: list[pd.Series] = []
     for node in nodes:
-        result = _eval(node, bars, cache)
+        result = _completed_expression_result(_eval(node, bars, cache))
         out.append(
             result if isinstance(result, pd.Series) else _as_series(result, bars.index)
         )
@@ -1000,7 +1031,9 @@ def evaluate_panel_many(
         cache: dict[tuple, object] = {}
         for node_position, node in enumerate(nodes):
             try:
-                result = _broadcast(_eval(node, panel, cache), panel)
+                result = _completed_expression_result(
+                    _broadcast(_eval(node, panel, cache), panel)
+                )
             except (PineError, TypeError, ValueError):
                 # Redo only the failing expression one ticker at a time so its
                 # exact exception is preserved without discarding other panel
