@@ -28,7 +28,7 @@ applies - pass it whenever the frame has it.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 import pandas as pd
@@ -74,12 +74,14 @@ def relative_strength_rank(
     *,
     volumes_by_symbol: Mapping[str, pd.Series] | None = None,
     window: int = RS_RANK_WINDOW,
+    mask_rank_reference: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """Cross-sectional percentile, 0-100, of each symbol's ``window``-bar return.
 
     Returns a ``bar x symbol`` frame over the union of the inputs' indices.
     Symbols with no usable close series are dropped; an empty mapping yields an
-    empty frame.
+    empty frame. ``mask_rank_reference`` excludes dated non-members before
+    percentiles are calculated, without removing price history for warmup.
 
     This is the measure the gate matters most for. A percentile is
     *competitive*: an untradeable name does not merely carry a wrong number of
@@ -102,7 +104,11 @@ def relative_strength_rank(
         returns[symbol] = raw.where(tradeable_window(values, volume, lookback=window))
     if not returns:
         return pd.DataFrame()
-    return pd.DataFrame(returns).rank(axis=1, pct=True) * 100.0
+    reference = pd.DataFrame(returns)
+    # Mask returns, not closes: pre-membership prices still warm up indicators.
+    if mask_rank_reference is not None:
+        reference = mask_rank_reference(reference)
+    return reference.rank(axis=1, pct=True) * 100.0
 
 
 def relative_strength_spread(

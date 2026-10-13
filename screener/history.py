@@ -61,7 +61,19 @@ def _to_float(val) -> float | None:
     return f
 
 
+def _screen_ticker_keys(df: pd.DataFrame) -> pd.Series:
+    """Canonical screen identities, with display-symbol fallback for old frames."""
+
+    def cleaned(column: str) -> pd.Series:
+        values = df.get(column, pd.Series(index=df.index, dtype=object))
+        return values.map(lambda value: "" if pd.isna(value) else str(value).strip())
+
+    tickers = cleaned("ticker")
+    return tickers.where(tickers != "", cleaned("name"))
+
+
 def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
+    """Persist canonical ticker keys without changing the legacy row schema."""
     run_ts = datetime.now(UTC).isoformat(timespec="seconds")
     conn = _connect()
     try:
@@ -96,7 +108,9 @@ def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
             "market_cap_basic",
             "setup_score",
         ]
-        records = df.reindex(columns=columns).itertuples(index=False, name=None)
+        stored = df.reindex(columns=columns).copy()
+        stored["name"] = _screen_ticker_keys(df)
+        records = stored.itertuples(index=False, name=None)
         for rank, (symbol, description, *values) in enumerate(records, start=1):
             ticker = "" if pd.isna(symbol) else str(symbol).strip()
             if not ticker:
@@ -303,15 +317,24 @@ def previous_run(market: str, criteria: str, before_id: int) -> pd.DataFrame | N
 
 
 def diff(current: pd.DataFrame, previous: pd.DataFrame) -> tuple[list[str], list[str]]:
-    if current is None or current.empty:
-        current_set: set[str] = set()
-    else:
-        current_set = {str(t) for t in current["name"].dropna().tolist()}
-
-    if previous is None or previous.empty:
-        previous_set: set[str] = set()
-    else:
-        previous_set = {str(t) for t in previous["ticker"].dropna().tolist()}
+    """Compare canonical identities; match legacy plain keys only unambiguously."""
+    current_set = (
+        set(_screen_ticker_keys(current)) if current is not None else set()
+    ) - {""}
+    previous_set = (
+        set(_screen_ticker_keys(previous)) if previous is not None else set()
+    ) - {""}
+    # Old rows stored only a plain symbol. Recover a unique qualified key,
+    # but do not guess an exchange when more than one listing exists.
+    aliases: dict[str, set[str]] = {}
+    for ticker in current_set:
+        aliases.setdefault(ticker.split(":", 1)[-1], set()).add(ticker)
+    previous_set = {
+        next(iter(aliases[ticker]))
+        if ":" not in ticker and len(aliases.get(ticker, set())) == 1
+        else ticker
+        for ticker in previous_set
+    }
 
     added = sorted(current_set - previous_set)
     removed = sorted(previous_set - current_set)
