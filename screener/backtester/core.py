@@ -66,8 +66,8 @@ class LiquidityFilterSpec(Protocol):
 
 
 @dataclass(frozen=True)
-class PendingLimitOrder:
-    """A limit order awaiting a future bar, with no fill or cash debit yet."""
+class PendingEntryOrder:
+    """An entry order awaiting its execution bar, with no cash debit yet."""
 
     ticker: str
     signal_idx: int
@@ -425,9 +425,8 @@ class _SlotState:
     exit_signal_values: np.ndarray | None = None
     # Session-last mask aligned to ``bars.index`` when ``cfg.intraday_only``.
     session_last: np.ndarray | None = None
-    # Size used by a liquidity-sensitive FillModel and passed unchanged to
-    # Portfolio.open. Fixed-price models retain legacy portfolio sizing.
-    # See docs/adr/0001-pre-impact-entry-sizing.md.
+    # Pre-impact quote capped by exact affordability at the fixed fill price.
+    # See docs/adr/0005-causal-entry-orders-and-exact-affordability.md.
     entry_shares: float | None = None
     # Rank-exit rebalance flag (rolling engine): set between sweeps when the
     # ticker left the prior bar's top-N ranking; the shared exit sweep then
@@ -650,7 +649,7 @@ def _fire_partial_exits_at_bar(
     portfolio: Portfolio,
     fill_model: FillModel,
 ) -> None:
-    """Close configured partial-exit tranches if their target prices trade."""
+    """Execute partial and full targets in price order, full first on ties."""
     if not state.partial_targets:
         return
     pos = portfolio.get_position(state.ticker)
@@ -665,9 +664,31 @@ def _fire_partial_exits_at_bar(
         bar_open = float(bar["open"])
         high = float(bar["high"])
     bar_date = _bar_label(bars.index[i], cfg)
-    for tier_idx, target_price in enumerate(state.partial_targets):
-        if state.partial_fired[tier_idx] or high < target_price:
-            continue
+    targets = [
+        (price, tier)
+        for tier, price in enumerate(state.partial_targets)
+        if not state.partial_fired[tier]
+    ]
+    if state.target_ref is not None:
+        targets.append((state.target_ref, -1))
+    for target_price, tier_idx in sorted(targets):
+        if high < target_price:
+            break
+        pos = portfolio.get_position(state.ticker)
+        if pos is None:
+            break
+        if tier_idx == -1:
+            fill = fill_model.exit_price(
+                reason="target",
+                bar_open=bar_open,
+                level=target_price,
+                shares=pos.shares,
+                adv_shares=state.adv_shares,
+                sigma_daily=state.sigma_daily,
+                half_spread=state.half_spread,
+            )
+            portfolio.close(state.ticker, bar_date, fill, "target")
+            break
         close_shares = portfolio.partial_exit_shares(
             pos.shares, state.partial_fractions[tier_idx]
         )
@@ -752,10 +773,12 @@ def _check_exit_at_bar(
             )
             if prior_exit:
                 return _sell("exit_expr", at_open=True), "exit_expr"
+        if trail_hit and (
+            not stop_hit or cast(float, trail_ref) > cast(float, state.stop_ref)
+        ):
+            return _sell("trail", trail_ref), "trail"
         if stop_hit:
             return _sell("stop", state.stop_ref), "stop"
-        if trail_hit:
-            return _sell("trail", trail_ref), "trail"
     if exit_phase == "protection":
         return None
     if target_hit:
