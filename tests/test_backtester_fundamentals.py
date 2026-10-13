@@ -66,16 +66,23 @@ def _sample_payload() -> dict[str, object]:
         "ratios": [
             {
                 "date": "2024-01-31",
+                "acceptedDate": "2024-02-05 16:30:00",
                 "priceEarningsRatio": 20.0,
                 "priceToBookRatio": 3.0,
                 "returnOnEquity": 0.18,
                 "debtEquityRatio": 0.4,
             }
         ],
-        "key_metrics": [{"date": "2024-01-31", "peRatioTTM": 19.0}],
+        "key_metrics": [
+            {"date": "2024-01-31", "acceptedDate": "2024-02-05", "peRatioTTM": 19.0}
+        ],
         "balance": [{"date": "2024-01-31", "totalDebt": 40.0}],
         "enterprise_values": [
-            {"date": "2024-01-31", "marketCapitalization": 5_000_000_000.0}
+            {
+                "date": "2024-01-31",
+                "acceptedDate": "2024-02-05",
+                "marketCapitalization": 5_000_000_000.0,
+            }
         ],
     }
 
