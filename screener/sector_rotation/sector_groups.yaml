@@ -1,0 +1,415 @@
+# Group labels recovered from the cited video, not its proprietary constituent lists.
+# Members are small, manually selected research baskets, not exhaustive industries.
+version: 1
+market: india
+benchmark: ^CRSLDX
+benchmark_name: Nifty 500 price index
+observed_on: 2026-10-20
+source: https://www.youtube.com/watch?v=d-I6BG5F-Yg
+membership_basis: curated_research
+membership_note: >-
+  Current curated research baskets, not official indices or the video's constituent lists.
+  Historical charts use today's selected stocks and have survivorship bias.
+  Diversified companies can occur in several groups; inclusion does not imply pure-play exposure.
+  Adjusted stock returns include distributions; the Nifty 500 price benchmark does not.
+groups:
+  - id: pharma
+    name: Pharma
+    parent: Healthcare
+    kind: sector
+    video_at: '3:00'
+    members: [NSE:SUNPHARMA, NSE:CIPLA, NSE:DRREDDY, NSE:LUPIN, NSE:AUROPHARMA]
+  - id: us_generics
+    name: US generics
+    parent: Pharma
+    kind: industry
+    video_at: '3:30'
+    members: [NSE:SUNPHARMA, NSE:LUPIN, NSE:DRREDDY, NSE:AUROPHARMA]
+  - id: diagnostics
+    name: Diagnostics
+    parent: Healthcare
+    kind: industry
+    video_at: '3:40'
+    members: [NSE:LALPATHLAB, NSE:METROPOLIS, NSE:THYROCARE, NSE:VIJAYA]
+  - id: cdmo
+    name: CDMO
+    parent: Pharma
+    kind: industry
+    video_at: '4:20'
+    members: [NSE:DIVISLAB, NSE:SYNGENE, NSE:SAILIFE, NSE:PPLPHARMA]
+  - id: api
+    name: Active pharmaceutical ingredients
+    parent: Pharma
+    kind: industry
+    video_at: '4:00'
+    members: [NSE:DIVISLAB, NSE:LAURUSLABS, NSE:GRANULES, NSE:NEULANDLAB]
+  - id: branded_pharma
+    name: Branded pharma
+    parent: Pharma
+    kind: industry
+    video_at: '4:40'
+    members: [NSE:MANKIND, NSE:ALKEM, NSE:TORNTPHARM, NSE:AJANTPHARM]
+  - id: niche_cdmo
+    name: Niche CDMO
+    parent: CDMO
+    kind: industry
+    video_at: '4:40'
+    members: [NSE:SAILIFE, NSE:SYNGENE]
+    notes: Small illustrative basket; niche and generic CDMO are not exclusive classifications.
+  - id: generic_cdmo
+    name: Generic CDMO
+    parent: CDMO
+    kind: industry
+    video_at: '4:40'
+    members: [NSE:DIVISLAB, NSE:LAURUSLABS]
+  - id: capital_goods
+    name: Capital goods
+    parent: Industrials
+    kind: sector
+    video_at: '5:00'
+    members: [NSE:LT, NSE:ABB, NSE:SIEMENS, NSE:CGPOWER, NSE:THERMAX, NSE:CUMMINSIND]
+  - id: machines
+    name: Machines
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:ACE, NSE:BEML, NSE:ELGIEQUIP, NSE:LMW]
+  - id: bearings
+    name: Bearings
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:SCHAEFFLER, NSE:SKFINDIA, NSE:TIMKEN, NSE:NRBBEARING]
+  - id: pumps
+    name: Pumps
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:KIRLOSBROS, NSE:KSB, NSE:SHAKTIPUMP, NSE:WPIL]
+  - id: transformers
+    name: Transformers
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:TARIL, NSE:VOLTAMP, NSE:CGPOWER, NSE:INDOTECH]
+  - id: cables
+    name: Cables
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:POLYCAB, NSE:KEI, NSE:RRKABEL, NSE:FINCABLES]
+  - id: cranes
+    name: Cranes
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:ACE, NSE:SANGHVIMOV]
+    notes: Includes crane rental; this is not a pure manufacturer basket.
+  - id: switchgear
+    name: Switchgear
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:ABB, NSE:SIEMENS, NSE:CGPOWER, NSE:HAVELLS]
+  - id: compressors
+    name: Compressors
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:ELGIEQUIP, NSE:KIRLPNU, NSE:INGERRAND]
+  - id: valves
+    name: Valves
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:TRITONV, NSE:RAPPID, NSE:ATAM]
+  - id: motors
+    name: Motors
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:CGPOWER, NSE:ABB, NSE:SIEMENS, NSE:BBL]
+  - id: boilers
+    name: Boilers
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:THERMAX, NSE:BHEL]
+  - id: conveyors
+    name: Conveyors
+    parent: Capital goods
+    kind: industry
+    video_at: '5:00'
+    members: [NSE:ELECON, NSE:TRF, NSE:TIL]
+    notes: Material-handling exposure; diversified businesses are included.
+  - id: shipbuilding
+    name: Shipbuilding
+    parent: Industrials
+    kind: industry
+    video_at: '8:50'
+    members: [NSE:MAZDOCK, NSE:COCHINSHIP, NSE:GRSE]
+  - id: healthcare_ayurveda
+    name: Healthcare - Ayurveda
+    parent: Healthcare
+    kind: industry
+    video_at: '5:20'
+    members: [NSE:DABUR, NSE:EMAMILTD, NSE:PATANJALI]
+    notes: Diversified consumer companies with Ayurveda exposure; not pure plays.
+  - id: energy_transmission
+    name: Energy - Transmission
+    parent: Energy
+    kind: industry
+    video_at: '5:20'
+    members: [NSE:POWERGRID, NSE:ADANIENSOL, NSE:KPIL]
+  - id: cnc_machines
+    name: CNC machines
+    parent: Capital goods
+    kind: industry
+    video_at: '9:20'
+    members: [NSE:LMW, NSE:JYOTICNC, NSE:MACPOWER]
+    notes: LMW also has textile machinery exposure.
+  - id: cryogenics
+    name: Cryogenics
+    parent: Capital goods
+    kind: industry
+    video_at: '10:10'
+    members: [NSE:INOXINDIA]
+  - id: heat_exchangers
+    name: Heat exchangers
+    parent: Capital goods
+    kind: industry
+    video_at: '9:40'
+    members: [NSE:KRN, NSE:THERMAX]
+  - id: pre_engineered_buildings
+    name: Pre-engineered buildings
+    parent: Industrials
+    kind: industry
+    video_at: '10:40'
+    members: [NSE:EPACKPEB, NSE:INTERARCH, NSE:PENIND]
+  - id: investment_holding
+    name: Investment holding
+    parent: Financials
+    kind: industry
+    video_at: '10:10'
+    members: [NSE:BAJAJHLDNG, NSE:MAHSCOOTER, NSE:KICL]
+  - id: defence_aerospace
+    name: Defence and aerospace
+    parent: Industrials
+    kind: theme
+    video_at: '10:10'
+    members: [NSE:HAL, NSE:BEL, NSE:BDL, NSE:DATAPATTNS, NSE:ZENTEC]
+  - id: energy_finance
+    name: Energy - Finance corporations
+    parent: Financials
+    kind: industry
+    video_at: '11:50'
+    members: [NSE:RECLTD, NSE:PFC, NSE:IREDA]
+  - id: precision_engineering
+    name: Precision engineering
+    parent: Capital goods
+    kind: industry
+    video_at: '11:50'
+    members: [NSE:MTARTECH, NSE:AZAD, NSE:UNIPARTS, NSE:SANSERA]
+  - id: castings
+    name: Castings
+    parent: Industrials
+    kind: industry
+    video_at: '12:20'
+    members: [NSE:INDOMIM, NSE:SGIL, NSE:STEELCAS]
+  - id: home_furnishings
+    name: Home furnishings
+    parent: Consumer discretionary
+    kind: industry
+    video_at: '6:00'
+    members: [NSE:WELSPUNLIV, NSE:TRIDENT, NSE:HIMATSEIDE]
+  - id: sanitaryware_bath_fittings
+    name: Sanitaryware and bath fittings
+    parent: Consumer discretionary
+    kind: industry
+    video_at: '6:00'
+    members: [NSE:CERA, NSE:HINDWAREAP, NSE:KAJARIACER]
+  - id: chemicals_amines
+    name: Chemicals - Amines
+    parent: Materials
+    kind: industry
+    video_at: '12:50'
+    members: [NSE:ALKYLAMINE, NSE:BALAMINES]
+  - id: warehousing
+    name: Warehousing
+    parent: Logistics
+    kind: industry
+    video_at: '13:00'
+    members: [NSE:TVSSCS, NSE:TCI, NSE:MAHLOG]
+    notes: Listed logistics operators with warehousing exposure, not warehouse property indices.
+  - id: vfx_post_production
+    name: VFX and post-production
+    parent: Media
+    kind: industry
+    video_at: '13:30'
+    members: [NSE:PFOCUS, NSE:BASILIC, NSE:DIGIKORE]
+    notes: Some video examples are private or not listed on NSE; they are not fabricated as tickers.
+  - id: chemicals_fluorochemicals
+    name: Chemicals - Fluorochemicals
+    parent: Materials
+    kind: industry
+    video_at: '15:20'
+    members: [NSE:FLUOROCHEM, NSE:SRF, NSE:NAVINFLUOR]
+  - id: chemicals_oleochemicals
+    name: Chemicals - Oleo
+    parent: Materials
+    kind: industry
+    video_at: '15:20'
+    members: [NSE:FINEORG, NSE:GALAXYSURF, NSE:GODREJIND]
+    notes: Oleo derivatives and surfactant exposure; diversified businesses are included.
+  - id: packaging_bopp_films
+    name: Packaging - BOPP films
+    parent: Materials
+    kind: industry
+    video_at: '15:30'
+    members: [NSE:UFLEX, NSE:POLYPLEX, NSE:JINDALPOLY, NSE:COSMOFIRST, NSE:ESTER]
+    notes: Flexible-film producers; some members also make BOPET or other films.
+  - id: it_education
+    name: IT education
+    parent: Education
+    kind: industry
+    video_at: '15:20'
+    members: [NSE:NIITLTD, NSE:NIITMTS]
+  - id: paints
+    name: Paints
+    parent: Consumer discretionary
+    kind: industry
+    video_at: '15:20'
+    members: [NSE:ASIANPAINT, NSE:BERGEPAINT, NSE:KANSAINER, NSE:INDIGOPNTS]
+  - id: energy_renewables
+    name: Energy - Renewables
+    parent: Energy
+    kind: theme
+    video_at: '15:20'
+    members: [NSE:ADANIGREEN, NSE:NTPCGREEN, NSE:WAAREEENER, NSE:PREMIERENE]
+  - id: batteries
+    name: Batteries
+    parent: Industrials
+    kind: industry
+    video_at: '16:00'
+    members: [NSE:EXIDEIND, NSE:ARE&M, NSE:HBLENGINE]
+  - id: shipping
+    name: Shipping
+    parent: Logistics
+    kind: industry
+    video_at: '16:00'
+    members: [NSE:GESHIP, NSE:SCI]
+  - id: cement
+    name: Cement
+    parent: Materials
+    kind: industry
+    video_at: '16:00'
+    members: [NSE:ULTRACEMCO, NSE:AMBUJACEM, NSE:SHREECEM, NSE:JKCEMENT]
+  - id: tea
+    name: Tea
+    parent: Consumer staples
+    kind: industry
+    video_at: '16:50'
+    members: [NSE:JAYSREETEA, NSE:MCLEODRUSS, NSE:DTIL, NSE:UNITEDTEA]
+  - id: engineered_goods
+    name: Engineered goods
+    parent: Industrials
+    kind: industry
+    video_at: '16:50'
+    members: [NSE:ELECON, NSE:TIMKEN, NSE:THERMAX]
+  - id: hospitals
+    name: Hospitals
+    parent: Healthcare
+    kind: industry
+    video_at: '17:50'
+    members: [NSE:APOLLOHOSP, NSE:MAXHEALTH, NSE:FORTIS, NSE:NH, NSE:KIMS]
+  - id: broking
+    name: Broking
+    parent: Financials
+    kind: industry
+    video_at: '17:40'
+    members: [NSE:ANGELONE, NSE:MOTILALOFS, NSE:IIFLCAPS]
+  - id: animal_feed
+    name: Animal feed
+    parent: Agriculture
+    kind: industry
+    video_at: '17:40'
+    members: [NSE:AVANTIFEED, NSE:GODREJAGRO, NSE:APEX]
+  - id: paper_packaging
+    name: Paper and packaging
+    parent: Materials
+    kind: industry
+    video_at: '17:40'
+    members: [NSE:JKPAPER, NSE:WSTCSTPAPR, NSE:ANDHRAPAP]
+  - id: industrial_gases
+    name: Industrial gases
+    parent: Materials
+    kind: industry
+    video_at: '17:50'
+    members: [NSE:LINDEINDIA, NSE:STALLION]
+  - id: credit_rating
+    name: Credit rating
+    parent: Financials
+    kind: industry
+    video_at: '17:50'
+    members: [NSE:CRISIL, NSE:ICRA, NSE:CARERATING]
+  - id: hotels
+    name: Hotels
+    parent: Consumer discretionary
+    kind: industry
+    video_at: '17:50'
+    members: [NSE:INDHOTEL, NSE:EIHOTEL, NSE:CHALET, NSE:LEMONTREE]
+  - id: retail
+    name: Retail
+    parent: Consumer discretionary
+    kind: industry
+    video_at: '17:50'
+    members: [NSE:TRENT, NSE:DMART, NSE:VMART, NSE:SHOPERSTOP]
+  - id: quick_service_restaurants
+    name: Quick-service restaurants
+    parent: Consumer discretionary
+    kind: industry
+    video_at: '18:10'
+    members: [NSE:JUBLFOOD, NSE:DEVYANI, NSE:SAPPHIRE, NSE:WESTLIFE, NSE:RBA]
+  - id: food_platforms
+    name: Food platforms
+    parent: Consumer discretionary
+    kind: industry
+    video_at: '18:10'
+    members: [NSE:ETERNAL, NSE:SWIGGY]
+
+  - id: fertilizers
+    name: Fertilizers
+    parent: Agriculture
+    kind: industry
+    video_at: '12:00'
+    members: [NSE:COROMANDEL, NSE:CHAMBLFERT, NSE:PARADEEP, NSE:GSFC]
+  - id: edible_oils
+    name: Edible oils
+    parent: Consumer staples
+    kind: industry
+    video_at: '12:00'
+    members: [NSE:PATANJALI, NSE:AWL, NSE:GOKULAGRO]
+  - id: chemicals_agrochemicals
+    name: Chemicals - Agrochemicals
+    parent: Materials
+    kind: industry
+    video_at: '15:20'
+    members: [NSE:UPL, NSE:PIIND, NSE:SUMICHEM, NSE:SHARDACROP]
+  - id: chemicals_dyes
+    name: Chemicals - Dyes
+    parent: Materials
+    kind: industry
+    video_at: '15:20'
+    members: [NSE:SUDARSCHEM, NSE:KIRIINDUS, NSE:BODALCHEM, NSE:ASAHISONG]
+  - id: energy_refining
+    name: Energy - Refining
+    parent: Energy
+    kind: industry
+    video_at: '15:20'
+    members: [NSE:RELIANCE, NSE:IOC, NSE:BPCL, NSE:HINDPETRO]
+  - id: chemicals_specialty
+    name: Chemicals - Specialty
+    parent: Materials
+    kind: industry
+    video_at: '17:50'
+    members: [NSE:AARTIIND, NSE:DEEPAKNTR, NSE:ATUL, NSE:VINATIORGA]

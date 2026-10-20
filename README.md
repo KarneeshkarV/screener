@@ -201,6 +201,20 @@ uv run screener seasonality RELIANCE -m india --csv
 just seasonality AAPL
 ```
 
+### `sector-rotation`
+
+Compare curated Indian sector and industry baskets with Nifty 500.
+The offline HTML report includes group search, benchmark charts, and member details.
+Current selected stocks are research baskets, not historical index membership or trading signals.
+
+```bash
+uv run screener sector-rotation --list-groups
+uv run screener sector-rotation --period 3m --report rotation.html
+uv run screener sector-rotation --group cnc_machines --group shipbuilding --csv
+```
+
+See [docs/sector-rotation.md](docs/sector-rotation.md) for catalogue sources, return rules, and data limits.
+
 ### `rs-breakout`
 
 Screens for relative strength, SuperTrend, breakout, and volume setups.
