@@ -407,6 +407,7 @@ def simulate_connors_crash(
     trades, orders, equity, decisions = [], [], [], []
     total_execution = total_borrow = total_dividends = 0.0
     submitted = fills = stale_position_days = unfilled_exit_days = 0
+    exit_indicator_unavailable_days = 0
     candidates_seen = eligible_highvol = 0
     entry_ages = []
     previous_stamp = start
@@ -486,13 +487,15 @@ def simulate_connors_crash(
                     }
                 )
         for j, p in positions.items():
+            exit_indicator_available = available[j] and np.isfinite(a["crsi"][i - 1, j])
+            if not exit_indicator_available:
+                exit_indicator_unavailable_days += 1
             if not universe[j]:
-                p.exit_reason = "universe_removal"
-            elif (
-                available[j]
-                and np.isfinite(a["crsi"][i - 1, j])
-                and a["crsi"][i - 1, j] < 30
-            ):
+                p.exit_reason = p.exit_reason or "universe_removal"
+            elif not exit_indicator_available:
+                # A reset must not silently freeze a short until indicator warmup ends.
+                p.exit_reason = p.exit_reason or "exit_indicator_unavailable"
+            elif a["crsi"][i - 1, j] < 30:
                 p.exit_reason = p.exit_reason or "crsi_below_30"
         morning_marks = marks.copy()
         good_open = np.isfinite(a["open"][i])
@@ -805,6 +808,8 @@ def simulate_connors_crash(
         "reconciliation_error": reconciliation,
         "stale_position_days": stale_position_days,
         "unfilled_exit_days": unfilled_exit_days,
+        "exit_indicator_unavailable_days": exit_indicator_unavailable_days,
+        "missing_exit_indicator_policy": "queue cover at next valid open; preserve first exit reason",
         "highvol_eligible_symbol_days": eligible_highvol,
         "entry_candidate_symbol_days": candidates_seen,
         "max_entry_wait_calendar_days": max(entry_ages, default=0),
@@ -1002,7 +1007,7 @@ def run_connors_research() -> None:
         else "observations, not verified exchange effective dates; stale final snapshot is carried to end",
         "indicator_reference": "https://github.com/QuantConnect/Lean/blob/master/Indicators/ConnorsRelativeStrengthIndex.cs fetched 2026-10-20",
         "indicator_warmup": "up to 400 calendar days pre-window; continuous per-symbol indicators, not reset on universe re-entry",
-        "indicator_gap_policy": "Indicators reset after missing sessions; entries and pending limits require a complete 101-session window.",
+        "indicator_gap_policy": "Indicators reset after missing sessions; entries and pending limits require a complete 101-session window. Held shorts queue a cover when their prior exit indicator is unavailable; fill only at a valid open. Count affected position-days as exit_indicator_unavailable_days.",
         "provider_selection_policy": "Fixed Yahoo source; optional FMP fallback only if Yahoo path is absent. Observed caches still lack historical availability and cannot establish PIT.",
         "calendar": "supplied independent sessions"
         if args.pit_bundles
