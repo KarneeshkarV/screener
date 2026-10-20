@@ -1,5 +1,7 @@
-# Group labels recovered from the cited video, not its proprietary constituent lists.
-# Members are small, manually selected research baskets, not exhaustive industries.
+# The first 65 group labels are inherited from the cited video, not its constituents.
+# Added groups and all descriptions, drivers, risks and sources are independent research.
+# Members are selected research baskets, not exhaustive industries or official indices.
+# Evidence scope: docs/sector-catalogue-india-sources.md.
 version: 1
 market: india
 benchmark: ^CRSLDX
@@ -9,47 +11,78 @@ source: https://www.youtube.com/watch?v=d-I6BG5F-Yg
 membership_basis: curated_research
 membership_note: >-
   Current curated research baskets, not official indices or the video's constituent lists.
+  The first 65 group labels and video timestamps are inherited; added groups have no video provenance.
+  Details and sources were reviewed on 2026-10-20; observed_on is not a point-in-time membership date.
+  NSE main-board and SME files confirmed symbol identities, not liquidity or every product classification.
   Historical charts use today's selected stocks and have survivorship bias.
   Diversified companies can occur in several groups; inclusion does not imply pure-play exposure.
   Adjusted stock returns include distributions; the Nifty 500 price benchmark does not.
 groups:
   - id: pharma
+    description: Indian drug makers with domestic brands, export generics and specialty medicines; business mix differs by issuer.
+    drivers: [Domestic prescription demand, Export launches and currency movements]
+    risks: [Regulatory inspection findings, Generic price erosion and litigation]
+    sources: [https://sunpharma.com/, https://archives.nseindia.com/content/indices/ind_niftypharmalist.csv, &nse_equity https://archives.nseindia.com/content/equities/EQUITY_L.csv]
     name: Pharma
     parent: Healthcare
     kind: sector
     video_at: '3:00'
     members: [NSE:SUNPHARMA, NSE:CIPLA, NSE:DRREDDY, NSE:LUPIN, NSE:AUROPHARMA]
   - id: us_generics
+    description: Drug makers with US generic sales, not US-only revenue; Indian brands and other markets remain material.
+    drivers: [US product approvals and launches, Limited-competition products]
+    risks: [US FDA compliance, Buyer concentration and price erosion]
+    sources: [https://www.lupin.com/, https://archives.nseindia.com/content/indices/ind_niftypharmalist.csv, *nse_equity]
     name: US generics
     parent: Pharma
     kind: industry
     video_at: '3:30'
     members: [NSE:SUNPHARMA, NSE:LUPIN, NSE:DRREDDY, NSE:AUROPHARMA]
   - id: diagnostics
+    description: Pathology and diagnostic service networks; Vijaya adds substantial radiology exposure.
+    drivers: [Test volumes and preventive screening, Collection-network expansion]
+    risks: [Local price competition, Quality failures and acquisition costs]
+    sources: [https://www.lalpathlabs.com/, https://archives.nseindia.com/content/indices/ind_niftyhealthcarelist.csv, *nse_equity]
     name: Diagnostics
     parent: Healthcare
     kind: industry
     video_at: '3:40'
     members: [NSE:LALPATHLAB, NSE:METROPOLIS, NSE:THYROCARE, NSE:VIJAYA]
   - id: cdmo
+    description: Contract drug research, development and manufacturing; Divis and other members also sell their own APIs.
+    drivers: [Outsourced research spending, Commercial manufacturing contracts]
+    risks: [Customer and molecule concentration, Plant compliance and project delays]
+    sources: [https://www.syngeneintl.com/, *nse_equity]
     name: CDMO
     parent: Pharma
     kind: industry
     video_at: '4:20'
     members: [NSE:DIVISLAB, NSE:SYNGENE, NSE:SAILIFE, NSE:PPLPHARMA]
   - id: api
+    description: Bulk drug and intermediate producers with different generic, custom-synthesis and formulation mixes.
+    drivers: [Customer restocking, Outsourcing and new molecule demand]
+    risks: [Input price swings, Regulatory actions and customer concentration]
+    sources: [https://www.divislabs.com/, *nse_equity]
     name: Active pharmaceutical ingredients
     parent: Pharma
     kind: industry
     video_at: '4:00'
     members: [NSE:DIVISLAB, NSE:LAURUSLABS, NSE:GRANULES, NSE:NEULANDLAB]
   - id: branded_pharma
+    description: Drug makers with branded prescription franchises; exports and unbranded products prevent pure domestic-brand exposure.
+    drivers: [Prescription growth, New therapies and distribution reach]
+    risks: [Drug price controls, Sales-practice rules and product quality]
+    sources: [https://www.mankindpharma.com/, https://archives.nseindia.com/content/indices/ind_niftypharmalist.csv, *nse_equity]
     name: Branded pharma
     parent: Pharma
     kind: industry
     video_at: '4:40'
     members: [NSE:MANKIND, NSE:ALKEM, NSE:TORNTPHARM, NSE:AJANTPHARM]
   - id: niche_cdmo
+    description: Small research and complex-development basket; this is a curated distinction, not a formal CDMO segment.
+    drivers: [Biotech research funding, Complex development mandates]
+    risks: [Client project cancellations, Small basket and long development cycles]
+    sources: [https://www.sailife.com/, *nse_equity]
     name: Niche CDMO
     parent: CDMO
     kind: industry
@@ -57,48 +90,80 @@ groups:
     members: [NSE:SAILIFE, NSE:SYNGENE]
     notes: Small illustrative basket; niche and generic CDMO are not exclusive classifications.
   - id: generic_cdmo
+    description: Custom synthesis and API outsourcing exposure; members also have non-contract generic and formulation businesses.
+    drivers: [API outsourcing, Commercial project scale-up]
+    risks: [Customer concentration, Capacity underuse and regulatory findings]
+    sources: [https://www.lauruslabs.com/, *nse_equity]
     name: Generic CDMO
     parent: CDMO
     kind: industry
     video_at: '4:40'
     members: [NSE:DIVISLAB, NSE:LAURUSLABS]
   - id: capital_goods
+    description: Equipment and engineering businesses serving industrial investment, infrastructure and electrification; LT includes construction.
+    drivers: [Private and public capital spending, Order conversion and factory utilization]
+    risks: [Project delays and working capital, Commodity costs and order cyclicality]
+    sources: [https://www.larsentoubro.com/, https://archives.nseindia.com/content/indices/ind_niftyenergylist.csv, *nse_equity]
     name: Capital goods
     parent: Industrials
     kind: sector
     video_at: '5:00'
     members: [NSE:LT, NSE:ABB, NSE:SIEMENS, NSE:CGPOWER, NSE:THERMAX, NSE:CUMMINSIND]
   - id: machines
+    description: Construction equipment, compressors and textile or machine-tool businesses; this is a mixed machinery basket.
+    drivers: [Factory and infrastructure investment, Equipment replacement demand]
+    risks: [Capital spending downturns, Dealer inventories and import competition]
+    sources: [https://www.lmwglobal.com/, *nse_equity]
     name: Machines
     parent: Capital goods
     kind: industry
     video_at: '5:00'
     members: [NSE:ACE, NSE:BEML, NSE:ELGIEQUIP, NSE:LMW]
   - id: bearings
+    description: Bearing and motion-component makers serving vehicle and industrial demand; product and aftermarket mixes differ.
+    drivers: [Vehicle production and replacement, Industrial utilization and rail investment]
+    risks: [Steel input costs, Import competition and customer concentration]
+    sources: [https://www.schaeffler.co.in/, *nse_equity]
     name: Bearings
     parent: Capital goods
     kind: industry
     video_at: '5:00'
     members: [NSE:SCHAEFFLER, NSE:SKFINDIA, NSE:TIMKEN, NSE:NRBBEARING]
   - id: pumps
+    description: Water and industrial pump makers; Shakti adds solar irrigation exposure rather than identical end markets.
+    drivers: [Water infrastructure orders, Irrigation and industrial demand]
+    risks: [Tender delays and receivables, Subsidy dependence and raw material costs]
+    sources: [https://www.kirloskarpumps.com/, *nse_equity]
     name: Pumps
     parent: Capital goods
     kind: industry
     video_at: '5:00'
     members: [NSE:KIRLOSBROS, NSE:KSB, NSE:SHAKTIPUMP, NSE:WPIL]
   - id: transformers
+    description: Transformer manufacturers with utility and industrial customers; CG Power also has motors and other equipment.
+    drivers: [Grid expansion and replacement, Renewable power connections]
+    risks: [Copper and electrical steel costs, Order execution and customer payments]
+    sources: [https://www.voltamptransformers.com/, *nse_equity]
     name: Transformers
     parent: Capital goods
     kind: industry
     video_at: '5:00'
     members: [NSE:TARIL, NSE:VOLTAMP, NSE:CGPOWER, NSE:INDOTECH]
   - id: cables
+    description: Wire and cable makers serving construction, utilities and industry; consumer electrical businesses add mixed exposure.
+    drivers: [Housing and grid investment, Shift to branded cables]
+    risks: [Copper price and inventory swings, Dealer credit and competition]
+    sources: [https://polycab.com/, *nse_equity]
     name: Cables
     parent: Capital goods
     kind: industry
     video_at: '5:00'
     members: [NSE:POLYCAB, NSE:KEI, NSE:RRKABEL, NSE:FINCABLES]
   - id: cranes
+    description: Crane manufacturing and rental exposure; ACE and Sanghvi Movers have different capital and utilization models.
+    drivers: [Infrastructure and plant construction, Rental utilization and fleet additions]
+    risks: [Project delays, Debt and equipment downtime]
+    sources: [https://www.sanghvicranes.com/, *nse_equity]
     name: Cranes
     parent: Capital goods
     kind: industry
@@ -106,36 +171,60 @@ groups:
     members: [NSE:ACE, NSE:SANGHVIMOV]
     notes: Includes crane rental; this is not a pure manufacturer basket.
   - id: switchgear
+    description: Electrical control and distribution equipment within diversified industrial and consumer electrical companies.
+    drivers: [Electrification and automation spending, Building electrical demand]
+    risks: [Project execution delays, Product price competition and component shortages]
+    sources: [https://new.abb.com/indian-subcontinent, https://archives.nseindia.com/content/indices/ind_niftyenergylist.csv, *nse_equity]
     name: Switchgear
     parent: Capital goods
     kind: industry
     video_at: '5:00'
     members: [NSE:ABB, NSE:SIEMENS, NSE:CGPOWER, NSE:HAVELLS]
   - id: compressors
+    description: Air and industrial compressor producers serving factories and process industries; Kirloskar Pneumatic also has refrigeration.
+    drivers: [Factory investment and maintenance, Energy-efficient equipment replacement]
+    risks: [Industrial spending cycles, Input costs and imported competition]
+    sources: [https://www.elgi.com/in/, *nse_equity]
     name: Compressors
     parent: Capital goods
     kind: industry
     video_at: '5:00'
     members: [NSE:ELGIEQUIP, NSE:KIRLPNU, NSE:INGERRAND]
   - id: valves
+    description: Industrial and tyre-valve producers; Triton has tyre-valve exposure and Rappid is an SME listing.
+    drivers: [Process-industry investment, Vehicle and replacement demand]
+    risks: [Different end-market cycles, Small-cap liquidity and raw material costs]
+    sources: [https://www.atamvalves.in/, *nse_equity, &nse_sme https://archives.nseindia.com/emerge/corporates/content/SME_EQUITY_L.csv]
     name: Valves
     parent: Capital goods
     kind: industry
     video_at: '5:00'
     members: [NSE:TRITONV, NSE:RAPPID, NSE:ATAM]
   - id: motors
+    description: Electric motor and drive exposure within diversified equipment businesses; not a motor-only revenue basket.
+    drivers: [Factory automation, Energy-efficiency upgrades]
+    risks: [Industrial investment slowdown, Copper costs and imported components]
+    sources: [https://www.cgglobal.com/, https://archives.nseindia.com/content/indices/ind_niftyenergylist.csv, *nse_equity]
     name: Motors
     parent: Capital goods
     kind: industry
     video_at: '5:00'
     members: [NSE:CGPOWER, NSE:ABB, NSE:SIEMENS, NSE:BBL]
   - id: boilers
+    description: Steam, heating and power equipment exposure; BHEL includes large power projects and Thermax includes environmental systems.
+    drivers: [Process heat demand, Power-plant and industrial investment]
+    risks: [Long project cycles, Receivable delays and execution losses]
+    sources: [https://www.thermaxglobal.com/, *nse_equity]
     name: Boilers
     parent: Capital goods
     kind: industry
     video_at: '5:00'
     members: [NSE:THERMAX, NSE:BHEL]
   - id: conveyors
+    description: Material-handling and transmission-equipment companies; cranes and gears mean this is not a conveyor-only basket.
+    drivers: [Mining and bulk-material projects, Plant modernization]
+    risks: [Cyclical orders, Execution and small-cap liquidity]
+    sources: [https://www.elecon.com/, *nse_equity]
     name: Conveyors
     parent: Capital goods
     kind: industry
@@ -143,12 +232,20 @@ groups:
     members: [NSE:ELECON, NSE:TRF, NSE:TIL]
     notes: Material-handling exposure; diversified businesses are included.
   - id: shipbuilding
+    description: Government-controlled shipyards with naval and commercial vessel construction and repair exposure.
+    drivers: [Naval procurement, Ship repair and export orders]
+    risks: [Dependence on government contracts, Delivery delays and cost overruns]
+    sources: [https://mazagondock.in/, *nse_equity]
     name: Shipbuilding
     parent: Industrials
     kind: industry
     video_at: '8:50'
     members: [NSE:MAZDOCK, NSE:COCHINSHIP, NSE:GRSE]
   - id: healthcare_ayurveda
+    description: Consumer brands with Ayurveda or herbal products; foods, personal care and edible oils dilute healthcare exposure.
+    drivers: [Branded herbal product demand, Rural distribution and household spending]
+    risks: [Product claims and quality rules, Commodity costs and competition]
+    sources: [https://www.dabur.com/, https://archives.nseindia.com/content/indices/ind_niftyfmcglist.csv, *nse_equity]
     name: Healthcare - Ayurveda
     parent: Healthcare
     kind: industry
@@ -156,12 +253,20 @@ groups:
     members: [NSE:DABUR, NSE:EMAMILTD, NSE:PATANJALI]
     notes: Diversified consumer companies with Ayurveda exposure; not pure plays.
   - id: energy_transmission
+    description: Grid ownership and transmission construction exposure; KPIL is an EPC contractor, not a comparable regulated utility.
+    drivers: [Grid connections and interregional capacity, Transmission project awards]
+    risks: [Regulatory tariff decisions, Construction delays and leverage]
+    sources: [https://www.powergrid.in/en, https://archives.nseindia.com/content/indices/ind_niftyenergylist.csv, *nse_equity]
     name: Energy - Transmission
     parent: Energy
     kind: industry
     video_at: '5:20'
     members: [NSE:POWERGRID, NSE:ADANIENSOL, NSE:KPIL]
   - id: cnc_machines
+    description: Machine-tool suppliers with CNC exposure; LMW also sells textile machinery and has aerospace activities.
+    drivers: [Manufacturing capacity additions, Automation and import substitution]
+    risks: [Order cyclicality, Customer concentration and small-cap liquidity]
+    sources: [https://jyoti.co.in/, *nse_equity]
     name: CNC machines
     parent: Capital goods
     kind: industry
@@ -169,72 +274,120 @@ groups:
     members: [NSE:LMW, NSE:JYOTICNC, NSE:MACPOWER]
     notes: LMW also has textile machinery exposure.
   - id: cryogenics
+    description: Single-stock cryogenic equipment exposure through Inox India; no listed-peer diversification is implied.
+    drivers: [Industrial gas and LNG equipment orders, Export projects]
+    risks: [Single-company concentration, Project timing and customer capital spending]
+    sources: [https://www.inoxcva.com/, *nse_equity]
     name: Cryogenics
     parent: Capital goods
     kind: industry
     video_at: '10:10'
     members: [NSE:INOXINDIA]
   - id: heat_exchangers
+    description: Heat-transfer equipment exposure; KRN serves HVAC while Thermax includes broader energy and environmental systems.
+    drivers: [Cooling equipment demand, Industrial heat-recovery investment]
+    risks: [Customer concentration, Metal costs and capacity ramp-up]
+    sources: [https://krnheatexchanger.com/, *nse_equity]
     name: Heat exchangers
     parent: Capital goods
     kind: industry
     video_at: '9:40'
     members: [NSE:KRN, NSE:THERMAX]
   - id: pre_engineered_buildings
+    description: Steel building systems for warehouses, factories and commercial construction; Pennar has other engineered products.
+    drivers: [Industrial and warehouse construction, Use of prefabricated steel structures]
+    risks: [Steel price movements, Execution delays and receivables]
+    sources: [https://www.interarchbuildings.com/, *nse_equity]
     name: Pre-engineered buildings
     parent: Industrials
     kind: industry
     video_at: '10:40'
     members: [NSE:EPACKPEB, NSE:INTERARCH, NSE:PENIND]
   - id: investment_holding
+    description: Listed holding companies whose values depend on underlying investments, dividends and holding-company discounts.
+    drivers: [Underlying portfolio earnings, Dividends and discount changes]
+    risks: [Persistent valuation discounts, Concentration and capital allocation]
+    sources: [https://www.bhil.in/, *nse_equity]
     name: Investment holding
     parent: Financials
     kind: industry
     video_at: '10:10'
     members: [NSE:BAJAJHLDNG, NSE:MAHSCOOTER, NSE:KICL]
   - id: defence_aerospace
+    description: Aircraft, electronics, missiles and defence systems suppliers; procurement exposure differs across platforms and components.
+    drivers: [Defence procurement and exports, Domestic sourcing policy]
+    risks: [Government customer concentration, Qualification delays and execution costs]
+    sources: [https://hal-india.co.in/, *nse_equity]
     name: Defence and aerospace
     parent: Industrials
     kind: theme
     video_at: '10:10'
     members: [NSE:HAL, NSE:BEL, NSE:BDL, NSE:DATAPATTNS, NSE:ZENTEC]
   - id: energy_finance
+    description: State-controlled lenders to power and renewable projects; PFC owns REC, creating overlapping economic exposure.
+    drivers: [Power-sector investment and loan growth, Funding spreads]
+    risks: [Borrower concentration and credit losses, Rate changes and policy-directed lending]
+    sources: [https://www.pfcindia.com/, https://archives.nseindia.com/content/indices/ind_niftyfinancelist.csv, *nse_equity]
     name: Energy - Finance corporations
     parent: Financials
     kind: industry
     video_at: '11:50'
     members: [NSE:RECLTD, NSE:PFC, NSE:IREDA]
   - id: precision_engineering
+    description: Precision components for aerospace, energy, vehicles and off-highway machinery; end-market exposure is mixed.
+    drivers: [Export sourcing contracts, Customer production programs]
+    risks: [Customer concentration, Qualification costs and production ramp-up]
+    sources: [https://www.sansera.in/, *nse_equity]
     name: Precision engineering
     parent: Capital goods
     kind: industry
     video_at: '11:50'
     members: [NSE:MTARTECH, NSE:AZAD, NSE:UNIPARTS, NSE:SANSERA]
   - id: castings
+    description: Metal-component basket spanning conventional castings and INDO-MIM metal injection moulding; processes are not equivalent.
+    drivers: [Industrial and wind-equipment orders, Export component demand]
+    risks: [Customer concentration, Energy and metal costs]
+    sources: [https://www.indo-mim.com/, *nse_equity]
     name: Castings
     parent: Industrials
     kind: industry
     video_at: '12:20'
     members: [NSE:INDOMIM, NSE:SGIL, NSE:STEELCAS]
   - id: home_furnishings
+    description: Export-oriented home textile makers with towel, bedding and fabric exposure; not domestic furniture retailers.
+    drivers: [US and European retail orders, Cotton prices and currency movements]
+    risks: [Retail inventory corrections, Trade tariffs and customer concentration]
+    sources: [https://www.welspunliving.com/, *nse_equity]
     name: Home furnishings
     parent: Consumer discretionary
     kind: industry
     video_at: '6:00'
     members: [NSE:WELSPUNLIV, NSE:TRIDENT, NSE:HIMATSEIDE]
   - id: sanitaryware_bath_fittings
+    description: Bathroom and building-finish exposure; Kajaria is principally a tile producer and Hindware Home has broader consumer products.
+    drivers: [Housing completions and renovation, Branded distribution growth]
+    risks: [Housing slowdown, Fuel costs and product price competition]
+    sources: [https://www.cera-india.com/, *nse_equity]
     name: Sanitaryware and bath fittings
     parent: Consumer discretionary
     kind: industry
     video_at: '6:00'
     members: [NSE:CERA, NSE:HINDWAREAP, NSE:KAJARIACER]
   - id: chemicals_amines
+    description: Small amines and derivatives basket serving pharmaceutical, crop-protection and other chemical customers.
+    drivers: [Downstream chemical production, Domestic substitution and exports]
+    risks: [New-capacity price pressure, Feedstock costs and environmental compliance]
+    sources: [https://www.alkylamines.com/, *nse_equity]
     name: Chemicals - Amines
     parent: Materials
     kind: industry
     video_at: '12:50'
     members: [NSE:ALKYLAMINE, NSE:BALAMINES]
   - id: warehousing
+    description: Supply-chain and freight operators with warehousing services; not a warehouse property or rental-yield index.
+    drivers: [Outsourced logistics demand, Warehouse occupancy and contract wins]
+    risks: [Low-margin contract execution, Working capital and customer concentration]
+    sources: [https://www.tvsscs.com/, *nse_equity]
     name: Warehousing
     parent: Logistics
     kind: industry
@@ -242,6 +395,10 @@ groups:
     members: [NSE:TVSSCS, NSE:TCI, NSE:MAHLOG]
     notes: Listed logistics operators with warehousing exposure, not warehouse property indices.
   - id: vfx_post_production
+    description: Visual-effects and post-production studios serving film and television; Basilic and Digikore are SME listings.
+    drivers: [Film and streaming production spending, International outsourcing]
+    risks: [Project cancellations and client concentration, SME liquidity and technology disruption]
+    sources: [https://www.primefocus.com/, *nse_equity, *nse_sme]
     name: VFX and post-production
     parent: Media
     kind: industry
@@ -249,12 +406,20 @@ groups:
     members: [NSE:PFOCUS, NSE:BASILIC, NSE:DIGIKORE]
     notes: Some video examples are private or not listed on NSE; they are not fabricated as tickers.
   - id: chemicals_fluorochemicals
+    description: Refrigerants, fluoropolymers and fluorine chemistry exposure; SRF also has packaging films and technical textiles.
+    drivers: [Refrigerant and polymer demand, Specialty fluorine contracts]
+    risks: [Environmental restrictions, Capacity cycles and export pricing]
+    sources: [https://www.gfl.co.in/, *nse_equity]
     name: Chemicals - Fluorochemicals
     parent: Materials
     kind: industry
     video_at: '15:20'
     members: [NSE:FLUOROCHEM, NSE:SRF, NSE:NAVINFLUOR]
   - id: chemicals_oleochemicals
+    description: Oleo-derived additives and surfactants; Godrej Industries has substantial non-chemical investments and businesses.
+    drivers: [Personal-care and food ingredient demand, Customer formulation changes]
+    risks: [Vegetable oil feedstock costs, Customer concentration and mixed business exposure]
+    sources: [https://www.fineorganics.com/, *nse_equity]
     name: Chemicals - Oleo
     parent: Materials
     kind: industry
@@ -262,6 +427,10 @@ groups:
     members: [NSE:FINEORG, NSE:GALAXYSURF, NSE:GODREJIND]
     notes: Oleo derivatives and surfactant exposure; diversified businesses are included.
   - id: packaging_bopp_films
+    description: Flexible packaging film producers with BOPP, BOPET and other products; this is not a pure BOPP basket.
+    drivers: [Packaged goods demand, Film capacity utilization]
+    risks: [Industry overcapacity, Polymer costs and export restrictions]
+    sources: [https://www.cosmofirst.com/, *nse_equity]
     name: Packaging - BOPP films
     parent: Materials
     kind: industry
@@ -269,108 +438,180 @@ groups:
     members: [NSE:UFLEX, NSE:POLYPLEX, NSE:JINDALPOLY, NSE:COSMOFIRST, NSE:ESTER]
     notes: Flexible-film producers; some members also make BOPET or other films.
   - id: it_education
+    description: Learning businesses spanning individual skills and corporate training; NIIT and NIIT MTS are separate listed companies.
+    drivers: [Corporate training budgets, Demand for digital skills]
+    risks: [Client budget cuts, Enrollment weakness and small basket size]
+    sources: [https://www.niitmts.com/, *nse_equity]
     name: IT education
     parent: Education
     kind: industry
     video_at: '15:20'
     members: [NSE:NIITLTD, NSE:NIITMTS]
   - id: paints
+    description: Decorative and industrial coating makers with different customer and distribution mixes.
+    drivers: [Housing repainting and construction, Premium product demand]
+    risks: [New competitor capacity, Petrochemical input costs and discounting]
+    sources: [https://www.asianpaints.com/, https://archives.nseindia.com/content/indices/ind_niftyconsumerdurableslist.csv, *nse_equity]
     name: Paints
     parent: Consumer discretionary
     kind: industry
     video_at: '15:20'
     members: [NSE:ASIANPAINT, NSE:BERGEPAINT, NSE:KANSAINER, NSE:INDIGOPNTS]
   - id: energy_renewables
+    description: Mixed renewable generation and solar manufacturing basket; module makers do not share a utility tariff model.
+    drivers: [Renewable power procurement, Solar capacity installations]
+    risks: [Policy and trade-rule changes, Leverage and equipment pricing]
+    sources: [https://www.adanigreenenergy.com/, https://archives.nseindia.com/content/indices/ind_niftyenergylist.csv, *nse_equity]
     name: Energy - Renewables
     parent: Energy
     kind: theme
     video_at: '15:20'
     members: [NSE:ADANIGREEN, NSE:NTPCGREEN, NSE:WAAREEENER, NSE:PREMIERENE]
   - id: batteries
+    description: Lead-acid, industrial and newer battery technology exposure; HBL Engineering also has railway electronics businesses.
+    drivers: [Vehicle replacement demand, Industrial storage and new cell investment]
+    risks: [Lead prices and recycling rules, Technology changes and new-factory execution]
+    sources: [https://www.exideindustries.com/, *nse_equity]
     name: Batteries
     parent: Industrials
     kind: industry
     video_at: '16:00'
     members: [NSE:EXIDEIND, NSE:ARE&M, NSE:HBLENGINE]
   - id: shipping
+    description: Ocean shipping operators with tanker, dry-bulk and other vessel exposure; earnings depend on fleet mix.
+    drivers: [Freight rates and vessel utilization, Global commodity trade]
+    risks: [Freight cycle reversals, Fuel costs and fleet capital spending]
+    sources: [https://www.greatship.com/, *nse_equity]
     name: Shipping
     parent: Logistics
     kind: industry
     video_at: '16:00'
     members: [NSE:GESHIP, NSE:SCI]
   - id: cement
+    description: Cement makers serving Indian construction; regional capacity, fuel sourcing and acquisitions affect each issuer.
+    drivers: [Infrastructure and housing demand, Regional capacity utilization]
+    risks: [Coal and freight costs, Capacity additions and price competition]
+    sources: [https://www.ultratechcement.com/, https://archives.nseindia.com/content/indices/ind_niftycommoditieslist.csv, *nse_equity]
     name: Cement
     parent: Materials
     kind: industry
     video_at: '16:00'
     members: [NSE:ULTRACEMCO, NSE:AMBUJACEM, NSE:SHREECEM, NSE:JKCEMENT]
   - id: tea
+    description: Plantation and bulk-tea exposure rather than diversified packaged beverage brands; several members are small companies.
+    drivers: [Tea auction prices, Crop yields and export demand]
+    risks: [Weather and labour costs, Leverage and limited trading liquidity]
+    sources: [https://www.jayshreetea.com/, *nse_equity]
     name: Tea
     parent: Consumer staples
     kind: industry
     video_at: '16:50'
     members: [NSE:JAYSREETEA, NSE:MCLEODRUSS, NSE:DTIL, NSE:UNITEDTEA]
   - id: engineered_goods
+    description: Mixed industrial engineering basket spanning gears, bearings, heating and environmental systems.
+    drivers: [Industrial utilization and replacement, Factory capital spending]
+    risks: [Order cyclicality, Input inflation and execution costs]
+    sources: [https://www.elecon.com/, *nse_equity]
     name: Engineered goods
     parent: Industrials
     kind: industry
     video_at: '16:50'
     members: [NSE:ELECON, NSE:TIMKEN, NSE:THERMAX]
   - id: hospitals
+    description: Hospital operators with different regional, specialty and occupancy mixes; Apollo also has pharmacy-related exposure.
+    drivers: [Patient volumes and treatment mix, New bed capacity and occupancy]
+    risks: [Price regulation and clinical quality, Staffing costs and expansion spending]
+    sources: [https://www.apollohospitals.com/, https://archives.nseindia.com/content/indices/ind_niftyhealthcarelist.csv, *nse_equity]
     name: Hospitals
     parent: Healthcare
     kind: industry
     video_at: '17:50'
     members: [NSE:APOLLOHOSP, NSE:MAXHEALTH, NSE:FORTIS, NSE:NH, NSE:KIMS]
   - id: broking
+    description: Securities brokers with wealth, distribution or investment-banking businesses; not a uniform transaction-fee basket.
+    drivers: [Cash and derivatives activity, Client assets and new accounts]
+    risks: [Trading-rule changes, Market declines and technology outages]
+    sources: [https://www.angelone.in/, *nse_equity]
     name: Broking
     parent: Financials
     kind: industry
     video_at: '17:40'
     members: [NSE:ANGELONE, NSE:MOTILALOFS, NSE:IIFLCAPS]
   - id: animal_feed
+    description: Animal and aquaculture feed exposure; Apex is primarily shrimp processing and exports rather than a direct feed peer.
+    drivers: [Livestock and shrimp production, Feed volumes and export demand]
+    risks: [Disease and export restrictions, Soymeal and fishmeal costs]
+    sources: [https://www.avantifeeds.com/, *nse_equity]
     name: Animal feed
     parent: Agriculture
     kind: industry
     video_at: '17:40'
     members: [NSE:AVANTIFEED, NSE:GODREJAGRO, NSE:APEX]
   - id: paper_packaging
+    description: Paper and paperboard producers with different writing-paper and packaging mixes; not all sales are packaging.
+    drivers: [Paper and packaging demand, Capacity utilization]
+    risks: [Wood and energy costs, Import competition and paper price cycles]
+    sources: [https://www.jkpaper.com/, *nse_equity]
     name: Paper and packaging
     parent: Materials
     kind: industry
     video_at: '17:40'
     members: [NSE:JKPAPER, NSE:WSTCSTPAPR, NSE:ANDHRAPAP]
   - id: industrial_gases
+    description: Industrial gas production and supply; Stallion adds refrigerants and specialty gases with a different scale and customer mix.
+    drivers: [Industrial oxygen and nitrogen demand, New on-site gas contracts]
+    risks: [Customer plant shutdowns, Power costs and small basket concentration]
+    sources: [https://www.linde.in/, *nse_equity]
     name: Industrial gases
     parent: Materials
     kind: industry
     video_at: '17:50'
     members: [NSE:LINDEINDIA, NSE:STALLION]
   - id: credit_rating
+    description: Credit-rating agencies with research and analytics operations; rating fees are only part of some companies' revenue.
+    drivers: [Debt issuance and bank loan ratings, Analytics outsourcing]
+    risks: [Regulatory and conflict-of-interest rules, Reputational damage and client concentration]
+    sources: [https://www.crisil.com/, *nse_equity]
     name: Credit rating
     parent: Financials
     kind: industry
     video_at: '17:50'
     members: [NSE:CRISIL, NSE:ICRA, NSE:CARERATING]
   - id: hotels
+    description: Hotel owners and operators across premium and midscale travel; asset ownership and management-fee models differ.
+    drivers: [Room rates and occupancy, Business and leisure travel]
+    risks: [Travel downturns, High fixed costs and new room supply]
+    sources: [https://www.ihcltata.com/, *nse_equity]
     name: Hotels
     parent: Consumer discretionary
     kind: industry
     video_at: '17:50'
     members: [NSE:INDHOTEL, NSE:EIHOTEL, NSE:CHALET, NSE:LEMONTREE]
   - id: retail
+    description: Physical retail chains spanning apparel, groceries and department stores; store economics differ materially.
+    drivers: [Same-store sales, Store expansion and household spending]
+    risks: [Inventory markdowns, Lease costs and online competition]
+    sources: [https://trentlimited.com/, *nse_equity]
     name: Retail
     parent: Consumer discretionary
     kind: industry
     video_at: '17:50'
     members: [NSE:TRENT, NSE:DMART, NSE:VMART, NSE:SHOPERSTOP]
   - id: quick_service_restaurants
+    description: Listed restaurant franchise operators across pizza, burgers and other formats; brands and territory rights differ.
+    drivers: [Same-store transactions, Store openings and delivery demand]
+    risks: [Food and wage inflation, Royalty costs and weak store payback]
+    sources: [https://www.jubilantfoodworks.com/, *nse_equity]
     name: Quick-service restaurants
     parent: Consumer discretionary
     kind: industry
     video_at: '18:10'
     members: [NSE:JUBLFOOD, NSE:DEVYANI, NSE:SAPPHIRE, NSE:WESTLIFE, NSE:RBA]
   - id: food_platforms
+    description: Food delivery and quick-commerce platforms; Eternal also includes other businesses and is not food-delivery-only.
+    drivers: [Order frequency and spending, Advertising and delivery monetization]
+    risks: [Quick-commerce funding competition, Worker rules and sustained cash burn]
+    sources: [https://www.eternal.com/, *nse_equity]
     name: Food platforms
     parent: Consumer discretionary
     kind: industry
@@ -378,38 +619,434 @@ groups:
     members: [NSE:ETERNAL, NSE:SWIGGY]
 
   - id: fertilizers
+    description: Fertilizer and crop-nutrition makers with differing urea, phosphate and other chemical mixes.
+    drivers: [Farm nutrient demand, Subsidy policy and plant utilization]
+    risks: [Subsidy payment delays, Gas and imported feedstock costs]
+    sources: [https://www.coromandel.biz/, *nse_equity]
     name: Fertilizers
     parent: Agriculture
     kind: industry
     video_at: '12:00'
     members: [NSE:COROMANDEL, NSE:CHAMBLFERT, NSE:PARADEEP, NSE:GSFC]
   - id: edible_oils
+    description: Edible oil processors and consumer brands; food products and oleochemicals add non-oil exposure.
+    drivers: [Packaged oil demand, Import duties and oilseed crushing spreads]
+    risks: [Global vegetable oil prices, Inventory losses and policy changes]
+    sources: [https://www.awl.in/, https://archives.nseindia.com/content/indices/ind_niftyfmcglist.csv, *nse_equity]
     name: Edible oils
     parent: Consumer staples
     kind: industry
     video_at: '12:00'
     members: [NSE:PATANJALI, NSE:AWL, NSE:GOKULAGRO]
   - id: chemicals_agrochemicals
+    description: Crop-protection and custom-synthesis businesses with different branded, generic and contract manufacturing mixes.
+    drivers: [Farm crop economics, Customer restocking and outsourcing]
+    risks: [Pesticide restrictions, Weather and channel inventories]
+    sources: [https://www.piindustries.com/, *nse_equity]
     name: Chemicals - Agrochemicals
     parent: Materials
     kind: industry
     video_at: '15:20'
     members: [NSE:UPL, NSE:PIIND, NSE:SUMICHEM, NSE:SHARDACROP]
   - id: chemicals_dyes
+    description: Colour chemistry basket spanning pigments, dyes and intermediates; Sudarshan is primarily a pigment producer.
+    drivers: [Textile and coatings production, Export colourant demand]
+    risks: [Environmental restrictions, Feedstock prices and customer concentration]
+    sources: [https://www.sudarshan.com/, *nse_equity]
     name: Chemicals - Dyes
     parent: Materials
     kind: industry
     video_at: '15:20'
     members: [NSE:SUDARSCHEM, NSE:KIRIINDUS, NSE:BODALCHEM, NSE:ASAHISONG]
   - id: energy_refining
+    description: Refining and fuel marketing companies; Reliance also has major retail, telecom and petrochemical exposure.
+    drivers: [Refining margins, Domestic fuel demand and marketing spreads]
+    risks: [Crude volatility and inventory losses, Policy controls and mixed conglomerate exposure]
+    sources: [https://www.iocl.com/, https://archives.nseindia.com/content/indices/ind_niftyoilgaslist.csv, *nse_equity]
     name: Energy - Refining
     parent: Energy
     kind: industry
     video_at: '15:20'
     members: [NSE:RELIANCE, NSE:IOC, NSE:BPCL, NSE:HINDPETRO]
   - id: chemicals_specialty
+    description: Specialty and intermediate chemical producers serving multiple industries; commodity-linked products remain material.
+    drivers: [Customer restocking and outsourcing, New product capacity utilization]
+    risks: [Chemical capacity oversupply, Feedstock swings and environmental compliance]
+    sources: [https://www.aarti-industries.com/, *nse_equity]
     name: Chemicals - Specialty
     parent: Materials
     kind: industry
     video_at: '17:50'
     members: [NSE:AARTIIND, NSE:DEEPAKNTR, NSE:ATUL, NSE:VINATIORGA]
+
+  # Independent research additions. No video timestamps or video-derived membership.
+  - id: banks
+    name: Banks
+    parent: Financials
+    kind: sector
+    members: [NSE:HDFCBANK, NSE:ICICIBANK, NSE:SBIN, NSE:AXISBANK, NSE:KOTAKBANK, NSE:BANKBARODA]
+    description: Deposit-taking banks across private and public ownership; this selected basket is not the Nifty Bank index.
+    drivers: [Loan growth and deposit funding, Net interest margins and credit costs]
+    risks: [Bad loans and deposit competition, Rate changes and regulatory capital needs]
+    sources: [https://www.hdfcbank.com/, https://archives.nseindia.com/content/indices/ind_niftybanklist.csv, *nse_equity]
+  - id: private_banks
+    name: Private banks
+    parent: Banks
+    kind: industry
+    members: [NSE:HDFCBANK, NSE:ICICIBANK, NSE:AXISBANK, NSE:KOTAKBANK, NSE:FEDERALBNK]
+    description: Privately controlled banks with retail and corporate lending; funding franchises and unsecured exposure differ.
+    drivers: [Deposit franchise growth, Loan mix and fee income]
+    risks: [Deposit pricing pressure, Credit losses and operational controls]
+    sources: [https://www.icicibank.com/, https://archives.nseindia.com/content/indices/ind_niftybanklist.csv, *nse_equity]
+  - id: public_sector_banks
+    name: Public-sector banks
+    parent: Banks
+    kind: industry
+    members: [NSE:SBIN, NSE:BANKBARODA, NSE:CANBK, NSE:PNB, NSE:UNIONBANK]
+    description: Government-controlled banks with broad credit portfolios; ownership does not remove credit or capital risk.
+    drivers: [Corporate credit recovery, Loan growth and recoveries]
+    risks: [Policy-directed lending, Provisioning and equity dilution]
+    sources: [https://sbi.bank.in/, https://archives.nseindia.com/content/indices/ind_niftypsubanklist.csv, *nse_equity]
+  - id: small_finance_banks
+    name: Small finance banks
+    parent: Banks
+    kind: industry
+    members: [NSE:AUBANK, NSE:UJJIVANSFB, NSE:EQUITASBNK]
+    description: Banks built around small borrowers and retail deposits; AU has a different secured and vehicle-loan mix from microfinance-heavy peers.
+    drivers: [Deposit mobilization, Secured retail and small-business credit]
+    risks: [Microfinance stress and borrower concentration, Funding costs and regulatory transitions]
+    sources: [https://www.aubank.in/, *nse_equity]
+  - id: financials
+    name: Financial services
+    parent: Financials
+    kind: sector
+    members: [NSE:HDFCBANK, NSE:SBIN, NSE:BAJFINANCE, NSE:HDFCLIFE, NSE:ICICIGI, NSE:HDFCAMC]
+    description: Broad finance basket spanning banking, non-bank lending, insurance and asset management; not an official index.
+    drivers: [Credit and savings growth, Capital-market and insurance demand]
+    risks: [Credit cycles, Rate changes and financial regulation]
+    sources: [https://www.bajajfinserv.in/, https://archives.nseindia.com/content/indices/ind_niftyfinancelist.csv, *nse_equity]
+  - id: nbfc_lending
+    name: Non-bank lending
+    parent: Financials
+    kind: industry
+    members: [NSE:BAJFINANCE, NSE:CHOLAFIN, NSE:SHRIRAMFIN, NSE:M&MFIN, NSE:LTF]
+    description: Non-bank lenders with consumer, vehicle, rural and business loan portfolios; deposit access differs from banks.
+    drivers: [Retail credit demand, Funding spreads and collections]
+    risks: [Wholesale funding pressure, Credit losses and leverage]
+    sources: [https://www.bajajfinserv.in/, https://archives.nseindia.com/content/indices/ind_niftyfinancelist.csv, *nse_equity]
+  - id: housing_finance
+    name: Housing finance
+    parent: Financials
+    kind: industry
+    members: [NSE:LICHSGFIN, NSE:PNBHOUSING, NSE:AAVAS, NSE:APTUS, NSE:HOMEFIRST]
+    description: Housing-focused lenders spanning salaried and affordable self-employed borrowers; not property developers.
+    drivers: [Mortgage demand, Housing affordability and loan spreads]
+    risks: [Collateral recovery delays, Funding costs and borrower income shocks]
+    sources: [https://www.lichousing.com/, *nse_equity]
+  - id: gold_lending
+    name: Gold-backed lending
+    parent: Financials
+    kind: industry
+    members: [NSE:MUTHOOTFIN, NSE:MANAPPURAM, NSE:IIFL]
+    description: Lenders with material gold-loan businesses; other loan books and subsidiaries add credit risk beyond gold collateral.
+    drivers: [Gold collateral values, Short-term household credit demand]
+    risks: [Loan-to-value and auction rules, Custody failures and non-gold credit losses]
+    sources: [https://www.manappuram.com/, https://www.muthootfinance.com/, *nse_equity]
+  - id: asset_management
+    name: Asset management
+    parent: Financials
+    kind: industry
+    members: [NSE:HDFCAMC, NSE:NAM-INDIA, NSE:ABSLAMC, NSE:UTIAMC]
+    description: Listed fund managers earning fees on client assets; not direct mutual-fund return proxies.
+    drivers: [Net investment flows, Market levels and equity asset mix]
+    risks: [Fee regulation and passive competition, Market falls and client redemptions]
+    sources: [https://mf.nipponindiaim.com/, https://www.hdfcfund.com/, *nse_equity]
+  - id: life_insurance
+    name: Life insurance
+    parent: Financials
+    kind: industry
+    members: [NSE:LICI, NSE:SBILIFE, NSE:HDFCLIFE, NSE:MFSL]
+    description: Life insurers and Max Financial as a holding-company route to Axis Max Life; product and ownership structures differ.
+    drivers: [New business premiums, Persistency and protection demand]
+    risks: [Surrender and tax rules, Investment returns and actuarial assumptions]
+    sources: [https://www.hdfclife.com/, https://archives.nseindia.com/content/indices/ind_niftyfinancelist.csv, *nse_equity]
+  - id: general_insurance
+    name: General and health insurance
+    parent: Financials
+    kind: industry
+    members: [NSE:ICICIGI, NSE:STARHEALTH, NSE:NIACL, NSE:GICRE]
+    description: Non-life and health insurers plus GIC Re reinsurance; medical, motor and catastrophe underwriting are different risks.
+    drivers: [Premium growth and pricing, Underwriting discipline]
+    risks: [Claims inflation and catastrophe losses, Reinsurance cycles and investment volatility]
+    sources: [https://www.icicilombard.com/, *nse_equity]
+  - id: information_technology
+    name: Information technology
+    parent: Technology
+    kind: sector
+    members: [NSE:TCS, NSE:INFY, NSE:HCLTECH, NSE:WIPRO, NSE:TECHM, NSE:LTM, NSE:PERSISTENT]
+    description: Large and mid-sized IT services firms; the basket omits hardware and is not the complete Indian technology sector.
+    drivers: [Global technology spending, Cloud modernization and outsourcing]
+    risks: [Client budget cuts, Currency moves and automation]
+    sources: [https://www.infosys.com/, https://archives.nseindia.com/content/indices/ind_niftyitlist.csv, *nse_equity]
+  - id: it_services
+    name: IT services
+    parent: Information technology
+    kind: industry
+    members: [NSE:TCS, NSE:INFY, NSE:HCLTECH, NSE:WIPRO, NSE:TECHM]
+    description: Large IT services exporters with consulting, application and infrastructure work; HCLTech also has software products.
+    drivers: [Client outsourcing budgets, Contract renewals and utilization]
+    risks: [Discretionary spending cuts, Pricing pressure and automation]
+    sources: [https://www.hcltech.com/, https://archives.nseindia.com/content/indices/ind_niftyitlist.csv, *nse_equity]
+  - id: engineering_rd
+    name: Engineering research and development
+    parent: Information technology
+    kind: industry
+    members: [NSE:LTTS, NSE:TATAELXSI, NSE:KPITTECH, NSE:TATATECH]
+    description: Outsourced product engineering and design with substantial automotive exposure; not generic application outsourcing.
+    drivers: [Vehicle software and product development, Industrial engineering outsourcing]
+    risks: [Customer concentration, Automotive program delays and staff costs]
+    sources: [https://www.ltts.com/, *nse_equity]
+  - id: enterprise_software
+    name: Enterprise software
+    parent: Information technology
+    kind: industry
+    members: [NSE:OFSS, NSE:INTELLECT, NSE:NEWGEN]
+    description: Banking and workflow software vendors with license, subscription and implementation revenue; not consumer internet firms.
+    drivers: [Bank digitization, Product license and subscription adoption]
+    risks: [Lumpy deal timing, Implementation costs and technology competition]
+    sources: [https://www.newgensoft.com/, *nse_equity]
+  - id: automobiles
+    name: Automobiles and components
+    parent: Consumer discretionary
+    kind: sector
+    members: [NSE:MARUTI, NSE:M&M, NSE:TMPV, NSE:BAJAJ-AUTO, NSE:TVSMOTOR, NSE:EICHERMOT, NSE:BOSCHLTD]
+    description: Vehicle makers and one major component supplier covering passenger, two-wheeler and utility demand; not an official auto index.
+    drivers: [Household vehicle demand, Vehicle financing and replacement]
+    risks: [Commodity costs and discounts, Emission rules and technology transitions]
+    sources: [https://www.marutisuzuki.com/, https://archives.nseindia.com/content/indices/ind_niftyautolist.csv, *nse_equity]
+  - id: passenger_vehicles
+    name: Passenger vehicles
+    parent: Automobiles
+    kind: industry
+    members: [NSE:MARUTI, NSE:M&M, NSE:TMPV]
+    description: Passenger vehicle producers; Mahindra includes tractors and other businesses, and TMPV includes Jaguar Land Rover.
+    drivers: [Domestic car and SUV sales, Premium mix and exports]
+    risks: [Discounting and financing costs, Global luxury cycles and electric-vehicle investment]
+    sources: [https://www.marutisuzuki.com/, https://archives.nseindia.com/content/indices/ind_niftyautolist.csv, *nse_equity]
+  - id: two_wheelers
+    name: Two-wheelers
+    parent: Automobiles
+    kind: industry
+    members: [NSE:BAJAJ-AUTO, NSE:HEROMOTOCO, NSE:TVSMOTOR, NSE:EICHERMOT]
+    description: Motorcycle and scooter makers with export and premium differences; Eicher also has commercial vehicle exposure through VECV.
+    drivers: [Rural and urban replacement demand, Exports and premium motorcycles]
+    risks: [Entry-level affordability, Electric competition and commodity costs]
+    sources: [https://www.heromotocorp.com/, https://archives.nseindia.com/content/indices/ind_niftyautolist.csv, *nse_equity]
+  - id: commercial_vehicles
+    name: Commercial vehicles
+    parent: Automobiles
+    kind: industry
+    members: [NSE:TMCV, NSE:ASHOKLEY, NSE:EICHERMOT, NSE:OLECTRA]
+    description: Truck and bus exposure including electric buses; Eicher is mixed with motorcycles and Tata Motors now trades as TMCV.
+    drivers: [Freight and fleet replacement, Bus procurement and infrastructure spending]
+    risks: [Highly cyclical fleet demand, Tender delays and electrification costs]
+    sources: [https://www.ashokleyland.com/, https://archives.nseindia.com/content/indices/ind_niftyautolist.csv, *nse_equity]
+  - id: auto_components
+    name: Auto components
+    parent: Automobiles
+    kind: industry
+    members: [NSE:BOSCHLTD, NSE:MOTHERSON, NSE:BHARATFORG, NSE:UNOMINDA, NSE:SONACOMS]
+    description: Component makers spanning powertrain, wiring, forgings and vehicle electronics; export and non-auto revenue differs.
+    drivers: [Vehicle production and content per vehicle, Electric and electronic component demand]
+    risks: [Customer concentration, Technology shifts and metal costs]
+    sources: [https://www.unominda.com/, https://archives.nseindia.com/content/indices/ind_niftyautolist.csv, *nse_equity]
+  - id: telecom
+    name: Telecom services
+    parent: Communication services
+    kind: sector
+    members: [NSE:BHARTIARTL, NSE:IDEA, NSE:TATACOMM]
+    description: Telecom operators spanning mobile connectivity and enterprise networks; Tata Communications is not a domestic mobile peer.
+    drivers: [Data demand and tariff changes, Enterprise connectivity spending]
+    risks: [Spectrum and network costs, Debt and competition]
+    sources: [https://www.airtel.in/, *nse_equity]
+  - id: telecom_equipment
+    name: Telecom equipment
+    parent: Communication services
+    kind: industry
+    members: [NSE:TEJASNET, NSE:HFCL, NSE:ITI]
+    description: Network equipment and telecom infrastructure suppliers; ITI includes project execution and other products.
+    drivers: [Network rollouts and domestic sourcing, Broadband infrastructure orders]
+    risks: [Customer concentration and tender timing, Working capital and technology changes]
+    sources: [https://www.tejasnetworks.com/, *nse_equity]
+    notes: HFCL is in NSE BE trade-to-trade series in the reviewed file; do not assume unrestricted liquidity.
+  - id: utilities
+    name: Power utilities
+    parent: Utilities
+    kind: sector
+    members: [NSE:NTPC, NSE:POWERGRID, NSE:TATAPOWER, NSE:JSWENERGY, NSE:CESC, NSE:TORNTPOWER]
+    description: Electric generation, transmission and distribution businesses with regulated and merchant revenue; not a single tariff model.
+    drivers: [Electricity demand and grid investment, Regulated asset growth]
+    risks: [Tariff decisions and receivables, Fuel supply and debt-funded investment]
+    sources: [https://www.ntpc.co.in/, https://archives.nseindia.com/content/indices/ind_niftyenergylist.csv, *nse_equity]
+  - id: power_generation
+    name: Power generation
+    parent: Utilities
+    kind: industry
+    members: [NSE:NTPC, NSE:JSWENERGY, NSE:TATAPOWER, NSE:NHPC, NSE:SJVN]
+    description: Thermal, hydro and renewable generators; Tata Power includes distribution and solar manufacturing.
+    drivers: [Power demand and plant availability, New capacity commissioning]
+    risks: [Fuel and water availability, Project delays and counterparty payments]
+    sources: [https://www.nhpcindia.com/, https://archives.nseindia.com/content/indices/ind_niftyenergylist.csv, *nse_equity]
+  - id: gas_distribution
+    name: Gas distribution
+    parent: Utilities
+    kind: industry
+    members: [NSE:IGL, NSE:MGL, NSE:ATGL]
+    description: City gas networks supplying vehicle, domestic and industrial customers with different regional demand mixes.
+    drivers: [Gas connections and vehicle conversion, Industrial gas competitiveness]
+    risks: [Gas allocation and procurement costs, Competing fuels and tariff pressure]
+    sources: [https://www.iglonline.net/, https://archives.nseindia.com/content/indices/ind_niftyoilgaslist.csv, *nse_equity]
+  - id: metals
+    name: Metals and mining
+    parent: Materials
+    kind: sector
+    members: [NSE:TATASTEEL, NSE:JSWSTEEL, NSE:HINDALCO, NSE:VEDL, NSE:HINDZINC, NSE:NMDC]
+    description: Ferrous and non-ferrous producers plus iron ore; Vedanta is diversified and owns a controlling stake in Hindustan Zinc.
+    drivers: [Global commodity prices, Domestic construction and manufacturing]
+    risks: [China supply and trade barriers, Energy costs and overlapping holdings]
+    sources: [https://www.hindalco.com/, https://archives.nseindia.com/content/indices/ind_niftymetallist.csv, *nse_equity]
+  - id: steel
+    name: Steel
+    parent: Materials
+    kind: industry
+    members: [NSE:TATASTEEL, NSE:JSWSTEEL, NSE:SAIL, NSE:JINDALSTEL]
+    description: Integrated steel producers with different ore, coal and geographic exposure; not steel fabricators.
+    drivers: [Steel demand and utilization, Steel-to-raw-material spreads]
+    risks: [Import competition and trade action, Coking coal costs and capital intensity]
+    sources: [https://www.jswsteel.in/, https://archives.nseindia.com/content/indices/ind_niftymetallist.csv, *nse_equity]
+  - id: nonferrous_metals
+    name: Non-ferrous metals
+    parent: Materials
+    kind: industry
+    members: [NSE:HINDALCO, NSE:NATIONALUM, NSE:HINDZINC, NSE:VEDL]
+    description: Aluminium and zinc exposure with recycling, copper and diversified mining businesses; Vedanta and Hindustan Zinc overlap.
+    drivers: [Aluminium and zinc prices, Energy transition and packaging demand]
+    risks: [Power costs and commodity cycles, Leverage and overlapping ownership]
+    sources: [https://www.hzlindia.com/, https://archives.nseindia.com/content/indices/ind_niftymetallist.csv, *nse_equity]
+  - id: real_estate
+    name: Real estate developers
+    parent: Real estate
+    kind: sector
+    members: [NSE:DLF, NSE:GODREJPROP, NSE:OBEROIRLTY, NSE:PRESTIGE, NSE:BRIGADE, NSE:PHOENIXLTD]
+    description: Listed property developers and commercial landlords; common shares only, not REIT units or a property-price index.
+    drivers: [Property bookings and collections, Rental demand and project completions]
+    risks: [Interest rates and approvals, Land costs and project leverage]
+    sources: [https://www.dlf.in/, https://archives.nseindia.com/content/indices/ind_niftyrealtylist.csv, *nse_equity]
+  - id: residential_developers
+    name: Residential developers
+    parent: Real estate
+    kind: industry
+    members: [NSE:GODREJPROP, NSE:OBEROIRLTY, NSE:PRESTIGE, NSE:SOBHA, NSE:BRIGADE]
+    description: Housing developers with different city and premium-market mixes; some also own commercial and hotel assets.
+    drivers: [Housing presales and affordability, Land pipeline conversion]
+    risks: [Project approvals and delivery, Mortgage costs and concentrated local markets]
+    sources: [https://www.godrejproperties.com/, https://archives.nseindia.com/content/indices/ind_niftyrealtylist.csv, *nse_equity]
+  - id: commercial_property
+    name: Commercial property owners
+    parent: Real estate
+    kind: industry
+    members: [NSE:DLF, NSE:PHOENIXLTD, NSE:OBEROIRLTY, NSE:BRIGADE]
+    description: Common-stock exposure to offices and shopping malls alongside development sales; not pure rental income or REIT exposure.
+    drivers: [Office leasing and mall consumption, Occupancy and rental escalation]
+    risks: [Vacancy and lease renewals, Construction spending and mixed development risk]
+    sources: [https://www.dlf.in/, https://www.thephoenixmills.com/, https://archives.nseindia.com/content/indices/ind_niftyrealtylist.csv, *nse_equity]
+  - id: consumer_staples
+    name: Consumer staples
+    parent: Consumer staples
+    kind: sector
+    members: [NSE:HINDUNILVR, NSE:ITC, NSE:NESTLEIND, NSE:BRITANNIA, NSE:DABUR, NSE:MARICO]
+    description: Branded household, food and tobacco businesses; ITC and other diversified issuers are not pure packaged-food exposures.
+    drivers: [Household volumes and rural demand, Pricing and distribution reach]
+    risks: [Input inflation and local competition, Consumption taxes and product rules]
+    sources: [https://www.hul.co.in/, https://archives.nseindia.com/content/indices/ind_niftyfmcglist.csv, *nse_equity]
+  - id: packaged_foods
+    name: Packaged foods
+    parent: Consumer staples
+    kind: industry
+    members: [NSE:NESTLEIND, NSE:BRITANNIA, NSE:TATACONSUM, NSE:BIKAJI]
+    description: Branded packaged food and beverage businesses; Tata Consumer includes tea, coffee and salt.
+    drivers: [Packaged food volumes, Premium products and distribution]
+    risks: [Food input inflation, Product safety and price-sensitive demand]
+    sources: [https://www.nestle.in/, https://archives.nseindia.com/content/indices/ind_niftyfmcglist.csv, *nse_equity]
+  - id: personal_care
+    name: Personal and household care
+    parent: Consumer staples
+    kind: industry
+    members: [NSE:HINDUNILVR, NSE:DABUR, NSE:MARICO, NSE:GODREJCP, NSE:EMAMILTD]
+    description: Branded personal and household products; foods, beverages and international sales create mixed exposures.
+    drivers: [Rural consumption and branded penetration, Premium products and distribution]
+    risks: [Commodity and advertising costs, Local competition and currency exposure]
+    sources: [https://www.godrejcp.com/, https://archives.nseindia.com/content/indices/ind_niftyfmcglist.csv, *nse_equity]
+  - id: beverages
+    name: Beverages
+    parent: Consumer staples
+    kind: industry
+    members: [NSE:VBL, NSE:UBL, NSE:UNITDSPR, NSE:RADICO]
+    description: Soft drinks, beer and spirits producers; alcohol taxes and distribution rules do not apply uniformly to soft drinks.
+    drivers: [Consumption volumes and premium mix, Distribution and capacity additions]
+    risks: [State excise and advertising rules, Sugar and packaging costs]
+    sources: [https://www.varunbeverages.com/, *nse_equity]
+  - id: consumer_durables
+    name: Consumer durables
+    parent: Consumer discretionary
+    kind: sector
+    members: [NSE:VOLTAS, NSE:BLUESTARCO, NSE:HAVELLS, NSE:WHIRLPOOL, NSE:CROMPTON]
+    description: Cooling, home appliances and electrical goods; Havells also has substantial cable and switchgear exposure.
+    drivers: [Household appliance penetration, Summer cooling and replacement demand]
+    risks: [Weather and inventory cycles, Component imports and price competition]
+    sources: [https://www.voltas.com/, https://www.bluestarindia.com/, https://archives.nseindia.com/content/indices/ind_niftyconsumerdurableslist.csv, *nse_equity]
+  - id: jewellery
+    name: Jewellery retail
+    parent: Consumer discretionary
+    kind: industry
+    members: [NSE:TITAN, NSE:KALYANKJIL, NSE:SENCO, NSE:THANGAMAYL]
+    description: Branded jewellery retailers with different regional and franchise mixes; Titan also sells watches and eyewear.
+    drivers: [Wedding demand and formal retail share, Store growth and product mix]
+    risks: [Gold price shocks and inventory funding, Import duties and discretionary spending]
+    sources: [https://www.kalyanjewellers.net/, *nse_equity]
+  - id: energy
+    name: Energy
+    parent: Energy
+    kind: sector
+    members: [NSE:RELIANCE, NSE:ONGC, NSE:OIL, NSE:IOC, NSE:BPCL, NSE:GAIL]
+    description: Integrated exposure to oil production, refining, fuel marketing and gas; Reliance adds large non-energy businesses.
+    drivers: [Oil and gas demand, Upstream prices and downstream margins]
+    risks: [Opposing upstream and refining cycles, Policy changes and conglomerate exposure]
+    sources: [https://www.ongcindia.com/, https://archives.nseindia.com/content/indices/ind_niftyoilgaslist.csv, *nse_equity]
+  - id: oil_gas_production
+    name: Oil and gas production
+    parent: Energy
+    kind: industry
+    members: [NSE:ONGC, NSE:OIL, NSE:VEDL]
+    description: Upstream oil and gas producers including Cairn through diversified Vedanta; not pure crude-price trackers.
+    drivers: [Realized oil and gas prices, Production volumes and discoveries]
+    risks: [Tax and gas pricing policy, Reservoir decline and non-oil business risk]
+    sources: [https://www.oil-india.com/, https://archives.nseindia.com/content/indices/ind_niftyoilgaslist.csv, *nse_equity]
+  - id: ports_logistics
+    name: Ports and logistics
+    parent: Logistics
+    kind: industry
+    members: [NSE:ADANIPORTS, NSE:JSWINFRA, NSE:GPPL]
+    description: Port and terminal operators with different cargo and logistics mixes; JSW Infrastructure has related-group cargo exposure.
+    drivers: [Cargo throughput and trade, Terminal capacity and logistics integration]
+    risks: [Concession and environmental rules, Cargo concentration and project leverage]
+    sources: [https://www.adaniports.com/, *nse_equity]
+  - id: healthcare
+    name: Healthcare
+    parent: Healthcare
+    kind: sector
+    members: [NSE:SUNPHARMA, NSE:CIPLA, NSE:APOLLOHOSP, NSE:MAXHEALTH, NSE:LALPATHLAB]
+    description: Healthcare basket spanning medicines, hospitals and diagnostic services; not a uniform drug-price or hospital-demand exposure.
+    drivers: [Medicine and treatment demand, Healthcare access and capacity]
+    risks: [Different drug and service regulations, Clinical quality and expansion costs]
+    sources: [https://www.apollohospitals.com/, https://archives.nseindia.com/content/indices/ind_niftyhealthcarelist.csv, *nse_equity]

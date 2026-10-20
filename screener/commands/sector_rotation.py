@@ -1,4 +1,4 @@
-"""CLI for video-inspired sector baskets, without changing trading rules."""
+"""CLI for India and US sector research, without changing trading rules."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ _PERIOD_DAYS = {
 
 @click.command(name="sector-rotation")
 @click.option(
-    "--market", type=click.Choice(["india"]), default="india", show_default=True
+    "--market", type=click.Choice(["india", "us"]), default="india", show_default=True
 )
 @click.option(
     "--catalogue",
@@ -49,11 +49,17 @@ _PERIOD_DAYS = {
     help="List group IDs and selected members without fetching prices.",
 )
 @click.option(
+    "--describe-groups",
+    is_flag=True,
+    help="Show descriptions, drivers, risks, sources, and members without fetching prices.",
+)
+@click.option(
     "--period", type=click.Choice(list(_PERIOD_DAYS)), default="3m", show_default=True
 )
 @as_of_option(help="Last completed session on or before this date; default yesterday.")
 @click.option(
-    "--benchmark", help="Price-provider symbol override; default Nifty 500 (^CRSLDX)."
+    "--benchmark",
+    help="Price-provider symbol override; defaults to Nifty 500 for India or S&P 500 for US.",
 )
 @click.option(
     "--minimum-coverage",
@@ -79,6 +85,7 @@ def sector_rotation(
     catalogue: Path | None,
     group_ids: tuple[str, ...],
     list_groups: bool,
+    describe_groups: bool,
     period: str,
     as_of_arg,
     benchmark: str | None,
@@ -87,17 +94,46 @@ def sector_rotation(
     members_csv: Path | None,
     report: Path | None,
 ) -> None:
-    """Compare curated sector and industry baskets with Nifty 500.
+    """Compare curated India or US baskets with a market benchmark.
 
     Current selected members are not historical index constituents. This
     research command does not generate entry signals or change screen gates.
     """
     try:
-        selection = select_sector_groups(load_sector_catalogue(catalogue), group_ids)
+        if list_groups and describe_groups:
+            raise ValueError(
+                "Sector rotation: use either --list-groups or --describe-groups"
+            )
+        selection = select_sector_groups(
+            load_sector_catalogue(catalogue, market=market), group_ids
+        )
         if market != selection.catalogue.market:
             raise ValueError(
                 "Sector rotation: catalogue market does not match --market"
             )
+        if describe_groups:
+            click.echo(
+                f"Market: {market} | Benchmark: {selection.catalogue.benchmark_name} "
+                f"({selection.catalogue.benchmark})"
+            )
+            click.echo(f"Membership: {selection.catalogue.membership_note}")
+            for group in selection.groups:
+                click.echo(
+                    f"\n{group.id} | {group.name} | {group.parent} | {group.kind}"
+                )
+                click.echo(group.description or "No description supplied.")
+                for label, items in (
+                    ("Drivers", group.drivers),
+                    ("Risks", group.risks),
+                ):
+                    click.echo(f"{label}: {'; '.join(items) or 'Not supplied.'}")
+                click.echo(f"Members: {', '.join(group.members)}")
+                if group.notes:
+                    click.echo(f"Exposure notes: {group.notes}")
+                click.echo(
+                    f"Sources: {'; '.join(group.sources) or selection.catalogue.source}"
+                )
+            return
         if list_groups:
             for group in selection.groups:
                 click.echo(
