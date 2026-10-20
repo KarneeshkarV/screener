@@ -82,6 +82,9 @@ Columns: `session,decision_at,open_at,close_at,available_at`.
 Provide an independent exchange calendar, including indicator warmup.
 Do not derive it from which benchmark prices happen to exist.
 The calendar must be sorted, unique, and cover the requested window.
+It must include at least 101 exchange sessions strictly before the earliest test start.
+The loader rejects a short calendar warmup instead of silently testing an inactive opening period.
+New listings and stock-specific gaps can still lack valid price warmup; the decision and coverage ledgers report those blocks.
 The calendar record must be available before the decision.
 The previous session must close before the next decision, and the decision must precede or equal the open.
 Decision, open, and close timestamps must match the session label in `America/New_York` for the US or `Asia/Kolkata` for India.
@@ -136,6 +139,12 @@ The loader checks that all observations contributing to a signal were available 
 This includes older observations retained by Wilder smoothing.
 A held position with a delayed, unavailable prior valuation aborts the run instead of using an undisclosed future mark for sizing.
 Ordinary missing quotes retain a stale mark and appear in the equity ledger.
+If a held short's prior exit indicator is unavailable, the simulator queues a cover with reason `exit_indicator_unavailable`.
+It preserves any exit reason already queued and fills only at the next valid open.
+It does not wait another 100 sessions for indicator warmup or invent a fill during a halt.
+This is an explicit data-loss exit policy, not an original CRSI signal or proof of executable liquidation.
+`exit_indicator_unavailable_days` counts held position-days without an available exit indicator, including the eventual fill day.
+`unfilled_exit_days` separately counts queued covers that have no valid open.
 
 Signals use a causal total-return index built from nominal closes and effective split/dividend events.
 Future action records never rescale earlier signals.
@@ -198,6 +207,11 @@ uv run ruff check scripts/connors_crash_research.py \
 ```
 
 The offline end-to-end test supplies both market bundles, runs the real CLI, and checks all 24 scenario outputs.
+Universe validation uses grouped counts and listing-interval counts rather than scanning all universe rows for every session.
+Bar listing and decision-availability checks are vectorized, including segmented arrival-time maxima for Wilder history.
+A local 1,400-session synthetic benchmark improved from 12.789 to 1.103 seconds for 40 securities and from 26.489 to 2.127 seconds for 80 securities.
+The revised loader took 5.323 seconds for 200 securities and 10.600 seconds for 400 securities.
+These are measured loader times, excluding fixture generation, not a claim about full-market runtime.
 Other tests alter future prices and actions, delay bars, remove universe snapshots, rename tickers, remove prices, and withdraw short permissions.
 The tests verify rejection or causal behavior, not market-data completeness.
 
@@ -212,6 +226,9 @@ The existing corporate-action uncertainties still invalidate a claim of verified
 `findings/connors_crash_pit_controls_summary.csv` retains the revised summary.
 Detailed local ledgers are in `reports/connors_pit_controls_2026-10-20/`, which is gitignored.
 All 24 account ledgers reconcile within 0.000001 local-currency units.
+A rerun after the missing-exit-indicator fix left all 24 returns and trade counts unchanged.
+No held exit-indicator gaps occurred in these available-cache ledgers.
+The post-review local ledgers are in `reports/connors_claude_review_fixes_2026-10-20/`.
 
 ## External work still required
 

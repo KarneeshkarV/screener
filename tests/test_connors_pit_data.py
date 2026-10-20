@@ -197,6 +197,108 @@ def test_connors_pit_missing_bar_resets_daily_indicators(tmp_path):
     assert data.missing_sessions.iloc[0]["date"] == str(calendar[110].date())
 
 
+def test_connors_pit_held_gap_queues_cover_without_waiting_for_indicator_warmup(
+    tmp_path,
+):
+    calendar = write_connors_bundle(tmp_path)
+    change_csv(tmp_path, "bars.csv", lambda d: d.drop(index=[112, 113], inplace=True))
+    data = load_bundle(tmp_path, calendar)
+    data.arrays["crsi"][109, 0] = 95
+    data.arrays["volatility"][109, 0] = 110
+    result = simulate_connors_crash(data, calendar[110], calendar[-1])
+    assert result.trades[0]["exit_date"] == str(calendar[114].date())
+    assert result.trades[0]["exit_reason"] == "exit_indicator_unavailable"
+    assert result.summary["exit_indicator_unavailable_days"] == 2
+    assert result.summary["unfilled_exit_days"] == 1
+    assert result.summary["open_positions_at_end"] == 0
+
+
+def test_connors_pit_rejects_insufficient_calendar_warmup(tmp_path):
+    calendar = write_connors_bundle(tmp_path)
+    with pytest.raises(ValueError, match="requires 101 pre-start sessions; found 1"):
+        load_connors_pit_bundle(tmp_path, "us", calendar[-1], calendar[1])
+
+
+def test_connors_pit_accepts_exactly_101_calendar_warmup_sessions(tmp_path):
+    calendar = write_connors_bundle(tmp_path)
+    data = load_connors_pit_bundle(tmp_path, "us", calendar[-1], calendar[101])
+    assert data.arrays["complete_window"][100, 0]
+
+
+def test_connors_pit_unavailable_indicator_preserves_existing_exit_reason():
+    data = connors_test_market()
+    data.arrays["crsi"][0, 0] = 95
+    data.arrays["high"][1, 0] = 104
+    data.arrays["crsi"][1, 0] = 20
+    data.arrays["crsi"][2:, 0] = np.nan
+    for key in ("open", "high", "low", "close"):
+        data.arrays[key][2:4, 0] = np.nan
+    result = simulate_connors_crash(data, data.calendar[1], data.calendar[-1])
+    assert result.trades[0]["exit_reason"] == "crsi_below_30"
+    assert result.trades[0]["exit_date"] == str(data.calendar[4].date())
+    assert result.summary["exit_indicator_unavailable_days"] == 2
+
+
+def test_connors_pit_all_listed_interval_counts_include_empty_sessions(tmp_path):
+    calendar = write_connors_bundle(tmp_path)
+    cutoff = str(calendar[110].date())
+    change_csv(tmp_path, "securities.csv", lambda d: d.__setitem__("listed_on", cutoff))
+    for name in ("universe.csv", "bars.csv"):
+        change_csv(
+            tmp_path,
+            name,
+            lambda d: d.drop(index=d.index[d.session < cutoff], inplace=True),
+        )
+    change_csv(
+        tmp_path,
+        "universe_sessions.csv",
+        lambda d: d.__setitem__("member_count", (d.session >= cutoff).astype(int)),
+    )
+    data = load_bundle(tmp_path, calendar)
+    assert not data.membership[:110].any()
+    assert data.membership[110:].all()
+    assert np.isnan(data.arrays["crsi"]).all()
+    change_csv(
+        tmp_path, "universe_sessions.csv", lambda d: d.__setitem__("member_count", 2)
+    )
+    with pytest.raises(ValueError, match="member count mismatch"):
+        load_bundle(tmp_path, calendar)
+
+
+def test_connors_pit_availability_max_resets_at_missing_quote(tmp_path):
+    calendar = write_connors_bundle(tmp_path)
+    change_csv(
+        tmp_path,
+        "bars.csv",
+        lambda d: d.loc.__setitem__((100, "available_at"), "2030-01-01T00:00:00Z"),
+    )
+    change_csv(tmp_path, "bars.csv", lambda d: d.drop(index=111, inplace=True))
+    data = load_bundle(tmp_path, calendar)
+    assert not data.arrays["prior_bar_available"][111, 0]
+    assert not data.arrays["prior_quote_available"][112, 0]
+    assert data.arrays["prior_bar_available"][113, 0]
+    assert not data.arrays["complete_window"][113, 0]
+
+
+@pytest.mark.parametrize("arrival", ["07:59:59.999999999Z", "08:00:00.000000001Z"])
+def test_connors_pit_availability_preserves_nanosecond_decision_boundary(
+    tmp_path, arrival
+):
+    calendar = write_connors_bundle(tmp_path)
+    change_csv(
+        tmp_path,
+        "bars.csv",
+        lambda d: d.loc.__setitem__(
+            (109, "available_at"), str(calendar[110].date()) + "T" + arrival
+        ),
+    )
+    data = load_bundle(tmp_path, calendar)
+    assert bool(data.arrays["prior_quote_available"][110, 0]) == arrival.startswith(
+        "07"
+    )
+    assert bool(data.arrays["prior_bar_available"][110, 0]) == arrival.startswith("07")
+
+
 def test_connors_pit_future_prices_and_actions_do_not_change_past_signals(tmp_path):
     calendar = write_connors_bundle(tmp_path)
     before = load_bundle(tmp_path, calendar)

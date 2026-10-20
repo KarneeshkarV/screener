@@ -38,7 +38,9 @@ def connors_evidence_times(frame: pd.DataFrame, columns: tuple[str, ...]) -> Non
         text = frame[column].astype(str)
         if not text.str.contains(r"(?:Z|[+-]\d\d:\d\d)$", regex=True).all():
             raise ValueError(f"Connors PIT timestamp needs timezone: {column}")
-        frame[column] = pd.to_datetime(frame[column], utc=True, errors="raise")
+        frame[column] = pd.to_datetime(
+            frame[column], utc=True, errors="raise", format="ISO8601"
+        )
 
 
 def connors_evidence_sessions(frame: pd.DataFrame) -> None:
@@ -103,6 +105,11 @@ def load_connors_pit_bundle(
         or sessions.session.min() >= earliest_start
     ):
         raise ValueError("Connors PIT calendar lacks requested coverage or warmup")
+    warmup_sessions = int((sessions.session < earliest_start).sum())
+    if warmup_sessions < 101:
+        raise ValueError(
+            f"Connors PIT calendar requires 101 pre-start sessions; found {warmup_sessions}"
+        )
     exchange_timezone = "America/New_York" if market == "us" else "Asia/Kolkata"
     for column in ("decision_at", "open_at", "close_at"):
         local_dates = sessions[column].dt.tz_convert(exchange_timezone).dt.date
@@ -139,7 +146,7 @@ def load_connors_pit_bundle(
     if securities.security_id.duplicated().any():
         raise ValueError("Connors PIT duplicate permanent security ID")
     symbols = sorted(securities.security_id)
-    security_times = securities.set_index("security_id").available_at
+    security_master = securities.set_index("security_id")
     shape = (len(calendar), len(symbols))
     symbol_indices = {s: j for j, s in enumerate(symbols)}
     keys = ("open", "high", "low", "close", "turnover", "crsi", "volatility")
@@ -191,44 +198,53 @@ def load_connors_pit_bundle(
             "Connors PIT ticker maps to multiple security IDs on one session"
         )
     membership = np.zeros(shape, dtype=bool)
-    for row in universe_days.itertuples():
-        if row.available_at > sessions.loc[row.session, "decision_at"]:
-            raise ValueError("Connors PIT universe manifest unavailable at decision")
-        actual = universe[universe.session == row.session]
-        listed = securities[
-            (securities.listed_on <= row.session)
-            & (securities.delisted_on.isna() | (securities.delisted_on >= row.session))
-        ]
-        if not actual.security_id.isin(listed.security_id).all():
-            raise ValueError("Connors PIT universe member outside listing interval")
-        if metadata["universe_kind"] == "all_listed" and set(actual.security_id) != set(
-            listed.security_id
-        ):
-            raise ValueError("Connors PIT all-listed universe omits a listed security")
-        if (
-            not np.isfinite(row.member_count)
-            or row.member_count < 0
-            or row.member_count != len(actual)
-        ):
-            raise ValueError("Connors PIT universe member count mismatch")
-    for row in universe.itertuples():
-        decision = sessions.loc[row.session, "decision_at"]
-        if row.available_at > decision or security_times[row.security_id] > decision:
-            raise ValueError("Connors PIT future universe or security identity")
-        membership[calendar.get_loc(row.session), symbol_indices[row.security_id]] = (
-            True
+    if (
+        universe_days.available_at > universe_days.session.map(sessions.decision_at)
+    ).any():
+        raise ValueError("Connors PIT universe manifest unavailable at decision")
+    listed_on = universe.security_id.map(security_master.listed_on)
+    delisted_on = universe.security_id.map(security_master.delisted_on)
+    if ((universe.session < listed_on) | (universe.session > delisted_on)).any():
+        raise ValueError("Connors PIT universe member outside listing interval")
+    member_counts = universe.groupby("session").size().reindex(calendar, fill_value=0)
+    if metadata["universe_kind"] == "all_listed":
+        # Unique valid member IDs plus matching counts establish set equality.
+        # Count listing intervals once, rather than filtering the master every session.
+        listing_changes = np.zeros(len(calendar) + 1, dtype=np.int64)
+        first = calendar.searchsorted(securities.listed_on, side="left")
+        last = calendar.searchsorted(
+            securities.delisted_on.fillna(calendar[-1]), side="right"
         )
+        np.add.at(listing_changes, first, 1)
+        np.add.at(listing_changes, last, -1)
+        if not np.array_equal(member_counts.to_numpy(), listing_changes.cumsum()[:-1]):
+            raise ValueError("Connors PIT all-listed universe omits a listed security")
+    declared_counts = universe_days.set_index("session").member_count.reindex(calendar)
+    if not (
+        np.isfinite(declared_counts)
+        & declared_counts.ge(0)
+        & declared_counts.eq(member_counts)
+    ).all():
+        raise ValueError("Connors PIT universe member count mismatch")
+    decision_times = universe.session.map(sessions.decision_at)
+    if (
+        (universe.available_at > decision_times)
+        | (universe.security_id.map(security_master.available_at) > decision_times)
+    ).any():
+        raise ValueError("Connors PIT future universe or security identity")
+    membership[
+        calendar.get_indexer(universe.session),
+        universe.security_id.map(symbol_indices).to_numpy(dtype=int),
+    ] = True
 
     bars = evidence_table(
         "bars.csv", {"security_id", "open", "high", "low", "close", "turnover"}
     )
-    listing_bounds = securities.set_index("security_id")
-    for row in bars.itertuples():
-        bounds = listing_bounds.loc[row.security_id]
-        if row.session < bounds.listed_on or (
-            pd.notna(bounds.delisted_on) and row.session > bounds.delisted_on
-        ):
-            raise ValueError("Connors PIT quote outside listing interval")
+    if (
+        (bars.session < bars.security_id.map(security_master.listed_on))
+        | (bars.session > bars.security_id.map(security_master.delisted_on))
+    ).any():
+        raise ValueError("Connors PIT quote outside listing interval")
     # Delisting settlement is unsupported. Refuse it even without an action row.
     for row in securities.itertuples():
         if pd.notna(row.delisted_on) and row.delisted_on <= end:
@@ -255,7 +271,7 @@ def load_connors_pit_bundle(
             raise ValueError("Connors PIT invalid split or dividend")
         i, j = calendar.get_loc(row.session), symbol_indices[row.security_id]
         arrays["split"][i, j], arrays["dividend"][i, j] = row.split, row.dividend
-    bar_times: dict[str, pd.Series] = {}
+    decision_ns = sessions.decision_at.array.as_unit("ns").asi8
     invalid_counts: dict[str, int] = {}
     anomalies = []
     for symbol, group in bars.groupby("security_id"):
@@ -272,7 +288,7 @@ def load_connors_pit_bundle(
             < sessions.loc[group.available_at.dropna().index, "close_at"]
         ).any():
             raise ValueError("Connors PIT full daily bar available before close")
-        bar_times[symbol] = group.available_at.where(valid)
+        bar_times = group.available_at.where(valid)
         for key in keys[:5]:
             arrays[key][:, j] = numeric[key].where(valid).to_numpy()
         invalid_counts[symbol] = int((~valid & group.available_at.notna()).sum())
@@ -304,23 +320,16 @@ def load_connors_pit_bundle(
         arrays["complete_window"][:, j] = close.notna().rolling(101).sum().eq(101)
         arrays["entry_quality"][:, j] = arrays["complete_window"][:, j]
         # Wilder smoothing retains every observation since the latest missing bar.
-        latest_arrival = None
-        for i in range(1, len(calendar)):
-            prior_time = bar_times[symbol].iloc[i - 1]
-            if pd.isna(prior_time):
-                latest_arrival = None
-                continue
-            latest_arrival = (
-                prior_time
-                if latest_arrival is None
-                else max(latest_arrival, prior_time)
-            )
-            arrays["prior_quote_available"][i, j] = (
-                prior_time <= sessions.decision_at.iloc[i]
-            )
-            arrays["prior_bar_available"][i, j] = (
-                latest_arrival <= sessions.decision_at.iloc[i]
-            )
+        # Segmented cumulative maxima check the whole chain in linear time.
+        arrived = bar_times.notna().to_numpy()
+        arrival_ns = pd.Series(bar_times.array.as_unit("ns").asi8, index=calendar)
+        latest_arrival = arrival_ns.groupby((~arrived).cumsum()).cummax().to_numpy()
+        arrays["prior_quote_available"][1:, j] = arrived[:-1] & (
+            arrival_ns.to_numpy()[:-1] <= decision_ns[1:]
+        )
+        arrays["prior_bar_available"][1:, j] = arrived[:-1] & (
+            latest_arrival[:-1] <= decision_ns[1:]
+        )
 
     # Borrow evidence is optional; its absence must not become assumed availability.
     permissions_path = root / "short_permissions.csv"
