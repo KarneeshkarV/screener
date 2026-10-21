@@ -1,0 +1,446 @@
+# Curated common-stock research baskets, not official index constituents.
+# Classification vocabulary follows the cited March 2023 GICS methodology.
+version: 1
+market: us
+benchmark: ^GSPC
+benchmark_name: S&P 500 price index
+observed_on: 2026-10-20
+source: https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf
+membership_basis: curated_research
+membership_note: >-
+  Current curated research baskets, not official GICS or S&P 500 constituent lists.
+  Historical charts use current selected members and have survivorship bias.
+  Baskets overlap and are not exhaustive; diversified issuers are not pure-play exposures.
+  US means US-listed common or ordinary shares, including foreign-domiciled issuers and equity REITs; no ETFs.
+  Adjusted stock returns include distributions; the S&P 500 price index (^GSPC) excludes distributions.
+  Equal-weight baskets differ from the benchmark's capitalization weights, size mix and membership.
+  Listing symbols and ETF flags were checked against Nasdaq Trader directories on the observation date, not against historical membership.
+groups:
+  - id: information_technology
+    name: Information technology
+    parent: Information technology
+    kind: sector
+    members: [NASDAQ:AAPL, NASDAQ:MSFT, NASDAQ:NVDA, NASDAQ:AVGO, NYSE:CRM, NASDAQ:ADBE]
+    description: Hardware, semiconductors and enterprise software across several technology revenue models.
+    drivers: [Enterprise cloud migration and software renewals, Data-center accelerator purchases, Smartphone replacement demand]
+    risks: [Export controls on advanced chips, Customer concentration in cloud capital spending, High valuation sensitivity to earnings revisions]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.nvidia.com/en-us/about-nvidia/]
+  - id: financials
+    name: Financials
+    parent: Financials
+    kind: sector
+    members: [NYSE:JPM, NYSE:BAC, NYSE:GS, NYSE:V, NYSE:PGR, NYSE:SPGI]
+    description: Banks, capital markets, payments and insurance rather than a bank-only proxy.
+    drivers: [Loan growth and net interest margins, Card payment volumes, Insurance premium repricing]
+    risks: [Credit losses after weaker employment, Deposit funding pressure, Catastrophe claims and reserve errors]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.jpmorganchase.com/about]
+  - id: health_care
+    name: Health care
+    parent: Health care
+    kind: sector
+    members: [NYSE:LLY, NYSE:JNJ, NYSE:MRK, NYSE:ABBV, NYSE:ABT, NYSE:TMO]
+    description: Drug makers, medical devices and laboratory tools; not a comprehensive health services basket.
+    drivers: [New drug approvals and prescription uptake, Elective procedure volumes, Biopharma research budgets]
+    risks: [Patent expirations and generic entry, Clinical trial failures, Reimbursement and drug-pricing restrictions]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.merck.com/company-overview/]
+  - id: industrials
+    name: Industrials
+    parent: Industrials
+    kind: sector
+    members: [NYSE:GE, NYSE:CAT, NYSE:UNP, NYSE:ETN, NYSE:WM, NYSE:RTX]
+    description: Aerospace, machinery, transport, electrical equipment and waste services.
+    drivers: [Aircraft delivery and maintenance demand, Grid equipment orders, Freight volumes and industrial investment]
+    risks: [Factory order cancellations in recessions, Fixed-price contract overruns, Parts shortages and labor costs]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.lockheedmartin.com/en-us/who-we-are.html]
+  - id: consumer_discretionary
+    name: Consumer discretionary
+    parent: Consumer discretionary
+    kind: sector
+    members: [NASDAQ:AMZN, NYSE:HD, NYSE:LOW, NYSE:MCD, NASDAQ:TSLA, NASDAQ:BKNG]
+    description: Retail, restaurants, vehicles and travel with exposure to optional household spending.
+    drivers: [Real wage growth and consumer credit availability, Housing turnover and remodeling, Travel bookings and restaurant traffic]
+    risks: [Higher borrowing costs suppressing purchases, Discounting and inventory write-downs, Wage and freight cost inflation]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.marriott.com/marriott/aboutmarriott.mi]
+    notes: Amazon also has substantial cloud computing exposure outside retail.
+  - id: consumer_staples
+    name: Consumer staples
+    parent: Consumer staples
+    kind: sector
+    members: [NYSE:PG, NYSE:KO, NASDAQ:PEP, NASDAQ:WMT, NASDAQ:COST, NASDAQ:MDLZ]
+    description: Household essentials, beverages, food and staple retailers with repeat purchase demand.
+    drivers: [Price increases retained without volume loss, Store traffic and membership renewals, Lower commodity input costs]
+    risks: [Consumers substituting lower-price private labels, Retailer bargaining power, Currency translation on overseas sales]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://us.pg.com/who-we-are/]
+  - id: energy
+    name: Energy
+    parent: Energy
+    kind: sector
+    members: [NYSE:XOM, NYSE:CVX, NYSE:COP, NYSE:EOG, NYSE:SLB, NYSE:KMI]
+    description: Integrated oil, exploration and production, oilfield services and energy infrastructure.
+    drivers: [Crude and natural gas realizations, Upstream drilling budgets, Pipeline throughput and export demand]
+    risks: [Commodity price declines, Drilling and project cost overruns, Methane regulation and spill liabilities]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.eogresources.com/, https://www.kindermorgan.com/]
+  - id: materials
+    name: Materials
+    parent: Materials
+    kind: sector
+    members: [NASDAQ:LIN, NYSE:APD, NYSE:DOW, NYSE:NUE, NYSE:FCX, NYSE:AA]
+    description: Industrial gases, chemicals, steel, copper and aluminum rather than one commodity proxy.
+    drivers: [Manufacturing production and construction orders, Metal prices and smelter utilization, Industrial gas project start-ups]
+    risks: [Chinese supply growth and weak commodity prices, Energy and feedstock cost spikes, Mine disruptions and environmental liabilities]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://nucor.com/]
+  - id: utilities
+    name: Utilities
+    parent: Utilities
+    kind: sector
+    members: [NYSE:NEE, NYSE:DUK, NYSE:SO, NASDAQ:AEP, NASDAQ:XEL, NASDAQ:EXC]
+    description: Electric utilities with regulated networks and varying generation portfolios.
+    drivers: [Regulated rate-base investment, Data-center electricity demand, Approved customer rate increases]
+    risks: [Regulatory disallowance of capital costs, Debt refinancing at higher rates, Storm and wildfire liabilities]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.nexteraenergy.com/about-us.html]
+  - id: communication_services
+    name: Communication services
+    parent: Communication services
+    kind: sector
+    members: [NASDAQ:GOOGL, NASDAQ:META, NASDAQ:NFLX, NYSE:DIS, NYSE:T, NYSE:VZ]
+    description: Advertising platforms, entertainment and telecom networks with different revenue cycles.
+    drivers: [Digital advertising budgets, Streaming subscription revenue, Wireless service pricing]
+    risks: [Antitrust remedies and privacy restrictions, Content spending without subscriber growth, Telecom capital intensity and price competition]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://thewaltdisneycompany.com/about/]
+  - id: real_estate
+    name: Real estate
+    parent: Real estate
+    kind: sector
+    members: [NASDAQ:EQIX, NYSE:AMT, NYSE:PLD, NYSE:O, NYSE:WELL, NYSE:DLR]
+    description: Equity REIT common shares across data centers, towers, logistics, retail and health properties.
+    drivers: [Lease renewals and contractual rent steps, Property occupancy and tenant demand, Acquisition spreads relative to funding costs]
+    risks: [Higher capitalization rates reducing asset values, Debt refinancing costs, Tenant failures and costly property redevelopment]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://investor.equinix.com/, https://www.realtyincome.com/who-we-are]
+    notes: REIT distributions make comparison with a price-only benchmark particularly imperfect.
+  - id: semiconductors
+    name: Semiconductor designers and manufacturers
+    parent: Information technology
+    kind: industry
+    members: [NASDAQ:NVDA, NASDAQ:AMD, NASDAQ:AVGO, NASDAQ:QCOM, NASDAQ:MU, NASDAQ:INTC]
+    description: Logic, connectivity and memory chips with both fabless and manufacturing business models.
+    drivers: [Accelerator and networking chip orders, Memory pricing recovery, Handset and PC unit shipments]
+    risks: [Inventory corrections at customers, Foundry capacity and yield constraints, Advanced chip export restrictions]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.nvidia.com/en-us/about-nvidia/]
+  - id: semiconductor_equipment
+    name: Semiconductor manufacturing equipment
+    parent: Information technology
+    kind: industry
+    members: [NASDAQ:AMAT, NASDAQ:LRCX, NASDAQ:KLAC, NASDAQ:TER]
+    description: Wafer processing, inspection and test suppliers whose orders follow fab investment.
+    drivers: [Leading-edge foundry capacity additions, More process steps per chip, Advanced packaging and test demand]
+    risks: [Fab construction delays, China shipment restrictions, Memory producer capital spending cuts]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.kla.com/company]
+    notes: Teradyne also has industrial automation exposure.
+  - id: enterprise_software
+    name: Enterprise application software
+    parent: Information technology
+    kind: industry
+    members: [NYSE:CRM, NYSE:NOW, NASDAQ:ADBE, NASDAQ:INTU, NASDAQ:MSFT]
+    description: Subscription software for customer workflows, productivity, creative work and accounting.
+    drivers: [Paid seat growth and renewal rates, Higher revenue per user, Enterprise workflow automation budgets]
+    risks: [Seat reductions after layoffs, AI features replacing paid products, Sales execution and data security failures]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.salesforce.com/company/our-story/]
+  - id: cybersecurity
+    name: Cybersecurity software
+    parent: Information technology
+    kind: industry
+    members: [NASDAQ:PANW, NASDAQ:CRWD, NASDAQ:FTNT, NASDAQ:ZS]
+    description: Endpoint, network and cloud security vendors; a curated software subset, not a GICS industry.
+    drivers: [Cloud workload security purchases, Consolidation of security tools, Renewal of multiyear enterprise contracts]
+    risks: [Outages caused by software updates, Competition reducing contract prices, Security breaches damaging customer trust]
+    sources: [https://www.paloaltonetworks.com/about-us, https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf]
+  - id: diversified_banks
+    name: Diversified banks
+    parent: Financials
+    kind: industry
+    members: [NYSE:JPM, NYSE:BAC, NYSE:WFC, NYSE:C]
+    description: Large deposit-funded banks with consumer, commercial and capital markets exposure.
+    drivers: [Deposit repricing relative to loan yields, Consumer and commercial loan demand, Investment banking fee recovery]
+    risks: [Consumer delinquencies and commercial real estate losses, Deposit flight to higher-yielding alternatives, Capital requirements limiting distributions]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.jpmorganchase.com/about]
+  - id: property_casualty_insurance
+    name: Property and casualty insurance
+    parent: Financials
+    kind: industry
+    members: [NYSE:PGR, NYSE:TRV, NYSE:ALL, NYSE:CB]
+    description: Auto, home and commercial insurers with underwriting and investment income exposure.
+    drivers: [Premium rate increases relative to claims inflation, Higher investment portfolio yields, Policy count growth]
+    risks: [Hurricane and wildfire losses, Adverse prior-year reserve development, Repair and litigation cost inflation]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.progressive.com/about/]
+  - id: payments
+    name: Payment networks and processing
+    parent: Financials
+    kind: industry
+    members: [NYSE:V, NYSE:MA, NYSE:AXP, NASDAQ:FISV, NASDAQ:PYPL, NYSE:XYZ]
+    description: Card networks, merchant processing and digital wallets with different credit exposure.
+    drivers: [Cash-to-card payment conversion, Cross-border travel transaction volumes, Merchant software adoption]
+    risks: [Interchange fee regulation, Account-to-account payment competition, Fraud losses and consumer credit deterioration]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.fiserv.com/en/about-fiserv.html]
+    notes: Uses current FISV and XYZ symbols rather than former FI and SQ; American Express also lends to cardholders.
+  - id: pharmaceuticals
+    name: Branded pharmaceuticals
+    parent: Health care
+    kind: industry
+    members: [NYSE:LLY, NYSE:MRK, NYSE:ABBV, NYSE:PFE, NYSE:JNJ]
+    description: Diversified drug portfolios with clinical pipelines and patent-protected products.
+    drivers: [Prescription growth for recently launched medicines, Positive late-stage trial results, Manufacturing capacity for constrained therapies]
+    risks: [Loss of exclusivity on large products, Trial safety signals, Price negotiation and reimbursement restrictions]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.merck.com/company-overview/]
+    notes: Johnson & Johnson also has a substantial medical technology business.
+  - id: biotechnology
+    name: Commercial biotechnology
+    parent: Health care
+    kind: industry
+    members: [NASDAQ:AMGN, NASDAQ:GILD, NASDAQ:REGN, NASDAQ:VRTX]
+    description: Established biotechnology drug sellers rather than pre-revenue trial speculation.
+    drivers: [New indications for approved drugs, Clinical pipeline milestones, Patient access and treatment penetration]
+    risks: [Single-franchise revenue concentration, Biosimilar competition reducing drug prices, Failed trials and acquisition integration costs]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.amgen.com/about]
+  - id: medical_devices
+    name: Medical devices
+    parent: Health care
+    kind: industry
+    members: [NYSE:ABT, NYSE:MDT, NYSE:SYK, NASDAQ:ISRG]
+    description: Surgical systems, implants, diagnostics and monitoring devices tied to procedure demand.
+    drivers: [Elective procedure growth, Installed base expansion and disposable sales, Adoption of minimally invasive surgery]
+    risks: [Product recalls and regulatory findings, Hospital capital budget cuts, Reimbursement pressure on procedures]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.abbott.com/en-us/about-abbott]
+    notes: Abbott also has nutrition and pharmaceutical exposure.
+  - id: life_science_tools
+    name: Life science tools and laboratory equipment
+    parent: Health care
+    kind: industry
+    members: [NYSE:TMO, NYSE:DHR, NYSE:A, NYSE:WAT]
+    description: Instruments, consumables and laboratory services used in research and quality testing.
+    drivers: [Biopharma research funding, Biologic drug production volumes, Laboratory instrument replacement cycles]
+    risks: [Biotech funding contractions, China research procurement weakness, Customer inventory drawdowns]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.danaher.com/our-businesses]
+  - id: aerospace_defense
+    name: Aerospace and defense
+    parent: Industrials
+    kind: industry
+    members: [NYSE:GE, NYSE:RTX, NYSE:LMT, NYSE:NOC, NYSE:GD]
+    description: Aircraft engines and defense systems with long delivery and service contracts.
+    drivers: [Commercial flight hours and engine maintenance, Defense procurement budgets, Backlog conversion into deliveries]
+    risks: [Fixed-price development losses, Engine quality and recall costs, Government funding delays]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.lockheedmartin.com/en-us/who-we-are.html]
+  - id: rail_transport
+    name: Rail operators and equipment
+    parent: Industrials
+    kind: industry
+    members: [NYSE:UNP, NASDAQ:CSX, NYSE:NSC, NYSE:WAB]
+    description: US freight rail networks plus a locomotive and rail equipment supplier.
+    drivers: [Intermodal and industrial carload volumes, Rail freight price increases, Locomotive replacement and modernization]
+    risks: [Derailment liabilities and service interruptions, Labor negotiations disrupting rail operations, Coal and industrial freight declines]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.up.com/about-us]
+    notes: Wabtec supplies equipment rather than operating a freight railroad; merger developments can alter membership.
+  - id: heavy_machinery
+    name: Heavy machinery and powertrains
+    parent: Industrials
+    kind: industry
+    members: [NYSE:CAT, NYSE:DE, NASDAQ:PCAR, NYSE:CMI]
+    description: Construction and farm machinery, heavy trucks and engines across different replacement cycles.
+    drivers: [Infrastructure construction spending, Farm equipment replacement, Truck fleet age and engine emissions upgrades]
+    risks: [Dealer inventory reductions, Weak crop prices reducing farm purchases, Emissions compliance and warranty costs]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf]
+  - id: electrical_automation
+    name: Electrical equipment and industrial automation
+    parent: Industrials
+    kind: industry
+    members: [NYSE:ETN, NYSE:EMR, NYSE:ROK, NYSE:HUBB]
+    description: Power management, electrical components and factory control systems.
+    drivers: [Utility grid investment, Factory automation projects, Data-center power distribution orders]
+    risks: [Industrial project delays, Component shortages limiting shipments, Distributor inventory corrections]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf]
+  - id: waste_services
+    name: Waste collection and disposal
+    parent: Industrials
+    kind: industry
+    members: [NYSE:WM, NYSE:RSG, NYSE:WCN, NASDAQ:CWST]
+    description: Collection routes, disposal sites and recycling operations with local scale advantages.
+    drivers: [Contract price increases, Commercial collection volumes, Landfill capacity and renewable gas projects]
+    risks: [Diesel and driver wage inflation, Landfill closure and remediation obligations, Falling recycled commodity prices]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.wm.com/us/en/inside-wm/who-we-are]
+  - id: automobiles_components
+    name: Automobiles and components
+    parent: Consumer discretionary
+    kind: industry
+    members: [NASDAQ:TSLA, NYSE:GM, NYSE:F, NYSE:BWA]
+    description: Vehicle manufacturers plus a powertrain supplier, spanning combustion and electric vehicles.
+    drivers: [Vehicle replacement and financing availability, Battery cost reductions, New model launches and supplier content per vehicle]
+    risks: [Vehicle price competition, Tariffs and supply chain disruption, Recalls and losses on electric vehicle investment]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.gm.com/company/about-us]
+  - id: homebuilders
+    name: Homebuilders
+    parent: Consumer discretionary
+    kind: industry
+    members: [NYSE:DHI, NYSE:LEN, NYSE:PHM, NYSE:TOL]
+    description: New residential construction across entry-level, move-up and luxury homes.
+    drivers: [Mortgage rate declines, Limited resale home supply, Household formation and lot availability]
+    risks: [Mortgage payment affordability, Land inventory impairments, Incentives eroding selling margins]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://investors.lennar.com/]
+  - id: travel_leisure
+    name: Travel and leisure services
+    parent: Consumer discretionary
+    kind: industry
+    members: [NASDAQ:MAR, NYSE:HLT, NASDAQ:BKNG, NYSE:RCL]
+    description: Hotel franchising, online travel booking and cruises; not a single official industry basket.
+    drivers: [Room rates and occupancy, International booking volumes, Cruise capacity utilization and onboard spending]
+    risks: [Travel demand falling in recessions, Geopolitical disruptions and disease outbreaks, Fuel costs and leverage at cruise operators]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.marriott.com/marriott/aboutmarriott.mi]
+  - id: household_products
+    name: Household and personal products
+    parent: Consumer staples
+    kind: industry
+    members: [NYSE:PG, NYSE:CL, NASDAQ:KMB, NYSE:CHD]
+    description: Branded cleaning, hygiene and personal care products sold through retail channels.
+    drivers: [Brand pricing relative to private label, Product mix toward higher-value formats, Lower pulp and packaging costs]
+    risks: [Consumers switching to cheaper brands, Retail shelf-space losses, Currency and raw material cost increases]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://us.pg.com/who-we-are/]
+  - id: beverages
+    name: Non-alcoholic beverages
+    parent: Consumer staples
+    kind: industry
+    members: [NYSE:KO, NASDAQ:PEP, NASDAQ:MNST, NASDAQ:KDP]
+    description: Soft drinks, energy drinks and coffee systems with brand and distribution exposure.
+    drivers: [Price and package mix improvements, Energy drink category growth, International distribution expansion]
+    risks: [Sugar taxes and labeling restrictions, Aluminum and sweetener cost inflation, Volume losses after price increases]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.coca-colacompany.com/about-us]
+    notes: PepsiCo also has a large snacks business.
+  - id: staples_retail
+    name: Food and household essentials retail
+    parent: Consumer staples
+    kind: industry
+    members: [NASDAQ:WMT, NASDAQ:COST, NYSE:KR, NYSE:TGT]
+    description: Grocery, warehouse clubs and mass merchants; includes substantial general merchandise sales.
+    drivers: [Comparable-store traffic and basket size, Membership fee growth, Supply chain productivity]
+    risks: [Low-margin price competition, Inventory shrink and wage costs, Weak discretionary merchandise demand]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://corporate.walmart.com/about]
+    notes: Exchange prefixes use the checked current listings, including Nasdaq for Walmart.
+  - id: oil_gas_producers
+    name: Oil and gas exploration and production
+    parent: Energy
+    kind: industry
+    members: [NYSE:COP, NYSE:EOG, NYSE:DVN, NASDAQ:FANG]
+    description: Upstream producers whose cash generation depends on commodity realizations and well productivity.
+    drivers: [Crude oil prices, Production growth within capital budgets, Lower drilling and completion unit costs]
+    risks: [Oil and gas price declines, Well decline rates and weak drilling inventory, Water disposal limits and methane rules]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.eogresources.com/]
+  - id: oilfield_services
+    name: Oilfield services and equipment
+    parent: Energy
+    kind: industry
+    members: [NYSE:SLB, NYSE:HAL, NASDAQ:BKR, NYSE:NOV]
+    description: Drilling, reservoir, completion and production equipment suppliers serving upstream investment.
+    drivers: [International upstream capital spending, Offshore project awards, Higher service pricing and equipment utilization]
+    risks: [Producer spending cuts, Excess service capacity, Sanctions and political risks in operating countries]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.slb.com/about/who-we-are]
+  - id: midstream
+    name: Energy pipelines and midstream
+    parent: Energy
+    kind: industry
+    members: [NYSE:KMI, NYSE:WMB, NYSE:OKE, NYSE:TRGP]
+    description: Corporate common shares in gas transport, gathering and processing, without partnership units.
+    drivers: [Natural gas and liquids throughput, LNG export feedgas demand, New pipeline and processing capacity contracts]
+    risks: [Permit delays and construction inflation, Producer counterparty distress, Contract renewal and volume risk]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.kindermorgan.com/]
+  - id: chemicals_gases
+    name: Chemicals and industrial gases
+    parent: Materials
+    kind: industry
+    members: [NASDAQ:LIN, NYSE:APD, NYSE:DOW, NYSE:DD]
+    description: Industrial gas suppliers and chemical manufacturers with different feedstock and contract structures.
+    drivers: [Industrial production and customer utilization, Long-term gas supply project starts, Chemical volume and product spread recovery]
+    risks: [Petrochemical overcapacity reducing selling margins, Large project cost overruns, Natural gas and electricity input cost spikes]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf]
+    notes: DuPont portfolio changes limit comparability across long historical windows.
+  - id: metals_mining
+    name: Metals and mining
+    parent: Materials
+    kind: industry
+    members: [NYSE:NUE, NASDAQ:STLD, NYSE:FCX, NYSE:AA]
+    description: Steelmakers and copper and aluminum producers; a deliberately mixed metals basket.
+    drivers: [Construction and manufacturing metal demand, Copper demand from electrical infrastructure, Steel and aluminum price spreads]
+    risks: [Commodity oversupply reducing metal prices, Mine disruptions and ore grade deterioration, Electricity costs and trade restrictions]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://nucor.com/]
+  - id: regulated_electric_utilities
+    name: Regulated electric utilities
+    parent: Utilities
+    kind: industry
+    members: [NYSE:DUK, NYSE:SO, NASDAQ:AEP, NASDAQ:XEL, NASDAQ:EXC]
+    description: Electric utility holding companies with substantial regulated generation or network assets.
+    drivers: [Approved rate-base growth, Industrial and data-center load connections, Recovery of grid modernization spending]
+    risks: [Rate case delays and disallowed costs, Storm restoration expenses, Financing needs and equity dilution]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf]
+  - id: media_streaming
+    name: Media and streaming entertainment
+    parent: Communication services
+    kind: industry
+    members: [NASDAQ:NFLX, NYSE:DIS, NASDAQ:CMCSA, NASDAQ:GOOGL]
+    description: Subscription video, studios, television and online video platforms with mixed business segments.
+    drivers: [Streaming subscription and advertising revenue, Audience engagement and content releases, Lower streaming operating losses]
+    risks: [Content cost inflation, Linear television subscriber losses, Advertising budget cuts and platform regulation]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://thewaltdisneycompany.com/about/]
+    notes: Alphabet includes search and cloud; Comcast also has broadband networks and theme parks.
+  - id: telecom_broadband
+    name: Telecom and broadband networks
+    parent: Communication services
+    kind: industry
+    members: [NYSE:T, NYSE:VZ, NASDAQ:TMUS, NASDAQ:CHTR]
+    description: Wireless and cable access providers; Charter is cable rather than an official telecom peer.
+    drivers: [Postpaid wireless additions, Broadband subscriber and pricing growth, Fiber buildout take rates]
+    risks: [Wireless and broadband price competition, Spectrum and network investment costs, Debt refinancing and customer churn]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.verizon.com/about]
+  - id: digital_infrastructure_reits
+    name: Data-center and tower REITs
+    parent: Real estate
+    kind: industry
+    members: [NASDAQ:EQIX, NYSE:DLR, NYSE:AMT, NASDAQ:SBAC]
+    description: Data-center and communications tower landlords; these are distinct real estate sub-industries.
+    drivers: [Cloud capacity leases and interconnection demand, Wireless equipment leasing on towers, Rent escalators and new lease bookings]
+    risks: [Power availability limiting data-center builds, Mobile carrier consolidation, High capital needs and financing costs]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://investor.equinix.com/]
+  - id: industrial_reits
+    name: Logistics and industrial REITs
+    parent: Real estate
+    kind: industry
+    members: [NYSE:PLD, NYSE:REXR, NYSE:FR, NYSE:STAG]
+    description: Warehouse and industrial property common shares with regional and tenant mix differences.
+    drivers: [Lease mark-to-market rent increases, Logistics space absorption, Warehouse occupancy and development leasing]
+    risks: [New warehouse oversupply, Tenant bankruptcies reducing rental collections, Falling property values and higher borrowing costs]
+    sources: [https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf, https://www.stagindustrial.com/]
+  - id: ai_compute_infrastructure
+    name: AI compute infrastructure
+    parent: Cross-sector themes
+    kind: theme
+    members: [NASDAQ:NVDA, NASDAQ:AVGO, NASDAQ:AMD, NASDAQ:MSFT, NYSE:ETN, NASDAQ:EQIX]
+    description: Chips, cloud software, electrical equipment and data-center property supporting AI compute capacity.
+    drivers: [Hyperscaler accelerator capital spending, High-density rack power demand, Commercial use of AI services]
+    risks: [Capital spending falling before supplier capacity catches up, Lower compute costs reducing revenue per workload, Power and cooling limits delaying deployments]
+    sources: [https://www.nvidia.com/en-us/about-nvidia/, https://investor.equinix.com/]
+    notes: Cross-sector exposure, not an official industry or a claim that all revenue comes from AI.
+  - id: grid_electrification
+    name: Grid investment and electrification
+    parent: Cross-sector themes
+    kind: theme
+    members: [NYSE:ETN, NYSE:HUBB, NYSE:EMR, NYSE:NEE, NASDAQ:AEP, NYSE:FCX]
+    description: Electrical equipment, utility investment and copper supply across the electrification value chain.
+    drivers: [Transmission and distribution investment, New electricity load connections, Copper use in power infrastructure]
+    risks: [Slow grid permitting and interconnection approvals, Utility funding and ratepayer affordability constraints, Commodity price swings and project cancellations]
+    sources: [https://www.nexteraenergy.com/about-us.html, https://www.msci.com/documents/1296102/11185224/GICS+Methodology+2023.pdf]
+    notes: Mixed equipment sellers, asset owners and a copper producer; no claim of a pure-play or official index.
+  - id: clean_power_supply_chain
+    name: Clean power supply chain
+    parent: Cross-sector themes
+    kind: theme
+    members: [NASDAQ:FSLR, NASDAQ:ENPH, NYSE:NEE, NYSE:ETN]
+    description: Solar modules, inverters, power development and electrical equipment across different business models.
+    drivers: [Utility solar project awards, Residential solar installation volumes, Grid connection and electrical equipment investment]
+    risks: [Subsidy and import tariff changes, High interest rates delaying installations, Equipment oversupply and customer inventory reductions]
+    sources: [https://www.firstsolar.com/en/About-Us/Overview, https://www.nexteraenergy.com/about-us.html]
+    notes: Cross-sector theme, not a utilities industry; diversified members have substantial non-solar operations.

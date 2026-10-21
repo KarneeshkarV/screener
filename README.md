@@ -203,14 +203,18 @@ just seasonality AAPL
 
 ### `sector-rotation`
 
-Compare curated Indian sector and industry baskets with Nifty 500.
-The offline HTML report includes group search, benchmark charts, and member details.
+Compare curated India or US sector, industry, and theme baskets with Nifty 500 or the S&P 500.
+Read business descriptions, drivers, risks, and sources offline with `--describe-groups`.
+The offline HTML report includes business details, group search, parent and kind filters, benchmark charts, and member details.
 Current selected stocks are research baskets, not historical index membership or trading signals.
 
 ```bash
 uv run screener sector-rotation --list-groups
 uv run screener sector-rotation --period 3m --report rotation.html
 uv run screener sector-rotation --group cnc_machines --group shipbuilding --csv
+uv run screener sector-rotation --group cnc_machines --describe-groups
+uv run screener sector-rotation --market us --list-groups
+uv run screener sector-rotation --market us --period 3m --report rotation-us.html
 ```
 
 See [docs/sector-rotation.md](docs/sector-rotation.md) for catalogue sources, return rules, and data limits.

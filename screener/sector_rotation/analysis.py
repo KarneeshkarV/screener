@@ -180,9 +180,7 @@ def compute_sector_rotation(
         warnings.append(
             "Historical view uses current curated members and has survivorship bias."
         )
-    curves = pd.DataFrame(
-        {"benchmark": benchmark_window / benchmark_window.iloc[0] * 100}
-    )
+    basket_curves = {"benchmark": benchmark_window / benchmark_window.iloc[0] * 100}
     benchmark_return = _return_percent(benchmark_window)
     summary_rows: list[dict[str, object]] = []
     member_rows: list[dict[str, object]] = []
@@ -198,7 +196,7 @@ def compute_sector_rotation(
         )
         window = histories.loc[anchor:]
         curve, coverage = build_sector_basket(window, minimum_coverage=minimum_coverage)
-        curves[group.id] = curve
+        basket_curves[group.id] = curve
         group_return = _return_percent(curve)
         members = _member_metrics(group, histories, window)
         member_rows.extend(members)
@@ -208,6 +206,12 @@ def compute_sector_rotation(
             "group": group.name,
             "parent": group.parent,
             "kind": group.kind,
+            "market": selection.catalogue.market,
+            "description": group.description,
+            "drivers": "; ".join(group.drivers),
+            "risks": "; ".join(group.risks),
+            "notes": group.notes,
+            "sources": "; ".join(group.sources),
             "start": anchor.date().isoformat(),
             "end": benchmark_window.index[-1].date().isoformat(),
             "return_pct": group_return,
@@ -262,7 +266,7 @@ def compute_sector_rotation(
         benchmark,
         summary,
         pd.DataFrame(member_rows),
-        curves,
+        pd.DataFrame(basket_curves),
         tuple(warnings),
     )
 
