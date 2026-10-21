@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from datetime import date
 from pathlib import Path
 
@@ -397,20 +398,28 @@ def test_cli_agent_output_is_bounded_and_spills_full_metrics(tmp_path, monkeypat
     assert len(pd.read_csv(files[0])) == len(load_sector_catalogue().groups)
 
 
-def test_missing_benchmark_month_end_cannot_change_rebalance_silently():
+def test_missing_benchmark_month_end_is_carried_forward_with_warning():
     index = pd.to_datetime(["2026-01-29", "2026-01-30", "2026-02-02"])
     prices = {
-        "^CRSLDX": pd.DataFrame({"close": [100, 100]}, index=index[[0, 2]]),
+        "^CRSLDX": pd.DataFrame({"close": [100, 110]}, index=index[[0, 2]]),
         "AAA.NS": pd.DataFrame({"close": [10, 20, 20]}, index=index),
         "BBB.NS": pd.DataFrame({"close": [100, 100, 200]}, index=index),
     }
-    with pytest.raises(ValueError, match="benchmark sessions missing.*2026-01-30"):
-        compute_sector_rotation(
-            select_sector_groups(_catalogue(), ("machines",)),
-            prices,
-            start=date(2026, 1, 29),
-            end=date(2026, 2, 2),
-        )
+    result = compute_sector_rotation(
+        select_sector_groups(_catalogue(), ("machines",)),
+        prices,
+        start=date(2026, 1, 29),
+        end=date(2026, 2, 2),
+    )
+    # The member session stays in the calendar, so January still rebalances
+    # at its real last close (30 Jan): 1.5 * (0.5 * 1 + 0.5 * 2) = 2.25.
+    assert list(result.curves.index) == list(index)
+    assert result.curves["benchmark"].tolist() == pytest.approx([100.0, 100.0, 110.0])
+    assert result.summary.loc[0, "return_pct"] == pytest.approx(125.0)
+    assert any(
+        "no price for 1 session(s)" in w and "2026-01-30" in w and "carried" in w
+        for w in result.warnings
+    )
 
 
 def test_zero_volume_holiday_rows_do_not_imply_missing_benchmark_session():
@@ -427,14 +436,166 @@ def test_zero_volume_holiday_rows_do_not_imply_missing_benchmark_session():
         end=date(2026, 1, 6),
     )
     assert result.summary.status.eq("ok").all()
+    assert not any("carried forward" in w for w in result.warnings)
     prices["AAA.NS"].loc[holiday, "volume"] = 1
-    with pytest.raises(ValueError, match="benchmark sessions missing"):
-        compute_sector_rotation(
-            select_sector_groups(_catalogue()),
-            prices,
-            start=date(2026, 1, 2),
-            end=date(2026, 1, 6),
-        )
+    result = compute_sector_rotation(
+        select_sector_groups(_catalogue()),
+        prices,
+        start=date(2026, 1, 2),
+        end=date(2026, 1, 6),
+    )
+    assert any("2026-01-05" in w and "carried forward" in w for w in result.warnings)
+
+
+class _DictFetcher:
+    def __init__(self, prices):
+        self.prices = prices
+        self.calls = []
+
+    def fetch(self, tickers, start, end):
+        tickers = list(tickers)
+        self.calls.append(tickers)
+        return {t: self.prices[t] for t in tickers if t in self.prices}
+
+
+def test_fmp_replaces_entire_benchmark_when_it_has_the_missing_session():
+    primary = _prices()
+    holiday = pd.Timestamp("2026-01-05")
+    full_benchmark = primary["^CRSLDX"].copy() * 2
+    primary["^CRSLDX"] = primary["^CRSLDX"].drop(holiday)
+    fallback = _DictFetcher({"^CRSLDX": full_benchmark})
+    result = fetch_sector_rotation(
+        select_sector_groups(_catalogue()),
+        _DictFetcher(primary),
+        start=date(2026, 1, 2),
+        end=date(2026, 1, 6),
+        fallback=fallback,
+    )
+    assert fallback.calls == [["^CRSLDX"]]
+    assert holiday in result.curves.index
+    assert any(
+        "FMP history was used for the entire benchmark" in w for w in result.warnings
+    )
+    assert not any("carried forward" in w for w in result.warnings)
+
+
+def test_incomplete_fmp_benchmark_keeps_primary_and_carries_forward():
+    primary = _prices()
+    holiday = pd.Timestamp("2026-01-05")
+    primary["^CRSLDX"] = primary["^CRSLDX"].drop(holiday)
+    result = fetch_sector_rotation(
+        select_sector_groups(_catalogue()),
+        _DictFetcher(primary),
+        start=date(2026, 1, 2),
+        end=date(2026, 1, 6),
+        fallback=_DictFetcher({"^CRSLDX": primary["^CRSLDX"]}),
+    )
+    assert any("FMP fallback does not cover" in w for w in result.warnings)
+    assert any("carried forward" in w for w in result.warnings)
+
+
+def test_missing_benchmark_without_fmp_says_fallback_not_tried():
+    primary = _prices()
+    primary["^CRSLDX"] = primary["^CRSLDX"].drop(pd.Timestamp("2026-01-05"))
+    result = fetch_sector_rotation(
+        select_sector_groups(_catalogue()),
+        _DictFetcher(primary),
+        start=date(2026, 1, 2),
+        end=date(2026, 1, 6),
+    )
+    assert any("FMP_API_KEY is not set" in w for w in result.warnings)
+
+
+def test_ticker_missing_from_yfinance_uses_entire_fmp_history():
+    primary = _prices()
+    recovered = primary.pop("CCC.NS")
+    fallback = _DictFetcher({"CCC.NS": recovered})
+    result = fetch_sector_rotation(
+        select_sector_groups(_catalogue()),
+        _DictFetcher(primary),
+        start=date(2026, 1, 2),
+        end=date(2026, 1, 6),
+        fallback=fallback,
+    )
+    assert fallback.calls == [["CCC.NS"]]
+    assert result.summary.status.eq("ok").all()
+    assert any(
+        "FMP history was used for the entire ticker: CCC.NS" in w
+        for w in result.warnings
+    )
+
+
+def test_ticker_missing_everywhere_is_named_in_a_warning():
+    primary = _prices()
+    del primary["CCC.NS"]
+    result = fetch_sector_rotation(
+        select_sector_groups(_catalogue()),
+        _DictFetcher(primary),
+        start=date(2026, 1, 2),
+        end=date(2026, 1, 6),
+    )
+    assert any(
+        "No prices for 1 ticker(s) and FMP_API_KEY is not set: CCC.NS" in w
+        for w in result.warnings
+    )
+
+
+@pytest.mark.parametrize(
+    ("period", "expected_start"),
+    [
+        # End is Tue 6 Jan 2026; weekend starts anchor to the prior Friday.
+        ("9m", "2025-04-04"),
+        ("12m", "2025-01-06"),
+        ("18m", "2024-07-05"),
+        ("10d", "2025-12-26"),
+        ("2w", "2025-12-23"),
+        ("1y", "2025-01-06"),
+    ],
+)
+def test_cli_accepts_arbitrary_periods(period, expected_start):
+    fetcher = StubSectorFetcher()
+    result = CliRunner().invoke(
+        cli,
+        ["sector-rotation", "--period", period, "--as-of", "2026-01-06", "--csv"],
+        obj=fetcher,
+    )
+    assert result.exit_code == 0, result.output
+    assert pd.read_csv(io.StringIO(result.stdout)).start.iloc[0] == expected_start
+
+
+@pytest.mark.parametrize("period", ["0m", "9x", "m", "1.5y", "-3m"])
+def test_cli_rejects_malformed_periods(period):
+    result = CliRunner().invoke(
+        cli, ["sector-rotation", "--period", period], obj=StubSectorFetcher()
+    )
+    assert result.exit_code == 2
+    assert "Invalid value for '--period'" in result.output
+
+
+def test_report_and_cli_show_data_warnings(tmp_path):
+    primary = _prices()
+    primary["^CRSLDX"] = primary["^CRSLDX"].drop(pd.Timestamp("2026-01-05"))
+    catalogue = tmp_path / "groups.yaml"
+    catalogue.write_text(
+        __import__("yaml").safe_dump(_catalogue().model_dump(mode="json"))
+    )
+    report = tmp_path / "r.html"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "sector-rotation",
+            "--catalogue",
+            str(catalogue),
+            "--as-of",
+            "2026-01-06",
+            "--report",
+            str(report),
+        ],
+        obj=_DictFetcher(primary),
+    )
+    assert result.exit_code == 0, result.output
+    assert "carried forward" in result.stderr
+    assert "carried forward" in report.read_text()
 
 
 def test_invalid_benchmark_warmup_does_not_block_valid_return_window():
