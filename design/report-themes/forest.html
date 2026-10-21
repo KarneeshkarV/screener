@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Forest - report theme</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
+  <style>
+:root{color-scheme:dark;
+  --bg:#101b16;--surface:#15221b;--surface-2:#1a2a21;--ink:#e5ece9;--muted:#9daea7;--line:#30433b;--line-soft:#233229;--hover:#1c2c23;
+  --accent:#8ce6b0;--series-1:#2ca470;--series-2:#c38300;--series-3:#765fca;
+  --pos:#2ca470;--neg:#d9645a;--pos-ink:#8ce6b0;--neg-ink:#f0a69e;--div-mid:#1e2e25;--on-strong:#101b16;
+  --status-good:#0ca30c;--status-warning:#fab219;--status-critical:#d03b3b;
+  --font-ui:"IBM Plex Sans",system-ui,sans-serif;--font-display:Fraunces,Georgia,serif;--font-num:"IBM Plex Mono",monospace;--font-mono:"IBM Plex Mono",monospace;
+  --h1-size:36px;--h1-weight:500;--h1-tracking:-.01em;--radius:0px;--gap:16px}
+/* Shared report layout. Every theme supplies only the tokens below; nothing in
+   this file names a raw colour, so a theme swap is a token swap. */
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--font-ui);-webkit-font-smoothing:antialiased}
+main{max-width:1280px;margin:0 auto;padding:40px 32px 64px}
+.theme-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font:12px var(--font-ui);color:var(--muted);margin-bottom:28px}
+.theme-bar a{color:var(--muted);text-decoration:none;padding:4px 10px;border:1px solid var(--line);border-radius:var(--radius)}
+.theme-bar a[aria-current]{color:var(--ink);border-color:var(--accent)}
+header{display:flex;justify-content:space-between;gap:24px;align-items:end;padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:24px}
+.eyebrow{font:600 11px var(--font-ui);letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+h1{font:var(--h1-weight) var(--h1-size)/1.15 var(--font-display);margin:6px 0 4px;letter-spacing:var(--h1-tracking)}
+.sub{color:var(--muted);font-size:13px}
+.lib{font:12px var(--font-mono);color:var(--muted);text-align:right;white-space:nowrap}
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--gap);margin-bottom:var(--gap)}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+.kpi .label{font-size:12px;color:var(--muted)}
+.kpi .value{font:600 26px/1.2 var(--font-num);font-variant-numeric:tabular-nums;margin-top:6px}
+.kpi .delta{font-size:12px;color:var(--muted);margin-top:2px}
+.kpi .delta::before{content:"";display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;background:var(--line)}
+.kpi[data-tone=pos] .delta::before{background:var(--pos)}.kpi[data-tone=neg] .delta::before{background:var(--neg)}
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:var(--gap)}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px 18px 14px;min-width:0}
+.panel h2{font:600 13px var(--font-ui);margin:0 0 2px;letter-spacing:.01em}
+.panel .hint{font-size:12px;color:var(--muted);margin:0 0 12px}
+.span-12{grid-column:span 12}.span-8{grid-column:span 8}.span-7{grid-column:span 7}.span-6{grid-column:span 6}.span-5{grid-column:span 5}.span-4{grid-column:span 4}
+.chart{height:300px}#hist{height:220px}.chart.short{height:180px}
+.legend{display:flex;gap:16px;font-size:12px;color:var(--muted);margin:0 0 8px}
+.legend i{display:inline-block;width:14px;height:2px;vertical-align:middle;margin-right:6px;border-radius:1px}
+table{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums}
+th{font-weight:500;color:var(--muted);text-align:right;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--line-soft);white-space:nowrap;font-family:var(--font-num)}
+th:first-child,td:first-child{text-align:left}
+tbody tr:hover td{background:var(--hover)}
+.num-pos{color:var(--pos-ink)}.num-neg{color:var(--neg-ink)}
+.heatmap td{padding:7px 4px;text-align:center;font-size:11.5px;border:2px solid var(--surface)}
+.heatmap td.strong{color:var(--on-strong)}
+.heatmap td.empty{background:transparent}
+.table-wrap{overflow:auto;max-height:340px}
+.warnings{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.warnings li{display:flex;gap:10px;align-items:flex-start;font-size:13px;padding:10px 12px;border-radius:var(--radius);background:var(--surface-2)}
+.warnings .badge{font:600 11px var(--font-ui);padding:1px 8px;border-radius:999px;color:var(--bg);white-space:nowrap}
+.badge.good{background:var(--status-good)}.badge.warning{background:var(--status-warning)}.badge.critical{background:var(--status-critical)}
+.swatches{display:flex;gap:6px;flex-wrap:wrap}
+.swatch{display:flex;align-items:center;gap:6px;font:11px var(--font-mono);color:var(--muted);padding:4px 8px 4px 4px;border:1px solid var(--line);border-radius:var(--radius)}
+.swatch b{width:18px;height:18px;border-radius:calc(var(--radius) / 2);display:block;border:1px solid var(--line)}
+footer{margin-top:32px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:16px}
+@media (max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.grid>*{grid-column:span 12!important}header{display:block}.lib{text-align:left;margin-top:8px}}
+
+.kpi .value{font-family:var(--font-display);font-weight:500;font-size:30px}
+.chart svg{width:100%;height:100%;overflow:visible}.chart text{fill:var(--muted);font:11px var(--font-mono)}
+.chart .domain{stroke:var(--line)}.chart .tick line{stroke:var(--line-soft)}
+.tt{position:fixed;pointer-events:none;background:var(--surface-2);border:1px solid var(--line);padding:8px 10px;font:12px var(--font-mono);color:var(--ink);display:none;z-index:9;white-space:pre}
+  </style>
+</head>
+<body>
+<main>
+  <nav class="theme-bar" id="theme-bar"></nav>
+  <header>
+    <div><div class="eyebrow">Backtest tear-sheet</div><h1 id="title"></h1><div class="sub" id="subtitle"></div></div>
+    <div class="lib">Hand-rolled SVG + D3 7.9<br>evolution of the current sector-rotation look · zero heavy deps</div>
+  </header>
+  <section class="kpis" id="kpis"></section>
+  <section class="grid">
+    <div class="panel span-12"><h2>Equity vs benchmark</h2><p class="hint">Growth of 100,000 · hover for values</p>
+      <div class="legend"><span><i style="background:var(--series-1)"></i>Strategy</span><span><i style="background:var(--series-2)"></i>Benchmark</span></div>
+      <div class="chart" id="equity"></div></div>
+    <div class="panel span-12"><h2>Drawdown</h2><p class="hint">Distance below the running peak</p><div class="chart short" id="drawdown"></div></div>
+    <div class="panel span-7"><h2>Monthly returns</h2><p class="hint">Diverging scale · neutral = flat month</p><div id="heatmap" class="table-wrap"></div></div>
+    <div class="panel span-5"><h2>Trade return distribution</h2><p class="hint">Count of trades per 2% bucket</p><div class="chart" id="hist"></div></div>
+    <div class="panel span-5"><h2>Sector contribution</h2><p class="hint">Return attributed by sector</p><div class="chart" id="sectors"></div></div>
+    <div class="panel span-7"><h2>Trade ledger</h2><p class="hint">Sorted by PnL</p><div id="trades" class="table-wrap"></div></div>
+    <div class="panel span-6"><h2>Warnings</h2><p class="hint">Status colours always ship with an icon and label</p><ul class="warnings" id="warnings"></ul></div>
+    <div class="panel span-6"><h2>Colour tokens</h2><p class="hint">The full theme - every report reads only these</p><div class="swatches" id="swatches"></div></div>
+  </section>
+  <footer>Mockup with deterministic sample data · not a real backtest</footer>
+</main>
+
+<script>// Deterministic sample data shared by every theme mockup (seeded PRNG).
+(function () {
+  let s = 42;
+  const rnd = () => ((s = (s * 1664525 + 1013904223) % 4294967296) / 4294967296);
+  const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-9)) * Math.cos(2 * Math.PI * rnd());
+  const dates = [], equity = [], benchmark = [], drawdown = [];
+  let e = 100000, b = 100000, peak = e;
+  const d0 = new Date(Date.UTC(2022, 0, 3));
+  for (let i = 0, d = new Date(d0); equity.length < 756; d.setUTCDate(d.getUTCDate() + 1)) {
+    const wd = d.getUTCDay(); if (wd === 0 || wd === 6) continue;
+    const m = gauss();
+    b *= 1 + 0.0003 + 0.011 * m;
+    e *= 1 + 0.0007 + 0.008 * m + 0.006 * gauss();
+    peak = Math.max(peak, e);
+    dates.push(d.toISOString().slice(0, 10));
+    equity.push(+e.toFixed(2)); benchmark.push(+b.toFixed(2));
+    drawdown.push(+((e / peak - 1) * 100).toFixed(2)); i++;
+  }
+  const monthly = {}; // {year: [12 monthly % returns or null]}
+  let prev = equity[0], prevKey = dates[0].slice(0, 7);
+  dates.forEach((dt, i) => {
+    const key = dt.slice(0, 7);
+    const last = i === dates.length - 1;
+    if (key !== prevKey || last) {
+      const endVal = last ? equity[i] : equity[i - 1];
+      const [y, mo] = prevKey.split("-").map(Number);
+      (monthly[y] ||= Array(12).fill(null))[mo - 1] = +((endVal / prev - 1) * 100).toFixed(2);
+      prev = endVal; prevKey = key;
+    }
+  });
+  const tickers = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "AAPL", "MSFT", "NVDA", "AMZN", "ICICIBANK", "META", "TSLA", "LT"];
+  const trades = [];
+  for (let i = 0; i < 64; i++) {
+    const r = +(gauss() * 7 + 1.4).toFixed(2);
+    const entry = dates[Math.floor(rnd() * 700)];
+    trades.push({ ticker: tickers[Math.floor(rnd() * tickers.length)], entry, hold: 3 + Math.floor(rnd() * 40),
+      ret: r, pnl: Math.round(r * 120 + gauss() * 40), exit: rnd() < 0.6 ? "time" : rnd() < 0.5 ? "stop" : "target" });
+  }
+  const sectors = ["Tech", "Financials", "Energy", "Healthcare", "Industrials", "Consumer"];
+  const sectorReturns = sectors.map((name, k) => ({ name, ret: +(gauss() * 9 + 3 - k).toFixed(1) }));
+  const final = equity.at(-1), years = equity.length / 252;
+  window.REPORT = {
+    title: "Momentum Breakout - NIFTY 50 + S&P 100",
+    subtitle: "2022-01-03 to " + dates.at(-1) + " · daily bars · 5 slots · 10 bps costs",
+    dates, equity, benchmark, drawdown, monthly, trades, sectorReturns,
+    metrics: [
+      { label: "Total return", value: ((final / 100000 - 1) * 100).toFixed(1) + "%", delta: "+" + ((final / 100000 - benchmark.at(-1) / 100000) * 100).toFixed(1) + " pp vs bench", tone: "pos" },
+      { label: "CAGR", value: ((Math.pow(final / 100000, 1 / years) - 1) * 100).toFixed(1) + "%", tone: "pos" },
+      { label: "Sharpe", value: "1.42", tone: "neutral" },
+      { label: "Max drawdown", value: Math.min(...drawdown).toFixed(1) + "%", tone: "neg" },
+      { label: "Win rate", value: Math.round(trades.filter(t => t.ret > 0).length / trades.length * 100) + "%", tone: "neutral" },
+      { label: "Trades", value: String(trades.length), tone: "neutral" },
+    ],
+    warnings: [
+      { level: "warning", text: "3 tickers had fewer than 200 bars of history and were skipped." },
+      { level: "good", text: "No look-ahead detected in signal alignment." },
+    ],
+  };
+})();
+</script>
+<script>// Renders the library-independent parts of every mockup (KPIs, heatmap,
+// tables, warnings, palette strip) from window.REPORT and the theme's CSS tokens.
+(function () {
+  const R = window.REPORT;
+  const css = getComputedStyle(document.documentElement);
+  const tok = (n) => css.getPropertyValue("--" + n).trim();
+  window.tok = tok;
+  const $ = (id) => document.getElementById(id);
+  const fmtPct = (v) => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(1) + "%";
+  window.fmtPct = fmtPct;
+  const sign = (v) => (v >= 0 ? "num-pos" : "num-neg");
+
+  const THEMES = [["terminal", "Terminal"], ["editorial", "Editorial"], ["slate", "Slate"],
+    ["midnight", "Midnight"], ["graphite", "Graphite"], ["forest", "Forest"]];
+  const here = location.pathname.split("/").pop().replace(".html", "");
+  $("theme-bar").innerHTML = "<span>Theme:</span>" + THEMES.map(([f, n]) =>
+    `<a href="${f}.html"${f === here ? ' aria-current="page"' : ""}>${n}</a>`).join("");
+
+  $("title").textContent = R.title;
+  $("subtitle").textContent = R.subtitle;
+  $("kpis").innerHTML = R.metrics.map((m) => `<div class="kpi" data-tone="${m.tone}">
+    <div class="label">${m.label}</div><div class="value">${m.value}</div>
+    <div class="delta">${m.delta || (m.tone === "pos" ? "above target" : m.tone === "neg" ? "worst peak-to-trough" : "&nbsp;")}</div></div>`).join("");
+
+  // Diverging heatmap: theme pos/neg poles mixed into a neutral midpoint.
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const all = Object.values(R.monthly).flat().filter((v) => v !== null);
+  const max = Math.max(...all.map(Math.abs));
+  const cell = (v) => {
+    if (v === null) return '<td class="empty"></td>';
+    const t = Math.min(1, Math.abs(v) / max), pole = v >= 0 ? "var(--pos)" : "var(--neg)";
+    const bg = `color-mix(in oklab, ${pole} ${Math.round(12 + t * 78)}%, var(--div-mid))`;
+    return `<td class="${t > 0.55 ? "strong" : ""}" style="background:${bg}" title="${fmtPct(v)}">${fmtPct(v)}</td>`;
+  };
+  $("heatmap").innerHTML = `<table class="heatmap"><thead><tr><th>Year</th>${months.map((m) => `<th style="text-align:center">${m}</th>`).join("")}</tr></thead><tbody>` +
+    Object.entries(R.monthly).map(([y, row]) => `<tr><td>${y}</td>${row.map(cell).join("")}</tr>`).join("") + "</tbody></table>";
+
+  const top = [...R.trades].sort((a, b) => b.pnl - a.pnl);
+  $("trades").innerHTML = `<table><thead><tr><th>Ticker</th><th>Entry</th><th>Hold</th><th>Exit</th><th>Return</th><th>PnL</th></tr></thead><tbody>` +
+    top.map((t) => `<tr><td>${t.ticker}</td><td>${t.entry}</td><td>${t.hold}d</td><td>${t.exit}</td><td class="${sign(t.ret)}">${fmtPct(t.ret)}</td><td class="${sign(t.pnl)}">${t.pnl >= 0 ? "+" : "−"}${Math.abs(t.pnl).toLocaleString()}</td></tr>`).join("") + "</tbody></table>";
+
+  $("warnings").innerHTML = R.warnings.map((w) => `<li><span class="badge ${w.level}">${w.level === "good" ? "✓ OK" : w.level === "warning" ? "! Warning" : "✕ Critical"}</span><span>${w.text}</span></li>`).join("");
+
+  const sw = ["bg", "surface", "ink", "muted", "accent", "series-1", "series-2", "series-3", "pos", "neg", "status-good", "status-warning", "status-critical"];
+  $("swatches").innerHTML = sw.map((n) => `<span class="swatch"><b style="background:var(--${n})"></b>--${n} ${tok(n)}</span>`).join("");
+
+  // Histogram bins shared by every library.
+  const lo = -20, hi = 22, w = 2, bins = [];
+  for (let x = lo; x < hi; x += w) bins.push({ x0: x, x1: x + w, n: R.trades.filter((t) => t.ret >= x && t.ret < x + w).length });
+  window.HIST = bins;
+})();
+</script>
+<script>
+const R = REPORT;
+const tt = Object.assign(document.body.appendChild(document.createElement("div")), { className: "tt" });
+const show = (e, t) => { tt.style.display = "block"; tt.textContent = t; tt.style.left = e.clientX + 14 + "px"; tt.style.top = e.clientY + 14 + "px"; };
+const hide = () => (tt.style.display = "none");
+const frame = (id, m = { t: 8, r: 70, b: 24, l: 52 }) => {
+  const el = document.getElementById(id), W = el.clientWidth, H = el.clientHeight;
+  const svg = d3.select(el).append("svg").attr("viewBox", [0, 0, W, H]);
+  return { svg, W, H, m, iw: W - m.l - m.r, ih: H - m.t - m.b, g: svg.append("g").attr("transform", `translate(${m.l},${m.t})`) };
+};
+const dates = R.dates.map((d) => new Date(d));
+const timeLine = (id, seriesList, fmt, area) => {
+  const f = frame(id);
+  const x = d3.scaleUtc(d3.extent(dates), [0, f.iw]);
+  const all = seriesList.flatMap((s) => s.values);
+  const y = d3.scaleLinear(area ? [d3.min(all), 0] : d3.extent(all), [f.ih, 0]).nice();
+  f.g.append("g").call(d3.axisLeft(y).ticks(5).tickSize(-f.iw).tickFormat(fmt)).call((g) => g.select(".domain").remove());
+  f.g.append("g").attr("transform", `translate(0,${f.ih})`).call(d3.axisBottom(x).ticks(6).tickSizeOuter(0));
+  seriesList.forEach((s) => {
+    if (area) f.g.append("path").attr("fill", s.color).attr("fill-opacity", 0.2).attr("d", d3.area().x((_, i) => x(dates[i])).y0(y(0)).y1((v) => y(v))(s.values));
+    f.g.append("path").attr("fill", "none").attr("stroke", s.color).attr("stroke-width", 2).attr("d", d3.line().x((_, i) => x(dates[i])).y((v) => y(v))(s.values));
+    if (s.label) f.g.append("text").attr("x", f.iw + 6).attr("y", y(s.values.at(-1))).attr("dy", "0.32em").style("fill", "var(--ink)").text(s.label);
+  });
+  const rule = f.g.append("line").attr("y1", 0).attr("y2", f.ih).attr("stroke", "var(--muted)").attr("stroke-dasharray", "2 3").style("display", "none");
+  const dots = seriesList.map((s) => f.g.append("circle").attr("r", 4).attr("fill", s.color).attr("stroke", "var(--surface)").attr("stroke-width", 2).style("display", "none"));
+  f.svg.on("pointermove", (e) => {
+    const [px] = d3.pointer(e, f.g.node()); const i = Math.max(0, Math.min(dates.length - 1, d3.bisectCenter(dates, x.invert(px))));
+    rule.style("display", null).attr("x1", x(dates[i])).attr("x2", x(dates[i]));
+    dots.forEach((d, k) => d.style("display", null).attr("cx", x(dates[i])).attr("cy", y(seriesList[k].values[i])));
+    show(e, R.dates[i] + "\n" + seriesList.map((s) => `${(s.label || s.name).padEnd(10)} ${fmt(s.values[i])}`).join("\n"));
+  }).on("pointerleave", () => { hide(); rule.style("display", "none"); dots.forEach((d) => d.style("display", "none")); });
+};
+timeLine("equity", [{ label: "Strategy", values: R.equity, color: tok("series-1") }, { label: "Benchmark", values: R.benchmark, color: tok("series-2") }], (v) => Math.round(v / 1000) + "k");
+timeLine("drawdown", [{ name: "Drawdown", values: R.drawdown, color: tok("neg") }], (v) => v.toFixed(1) + "%", true);
+(() => {
+  const f = frame("hist", { t: 8, r: 8, b: 24, l: 32 });
+  const x = d3.scaleLinear([HIST[0].x0, HIST.at(-1).x1], [0, f.iw]), y = d3.scaleLinear([0, d3.max(HIST, (b) => b.n)], [f.ih, 0]).nice();
+  f.g.append("g").call(d3.axisLeft(y).ticks(5).tickSize(-f.iw)).call((g) => g.select(".domain").remove());
+  f.g.append("g").attr("transform", `translate(0,${f.ih})`).call(d3.axisBottom(x).ticks(8).tickFormat((v) => v + "%"));
+  f.g.selectAll("rect").data(HIST).join("rect").attr("x", (b) => x(b.x0) + 1).attr("width", (b) => x(b.x1) - x(b.x0) - 2).attr("y", (b) => y(b.n)).attr("height", (b) => y(0) - y(b.n))
+    .attr("fill", (b) => (b.x0 >= 0 ? tok("pos") : tok("neg"))).on("pointermove", (e, b) => show(e, `${b.x0}% to ${b.x1}%\n${b.n} trades`)).on("pointerleave", hide);
+})();
+(() => {
+  const f = frame("sectors", { t: 8, r: 52, b: 24, l: 88 });
+  const sec = [...R.sectorReturns].sort((a, b) => b.ret - a.ret), ext = d3.max(sec, (s) => Math.abs(s.ret));
+  const x = d3.scaleLinear([-ext - 8, ext], [0, f.iw]).nice(), y = d3.scaleBand(sec.map((s) => s.name), [0, f.ih]).padding(0.35);
+  f.g.append("g").attr("transform", `translate(0,${f.ih})`).call(d3.axisBottom(x).ticks(5).tickSize(-f.ih).tickFormat((v) => v + "%")).call((g) => g.select(".domain").remove());
+  f.g.append("g").call(d3.axisLeft(y).tickSize(0)).call((g) => g.select(".domain").remove());
+  f.g.append("line").attr("x1", x(0)).attr("x2", x(0)).attr("y2", f.ih).attr("stroke", "var(--muted)");
+  f.g.selectAll("rect.b").data(sec).join("rect").attr("x", (s) => x(Math.min(0, s.ret))).attr("width", (s) => Math.abs(x(s.ret) - x(0))).attr("y", (s) => y(s.name)).attr("height", y.bandwidth())
+    .attr("fill", (s) => (s.ret >= 0 ? tok("pos") : tok("neg"))).on("pointermove", (e, s) => show(e, `${s.name}\n${fmtPct(s.ret)}`)).on("pointerleave", hide);
+  f.g.selectAll("text.v").data(sec).join("text").attr("x", (s) => x(s.ret) + (s.ret >= 0 ? 6 : -6)).attr("text-anchor", (s) => (s.ret >= 0 ? "start" : "end"))
+    .attr("y", (s) => y(s.name) + y.bandwidth() / 2).attr("dy", "0.32em").style("fill", "var(--ink)").text((s) => fmtPct(s.ret));
+})();
+</script>
+</body>
+</html>

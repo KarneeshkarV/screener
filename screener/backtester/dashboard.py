@@ -6,26 +6,22 @@ import html
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
 
 import pandas as pd
 
-from screener import _optional
 from screener.backtester.display import trades_dataframe
 from screener.backtester.metrics import result_view
 from screener.backtester.models import BacktestResult
 from screener.html_report import html_page
-
-if TYPE_CHECKING:
-    import plotly.express as px
-    import plotly.graph_objects as go
-    from plotly.io import to_html
-    from plotly.offline import get_plotlyjs
-else:
-    px = _optional.load("plotly.express")
-    go = _optional.load("plotly.graph_objects")
-    to_html = _optional.load("plotly.io").to_html
-    get_plotlyjs = _optional.load("plotly.offline").get_plotlyjs
+from screener.report_theme import (
+    bar_chart,
+    chart_html,
+    drawdown_chart,
+    histogram_chart,
+    line_chart,
+    signed_colors,
+)
 
 
 class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
@@ -93,52 +89,21 @@ def dashboard_frames(result: BacktestResult) -> dict[str, pd.DataFrame]:
     }
 
 
-def figure_html(fig: go.Figure, div_id: str, *, height: int = 320) -> str:
-    """Serialize ``fig`` to a Plotly div that keeps a pixel height.
-
-    Plotly's ``responsive=True`` config emits ``height:100%`` on the graph
-    div. Inside a CSS grid panel with auto height that computes to ~0, so
-    the chart collapses to a strip of overlapping axis labels. A sized
-    wrapper gives the 100% div a real containing block.
-    """
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#07090d",
-        plot_bgcolor="#0d1117",
-        font={
-            "family": "IBM Plex Sans, Aptos, sans-serif",
-            "size": 12,
-            "color": "#e5e7eb",
-        },
-        margin={"l": 56, "r": 28, "t": 44, "b": 42},
-        hovermode="x unified",
-        legend={"orientation": "h", "y": 1.08, "font": {"color": "#e5e7eb"}},
-        height=int(height),
-        autosize=True,
-    )
-    fig.update_xaxes(gridcolor="#242b36", zerolinecolor="#374151")
-    fig.update_yaxes(gridcolor="#242b36", zerolinecolor="#374151")
-    plot_html = str(  # plotly.io.to_html is untyped -> Any; it returns the HTML str
-        to_html(
-            fig,
-            include_plotlyjs=False,
-            full_html=False,
-            div_id=div_id,
-            config={
-                "displaylogo": False,
-                "responsive": True,
-                "displayModeBar": "hover",
-            },
-        )
-    )
-    return f'<div style="height:{int(height)}px;width:100%">{plot_html}</div>'
-
-
 def _empty_panel(panel_id: str, title: str, message: str) -> str:
     return (
         f'<section class="panel" id="{panel_id}">'
         f'<h2>{html.escape(title)}</h2><p class="empty">{html.escape(message)}</p></section>'
     )
+
+
+def _chart_card(title: str, chart: str) -> str:
+    return f"<div><h3>{html.escape(title)}</h3>{chart}</div>"
+
+
+def _count_axis(option: dict[str, Any]) -> dict[str, Any]:
+    """Whole-number value axis so small counts never get repeated fractional ticks."""
+    option["yAxis"]["minInterval"] = 1
+    return option
 
 
 def table_html(df: pd.DataFrame, table_id: str, limit: int = 250) -> str:
@@ -166,6 +131,23 @@ def metric_cards(result: BacktestResult) -> str:
     )
 
 
+_CSS = """\
+main {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gap);
+}
+.metrics, .wide, .tables { grid-column: 1 / -1; }
+.tables {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gap);
+}
+@media (max-width: 900px) {
+  main, .tables { grid-template-columns: 1fr; }
+}"""
+
+
 def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
     """Render a self-contained HTML dashboard and return its path."""
     output_path = Path(output_dir)
@@ -187,38 +169,35 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
         )
         sections.append(_empty_panel("drawdown-chart", "Drawdown", "No drawdown data."))
     else:
-        perf = go.Figure()
-        perf.add_trace(
-            go.Scatter(
-                x=curves["date"],
-                y=curves["strategy_return"],
-                name="Strategy",
-                mode="lines",
-                line={"color": "#0f766e", "width": 3},
-            )
+        dates = curves["date"].tolist()
+        perf_option = line_chart(
+            dates,
+            [
+                {
+                    "name": "Strategy",
+                    "values": curves["strategy_return"].tolist(),
+                    "color": "series-1",
+                    "width": 3,
+                },
+                {
+                    "name": "Benchmark",
+                    "values": curves["benchmark_return"].tolist(),
+                    "color": "series-2",
+                    "width": 2,
+                },
+            ],
+            value_format="pct0",
         )
-        perf.add_trace(
-            go.Scatter(
-                x=curves["date"],
-                y=curves["benchmark_return"],
-                name="Benchmark",
-                mode="lines",
-                line={"color": "#7c3aed", "width": 2},
-            )
-        )
-        perf.update_yaxes(tickformat=".0%")
         sections.append(
             '<section class="panel" id="performance-chart"><h2>Performance</h2>'
-            + figure_html(perf, "equity-vs-benchmark")
+            + chart_html("equity-vs-benchmark", perf_option, group="perf")
             + "</section>"
         )
 
-        dd = px.area(curves, x="date", y="drawdown", labels={"drawdown": "Drawdown"})
-        dd.update_traces(line_color="#b91c1c", fillcolor="rgba(185,28,28,.18)")
-        dd.update_yaxes(tickformat=".0%")
+        dd_option = drawdown_chart(curves["date"].tolist(), curves["drawdown"].tolist())
         sections.append(
             '<section class="panel" id="drawdown-chart"><h2>Drawdown</h2>'
-            + figure_html(dd, "drawdown-curve")
+            + chart_html("drawdown-curve", dd_option, group="perf")
             + "</section>"
         )
 
@@ -227,18 +206,16 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
             _empty_panel("monthly-returns", "Monthly Returns", "No monthly returns.")
         )
     else:
-        monthly_fig = px.bar(
-            monthly,
-            x="month",
-            y="return_pct",
-            labels={"return_pct": "Return", "month": "Month"},
-            color="return_pct",
-            color_continuous_scale=["#b91c1c", "#f7f5ef", "#0f766e"],
+        monthly_option = bar_chart(
+            monthly["month"].tolist(),
+            monthly["return_pct"].tolist(),
+            name="Return",
+            value_format="pct1",
+            colors=signed_colors(monthly["return_pct"]),
         )
-        monthly_fig.update_yaxes(tickformat=".0%")
         sections.append(
-            '<section class="panel" id="monthly-returns"><h2>Monthly Returns</h2>'
-            + figure_html(monthly_fig, "monthly-return-bars")
+            '<section class="panel wide" id="monthly-returns"><h2>Monthly Returns</h2>'
+            + chart_html("monthly-return-bars", monthly_option)
             + "</section>"
         )
 
@@ -247,24 +224,29 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
             _empty_panel("trade-diagnostics", "Trade Diagnostics", "No trades.")
         )
     else:
-        ret_fig = px.histogram(
-            trades,
-            x="return_pct",
-            nbins=24,
-            labels={"return_pct": "Trade Return"},
+        ret_option = histogram_chart(
+            trades["return_pct"].tolist(),
+            bins=24,
+            name="Trades",
+            value_format="pct1",
+            signed=True,
         )
-        ret_fig.update_xaxes(tickformat=".0%")
-        exit_fig = px.bar(
-            trades.groupby("exit_reason").size().rename("count").reset_index(),
-            x="exit_reason",
-            y="count",
-            labels={"exit_reason": "Exit", "count": "Trades"},
+        exit_counts = trades.groupby("exit_reason").size()
+        exit_option = _count_axis(
+            bar_chart(
+                exit_counts.index.tolist(),
+                exit_counts.tolist(),
+                name="Trades",
+                value_format="num0",
+                labels=True,
+            )
         )
-        hold_fig = px.histogram(
-            trades,
-            x="holding_days",
-            nbins=20,
-            labels={"holding_days": "Holding Days"},
+        hold_option = histogram_chart(
+            trades["holding_days"].tolist(),
+            bins=20,
+            name="Trades",
+            value_format="num1",
+            signed=False,
         )
         contrib = (
             trades.groupby("ticker")
@@ -273,20 +255,32 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
             .sort_values("pnl", ascending=False)
             .head(30)
         )
-        contrib_fig = px.bar(
-            contrib,
-            x="ticker",
-            y="pnl",
-            color="trades",
-            labels={"ticker": "Ticker", "pnl": "PnL", "trades": "Trades"},
+        contrib_option = bar_chart(
+            contrib["ticker"].tolist(),
+            contrib["pnl"].tolist(),
+            name="PnL",
+            value_format="num0",
+            colors=signed_colors(contrib["pnl"]),
         )
         sections.append(
             '<section class="panel wide" id="trade-diagnostics"><h2>Trade Diagnostics</h2>'
             '<div class="chart-grid">'
-            + figure_html(ret_fig, "return-distribution")
-            + figure_html(exit_fig, "exit-reason-breakdown")
-            + figure_html(hold_fig, "holding-period-distribution")
-            + figure_html(contrib_fig, "ticker-contribution")
+            + _chart_card(
+                "Trade return distribution",
+                chart_html("return-distribution", ret_option),
+            )
+            + _chart_card(
+                "Exit reasons",
+                chart_html("exit-reason-breakdown", exit_option),
+            )
+            + _chart_card(
+                "Holding period (days)",
+                chart_html("holding-period-distribution", hold_option),
+            )
+            + _chart_card(
+                "PnL by ticker (top 30)",
+                chart_html("ticker-contribution", contrib_option),
+            )
             + "</div></section>"
         )
 
@@ -298,23 +292,32 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
         )
     else:
         by_day = selection.groupby("signal_date").size().rename("signals").reset_index()
-        signal_fig = px.bar(
-            by_day,
-            x="signal_date",
-            y="signals",
-            labels={"signal_date": "Signal Date", "signals": "Signals"},
+        signal_option = _count_axis(
+            bar_chart(
+                by_day["signal_date"].tolist(),
+                by_day["signals"].tolist(),
+                name="Signals",
+                value_format="num0",
+            )
         )
-        rank_fig = px.histogram(
-            selection,
-            x="rank",
-            nbins=max(int(selection["rank"].max()), 1),
-            labels={"rank": "Rank"},
+        rank_option = histogram_chart(
+            selection["rank"].tolist(),
+            bins=max(int(selection["rank"].max()), 1),
+            name="Selections",
+            value_format="num1",
+            signed=False,
         )
         sections.append(
             '<section class="panel wide" id="selection-diagnostics"><h2>Selection Diagnostics</h2>'
-            '<div class="chart-grid two">'
-            + figure_html(signal_fig, "signal-count-by-day")
-            + figure_html(rank_fig, "rank-distribution")
+            '<div class="chart-grid">'
+            + _chart_card(
+                "Signals per day",
+                chart_html("signal-count-by-day", signal_option),
+            )
+            + _chart_card(
+                "Rank distribution",
+                chart_html("rank-distribution", rank_option),
+            )
             + "</div></section>"
         )
 
@@ -323,112 +326,12 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
         or "<li>No warnings.</li>"
     )
     cfg = result.config
-    plotly_js = get_plotlyjs()
-    _css = """\
-    :root {
-      --ink: #e5e7eb;
-      --muted: #9ca3af;
-      --paper: #07090d;
-      --panel: #0d1117;
-      --panel-strong: #111827;
-      --line: #242b36;
-      --accent: #22c55e;
-      --warn: #ef4444;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--paper);
-      color: var(--ink);
-      font-family: "IBM Plex Sans", Aptos, sans-serif;
-      letter-spacing: 0;
-    }
-    header {
-      border-bottom: 1px solid var(--line);
-      padding: 24px 32px 18px;
-      background: #0b0f16;
-    }
-    h1, h2 { margin: 0; font-weight: 700; }
-    h1 { font-size: 28px; }
-    h2 { font-size: 17px; margin-bottom: 14px; }
-    .subhead {
-      color: var(--muted);
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px 18px;
-      margin-top: 8px;
-      font-size: 13px;
-    }
-    main {
-      padding: 22px 32px 36px;
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 16px;
-    }
-    .metrics {
-      grid-column: 1 / -1;
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 10px;
-    }
-    .metric, .panel {
-      border: 1px solid var(--line);
-      background: var(--panel);
-      border-radius: 6px;
-    }
-    .metric { padding: 13px 14px; }
-    .metric span {
-      color: var(--muted);
-      display: block;
-      font-size: 12px;
-      text-transform: uppercase;
-    }
-    .metric strong { display: block; margin-top: 5px; font-size: 22px; }
-    .panel { padding: 16px; min-width: 0; }
-    .wide { grid-column: 1 / -1; }
-    .chart-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-    .chart-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .tables {
-      grid-column: 1 / -1;
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 16px;
-    }
-    .table-wrap { overflow: auto; max-height: 520px; }
-    .data-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-      white-space: nowrap;
-    }
-    .data-table th {
-      position: sticky;
-      top: 0;
-      background: var(--panel-strong);
-      color: var(--ink);
-      text-align: left;
-      z-index: 1;
-    }
-    .data-table th, .data-table td {
-      border-bottom: 1px solid var(--line);
-      padding: 7px 9px;
-    }
-    .empty, .warnings { color: var(--muted); font-size: 13px; }
-    .warnings { margin: 0; padding-left: 18px; }
-    @media (max-width: 900px) {
-      header, main { padding-left: 16px; padding-right: 16px; }
-      main, .tables, .chart-grid, .chart-grid.two { grid-template-columns: 1fr; }
-      .wide, .metrics { grid-column: auto; }
-    }"""
     page_html = html_page(
         "Rolling Backtest Dashboard",
-        _css,
+        _CSS,
         f"""\
   <header>
+    <div class="eyebrow">Rolling backtest</div>
     <h1>Rolling Backtest Dashboard</h1>
     <div class="subhead">
       <span>{html.escape(cfg.market.upper())}</span>
@@ -448,7 +351,7 @@ def render_dashboard(result: BacktestResult, output_dir: str | Path) -> Path:
       <article class="panel" id="selection-table"><h2>Selections</h2><div class="table-wrap">{table_html(selection, "selection-table-data")}</div></article>
     </section>
   </main>""",
-        head_extra=f"<script>{plotly_js}</script>",
+        charts=True,
     )
     html_path.write_text(page_html, encoding="utf-8")
     return html_path

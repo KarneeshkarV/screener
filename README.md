@@ -63,14 +63,14 @@ Other workflows need their extra:
 
 | Extra | Installs | Needed for |
 |---|---|---|
-| `report` | plotly | HTML reports and tear-sheets, i.e. `screen` without `--csv`, `dashboard`, `factor-tearsheet` |
+| `report` | nothing (kept for compatibility) | HTML reports render with a vendored ECharts bundle and need only the core install |
 | `prices` | yfinance, openscreener | every backtest, `garp`, `conviction`, `options` |
 | `india` | jugaad-data | `unusual-volume`, `operator-scan` |
 | `usage` | libsql-client | Turso history mirror and feature-usage tracking |
 | `all` | all of the above | the pre-split behaviour |
 
 ```bash
-uv add "screener[report] @ git+https://github.com/KarneeshkarV/screener@main"
+uv add "screener[prices] @ git+https://github.com/KarneeshkarV/screener@main"
 ```
 
 A missing extra raises an `ImportError` naming the one to install, rather than a bare `ModuleNotFoundError`.

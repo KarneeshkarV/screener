@@ -5,15 +5,13 @@ from __future__ import annotations
 import html
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pandas as pd
 
-from screener import _optional
 from screener.backtester.dashboard import (
     dashboard_frames,
-    figure_html,
     metric_cards,
     table_html,
 )
@@ -24,23 +22,20 @@ from screener.backtester.metrics import (
 )
 from screener.backtester.models import BacktestResult
 from screener.html_report import html_page
+from screener.report_theme import (
+    chart_html,
+    diverging_cell_style,
+    drawdown_chart,
+    histogram_chart,
+    line_chart,
+    signed_colors,
+)
 
 if TYPE_CHECKING:
-    import plotly.express as px
-    import plotly.graph_objects as go
-    from plotly.offline import get_plotlyjs
-
     from screener.backtester.optimization.monte_carlo import (
         EquityMonteCarloPaths,
         EquityMonteCarloResult,
     )
-else:
-    # Only the plotly names have a runtime counterpart; the Monte Carlo types
-    # are annotations alone, so importing them here would pull the optimization
-    # package into every tear-sheet render for nothing.
-    px = _optional.load("plotly.express")
-    go = _optional.load("plotly.graph_objects")
-    get_plotlyjs = _optional.load("plotly.offline").get_plotlyjs
 
 _MONTH_LABELS = [
     "Jan",
@@ -65,25 +60,25 @@ def _empty_section(section_id: str, title: str, message: str) -> str:
     )
 
 
-def _heatmap_cell(value: float) -> str:
+def _heatmap_cell(value: float, max_abs: float) -> str:
     if pd.isna(value):
         return '<td class="hm-empty"></td>'
-    alpha = min(abs(float(value)) / 0.10, 1.0) * 0.85
-    color = "15,118,110" if value >= 0 else "185,28,28"
-    return (
-        f'<td style="background:rgba({color},{alpha:.2f})">'
-        f"{float(value) * 100:+.1f}%</td>"
-    )
+    style, cls = diverging_cell_style(value, max_abs)
+    class_attr = f' class="{cls}"' if cls else ""
+    return f'<td{class_attr} style="{style}">{float(value) * 100:+.1f}%</td>'
 
 
 def _monthly_heatmap_html(monthly: pd.DataFrame) -> str:
-    """Render monthly returns as a year x month table with colored cells."""
+    """Render monthly returns as a year x month table with diverging cells."""
     if monthly.empty:
         return '<p class="empty">No monthly returns.</p>'
     frame = monthly.copy()
     frame["year"] = frame["month"].str[:4]
     frame["mon"] = frame["month"].str[5:7].astype(int)
     pivot = frame.pivot(index="year", columns="mon", values="return_pct")
+    finite = np.abs(pivot.to_numpy(dtype=float))
+    finite = finite[np.isfinite(finite)]
+    max_abs = float(finite.max()) if finite.size else 0.0
     header = "".join(f"<th>{label}</th>" for label in _MONTH_LABELS)
     rows: list[str] = []
     for year in sorted(pivot.index):
@@ -91,7 +86,8 @@ def _monthly_heatmap_html(monthly: pd.DataFrame) -> str:
             _heatmap_cell(
                 cast(float, pivot.at[year, mon])
                 if mon in pivot.columns
-                else float("nan")
+                else float("nan"),
+                max_abs,
             )
             for mon in range(1, 13)
         )
@@ -146,38 +142,73 @@ def _trade_ledger_frame(trades: pd.DataFrame) -> pd.DataFrame:
 
 
 def _trade_timeline_html(trades: pd.DataFrame) -> str:
+    """Horizontal entry-to-exit bar per trade, coloured by the trade's return.
+
+    A transparent offset bar stacked under each visible bar puts it at the entry
+    date on a time axis, so the bar spans the holding period.
+    """
     if trades.empty:
         return '<p class="empty">No trades.</p>'
     frame = trades.copy().sort_values(["entry_date", "exit_date", "ticker"])
-    frame["label"] = frame["ticker"].astype(str) + " #" + frame["rank"].astype(str)
-    frame["return_label"] = frame["return_pct"].map(
-        lambda value: format_result_value(value, "pct")
-    )
-    frame["pnl_label"] = frame["pnl"].map(lambda v: f"{float(v):,.2f}")
-    frame["holding_days"] = (
-        pd.to_datetime(frame["exit_date"]) - pd.to_datetime(frame["entry_date"])
-    ).dt.days
-    fig = px.timeline(
-        frame,
-        x_start="entry_date",
-        x_end="exit_date",
-        y="label",
-        color="return_pct",
-        color_continuous_scale=["#ef4444", "#1f2937", "#22c55e"],
-        hover_data={
-            "ticker": True,
-            "rank": True,
-            "return_label": True,
-            "pnl_label": True,
-            "exit_reason": True,
-            "holding_days": True,
-            "return_pct": False,
-            "label": False,
+    returns = frame["return_pct"].tolist()
+    # The category label carries the return, because an ECharts string tooltip
+    # can only show the category name (no JS formatter is allowed in a spec).
+    labels = [
+        f"{ticker} #{rank}  {format_result_value(ret, 'pct')}"
+        for ticker, rank, ret in zip(
+            frame["ticker"].astype(str), frame["rank"].astype(str), returns, strict=True
+        )
+    ]
+    entry_ms = [
+        int(pd.Timestamp(v).timestamp() * 1000)
+        for v in pd.to_datetime(frame["entry_date"])
+    ]
+    exit_ms = [
+        int(pd.Timestamp(v).timestamp() * 1000)
+        for v in pd.to_datetime(frame["exit_date"])
+    ]
+    colors = signed_colors(returns)
+    bars = [
+        {
+            "value": exit_ms[i] - entry_ms[i],
+            "itemStyle": {"color": colors[i], "borderRadius": 3},
+        }
+        for i in range(len(labels))
+    ]
+    option: dict[str, Any] = {
+        "tooltip": {"trigger": "item", "formatter": "{b}"},
+        "xAxis": {
+            "type": "value",
+            "min": min(entry_ms),
+            "axisLabel": {"formatter": "fmt:date"},
         },
-        labels={"label": "Trade", "return_pct": "Return"},
-    )
-    fig.update_yaxes(autorange="reversed")
-    return figure_html(fig, "tearsheet-trade-timeline")
+        "yAxis": {
+            "type": "category",
+            "data": labels,
+            "inverse": True,
+            "splitLine": {"show": False},
+        },
+        "series": [
+            {
+                "type": "bar",
+                "name": "Entry",
+                "stack": "span",
+                "silent": True,
+                "barMaxWidth": 14,
+                "itemStyle": {"color": "transparent"},
+                "data": entry_ms,
+            },
+            {
+                "type": "bar",
+                "name": "Trade",
+                "stack": "span",
+                "barMaxWidth": 14,
+                "data": bars,
+            },
+        ],
+    }
+    height = min(640, max(240, 28 * len(labels) + 60))
+    return chart_html("tearsheet-trade-timeline", option, height=height)
 
 
 def _sizing_comparison_html(
@@ -235,12 +266,12 @@ _FAN_LINES = 200
 # here. The bands and the realized run stay at full resolution, because those
 # are the traces a reader takes numbers off.
 _FAN_BAR_POINTS = 400
-# Label and colour per percentile, looked up by the band's own percentile so a
-# change to ``band_percentiles`` cannot silently mislabel a line.
+# Label and colour token per percentile, looked up by the band's own percentile
+# so a change to ``band_percentiles`` cannot silently mislabel a line.
 _FAN_BAND_STYLE = {
-    5: ("p05", "#b91c1c"),
-    50: ("median", "#38bdf8"),
-    95: ("p95", "#16a34a"),
+    5: ("p05", "series-2"),
+    50: ("median", "series-1"),
+    95: ("p95", "series-3"),
 }
 
 
@@ -252,20 +283,24 @@ def _fan_chart_html(
 
     The x axis is the bar number, not the date. A resampled path draws its
     returns out of calendar order, so no bar of it belongs to any date; plotting
-    against the real index would also repeat the date array once per line, which
-    on its own added ~4 MB to the page.
+    against the real index would also repeat the date array once per line.
 
     The bands come from ``paths.bands``, which the bootstrap took over every
     iteration. Recomputing them here from the retained sample would answer a
     different question from the summary table on the same page, and at
     ``--paths 1`` would collapse all three onto one arbitrary path.
+
+    Paths and bands live in separate ECharts datasets. The paths share one
+    thinned row set, so the page carries each drawn x position once rather than
+    once per line.
     """
     # Empty bands mean the curve had no bar to resample. Retaining no paths is
     # a different case, and it still has bands to draw.
     if paths.bands.size == 0:
         return '<p class="empty">No bars to simulate.</p>'
 
-    fig = go.Figure()
+    datasets: list[dict[str, Any]] = []
+    series: list[dict[str, Any]] = []
     sample = paths.paths
     # ``--paths 0`` retains nothing, and that is a request to skip the fan, not
     # to drop the bands with it.
@@ -279,52 +314,111 @@ def _fan_chart_html(
         points = min(_FAN_BAR_POINTS, bars)
         if points < bars and points > 1:
             # ``linspace`` keeps the first and last bar exactly, so the fan ends
-            # on the same bar as the realized run. The spacing it samples at is
-            # within one bar of the even ``dx`` grid below, which no reader can
-            # see on a background texture.
-            drawn = drawn[:, np.round(np.linspace(0, bars - 1, points)).astype(int)]
-            dx = (bars - 1) / (points - 1)
+            # on the same bar as the realized run.
+            columns = np.round(np.linspace(0, bars - 1, points)).astype(int)
+            drawn = drawn[:, columns]
         else:
-            dx = 1.0
-        for row, path in enumerate(np.round(drawn).astype(float)):
-            fig.add_trace(
-                go.Scatter(
-                    y=path.tolist(),
-                    # ``x0``/``dx`` spaces the points without emitting an x
-                    # array. One flat trace with gaps between paths would need
-                    # an explicit x repeated per path, which measured 1.6x
-                    # larger than these per-path traces.
-                    x0=0,
-                    dx=dx,
-                    name=f"{drawn.shape[0]} simulated paths",
-                    legendgroup="paths",
-                    showlegend=row == 0,
-                    mode="lines",
-                    line={"color": "rgba(148,163,184,.18)", "width": 1},
-                    hoverinfo="skip",
-                )
+            columns = np.arange(bars)
+        rows = np.column_stack([columns.astype(float), np.round(drawn.T)])
+        datasets.append({"source": rows.tolist()})
+        for row in range(drawn.shape[0]):
+            series.append(
+                {
+                    "type": "line",
+                    "datasetIndex": 0,
+                    "encode": {"x": 0, "y": row + 1},
+                    "showSymbol": False,
+                    "silent": True,
+                    "tooltip": {"show": False},
+                    "lineStyle": {"width": 1, "color": "token:muted/0.15"},
+                }
             )
-    for pct, band in zip(paths.band_percentiles, paths.bands, strict=True):
-        label, color = _FAN_BAND_STYLE.get(pct, (f"p{pct:02d}", "#94a3b8"))
-        fig.add_trace(
-            go.Scatter(
-                y=np.round(band).tolist(),
-                name=f"Simulated {label}",
-                mode="lines",
-                line={"color": color, "width": 2, "dash": "dot"},
+
+    band_rows = [np.round(band) for band in paths.bands]
+    realized = np.round(equity.to_numpy(dtype=float))
+    band_index = {pct: i for i, pct in enumerate(paths.band_percentiles)}
+    stacked = 5 in band_index and 95 in band_index
+    table_columns = [np.arange(paths.bands.shape[1], dtype=float), *band_rows, realized]
+    # When both p05 and p95 exist, the p05 line is the base of a stack and the
+    # band series stacks the p95 - p05 width on top, so its area fills exactly
+    # between the two.
+    band_dataset = len(datasets)
+    datasets.append({"source": np.column_stack(table_columns).tolist()})
+
+    legend: list[str] = []
+    realized_col = 1 + len(band_rows)
+    for i, pct in enumerate(paths.band_percentiles):
+        label, token = _FAN_BAND_STYLE.get(pct, (f"p{pct:02d}", "muted"))
+        name = f"Simulated {label}"
+        legend.append(name)
+        line: dict[str, Any] = {
+            "type": "line",
+            "name": name,
+            "datasetIndex": band_dataset,
+            "encode": {"x": 0, "y": i + 1},
+            "showSymbol": False,
+            "lineStyle": {"width": 1.5, "type": "dashed", "color": f"token:{token}"},
+            "itemStyle": {"color": f"token:{token}"},
+        }
+        if stacked and pct == 5:
+            # ECharts only stacks series that carry their own data, not
+            # dataset-encoded ones, so the band base and width are inlined.
+            del line["datasetIndex"], line["encode"]
+            line["stack"] = "band"
+            line["data"] = [[float(x), y] for x, y in enumerate(band_rows[i].tolist())]
+        series.append(line)
+        if stacked and pct == 5:
+            width = band_rows[band_index[95]] - band_rows[band_index[5]]
+            series.append(
+                {
+                    "type": "line",
+                    "name": "Simulated band",
+                    "stack": "band",
+                    "data": [[float(x), y] for x, y in enumerate(width.tolist())],
+                    "showSymbol": False,
+                    "silent": True,
+                    "tooltip": {"show": False},
+                    "lineStyle": {"width": 0},
+                    "areaStyle": {"color": "token:series-1/0.12"},
+                }
             )
-        )
-    fig.add_trace(
-        go.Scatter(
-            y=np.round(equity.to_numpy()).tolist(),
-            name="Realized run",
-            mode="lines",
-            line={"color": "#facc15", "width": 3},
-        )
+    series.append(
+        {
+            "type": "line",
+            "name": "Realized run",
+            "datasetIndex": band_dataset,
+            "encode": {"x": 0, "y": realized_col},
+            "showSymbol": False,
+            "lineStyle": {"width": 2, "color": "token:ink"},
+            "itemStyle": {"color": "token:ink"},
+        }
     )
-    fig.update_xaxes(title="Bar")
-    fig.update_yaxes(title="Equity")
-    return figure_html(fig, "tearsheet-mc-paths", height=420)
+    option: dict[str, Any] = {
+        "legend": {"data": [*legend, "Realized run"]},
+        "tooltip": {"trigger": "axis", "axisPointer": {"type": "line"}},
+        "dataset": datasets,
+        # A category axis over the bar numbers: ECharts only stacks (the p05 to
+        # p95 band) on a category base axis, and numeric x values on one are
+        # read as category indices, so the thinned paths still land on their bar.
+        "xAxis": {
+            "type": "category",
+            "name": "Bar",
+            "nameLocation": "middle",
+            "nameGap": 28,
+            "boundaryGap": False,
+            "data": list(range(paths.bands.shape[1])),
+            "axisLabel": {"interval": max(0, paths.bands.shape[1] // 10 - 1)},
+            "splitLine": {"show": False},
+        },
+        "yAxis": {
+            "type": "value",
+            "name": "Equity",
+            "scale": True,
+            "axisLabel": {"formatter": "fmt:compact"},
+        },
+        "series": series,
+    }
+    return chart_html("tearsheet-mc-paths", option, height=420)
 
 
 def _distribution_html(
@@ -335,38 +429,53 @@ def _distribution_html(
     label: str,
 ) -> str:
     """Histogram of a per-iteration outcome, with the realized run marked."""
-    fig = px.histogram(x=values, nbins=60, labels={"x": label})
-    fig.update_traces(marker_color="#0f766e")
+    bins = 60
+    option = histogram_chart(
+        values, bins=bins, name=label, value_format="pct1", signed=False
+    )
     # One vectorized call rather than three: each ``np.percentile`` sorts the
     # whole array, and these three want the same sort.
     p05, median, p95 = (float(v) for v in np.percentile(values, [5, 50, 95]))
+    # The category axis holds bin lower edges, and bar ``i`` is centred on index
+    # ``i``. A value's fractional bin position places its marker line on the
+    # bar it falls in.
+    edges = np.histogram(np.asarray(values, dtype=float), bins=bins)[1]
+    span = float(edges[-1] - edges[0]) or 1.0
+
+    def bin_position(value: float) -> float:
+        return (value - float(edges[0])) / span * bins - 0.5
+
+    # Each marker gets its own (position, distance) pair, so labels for values
+    # that sit close together land on separate rows instead of overprinting.
     markers = [
-        ("p05", p05, "#b91c1c"),
-        ("median", median, "#38bdf8"),
-        ("p95", p95, "#16a34a"),
-        ("realized", realized, "#facc15"),
+        ("p05", p05, "token:series-2", "insideStartTop", 4),
+        ("median", median, "token:series-1", "insideStartTop", 22),
+        ("p95", p95, "token:series-3", "insideEndTop", 4),
+        ("realized", realized, "token:ink", "insideEndTop", 22),
     ]
-    # Put labels for the same value on separate rows. Labels for different
-    # values can use the first row because their marker lines separate them.
-    markers.sort(key=lambda marker: marker[1])
-    label_rows_by_value: dict[float, int] = {}
-    for name, value, color in markers:
-        label_row = label_rows_by_value.get(value, 0)
-        label_rows_by_value[value] = label_row + 1
-        fig.add_vline(
-            x=value,
-            line_color=color,
-            line_dash="dot",
-            annotation={
-                "text": name,
-                "font": {"color": color, "size": 11},
-                "yshift": label_row * 15,
-            },
-            annotation_position="top",
-        )
-    fig.update_xaxes(tickformat=".0%")
-    fig.update_layout(showlegend=False)
-    return figure_html(fig, div_id)
+    option["series"][0]["markLine"] = {
+        "symbol": "none",
+        "silent": True,
+        "data": [
+            {
+                "xAxis": bin_position(value),
+                "lineStyle": {"color": color, "type": "dashed", "width": 1.5},
+                "label": {
+                    "formatter": name,
+                    "position": position,
+                    "distance": distance,
+                    "color": color,
+                    "rotate": 0,
+                    "fontSize": 11,
+                    "backgroundColor": "token:surface",
+                    "padding": [2, 4],
+                    "borderRadius": 3,
+                },
+            }
+            for name, value, color, position, distance in markers
+        ],
+    }
+    return chart_html(div_id, option)
 
 
 _OUTCOME_PERCENTILES = (1, 5, 25, 50, 75, 95, 99)
@@ -501,38 +610,34 @@ def render_tearsheet(
             _empty_section("drawdown-curve", "Drawdown", "No drawdown data.")
         )
     else:
-        perf = go.Figure()
-        perf.add_trace(
-            go.Scatter(
-                x=curves["date"],
-                y=curves["strategy_return"],
-                name="Strategy",
-                mode="lines",
-                line={"color": "#0f766e", "width": 3},
-            )
+        dates = curves["date"].tolist()
+        perf = line_chart(
+            dates,
+            [
+                {
+                    "name": "Strategy",
+                    "values": curves["strategy_return"].tolist(),
+                    "area": True,
+                    "width": 3,
+                },
+                {
+                    "name": "Benchmark",
+                    "values": curves["benchmark_return"].tolist(),
+                    "color": "series-2",
+                },
+            ],
+            value_format="pct1",
         )
-        perf.add_trace(
-            go.Scatter(
-                x=curves["date"],
-                y=curves["benchmark_return"],
-                name="Benchmark",
-                mode="lines",
-                line={"color": "#7c3aed", "width": 2},
-            )
-        )
-        perf.update_yaxes(tickformat=".0%")
         sections.append(
             '<section class="panel wide" id="equity-vs-benchmark"><h2>Equity vs Benchmark</h2>'
-            + figure_html(perf, "tearsheet-equity-vs-benchmark")
+            + chart_html("tearsheet-equity-vs-benchmark", perf, group="ts")
             + "</section>"
         )
 
-        dd = px.area(curves, x="date", y="drawdown", labels={"drawdown": "Drawdown"})
-        dd.update_traces(line_color="#b91c1c", fillcolor="rgba(185,28,28,.18)")
-        dd.update_yaxes(tickformat=".0%")
+        drawdown = drawdown_chart(dates, curves["drawdown"].tolist())
         sections.append(
             '<section class="panel wide" id="drawdown-curve"><h2>Drawdown</h2>'
-            + figure_html(dd, "tearsheet-drawdown-curve")
+            + chart_html("tearsheet-drawdown-curve", drawdown, group="ts")
             + "</section>"
         )
 
@@ -557,16 +662,15 @@ def render_tearsheet(
             + _trade_timeline_html(trades)
             + "</section>"
         )
-        hist = px.histogram(
-            trades,
-            x="return_pct",
-            nbins=24,
-            labels={"return_pct": "Trade Return"},
+        hist = histogram_chart(
+            trades["return_pct"].tolist(),
+            bins=24,
+            name="Trades",
+            value_format="pct1",
         )
-        hist.update_xaxes(tickformat=".0%")
         sections.append(
             '<section class="panel" id="trade-histogram"><h2>Trade Return Distribution</h2>'
-            + figure_html(hist, "tearsheet-trade-histogram")
+            + chart_html("tearsheet-trade-histogram", hist)
             + "</section>"
         )
         winners, losers = _winners_losers_frames(trades)
@@ -605,56 +709,20 @@ def render_tearsheet(
         else f'<section class="tab-panel" id="montecarlo-panel">{monte_carlo_html}</section>'
     )
     _css = """\
-    :root {
-      --ink: #e5e7eb;
-      --muted: #9ca3af;
-      --paper: #07090d;
-      --panel: #0d1117;
-      --panel-strong: #111827;
-      --line: #242b36;
-      --accent: #22c55e;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--paper);
-      color: var(--ink);
-      font-family: "IBM Plex Sans", Aptos, sans-serif;
-    }
-    header {
-      border-bottom: 1px solid var(--line);
-      padding: 24px 32px 18px;
-      background: #0b0f16;
-    }
-    h1, h2, h3 { margin: 0; font-weight: 700; }
-    h1 { font-size: 28px; }
-    h2 { font-size: 17px; margin-bottom: 14px; }
-    h3 { font-size: 14px; margin-bottom: 8px; }
-    .subhead {
-      color: var(--muted);
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px 18px;
-      margin-top: 8px;
-      font-size: 13px;
-    }
-    main {
-      padding: 22px 32px 36px;
-    }
     .tab-radio { position: absolute; opacity: 0; pointer-events: none; }
     .tabs {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
-      margin-bottom: 16px;
+      margin-bottom: var(--gap);
     }
     .tabs label {
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: calc(var(--radius) / 2);
       color: var(--muted);
       cursor: pointer;
       padding: 8px 12px;
-      background: var(--panel);
+      background: var(--surface-2);
       font-size: 13px;
     }
     #tab-overview:checked ~ .tabs label[for="tab-overview"],
@@ -662,7 +730,7 @@ def render_tearsheet(
     #tab-ledger:checked ~ .tabs label[for="tab-ledger"] {
       color: var(--ink);
       border-color: var(--accent);
-      background: #10261c;
+      background: var(--surface);
     }
     .tab-panel { display: none; }
     #tab-overview:checked ~ #overview-panel,
@@ -670,63 +738,23 @@ def render_tearsheet(
     #tab-ledger:checked ~ #ledger-panel {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 16px;
+      gap: var(--gap);
     }
-    .metrics {
-      grid-column: 1 / -1;
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 10px;
-    }
-    .metric, .panel {
-      border: 1px solid var(--line);
-      background: var(--panel);
-      border-radius: 6px;
-    }
-    .metric { padding: 13px 14px; }
-    .metric span {
-      color: var(--muted);
-      display: block;
-      font-size: 12px;
-      text-transform: uppercase;
-    }
-    .metric strong { display: block; margin-top: 5px; font-size: 22px; }
-    .panel { padding: 16px; min-width: 0; }
-    .wide { grid-column: 1 / -1; }
-    .chart-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-    .table-wrap { overflow: auto; max-height: 520px; }
-    .data-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-      white-space: nowrap;
-    }
-    .data-table th, .data-table td {
-      border-bottom: 1px solid var(--line);
-      padding: 7px 9px;
-      text-align: left;
-    }
-    .data-table th { background: var(--panel-strong); color: var(--ink); }
-    .heatmap td { text-align: right; }
-    .empty, .warnings { color: var(--muted); font-size: 13px; }
-    .warnings { margin: 0; padding-left: 18px; }
+    .metrics { grid-column: 1 / -1; }
     @media (max-width: 900px) {
-      header, main { padding-left: 16px; padding-right: 16px; }
       #tab-overview:checked ~ #overview-panel,
       #tab-montecarlo:checked ~ #montecarlo-panel,
-      #tab-ledger:checked ~ #ledger-panel,
-      .chart-grid { grid-template-columns: 1fr; }
-      .wide, .metrics { grid-column: auto; }
+      #tab-ledger:checked ~ #ledger-panel {
+        grid-template-columns: 1fr;
+      }
+      .metrics, .wide { grid-column: auto; }
     }"""
     page_html = html_page(
         html.escape(title),
         _css,
         f"""\
   <header>
+    <div class="eyebrow">Backtest tear-sheet</div>
     <h1>{html.escape(title)}</h1>
     <div class="subhead">
       <span>{html.escape(cfg.market.upper())}</span>
@@ -757,7 +785,7 @@ def render_tearsheet(
     </section>
     {monte_carlo_panel}
   </main>""",
-        head_extra=f"<script>{get_plotlyjs()}</script>",
+        charts=True,
     )
     output_path.write_text(page_html, encoding="utf-8")
     return output_path

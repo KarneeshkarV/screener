@@ -1,0 +1,44 @@
+@@ title
+Graphite
+@@ lib
+Chart.js 4.4<br>Linear/Vercel-style · zinc + teal · compact
+@@ head
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono&display=swap" rel="stylesheet">
+@@ tokens
+:root{color-scheme:dark;
+  --bg:#09090b;--surface:#18181b;--surface-2:#1f1f23;--ink:#fafafa;--muted:#a1a1aa;--line:#27272a;--line-soft:#202024;--hover:#202024;
+  --accent:#2dd4bf;--series-1:#00a38f;--series-2:#8e71d6;--series-3:#cf7b00;
+  --pos:#10b981;--neg:#f43f5e;--pos-ink:#34d399;--neg-ink:#fb7185;--div-mid:#232327;--on-strong:#09090b;
+  --status-good:#0ca30c;--status-warning:#fab219;--status-critical:#d03b3b;
+  --font-ui:Geist,Inter,system-ui,sans-serif;--font-display:Geist,system-ui,sans-serif;--font-num:"Geist Mono",monospace;--font-mono:"Geist Mono",monospace;
+  --h1-size:26px;--h1-weight:600;--h1-tracking:-.03em;--radius:8px;--gap:12px}
+@@ css
+.kpi .value{font-size:24px;font-weight:500}
+.chart{position:relative}
+@@ charts
+const R = REPORT;
+Chart.defaults.color = tok("muted"); Chart.defaults.font.family = tok("font-ui"); Chart.defaults.font.size = 11;
+Chart.defaults.borderColor = tok("line-soft");
+Object.assign(Chart.defaults.plugins.tooltip, { backgroundColor: tok("surface-2"), borderColor: tok("line"), borderWidth: 1, titleColor: tok("ink"), bodyColor: tok("ink"), padding: 10, cornerRadius: 6, boxPadding: 4 });
+const canvas = (id) => { const el = document.getElementById(id); el.innerHTML = "<canvas></canvas>"; return el.firstChild; };
+const time = { ticks: { maxTicksLimit: 7, maxRotation: 0 }, grid: { display: false } };
+const common = { responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false }, plugins: { legend: { display: false } } };
+const sparse = (arr) => arr.filter((_, i) => i % 2 === 0);
+const labels = sparse(R.dates);
+const g = (ctx, c) => { const gr = ctx.chart.ctx.createLinearGradient(0, 0, 0, ctx.chart.height); gr.addColorStop(0, c + "40"); gr.addColorStop(1, c + "00"); return gr; };
+new Chart(canvas("equity"), { type: "line", data: { labels, datasets: [
+  { label: "Strategy", data: sparse(R.equity), borderColor: tok("series-1"), backgroundColor: (c) => g(c, tok("series-1")), fill: true, borderWidth: 2, pointRadius: 0, tension: 0.2 },
+  { label: "Benchmark", data: sparse(R.benchmark), borderColor: tok("series-2"), borderWidth: 2, pointRadius: 0, tension: 0.2 }] },
+  options: { ...common, scales: { x: time, y: { ticks: { callback: (v) => v / 1000 + "k" } } },
+    plugins: { ...common.plugins, tooltip: { callbacks: { label: (c) => ` ${c.dataset.label}  ${Math.round(c.raw).toLocaleString()}` } } } } });
+new Chart(canvas("drawdown"), { type: "line", data: { labels, datasets: [{ label: "Drawdown", data: sparse(R.drawdown), borderColor: tok("neg"), backgroundColor: tok("neg") + "2e", fill: true, borderWidth: 1.5, pointRadius: 0 }] },
+  options: { ...common, scales: { x: time, y: { ticks: { callback: (v) => v + "%" } } } } });
+new Chart(canvas("hist"), { type: "bar", data: { labels: HIST.map((b) => b.x0 + "%"), datasets: [{ label: "Trades", data: HIST.map((b) => b.n),
+  backgroundColor: HIST.map((b) => (b.x0 >= 0 ? tok("pos") : tok("neg"))), borderRadius: 4, borderSkipped: "start", categoryPercentage: 0.94, barPercentage: 1 }] },
+  options: { ...common, scales: { x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } } } } });
+const sec = [...R.sectorReturns].sort((a, b) => b.ret - a.ret);
+new Chart(canvas("sectors"), { type: "bar", data: { labels: sec.map((s) => s.name), datasets: [{ label: "Return", data: sec.map((s) => s.ret),
+  backgroundColor: sec.map((s) => (s.ret >= 0 ? tok("pos") : tok("neg"))), borderRadius: 4, borderSkipped: false, barPercentage: 0.6 }] },
+  options: { ...common, indexAxis: "y", scales: { x: { ticks: { callback: (v) => v + "%" } }, y: { grid: { display: false } } },
+    plugins: { ...common.plugins, tooltip: { callbacks: { label: (c) => " " + fmtPct(c.raw) } } } } });

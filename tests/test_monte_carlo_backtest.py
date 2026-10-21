@@ -682,11 +682,12 @@ def test_cli_rejects_negative_seed_before_resolving_the_backtest(monkeypatch):
 def test_flat_distribution_marker_labels_have_separate_positions(monkeypatch):
     captured = {}
 
-    def capture_figure(fig, _div_id):
-        captured["figure"] = fig
+    def capture_option(div_id, option, **_kwargs):
+        captured["div_id"] = div_id
+        captured["option"] = option
         return ""
 
-    monkeypatch.setattr(tearsheet, "figure_html", capture_figure)
+    monkeypatch.setattr(tearsheet, "chart_html", capture_option)
 
     tearsheet._distribution_html(
         np.zeros(20),
@@ -695,14 +696,17 @@ def test_flat_distribution_marker_labels_have_separate_positions(monkeypatch):
         label="Return",
     )
 
-    annotations = captured["figure"].layout.annotations
-    assert {annotation.text for annotation in annotations} == {
+    assert captured["div_id"] == "flat-distribution"
+    mark_data = captured["option"]["series"][0]["markLine"]["data"]
+    labels = [item["label"] for item in mark_data]
+    assert [label["formatter"] for label in labels] == [
         "p05",
         "median",
         "p95",
         "realized",
-    }
-    assert len({annotation.yshift for annotation in annotations}) == 4
+    ]
+    placements = {(label["position"], label["distance"]) for label in labels}
+    assert len(placements) == 4
 
 
 def test_cli_help_lists_monte_carlo_and_shared_run_flags():
@@ -776,7 +780,7 @@ def test_the_fan_chart_size_stays_bounded_as_bars_grow():
     """The fan is a texture, so its cost must not scale with the bar count.
 
     One trace per drawn bar put 4.4 MB of equity levels into a 10-year daily
-    report, on top of the plotly bundle, on every run.
+    report, on top of the chart bundle, on every run.
     """
     sizes = []
     for bars in (600, 2520):
