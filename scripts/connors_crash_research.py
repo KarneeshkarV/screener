@@ -15,27 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
-@dataclass
-class ConnorsMarketData:
-    """Daily nominal execution prices and adjusted signals on a benchmark calendar."""
-
-    market: str
-    calendar: pd.DatetimeIndex
-    symbols: list[str]
-    arrays: dict[str, np.ndarray]
-    membership: np.ndarray
-    coverage: pd.DataFrame
-    missing_sessions: pd.DataFrame
-    observations: pd.DataFrame
-    anomalies: pd.DataFrame
-    sources: list[dict]
-    evidence: dict = field(
-        default_factory=lambda: {
-            "classification": "observed_index_proxy",
-            "executable": False,
-        }
-    )
+from scripts.pit_market_data import PitMarketData, load_pit_market_bundle
 
 
 def lean_wilder_rsi(values: np.ndarray, period: int) -> np.ndarray:
@@ -94,6 +74,28 @@ def connors_contiguous_indicators(close: pd.Series) -> pd.DataFrame:
     return result
 
 
+def load_connors_pit_bundle(
+    root: Path, market: str, end: pd.Timestamp, earliest_start: pd.Timestamp
+) -> PitMarketData:
+    """Prepare Connors signals from validated PIT prices with 101-session warmup."""
+    data = load_pit_market_bundle(
+        root, market, end, earliest_start, history_sessions=101
+    )
+    shape = data.membership.shape
+    for key in ("crsi", "volatility"):
+        data.arrays[key] = np.full(shape, np.nan)
+    for j in range(len(data.symbols)):
+        signal = pd.Series(data.arrays["signal_close"][:, j], index=data.calendar)
+        features = connors_contiguous_indicators(signal)
+        for key in ("crsi", "volatility"):
+            data.arrays[key][:, j] = features[key].to_numpy()
+    data.arrays["entry_quality"] = data.arrays["complete_window"].copy()
+    data.coverage = data.coverage.rename(
+        columns={"incomplete_history_sessions": "unready_indicator_sessions"}
+    )
+    return data
+
+
 def connors_nominal_bars(frame: pd.DataFrame) -> pd.DataFrame:
     """Recover nominal OHLC from retained turnover and explicit future split factors.
 
@@ -144,7 +146,7 @@ def load_connors_market(
     end: pd.Timestamp,
     earliest_start: pd.Timestamp,
     allow_fmp_proxy: bool = False,
-) -> ConnorsMarketData:
+) -> PitMarketData:
     """Load only versioned adjusted caches; record every unavailable member-session."""
     members = pd.read_csv(membership_path)
     members["effective_date"] = pd.to_datetime(members["effective_date"])
@@ -323,7 +325,7 @@ def load_connors_market(
                     "location": location,
                 }
             )
-    return ConnorsMarketData(
+    return PitMarketData(
         market,
         calendar,
         symbols,
@@ -381,7 +383,7 @@ class ConnorsSimulationResult:
 
 
 def simulate_connors_crash(
-    data: ConnorsMarketData,
+    data: PitMarketData,
     start: pd.Timestamp,
     end: pd.Timestamp,
     initial_capital: float = 100_000,
@@ -876,8 +878,6 @@ def run_connors_research() -> None:
     ):
         print(f"Loading {market}, end={end.date()}", flush=True)
         if args.pit_bundles:
-            from scripts.connors_pit_data import load_connors_pit_bundle
-
             data = load_connors_pit_bundle(
                 args.pit_bundles / market, market, end, earliest
             )
@@ -969,7 +969,7 @@ def run_connors_research() -> None:
             Path(__file__).read_bytes()
         ).hexdigest(),
         "pit_loader_sha256": hashlib.sha256(
-            Path(__file__).with_name("connors_pit_data.py").read_bytes()
+            Path(__file__).with_name("pit_market_data.py").read_bytes()
         ).hexdigest(),
         "extreme_return_quarantine": args.quarantine_extreme_returns,
         "fmp_total_return_proxy": args.allow_fmp_proxy,

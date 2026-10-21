@@ -1,4 +1,4 @@
-"""Validate timestamped Connors input bundles without certifying vendor evidence.
+"""Validate timestamped market input bundles without certifying vendor evidence.
 
 All security keys are permanent IDs, never inferred ticker aliases.
 The daily universe and calendar must be supplied independently of price coverage.
@@ -8,61 +8,89 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from scripts.connors_crash_research import (
-    ConnorsMarketData,
-    connors_contiguous_indicators,
-)
+
+@dataclass
+class PitMarketData:
+    """Daily nominal prices and evidence on an explicit session calendar."""
+
+    market: str
+    calendar: pd.DatetimeIndex
+    symbols: list[str]
+    arrays: dict[str, np.ndarray]
+    membership: np.ndarray
+    coverage: pd.DataFrame
+    missing_sessions: pd.DataFrame
+    observations: pd.DataFrame
+    anomalies: pd.DataFrame
+    sources: list[dict]
+    evidence: dict = field(
+        default_factory=lambda: {
+            "classification": "observed_index_proxy",
+            "executable": False,
+        }
+    )
 
 
-def read_connors_evidence(root: Path, name: str, required: set[str]) -> pd.DataFrame:
+def read_pit_evidence(root: Path, name: str, required: set[str]) -> pd.DataFrame:
     """Read one evidence table and fail on missing columns or empty identities."""
     frame = pd.read_csv(root / name, dtype={"security_id": str})
     missing = required - set(frame.columns)
     if missing:
-        raise ValueError(f"Connors PIT columns missing in {name}: {sorted(missing)}")
+        raise ValueError(
+            f"PIT market data columns missing in {name}: {sorted(missing)}"
+        )
     if "security_id" in frame and (
         frame.security_id.isna().any() or frame.security_id.str.strip().eq("").any()
     ):
-        raise ValueError(f"Connors PIT empty security ID in {name}")
+        raise ValueError(f"PIT market data empty security ID in {name}")
     return frame
 
 
-def connors_evidence_times(frame: pd.DataFrame, columns: tuple[str, ...]) -> None:
+def pit_evidence_times(frame: pd.DataFrame, columns: tuple[str, ...]) -> None:
     """Require explicit timezone offsets, then normalize evidence timestamps to UTC."""
     for column in columns:
         text = frame[column].astype(str)
         if not text.str.contains(r"(?:Z|[+-]\d\d:\d\d)$", regex=True).all():
-            raise ValueError(f"Connors PIT timestamp needs timezone: {column}")
+            raise ValueError(f"PIT market data timestamp needs timezone: {column}")
         frame[column] = pd.to_datetime(
             frame[column], utc=True, errors="raise", format="ISO8601"
         )
 
 
-def connors_evidence_sessions(frame: pd.DataFrame) -> None:
+def pit_evidence_sessions(frame: pd.DataFrame) -> None:
     """Require date-only session keys, not intraday or timezone-dependent dates."""
     if not frame.session.astype(str).str.fullmatch(r"\d{4}-\d{2}-\d{2}").all():
-        raise ValueError("Connors PIT session must be YYYY-MM-DD")
+        raise ValueError("PIT market data session must be YYYY-MM-DD")
     frame["session"] = pd.to_datetime(frame.session, errors="raise")
 
 
-def load_connors_pit_bundle(
-    root: Path, market: str, end: pd.Timestamp, earliest_start: pd.Timestamp
-) -> ConnorsMarketData:
+def load_pit_market_bundle(
+    root: Path,
+    market: str,
+    end: pd.Timestamp,
+    earliest_start: pd.Timestamp,
+    *,
+    history_sessions: int = 1,
+) -> PitMarketData:
     """Load complete daily evidence; refuse unknown actions and unsupported short claims.
 
     This validates a supplied data contract, not the truth or completeness of its source.
-    Daily fills remain hypothetical even when dated borrow evidence is supplied.
+    No indicator, order, or fill model is applied here.
+    history_sessions specifies the caller's required contiguous price history.
     """
+    if history_sessions < 1:
+        raise ValueError("PIT market data history_sessions must be positive")
     metadata = json.loads((root / "metadata.json").read_text())
     if metadata.get("schema_version") != 1 or metadata.get("market") != market:
-        raise ValueError("Connors PIT metadata version or market mismatch")
+        raise ValueError("PIT market data metadata version or market mismatch")
     if metadata.get("universe_kind") not in {"all_listed", "index"}:
-        raise ValueError("Connors PIT universe_kind must be all_listed or index")
+        raise ValueError("PIT market data universe_kind must be all_listed or index")
     for claim in (
         "calendar_source",
         "universe_source",
@@ -71,66 +99,66 @@ def load_connors_pit_bundle(
         "action_source",
     ):
         if not isinstance(metadata.get(claim), str) or not metadata[claim].strip():
-            raise ValueError(f"Connors PIT source reference required: {claim}")
+            raise ValueError(f"PIT market data source reference required: {claim}")
     if (
         metadata.get("actions_complete_through") is None
         or pd.Timestamp(metadata["actions_complete_through"]) < end
     ):
         raise ValueError(
-            "Connors PIT corporate-action coverage ends before requested end"
+            "PIT market data corporate-action coverage ends before requested end"
         )
-    sessions = read_connors_evidence(
+    sessions = read_pit_evidence(
         root,
         "sessions.csv",
         {"session", "decision_at", "open_at", "close_at", "available_at"},
     )
-    connors_evidence_sessions(sessions)
-    connors_evidence_times(
-        sessions, ("decision_at", "open_at", "close_at", "available_at")
-    )
+    pit_evidence_sessions(sessions)
+    pit_evidence_times(sessions, ("decision_at", "open_at", "close_at", "available_at"))
     if (
         sessions.session.duplicated().any()
         or not sessions.session.is_monotonic_increasing
     ):
-        raise ValueError("Connors PIT calendar must be unique and sorted")
+        raise ValueError("PIT market data calendar must be unique and sorted")
     if not (
         (sessions.available_at <= sessions.decision_at)
         & (sessions.decision_at <= sessions.open_at)
         & (sessions.open_at < sessions.close_at)
     ).all():
-        raise ValueError("Connors PIT invalid calendar availability or session times")
+        raise ValueError(
+            "PIT market data invalid calendar availability or session times"
+        )
     if (
         len(sessions) == 0
         or sessions.session.max() < end
         or sessions.session.min() >= earliest_start
     ):
-        raise ValueError("Connors PIT calendar lacks requested coverage or warmup")
+        raise ValueError("PIT market data calendar lacks requested coverage or warmup")
     warmup_sessions = int((sessions.session < earliest_start).sum())
-    if warmup_sessions < 101:
+    if warmup_sessions < history_sessions:
         raise ValueError(
-            f"Connors PIT calendar requires 101 pre-start sessions; found {warmup_sessions}"
+            f"PIT market data calendar requires {history_sessions} pre-start sessions; found {warmup_sessions}"
         )
     exchange_timezone = "America/New_York" if market == "us" else "Asia/Kolkata"
     for column in ("decision_at", "open_at", "close_at"):
         local_dates = sessions[column].dt.tz_convert(exchange_timezone).dt.date
         if not local_dates.eq(sessions.session.dt.date).all():
             raise ValueError(
-                "Connors PIT session label disagrees with exchange-local timestamp"
+                "PIT market data session label disagrees with exchange-local timestamp"
             )
     if (
         not sessions.decision_at.is_monotonic_increasing
         or not sessions.close_at.is_monotonic_increasing
     ):
-        raise ValueError("Connors PIT calendar timestamps must increase")
+        raise ValueError("PIT market data calendar timestamps must increase")
     if not (
         sessions.close_at.iloc[:-1].to_numpy()
         < sessions.decision_at.iloc[1:].to_numpy()
     ).all():
-        raise ValueError("Connors PIT sessions overlap next decision")
+        raise ValueError("PIT market data sessions overlap next decision")
     # Keep all supplied warmup; never infer sessions from a benchmark's prices.
     sessions = sessions[sessions.session <= end].set_index("session")
     calendar = pd.DatetimeIndex(sessions.index)
-    securities = read_connors_evidence(
+    securities = read_pit_evidence(
         root,
         "securities.csv",
         {"security_id", "available_at", "listed_on", "delisted_on"},
@@ -141,71 +169,72 @@ def load_connors_pit_bundle(
         securities.listed_on.isna().any()
         or (securities.delisted_on < securities.listed_on).any()
     ):
-        raise ValueError("Connors PIT invalid listing interval")
-    connors_evidence_times(securities, ("available_at",))
+        raise ValueError("PIT market data invalid listing interval")
+    pit_evidence_times(securities, ("available_at",))
     if securities.security_id.duplicated().any():
-        raise ValueError("Connors PIT duplicate permanent security ID")
+        raise ValueError("PIT market data duplicate permanent security ID")
     symbols = sorted(securities.security_id)
     security_master = securities.set_index("security_id")
     shape = (len(calendar), len(symbols))
     symbol_indices = {s: j for j, s in enumerate(symbols)}
-    keys = ("open", "high", "low", "close", "turnover", "crsi", "volatility")
+    keys = ("open", "high", "low", "close", "turnover", "signal_close")
     arrays = {key: np.full(shape, np.nan) for key in keys}
     arrays.update(
         {
             "dividend": np.zeros(shape),
             "split": np.ones(shape),
             "complete_window": np.zeros(shape, dtype=bool),
-            "entry_quality": np.zeros(shape, dtype=bool),
             "prior_bar_available": np.zeros(shape, dtype=bool),
             "prior_quote_available": np.zeros(shape, dtype=bool),
         }
     )
 
     def evidence_table(name: str, columns: set[str]) -> pd.DataFrame:
-        frame = read_connors_evidence(root, name, columns | {"session", "available_at"})
-        connors_evidence_sessions(frame)
-        connors_evidence_times(frame, ("available_at",))
+        frame = read_pit_evidence(root, name, columns | {"session", "available_at"})
+        pit_evidence_sessions(frame)
+        pit_evidence_times(frame, ("available_at",))
         if frame.duplicated(["session", "security_id"]).any():
-            raise ValueError(f"Connors PIT duplicate evidence in {name}")
+            raise ValueError(f"PIT market data duplicate evidence in {name}")
         if (
             not frame.security_id.isin(symbols).all()
             or not frame.session.isin(calendar).all()
         ):
-            raise ValueError(f"Connors PIT unknown security or session in {name}")
+            raise ValueError(f"PIT market data unknown security or session in {name}")
         return frame
 
     # Exactly one manifest row per supplied session, including empty-universe days.
-    universe_days = read_connors_evidence(
+    universe_days = read_pit_evidence(
         root, "universe_sessions.csv", {"session", "available_at", "member_count"}
     )
-    connors_evidence_sessions(universe_days)
-    connors_evidence_times(universe_days, ("available_at",))
+    pit_evidence_sessions(universe_days)
+    pit_evidence_times(universe_days, ("available_at",))
     if universe_days.session.duplicated().any() or set(universe_days.session) != set(
         calendar
     ):
         raise ValueError(
-            "Connors PIT universe coverage must match every calendar session"
+            "PIT market data universe coverage must match every calendar session"
         )
     universe = evidence_table("universe.csv", {"security_id", "ticker"})
     if (
         universe.ticker.isna().any()
         or universe.ticker.astype(str).str.contains("DUMMY", case=False).any()
     ):
-        raise ValueError("Connors PIT invalid ticker or corporate-action placeholder")
+        raise ValueError(
+            "PIT market data invalid ticker or corporate-action placeholder"
+        )
     if universe.duplicated(["session", "ticker"]).any():
         raise ValueError(
-            "Connors PIT ticker maps to multiple security IDs on one session"
+            "PIT market data ticker maps to multiple security IDs on one session"
         )
     membership = np.zeros(shape, dtype=bool)
     if (
         universe_days.available_at > universe_days.session.map(sessions.decision_at)
     ).any():
-        raise ValueError("Connors PIT universe manifest unavailable at decision")
+        raise ValueError("PIT market data universe manifest unavailable at decision")
     listed_on = universe.security_id.map(security_master.listed_on)
     delisted_on = universe.security_id.map(security_master.delisted_on)
     if ((universe.session < listed_on) | (universe.session > delisted_on)).any():
-        raise ValueError("Connors PIT universe member outside listing interval")
+        raise ValueError("PIT market data universe member outside listing interval")
     member_counts = universe.groupby("session").size().reindex(calendar, fill_value=0)
     if metadata["universe_kind"] == "all_listed":
         # Unique valid member IDs plus matching counts establish set equality.
@@ -218,20 +247,22 @@ def load_connors_pit_bundle(
         np.add.at(listing_changes, first, 1)
         np.add.at(listing_changes, last, -1)
         if not np.array_equal(member_counts.to_numpy(), listing_changes.cumsum()[:-1]):
-            raise ValueError("Connors PIT all-listed universe omits a listed security")
+            raise ValueError(
+                "PIT market data all-listed universe omits a listed security"
+            )
     declared_counts = universe_days.set_index("session").member_count.reindex(calendar)
     if not (
         np.isfinite(declared_counts)
         & declared_counts.ge(0)
         & declared_counts.eq(member_counts)
     ).all():
-        raise ValueError("Connors PIT universe member count mismatch")
+        raise ValueError("PIT market data universe member count mismatch")
     decision_times = universe.session.map(sessions.decision_at)
     if (
         (universe.available_at > decision_times)
         | (universe.security_id.map(security_master.available_at) > decision_times)
     ).any():
-        raise ValueError("Connors PIT future universe or security identity")
+        raise ValueError("PIT market data future universe or security identity")
     membership[
         calendar.get_indexer(universe.session),
         universe.security_id.map(symbol_indices).to_numpy(dtype=int),
@@ -244,7 +275,7 @@ def load_connors_pit_bundle(
         (bars.session < bars.security_id.map(security_master.listed_on))
         | (bars.session > bars.security_id.map(security_master.delisted_on))
     ).any():
-        raise ValueError("Connors PIT quote outside listing interval")
+        raise ValueError("PIT market data quote outside listing interval")
     # Delisting settlement is unsupported. Refuse it even without an action row.
     for row in securities.itertuples():
         if pd.notna(row.delisted_on) and row.delisted_on <= end:
@@ -257,10 +288,10 @@ def load_connors_pit_bundle(
     )
     for row in actions.itertuples():
         if row.available_at > sessions.loc[row.session, "decision_at"]:
-            raise ValueError("Connors PIT corporate action unknown at decision")
+            raise ValueError("PIT market data corporate action unknown at decision")
         if row.unsupported != 0:
             raise ValueError(
-                "Connors PIT unsupported corporate action requires verified settlement"
+                "PIT market data unsupported corporate action requires verified settlement"
             )
         if (
             not np.isfinite(row.split)
@@ -268,7 +299,7 @@ def load_connors_pit_bundle(
             or not np.isfinite(row.dividend)
             or row.dividend < 0
         ):
-            raise ValueError("Connors PIT invalid split or dividend")
+            raise ValueError("PIT market data invalid split or dividend")
         i, j = calendar.get_loc(row.session), symbol_indices[row.security_id]
         arrays["split"][i, j], arrays["dividend"][i, j] = row.split, row.dividend
     decision_ns = sessions.decision_at.array.as_unit("ns").asi8
@@ -287,7 +318,7 @@ def load_connors_pit_bundle(
             group.available_at.dropna()
             < sessions.loc[group.available_at.dropna().index, "close_at"]
         ).any():
-            raise ValueError("Connors PIT full daily bar available before close")
+            raise ValueError("PIT market data full daily bar available before close")
         bar_times = group.available_at.where(valid)
         for key in keys[:5]:
             arrays[key][:, j] = numeric[key].where(valid).to_numpy()
@@ -314,12 +345,11 @@ def load_connors_pit_bundle(
                         "adjusted_close_return": value,
                     }
                 )
-        features = connors_contiguous_indicators(signal)
-        for key in ("crsi", "volatility"):
-            arrays[key][:, j] = features[key].to_numpy()
-        arrays["complete_window"][:, j] = close.notna().rolling(101).sum().eq(101)
-        arrays["entry_quality"][:, j] = arrays["complete_window"][:, j]
-        # Wilder smoothing retains every observation since the latest missing bar.
+        arrays["signal_close"][:, j] = signal.to_numpy()
+        arrays["complete_window"][:, j] = (
+            close.notna().rolling(history_sessions).sum().eq(history_sessions)
+        )
+        # Recursive indicators can retain every observation since the latest missing bar.
         # Segmented cumulative maxima check the whole chain in linear time.
         arrived = bar_times.notna().to_numpy()
         arrival_ns = pd.Series(bar_times.array.as_unit("ns").asi8, index=calendar)
@@ -335,7 +365,7 @@ def load_connors_pit_bundle(
     permissions_path = root / "short_permissions.csv"
     if permissions_path.exists():
         if not metadata.get("borrow_source"):
-            raise ValueError("Connors PIT borrow source reference required")
+            raise ValueError("PIT market data borrow source reference required")
         permissions = evidence_table(
             "short_permissions.csv",
             {
@@ -346,7 +376,7 @@ def load_connors_pit_bundle(
                 "valid_until",
             },
         )
-        connors_evidence_times(permissions, ("valid_until",))
+        pit_evidence_times(permissions, ("valid_until",))
         arrays["short_capacity"] = np.zeros(shape)
         arrays["borrow_rate"] = np.zeros(shape)
         for row in permissions.itertuples():
@@ -355,19 +385,21 @@ def load_connors_pit_bundle(
                 row.available_at > decision
                 or row.valid_until < sessions.loc[row.session, "close_at"]
             ):
-                raise ValueError("Connors PIT late or expired short permission")
+                raise ValueError("PIT market data late or expired short permission")
             if (
                 not np.isfinite(row.max_quantity)
                 or row.max_quantity < 0
                 or not np.isfinite(row.annual_rate)
                 or row.annual_rate < 0
             ):
-                raise ValueError("Connors PIT invalid short capacity or borrow rate")
+                raise ValueError(
+                    "PIT market data invalid short capacity or borrow rate"
+                )
             if market == "india" and (
                 pd.isna(row.contract_id) or not str(row.contract_id).strip()
             ):
                 raise ValueError(
-                    "Connors PIT India short permission requires SLB contract ID"
+                    "PIT market data India short permission requires SLB contract ID"
                 )
             i, j = calendar.get_loc(row.session), symbol_indices[row.security_id]
             arrays["short_capacity"][i, j] = row.max_quantity
@@ -385,7 +417,7 @@ def load_connors_pit_bundle(
                 "invalid_bars": invalid_counts.get(symbol, 0),
                 "expected_member_sessions": int(expected.sum()),
                 "missing_member_sessions": int((expected & ~present).sum()),
-                "unready_indicator_sessions": int(
+                "incomplete_history_sessions": int(
                     (expected & present & ~arrays["complete_window"][:, j]).sum()
                 ),
             }
@@ -404,7 +436,7 @@ def load_connors_pit_bundle(
         for p in sorted(root.iterdir())
         if p.is_file()
     ]
-    data = ConnorsMarketData(
+    data = PitMarketData(
         market,
         calendar,
         symbols,

@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from scripts.connors_crash_research import (
-    ConnorsMarketData,
+    PitMarketData,
     connors_crash_indicators,
     connors_nominal_bars,
     lean_wilder_rsi,
@@ -32,7 +32,7 @@ def connors_test_market(count=6, symbols=("AAA",)):
             "volatility": 110,
         }.items()
     }
-    return ConnorsMarketData(
+    return PitMarketData(
         "us",
         calendar,
         list(symbols),
