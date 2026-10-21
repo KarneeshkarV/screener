@@ -82,9 +82,9 @@ Agent mode limits the displayed rows and writes the full metrics to a spill CSV.
 
 The India catalogue is `screener/sector_rotation/sector_groups.yaml`.
 The US catalogue is `screener/sector_rotation/sector_groups_us.yaml`.
-India has 106 groups, including 41 additions to the original 65 video-backed labels.
+India has 113 groups, including 48 additions to the original 65 video-backed labels.
 The US has 46 groups, including all 11 broad sectors, 32 industry baskets, and 3 themes.
-The catalogues contain 320 unique India stocks and 152 unique US stocks.
+The catalogues contain 346 unique India stocks and 152 unique US stocks.
 Each group has a stable ID, display name, parent label, kind, selected exchange-qualified symbols, and optional exposure notes.
 Both bundled catalogues also provide a business description, drivers, risks, and primary source links for each group.
 These qualitative details explain exposure, not forecasts or quantitative trading signals.
@@ -105,6 +105,7 @@ The bundled catalogue covers identifiable examples, not the full proprietary cat
 The transcript was unavailable during implementation, so group references come from visible diagrams and dashboard frames.
 Each original `video_at` field links a group to an approximate point in that footage.
 The expanded India groups and all US groups are independent research additions with no claimed video timestamp.
+Seven India groups added on 2026-10-21 follow themes from SOIC's [Q2 FY27 results review](https://www.youtube.com/watch?v=RXjwpqeBgkE); see the India evidence document.
 The video's index formula has not been verified.
 Our monthly equal-weight calculation is an explicit independent choice.
 

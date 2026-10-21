@@ -229,3 +229,38 @@ A fixed set of the 320 reviewed symbols detects accidental unreviewed symbols.
 That set is a dated regression fixture, not a live exchange feed.
 Tests also retain the curated-membership, survivorship, mixed-exposure and adjusted-return warnings.
 Future membership changes need fresh evidence and an explicit update to that fixture.
+
+## 2026-10-21 additions
+
+Review date: 2026-10-21.
+This review adds seven groups and 26 symbols, so the catalogue has 113 groups and 346 distinct NSE symbols.
+The themes come from SOIC's [Q2 FY27 results review](https://www.youtube.com/watch?v=RXjwpqeBgkE).
+Only a Hindi auto-generated transcript was available; the review read it with the published chapter list.
+That video is not the catalogue's top-level source, so the new groups have no `video_at` field.
+The video discussed companies with strong quarterly results; it did not define these baskets.
+Peers beyond the companies the video named are independent selections.
+
+| Group | Members | Video chapter |
+| --- | --- | --- |
+| `wealth_management` | 360ONE, NUVAMA, ANANDRATHI | 360 ONE WAM and Angel One (5:38) |
+| `music_media_content` | TIPSMUSIC, SAREGAMA, SUNTV | Tips Music (35:32) |
+| `mining_equipment` | EIMCOELECO, BEML, RVTH | Eimco Elecon (39:13) |
+| `midcap_it_services` | PERSISTENT, COFORGE, MPHASIS, BSOFT | AI and IT services (42:33) |
+| `regional_private_banks` | SOUTHBANK, FEDERALBNK, KARURVYSYA, CUB, DCBBANK | Federal Bank (14:30), South Indian Bank (49:53) |
+| `carbon_battery_materials` | HSCL, PCBL, GOACARBON | Himadri Speciality Chemical (48:07) |
+| `luxury_consumption` | THELEELA, EIHOTEL, INDHOTEL, LOTUSDEV | Three ways to win in consumption (25:57) |
+
+Existing groups received these members: `api` SOLARA, `chemicals_specialty` PAUSHAKLTD, `hotels` THELEELA, `steel` JAYNECOIND, `engineering_rd` ONWARDTEC, `residential_developers` LOTUSDEV and `nbfc_lending` SGFIN and FEDFINA.
+These additions change inherited member lists but not inherited IDs, names, parents, kinds or timestamps.
+
+The review downloaded the [NSE equity securities](https://archives.nseindia.com/content/equities/EQUITY_L.csv) file again.
+It had 2,609 lines and SHA-256 `a6a09d6f397db028efcb4191a8aa5f0475a5f47697c070a27d48fd0795092810`.
+All 26 new symbols matched.
+All are in EQ series except `LOTUSDEV`, which is in BE trade-to-trade series; the `luxury_consumption` notes record this.
+Aurum PropTech (`AURUM`) was the only listed proptech company in the video, so no proptech basket was added.
+ASML and TSMC are already covered by the US semiconductor groups.
+
+Bounded HTTP GETs returned 200 for every retained new issuer source.
+The Eimco Elecon page describes mining and construction equipment.
+The other pages were checked for status only, not for full business-segment content.
+The South Indian Bank, Karur Vysya Bank, Zee and Goa Carbon sites were blocked or did not resolve, so they are not retained sources.

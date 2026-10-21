@@ -82,6 +82,7 @@ ORIGINAL_VIDEO_TIMESTAMPS = {
 }
 
 # Symbol identity only, from the main-board and SME files in the source document.
+# The last three rows were added from the 2026-10-21 main-board file review.
 # This fixed review set prevents an accidental invented ticker, not future delistings.
 REVIEWED_NSE_SYMBOLS = frozenset(
     """
@@ -120,6 +121,9 @@ REVIEWED_NSE_SYMBOLS = frozenset(
     UJJIVANSFB ULTRACEMCO UNIONBANK UNIPARTS UNITDSPR UNITEDTEA UNOMINDA UPL
     UTIAMC VBL VEDL VIJAYA VINATIORGA VMART VOLTAMP VOLTAS WAAREEENER WELSPUNLIV
     WESTLIFE WHIRLPOOL WIPRO WPIL WSTCSTPAPR ZENTEC
+    360ONE ANANDRATHI BSOFT COFORGE CUB DCBBANK EIMCOELECO FEDFINA GOACARBON HSCL
+    JAYNECOIND KARURVYSYA LOTUSDEV MPHASIS NUVAMA ONWARDTEC PAUSHAKLTD PCBL RVTH
+    SAREGAMA SGFIN SOLARA SOUTHBANK SUNTV THELEELA TIPSMUSIC
     """.split()
 )
 
@@ -162,6 +166,9 @@ def test_india_catalogue_preserves_original_video_ids_and_timestamps():
         {"real_estate", "residential_developers", "commercial_property"},
         {"consumer_staples", "packaged_foods", "personal_care", "beverages"},
         {"consumer_durables", "jewellery", "healthcare", "energy"},
+        {"wealth_management", "music_media_content", "mining_equipment"},
+        {"midcap_it_services", "regional_private_banks"},
+        {"carbon_battery_materials", "luxury_consumption"},
     ],
 )
 def test_india_catalogue_expands_distinct_exposure_areas(required_ids):
@@ -234,6 +241,7 @@ def test_india_catalogue_uses_reviewed_corporate_action_symbols():
     assert "BE trade-to-trade" in groups["telecom_equipment"].notes
     assert "SME" in groups["valves"].description
     assert "SME" in groups["vfx_post_production"].description
+    assert "BE trade-to-trade" in groups["luxury_consumption"].notes
 
 
 @pytest.mark.parametrize(
