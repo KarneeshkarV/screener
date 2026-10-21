@@ -67,7 +67,7 @@ groups:
     parent: Pharma
     kind: industry
     video_at: '4:00'
-    members: [NSE:DIVISLAB, NSE:LAURUSLABS, NSE:GRANULES, NSE:NEULANDLAB]
+    members: [NSE:DIVISLAB, NSE:LAURUSLABS, NSE:GRANULES, NSE:NEULANDLAB, NSE:SOLARA]
   - id: branded_pharma
     description: Drug makers with branded prescription franchises; exports and unbranded products prevent pure domestic-brand exposure.
     drivers: [Prescription growth, New therapies and distribution reach]
@@ -586,7 +586,7 @@ groups:
     parent: Consumer discretionary
     kind: industry
     video_at: '17:50'
-    members: [NSE:INDHOTEL, NSE:EIHOTEL, NSE:CHALET, NSE:LEMONTREE]
+    members: [NSE:INDHOTEL, NSE:EIHOTEL, NSE:CHALET, NSE:LEMONTREE, NSE:THELEELA]
   - id: retail
     description: Physical retail chains spanning apparel, groceries and department stores; store economics differ materially.
     drivers: [Same-store sales, Store expansion and household spending]
@@ -677,7 +677,7 @@ groups:
     parent: Materials
     kind: industry
     video_at: '17:50'
-    members: [NSE:AARTIIND, NSE:DEEPAKNTR, NSE:ATUL, NSE:VINATIORGA]
+    members: [NSE:AARTIIND, NSE:DEEPAKNTR, NSE:ATUL, NSE:VINATIORGA, NSE:PAUSHAKLTD]
 
   # Independent research additions. No video timestamps or video-derived membership.
   - id: banks
@@ -729,7 +729,7 @@ groups:
     name: Non-bank lending
     parent: Financials
     kind: industry
-    members: [NSE:BAJFINANCE, NSE:CHOLAFIN, NSE:SHRIRAMFIN, NSE:M&MFIN, NSE:LTF]
+    members: [NSE:BAJFINANCE, NSE:CHOLAFIN, NSE:SHRIRAMFIN, NSE:M&MFIN, NSE:LTF, NSE:SGFIN, NSE:FEDFINA]
     description: Non-bank lenders with consumer, vehicle, rural and business loan portfolios; deposit access differs from banks.
     drivers: [Retail credit demand, Funding spreads and collections]
     risks: [Wholesale funding pressure, Credit losses and leverage]
@@ -801,7 +801,7 @@ groups:
     name: Engineering research and development
     parent: Information technology
     kind: industry
-    members: [NSE:LTTS, NSE:TATAELXSI, NSE:KPITTECH, NSE:TATATECH]
+    members: [NSE:LTTS, NSE:TATAELXSI, NSE:KPITTECH, NSE:TATATECH, NSE:ONWARDTEC]
     description: Outsourced product engineering and design with substantial automotive exposure; not generic application outsourcing.
     drivers: [Vehicle software and product development, Industrial engineering outsourcing]
     risks: [Customer concentration, Automotive program delays and staff costs]
@@ -919,7 +919,7 @@ groups:
     name: Steel
     parent: Materials
     kind: industry
-    members: [NSE:TATASTEEL, NSE:JSWSTEEL, NSE:SAIL, NSE:JINDALSTEL]
+    members: [NSE:TATASTEEL, NSE:JSWSTEEL, NSE:SAIL, NSE:JINDALSTEL, NSE:JAYNECOIND]
     description: Integrated steel producers with different ore, coal and geographic exposure; not steel fabricators.
     drivers: [Steel demand and utilization, Steel-to-raw-material spreads]
     risks: [Import competition and trade action, Coking coal costs and capital intensity]
@@ -946,7 +946,7 @@ groups:
     name: Residential developers
     parent: Real estate
     kind: industry
-    members: [NSE:GODREJPROP, NSE:OBEROIRLTY, NSE:PRESTIGE, NSE:SOBHA, NSE:BRIGADE]
+    members: [NSE:GODREJPROP, NSE:OBEROIRLTY, NSE:PRESTIGE, NSE:SOBHA, NSE:BRIGADE, NSE:LOTUSDEV]
     description: Housing developers with different city and premium-market mixes; some also own commercial and hotel assets.
     drivers: [Housing presales and affordability, Land pipeline conversion]
     risks: [Project approvals and delivery, Mortgage costs and concentrated local markets]
@@ -1050,3 +1050,70 @@ groups:
     drivers: [Medicine and treatment demand, Healthcare access and capacity]
     risks: [Different drug and service regulations, Clinical quality and expansion costs]
     sources: [https://www.apollohospitals.com/, https://archives.nseindia.com/content/indices/ind_niftyhealthcarelist.csv, *nse_equity]
+
+  # 2026-10-21 additions informed by https://www.youtube.com/watch?v=RXjwpqeBgkE (SOIC Q2 FY27 results).
+  # That video is not the catalogue source, so these groups carry no video_at timestamps.
+  - id: wealth_management
+    name: Wealth management
+    parent: Financials
+    kind: industry
+    members: [NSE:360ONE, NSE:NUVAMA, NSE:ANANDRATHI]
+    description: Wealth managers and private-client platforms earning advisory, distribution and asset-based fees; not mutual-fund AMC peers.
+    drivers: [Growth in wealthy households and client assets, Market levels and transaction activity]
+    risks: [Market falls and lower activity fees, Adviser attrition and fee regulation]
+    sources: [https://www.360.one/, https://www.nuvama.com/, *nse_equity]
+  - id: music_media_content
+    name: Music and media content
+    parent: Media
+    kind: industry
+    members: [NSE:TIPSMUSIC, NSE:SAREGAMA, NSE:SUNTV]
+    description: Owners of music catalogues and broadcast content that earn licensing, streaming and advertising revenue; Sun TV is mainly broadcasting.
+    drivers: [Paid streaming and platform licensing, Advertising demand and catalogue monetization]
+    risks: [Platform deal renewals and content costs, Audience shifts and advertising cycles]
+    sources: [https://www.tips.in/, https://www.saregama.com/, *nse_equity]
+  - id: mining_equipment
+    name: Mining equipment
+    parent: Capital goods
+    kind: industry
+    members: [NSE:EIMCOELECO, NSE:BEML, NSE:RVTH]
+    description: Makers of underground and surface mining machines and drilling rigs; BEML also has defence and rail businesses.
+    drivers: [Coal and mineral production targets, Underground mining mechanization]
+    risks: [Customer concentration in state miners, Lumpy orders and execution delays]
+    sources: [https://www.eimcoelecon.in/, https://www.bemlindia.in/, *nse_equity]
+  - id: midcap_it_services
+    name: Mid-cap IT services
+    parent: Information technology
+    kind: industry
+    members: [NSE:PERSISTENT, NSE:COFORGE, NSE:MPHASIS, NSE:BSOFT]
+    description: Mid-sized IT services exporters with smaller legacy service books than the large-cap firms; client and vertical mixes differ.
+    drivers: [Large deal wins and client mining, AI and cloud modernization work]
+    risks: [Client concentration, Discretionary spending cuts and wage costs]
+    sources: [https://www.persistent.com/, https://www.coforge.com/, https://archives.nseindia.com/content/indices/ind_niftyitlist.csv, *nse_equity]
+  - id: regional_private_banks
+    name: Regional private banks
+    parent: Banks
+    kind: industry
+    members: [NSE:SOUTHBANK, NSE:FEDERALBNK, NSE:KARURVYSYA, NSE:CUB, NSE:DCBBANK]
+    description: Older and regional private banks with lower starting valuations than large private banks; deposit bases are concentrated in home states.
+    drivers: [Asset quality recovery and lower credit costs, Return on assets improvement and valuation re-rating]
+    risks: [Regional economic concentration, Deposit competition and legacy bad loans]
+    sources: [https://www.federalbank.co.in/, https://www.cityunionbank.com/, *nse_equity]
+  - id: carbon_battery_materials
+    name: Carbon and battery materials
+    parent: Materials
+    kind: industry
+    members: [NSE:HSCL, NSE:PCBL, NSE:GOACARBON]
+    description: Carbon black, coal-tar pitch and calcined petroleum coke producers, with new battery-material capacity at some members.
+    drivers: [Tyre, aluminium and steel demand, Battery-material capacity additions]
+    risks: [Feedstock price swings, New-capacity execution and battery-material demand]
+    sources: [https://www.himadri.com/, https://www.pcblltd.com/, *nse_equity]
+  - id: luxury_consumption
+    name: Luxury consumption
+    parent: Consumer discretionary
+    kind: theme
+    members: [NSE:THELEELA, NSE:EIHOTEL, NSE:INDHOTEL, NSE:LOTUSDEV]
+    description: Luxury hotel owners and a luxury residential developer that sell to affluent customers; hotel and property cycles differ.
+    drivers: [Room-rate increases with stable occupancy, Affluent household wealth and luxury housing demand]
+    risks: [High asset costs and new luxury supply, Property-cycle and approval risk]
+    sources: [https://www.theleela.com/, https://www.lotusdevelopers.com/, *nse_equity]
+    notes: LOTUSDEV is in NSE BE trade-to-trade series in the reviewed file; do not assume unrestricted liquidity.
