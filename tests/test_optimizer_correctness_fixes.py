@@ -598,3 +598,58 @@ def test_fundamental_lag_sweep_rejected_before_trial_register(prices, tmp_path):
             trial_db_path=tmp_path / "trials.db",
         )
     assert not (tmp_path / "trials.db").exists()
+
+
+def _report_without_membership_history(prices, tmp_path, monkeypatch, *extra):
+    import screener.universes as universes
+
+    bars, fetcher = prices
+    monkeypatch.setattr(
+        "screener.backtester.optimization.cli._fetcher", lambda: fetcher
+    )
+    monkeypatch.setattr(universes, "CACHE_DIR", tmp_path / "universe-cache")
+    monkeypatch.setattr(
+        universes, "_fetch_sp500_revision_snapshot", lambda as_of, **kwargs: None
+    )
+    monkeypatch.setattr(universes, "_fetch_sp500", lambda **kwargs: (["AAA"], "live"))
+    monkeypatch.setattr(
+        universes,
+        "load_sp500_membership",
+        lambda **kwargs: {"AAA": date(2000, 1, 3)},
+    )
+    with pytest.warns(UserWarning, match="NOT point-in-time"):
+        return CliRunner().invoke(
+            optimize,
+            report_args(bars, tmp_path)
+            + [
+                "--universe",
+                "sp500",
+                "--max-universe",
+                "0",
+                "--param",
+                "hold=3",
+                *extra,
+            ],
+        )
+
+
+def test_public_report_explicit_point_in_time_fails_without_history(
+    prices, tmp_path, monkeypatch
+):
+    """A typed --point-in-time must not silently run survivorship-biased."""
+    result = _report_without_membership_history(
+        prices, tmp_path, monkeypatch, "--point-in-time"
+    )
+    assert result.exit_code != 0
+    assert "--point-in-time is unavailable" in result.output
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_public_report_default_point_in_time_falls_back_to_date_added(
+    prices, tmp_path, monkeypatch
+):
+    result = _report_without_membership_history(prices, tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "report.json").read_text())
+    assert payload["config"]["membership_added"]
+    assert any("'date added'" in w for w in payload["config"]["universe_warnings"])

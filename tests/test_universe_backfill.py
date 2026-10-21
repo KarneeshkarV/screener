@@ -484,3 +484,12 @@ def test_a_real_rebalance_is_not_rejected_as_a_different_document(tmp_path) -> N
 
     frame = pd.read_csv(tmp_path / "snapshots.csv", dtype=str)
     assert set(frame["effective_date"]) == {"2024-01-01", "2024-02-01"}
+
+
+def test_parse_nse_index_csv_drops_demerger_placeholders() -> None:
+    """NSE parks DUMMY* rows during a demerger; they are not tradable symbols."""
+    text = "Symbol\nVEDL\nDUMMYVEDL1\nDummyHDLVR\nTCS\n"
+    assert universes.parse_nse_index_csv(text, label="test", suffix=".NS") == [
+        "VEDL.NS",
+        "TCS.NS",
+    ]
