@@ -86,8 +86,8 @@ wrong file.
 ## Shipped `nifty500_pit`
 
 `universes.yaml` in the repository root defines `nifty500_pit` over a committed
-backfill at `data/universes/nifty500_pit_snapshots.csv`. It carries 13
-snapshots from 2018-10 to 2026-08 and 850 names that were ever members, against
+backfill at `data/universes/nifty500_pit_snapshots.csv`. It carries 14
+snapshots from 2018-10 to 2026-09 and 842 names that were ever members, against
 the 500 the current NSE list reports.
 
 ```bash
@@ -202,6 +202,14 @@ therefore retains an auditable identity.
   the result as not point-in-time and warns.
   That fallback is survivorship-biased and must not be reported as a
   point-in-time result.
+- A rate-limited (HTTP 429) or failed revision request is retried, honouring
+  `Retry-After`, before it counts as unreadable.
+- Membership windows need every quarterly sample. If any past sample stays
+  unreadable, the whole window history is reported as unavailable rather than
+  stretching the previous snapshot over the gap, so a typed `--point-in-time`
+  fails and the default falls back to the "date added" column with a warning.
+- NSE `DUMMY*` rows, placeholders NSE lists while a demerged entity awaits
+  listing, are dropped when parsing a constituent CSV. They are not tradable.
 - Sensex uses the public Wikipedia constituent table because BSE does not expose
   a stable documented free constituent API.
 - yfinance may lack usable prices for removed or delisted securities. Missing

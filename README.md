@@ -520,6 +520,9 @@ just optimize validate --trades trades.csv --iterations 5000 --json validation.j
 
 One-command research pipeline: grid search → walk-forward → Monte Carlo, reusing a single price fetcher across stages.
 Writes `<out>.json` and `<out>.html` plus a stdout summary.
+With `--universe`, `--point-in-time` is on by default, matching `backtest-rolling`.
+A typed `--point-in-time` fails when no membership history is available.
+The default instead falls back to the S&P 500 "date added" column, or to a survivorship-biased static list, and records a warning in the report.
 
 ```bash
 uv run screener optimize research-report -m us --years 1 --strategy rs_breakout --top 10

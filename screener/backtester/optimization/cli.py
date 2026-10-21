@@ -790,6 +790,16 @@ def _resolve_universe_tickers(
     help="Index universe when --tickers/--universe-file are omitted.",
 )
 @click.option(
+    "--point-in-time/--no-point-in-time",
+    default=True,
+    show_default=True,
+    help=(
+        "Gate --universe candidates on point-in-time membership. On by default "
+        "and downgraded with a warning when no membership history is available; "
+        "pass it explicitly to make that an error instead."
+    ),
+)
+@click.option(
     "--train-days",
     type=int,
     default=252,
@@ -827,6 +837,7 @@ def _resolve_universe_tickers(
 def research_report(
     param_specs: tuple[str, ...],
     universe: str | None,
+    point_in_time: bool,
     train_days: int,
     test_days: int,
     step_days: int,
@@ -880,18 +891,25 @@ def research_report(
     top_values = parameter_grid.get("top")
     top0 = int(top_values[0]) if top_values else int(kwargs["top"])
 
+    # Anything but DEFAULT counts as asked-for, as in backtest-rolling: a
+    # --config file reaches Click as DEFAULT_MAP and means it just as much.
+    point_in_time_was_explicit = (
+        click.get_current_context().get_parameter_source("point_in_time")
+        is not click.core.ParameterSource.DEFAULT
+    )
     membership_windows: tuple[tuple[str, date, date | None], ...] = ()
+    membership_added: tuple[tuple[str, date], ...] = ()
     universe_warnings: tuple[str, ...] = ()
     tickers_csv, universe_file = kwargs["tickers"], kwargs["universe_file"]
     if universe and not tickers_csv and not universe_file:
-        from screener.universes import load_universe_selection
+        from screener.universes import load_sp500_membership, load_universe_selection
 
         selection = load_universe_selection(
             universe,
             market=kwargs["market"],
             as_of=end_date,
             start=start_date,
-            point_in_time=True,
+            point_in_time=point_in_time,
         )
         symbols = selection.symbols
         if int(kwargs["max_universe"]) > 0:
@@ -903,10 +921,42 @@ def research_report(
             w for w in selection.membership_windows if w[0] in symbols
         )
         universe_warnings = selection.warnings
-        if not membership_windows:
+        if not point_in_time:
             universe_warnings += (
-                "Point-in-time membership unavailable; using a static universe with survivorship bias.",
+                "Point-in-time membership is off; using a static universe with survivorship bias.",
             )
+        elif not membership_windows:
+            if point_in_time_was_explicit:
+                raise click.UsageError(
+                    f"--point-in-time is unavailable: universe {universe!r} served "
+                    "no membership history for this window."
+                )
+            if universe == "sp500":
+                # Same weaker fallback backtest-rolling uses: the "date added"
+                # column keeps post-as-of additions out but cannot bring removed
+                # ex-members back.
+                try:
+                    added_by_symbol = load_sp500_membership(as_of=end_date)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    added_by_symbol = {}
+                    universe_warnings += (
+                        f"'date added' membership is unavailable ({exc}).",
+                    )
+                membership_added = tuple(
+                    (symbol, added)
+                    for symbol, added in added_by_symbol.items()
+                    if added is not None and symbol in symbols
+                )
+            if membership_added:
+                universe_warnings += (
+                    "Point-in-time membership unavailable; gating entries on the "
+                    "'date added' column, so removed ex-members are not "
+                    "reconstructed (survivorship bias).",
+                )
+            else:
+                universe_warnings += (
+                    "Point-in-time membership unavailable; using a static universe with survivorship bias.",
+                )
     cfg = _base_config(
         market=kwargs["market"],
         end_date=end_date,
@@ -931,7 +981,12 @@ def research_report(
         compounding=kwargs["compounding"],
         risk_free_rate=kwargs["risk_free_rate"],
     )
-    cfg = cfg.validated_update({"membership_windows": membership_windows})
+    cfg = cfg.validated_update(
+        {
+            "membership_windows": membership_windows,
+            "membership_added": membership_added,
+        }
+    )
     cfg, fundamental_fetcher = _optimization_collaborators(
         cfg,
         parameter_grid,

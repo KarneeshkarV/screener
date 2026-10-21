@@ -225,6 +225,13 @@ def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | Non
 
     Returns ``None`` when no valid ``acceptedDate`` / ``fillingDate`` /
     ``filingDate`` is present. Does not fall back to period-end ``date``.
+
+    A timestamp that carries a time of day is never knowable before the next
+    day, whatever ``lag_days`` says. ``_filing_timestamp`` normalizes to
+    midnight, so with ``lag_days=0`` a 16:30 after-close filing would otherwise
+    be visible on that same day's close bar. Intraday filings are not split
+    into pre-open and after-close: FMP stamps are exchange-local without a zone,
+    so the conservative reading is the only safe one.
     """
     raw = _filing_publication_raw(row)
     if raw is None:
@@ -234,6 +241,8 @@ def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | Non
         return None
     if lag_days > 0:
         ts += pd.Timedelta(days=lag_days)
+    elif pd.Timestamp(raw).tz_localize(None) != ts:
+        ts += pd.Timedelta(days=1)
     return ts
 
 
