@@ -56,6 +56,61 @@ from screener.ledger import ExitReason
 _Stamp = Union[date, datetime]
 
 
+def affordable_buy_shares(
+    cost_model: CostModel,
+    price: float,
+    budget: float,
+    *,
+    maximum_shares: float | None = None,
+    whole_shares: bool = False,
+) -> float:
+    """Size a buy at a fixed price with exact fees, never above its budget.
+
+    Fee schedules must have nondecreasing total buy cost as shares increase.
+    This solves affordability only, not the share-dependent slippage price.
+    """
+    if not np.isfinite(price) or price <= 0 or not np.isfinite(budget) or budget <= 0:
+        return 0.0
+    upper = budget / price
+    if maximum_shares is not None:
+        if not np.isfinite(maximum_shares) or maximum_shares <= 0:
+            return 0.0
+        upper = min(upper, maximum_shares)
+    if whole_shares:
+        upper = float(floor(upper))
+    breakdown_fn = getattr(cost_model, "side_cost_breakdown", None)
+
+    def buy_cost(shares: float) -> float:
+        if shares <= 0:
+            return 0.0
+        notional = shares * price
+        fees = (
+            sum(
+                max(float(amount), 0.0)
+                for amount in breakdown_fn("buy", notional, shares).values()
+            )
+            if callable(breakdown_fn)
+            else notional
+            * max(float(cost_model.side_cost_fraction("buy", notional)), 0.0)
+        )
+        return notional + fees
+
+    if buy_cost(upper) <= budget:
+        return upper
+    lower = 0.0
+    # Keep the feasible endpoint. Returning a tolerance-rounded midpoint could
+    # overdraw cash even when the difference is less than one cent.
+    for _ in range(64):
+        middle = (lower + upper) / 2.0
+        if middle == lower or middle == upper:
+            break
+        if buy_cost(middle) <= budget:
+            lower = middle
+        else:
+            upper = middle
+    return float(floor(lower)) if whole_shares else lower
+
+
 class Portfolio:
     def __init__(
         self,
@@ -190,42 +245,6 @@ class Portfolio:
             return None
         return fifo[0]
 
-    def _preview_fees(self, side: Side, notional: float, shares: float) -> float:
-        """Total fee for a prospective fill, without recording its breakdown."""
-        breakdown_fn = getattr(self.cost_model, "side_cost_breakdown", None)
-        if callable(breakdown_fn):
-            return sum(
-                max(float(amount), 0.0)
-                for amount in breakdown_fn(side, notional, shares).values()
-            )
-        frac = max(float(self.cost_model.side_cost_fraction(side, notional)), 0.0)
-        return notional * frac
-
-    def _shares_within_cap(
-        self, shares: float, entry_price: float, cap: float
-    ) -> float:
-        """Trim an externally quoted share count so the buy cannot overdraw.
-
-        ``FillModel.entry_quote`` sizes shares off the pre-slippage reference,
-        so a slipped buy fill can cost more than the budget it was quoted
-        against. Scale the count down to ``cap`` and re-check once: fee
-        schedules may be non-proportional, so the second pass prices the fee of
-        the trimmed order.
-        """
-        if shares <= 0.0 or entry_price <= 0.0:
-            return max(shares, 0.0)
-        if cap <= 0.0:
-            return 0.0
-        for _ in range(2):
-            notional = shares * entry_price
-            fees = self._preview_fees("buy", notional, shares)
-            if notional + fees <= cap:
-                break
-            shares = max((cap - fees) / entry_price, 0.0)
-            if shares <= 0.0:
-                return 0.0
-        return shares
-
     def open(
         self,
         ticker: str,
@@ -246,8 +265,8 @@ class Portfolio:
         clamps it to ``entry_budget()``. ``allow_slot_growth`` removes only the
         slot ceiling for a reinvested sizing rule; available cash remains a
         hard cap. When ``shares`` is supplied, it is the pre-impact count
-        quoted by ``FillModel`` and is used unchanged. The portfolio remains
-        the authority for the applicable fees and cash debit.
+        quoted by ``FillModel`` and is reduced only for affordability.
+        The portfolio remains the authority for fees and the cash debit.
 
         Fees come from the cost model owned by this portfolio.
         """
@@ -256,19 +275,15 @@ class Portfolio:
         # spend up to min(current_slot_capital, current cash); fees reduce
         # shares acquired. Cap by current cash so reserve promotion after
         # losing trades cannot overdraw the portfolio.
-        # Proportional fee models do not depend on notional; pass budget as a
-        # stable reference for any future notional-dependent schedules.
         cap = max(self._cash, 0.0) if allow_slot_growth else self.entry_budget()
         budget = cap if budget is None else min(max(float(budget), 0.0), cap)
-        if shares is None:
-            c = float(self.cost_model.side_cost_fraction("buy", budget))
-            c = max(c, 0.0)
-            gross_per_share = entry_price * (1.0 + c)
-            shares = budget / gross_per_share if gross_per_share > 0 else 0.0
-        else:
-            shares = self._shares_within_cap(max(float(shares), 0.0), entry_price, cap)
-        if self.whole_shares:
-            shares = float(floor(shares))
+        shares = affordable_buy_shares(
+            self.cost_model,
+            entry_price,
+            budget,
+            maximum_shares=shares,
+            whole_shares=self.whole_shares,
+        )
         notional = shares * entry_price
         commission = self._charge_fees("buy", notional, shares)
         entry_cost = notional + commission
@@ -312,7 +327,7 @@ class Portfolio:
         as portfolio cash rather than as an implicit boost to OHLC (the
         auto_adjust regime, which conflates capital and income return).
         """
-        if cash_per_share <= 0:
+        if not np.isfinite(cash_per_share) or cash_per_share <= 0:
             return 0.0
         total = 0.0
         for key, pos in self._open.items():
@@ -515,7 +530,7 @@ def build_portfolio_curve(
                 if frame is None or frame.empty or "dividend" not in frame.columns:
                     continue
                 dividends = frame["dividend"]
-                series = dividends.loc[dividends.notna() & (dividends > 0)]
+                series = dividends.loc[np.isfinite(dividends) & (dividends > 0)]
                 dividend_series_by_ticker[t.ticker] = series
             entry_ts = pd.Timestamp(t.entry_date)
             exit_ts = pd.Timestamp(t.exit_date)
@@ -532,7 +547,7 @@ def build_portfolio_curve(
                 ]
             for ex_day, div in window.items():
                 div = float(cast(Any, div))
-                if pd.isna(div) or div <= 0:
+                if not np.isfinite(div) or div <= 0:
                     continue
                 ex_ts = pd.Timestamp(cast(Any, ex_day))
                 dividend_cash_by_day[ex_ts] = (

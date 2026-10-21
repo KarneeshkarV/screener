@@ -141,7 +141,7 @@ def test_atomic_cache_failure_preserves_previous_frame(tmp_path, monkeypatch):
     assert list(tmp_path.glob("*.tmp")) == []
 
 
-def test_yfinance_fetcher_fetches_only_missing_tail(tmp_path, monkeypatch):
+def test_yfinance_fetcher_extends_with_scale_overlap(tmp_path, monkeypatch):
     import yfinance as yf
 
     calls = []
@@ -158,7 +158,7 @@ def test_yfinance_fetcher_fetches_only_missing_tail(tmp_path, monkeypatch):
     out = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 12))
 
     assert calls[0] == (pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-06"))
-    assert calls[1][0] == pd.Timestamp("2024-01-06")
+    assert calls[1][0] == pd.Timestamp("2024-01-01")
     assert calls[1][1] == pd.Timestamp("2024-01-13")
     assert out["AAA"].index.min() == pd.Timestamp("2024-01-01")
     assert out["AAA"].index.max() == pd.Timestamp("2024-01-12")
@@ -195,7 +195,9 @@ def test_yfinance_fetcher_downloads_batches_in_parallel(tmp_path, monkeypatch):
     assert active["peak"] >= 2, "batches should overlap when more than one job exists"
 
 
-def test_yfinance_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch):
+def test_yfinance_stale_tail_without_scale_overlap_reloads_window(
+    tmp_path, monkeypatch
+):
     import yfinance as yf
 
     # The newest *complete* session rather than today: a bar for a session
@@ -229,8 +231,10 @@ def test_yfinance_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeyp
 
     out = fetcher.fetch(["AAA"], start, today)["AAA"]
 
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert calls[0]["start"] == cached.index.max() - pd.Timedelta(days=7)
+    assert calls[1]["start"] == pd.Timestamp(start)
+    assert len(out) == 1
     assert out.loc[pd.Timestamp(today), "close"] == 999.5
 
 

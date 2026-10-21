@@ -193,7 +193,7 @@ def test_fmp_parallel_fetch_deduplicates_tickers_preserving_order(tmp_path):
     }
 
 
-def test_fmp_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch):
+def test_fmp_stale_tail_without_scale_overlap_reloads_window(tmp_path, monkeypatch):
     # The newest *complete* session rather than today: a daily bar for a
     # session still trading is dropped before it is cached or served, so
     # anchoring this on today would make the test read the clock.
@@ -239,11 +239,16 @@ def test_fmp_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch)
 
     out = fetcher.fetch(["AAA"], today - pd.Timedelta(days=5), today)["AAA"]
 
-    assert len(session.calls) == 2
+    assert len(session.calls) == 3
     assert (
-        session.calls[-1][1]["params"]["from"]
+        session.calls[-2][1]["params"]["from"]
         == (pd.Timestamp(today) - pd.Timedelta(days=7)).date().isoformat()
     )
+    assert (
+        session.calls[-1][1]["params"]["from"]
+        == (pd.Timestamp(today) - pd.Timedelta(days=5)).date().isoformat()
+    )
+    assert len(out) == 1
     assert out.loc[pd.Timestamp(today), "close"] == 201
 
 
@@ -486,13 +491,13 @@ def test_fmp_intraday_fetch_includes_whole_end_date(tmp_path):
 
 
 def test_fmp_intraday_cache_key_is_namespaced_per_interval():
-    assert data_module._fmp_cache_key("AAA", True) == "fmp_AAA__full_turnover_v2"
-    assert data_module._fmp_cache_key("AAA", False) == "fmp_AAA__raw"
+    assert data_module._fmp_cache_key("AAA", True) == "fmp_AAA__full_turnover_v3"
+    assert data_module._fmp_cache_key("AAA", False) == "fmp_AAA__raw_v3"
     assert (
         data_module._fmp_cache_key("AAA", True, "15m")
-        == "fmp_AAA__15m__full_turnover_v2"
+        == "fmp_AAA__15m__full_turnover_v3"
     )
-    assert data_module._fmp_cache_key("AAA", False, "15m") == "fmp_AAA__15m__raw"
+    assert data_module._fmp_cache_key("AAA", False, "15m") == "fmp_AAA__15m__raw_v3"
 
 
 def test_fmp_fetcher_rejects_unsupported_interval():

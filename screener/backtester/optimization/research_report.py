@@ -29,11 +29,14 @@ from rich.console import Console
 from rich.table import Table
 
 from screener.backtester.data import PriceFetcher
+from screener.backtester.fundamentals import FundamentalFetcher
 from screener.backtester.models import BacktestConfig
 from screener.backtester.optimization.grid import (
     GridSearchResult,
     grid_search,
+    fundamental_execution_kwargs,
     parameter_combinations,
+    validate_optimization_grid,
 )
 from screener.backtester.optimization.monte_carlo import (
     EquityMonteCarloResult,
@@ -301,6 +304,8 @@ def run_research_report(
     experiment_id: str | None = None,
     trial_db_path: Path | str | None = None,
     n_trials_effective: int | None = None,
+    fundamental_fetcher: FundamentalFetcher | None = None,
+    universe_warnings: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Run grid → walk-forward → Monte Carlo and write JSON/HTML reports.
 
@@ -326,6 +331,11 @@ def run_research_report(
     timings: dict[str, float] = {}
 
     require_daily_walk_forward_scope(cfg, parameter_grid)
+    validate_optimization_grid(
+        cfg, parameter_grid, fundamental_fetcher=fundamental_fetcher
+    )
+    for warning in universe_warnings:
+        console.print(f"[yellow]warning:[/yellow] {warning}")
     # Validate MC flags before any expensive stage, including empty-evidence paths.
     validate_equity_monte_carlo_flags(
         iterations=int(mc_iterations),
@@ -364,6 +374,7 @@ def run_research_report(
         ),
         trial_db_path=trial_db_path,
         n_trials_effective=n_trials_effective,
+        **fundamental_execution_kwargs(fundamental_fetcher),
     )
     stability = compute_parameter_stability(grid_results, parameter_grid, metric=metric)
     best = _descriptive_grid_best(grid_results, min_trades=min_trades)
@@ -410,6 +421,7 @@ def run_research_report(
         trial_db_path=trial_db_path,
         # The full-study estimate does not describe each isolated train period.
         n_trials_effective=None,
+        **fundamental_execution_kwargs(fundamental_fetcher),
     )
     oos_metric = _finite_or_none(walk_forward.aggregate_metrics.get(metric))
     # IS metric is the mean of eligible per-fold train scores only.
@@ -568,6 +580,11 @@ def run_research_report(
             "parameter_grid": parameter_grid,
             "tickers": list(cfg.tickers) if cfg.tickers else None,
             "universe_file": cfg.universe_file,
+            "membership_windows": cfg.membership_windows,
+            "universe_warnings": list(universe_warnings),
+            "fundamentals_provider": cfg.fundamentals_provider,
+            "fundamental_fields": cfg.fundamental_fields,
+            "fundamental_lag_days": cfg.fundamental_lag_days,
             "initial_capital": cfg.initial_capital,
             "risk_free_rate": cfg.risk_free_rate,
             "experiment_id": experiment_id,

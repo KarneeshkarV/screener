@@ -242,8 +242,8 @@ def test_portfolio_curve_dividends_preserve_trade_windows_and_tranches():
         1_004.0,
         1_004.0,
         1_004.0,
-        float("inf"),
-        float("inf"),
+        1_004.0,
+        1_007.0,
     ]
 
 

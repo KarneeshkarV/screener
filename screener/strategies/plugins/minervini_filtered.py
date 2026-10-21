@@ -65,7 +65,9 @@ def _add_quality_features(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _prep(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
-    prepared = prepare_backtest_frames(ctx.bars_by_tv)
+    prepared = prepare_backtest_frames(
+        ctx.bars_by_tv, mask_rank_reference=ctx.mask_rank_reference
+    )
     return {sym: _add_quality_features(frame) for sym, frame in prepared.items()}
 
 

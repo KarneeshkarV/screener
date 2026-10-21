@@ -30,7 +30,7 @@ drives one ``CandidateSource`` and one ``DayLoop`` over a calendar:
 
 The exit sequence per slot, per day, is invariant:
 
-    dividends → existing protective stops → partial targets → remaining exits
+    dividends → tightest protective stop → price-ordered targets → remaining exits
 
 Existing stops win when a daily bar also crosses a target.
 Stops raised by a partial target become active on the next bar.
@@ -303,7 +303,7 @@ class DayLoop:
         self.fill_model = fill_model if fill_model is not None else FillModel(cfg)
 
     def process_exits_for_day(self, day: pd.Timestamp) -> list[FreedSlot]:
-        """Run dividends, protection, partial targets, then remaining exits.
+        """Run dividends, protection, price-ordered targets, then remaining exits.
 
         Returns the slots that freed on ``day`` (with the state they held at
         close), in slot-id iteration order. Slots whose bars do not include

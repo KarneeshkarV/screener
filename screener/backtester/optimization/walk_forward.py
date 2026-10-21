@@ -37,13 +37,21 @@ from screener.backtester.metrics import (
     periods_per_year_for_interval,
 )
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
+from screener.backtester.fundamentals import FundamentalFetcher
 from screener.backtester.optimization.grid import (
     GridSearchResult,
     grid_search,
+    fundamental_execution_kwargs,
     parameter_combinations,
+    validate_optimization_grid,
 )
 from screener.backtester.optimization.metrics import optimization_metrics
 from screener.backtester.rolling_simulation import run_rolling_backtest
+
+
+class RiskFreeHurdleAmbiguity(ValueError):
+    """Selected fold hurdles cannot define one aggregate excess-return metric."""
+
 
 FOLD_BOUNDARY_POLICY = "close_flat_at_fold_boundary_with_configured_costs"
 CAPITAL_POLICY = "carry_ending_capital_restart_flat"
@@ -411,16 +419,22 @@ def walk_forward_optimize(
     experiment_id: str | None = None,
     trial_db_path: Path | str | None = None,
     n_trials_effective: int | None = None,
+    fundamental_fetcher: FundamentalFetcher | None = None,
 ) -> WalkForwardSummary:
     """Walk-forward with per-fold train selection only.
 
     Trial register / DSR context uses training-window ``grid_search`` calls
     only. Test-fold scores are never written into the trial register.
+    Aggregate excess-return metrics use the selected constant risk-free hurdle.
+    Different selected hurdles across folds are rejected as ambiguous.
     Reuse the same explicit ``experiment_id`` and ``trial_db_path`` across
     repeated research runs. Each training period has a separate register scope
     so later observations cannot alter earlier fold selection or DSR.
     """
     require_daily_walk_forward_scope(cfg, parameter_grid)
+    validate_optimization_grid(
+        cfg, parameter_grid, fundamental_fetcher=fundamental_fetcher
+    )
     trade_floor = evidence_trade_floor(min_trades)
     windows = generate_walk_forward_windows(
         start_date,
@@ -431,6 +445,7 @@ def walk_forward_optimize(
     )
     results: list[WalkForwardResult] = []
     train_scores: list[float] = []
+    selected_hurdles: set[float] = set()
     oos_trades: list[Trade] = []
     equity_pieces: list[pd.Series] = []
     missing_eligible_folds = 0
@@ -468,6 +483,7 @@ def walk_forward_optimize(
             ),
             trial_db_path=trial_db_path,
             n_trials_effective=n_trials_effective,
+            **fundamental_execution_kwargs(fundamental_fetcher),
         )
         # An infinite score can rank first while a lower result is eligible.
         best = next(
@@ -536,14 +552,22 @@ def walk_forward_optimize(
             )
             continue
 
-        test_cfg = cfg.model_copy(
-            update={**best.params, "initial_capital": float(capital)}
+        test_cfg = cfg.validated_update(
+            {**best.params, "initial_capital": float(capital)}
         )
+        selected_hurdle = float(test_cfg.risk_free_rate)
+        if selected_hurdles and selected_hurdle not in selected_hurdles:
+            raise RiskFreeHurdleAmbiguity(
+                "Walk-forward aggregate risk_free_rate is ambiguous: selected "
+                "risk-free hurdles vary across folds; use a constant hurdle"
+            )
+        selected_hurdles.add(selected_hurdle)
         test_result = run_rolling_backtest(
             test_cfg,
             fetcher,
             start_date=window.test_start,
             end_date=window.test_end,
+            **fundamental_execution_kwargs(fundamental_fetcher),
         )
         # Engine force-closes open slots at end_ts with configured costs
         # (fold_boundary_policy). Next fold restarts flat at carried capital.
@@ -630,6 +654,7 @@ def walk_forward_optimize(
     else:
         benchmark_aligned = pd.Series(dtype=float)
 
+    aggregate_hurdle = next(iter(selected_hurdles), float(cfg.risk_free_rate))
     if not combined_equity.empty:
         combined_metrics = compute_metrics(
             combined_equity,
@@ -637,7 +662,7 @@ def walk_forward_optimize(
             list(oos_trades),
             slot_count,
             periods_per_year=periods_per_year_for_interval(SUPPORTED_INTERVAL),
-            risk_free_rate=float(cfg.risk_free_rate),
+            risk_free_rate=aggregate_hurdle,
         )
         if exposure_reason is not None:
             combined_metrics["exposure"] = float("nan")
@@ -649,7 +674,7 @@ def walk_forward_optimize(
             )
         aggregate = optimization_metrics(
             BacktestResult(
-                config=cfg,
+                config=cfg.validated_update({"risk_free_rate": aggregate_hurdle}),
                 trades=list(oos_trades),
                 equity_curve=combined_equity,
                 benchmark_curve=benchmark_aligned,
@@ -711,6 +736,8 @@ def walk_forward_optimize(
         "adequate": adequate,
         "fold_boundary_policy": FOLD_BOUNDARY_POLICY,
         "capital_policy": CAPITAL_POLICY,
+        "aggregate_risk_free_rate": aggregate_hurdle,
+        "risk_free_policy": "selected_constant_hurdle_reject_varying_folds",
         "window_length_unit": WINDOW_LENGTH_UNIT,
         "train_days": train_days,
         "test_days": test_days,

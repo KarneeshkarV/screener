@@ -18,7 +18,6 @@ import pytest
 from screener import screen_workflow
 from screener.backtester.signal_panel import Candidate
 from screener.criteria import CRITERIA
-from screener.criteria import registry as criteria_registry
 from screener.screen_candidates import (
     OUTPUT_SCORE_COLUMN,
     _candidate_frame,
@@ -194,7 +193,7 @@ class TestLabel:
 # rule written on 21/252 session offsets, which leaves no sound leg at all.
 _PREFILTER_OF: dict[str, str | None] = {
     "breakout": "above_avg_volume",
-    "mark_minervini": "mark_minervini",
+    "mark_minervini": None,
     "momentum_12_1": None,
     "momentum_12_1_ema10": None,
 }
@@ -213,9 +212,8 @@ class TestPrefilter:
     def test_the_prefilter_yields_that_criterion_s_own_filters(self, name: str) -> None:
         strategy = resolve_screen_strategy((name,))
         assert strategy is not None
-        criterion = _PREFILTER_OF[name]
-        expected = [] if criterion is None else list(criteria_registry.get(criterion)())
-        assert prefilter_filters(strategy) == expected
+        # Live snapshot fields cannot cut a completed-session candidate field.
+        assert prefilter_filters(strategy) == []
 
     def test_a_strategy_without_a_prefilter_scans_unfiltered(self) -> None:
         # No declared prefilter means no field cut, which is always sound: the
@@ -374,9 +372,7 @@ class TestWorkflowWiring:
         outcome = run_screen_workflow(_request(criteria_names=("breakout",)))
 
         assert captured["scorer"] is None
-        assert captured["filters"] == list(
-            criteria_registry.get(_PREFILTER_OF["breakout"])()
-        )
+        assert captured["filters"] == []
         assert captured["tickers"] == ["NSE:AAA", "NSE:BBB"]
         assert captured["strategy"] == "breakout"
         # The digest is the settings fingerprint; the readable part is what
@@ -882,7 +878,10 @@ class TestFundamentalWiring:
             None,
         )
 
-    def test_the_us_default_provider_matches_the_backtester_s(self) -> None:
+    def test_the_us_default_provider_matches_the_backtester_s(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("FMP_API_KEY", "offline-test-key")
         _fetcher, provider = _fundamentals_for(
             "eps_growth_yoy > 0", None, market="us", refresh=False
         )

@@ -243,8 +243,10 @@ def marked_portfolio_equity(
     portfolio: Portfolio,
     bars_by_ticker: dict[str, pd.DataFrame],
     as_of: pd.Timestamp,
+    *,
+    inclusive: bool = True,
 ) -> float:
-    """Mark open positions at the last close known on or before ``as_of``."""
+    """Mark open positions using an inclusive or exclusive timestamp bound."""
     marks: dict[str, float] = {}
     for ticker in portfolio.open_tickers():
         bars = bars_by_ticker.get(ticker)
@@ -252,7 +254,7 @@ def marked_portfolio_equity(
             continue
         # bars.index is a sorted DatetimeIndex; searchsorted is O(log n) where
         # a boolean mask is O(n) per ticker per simulated day.
-        pos = int(bars.index.searchsorted(as_of, side="right"))
+        pos = int(bars.index.searchsorted(as_of, side="right" if inclusive else "left"))
         if pos > 0:
             marks[ticker] = float(bars["close"].iloc[pos - 1])
     return portfolio.marked_equity(marks, as_of=as_of)

@@ -9,11 +9,13 @@ import math
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict
 
+from screener.backtester.cli_common import referenced_fundamental_fields
 from screener.backtester.data import PriceFetcher
+from screener.backtester.fundamentals import FundamentalFetcher
 from screener.backtester.historical import run_backtest
 from screener.backtester.metrics import (
     SharpeMoments,
@@ -49,6 +51,19 @@ RunnerName = Literal["historical", "rolling"]
 LOG = logging.getLogger(__name__)
 
 
+class FundamentalExecutionArgs(TypedDict):
+    """Optional fundamental collaborator shared by preparation and execution."""
+
+    fundamental_fetcher: NotRequired[FundamentalFetcher]
+
+
+def fundamental_execution_kwargs(
+    fetcher: FundamentalFetcher | None,
+) -> FundamentalExecutionArgs:
+    """Omit the fundamental collaborator entirely for ordinary price-only runs."""
+    return {} if fetcher is None else {"fundamental_fetcher": fetcher}
+
+
 class GridSearchResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -69,6 +84,54 @@ def parameter_combinations(
     return [dict(zip(keys, combo)) for combo in itertools.product(*values)]
 
 
+def validate_optimization_grid(
+    cfg: BacktestConfig,
+    parameter_grid: dict[str, list[Any]],
+    *,
+    runner: RunnerName = "rolling",
+    fundamental_fetcher: FundamentalFetcher | None = None,
+) -> None:
+    """Reject invalid configs and missing fundamentals before data or trial writes."""
+    unknown = set(parameter_grid) - set(type(cfg).model_fields)
+    if unknown:
+        raise ValueError(
+            f"Unknown optimization parameters: {', '.join(sorted(unknown))}"
+        )
+    for params in parameter_combinations(parameter_grid):
+        test_cfg = cfg.validated_update(params)
+        fields = referenced_fundamental_fields(test_cfg.entry_expr, test_cfg.exit_expr)
+        needs_fundamentals = bool(fields or test_cfg.fundamentals_provider)
+        if needs_fundamentals and fundamental_fetcher is None:
+            raise ValueError(
+                "Fundamental optimization requires a resolved FundamentalFetcher; "
+                "CLI users must select --fundamentals-provider explicitly"
+            )
+        if fundamental_fetcher is not None:
+            if runner != "rolling":
+                raise ValueError("Fundamental optimization requires runner='rolling'")
+            if test_cfg.fundamentals_provider != cfg.fundamentals_provider:
+                raise ValueError(
+                    "Cannot sweep fundamentals_provider with one resolved FundamentalFetcher"
+                )
+            configured_market = getattr(fundamental_fetcher, "market", test_cfg.market)
+            if configured_market != test_cfg.market:
+                raise ValueError(
+                    "FundamentalFetcher configured market must match the selected market"
+                )
+            if test_cfg.market not in fundamental_fetcher.markets:
+                raise ValueError(
+                    "FundamentalFetcher does not support the selected market"
+                )
+            if test_cfg.fundamental_lag_days != fundamental_fetcher.lag_days:
+                raise ValueError(
+                    "fundamental_lag_days must match the resolved FundamentalFetcher"
+                )
+            if test_cfg.fundamental_fields != cfg.fundamental_fields:
+                raise ValueError(
+                    "Cannot sweep fundamental_fields with one resolved FundamentalFetcher"
+                )
+
+
 def _fingerprint_key(cfg: BacktestConfig) -> str:
     return json.dumps(_preparation_fingerprint(cfg), sort_keys=True, default=str)
 
@@ -80,7 +143,7 @@ def _group_params_by_preparation(
     groups: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
     for params in pending:
-        key = _fingerprint_key(cfg.model_copy(update=params))
+        key = _fingerprint_key(cfg.validated_update(params))
         if key not in groups:
             groups[key] = []
             order.append(key)
@@ -129,7 +192,7 @@ def _trial_key_for(
     min_trades: int,
 ) -> str:
     return trial_config_identity(
-        cfg.model_copy(update=params),
+        cfg.validated_update(params),
         runner=runner,
         start_date=start_date,
         end_date=end_date,
@@ -147,8 +210,9 @@ def _run_one(
     end_date: date | None,
     metric: str,
     min_trades: int,
+    fundamental_fetcher: FundamentalFetcher | None = None,
 ) -> tuple[GridSearchResult, SharpeMoments | None]:
-    test_cfg = cfg.model_copy(update=params)
+    test_cfg = cfg.validated_update(params)
     if runner == "rolling":
         if start_date is None or end_date is None:
             raise ValueError("rolling grid search requires start_date and end_date")
@@ -157,6 +221,7 @@ def _run_one(
             fetcher,
             start_date=start_date,
             end_date=end_date,
+            **fundamental_execution_kwargs(fundamental_fetcher),
         )
     else:
         result = run_backtest(test_cfg, fetcher)
@@ -181,7 +246,7 @@ def _run_one_prepared(
     metric: str,
     min_trades: int,
 ) -> tuple[GridSearchResult, SharpeMoments | None]:
-    test_cfg = cfg.model_copy(update=params)
+    test_cfg = cfg.validated_update(params)
     result = run_prepared_rolling_backtest(prepared, test_cfg)
     metrics = optimization_metrics(result)
     trade_count = len(result.trades)
@@ -208,10 +273,28 @@ def _error_result(params: dict[str, Any], exc: BaseException) -> GridSearchResul
 
 
 def _run_one_safe(args: tuple[Any, ...]) -> tuple[GridSearchResult, dict | None]:
-    cfg, params, fetcher, runner, start_date, end_date, metric, min_trades = args
+    (
+        cfg,
+        params,
+        fetcher,
+        runner,
+        start_date,
+        end_date,
+        metric,
+        min_trades,
+        fundamental_fetcher,
+    ) = args
     try:
         result, moments = _run_one(
-            cfg, params, fetcher, runner, start_date, end_date, metric, min_trades
+            cfg,
+            params,
+            fetcher,
+            runner,
+            start_date,
+            end_date,
+            metric,
+            min_trades,
+            fundamental_fetcher,
         )
         return result, None if moments is None else moments.as_dict()
     except KeyboardInterrupt:
@@ -233,6 +316,7 @@ def _run_chunk_safe(
         end_date,
         metric,
         min_trades,
+        fundamental_fetcher,
     ) = args
     prepared: PreparedRollingBacktest | None = None
     if runner == "rolling" and params_chunk:
@@ -252,10 +336,11 @@ def _run_chunk_safe(
             ]
         try:
             prepared = prepare_rolling_backtest(
-                cfg.model_copy(update=params_chunk[0]),
+                cfg.validated_update(params_chunk[0]),
                 fetcher,
                 start_date=start_date,
                 end_date=end_date,
+                **fundamental_execution_kwargs(fundamental_fetcher),
             )
         except KeyboardInterrupt:
             raise
@@ -264,7 +349,7 @@ def _run_chunk_safe(
 
     out: list[tuple[GridSearchResult, dict | None]] = []
     for params in params_chunk:
-        test_cfg = cfg.model_copy(update=params)
+        test_cfg = cfg.validated_update(params)
         if prepared is not None and prepared.supports(test_cfg):
             try:
                 result, moments = _run_one_prepared(
@@ -287,6 +372,7 @@ def _run_chunk_safe(
                         end_date,
                         metric,
                         min_trades,
+                        fundamental_fetcher,
                     )
                 )
             )
@@ -476,6 +562,7 @@ def grid_search(
     experiment_id: str | None = None,
     n_trials_effective: int | None = None,
     trial_db_path: Path | str | None = None,
+    fundamental_fetcher: FundamentalFetcher | None = None,
 ) -> list[GridSearchResult]:
     """Exhaustive parameter search with optional identity-aware caching.
 
@@ -487,14 +574,25 @@ def grid_search(
     iterative searches when rejected families must accumulate under one history.
     DSR uses that history's nominal trial count unless the caller supplies an
     explicit ``n_trials_effective`` estimate.
+    Invalid configs are rejected before preparation or trial registration.
+    Fundamental runs require an explicit ``fundamental_fetcher`` collaborator.
+    Their result cache is disabled until input identity covers fundamental data.
     """
+    validate_optimization_grid(
+        cfg, parameter_grid, runner=runner, fundamental_fetcher=fundamental_fetcher
+    )
     if cache_path is not None and frozen_input_identity is None:
         LOG.warning(
             "cache_path requested without frozen_input_identity; "
             "result cache disabled (ordinary CLI has no input identity)"
         )
-    cache = ResultCache(cache_path if frozen_input_identity is not None else None)
-    reuse = frozen_input_identity is not None
+    reuse = frozen_input_identity is not None and fundamental_fetcher is None
+    if fundamental_fetcher is not None and frozen_input_identity is not None:
+        LOG.warning(
+            "Fundamental result cache disabled: FrozenInputIdentity does not "
+            "authenticate fundamental data"
+        )
+    cache = ResultCache(cache_path if reuse else None)
     trial_path = Path(trial_db_path) if trial_db_path else None
     exp_id = experiment_id or default_experiment_id(
         cfg,
@@ -613,6 +711,7 @@ def grid_search(
                             end_date,
                             metric,
                             min_trades,
+                            fundamental_fetcher,
                         ),
                     ): chunk
                     for chunk in chunks
@@ -636,17 +735,18 @@ def grid_search(
                         )
                     try:
                         prepared = prepare_rolling_backtest(
-                            cfg.model_copy(update=group[0]),
+                            cfg.validated_update(group[0]),
                             fetcher,
                             start_date=start_date,
                             end_date=end_date,
+                            **fundamental_execution_kwargs(fundamental_fetcher),
                         )
                     except KeyboardInterrupt:
                         raise
                     except Exception:  # noqa: BLE001 - per-run fallback preserves errors
                         prepared = None
                 for params in group:
-                    test_cfg = cfg.model_copy(update=params)
+                    test_cfg = cfg.validated_update(params)
                     if prepared is not None and prepared.supports(test_cfg):
                         try:
                             result, moments = _run_one_prepared(
@@ -668,6 +768,7 @@ def grid_search(
                                     end_date,
                                     metric,
                                     min_trades,
+                                    fundamental_fetcher,
                                 )
                             )
                             moments = (
