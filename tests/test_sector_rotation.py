@@ -335,7 +335,7 @@ def test_report_is_offline_searchable_and_escapes_catalogue_text(tmp_path):
     text = path.read_text()
     assert "<img src=x" not in text
     assert "&lt;img src=x" in text
-    assert "<svg" in text and "<details>" in text
+    assert text.count('data-echart="') == 2 and "<details>" in text
     assert 'id="search"' in text and 'id="parent"' in text
     assert "survivorship" in text
     assert "<script src=" not in text
@@ -377,7 +377,7 @@ def test_cli_outputs_csv_html_and_member_csv_with_stub_prices(tmp_path):
     assert result.exit_code == 0, result.output
     assert result.stdout.startswith("rank,group_id,")
     assert "survivorship" in result.stderr
-    assert "<svg" in report.read_text()
+    assert 'data-echart="' in report.read_text()
     assert "NSE:JYOTICNC" in members.read_text()
 
 

@@ -6,21 +6,18 @@ import html
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from screener import _optional
-from screener.backtester.dashboard import figure_html, table_html
+from screener.backtester.dashboard import table_html
 from screener.display import COLUMN_LABELS, COLUMNS, _format_value
 from screener.html_report import html_page
-
-if TYPE_CHECKING:
-    import plotly.express as px
-    from plotly.offline import get_plotlyjs
-else:
-    px = _optional.load("plotly.express")
-    get_plotlyjs = _optional.load("plotly.offline").get_plotlyjs
+from screener.report_theme import (
+    bar_chart,
+    chart_html,
+    histogram_chart,
+    signed_colors,
+)
 
 _TOP_CHANGE_BARS = 25
 _TOP_CHANGE_ROW_PX = 22
@@ -55,11 +52,21 @@ def _summary_cards(
         ("Added", len(added)),
         ("Removed", len(removed)),
     ]
-    return "".join(
-        f'<article class="metric"><span>{html.escape(label)}</span>'
-        f"<strong>{_fmt(value)}</strong></article>"
-        for label, value in cards
-    )
+    parts = []
+    for label, value in cards:
+        if label == "Criteria":
+            # A criteria name is one long token; truncate it so the card keeps its grid width.
+            parts.append(
+                f'<article class="metric"><span>{html.escape(label)}</span>'
+                f'<strong class="truncate" title="{html.escape(criteria_name)}">'
+                f"{_fmt(value)}</strong></article>"
+            )
+        else:
+            parts.append(
+                f'<article class="metric"><span>{html.escape(label)}</span>'
+                f"<strong>{_fmt(value)}</strong></article>"
+            )
+    return "".join(parts)
 
 
 def _format_screen_cell(col: str, value: object, market: str) -> str:
@@ -141,19 +148,18 @@ def render_screen_report(
 
     sections: list[str] = []
     if not df.empty and "setup_score" in df.columns:
-        fig = px.histogram(
-            df,
-            x="setup_score",
-            nbins=20,
-            labels={"setup_score": "Setup Score"},
+        option = histogram_chart(
+            df["setup_score"].tolist(),
+            bins=20,
+            name="Count",
+            value_format="num1",
+            signed=False,
         )
-        fig.update_layout(showlegend=False)
-        fig.update_yaxes(title_text="Count")
         sections.append(
             '<section class="panel" id="setup-score-distribution">'
             "<h2>Setup Score Distribution</h2>"
-            + figure_html(
-                fig, "screen-setup-score-distribution", height=_CHART_HEIGHT_PX
+            + chart_html(
+                "screen-setup-score-distribution", option, height=_CHART_HEIGHT_PX
             )
             + "</section>"
         )
@@ -166,23 +172,23 @@ def render_screen_report(
             if "name" not in top.columns:
                 top["name"] = top.index.astype(str)
             top["name"] = top["name"].astype(str)
-            # Plotly draws the first row at the bottom; reverse so the
-            # largest change sits at the top of the horizontal bars.
-            top = top.iloc[::-1]
-            fig = px.bar(
-                top,
-                x="change",
-                y="name",
-                orientation="h",
-                labels={"change": "Change %", "name": "Ticker"},
+            changes = top["change"].tolist()
+            # Horizontal bar_chart puts the first category at the top, and the
+            # frame is already sorted largest first.
+            option = bar_chart(
+                top["name"].tolist(),
+                changes,
+                name="Change %",
+                value_format="pctv1",
+                horizontal=True,
+                colors=signed_colors(changes),
+                labels=True,
             )
-            fig.update_layout(showlegend=False)
-            fig.update_yaxes(title_text="", automargin=True)
             sections.append(
                 '<section class="panel" id="top-change">'
                 "<h2>Top Change</h2>"
-                + figure_html(
-                    fig, "screen-top-change", height=_top_change_height(len(top))
+                + chart_html(
+                    "screen-top-change", option, height=_top_change_height(len(top))
                 )
                 + "</section>"
             )
@@ -202,108 +208,41 @@ def render_screen_report(
     if first_run:
         notes.append("No prior run was available; this run was saved as the baseline.")
     note_items = "".join(f"<li>{html.escape(note)}</li>" for note in notes)
-    plotly_js = get_plotlyjs()
     title = f"{criteria_name.upper()} Screen"
+    subhead = (
+        f"{html.escape(market.upper())} market, {html.escape(criteria_name)} criteria"
+    )
     _css = """\
-    :root {
-      --ink: #e5e7eb;
-      --muted: #9ca3af;
-      --paper: #07090d;
-      --panel: #0d1117;
-      --panel-strong: #111827;
-      --line: #242b36;
-      --accent: #22c55e;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--paper);
-      color: var(--ink);
-      font-family: "IBM Plex Sans", Aptos, sans-serif;
-      letter-spacing: 0;
-    }
-    header {
-      border-bottom: 1px solid var(--line);
-      padding: 24px 32px 18px;
-      background: #0b0f16;
-    }
-    h1, h2 { margin: 0; font-weight: 700; }
-    h1 { font-size: 28px; }
-    h2 { font-size: 17px; margin-bottom: 14px; }
     main {
-      padding: 22px 32px 36px;
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 16px;
       align-items: start;
     }
-    .metrics {
-      grid-column: 1 / -1;
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 10px;
-    }
-    .metric, .panel {
-      border: 1px solid var(--line);
-      background: var(--panel);
-      border-radius: 6px;
-    }
-    .metric { padding: 13px 14px; }
-    .metric span {
-      color: var(--muted);
-      display: block;
-      font-size: 12px;
-      text-transform: uppercase;
-    }
-    .metric strong {
-      display: block;
-      margin-top: 5px;
-      font-size: 22px;
-      overflow-wrap: break-word;
-    }
-    .panel { padding: 16px; min-width: 0; }
-    .wide { grid-column: 1 / -1; }
-    .table-wrap { overflow: auto; max-height: 560px; }
-    .data-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-      white-space: nowrap;
-    }
-    .data-table th {
-      position: sticky;
-      top: 0;
-      background: var(--panel-strong);
-      color: var(--ink);
-      text-align: left;
-      z-index: 1;
-    }
-    .data-table th, .data-table td {
-      border-bottom: 1px solid var(--line);
-      padding: 7px 9px;
-    }
+    .metrics, .wide { grid-column: 1 / -1; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; }
     .chips span {
       border: 1px solid var(--line);
       border-radius: 999px;
-      padding: 5px 9px;
-      background: var(--panel-strong);
+      padding: 5px 10px;
+      background: var(--surface-2);
+      color: var(--ink);
       font-size: 12px;
     }
-    .empty, .notes { color: var(--muted); font-size: 13px; }
-    .notes { margin: 0; padding-left: 18px; }
+    .metric strong.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .notes { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
     @media (max-width: 900px) {
-      header, main { padding-left: 16px; padding-right: 16px; }
       main { grid-template-columns: 1fr; }
-      .wide, .metrics { grid-column: auto; }
-      .metric strong { font-size: 18px; }
+      .metrics, .wide { grid-column: auto; }
     }"""
     page_html = html_page(
         html.escape(title),
         _css,
         f"""\
   <header>
+    <div class="eyebrow">Screen report</div>
     <h1>{html.escape(title)}</h1>
+    <div class="subhead">{subhead}</div>
   </header>
   <main>
     <section class="metrics" id="screen-summary">{_summary_cards(market=market, criteria_name=criteria_name, total=total, shown=len(df), added=added, removed=removed)}</section>
@@ -314,7 +253,7 @@ def render_screen_report(
     {_ticker_list("Removed Since Previous Run", removed, "removed-tickers")}
     <section class="panel wide" id="report-notes"><h2>Notes</h2><ul class="notes">{note_items}</ul></section>
   </main>""",
-        head_extra=f"<script>{plotly_js}</script>",
+        charts=True,
     )
     output_path.write_text(page_html, encoding="utf-8")
     return output_path

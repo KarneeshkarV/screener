@@ -124,4 +124,27 @@ def test_render_dashboard_writes_expected_sections(tmp_path):
     assert 'id="trade-diagnostics"' in html
     assert 'id="selection-diagnostics"' in html
     assert 'id="trade-ledger-table"' in html
-    assert 'style="height:320px;width:100%"' in html
+    assert 'id="equity-vs-benchmark" data-echart="equity-vs-benchmark-spec"' in html
+    assert 'data-echart-group="perf"' in html
+    assert 'id="drawdown-curve"' in html
+    assert 'id="monthly-return-bars"' in html
+    assert 'id="return-distribution"' in html
+    assert 'id="exit-reason-breakdown"' in html
+    assert 'id="holding-period-distribution"' in html
+    assert 'id="ticker-contribution"' in html
+    assert 'id="signal-count-by-day"' in html
+    assert 'id="rank-distribution"' in html
+    assert "Rolling backtest</div>" in html
+    assert "plotly" not in html.lower()
+
+
+def test_render_dashboard_chart_specs_use_theme_tokens(tmp_path):
+    html = render_dashboard(_result(), tmp_path).read_text(encoding="utf-8")
+
+    assert '"token:series-1"' in html
+    assert '"token:series-2"' in html
+    assert '"token:neg"' in html
+    assert '"token:pos"' in html
+    assert '"fmt:pct0"' in html
+    assert "--paper" not in html
+    assert "#0f766e" not in html

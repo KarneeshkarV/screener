@@ -5,8 +5,8 @@ description = "A Python CLI for screening, ranking, and backtesting US and India
 readme = "README.md"
 requires-python = ">=3.11"
 # The screen path and nothing else. A codebase embedding `screener.api` to run
-# one screen should not have to install plotly, a price provider and a bhavcopy
-# client to do it, so every other workflow's third-party dependency sits in an
+# one screen should not have to install a price provider and a bhavcopy client
+# to do it, so every other workflow's third-party dependency sits in an
 # extra below. Verified by `tests/test_optional_extras.py`, which fails if a
 # module declared optional turns out to load on the screen path.
 dependencies = [
@@ -26,8 +26,9 @@ dependencies = [
 # the same test pins that the two agree, so a dependency can never be moved
 # here without its import site learning to name the extra.
 [project.optional-dependencies]
-# HTML reports and tear-sheets: `screen` without --csv, dashboard, tearsheet.
-report = ["plotly>=5.24"]
+# HTML reports need nothing beyond the core install: ECharts is vendored under
+# screener/assets. Kept as an empty extra so `screener[report]` still resolves.
+report = []
 # Price and fundamental history: every backtest, GARP, conviction, options.
 prices = [
     "yfinance>=0.2.40",
@@ -143,7 +144,6 @@ disable_error_code = [
 module = [
     "jugaad_data.*",
     "openscreener.*",
-    "plotly.*",
     "pyarrow",
     "pyarrow.*",
     "tradingview_screener.*",

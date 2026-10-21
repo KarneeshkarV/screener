@@ -28,6 +28,7 @@ from screener.backtester.optimization.walk_forward import (
     WalkForwardSummary,
 )
 from screener.html_report import html_page
+from screener.report_theme import bar_chart, chart_html, signed_colors
 
 GRID_IN_SAMPLE_DISCLAIMER = (
     "IN-SAMPLE / SELECTION BIAS WARNING: These metrics are computed on the SAME "
@@ -43,23 +44,44 @@ EVIDENCE_INTEGRITY_NOTE = (
 )
 
 _REPORT_CSS = """
-    body { font-family: system-ui, sans-serif; margin: 32px; color: #1a1a1a; }
-    h1, h2 { margin-top: 1.6em; }
-    h1 { margin-top: 0; }
-    pre { background: #f5f5f5; border: 1px solid #ddd; padding: 16px; overflow: auto; }
-    table { border-collapse: collapse; width: 100%; margin: 12px 0 24px; font-size: 14px; }
-    th, td { border: 1px solid #ddd; padding: 8px 10px; text-align: left; }
-    th { background: #f0f0f0; }
-    tr:nth-child(even) { background: #fafafa; }
-    .banner { background:#fff3cd; border:1px solid #ffeeba; color:#856404;
-              padding:12px 16px; border-radius:4px; font-weight:600; }
-    .verdict { background:#e8f5e9; border:1px solid #c8e6c9; padding:12px 16px;
-               border-radius:4px; font-weight:600; }
-    .verdict.caution { background:#fff3e0; border-color:#ffe0b2; }
-    .verdict.fail { background:#ffebee; border-color:#ffcdd2; }
-    .verdict.insufficient { background:#eceff1; border-color:#cfd8dc; }
-    .meta { color: #555; font-size: 13px; }
+    .panel { margin-bottom: var(--gap); }
+    .panel > h2 { margin-bottom: 12px; }
+    .verdict {
+      margin: 0;
+      padding: 12px 16px;
+      font-weight: 600;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      background: var(--surface-2);
+    }
+    .verdict.pass {
+      border-color: color-mix(in oklab, var(--status-good) 50%, var(--line));
+      background: color-mix(in oklab, var(--status-good) 16%, var(--surface));
+    }
+    .verdict.caution {
+      border-color: color-mix(in oklab, var(--status-warning) 55%, var(--line));
+      background: color-mix(in oklab, var(--status-warning) 16%, var(--surface));
+    }
+    .verdict.fail {
+      border-color: color-mix(in oklab, var(--status-critical) 50%, var(--line));
+      background: color-mix(in oklab, var(--status-critical) 16%, var(--surface));
+    }
+    .callout { margin: 0 0 10px; }
+    .meta { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+    .status-good td {
+      background: color-mix(in oklab, var(--status-good) 16%, var(--surface));
+    }
+    .status-warning td {
+      background: color-mix(in oklab, var(--status-warning) 16%, var(--surface));
+    }
+    .status-critical td {
+      background: color-mix(in oklab, var(--status-critical) 16%, var(--surface));
+    }
+    .status-neutral td { background: var(--surface-2); }
 """
+
+# Metrics stored as fractions, shown as percentages on chart axes and labels.
+_PERCENT_METRICS = frozenset({"total_return", "cagr", "max_drawdown"})
 
 
 def _json_safe(value: Any) -> Any:
@@ -202,45 +224,107 @@ def print_walk_forward_table(
         console.print(f"[yellow]warning:[/yellow] {warning}")
 
 
+def _header(eyebrow: str, title: str, subhead: Sequence[str]) -> str:
+    items = "".join(f"<span>{html_lib.escape(item)}</span>" for item in subhead if item)
+    return (
+        "<header>"
+        f'<div class="eyebrow">{html_lib.escape(eyebrow)}</div>'
+        f"<h1>{html_lib.escape(title)}</h1>"
+        f'<div class="subhead">{items}</div>'
+        "</header>"
+    )
+
+
+def _callout(text: str) -> str:
+    return (
+        '<div class="callout"><span class="badge warning">! Warning</span> '
+        f"{html_lib.escape(text)}</div>"
+    )
+
+
+def _sign_status(value: Any) -> str | None:
+    """Good/critical/neutral by sign; None for missing or non-numeric values."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    if not math.isfinite(value):
+        return None
+    if value > 0:
+        return "good"
+    if value < 0:
+        return "critical"
+    return "neutral"
+
+
+def _flag_status(value: Any, bad: str) -> str | None:
+    if value is None:
+        return None
+    return bad if value else "good"
+
+
+def _verdict_status(verdict: str) -> str | None:
+    if verdict.startswith("PASS"):
+        return "good"
+    if verdict.startswith("CAUTION"):
+        return "warning"
+    if verdict.startswith("FAIL"):
+        return "critical"
+    return None
+
+
 def write_html_report(
     data: Any,
     path: Path | str,
     title: str = "Optimization Report",
     disclaimer: str | None = None,
 ) -> None:
-    payload = json.dumps(data, indent=2, default=_json_default)
-    banner = (
-        f'  <p style="background:#fff3cd; border:1px solid #ffeeba; color:#856404; '
-        f'padding:12px 16px; border-radius:4px; font-weight:600;">{disclaimer}</p>\n'
+    payload = html_lib.escape(json.dumps(data, indent=2, default=_json_default))
+    warning = (
+        f'<section class="panel">{_callout(disclaimer)}</section>\n'
         if disclaimer
         else ""
     )
-    css = (
-        "    body { font-family: system-ui, sans-serif; margin: 32px; }\n"
-        "    pre { background: #f5f5f5; border: 1px solid #ddd; padding: 16px; "
-        "overflow: auto; }"
+    body = (
+        f"{_header('Optimization report', title, [])}\n"
+        "<main>\n"
+        f"{warning}"
+        '<section class="panel">\n'
+        "<h2>Report data</h2>\n"
+        f"<pre>{payload}</pre>\n"
+        "</section>\n"
+        "</main>"
     )
-    body = f"  <h1>{title}</h1>\n{banner}  <pre>{payload}</pre>"
-    html = html_page(title, css, body, viewport=False)
+    html = html_page(title, _REPORT_CSS, body, viewport=True)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(html)
 
 
-def _html_table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
+def _html_table(
+    headers: Sequence[str],
+    rows: Sequence[Sequence[Any]],
+    row_status: Sequence[str | None] | None = None,
+) -> str:
     head = "".join(f"<th>{html_lib.escape(str(h))}</th>" for h in headers)
     body_rows: list[str] = []
-    for row in rows:
+    for index, row in enumerate(rows):
+        status = row_status[index] if row_status is not None else None
+        row_attr = f' class="status-{status}"' if status else ""
         cells = "".join(f"<td>{html_lib.escape(str(c))}</td>" for c in row)
-        body_rows.append(f"<tr>{cells}</tr>")
-    return f"<table><thead><tr>{head}</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
+        body_rows.append(f"<tr{row_attr}>{cells}</tr>")
+    return (
+        '<div class="table-wrap"><table class="data-table">'
+        f"<thead><tr>{head}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table></div>"
+    )
 
 
 def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> None:
     """Combined single-page research report (config / grid / WF / MC).
 
-    Composes the same dependency-free HTML style as :func:`write_html_report`
-    (inline CSS, plain tables via :func:`html_page`) with structured sections.
+    Renders on the shared Slate theme: one ``.panel`` per section, status-tinted
+    rows via token classes, and ECharts charts for the top grid combos and the
+    per-window out-of-sample metric.
     """
     title = "Research Report"
     config = data.get("config") or {}
@@ -251,13 +335,12 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
     metric = str(config.get("metric") or "sharpe")
 
     verdict = str(summary.get("verdict") or "")
-    verdict_class = "verdict"
-    if verdict.startswith("INSUFFICIENT"):
-        verdict_class += " insufficient"
-    elif verdict.startswith("FAIL"):
-        verdict_class += " fail"
-    elif verdict.startswith("CAUTION"):
-        verdict_class += " caution"
+    verdict_state = _verdict_status(verdict)
+    verdict_class = "verdict" + (
+        {"good": " pass", "warning": " caution", "critical": " fail"}.get(
+            verdict_state or "", ""
+        )
+    )
 
     config_rows = [
         ("Market", config.get("market")),
@@ -333,6 +416,39 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         grid_rows,
     )
 
+    # Results arrive in rank order from the grid, so the top 20 are the first 20.
+    top_combos = grid_results[:20]
+    grid_chart = ""
+    if top_combos:
+        combo_labels = [
+            f"#{rank} "
+            + ", ".join(
+                f"{key}={value}"
+                for key, value in sorted((result.get("params") or {}).items())
+            )
+            for rank, result in enumerate(top_combos, start=1)
+        ]
+        combo_scores = [result.get("score") for result in top_combos]
+        grid_option = bar_chart(
+            combo_labels,
+            combo_scores,
+            name=metric,
+            value_format="num2",
+            horizontal=True,
+            colors=signed_colors(combo_scores),
+            labels=True,
+        )
+        # Leave room past the most negative bar so its value label does not
+        # run into the category labels on the left edge.
+        scores = [float(v) for v in combo_scores if isinstance(v, int | float)]
+        if scores and min(scores) < 0:
+            grid_option["xAxis"]["min"] = round(min(scores) * 1.4, 3)
+        grid_chart = chart_html(
+            "grid-top-chart",
+            grid_option,
+            height=max(220, 26 * len(top_combos) + 60),
+        )
+
     stability = grid.get("stability") or []
     stability_rows = [
         [
@@ -366,18 +482,27 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         (item.get("test_metrics") or {}) for item in windows
     )
     wf_rows = []
+    wf_status: list[str | None] = []
+    wf_labels: list[str] = []
+    wf_oos: list[Any] = []
     for item in windows:
         window = item.get("window") or {}
         best_train = item.get("best_train") or {}
-        cells = _view_cells(item.get("test_metrics") or {})
+        test_metrics = item.get("test_metrics") or {}
+        label = f"{window.get('train_start')}..{window.get('test_end')}"
+        cells = _view_cells(test_metrics)
         wf_rows.append(
             [
-                f"{window.get('train_start')}..{window.get('test_end')}",
+                label,
                 format_result_value(best_train.get("score"), "ratio"),
                 *(cells.get(column.key, "-") for column in wf_columns),
                 json.dumps(best_train.get("params") or {}, sort_keys=True),
             ]
         )
+        oos_value = test_metrics.get(metric)
+        wf_labels.append(label)
+        wf_oos.append(oos_value)
+        wf_status.append(_sign_status(oos_value))
     wf_table = _html_table(
         [
             "Window",
@@ -386,7 +511,22 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
             "Params",
         ],
         wf_rows,
+        wf_status,
     )
+    wf_chart = ""
+    if wf_oos:
+        wf_chart = chart_html(
+            "wf-oos-chart",
+            bar_chart(
+                wf_labels,
+                wf_oos,
+                name=f"OOS {metric}",
+                value_format="pct1" if metric in _PERCENT_METRICS else "num2",
+                colors=signed_colors(wf_oos),
+                labels=True,
+            ),
+            height=280,
+        )
 
     mc_rows = [
         ("Iterations", monte_carlo.get("iterations")),
@@ -425,27 +565,57 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         or EVIDENCE_INTEGRITY_NOTE
     )
     summary_rows = [
-        ("Best params", json.dumps(summary.get("best_params") or {}, sort_keys=True)),
-        (f"IS {metric}", format_result_value(summary.get("is_metric"), "ratio")),
-        (f"OOS {metric}", format_result_value(summary.get("oos_metric"), "ratio")),
-        ("Degradation", format_result_value(summary.get("degradation"), "ratio")),
+        (
+            "Best params",
+            json.dumps(summary.get("best_params") or {}, sort_keys=True),
+            None,
+        ),
+        (
+            f"IS {metric}",
+            format_result_value(summary.get("is_metric"), "ratio"),
+            None,
+        ),
+        (
+            f"OOS {metric}",
+            format_result_value(summary.get("oos_metric"), "ratio"),
+            _sign_status(summary.get("oos_metric")),
+        ),
+        ("Degradation", format_result_value(summary.get("degradation"), "ratio"), None),
         (
             "Train/test score ratio",
             format_result_value(summary.get("train_test_score_ratio"), "ratio"),
+            None,
         ),
-        ("Overfit flag", summary.get("overfit_flag")),
-        ("Insufficient data", summary.get("insufficient_data")),
+        (
+            "Overfit flag",
+            summary.get("overfit_flag"),
+            _flag_status(summary.get("overfit_flag"), "warning"),
+        ),
+        (
+            "Insufficient data",
+            summary.get("insufficient_data"),
+            _flag_status(summary.get("insufficient_data"), "critical"),
+        ),
         (
             "MC 5th-pct return",
             format_result_value(summary.get("mc_return_p05"), "ratio"),
+            _sign_status(summary.get("mc_return_p05")),
         ),
-        ("MC source", summary.get("mc_source")),
-        ("MC method", summary.get("mc_method")),
-        ("MC reason", summary.get("mc_reason") or monte_carlo.get("reason")),
-        ("Evidence note", integrity_note),
-        ("Verdict", verdict),
+        ("MC source", summary.get("mc_source"), None),
+        ("MC method", summary.get("mc_method"), None),
+        (
+            "MC reason",
+            summary.get("mc_reason") or monte_carlo.get("reason"),
+            None,
+        ),
+        ("Evidence note", integrity_note, None),
+        ("Verdict", verdict, verdict_state),
     ]
-    summary_table = _html_table(["Field", "Value"], summary_rows)
+    summary_table = _html_table(
+        ["Field", "Value"],
+        [(label, value) for label, value, _ in summary_rows],
+        [status for _, _, status in summary_rows],
+    )
 
     disclaimer = grid.get("warning") or GRID_IN_SAMPLE_DISCLAIMER
     grid_role = grid.get("role") or "descriptive_full_period_only"
@@ -453,43 +623,95 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         walk_forward.get("insufficient_data") or summary.get("insufficient_data")
     )
     wf_evidence = walk_forward.get("evidence") or {}
-    body = f"""  <h1>{html_lib.escape(title)}</h1>
-  <p class="{verdict_class}">{html_lib.escape(verdict)}</p>
-  <p class="banner">{html_lib.escape(integrity_note)}</p>
+    holding_warnings = (
+        config.get("holding_period_warnings")
+        or wf_evidence.get("holding_period_warnings")
+        or []
+    )
 
-  <h2>Run config</h2>
-  {config_table}
-
-  <h2>Grid search (descriptive full-period only)</h2>
-  <p class="banner">{html_lib.escape(str(disclaimer))}</p>
-  <p class="meta">Role: {html_lib.escape(str(grid_role))}
-  &nbsp;|&nbsp; Descriptive best params: {html_lib.escape(json.dumps(grid.get("best_params") or {}, sort_keys=True))}
-  &nbsp;|&nbsp; Descriptive best score: {html_lib.escape(format_result_value(grid.get("best_score"), "ratio"))}</p>
-  {grid_table}
-
-  <h2>Parameter stability</h2>
-  {stability_table}
-
-  <h2>Walk-forward (per-fold selection on original grid)</h2>
-  <p class="meta">Stability score: {html_lib.escape(format_result_value(walk_forward.get("stability_score"), "ratio"))}
-  &nbsp;|&nbsp; Train/test ratio: {html_lib.escape(format_result_value(walk_forward.get("train_test_score_ratio"), "ratio"))}
-  &nbsp;|&nbsp; Overfit flag: {html_lib.escape(str(walk_forward.get("overfit_flag")))}
-  &nbsp;|&nbsp; Insufficient data: {html_lib.escape(str(wf_insufficient))}
-  &nbsp;|&nbsp; Window unit: {html_lib.escape(str(config.get("window_length_unit") or wf_evidence.get("window_length_unit") or WINDOW_LENGTH_UNIT))}
-  &nbsp;|&nbsp; Boundary: {html_lib.escape(str(walk_forward.get("fold_boundary_policy") or wf_evidence.get("fold_boundary_policy") or FOLD_BOUNDARY_POLICY))}
-  &nbsp;|&nbsp; Capital: {html_lib.escape(str(walk_forward.get("capital_policy") or wf_evidence.get("capital_policy") or CAPITAL_POLICY))}
-  &nbsp;|&nbsp; Trial scope: {html_lib.escape(str(wf_evidence.get("trial_register_scope") or "train_folds_only"))}</p>
-  <p class="banner">Integrity PASS is a minimum data check only; it is not validated alpha or live-trading approval.</p>
-  {"".join(f'<p class="banner">{html_lib.escape(str(w))}</p>' for w in (config.get("holding_period_warnings") or wf_evidence.get("holding_period_warnings") or []))}
-  {wf_table}
-
-  <h2>Monte Carlo (OOS equity block bootstrap)</h2>
-  {mc_table}
-
-  <h2>Summary</h2>
-  {summary_table}
-"""
-    page = html_page(title, _REPORT_CSS, body, viewport=False)
+    header = _header(
+        "Research report",
+        title,
+        [
+            f"Strategy: {config.get('strategy_name') or '-'}",
+            f"Market: {config.get('market') or '-'}",
+            f"Metric: {metric}",
+        ],
+    )
+    sections = [
+        (
+            '<section class="panel">'
+            "<h2>Verdict</h2>"
+            f'<p class="{verdict_class}">{html_lib.escape(verdict)}</p>'
+            f'<p class="meta">{html_lib.escape(integrity_note)}</p>'
+            "</section>"
+        ),
+        (f'<section class="panel"><h2>Run config</h2>{config_table}</section>'),
+        (
+            '<section class="panel">'
+            "<h2>Grid search (descriptive full-period only)</h2>"
+            f"{_callout(str(disclaimer))}"
+            '<p class="meta">'
+            f"Role: {html_lib.escape(str(grid_role))}"
+            " &nbsp;|&nbsp; Descriptive best params: "
+            f"{html_lib.escape(json.dumps(grid.get('best_params') or {}, sort_keys=True))}"
+            " &nbsp;|&nbsp; Descriptive best score: "
+            f"{html_lib.escape(format_result_value(grid.get('best_score'), 'ratio'))}"
+            "</p>"
+            f"{grid_chart}"
+            f"{grid_table}"
+            "</section>"
+        ),
+        (
+            '<section class="panel">'
+            "<h2>Parameter stability</h2>"
+            f"{stability_table}"
+            "</section>"
+        ),
+        (
+            '<section class="panel">'
+            "<h2>Walk-forward (per-fold selection on original grid)</h2>"
+            '<p class="meta">'
+            "Stability score: "
+            f"{html_lib.escape(format_result_value(walk_forward.get('stability_score'), 'ratio'))}"
+            " &nbsp;|&nbsp; Train/test ratio: "
+            f"{html_lib.escape(format_result_value(walk_forward.get('train_test_score_ratio'), 'ratio'))}"
+            " &nbsp;|&nbsp; Overfit flag: "
+            f"{html_lib.escape(str(walk_forward.get('overfit_flag')))}"
+            " &nbsp;|&nbsp; Insufficient data: "
+            f"{html_lib.escape(str(wf_insufficient))}"
+            " &nbsp;|&nbsp; Window unit: "
+            f"{html_lib.escape(str(config.get('window_length_unit') or wf_evidence.get('window_length_unit') or WINDOW_LENGTH_UNIT))}"
+            " &nbsp;|&nbsp; Boundary: "
+            f"{html_lib.escape(str(walk_forward.get('fold_boundary_policy') or wf_evidence.get('fold_boundary_policy') or FOLD_BOUNDARY_POLICY))}"
+            " &nbsp;|&nbsp; Capital: "
+            f"{html_lib.escape(str(walk_forward.get('capital_policy') or wf_evidence.get('capital_policy') or CAPITAL_POLICY))}"
+            " &nbsp;|&nbsp; Trial scope: "
+            f"{html_lib.escape(str(wf_evidence.get('trial_register_scope') or 'train_folds_only'))}"
+            "</p>"
+            '<p class="meta">Integrity PASS is a minimum data check only; it is not '
+            "validated alpha or live-trading approval.</p>"
+            + "".join(_callout(str(warning)) for warning in holding_warnings)
+            + f"{wf_chart}"
+            + f"{wf_table}"
+            + "</section>"
+        ),
+        (
+            '<section class="panel">'
+            "<h2>Monte Carlo (OOS equity block bootstrap)</h2>"
+            f"{mc_table}"
+            "</section>"
+        ),
+        (f'<section class="panel"><h2>Summary</h2>{summary_table}</section>'),
+    ]
+    body = f"{header}\n<main>\n" + "\n".join(sections) + "\n</main>"
+    page = html_page(
+        title,
+        _REPORT_CSS,
+        body,
+        viewport=True,
+        charts=bool(grid_chart or wf_chart),
+    )
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(page)

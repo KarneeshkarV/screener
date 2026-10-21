@@ -156,12 +156,13 @@ def test_screen_auto_temp_report(tmp_path, monkeypatch):
     assert 'id="screen-summary"' in html
     assert 'id="screen-results"' in html
     assert "Important Metrics" in html
-    assert "--paper: #07090d" in html
-    assert '"plot_bgcolor":"#0d1117"' in html
+    assert "--surface:" in html
+    assert 'data-echart="screen-top-change-spec"' in html
+    assert '"token:neg"' in html
 
 
 def test_screen_prints_the_table_before_it_renders_the_report(tmp_path, monkeypatch):
-    """The report costs about 0.4s of plotly work the terminal need not wait on.
+    """The report costs rendering work the terminal need not wait on.
 
     Checked by when the file appears rather than by timing: at the moment the
     table is printed the report must still be unwritten, and it must be there

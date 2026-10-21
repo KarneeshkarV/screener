@@ -1,4 +1,4 @@
-"""Self-contained sector rotation report with inline SVG and member drill-down."""
+"""Self-contained sector rotation report with ECharts comparisons and member drill-down."""
 
 from __future__ import annotations
 
@@ -11,35 +11,39 @@ import numpy as np
 import pandas as pd
 
 from screener.html_report import html_page
+from screener.report_theme import chart_html, line_chart
 from screener.sector_rotation.analysis import SectorRotationResult
 
 _LEGACY_VIDEO_SOURCE = "https://www.youtube.com/watch?v=d-I6BG5F-Yg"
 
+# Layout only: colours, fonts and base typography come from THEME_CSS tokens.
 _REPORT_CSS = """
-:root{color-scheme:dark;--ink:#e5ece9;--muted:#9daea7;--line:#30433b;--green:#8ce6b0;--red:#f0a69e}
-*{box-sizing:border-box}body{margin:0;background:#101b16;color:var(--ink);font:15px Georgia,serif}
-main{max-width:1500px;margin:auto;padding:48px 32px}header{border-bottom:1px solid var(--line);padding-bottom:28px}
-h1{font-size:clamp(32px,5vw,64px);font-weight:normal;margin:12px 0}h2{font-size:24px;font-weight:normal}
-p{line-height:1.6}.eyebrow,.tag,th,.metric,summary{font-family:'Courier New',monospace}
-.eyebrow{letter-spacing:.15em;color:var(--green);font-size:12px}.subtle,.tag{color:var(--muted)}
-.notice{border-left:3px solid #cba66c;background:#1d271f;padding:12px 20px;margin:24px 0}
-.notice p{margin:6px 0}.toolbar{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin:28px 0}
-input,select{font:inherit;background:#17271f;color:var(--ink);border:1px solid #587364;border-radius:0;padding:10px;max-width:100%}
-input{width:300px}label{display:flex;gap:8px;align-items:center}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:20px}
-article{border:1px solid var(--line);padding:22px;background:#15221b;min-width:0;scroll-margin-top:20px}
-article h2{margin:8px 0 12px}article a{color:var(--muted);font-size:12px}.stats{display:flex;justify-content:space-between;gap:12px}
-.stats>div{min-width:0;flex:1}.metric{font-size:clamp(20px,2.2vw,28px);overflow-wrap:anywhere}.positive{color:var(--green)}.negative{color:var(--red)}.tag{font-size:12px}
-svg{width:100%;height:auto;display:block;margin-top:18px}svg text{fill:var(--muted);font:11px 'Courier New',monospace}
-.legend{display:flex;gap:16px;font-size:12px;color:var(--muted);margin:8px 0 18px}.group-key{color:var(--green)}
-.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:right;padding:9px 8px;border-bottom:1px solid var(--line);white-space:nowrap}td:first-child,th:first-child{text-align:left}
-th{font-weight:normal;color:var(--muted);font-size:11px}td a{color:var(--ink);font-size:13px}
-summary{cursor:pointer;padding:12px 0;color:var(--green)}details p{font-size:13px}
-.description,.exposure,.sources,footer{overflow-wrap:anywhere}.sector-details{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:16px}
-.sector-details h3,.detail-heading{font:13px 'Courier New',monospace;color:var(--muted);margin:16px 0 8px}
-.sector-details ul,.sources{padding-left:20px;font-size:13px;line-height:1.6}.sector-details li,.sources li{margin:6px 0;overflow-wrap:anywhere}
-footer{margin-top:36px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
-[hidden]{display:none!important}a:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--green);outline-offset:4px}
-@media(max-width:600px){main{padding:24px 14px}article{padding:16px}.stats{flex-wrap:wrap}.stats>div{flex:1 1 140px}.metric{font-size:24px}label{flex-wrap:wrap}}
+.toolbar{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin:24px 0}
+.toolbar label{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:13px}
+#search{width:300px;max-width:100%}
+#count{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:var(--gap)}
+article{min-width:0;scroll-margin-top:20px}
+article h2{margin:6px 0 4px}
+article a{font-size:12px}
+.meta{margin:6px 0;color:var(--muted);font-size:12px}
+.metrics{margin:14px 0 4px}
+.positive{color:var(--pos-ink)}
+.negative{color:var(--neg-ink)}
+.subtle{color:var(--muted)}
+.echart{margin-top:10px}
+.callout{margin:20px 0}
+.callout p{margin:4px 0}
+.description,.exposure,.sources,footer{overflow-wrap:anywhere}
+details summary{cursor:pointer;padding:10px 0;color:var(--accent);font-size:13px}
+details p{font-size:13px}
+.detail-heading{font-size:13px;color:var(--muted);margin:16px 0 8px}
+.sector-details{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:16px;margin-top:12px}
+.sector-details ul,.sources{padding-left:20px;font-size:13px;line-height:1.6}
+.sector-details li,.sources li{margin:6px 0;overflow-wrap:anywhere}
+footer{margin-top:32px;padding-top:20px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+[hidden]{display:none!important}
+@media(max-width:600px){article{padding:14px}}
 """
 
 
@@ -53,47 +57,32 @@ def _breadth_percent(value: float) -> str:
     return "Unavailable" if pd.isna(value) else f"{value:.1f}%"
 
 
-def _comparison_svg(curves: pd.DataFrame, name: str) -> str:
-    values = curves.to_numpy(dtype=float)
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return '<p class="subtle">No comparable history.</p>'
-    low, high = float(finite.min()), float(finite.max())
-    pad = max((high - low) * 0.1, 1.0)
-    low, high = low - pad, high + pad
-    width, height = 500, 220
-    left, right, top, bottom = 44, 488, 12, 188
-    svg = [
-        f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="{html.escape(name, quote=True)} versus benchmark, both rebased to 100">'
-    ]
-    for level in np.linspace(low, high, 3):
-        y = bottom - (level - low) / (high - low) * (bottom - top)
-        svg.append(
-            f'<line x1="{left}" y1="{y:.2f}" x2="{right}" y2="{y:.2f}" stroke="#30433b"/><text x="0" y="{y + 4:.2f}">{level:.0f}</text>'
-        )
-    for column, color in (("benchmark", "#b8c3bd"), (curves.columns[1], "#8ce6b0")):
-        segments: list[str] = []
-        connected = False
-        for i, value in enumerate(curves[column]):
-            if not np.isfinite(value):
-                connected = False
-                continue
-            x = left + i / max(len(curves) - 1, 1) * (right - left)
-            y = bottom - (value - low) / (high - low) * (bottom - top)
-            segments.append(f"{'L' if connected else 'M'}{x:.2f},{y:.2f}")
-            connected = True
-        dash = ' stroke-dasharray="4 4"' if column == "benchmark" else ""
-        svg.append(
-            f'<path d="{" ".join(segments)}" fill="none" stroke="{color}" stroke-width="2"{dash}/>'
-        )
-    svg.extend(
+def _chart_id(group_id: str) -> str:
+    """DOM-safe chart id: the card's anchor slug plus ``-chart``."""
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", group_id).strip("-") or "group"
+    return f"{slug}-chart"
+
+
+def _comparison_chart(
+    curves: pd.DataFrame, group_id: str, name: str, chart_id: str
+) -> str:
+    """Basket (series-1) versus benchmark (series-2, dashed), both rebased to 100."""
+    if not np.isfinite(curves[group_id].to_numpy(dtype=float)).any():
+        return '<p class="empty">No comparable history.</p>'
+    option = line_chart(
+        list(curves.index),
         [
-            f'<text x="{left}" y="213">{curves.index[0]:%d %b %Y}</text>',
-            f'<text x="{right}" y="213" text-anchor="end">{curves.index[-1]:%d %b %Y}</text>',
-            "</svg>",
-        ]
+            {"name": name, "values": curves[group_id].tolist(), "color": "series-1"},
+            {
+                "name": "Benchmark",
+                "values": curves["benchmark"].tolist(),
+                "color": "series-2",
+                "dashed": True,
+            },
+        ],
+        value_format="num0",
     )
-    return "".join(svg)
+    return chart_html(chart_id, option, height=200)
 
 
 def _safe_source_link(source: str, label: str | None = None) -> str:
@@ -202,7 +191,7 @@ def render_sector_report(result: SectorRotationResult, path: Path) -> None:
         )
         concentration = " | Concentrated basket" if row["concentrated"] else ""
         status_note = (
-            '<p class="negative">Unranked: incomplete basket history. '
+            '<p class="callout">Unranked: incomplete basket history. '
             "Any displayed basket line stops at the first data failure.</p>"
             if row["status"] != "ok"
             else ""
@@ -225,16 +214,18 @@ def render_sector_report(result: SectorRotationResult, path: Path) -> None:
             quote=True,
         )
         rank = "Unranked" if pd.isna(row["rank"]) else f"Rank {int(row['rank']):02d}"
-        cards.append(f"""<article id="{html.escape(group.id, quote=True)}" data-search="{searchable}" data-parent="{html.escape(group.parent, quote=True)}" data-kind="{html.escape(group.kind, quote=True)}">
-<div class="tag">{rank} / {html.escape(group.parent)} / {html.escape(group.kind.title())}</div>
+        chart_html_block = _comparison_chart(
+            result.curves, group.id, group.name, _chart_id(group.id)
+        )
+        cards.append(f"""<article class="panel" id="{html.escape(group.id, quote=True)}" data-search="{searchable}" data-parent="{html.escape(group.parent, quote=True)}" data-kind="{html.escape(group.kind, quote=True)}">
+<div class="meta">{rank} / {html.escape(group.parent)} / {html.escape(group.kind.title())}</div>
 <h2>{html.escape(group.name)}</h2>{description_html}{status_note}
-<div class="stats"><div><div class="metric {return_color}">{_percent(row["return_pct"])}</div><span class="tag">Basket return</span></div>
-<div><div class="metric {excess_color}">{_percent(row["excess_return_pp"], points=True)}</div><span class="tag">Excess vs benchmark</span></div></div>
-{_comparison_svg(result.curves[["benchmark", group.id]], group.name)}
-<div class="legend"><span class="group-key">Solid: basket</span><span>Dashed: benchmark</span></div>
-<p class="tag">{row["priced_members"]}/{row["members"]} members priced at end | Minimum coverage {row["minimum_coverage_pct"]:.0f}%{concentration}</p>
-<p class="tag">Above SMA50: {_breadth_percent(row["breadth_sma50_pct"])} ({row["breadth_sma50_members"]} known) | Above SMA200: {_breadth_percent(row["breadth_sma200_pct"])} ({row["breadth_sma200_members"]} known)</p>
-<details><summary>Inspect {row["members"]} members and sector details</summary><div class="table-wrap">{members.to_html(index=False, border=0, escape=True)}</div>
+<div class="metrics"><div class="metric"><span>Basket return</span><strong class="{return_color}">{_percent(row["return_pct"])}</strong></div>
+<div class="metric"><span>Excess vs benchmark</span><strong class="{excess_color}">{_percent(row["excess_return_pp"], points=True)}</strong></div></div>
+{chart_html_block}
+<p class="meta">{row["priced_members"]}/{row["members"]} members priced at end | Minimum coverage {row["minimum_coverage_pct"]:.0f}%{concentration}</p>
+<p class="meta">Above SMA50: {_breadth_percent(row["breadth_sma50_pct"])} ({row["breadth_sma50_members"]} known) | Above SMA200: {_breadth_percent(row["breadth_sma200_pct"])} ({row["breadth_sma200_members"]} known)</p>
+<details><summary>Inspect {row["members"]} members and sector details</summary><div class="table-wrap">{members.to_html(index=False, border=0, escape=True, classes="data-table")}</div>
 <div class="sector-details">{detail_lists}</div>
 <h3 class="detail-heading">Exposure notes</h3><p class="exposure">{html.escape(group.notes or "Selected research basket, not exhaustive industry membership.")}</p>
 {sources_html}{video_reference}</details></article>""")
@@ -247,14 +238,19 @@ def render_sector_report(result: SectorRotationResult, path: Path) -> None:
         f'<option value="{html.escape(kind, quote=True)}">{html.escape(kind.title())}</option>'
         for kind in sorted({group.kind for group in result.selection.groups})
     )
-    body = f"""<main><header><div class="eyebrow">SCREENER / INDUSTRY RESEARCH</div><h1>Where strength is moving.</h1>
-<p>Market: {html.escape(market_name)} / {result.start:%d %b %Y} to {result.end:%d %b %Y} / Benchmark: {html.escape(benchmark_name)} ({html.escape(result.benchmark)})</p>
-<p class="subtle">Monthly equal-weight research baskets. Both chart lines start at 100. Rank uses excess return, not a buy signal.</p></header>
-<section class="notice" aria-label="Research limitations">{warnings}</section>
+    notice = (
+        f'<section class="callout" aria-label="Research limitations">{warnings}</section>'
+        if warnings
+        else ""
+    )
+    body = f"""<main><header><div class="eyebrow">Sector rotation</div><h1>Where strength is moving.</h1>
+<div class="subhead"><span>Market: {html.escape(market_name)} / {result.start:%d %b %Y} to {result.end:%d %b %Y} / Benchmark: {html.escape(benchmark_name)} ({html.escape(result.benchmark)})</span></div>
+<div class="subhead"><span>Monthly equal-weight research baskets. Both chart lines start at 100. Rank uses excess return, not a buy signal.</span></div></header>
+{notice}
 <div class="toolbar"><label>Find group <input id="search" type="search" placeholder="Name, ticker, driver, risk..." /></label>
 <label>Parent <select id="parent"><option value="">All parents</option>{options}</select></label>
 <label>Kind <select id="kind-filter"><option value="">All kinds</option>{kind_options}</select></label><span id="count" role="status">{len(cards)} {"group" if len(cards) == 1 else "groups"}</span></div>
-<div class="grid">{"".join(cards)}</div><p id="empty" hidden>No groups match these filters.</p>
+<div class="grid">{"".join(cards)}</div><p id="empty" class="empty" hidden>No groups match these filters.</p>
 <footer><p>Weights reset after the last close of each month and drift between rebalances. Missing held prices stop a curve; unavailable groups remain unranked.
 No transaction costs are included. Adjusted stock returns and a price-only benchmark are not a total-return comparison.</p>
 <p>Catalogue observed {html.escape(str(catalogue.observed_on))}. Catalogue source: {_safe_source_link(catalogue.source)}.</p>
@@ -268,5 +264,6 @@ search.addEventListener('input',filterGroups);parent.addEventListener('change',f
 </script>"""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        html_page("Sector rotation research", _REPORT_CSS, body), encoding="utf-8"
+        html_page("Sector rotation research", _REPORT_CSS, body, charts=True),
+        encoding="utf-8",
     )

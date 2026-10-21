@@ -13,9 +13,7 @@ data = (HERE / "sample-data.js").read_text()
 common = (HERE / "common.js").read_text()
 
 for src in sorted((HERE / "src").glob("*.html")):
-    parts = dict(
-        chunk.split("\n", 1) for chunk in src.read_text().split("@@ ")[1:]
-    )
+    parts = dict(chunk.split("\n", 1) for chunk in src.read_text().split("@@ ")[1:])
     page = f"""<!doctype html>
 <html lang="en">
 <head>

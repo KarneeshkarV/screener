@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, replace
@@ -152,6 +153,11 @@ def _report_result(*groups, **catalogue_overrides) -> SectorRotationResult:
     )
 
 
+def _markup_outside_scripts(text: str) -> str:
+    """Page markup with inline scripts removed (the vendored ECharts bundle is trusted code)."""
+    return re.sub(r"<script\b.*?</script>", "", text, flags=re.DOTALL)
+
+
 def _render_report(tmp_path, result) -> tuple[str, _ReportParser]:
     path = tmp_path / "nested" / "global.html"
     render_sector_report(result, path)
@@ -203,7 +209,10 @@ def test_us_report_has_market_benchmark_details_and_primary_sources(tmp_path):
     assert "survivorship bias applies" in parsed.tagged("footer")[0].text
     assert not any(node.attrs.get("src") for node in parsed.tagged("script"))
     assert not parsed.tagged("link")
-    assert parsed.tagged("svg")
+    chart = parsed.identified("machines-chart")
+    assert chart.attrs.get("data-echart") == "machines-chart-spec"
+    assert chart.attrs.get("style") == "height:200px"
+    assert text.count('data-echart="') == 1
     assert "+5.00%" in card.text and "+3.00 pp" in card.text
     assert parsed.identified("count").text == "1 group"
     assert "Unknown" in card.text
@@ -244,7 +253,7 @@ def test_video_timestamps_require_matching_provenance(
         [expected] if expected else []
     )
     assert "Group labels come from the cited video" not in text
-    assert "<img" not in text
+    assert "<img" not in _markup_outside_scripts(text)
 
 
 def test_india_context_and_benchmark_override_do_not_use_us_or_default_label(tmp_path):
@@ -305,7 +314,8 @@ def test_all_metadata_is_escaped_in_text_attributes_and_links(tmp_path):
     )
     text, parsed = _render_report(tmp_path, result)
     assert not parsed.tagged("img")
-    assert len(parsed.tagged("script")) == 1
+    # ECharts bundle, theme runtime, one JSON spec per chart, and the filter script.
+    assert len(parsed.tagged("script")) == 4
     assert not any(
         name.startswith("on") for element in parsed.elements for name in element.attrs
     )
@@ -319,7 +329,8 @@ def test_all_metadata_is_escaped_in_text_attributes_and_links(tmp_path):
     assert all(link.attrs["href"] == source for link in parsed.tagged("a"))
     assert "&amp;y=&lt;tag&gt;" in text
     assert "x=&quot;quoted&quot;" in text
-    assert parsed.tagged("svg")[0].attrs["aria-label"].startswith(payload)
+    assert "\\u003cimg src=x" in text
+    assert "<img src=x" not in _markup_outside_scripts(text)
 
 
 @pytest.mark.parametrize(
@@ -403,7 +414,7 @@ def test_filters_execute_case_insensitive_search_and_combined_parent_kind(tmp_pa
         "industry": "Industry",
         "theme": "Theme",
     }.items() <= options.items()
-    script = parsed.tagged("script")[0].text
+    script = next(e.text for e in parsed.tagged("script") if "filterGroups" in e.text)
     harness = f"""
 const assert = require('node:assert/strict');
 const cards = {json.dumps(cards)};
@@ -445,7 +456,5 @@ def test_unavailable_group_keeps_metrics_and_chart_failure_behavior(tmp_path):
     assert "Unranked: incomplete basket history" in card.text
     assert "Unavailable" in card.text
     assert "Precision tools for factory automation." in card.text
-    paths = parsed.tagged("path")
-    assert paths[0].attrs["stroke-dasharray"] == "4 4"
-    assert paths[1].attrs["d"] == ""
-    assert len(parsed.tagged("svg")) == 1
+    assert "No comparable history." in card.text
+    assert not any(e.attrs.get("id") == "machines-chart" for e in parsed.elements)

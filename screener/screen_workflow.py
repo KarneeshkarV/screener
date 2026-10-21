@@ -65,7 +65,7 @@ def temp_report_path(prefix: str) -> Path:
 
 
 def render_screen_report(*args: Any, **kwargs: Any) -> Path:
-    """Lazy wrapper: plotly lives behind screen_report, only imported on use."""
+    """Lazy wrapper: the report renderer (ECharts pages) is only imported on use."""
     from screener.commands.screen_report import render_screen_report as _impl
 
     return _impl(*args, **kwargs)
@@ -126,7 +126,7 @@ class ScreenRequest:
     # budget, so callers cap both together. None keeps the resilience default.
     retries: int | None = None
     # Hand the report back unrendered, as ``ScreenOutcome.render_report``, so
-    # the caller decides when it runs. Rendering imports plotly and lays out
+    # the caller decides when it runs. Rendering builds the chart specs and lays out
     # the whole page, which is about 0.4s the caller is otherwise blocked on
     # before it can show a result it already has. The CLI sets this and renders
     # after printing; every other caller keeps the report written for it.
@@ -526,7 +526,7 @@ def _finish_screen(
 
     # Non-CSV always writes an HTML report (temp path when --report omitted).
     # render_screen_report / temp_report_path are lazy wrappers so the CSV path
-    # (above) never imports plotly.
+    # (above) never imports the report renderer.
     generated_report = request.report_path
     if generated_report is None:
         generated_report = temp_report_path("screen")
