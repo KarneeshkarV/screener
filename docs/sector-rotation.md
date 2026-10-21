@@ -46,7 +46,9 @@ uv run screener sector-rotation \
   --report rotation.html --members-csv rotation-members.csv --csv
 ```
 
-Supported periods are `1d`, `1w`, `1m`, `3m`, `6m`, `1y`, `3y`, and `5y`.
+`--period` takes a positive whole number and a unit: `d` days, `w` weeks, `m` months, or `y` years.
+Examples are `10d`, `2w`, `9m`, `12m`, `18m`, and `5y`.
+Month and year periods use calendar months, so `9m` ending on 6 January starts on 6 April.
 They are calendar windows measured back from the last benchmark session on or before the requested end.
 Each start anchors at the last benchmark session on or before that calculated start date.
 For example, a one-day request ending on Sunday compares Friday with Thursday.
@@ -60,10 +62,14 @@ The command does not convert INR and USD or compare cross-market ranks.
 Use `--benchmark SYMBOL` to replace it explicitly.
 The command fails if the benchmark does not cover the start or its endpoint is more than seven calendar days stale.
 A successful fetch can still contain unranked groups if member data is incomplete.
+Prices come from yfinance first.
+When `FMP_API_KEY` is set, FMP is the fallback, always for the entire ticker history and never spliced into one series.
+A ticker that yfinance returns empty is fetched from FMP and named in a warning.
 A provider can also omit a benchmark session while returning stock prices for that day.
-For example, the live Nifty 500 feed omitted 2026-01-01 during verification while the CNC basket stocks had prices.
-The command rejects that window rather than changing the rebalance calendar.
-Use a benchmark with a complete session history or a fully covered window; do not treat a failed request as a zero-return result.
+For example, the yfinance Nifty 500 feed omits 2026-01-01 while the member stocks have prices.
+The command then tries the FMP benchmark and uses it for the entire benchmark if it has every missing session.
+Otherwise the benchmark's last close is carried forward on those sessions, so the benchmark has zero return on them.
+Every fallback and carried-forward session is printed as a CLI warning and shown in the HTML report notice.
 
 `--csv` emits all group metrics on stdout.
 It also includes `market`, `description`, `drivers`, `risks`, `notes`, and `sources` so exports keep the business context.
@@ -149,7 +155,8 @@ Newly quoted members can enter only at a subsequent rebalance.
 Missing held prices stop the remainder of that basket curve.
 The calculation does not forward-fill prices, replace missing returns with zero, or silently sell a missing member.
 Invalid, non-finite, and non-positive closes count as missing.
-Missing benchmark sessions where a selected stock traded cause an explicit error, rather than silently changing the rebalance calendar.
+Missing benchmark sessions where a selected stock traded stay in the common calendar, so month-end rebalances do not move.
+The benchmark carries its last close on those sessions and a warning names them.
 Where volume is available, zero-volume stock rows do not count as evidence of a session.
 This excludes provider holiday placeholders.
 This check uses member-session evidence, not an independent exchange holiday calendar.

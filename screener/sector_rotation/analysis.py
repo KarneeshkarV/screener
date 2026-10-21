@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
 import numpy as np
@@ -37,6 +37,43 @@ def _usable_close(frame: pd.DataFrame | None) -> pd.Series:
     )
     close = close[~close.index.duplicated(keep="last")].sort_index()
     return close.where(np.isfinite(close) & (close > 0))
+
+
+def _missing_benchmark_sessions(
+    selection: SectorSelection,
+    prices: Mapping[str, pd.DataFrame],
+    benchmark_sessions: pd.DatetimeIndex,
+    end: date,
+) -> list[pd.Timestamp]:
+    """Member trading sessions inside the window that the benchmark omits."""
+    stock_sessions: set[pd.Timestamp] = set()
+    anchor = benchmark_sessions[0]
+    for group in selection.groups:
+        for ticker in group.members:
+            frame = prices.get(tv_to_yf(ticker, selection.catalogue.market))
+            close = _usable_close(frame)
+            # Providers sometimes emit flat, zero-volume holiday placeholders.
+            # Those are not evidence that the exchange held a session.
+            if frame is not None and "volume" in frame:
+                volume = frame.copy()
+                volume["close"] = volume["volume"]
+                close = close.where(_usable_close(volume).reindex(close.index).notna())
+            stock_sessions.update(close.loc[anchor : str(end)].dropna().index)
+    return sorted(stock_sessions - set(benchmark_sessions))
+
+
+def _format_sessions(sessions: list[pd.Timestamp]) -> str:
+    shown = ", ".join(session.date().isoformat() for session in sessions[:5])
+    return shown + (f" and {len(sessions) - 5} more" if len(sessions) > 5 else "")
+
+
+def _benchmark_window_sessions(
+    frame: pd.DataFrame | None, start: date, end: date
+) -> pd.DatetimeIndex:
+    close = _usable_close(frame).loc[: str(end)].dropna()
+    anchors = close.index[close.index <= pd.Timestamp(start)]
+    index = pd.DatetimeIndex(close.index)
+    return index[index >= anchors[-1]] if len(anchors) else index[:0]
 
 
 def build_sector_basket(
@@ -147,31 +184,29 @@ def compute_sector_rotation(
         raise ValueError(
             "Sector rotation: benchmark prices are missing or invalid in the analysis window"
         )
-    stock_sessions: set[pd.Timestamp] = set()
-    for group in selection.groups:
-        for ticker in group.members:
-            frame = prices.get(tv_to_yf(ticker, selection.catalogue.market))
-            close = _usable_close(frame)
-            # Providers sometimes emit flat, zero-volume holiday placeholders.
-            # Those are not evidence that the exchange held a session.
-            if frame is not None and "volume" in frame:
-                volume = frame.copy()
-                volume["close"] = volume["volume"]
-                close = close.where(_usable_close(volume).reindex(close.index).notna())
-            stock_sessions.update(close.loc[anchor : str(end)].dropna().index)
-    missing_sessions = sorted(stock_sessions - set(benchmark_window.index))
+    missing_sessions = _missing_benchmark_sessions(
+        selection, prices, pd.DatetimeIndex(benchmark_window.index), end
+    )
+    warnings = [selection.catalogue.membership_note]
     if missing_sessions:
-        raise ValueError(
-            "Sector rotation: benchmark sessions missing where member stocks traded: "
-            + ", ".join(session.date().isoformat() for session in missing_sessions[:5])
+        # Keep member sessions in the common calendar so month-end rebalances
+        # stay where the stocks traded; the benchmark holds its last close.
+        warnings.append(
+            f"Benchmark {benchmark} has no price for "
+            f"{len(missing_sessions)} session(s) where member stocks traded "
+            f"({_format_sessions(missing_sessions)}); its last close was carried "
+            "forward on those sessions."
         )
+        benchmark_close = benchmark_close.reindex(
+            benchmark_close.index.union(missing_sessions)
+        ).ffill()
+        benchmark_window = benchmark_close.loc[anchor:]
     if len(benchmark_window) < 2:
         raise ValueError("Sector rotation: fewer than two benchmark sessions")
     if (pd.Timestamp(start) - anchor).days > 7:
         raise ValueError(
             "Sector rotation: benchmark start is stale by more than seven days"
         )
-    warnings = [selection.catalogue.membership_note]
     if (pd.Timestamp(end) - benchmark_window.index[-1]).days > 7:
         raise ValueError(
             "Sector rotation: benchmark end is stale by more than seven days"
@@ -279,8 +314,16 @@ def fetch_sector_rotation(
     end: date,
     benchmark: str | None = None,
     minimum_coverage: float = 0.8,
+    fallback: PriceFetcher | None = None,
 ) -> SectorRotationResult:
-    """Fetch adjusted history once, including 400 calendar days for breadth warmup."""
+    """Fetch adjusted history once, including 400 calendar days for breadth warmup.
+
+    ``fallback`` (FMP) supplies the entire history of any ticker the primary
+    provider returns empty. When the benchmark omits sessions where members
+    traded, the whole benchmark history comes from ``fallback`` if that
+    provider has them all. Mixing two providers inside one series would splice
+    different adjustment bases, so the fallback replaces a ticker or is unused.
+    """
     benchmark = benchmark or selection.catalogue.benchmark
     tickers = sorted(
         {
@@ -291,12 +334,71 @@ def fetch_sector_rotation(
         | {benchmark}
     )
     prices = fetcher.fetch(tickers, start - timedelta(days=400), end)
+    fallback_warnings: list[str] = []
+    empty = [ticker for ticker in tickers if _usable_close(prices.get(ticker)).empty]
+    if empty and fallback is not None:
+        replacements = fallback.fetch(empty, start - timedelta(days=400), end)
+        recovered = [
+            ticker
+            for ticker in empty
+            if not _usable_close(replacements.get(ticker)).empty
+        ]
+        prices = {**prices, **{ticker: replacements[ticker] for ticker in recovered}}
+        if recovered:
+            fallback_warnings.append(
+                f"yfinance returned no prices for {len(recovered)} ticker(s); "
+                f"FMP history was used for the entire ticker: {', '.join(recovered)}."
+            )
+        empty = [ticker for ticker in empty if ticker not in recovered]
+    if empty:
+        fallback_warnings.append(
+            f"No prices for {len(empty)} ticker(s)"
+            + ("" if fallback is not None else " and FMP_API_KEY is not set")
+            + f": {', '.join(empty)}."
+        )
     benchmark_close = _usable_close(prices.get(benchmark)).loc[: str(end)]
     if not benchmark_close.empty:
         # Anchor calendar periods to the effective end session, not a weekend
         # or holiday requested by the caller. Keep requested end for stale checks.
         start = benchmark_close.index[-1].date() - (end - start)
-    return compute_sector_rotation(
+    fallback_warning: str | None = None
+    sessions = _benchmark_window_sessions(prices.get(benchmark), start, end)
+    missing = (
+        _missing_benchmark_sessions(selection, prices, sessions, end)
+        if len(sessions)
+        else []
+    )
+    if missing and fallback is None:
+        fallback_warning = (
+            f"Benchmark {benchmark}: FMP fallback not tried because FMP_API_KEY "
+            "is not set."
+        )
+    elif missing and fallback is not None:
+        fallback_warning = (
+            f"Benchmark {benchmark}: FMP fallback does not cover the missing "
+            "session(s), so the primary provider history was kept."
+        )
+        replacement = fallback.fetch([benchmark], start - timedelta(days=400), end).get(
+            benchmark
+        )
+        replacement_sessions = _benchmark_window_sessions(replacement, start, end)
+        if (
+            replacement is not None
+            and len(replacement_sessions)
+            and replacement_sessions[0] <= sessions[0]
+            and replacement_sessions[-1] >= sessions[-1]
+            and not _missing_benchmark_sessions(
+                selection, prices, replacement_sessions, end
+            )
+        ):
+            prices = {**prices, benchmark: replacement}
+            fallback_warning = (
+                f"Benchmark {benchmark}: the primary provider has no price for "
+                f"{len(missing)} session(s) where member stocks traded "
+                f"({_format_sessions(missing)}); FMP history was used for the "
+                "entire benchmark."
+            )
+    result = compute_sector_rotation(
         selection,
         prices,
         start=start,
@@ -304,3 +406,8 @@ def fetch_sector_rotation(
         benchmark=benchmark,
         minimum_coverage=minimum_coverage,
     )
+    if fallback_warning is not None:
+        fallback_warnings.append(fallback_warning)
+    if not fallback_warnings:
+        return result
+    return replace(result, warnings=(*result.warnings, *fallback_warnings))
