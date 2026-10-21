@@ -1,0 +1,49 @@
+@@ title
+Slate
+@@ lib
+Apache ECharts 5.5<br>light + dark (follows OS) · validated dataviz palette
+@@ head
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+@@ tokens
+:root{color-scheme:light;
+  --bg:#f4f4f2;--surface:#fcfcfb;--surface-2:#f0efec;--ink:#0b0b0b;--muted:#52514e;--line:#e2e1dc;--line-soft:#ecebe7;--hover:#f4f3ef;
+  --accent:#2a78d6;--series-1:#2a78d6;--series-2:#eb6834;--series-3:#1baf7a;
+  --pos:#2a78d6;--neg:#e34948;--pos-ink:#1c5cab;--neg-ink:#b8302f;--div-mid:#f0efec;--on-strong:#fff;
+  --status-good:#0ca30c;--status-warning:#fab219;--status-critical:#d03b3b;
+  --font-ui:Inter,system-ui,sans-serif;--font-display:Inter,system-ui,sans-serif;--font-num:Inter,sans-serif;--font-mono:"JetBrains Mono",monospace;
+  --h1-size:28px;--h1-weight:700;--h1-tracking:-.02em;--radius:10px;--gap:14px}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;
+  --bg:#111110;--surface:#1a1a19;--surface-2:#22221f;--ink:#f0efec;--muted:#a8a79f;--line:#2e2e2b;--line-soft:#262624;--hover:#232320;
+  --accent:#3987e5;--series-1:#3987e5;--series-2:#d95926;--series-3:#199e70;
+  --pos:#3987e5;--neg:#e66767;--pos-ink:#86b6ef;--neg-ink:#f09090;--div-mid:#383835;--on-strong:#fff}}
+@@ css
+.kpi{box-shadow:0 1px 2px rgba(0,0,0,.04)}.panel{box-shadow:0 1px 2px rgba(0,0,0,.04)}
+@@ charts
+const R = REPORT;
+const axis = { axisLine: { lineStyle: { color: tok("line") } }, axisLabel: { color: tok("muted"), fontFamily: tok("font-ui") }, splitLine: { lineStyle: { color: tok("line-soft") } }, axisTick: { show: false } };
+const tip = { trigger: "axis", backgroundColor: tok("surface"), borderColor: tok("line"), textStyle: { color: tok("ink"), fontFamily: tok("font-ui") }, axisPointer: { lineStyle: { color: tok("muted"), type: "dashed" } } };
+const init = (id) => { const c = echarts.init(document.getElementById(id), null, { renderer: "svg" }); addEventListener("resize", () => c.resize()); return c; };
+const grid = { left: 56, right: 72, top: 12, bottom: 28 };
+const eq = init("equity"), dd = init("drawdown");
+eq.setOption({ grid, tooltip: { ...tip, valueFormatter: (v) => Math.round(v).toLocaleString() },
+  xAxis: { type: "category", data: R.dates, ...axis, boundaryGap: false, axisLabel: { ...axis.axisLabel, interval: 125 } },
+  yAxis: { type: "value", scale: true, ...axis, axisLabel: { ...axis.axisLabel, formatter: (v) => v / 1000 + "k" } },
+  series: [
+    { name: "Strategy", type: "line", data: R.equity, showSymbol: false, lineStyle: { width: 2, color: tok("series-1") }, itemStyle: { color: tok("series-1") },
+      areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: tok("series-1") + "33" }, { offset: 1, color: tok("series-1") + "00" }]) },
+      endLabel: { show: true, formatter: "Strategy", color: tok("ink"), fontWeight: 600 } },
+    { name: "Benchmark", type: "line", data: R.benchmark, showSymbol: false, lineStyle: { width: 2, color: tok("series-2") }, itemStyle: { color: tok("series-2") } }] });
+dd.setOption({ grid, tooltip: { ...tip, valueFormatter: (v) => v.toFixed(1) + "%" },
+  xAxis: { type: "category", data: R.dates, ...axis, boundaryGap: false, axisLabel: { ...axis.axisLabel, interval: 125 } },
+  yAxis: { type: "value", ...axis, axisLabel: { ...axis.axisLabel, formatter: "{value}%" } },
+  series: [{ name: "Drawdown", type: "line", data: R.drawdown, showSymbol: false, lineStyle: { width: 1.5, color: tok("neg") }, itemStyle: { color: tok("neg") }, areaStyle: { color: tok("neg"), opacity: 0.18 } }] });
+echarts.connect([eq, dd]);
+init("hist").setOption({ grid: { ...grid, left: 36, right: 16 }, tooltip: { ...tip, axisPointer: { type: "shadow" } },
+  xAxis: { type: "category", data: HIST.map((b) => b.x0 + "%"), ...axis }, yAxis: { type: "value", ...axis },
+  series: [{ type: "bar", name: "Trades", barCategoryGap: "8%", data: HIST.map((b) => ({ value: b.n, itemStyle: { color: b.x0 >= 0 ? tok("pos") : tok("neg"), borderRadius: [4, 4, 0, 0] } })) }] });
+const sec = [...R.sectorReturns].sort((a, b) => a.ret - b.ret);
+init("sectors").setOption({ grid: { ...grid, left: 88, right: 48 }, tooltip: { ...tip, axisPointer: { type: "shadow" }, valueFormatter: fmtPct },
+  yAxis: { type: "category", data: sec.map((s) => s.name), ...axis }, xAxis: { type: "value", min: -30, max: 15, interval: 10, ...axis, axisLabel: { ...axis.axisLabel, formatter: "{value}%" } },
+  series: [{ type: "bar", name: "Return", barWidth: "55%", label: { show: true, position: "right", color: tok("ink"), formatter: (p) => fmtPct(p.value) },
+    data: sec.map((s) => ({ value: s.ret, itemStyle: { color: s.ret >= 0 ? tok("pos") : tok("neg"), borderRadius: s.ret >= 0 ? [0, 4, 4, 0] : [4, 0, 0, 4] }, label: { position: s.ret >= 0 ? "right" : "left" } })) }] });

@@ -1,0 +1,47 @@
+@@ title
+Editorial
+@@ lib
+Observable Plot 0.6 (on D3)<br>light paper · serif headlines · FT/Economist feel
+@@ head
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6.16/dist/plot.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono&display=swap" rel="stylesheet">
+@@ tokens
+:root{color-scheme:light;
+  --bg:#faf8f3;--surface:#fffefa;--surface-2:#f3efe6;--ink:#1d1c1a;--muted:#6b675e;--line:#e2ddd1;--line-soft:#eeeae0;--hover:#f6f2e8;
+  --accent:#b23a2a;--series-1:#215da5;--series-2:#d26c28;--series-3:#94468f;
+  --pos:#2f7d55;--neg:#b23a2a;--pos-ink:#1f6a44;--neg-ink:#a1301f;--div-mid:#f1ede4;--on-strong:#fffefa;
+  --status-good:#0a7d0a;--status-warning:#b97c00;--status-critical:#c0392b;
+  --font-ui:"IBM Plex Sans",system-ui,sans-serif;--font-display:"Source Serif 4",Georgia,serif;--font-num:"IBM Plex Sans",sans-serif;--font-mono:"IBM Plex Mono",monospace;
+  --h1-size:34px;--h1-weight:600;--h1-tracking:-.015em;--radius:0px;--gap:20px}
+@@ css
+.panel{border:none;border-top:2px solid var(--ink);padding:14px 0 0;background:transparent}
+.kpi{border:none;border-top:1px solid var(--line);background:transparent;padding:12px 0}
+.kpi .value{font-family:var(--font-display);font-size:30px}
+.panel h2{font:600 17px var(--font-display)}
+@@ charts
+const R = REPORT, P = Plot;
+const dates = R.dates.map((d) => new Date(d));
+const rows = dates.flatMap((d, i) => [{ d, v: R.equity[i], s: "Strategy" }, { d, v: R.benchmark[i], s: "Benchmark" }]);
+const style = { fontFamily: tok("font-ui"), fontSize: "11px", color: tok("muted"), background: "transparent", overflow: "visible" };
+const mount = (id, chart) => document.getElementById(id).replaceChildren(chart);
+const W = (id) => document.getElementById(id).clientWidth;
+mount("equity", P.plot({ width: W("equity"), height: 300, style, marginLeft: 56,
+  y: { grid: true, label: null, tickFormat: (v) => (v / 1000) + "k" }, x: { label: null },
+  color: { domain: ["Strategy", "Benchmark"], range: [tok("series-1"), tok("series-2")] },
+  marks: [P.ruleY([100000], { stroke: tok("line") }),
+    P.lineY(rows, { x: "d", y: "v", stroke: "s", strokeWidth: 2 }),
+    P.text(rows.filter((r, i) => i >= rows.length - 2), { x: "d", y: "v", text: "s", dx: 6, textAnchor: "start", fill: tok("ink"), fontWeight: 600 }),
+    P.ruleX(rows, P.pointerX({ x: "d", stroke: tok("muted"), strokeDasharray: "2 3" })),
+    P.dot(rows, P.pointerX({ x: "d", y: "v", fill: "s", r: 4, stroke: tok("surface"), strokeWidth: 2 })),
+    P.tip(rows, P.pointerX({ x: "d", y: "v", title: (r) => `${r.s}\n${r.d.toISOString().slice(0, 10)}\n${Math.round(r.v).toLocaleString()}` }))] }));
+const dd = dates.map((d, i) => ({ d, v: R.drawdown[i] }));
+mount("drawdown", P.plot({ width: W("drawdown"), height: 180, style, marginLeft: 56, y: { grid: true, label: null, tickFormat: (v) => v + "%" }, x: { label: null },
+  marks: [P.areaY(dd, { x: "d", y: "v", fill: tok("neg"), fillOpacity: 0.18 }), P.lineY(dd, { x: "d", y: "v", stroke: tok("neg"), strokeWidth: 1.5 }), P.ruleY([0], { stroke: tok("ink") }),
+    P.tip(dd, P.pointerX({ x: "d", y: "v", title: (r) => `${r.d.toISOString().slice(0, 10)}\n${r.v.toFixed(1)}%` }))] }));
+mount("hist", P.plot({ width: W("hist"), height: 220, style, y: { grid: true, label: "Trades" }, x: { label: "Return %" },
+  marks: [P.rectY(HIST, { x1: "x0", x2: "x1", y: "n", fill: (b) => (b.x0 >= 0 ? tok("pos") : tok("neg")), inset: 1, rx: 2, tip: true, title: (b) => `${b.x0}% to ${b.x1}%: ${b.n} trades` }), P.ruleY([0], { stroke: tok("ink") })] }));
+mount("sectors", P.plot({ width: W("sectors"), height: 300, style, marginLeft: 88, marginRight: 48, x: { grid: true, label: "Return %", domain: [Math.min(...R.sectorReturns.map((s) => s.ret)) - 7, Math.max(...R.sectorReturns.map((s) => s.ret)) + 4] }, y: { label: null, domain: [...R.sectorReturns].sort((a, b) => b.ret - a.ret).map((s) => s.name) },
+  marks: [P.barX(R.sectorReturns, { y: "name", x: "ret", fill: (s) => (s.ret >= 0 ? tok("pos") : tok("neg")), insetTop: 4, insetBottom: 4, tip: true }), P.ruleX([0], { stroke: tok("ink") }),
+    P.text(R.sectorReturns.filter((s) => s.ret >= 0), { y: "name", x: "ret", text: (s) => fmtPct(s.ret), dx: 6, textAnchor: "start", fill: tok("ink") }),
+    P.text(R.sectorReturns.filter((s) => s.ret < 0), { y: "name", x: "ret", text: (s) => fmtPct(s.ret), dx: -6, textAnchor: "end", fill: tok("ink") })] }));

@@ -1,0 +1,57 @@
+@@ title
+Terminal
+@@ lib
+TradingView Lightweight Charts 4.2<br>dense · amber-on-black · monospace
+@@ head
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+@@ tokens
+:root{color-scheme:dark;
+  --bg:#0b0e11;--surface:#11151a;--surface-2:#161b21;--ink:#e6e1d6;--muted:#8a8f98;--line:#232a33;--line-soft:#1a2028;--hover:#1a2029;
+  --accent:#f5a623;--series-1:#d37900;--series-2:#2d74ca;--series-3:#00a596;
+  --pos:#1fae6a;--neg:#e5484d;--pos-ink:#3fcf8e;--neg-ink:#ff6b6f;--div-mid:#1c2229;--on-strong:#0b0e11;
+  --status-good:#0ca30c;--status-warning:#fab219;--status-critical:#d03b3b;
+  --font-ui:Inter,system-ui,sans-serif;--font-display:"JetBrains Mono",monospace;--font-num:"JetBrains Mono",monospace;--font-mono:"JetBrains Mono",monospace;
+  --h1-size:24px;--h1-weight:600;--h1-tracking:-.01em;--radius:2px;--gap:10px}
+@@ css
+.kpi .value{color:var(--accent)}.kpi[data-tone=pos] .value{color:var(--pos-ink)}.kpi[data-tone=neg] .value{color:var(--neg-ink)}
+#hist,#sectors{height:auto}
+.panel h2{font-family:var(--font-mono);text-transform:uppercase;font-size:11px;letter-spacing:.1em;color:var(--accent)}
+@@ charts
+const R = REPORT, LW = LightweightCharts;
+const base = (el, h) => LW.createChart(document.getElementById(el), {
+  width: document.getElementById(el).clientWidth, height: h,
+  layout: { background: { color: "transparent" }, textColor: tok("muted"), fontFamily: tok("font-mono"), fontSize: 11 },
+  grid: { vertLines: { color: tok("line-soft") }, horzLines: { color: tok("line-soft") } },
+  rightPriceScale: { borderColor: tok("line") }, timeScale: { borderColor: tok("line") },
+  crosshair: { mode: LW.CrosshairMode.Magnet, vertLine: { color: tok("muted"), labelBackgroundColor: tok("surface-2") }, horzLine: { color: tok("muted"), labelBackgroundColor: tok("surface-2") } },
+});
+const eq = base("equity", 300);
+eq.addAreaSeries({ lineColor: tok("series-1"), topColor: "rgba(211,121,0,.28)", bottomColor: "rgba(211,121,0,0)", lineWidth: 2, title: "Strategy", priceFormat: { type: "custom", formatter: (v) => Math.round(v).toLocaleString() } })
+  .setData(R.dates.map((t, i) => ({ time: t, value: R.equity[i] })));
+eq.addLineSeries({ color: tok("series-2"), lineWidth: 2, title: "Bench", priceFormat: { type: "custom", formatter: (v) => Math.round(v).toLocaleString() } })
+  .setData(R.dates.map((t, i) => ({ time: t, value: R.benchmark[i] })));
+const dd = base("drawdown", 180);
+dd.addBaselineSeries({ baseValue: { type: "price", price: 0 }, bottomLineColor: tok("neg"), bottomFillColor1: "rgba(229,72,77,.05)", bottomFillColor2: "rgba(229,72,77,.35)", lineWidth: 2,
+  priceFormat: { type: "custom", formatter: (v) => v.toFixed(1) + "%" } })
+  .setData(R.dates.map((t, i) => ({ time: t, value: R.drawdown[i] })));
+// Fit both, then mirror pans/zooms between the two time axes (guarded against echo).
+eq.timeScale().fitContent(); dd.timeScale().fitContent();
+let syncing = false;
+const mirror = (from, to) => from.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+  if (!r || syncing) return; syncing = true; to.timeScale().setVisibleLogicalRange(r); syncing = false; });
+mirror(eq, dd); mirror(dd, eq);
+addEventListener("resize", () => [["equity", eq], ["drawdown", dd]].forEach(([id, c]) => c.applyOptions({ width: document.getElementById(id).clientWidth })));
+
+// Lightweight Charts is time-series only - histogram + sector bars use plain HTML bars.
+const bars = (el, rows, scaleMax) => {
+  document.getElementById(el).innerHTML = `<div style="display:grid;gap:3px;height:100%;align-content:center">` + rows.map((r) =>
+    `<div title="${r.tip}" style="display:grid;grid-template-columns:64px 1fr 56px;align-items:center;gap:8px;font:11px var(--font-mono);color:var(--muted)">
+      <span>${r.label}</span><span style="position:relative;height:${r.h || 10}px;background:var(--line-soft)">
+      <span style="position:absolute;top:0;bottom:0;${r.v >= 0 ? "left:" + (r.mid ?? 0) + "%" : "right:" + (100 - (r.mid ?? 0)) + "%"};width:${Math.abs(r.v) / scaleMax * (r.mid ? 50 : 100)}%;background:${r.color}"></span></span>
+      <span style="text-align:right;color:var(--ink)">${r.text}</span></div>`).join("") + "</div>";
+};
+const hmax = Math.max(...HIST.map((b) => b.n));
+bars("hist", HIST.map((b) => ({ label: `${b.x0}…${b.x1}%`, v: b.n, text: b.n, color: b.x0 >= 0 ? tok("pos") : tok("neg"), h: 9, tip: b.n + " trades" })), hmax);
+const smax = Math.max(...R.sectorReturns.map((s) => Math.abs(s.ret)));
+bars("sectors", R.sectorReturns.map((s) => ({ label: s.name.slice(0, 8), v: s.ret, mid: 50, text: fmtPct(s.ret), color: s.ret >= 0 ? tok("pos") : tok("neg"), h: 16, tip: s.name })), smax);
