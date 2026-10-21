@@ -201,7 +201,16 @@ main {{ max-width: 1440px; margin: 0 auto; padding: 20px 32px 48px; }}
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--gap);
 }}
-.echart {{ width: 100%; }}
+.echart {{ width: 100%; position: relative; border-radius: calc(var(--radius) / 2); }}
+.echart:not(.is-ready) {{
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--hover) 40%, var(--surface-2) 80%);
+  background-size: 200% 100%;
+  animation: echart-shimmer 1.4s ease-in-out infinite;
+}}
+@keyframes echart-shimmer {{ from {{ background-position: 100% 0; }} to {{ background-position: -100% 0; }} }}
+@media (prefers-reduced-motion: reduce) {{
+  .echart:not(.is-ready) {{ animation: none; }}
+}}
 .table-wrap {{ overflow: auto; max-height: 520px; }}
 .data-table {{
   width: 100%;
@@ -334,11 +343,17 @@ _RUNTIME_JS = r"""
       nameTextStyle: { color: css("muted") }
     };
   }
-  function themed(spec) {
+  var reduceMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  function themed(spec, animate) {
     var opt = resolve(spec);
     var base = {
       backgroundColor: "transparent",
-      animation: false,
+      // Lines draw in and bars grow on first reveal only; theme flips and
+      // resizes repaint instantly.
+      animation: !!animate && !reduceMotion,
+      animationDuration: 700,
+      animationEasing: "cubicOut",
+      animationDurationUpdate: 0,
       color: [1, 2, 3, 4, 5, 6, 7, 8].map(function (i) { return css("series-" + i); }),
       textStyle: { fontFamily: css("font-ui"), color: css("muted") },
       grid: { left: 8, right: 24, top: 16, bottom: 8, containLabel: true },
@@ -366,21 +381,39 @@ _RUNTIME_JS = r"""
   }
   var charts = [];
   function renderAll() {
-    charts.forEach(function (c) { c.chart.setOption(themed(c.spec), true); });
+    charts.forEach(function (c) { if (c.drawn) c.chart.setOption(themed(c.spec, false), true); });
+  }
+  function draw(c) {
+    if (c.drawn) return;
+    c.drawn = true;
+    c.chart.setOption(themed(c.spec, true), true);
+    c.el.classList.add("is-ready");
   }
   function boot() {
     if (!window.echarts) return;
     var groups = {};
+    // Draw each chart as it first scrolls into view (and becomes visible: a
+    // chart in a closed tab has no box until its tab opens), so the entrance
+    // animation is seen instead of playing off-screen.
+    var io = window.IntersectionObserver ? new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        io.unobserve(e.target);
+        var c = charts.filter(function (x) { return x.el === e.target; })[0];
+        if (c) { c.chart.resize(); draw(c); }
+      });
+    }, { threshold: 0.15 }) : null;
     document.querySelectorAll("[data-echart]").forEach(function (el) {
       var src = document.getElementById(el.getAttribute("data-echart"));
       if (!src) return;
       var spec = JSON.parse(src.textContent);
       var chart = echarts.init(el, null, { renderer: "svg" });
-      chart.setOption(themed(spec), true);
-      charts.push({ chart: chart, spec: spec });
+      var c = { chart: chart, spec: spec, el: el, drawn: false };
+      charts.push(c);
       var group = el.getAttribute("data-echart-group");
       if (group) { chart.group = group; groups[group] = true; }
       if (window.ResizeObserver) new ResizeObserver(function () { chart.resize(); }).observe(el);
+      if (io) io.observe(el); else draw(c);
     });
     Object.keys(groups).forEach(function (g) { echarts.connect(g); });
     if (window.matchMedia) {
@@ -392,7 +425,10 @@ _RUNTIME_JS = r"""
       new MutationObserver(renderAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     }
   }
-  window.screenerCharts = { charts: charts, render: renderAll, formatters: FMT };
+  // ``drawAll`` forces every chart to draw now (printing, screenshots, tests).
+  function drawAll() { charts.forEach(function (c) { c.chart.resize(); draw(c); }); }
+  if (window.addEventListener) window.addEventListener("beforeprint", drawAll);
+  window.screenerCharts = { charts: charts, render: renderAll, drawAll: drawAll, formatters: FMT };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 })();

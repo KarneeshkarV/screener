@@ -135,3 +135,11 @@ def test_end_labels_are_dropped_when_the_lines_finish_on_top_of_each_other() -> 
 def test_a_page_toggle_can_force_either_scheme_over_the_os_setting() -> None:
     assert ':root[data-theme="dark"]' in rt.THEME_CSS
     assert ':root:where(:not([data-theme="light"]))' in rt.THEME_CSS
+
+
+def test_charts_show_a_skeleton_and_animate_only_their_first_draw() -> None:
+    page = html_page("t", "", rt.chart_html("c", rt.bar_chart(["a"], [1])), charts=True)
+    assert ".echart:not(.is-ready)" in page
+    assert "prefers-reduced-motion: reduce" in page
+    # Re-theming repaints without animation; only draw() passes animate=true.
+    assert "themed(c.spec, false)" in page and "themed(c.spec, true)" in page
