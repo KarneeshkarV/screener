@@ -130,3 +130,8 @@ def test_end_labels_are_dropped_when_the_lines_finish_on_top_of_each_other() -> 
     )
     assert all("endLabel" not in s for s in same["series"])
     assert all("endLabel" in s for s in apart["series"])
+
+
+def test_a_page_toggle_can_force_either_scheme_over_the_os_setting() -> None:
+    assert ':root[data-theme="dark"]' in rt.THEME_CSS
+    assert ':root:where(:not([data-theme="light"]))' in rt.THEME_CSS

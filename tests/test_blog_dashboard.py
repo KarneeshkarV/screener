@@ -32,3 +32,22 @@ def test_blog_dashboard_is_self_contained_and_first_month_is_present(
     assert payload[0]["sharpe"] is None
     assert payload[0]["returns"][0] == ["2020-01-31", 1.0]
     assert "__RESULTS__" not in output
+
+
+def test_render_template_injects_slate_theme_and_echarts():
+    template = (
+        "<style>/*__THEME_CSS__*/</style><!--__ECHARTS__-->"
+        "<script>const DATA=__RESULTS__;</script>"
+    )
+    output = build_blog_dashboard.render_template(
+        template, [{"strategy": "chan_return_12m", "sharpe": None}]
+    )
+    assert "--series-1:" in output
+    assert "echarts" in output
+    assert "__THEME_CSS__" not in output
+    assert "__ECHARTS__" not in output
+    assert "__RESULTS__" not in output
+    assert (
+        '"strategy": "chan_return_12m"' in output
+        or '"strategy":"chan_return_12m"' in output
+    )

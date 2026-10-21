@@ -8,7 +8,23 @@ from pathlib import Path
 
 import pandas as pd
 
+from screener.report_theme import THEME_CSS, echarts_js
+
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def render_template(template: str, rows: list[dict]) -> str:
+    """Inject the Slate theme, the ECharts bundle and the result rows.
+
+    Missing placeholders are skipped so minimal templates still render.
+    The JSON goes in last so its text is never re-interpreted.
+    """
+    payload = json.dumps(rows, allow_nan=False).replace("</", "<\\/")
+    return (
+        template.replace("/*__THEME_CSS__*/", THEME_CSS)
+        .replace("<!--__ECHARTS__-->", f"<script>{echarts_js()}</script>")
+        .replace("__RESULTS__", payload)
+    )
 
 
 def build_blog_dashboard() -> Path:
@@ -96,11 +112,7 @@ def build_blog_dashboard() -> Path:
     template = (ROOT / "scripts/blog_dashboard.html").read_text()
     output = ROOT / "reports/blog_momentum/index.html"
     temporary = output.with_suffix(".html.tmp")
-    temporary.write_text(
-        template.replace(
-            "__RESULTS__", json.dumps(rows, allow_nan=False).replace("</", "<\\/")
-        )
-    )
+    temporary.write_text(render_template(template, rows))
     temporary.replace(output)
     print(f"{len(rows)} cells: {output}")
     return output

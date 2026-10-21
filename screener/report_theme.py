@@ -5,8 +5,8 @@ report, optimization reports, sector rotation) share one colour system and one
 charting library so they read as one product:
 
 * **Colour** lives only in the CSS custom properties of :data:`THEME_CSS`, with
-  a light and a dark step of every token (the page follows the OS colour
-  scheme). Page CSS and chart specs refer to roles (``--series-1``, ``--pos``),
+  a light and a dark step of every token. The page follows the OS colour
+  scheme unless ``<html data-theme="light|dark">`` overrides it (a toggle). Page CSS and chart specs refer to roles (``--series-1``, ``--pos``),
   never raw hex, so a theme change is a token change.
 * **Charts** are Apache ECharts, vendored under ``screener/assets`` so a report
   opens offline exactly like the old inlined Plotly bundle did. Python builds a
@@ -129,10 +129,14 @@ THEME_CSS = f"""\
   --gap: 14px;
 }}
 @media (prefers-color-scheme: dark) {{
-  :root {{
+  :root:where(:not([data-theme="light"])) {{
     color-scheme: dark;
 {_token_block(_DARK).replace("  --", "    --")}
   }}
+}}
+:root[data-theme="dark"] {{
+  color-scheme: dark;
+{_token_block(_DARK)}
 }}
 * {{ box-sizing: border-box; }}
 body {{
@@ -382,6 +386,10 @@ _RUNTIME_JS = r"""
     if (window.matchMedia) {
       var mq = window.matchMedia("(prefers-color-scheme: dark)");
       (mq.addEventListener ? mq.addEventListener.bind(mq, "change") : mq.addListener.bind(mq))(renderAll);
+    }
+    // A page-level light/dark toggle sets <html data-theme>; re-theme on it too.
+    if (window.MutationObserver) {
+      new MutationObserver(renderAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     }
   }
   window.screenerCharts = { charts: charts, render: renderAll, formatters: FMT };
