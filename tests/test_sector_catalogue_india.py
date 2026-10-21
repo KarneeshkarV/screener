@@ -234,3 +234,43 @@ def test_india_catalogue_uses_reviewed_corporate_action_symbols():
     assert "BE trade-to-trade" in groups["telecom_equipment"].notes
     assert "SME" in groups["valves"].description
     assert "SME" in groups["vfx_post_production"].description
+
+
+@pytest.mark.parametrize(
+    "group_ids",
+    [
+        ("banks", "private_banks", "public_sector_banks", "small_finance_banks"),
+        (
+            "financials",
+            "nbfc_lending",
+            "housing_finance",
+            "gold_lending",
+            "asset_management",
+            "life_insurance",
+            "general_insurance",
+        ),
+        (
+            "information_technology",
+            "it_services",
+            "engineering_rd",
+            "enterprise_software",
+        ),
+        (
+            "automobiles",
+            "passenger_vehicles",
+            "two_wheelers",
+            "commercial_vehicles",
+            "auto_components",
+        ),
+        ("telecom", "telecom_equipment"),
+        ("utilities", "power_generation", "gas_distribution"),
+        ("metals", "steel", "nonferrous_metals"),
+        ("real_estate", "residential_developers", "commercial_property"),
+        ("consumer_staples", "packaged_foods", "personal_care", "beverages"),
+        ("consumer_durables", "jewellery"),
+        ("energy", "oil_gas_production"),
+    ],
+)
+def test_added_india_sector_and_related_industries_share_parent_filter(group_ids):
+    groups = {group.id: group for group in load_sector_catalogue().groups}
+    assert len({groups[group_id].parent for group_id in group_ids}) == 1

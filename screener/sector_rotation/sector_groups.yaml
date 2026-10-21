@@ -682,7 +682,7 @@ groups:
   # Independent research additions. No video timestamps or video-derived membership.
   - id: banks
     name: Banks
-    parent: Financials
+    parent: Banks
     kind: sector
     members: [NSE:HDFCBANK, NSE:ICICIBANK, NSE:SBIN, NSE:AXISBANK, NSE:KOTAKBANK, NSE:BANKBARODA]
     description: Deposit-taking banks across private and public ownership; this selected basket is not the Nifty Bank index.
@@ -781,7 +781,7 @@ groups:
     sources: [https://www.icicilombard.com/, *nse_equity]
   - id: information_technology
     name: Information technology
-    parent: Technology
+    parent: Information technology
     kind: sector
     members: [NSE:TCS, NSE:INFY, NSE:HCLTECH, NSE:WIPRO, NSE:TECHM, NSE:LTM, NSE:PERSISTENT]
     description: Large and mid-sized IT services firms; the basket omits hardware and is not the complete Indian technology sector.
@@ -817,7 +817,7 @@ groups:
     sources: [https://www.newgensoft.com/, *nse_equity]
   - id: automobiles
     name: Automobiles and components
-    parent: Consumer discretionary
+    parent: Automobiles
     kind: sector
     members: [NSE:MARUTI, NSE:M&M, NSE:TMPV, NSE:BAJAJ-AUTO, NSE:TVSMOTOR, NSE:EICHERMOT, NSE:BOSCHLTD]
     description: Vehicle makers and one major component supplier covering passenger, two-wheeler and utility demand; not an official auto index.

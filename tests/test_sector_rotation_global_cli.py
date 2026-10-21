@@ -91,9 +91,10 @@ def test_legacy_catalogue_can_describe_groups_without_new_fields(tmp_path):
         cli, ["sector-rotation", "--catalogue", str(path), "--describe-groups"]
     )
     assert result.exit_code == 0, result.output
-    assert "No description supplied." in result.stdout
-    assert "Drivers: Not supplied." in result.stdout
-    assert "Risks: Not supplied." in result.stdout
+    assert "No description supplied." not in result.stdout
+    assert "Drivers:" not in result.stdout
+    assert "Risks:" not in result.stdout
+    assert "Members:" in result.stdout
     assert catalogue.source in result.stdout
 
 
@@ -241,3 +242,57 @@ def test_us_benchmark_override_is_fetched_and_reported(tmp_path):
     assert "^RUA" in fetcher.calls[0][0]
     assert "^GSPC" not in fetcher.calls[0][0]
     assert "Benchmark: ^RUA" in report.read_text()
+
+
+@pytest.mark.parametrize("market", ["india", "us"])
+@pytest.mark.parametrize("detail", ["summary", "head", "full"])
+def test_agent_group_descriptions_spill_all_details(
+    market, detail, tmp_path, monkeypatch
+):
+    from screener import agentio
+
+    monkeypatch.setenv("SCREENER_AGENT_DIR", str(tmp_path))
+    fetcher = GlobalSectorFetcher()
+    try:
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--agent",
+                "--agent-detail",
+                detail,
+                "sector-rotation",
+                "--market",
+                market,
+                "--describe-groups",
+            ],
+            obj=fetcher,
+        )
+        assert result.exit_code == 0, result.output
+        assert not fetcher.calls
+        if detail != "full":
+            assert len(result.stdout.splitlines()) < 20
+            assert len(result.stdout) < 5000
+        paths = list(tmp_path.glob("sector-group-details-*.csv"))
+        assert len(paths) == 1
+        assert str(paths[0]) in result.stdout
+        rows = pd.read_csv(paths[0], keep_default_na=False)
+        catalogue = load_sector_catalogue(market=market)
+        assert rows.group_id.tolist() == [group.id for group in catalogue.groups]
+        assert rows.market.eq(market).all()
+        assert rows.membership_note.eq(catalogue.membership_note).all()
+        for row, group in zip(rows.to_dict("records"), catalogue.groups, strict=True):
+            assert row["description"] == group.description
+            assert row["drivers"] == "; ".join(group.drivers)
+            assert row["risks"] == "; ".join(group.risks)
+            assert row["sources"] == "; ".join(group.sources)
+            assert row["members"] == ", ".join(group.members)
+            assert row["notes"] == group.notes
+        if detail == "summary":
+            assert catalogue.groups[0].id not in result.stdout
+        elif detail == "head":
+            assert catalogue.groups[0].id in result.stdout
+            assert catalogue.groups[-1].id not in result.stdout
+        else:
+            assert catalogue.groups[-1].id in result.stdout
+    finally:
+        agentio.reset()

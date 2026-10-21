@@ -49,7 +49,21 @@ def _validate_source_url(value: str) -> str:
                 or len(labels) < 2
                 or not re.fullmatch(r"[a-zA-Z]{2,63}|xn--[a-zA-Z0-9-]+", labels[-1])
                 or labels[-1].lower()
-                in {"localhost", "local", "localdomain", "internal", "invalid", "test"}
+                in {
+                    "localhost",
+                    "local",
+                    "localdomain",
+                    "internal",
+                    "invalid",
+                    "test",
+                    "lan",
+                    "home",
+                    "corp",
+                    "intranet",
+                    "private",
+                    "onion",
+                    "example",
+                }
                 or host.lower().endswith(".home.arpa")
                 or any(
                     not re.fullmatch(

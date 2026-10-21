@@ -25,6 +25,10 @@ uv run screener sector-rotation --market us --describe-groups
 
 Use either `--list-groups` or `--describe-groups`, not both.
 The compact `--list-groups` output keeps its original tab-separated format.
+In agent mode, `--describe-groups` prints a bounded preview and a `full:` path to a CSV containing every selected group's details, benchmark and membership warning.
+`--agent-detail summary` shows only the count and file path; `head` shows the first five groups; `full` prints all details and still writes the CSV.
+Use the global `--no-agent` option to get full human-readable descriptions without a spill file.
+Legacy catalogues omit missing descriptions, drivers and risks instead of printing placeholders.
 
 Generate a report for every bundled group:
 
@@ -81,6 +85,8 @@ These qualitative details explain exposure, not forecasts or quantitative tradin
 A video timestamp is optional and applies only to an original video-backed label.
 Groups can overlap.
 A parent is a classification label, not a declaration that the parent basket contains every child member.
+New India sector baskets share a parent filter label with their related industries, including Banks, Information technology and Automobiles.
+Original India parent labels remain unchanged.
 The schema accepts sectors, industries, and themes without forcing themes into exclusive sector labels.
 India members use `NSE:` symbols.
 US members use `NASDAQ:`, `NYSE:`, or `AMEX:` symbols.
@@ -119,6 +125,9 @@ Member lists must contain unique TradingView-style symbols for the catalogue's m
 Two member spellings that resolve to the same provider ticker cannot occur in one basket.
 The catalogue records its observation date and states that membership is `curated_research`.
 The catalogue `source` and optional group `sources` must use HTTP or HTTPS URLs with a host and no credentials.
+Validation rejects private IP literals and known local or non-public domain endings, including `.lan`, `.home`, `.corp`, `.intranet`, `.private`, `.onion` and `.example`.
+This is an offline syntax check, not a DNS lookup or a guarantee that a hostname resolves to a public address.
+The report does not fetch these links automatically.
 Optional group fields are `description`, `drivers`, `risks`, `sources`, `notes`, and `video_at`.
 The original `notes` and `video_at` fields remain compatible with the initial release.
 `drivers`, `risks`, and `sources` are lists of strings.
