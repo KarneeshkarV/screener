@@ -94,6 +94,11 @@ _LAZY_COMMANDS: dict[str, tuple[str, str, str]] = {
         "index_inclusion",
         "Event study of post-addition excess drift for S&P 500 additions vs SPY.",
     ),
+    "sector-rotation": (
+        "screener.commands.sector_rotation",
+        "sector_rotation",
+        "Compare curated sector and industry baskets with Nifty 500.",
+    ),
     "seasonality": (
         "screener.commands.seasonality",
         "seasonality",
