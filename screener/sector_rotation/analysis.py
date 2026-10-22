@@ -30,7 +30,7 @@ class SectorRotationResult:
 
 def _usable_close(frame: pd.DataFrame | None) -> pd.Series:
     if frame is None or frame.empty or "close" not in frame:
-        return pd.Series(dtype=float)
+        return pd.Series(dtype=float, index=pd.DatetimeIndex([]))
     close = pd.to_numeric(frame["close"], errors="coerce").astype(float)
     close.index = (
         pd.DatetimeIndex(pd.to_datetime(close.index)).tz_localize(None).normalize()
