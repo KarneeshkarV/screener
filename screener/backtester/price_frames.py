@@ -160,6 +160,14 @@ def warn_unadjustable_fmp_frames(
 #: vendor's own rounding, not a real price move.
 RESCALE_TOLERANCE = 0.01
 
+#: The tolerance a refresh judges its tail against. A refresh downloads only
+#: the newest bars of an entry it already holds, so the older bars it keeps
+#: must be on the vendor's current scale to the last digit, not merely the
+#: same split. A dividend the vendor has back-propagated since the entry was
+#: written moves every older adjusted bar by well over this, and the parquet
+#: round-trip moves none by more than a few parts in ten million.
+REFRESH_RESCALE_TOLERANCE = 1e-5
+
 #: Overlapping sessions needed before a scale verdict is trusted. One shared
 #: bar can differ for reasons that are not a rescale (a late vendor
 #: correction to a single session), so a verdict rests on a handful.
@@ -202,7 +210,11 @@ def has_price_seam(frame: pd.DataFrame | None) -> bool:
 
 
 def overlap_rescaled(
-    existing: pd.DataFrame | None, new: pd.DataFrame, interval: str = "1d"
+    existing: pd.DataFrame | None,
+    new: pd.DataFrame,
+    interval: str = "1d",
+    *,
+    tolerance: float = RESCALE_TOLERANCE,
 ) -> bool:
     """True when ``existing`` and ``new`` price the same sessions differently.
 
@@ -227,6 +239,11 @@ def overlap_rescaled(
 
     Returns False when either frame is missing or the overlap is too small to
     judge; the caller then keeps its ordinary merge.
+
+    ``tolerance`` defaults to :data:`RESCALE_TOLERANCE`, which only a split
+    clears. A refresh passes a tighter one, so that a dividend the vendor has
+    back-propagated since the entry was written also counts as a re-based
+    history.
     """
     if existing is None or existing.empty or new is None or new.empty:
         return False
@@ -247,7 +264,7 @@ def overlap_rescaled(
     if int(usable.sum()) < RESCALE_MIN_OVERLAP:
         return False
     ratio = (new_shared[usable] / old_shared[usable]).abs()
-    return bool((ratio - 1.0).abs().max() > RESCALE_TOLERANCE)
+    return bool((ratio - 1.0).abs().max() > tolerance)
 
 
 def cache_merge_needs_full_download(
@@ -404,6 +421,7 @@ def split_yfinance_download(
 __all__ = [
     "CORPORATE_ACTION_COLUMNS",
     "OHLCV_COLUMNS",
+    "REFRESH_RESCALE_TOLERANCE",
     "apply_splits_only_adjustment",
     "cache_merge_needs_full_download",
     "empty_ohlcv_frame",

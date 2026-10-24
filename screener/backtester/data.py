@@ -10,12 +10,15 @@ the engine never depends directly on yfinance.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
+import logging
 import os
 import queue
 import threading
-from collections.abc import Callable, Iterable, Sequence
+import time
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
@@ -75,6 +78,8 @@ from screener.backtester.price_frames import (
 )
 from screener.backtester.price_frames import (
     OHLCV_COLUMNS,
+    REFRESH_RESCALE_TOLERANCE,
+    RESCALE_TOLERANCE,
     cache_merge_needs_full_download,
     naive_normalized_index,
     normalize_price_frame,
@@ -197,13 +202,20 @@ def _strict_refresh_stale_data_error(
     leftover: Sequence[tuple[str, pd.DataFrame]],
     *,
     as_of: pd.Timestamp,
+    rate_limited: Iterable[str] = (),
+    unserved: Iterable[str] = (),
 ) -> StaleDataError:
     """StaleDataError for a strict refresh that would have scored leftover cache.
 
     The message starts with ``strict refresh could not refresh bars for`` so a
     log line greps back to this constructor. Each ticker is named with the
-    date of its newest cached bar and the calendar-day gap to ``as_of``.
+    date of its newest cached bar and the calendar-day gap to ``as_of``, and
+    with the cause when the vendor throttled or served nothing on every
+    attempt at it: such a name is not stale at the vendor, only unreachable
+    this run.
     """
+    causes = dict.fromkeys(unserved, "; yfinance served no bars on every attempt")
+    causes.update(dict.fromkeys(rate_limited, "; yfinance rate limited every attempt"))
     as_of_ts = pd.Timestamp(as_of)
     if as_of_ts.tz is not None:
         as_of_ts = as_of_ts.tz_convert("UTC").tz_localize(None)
@@ -213,8 +225,10 @@ def _strict_refresh_stale_data_error(
         if last_bar.tz is not None:
             last_bar = last_bar.tz_convert("UTC").tz_localize(None)
         age_days = int((as_of_ts.normalize() - last_bar.normalize()).days)
+        cause = causes.get(ticker, "")
         clauses.append(
-            f"{ticker} (newest bar {last_bar.date()}, {age_days} calendar days old)"
+            f"{ticker} (newest bar {last_bar.date()}, "
+            f"{age_days} calendar days old{cause})"
         )
     return StaleDataError(
         "strict refresh could not refresh bars for " + ", ".join(clauses)
@@ -246,6 +260,131 @@ def _covered_window(
     return start, end
 
 
+#: Text yfinance puts in the error it records for a throttled symbol. The
+#: library catches the exception per symbol and serves an empty frame in its
+#: place, so this text is the only trace a throttled request leaves.
+_YFINANCE_RATE_LIMIT_MARKERS = ("Too Many Requests", "Rate limited", "YFRateLimitError")
+
+#: Pauses before each re-download of the symbols Yahoo throttled or served
+#: empty. Yahoo's 429 is a short burst limit, not a quota, and the empties it
+#: serves under load are as short-lived, so a few seconds of quiet clear both.
+YFINANCE_RETRY_DELAYS = (2.0, 4.0, 8.0)
+
+#: Batch size of a re-download. Smaller than a first pass, so the few names
+#: left spread over the workers instead of queueing behind one of them.
+YFINANCE_RETRY_BATCH = 10
+
+#: Cached daily bars a refresh downloads again before the newest one. They are
+#: the overlap the scale check compares, and three weeks of them also reach
+#: back past a dividend the vendor recorded some days after its ex-date.
+REFRESH_TAIL_OVERLAP_BARS = 15
+
+#: Oldest newest-bar a refresh still treats as a tail. One download serves
+#: every tail-refreshed name, from the earliest start among them, so a name
+#: cached months ago would widen every other name's window to match.
+REFRESH_TAIL_MAX_GAP = pd.Timedelta(days=31)
+
+
+def _refresh_tail_start(
+    stored: pd.DataFrame | None,
+    coverage: tuple[pd.Timestamp | None, pd.Timestamp | None],
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    interval: str,
+) -> pd.Timestamp | None:
+    """First bar a refresh downloads for ``stored``, or None for the window.
+
+    A refresh exists to make the newest bars the vendor's, not to download
+    bars the entry already holds. So a daily entry that holds the window's
+    body downloads only from :data:`REFRESH_TAIL_OVERLAP_BARS` before its
+    newest bar. None means the whole window: an intraday entry, an entry that
+    does not reach the window's start, or one whose newest bar is too old to
+    share a download with current names. ``coverage`` is the entry's vendor
+    bounds, so a name that listed inside the window still qualifies.
+    """
+    if interval != "1d" or stored is None or stored.empty:
+        return None
+    # Bars after the window are not the refresh's business, so the overlap is
+    # counted back from the window's end, not from the entry's newest bar.
+    held = int(stored.index.searchsorted(end_ts, side="right"))
+    if held <= REFRESH_TAIL_OVERLAP_BARS:
+        return None
+    if stored.index[held - 1] < end_ts - REFRESH_TAIL_MAX_GAP:
+        return None
+    covered_start, _covered_end = _covered_window(start_ts, end_ts, coverage)
+    if stored.index.min() > covered_start + pd.Timedelta(days=3):
+        return None
+    tail_start = pd.Timestamp(stored.index[held - 1 - REFRESH_TAIL_OVERLAP_BARS])
+    if tail_start <= start_ts:
+        return None
+    return tail_start
+
+
+def _retry_sleep(seconds: float) -> None:
+    """``time.sleep``, named so tests can skip the rate-limit backoff."""
+    time.sleep(seconds)
+
+
+class _YfinanceRateLimitLog(logging.Filter):
+    """Collects the symbols yfinance reports as rate limited.
+
+    ``yf.download`` logs each failure group on the ``yfinance`` logger as
+    ``"['A.NS', 'B.NS']: YFRateLimitError(...)"``. The filter reads the symbol
+    list out of that record and passes the record on unchanged, so it must sit
+    ahead of :func:`~screener.logging_config.suppressed_yfinance_errors`,
+    whose filter drops it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._symbols: set[str] = set()
+        self._lock = threading.Lock()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - a bad record must not break the download
+            return True
+        if not message.startswith("[") or not any(
+            marker in message for marker in _YFINANCE_RATE_LIMIT_MARKERS
+        ):
+            return True
+        head, _sep, _err = message.partition("]: ")
+        try:
+            symbols = ast.literal_eval(head + "]")
+        except (SyntaxError, ValueError):
+            return True
+        if isinstance(symbols, list):
+            with self._lock:
+                self._symbols.update(str(symbol).upper() for symbol in symbols)
+        return True
+
+    def take(self) -> set[str]:
+        """The symbols collected since the last call, upper-cased."""
+        with self._lock:
+            symbols, self._symbols = self._symbols, set()
+        return symbols
+
+
+@contextlib.contextmanager
+def _yfinance_rate_limit_log() -> Iterator[_YfinanceRateLimitLog]:
+    logger = logging.getLogger("yfinance")
+    capture = _YfinanceRateLimitLog()
+    # ``Logger.error`` returns before any filter runs when the level is above
+    # ERROR, so a quiet ``--log-level`` would hide every throttled symbol. The
+    # suppressor still drops the records, so nothing more is printed.
+    level = logger.level
+    if logger.getEffectiveLevel() > logging.ERROR:
+        logger.setLevel(logging.ERROR)
+    # Ahead of every filter already attached, the suppressor included.
+    logger.filters.insert(0, capture)
+    try:
+        yield capture
+    finally:
+        logger.removeFilter(capture)
+        logger.setLevel(level)
+
+
 class YFinancePriceFetcher:
     """Fetches daily OHLCV from yfinance with a parquet on-disk cache.
 
@@ -262,8 +401,15 @@ class YFinancePriceFetcher:
     Cache version 3 records this contract and rejects older entries, which may
     contain non-overlapping price scales or ambiguous split factors.
 
-    ``refresh=True`` forces a download of the requested window even when a
-    covering parquet already exists. A failed download is an empty frame,
+    ``refresh=True`` forces a download even when a covering parquet already
+    exists. A daily entry that already holds the window's body downloads only
+    its tail: the last :data:`REFRESH_TAIL_OVERLAP_BARS` cached bars and
+    everything after them. Those overlap bars must match the vendor's to
+    :data:`~screener.backtester.price_frames.REFRESH_RESCALE_TOLERANCE`, or the
+    entry is re-downloaded whole, so a split or a newly applied dividend still
+    re-bases the history. Any other entry downloads the whole window.
+
+    A failed download is an empty frame,
     and that empty frame is merged with leftover cache so the caller still
     has data. ``strict=True`` changes only that failure path, and only
     together with ``refresh``: leftover cache is refused with
@@ -276,9 +422,9 @@ class YFinancePriceFetcher:
         self,
         cache_dir: Path | None = None,
         auto_adjust: bool = True,
-        batch_size: int = 75,
+        batch_size: int = 25,
         refresh: bool = False,
-        max_workers: int = 4,
+        max_workers: int = 32,
         interval: str = "1d",
         strict: bool = False,
     ) -> None:
@@ -443,6 +589,11 @@ class YFinancePriceFetcher:
         # emptiness claim from a group peer.
         window_by_ticker: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
         tail_refresh_tickers: set[str] = set()
+        # The subset of ``tail_refresh_tickers`` that a refresh shortened. They
+        # keep cached bars a refresh would otherwise have re-downloaded, so
+        # their scale check is held to the refresh tolerance and a failed one
+        # re-downloads them whole.
+        refresh_tail_tickers: set[str] = set()
 
         def want(
             cause: str, ticker: str, first: pd.Timestamp, last: pd.Timestamp
@@ -457,8 +608,8 @@ class YFinancePriceFetcher:
             )
 
         # Load the stored frames even on a refresh. The save-time merge keeps
-        # bars outside the re-downloaded window. ``cached`` stays None while
-        # refreshing, so every download decision below stays unchanged. The
+        # bars outside the re-downloaded window, and a refresh of an entry
+        # that already holds the window's body downloads only its tail. The
         # merge keeps the LAST duplicate, so the fresh download still wins on
         # the dates it covers.
         #
@@ -489,8 +640,11 @@ class YFinancePriceFetcher:
             # Such an entry is re-downloaded whole, once, and the marker keeps
             # it to once - a microcap whose jump was real must not re-download
             # forever.
+            #
+            # A refresh runs the check too, because it may now keep the entry
+            # and download only the tail, which cannot reveal the seam either.
             if (
-                not distrust_cache
+                ticker not in force_full
                 and stored is not None
                 and not _has_scale_verified(cache_key, self.cache_dir)
             ):
@@ -513,6 +667,26 @@ class YFinancePriceFetcher:
                 else:
                     _record_scale_verified(cache_key, self.cache_dir)
             cached = None if distrust_cache else stored
+            refresh_tail_start = (
+                _refresh_tail_start(
+                    stored,
+                    _load_coverage(cache_key, self.cache_dir),
+                    start_ts,
+                    end_ts,
+                    self.interval,
+                )
+                if self.refresh and ticker not in force_full
+                else None
+            )
+            if refresh_tail_start is not None:
+                # The full window would re-download bars the entry already
+                # holds, and on a 5000-name field that is what made a refresh
+                # miss the live engine's deadline. The overlap bars are what
+                # the scale check below compares.
+                want("refresh_tail", ticker, refresh_tail_start, end_ts)
+                tail_refresh_tickers.add(ticker)
+                refresh_tail_tickers.add(ticker)
+                continue
             # The completeness test runs against what the vendor has, not
             # against what the caller asked for. A name that listed inside the
             # window has no bar at the window's start and never will, so
@@ -586,9 +760,12 @@ class YFinancePriceFetcher:
                         (window_start, window_end, group[i : i + self.batch_size])
                     )
 
-        def download_job(
-            job: tuple[pd.Timestamp, pd.Timestamp, list[str]],
-        ) -> tuple[list[str], pd.DataFrame, bool]:
+        Job = tuple[pd.Timestamp, pd.Timestamp, list[str]]
+
+        # Each response is split into per-ticker frames in the worker that
+        # downloaded it, so the split overlaps the other workers' requests
+        # instead of running after all of them.
+        def download_job(job: Job) -> tuple[Job, dict[str, pd.DataFrame], bool]:
             fetch_start, fetch_end, batch = job
             download_end = fetch_end + pd.Timedelta(days=1)
             if self.interval != "1d":
@@ -601,7 +778,11 @@ class YFinancePriceFetcher:
                 interval=self.interval,
                 auto_adjust=False,
                 progress=False,
-                threads=True,
+                # The workers below are the concurrency. yfinance's own threads
+                # share one process-wide pool that its first caller sizes, so
+                # under them every batch queued behind 16 slots in total, and
+                # that pool, not the network, set the pace of a large refresh.
+                threads=False,
                 group_by="ticker",
                 timeout=YFINANCE_TIMEOUT_SECONDS,
             )
@@ -617,7 +798,7 @@ class YFinancePriceFetcher:
                 lambda: (True, yf.download(target, **download_kwargs)),
                 fallback=(False, pd.DataFrame()),
             )
-            return batch, raw, ok
+            return job, _split_download(raw, batch, self.interval), ok
 
         # yfinance reports expected "possibly delisted" messages for empty
         # pre-listing ranges. The empty frame is enough for
@@ -628,23 +809,108 @@ class YFinancePriceFetcher:
         # stderr redirect stays for anything the library prints directly.
         # Both are process-wide, covering the worker threads: per-batch scoping
         # would race when batches download concurrently.
-        with suppressed_yfinance_errors(), contextlib.redirect_stderr(io.StringIO()):
-            if not jobs:
-                downloads = []
-            elif len(jobs) == 1:
-                downloads = [download_job(jobs[0])]
-            else:
-                with ThreadPoolExecutor(
-                    max_workers=min(self.max_workers, len(jobs))
-                ) as pool:
-                    downloads = list(pool.map(download_job, jobs))
+        #
+        # ``yf.download`` also catches a 429 per symbol and serves an empty
+        # frame in its place, so a throttled name looked exactly like a name
+        # with no bars, and the resilience wrapper, which retries exceptions,
+        # never saw a failure. On a full India field Yahoo throttled most of
+        # the burst, and a strict refresh then refused large caps it serves
+        # without trouble one at a time. The error log is the only trace of a
+        # throttled symbol, so it is read here, and those symbols downloaded
+        # again in smaller batches after a pause.
+        #
+        # Under load Yahoo also serves some names an empty answer with no 429,
+        # as "possibly delisted; no price data found", and serves them in full
+        # a moment later. A strict refresh refuses such a name, so there an
+        # empty answer is asked again too, when the name's own cache holds
+        # bars inside the window: the vendor served those bars before, so the
+        # empty answer is the request failing, not the history ending.
+        def run_jobs(
+            round_jobs: list[Job],
+        ) -> list[tuple[Job, dict[str, pd.DataFrame], bool]]:
+            if len(round_jobs) == 1:
+                return [download_job(round_jobs[0])]
+            with ThreadPoolExecutor(
+                max_workers=min(self.max_workers, len(round_jobs))
+            ) as pool:
+                return list(pool.map(download_job, round_jobs))
+
+        def served_empty(
+            ticker: str,
+            frame: pd.DataFrame | None,
+            window_start: pd.Timestamp,
+            window_end: pd.Timestamp,
+        ) -> bool:
+            if not (self.strict and self.refresh) or (
+                frame is not None and not frame.empty
+            ):
+                return False
+            stored_frame = cached_by_ticker.get(ticker)
+            return (
+                stored_frame is not None
+                and not _range_slice(stored_frame, window_start, window_end).empty
+            )
+
+        downloads: list[tuple[list[str], dict[str, pd.DataFrame], bool]] = []
+        rate_limited: set[str] = set()
+        unserved: set[str] = set()
+        with (
+            _yfinance_rate_limit_log() as throttle_log,
+            suppressed_yfinance_errors(),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            pending = jobs
+            for delay in (None, *YFINANCE_RETRY_DELAYS):
+                if delay is not None:
+                    _retry_sleep(delay)
+                round_downloads = run_jobs(pending)
+                throttled = throttle_log.take()
+                pending = []
+                rate_limited = set()
+                unserved = set()
+                for (window_start, window_end, batch), split, ok in round_downloads:
+                    downloads.append((batch, split, ok))
+                    again = []
+                    for t in batch:
+                        if t.upper() in throttled:
+                            rate_limited.add(t)
+                            again.append(t)
+                        elif ok and served_empty(
+                            t, split.get(t), window_start, window_end
+                        ):
+                            unserved.add(t)
+                            again.append(t)
+                    for i in range(0, len(again), YFINANCE_RETRY_BATCH):
+                        pending.append(
+                            (
+                                window_start,
+                                window_end,
+                                again[i : i + YFINANCE_RETRY_BATCH],
+                            )
+                        )
+                if not pending:
+                    break
+        if rate_limited or unserved:
+            from screener.logging_config import get_logger
+
+            get_logger(__name__).warning(
+                "yfinance_rate_limited",
+                count=len(rate_limited),
+                tickers=sorted(rate_limited)[:20],
+                unserved_count=len(unserved),
+                unserved_tickers=sorted(unserved)[:20],
+                reason=(
+                    "Yahoo throttled, or served no bars for, every download "
+                    "attempt at these names; their bars were not refreshed "
+                    "this run"
+                ),
+            )
 
         downloaded_by_ticker: dict[str, pd.DataFrame] = {}
         # A ticker's history is only known-empty when every request covering it
         # came back from the vendor. One failed chunk leaves it unknown.
         download_ok: dict[str, bool] = {}
-        for batch, raw, ok in downloads:
-            downloaded = _split_download(raw, batch, self.interval)
+        for batch, downloaded, ok in downloads:
             for ticker in batch:
                 norm = downloaded.get(ticker, _empty_ohlcv_frame())
                 if self.auto_adjust:
@@ -653,6 +919,11 @@ class YFinancePriceFetcher:
                     downloaded_by_ticker.get(ticker), norm, self.interval
                 )
                 download_ok[ticker] = download_ok.get(ticker, True) and ok
+        # A name throttled on every attempt came back as an empty frame from a
+        # call that raised nothing. It is unknown, not empty.
+        # So is a name served empty on every attempt although it has bars.
+        for ticker in rate_limited | unserved:
+            download_ok[ticker] = False
         leftover: list[tuple[str, pd.DataFrame]] = []
         rescaled: set[str] = set()
         for ticker in dict.fromkeys(t for group in missing.values() for t in group):
@@ -705,17 +976,26 @@ class YFinancePriceFetcher:
             # at the seam, and every return, momentum and volatility figure
             # computed across that seam is wrong. The stale side loses: the
             # cache entry is dropped and the ticker re-downloaded whole below.
+            # A refresh that kept the entry and downloaded only its tail holds
+            # the overlap to a tighter tolerance: the kept bars stand in for a
+            # re-download, so a dividend the vendor has applied since they were
+            # written re-bases them just as a split does.
+            tolerance = (
+                REFRESH_RESCALE_TOLERANCE
+                if ticker in refresh_tail_tickers
+                else RESCALE_TOLERANCE
+            )
             if ticker not in force_full and (
-                _overlap_rescaled(stored, norm, self.interval)
+                _overlap_rescaled(stored, norm, self.interval, tolerance=tolerance)
                 or cache_merge_needs_full_download(stored, norm)
             ):
-                # A refresh already asked for the whole window, so only the
-                # stale entry has to go; a retry would repeat that request for
-                # nothing. When the cache *did* shorten the download, the
-                # retry is the point: the fresh bars cover a tail, and the
-                # history they have to be merged with has just been thrown
-                # away.
-                retry = not self.refresh
+                # A refresh of the whole window already asked for every bar,
+                # so only the stale entry has to go; a retry would repeat that
+                # request for nothing. When the cache *did* shorten the
+                # download, the retry is the point: the fresh bars cover a
+                # tail, and the history they have to be merged with has just
+                # been thrown away.
+                retry = not self.refresh or ticker in refresh_tail_tickers
                 from screener.logging_config import get_logger
 
                 get_logger(__name__).warning(
@@ -759,7 +1039,12 @@ class YFinancePriceFetcher:
                     _record_scale_verified(cache_key, self.cache_dir)
             results[ticker] = _range_slice(merged, start_ts, end_ts)
         if leftover:
-            raise _strict_refresh_stale_data_error(leftover, as_of=end_ts)
+            raise _strict_refresh_stale_data_error(
+                leftover,
+                as_of=end_ts,
+                rate_limited=rate_limited,
+                unserved=unserved,
+            )
         return results, frozenset(rescaled)
 
 
@@ -950,7 +1235,23 @@ class FMPPriceFetcher:
                 if distrust_cache
                 else _load_coverage(cache_key, self.cache_dir),
             )
-            if (
+            # Same tail-only refresh as the yfinance leg. This leg sends one
+            # request per ticker, so the window is all it can save.
+            refresh_tail_start = (
+                _refresh_tail_start(
+                    stored,
+                    _load_coverage(cache_key, self.cache_dir),
+                    start_ts,
+                    end_ts,
+                    self.interval,
+                )
+                if self.refresh and not force_full
+                else None
+            )
+            if refresh_tail_start is not None:
+                fetch_start = refresh_tail_start
+                is_tail_refresh = True
+            elif (
                 not distrust_cache
                 and cached is not None
                 and _has_range(cached, covered_start, covered_end, self.interval)
@@ -1049,12 +1350,22 @@ class FMPPriceFetcher:
             # history on a split, so a cache entry written before one prices
             # shared sessions on a scale the vendor has abandoned.
             rescaled_here = not force_full and (
-                _overlap_rescaled(stored, norm, self.interval)
+                _overlap_rescaled(
+                    stored,
+                    norm,
+                    self.interval,
+                    tolerance=REFRESH_RESCALE_TOLERANCE
+                    if refresh_tail_start is not None
+                    else RESCALE_TOLERANCE,
+                )
                 or cache_merge_needs_full_download(stored, norm)
             )
-            # Same reasoning as the yfinance leg: a refresh already requested
-            # the whole window, so it needs the discard but not the retry.
-            was_rescaled = rescaled_here and not self.refresh
+            # Same reasoning as the yfinance leg: a refresh of the whole window
+            # needs the discard but not the retry; a refresh of the tail needs
+            # both.
+            was_rescaled = rescaled_here and (
+                not self.refresh or refresh_tail_start is not None
+            )
             if rescaled_here:
                 from screener.logging_config import get_logger
 
