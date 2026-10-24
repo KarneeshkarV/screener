@@ -10,12 +10,15 @@ the engine never depends directly on yfinance.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
+import logging
 import os
 import queue
 import threading
-from collections.abc import Callable, Iterable, Sequence
+import time
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
@@ -197,13 +200,20 @@ def _strict_refresh_stale_data_error(
     leftover: Sequence[tuple[str, pd.DataFrame]],
     *,
     as_of: pd.Timestamp,
+    rate_limited: Iterable[str] = (),
+    unserved: Iterable[str] = (),
 ) -> StaleDataError:
     """StaleDataError for a strict refresh that would have scored leftover cache.
 
     The message starts with ``strict refresh could not refresh bars for`` so a
     log line greps back to this constructor. Each ticker is named with the
-    date of its newest cached bar and the calendar-day gap to ``as_of``.
+    date of its newest cached bar and the calendar-day gap to ``as_of``, and
+    with the cause when the vendor throttled or served nothing on every
+    attempt at it: such a name is not stale at the vendor, only unreachable
+    this run.
     """
+    causes = dict.fromkeys(unserved, "; yfinance served no bars on every attempt")
+    causes.update(dict.fromkeys(rate_limited, "; yfinance rate limited every attempt"))
     as_of_ts = pd.Timestamp(as_of)
     if as_of_ts.tz is not None:
         as_of_ts = as_of_ts.tz_convert("UTC").tz_localize(None)
@@ -213,8 +223,10 @@ def _strict_refresh_stale_data_error(
         if last_bar.tz is not None:
             last_bar = last_bar.tz_convert("UTC").tz_localize(None)
         age_days = int((as_of_ts.normalize() - last_bar.normalize()).days)
+        cause = causes.get(ticker, "")
         clauses.append(
-            f"{ticker} (newest bar {last_bar.date()}, {age_days} calendar days old)"
+            f"{ticker} (newest bar {last_bar.date()}, "
+            f"{age_days} calendar days old{cause})"
         )
     return StaleDataError(
         "strict refresh could not refresh bars for " + ", ".join(clauses)
@@ -244,6 +256,86 @@ def _covered_window(
     if last is not None and last < end:
         end = max(last, start)
     return start, end
+
+
+#: Text yfinance puts in the error it records for a throttled symbol. The
+#: library catches the exception per symbol and serves an empty frame in its
+#: place, so this text is the only trace a throttled request leaves.
+_YFINANCE_RATE_LIMIT_MARKERS = ("Too Many Requests", "Rate limited", "YFRateLimitError")
+
+#: Pauses before each re-download of the symbols Yahoo throttled or served
+#: empty. Yahoo's 429 is a short burst limit, not a quota, and the empties it
+#: serves under load are as short-lived, so a few seconds of quiet clear both.
+YFINANCE_RETRY_DELAYS = (2.0, 4.0, 8.0)
+
+#: Batch size of a re-download. Smaller than a first pass, so the few names
+#: left spread over the workers instead of queueing behind one of them.
+YFINANCE_RETRY_BATCH = 10
+
+
+def _retry_sleep(seconds: float) -> None:
+    """``time.sleep``, named so tests can skip the rate-limit backoff."""
+    time.sleep(seconds)
+
+
+class _YfinanceRateLimitLog(logging.Filter):
+    """Collects the symbols yfinance reports as rate limited.
+
+    ``yf.download`` logs each failure group on the ``yfinance`` logger as
+    ``"['A.NS', 'B.NS']: YFRateLimitError(...)"``. The filter reads the symbol
+    list out of that record and passes the record on unchanged, so it must sit
+    ahead of :func:`~screener.logging_config.suppressed_yfinance_errors`,
+    whose filter drops it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._symbols: set[str] = set()
+        self._lock = threading.Lock()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - a bad record must not break the download
+            return True
+        if not message.startswith("[") or not any(
+            marker in message for marker in _YFINANCE_RATE_LIMIT_MARKERS
+        ):
+            return True
+        head, _sep, _err = message.partition("]: ")
+        try:
+            symbols = ast.literal_eval(head + "]")
+        except (SyntaxError, ValueError):
+            return True
+        if isinstance(symbols, list):
+            with self._lock:
+                self._symbols.update(str(symbol).upper() for symbol in symbols)
+        return True
+
+    def take(self) -> set[str]:
+        """The symbols collected since the last call, upper-cased."""
+        with self._lock:
+            symbols, self._symbols = self._symbols, set()
+        return symbols
+
+
+@contextlib.contextmanager
+def _yfinance_rate_limit_log() -> Iterator[_YfinanceRateLimitLog]:
+    logger = logging.getLogger("yfinance")
+    capture = _YfinanceRateLimitLog()
+    # ``Logger.error`` returns before any filter runs when the level is above
+    # ERROR, so a quiet ``--log-level`` would hide every throttled symbol. The
+    # suppressor still drops the records, so nothing more is printed.
+    level = logger.level
+    if logger.getEffectiveLevel() > logging.ERROR:
+        logger.setLevel(logging.ERROR)
+    # Ahead of every filter already attached, the suppressor included.
+    logger.filters.insert(0, capture)
+    try:
+        yield capture
+    finally:
+        logger.removeFilter(capture)
+        logger.setLevel(level)
 
 
 class YFinancePriceFetcher:
@@ -276,9 +368,9 @@ class YFinancePriceFetcher:
         self,
         cache_dir: Path | None = None,
         auto_adjust: bool = True,
-        batch_size: int = 75,
+        batch_size: int = 25,
         refresh: bool = False,
-        max_workers: int = 4,
+        max_workers: int = 32,
         interval: str = "1d",
         strict: bool = False,
     ) -> None:
@@ -586,9 +678,12 @@ class YFinancePriceFetcher:
                         (window_start, window_end, group[i : i + self.batch_size])
                     )
 
-        def download_job(
-            job: tuple[pd.Timestamp, pd.Timestamp, list[str]],
-        ) -> tuple[list[str], pd.DataFrame, bool]:
+        Job = tuple[pd.Timestamp, pd.Timestamp, list[str]]
+
+        # Each response is split into per-ticker frames in the worker that
+        # downloaded it, so the split overlaps the other workers' requests
+        # instead of running after all of them.
+        def download_job(job: Job) -> tuple[Job, dict[str, pd.DataFrame], bool]:
             fetch_start, fetch_end, batch = job
             download_end = fetch_end + pd.Timedelta(days=1)
             if self.interval != "1d":
@@ -601,7 +696,11 @@ class YFinancePriceFetcher:
                 interval=self.interval,
                 auto_adjust=False,
                 progress=False,
-                threads=True,
+                # The workers below are the concurrency. yfinance's own threads
+                # share one process-wide pool that its first caller sizes, so
+                # under them every batch queued behind 16 slots in total, and
+                # that pool, not the network, set the pace of a large refresh.
+                threads=False,
                 group_by="ticker",
                 timeout=YFINANCE_TIMEOUT_SECONDS,
             )
@@ -617,7 +716,7 @@ class YFinancePriceFetcher:
                 lambda: (True, yf.download(target, **download_kwargs)),
                 fallback=(False, pd.DataFrame()),
             )
-            return batch, raw, ok
+            return job, _split_download(raw, batch, self.interval), ok
 
         # yfinance reports expected "possibly delisted" messages for empty
         # pre-listing ranges. The empty frame is enough for
@@ -628,23 +727,110 @@ class YFinancePriceFetcher:
         # stderr redirect stays for anything the library prints directly.
         # Both are process-wide, covering the worker threads: per-batch scoping
         # would race when batches download concurrently.
-        with suppressed_yfinance_errors(), contextlib.redirect_stderr(io.StringIO()):
-            if not jobs:
-                downloads = []
-            elif len(jobs) == 1:
-                downloads = [download_job(jobs[0])]
-            else:
-                with ThreadPoolExecutor(
-                    max_workers=min(self.max_workers, len(jobs))
-                ) as pool:
-                    downloads = list(pool.map(download_job, jobs))
+        #
+        # ``yf.download`` also catches a 429 per symbol and serves an empty
+        # frame in its place, so a throttled name looked exactly like a name
+        # with no bars, and the resilience wrapper, which retries exceptions,
+        # never saw a failure. On a full India field Yahoo throttled most of
+        # the burst, and a strict refresh then refused large caps it serves
+        # without trouble one at a time. The error log is the only trace of a
+        # throttled symbol, so it is read here, and those symbols downloaded
+        # again in smaller batches after a pause.
+        #
+        # Under load Yahoo also serves some names an empty answer with no 429,
+        # as "possibly delisted; no price data found", and serves them in full
+        # a moment later. A strict refresh refuses such a name, so there an
+        # empty answer is asked again too, when the name's own cache holds
+        # bars inside the window: the vendor served those bars before, so the
+        # empty answer is the request failing, not the history ending.
+        def run_jobs(
+            round_jobs: list[Job],
+        ) -> list[tuple[Job, dict[str, pd.DataFrame], bool]]:
+            if not round_jobs:
+                return []
+            if len(round_jobs) == 1:
+                return [download_job(round_jobs[0])]
+            with ThreadPoolExecutor(
+                max_workers=min(self.max_workers, len(round_jobs))
+            ) as pool:
+                return list(pool.map(download_job, round_jobs))
+
+        def served_empty(
+            ticker: str,
+            frame: pd.DataFrame | None,
+            window_start: pd.Timestamp,
+            window_end: pd.Timestamp,
+        ) -> bool:
+            if not (self.strict and self.refresh) or (
+                frame is not None and not frame.empty
+            ):
+                return False
+            stored_frame = cached_by_ticker.get(ticker)
+            return (
+                stored_frame is not None
+                and not _range_slice(stored_frame, window_start, window_end).empty
+            )
+
+        downloads: list[tuple[list[str], dict[str, pd.DataFrame], bool]] = []
+        rate_limited: set[str] = set()
+        unserved: set[str] = set()
+        with (
+            _yfinance_rate_limit_log() as throttle_log,
+            suppressed_yfinance_errors(),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            pending = jobs
+            for delay in (None, *YFINANCE_RETRY_DELAYS):
+                if delay is not None:
+                    _retry_sleep(delay)
+                round_downloads = run_jobs(pending)
+                throttled = throttle_log.take()
+                pending = []
+                rate_limited = set()
+                unserved = set()
+                for (window_start, window_end, batch), split, ok in round_downloads:
+                    downloads.append((batch, split, ok))
+                    again = []
+                    for t in batch:
+                        if t.upper() in throttled:
+                            rate_limited.add(t)
+                            again.append(t)
+                        elif ok and served_empty(
+                            t, split.get(t), window_start, window_end
+                        ):
+                            unserved.add(t)
+                            again.append(t)
+                    for i in range(0, len(again), YFINANCE_RETRY_BATCH):
+                        pending.append(
+                            (
+                                window_start,
+                                window_end,
+                                again[i : i + YFINANCE_RETRY_BATCH],
+                            )
+                        )
+                if not pending:
+                    break
+        if rate_limited or unserved:
+            from screener.logging_config import get_logger
+
+            get_logger(__name__).warning(
+                "yfinance_rate_limited",
+                count=len(rate_limited),
+                tickers=sorted(rate_limited)[:20],
+                unserved_count=len(unserved),
+                unserved_tickers=sorted(unserved)[:20],
+                reason=(
+                    "Yahoo throttled, or served no bars for, every download "
+                    "attempt at these names; their bars were not refreshed "
+                    "this run"
+                ),
+            )
 
         downloaded_by_ticker: dict[str, pd.DataFrame] = {}
         # A ticker's history is only known-empty when every request covering it
         # came back from the vendor. One failed chunk leaves it unknown.
         download_ok: dict[str, bool] = {}
-        for batch, raw, ok in downloads:
-            downloaded = _split_download(raw, batch, self.interval)
+        for batch, downloaded, ok in downloads:
             for ticker in batch:
                 norm = downloaded.get(ticker, _empty_ohlcv_frame())
                 if self.auto_adjust:
@@ -653,6 +839,11 @@ class YFinancePriceFetcher:
                     downloaded_by_ticker.get(ticker), norm, self.interval
                 )
                 download_ok[ticker] = download_ok.get(ticker, True) and ok
+        # A name throttled on every attempt came back as an empty frame from a
+        # call that raised nothing. It is unknown, not empty.
+        # So is a name served empty on every attempt although it has bars.
+        for ticker in rate_limited | unserved:
+            download_ok[ticker] = False
         leftover: list[tuple[str, pd.DataFrame]] = []
         rescaled: set[str] = set()
         for ticker in dict.fromkeys(t for group in missing.values() for t in group):
@@ -759,7 +950,12 @@ class YFinancePriceFetcher:
                     _record_scale_verified(cache_key, self.cache_dir)
             results[ticker] = _range_slice(merged, start_ts, end_ts)
         if leftover:
-            raise _strict_refresh_stale_data_error(leftover, as_of=end_ts)
+            raise _strict_refresh_stale_data_error(
+                leftover,
+                as_of=end_ts,
+                rate_limited=rate_limited,
+                unserved=unserved,
+            )
         return results, frozenset(rescaled)
 
 

@@ -163,6 +163,22 @@ def test_yfinance_one_minute_downloads_are_chunked_and_stitched(tmp_path, monkey
     assert out.index.max() == pd.Timestamp(end)
 
 
+def test_yfinance_intraday_window_past_retention_downloads_nothing(
+    tmp_path, monkeypatch
+):
+    """A window wholly before Yahoo's 1m retention has no request to send."""
+    import yfinance as yf
+
+    calls = []
+    monkeypatch.setattr(yf, "download", lambda *a, **k: calls.append(k))
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1m")
+
+    out = fetcher.fetch(["AAA"], date(2020, 1, 1), date(2020, 1, 2))
+
+    assert calls == []
+    assert out["AAA"].empty
+
+
 def test_yfinance_daily_window_remains_one_download(tmp_path, monkeypatch):
     import yfinance as yf
 
