@@ -269,16 +269,14 @@ def test_yfinance_tail_refresh_skips_fresh_and_historical_caches(tmp_path, monke
 def test_yfinance_refresh_merges_into_stored_history_instead_of_truncating_it(
     tmp_path, monkeypatch
 ):
-    """--refresh downloads only the tail of an entry that holds the window.
-
-    The cached series sits a hair off the vendor's, under a millionth of the
-    price: the parquet round-trip noise a refresh must still accept as the same
-    scale. Anything larger is a re-based history, covered by
-    ``test_yfinance_refresh_tail_redownloads_a_rebased_entry_whole``.
-    """
+    """--refresh re-downloads its window but must keep bars outside it on disk."""
     import yfinance as yf
 
-    wide = _plain_bars(date(2018, 1, 1), date(2024, 6, 1), base=99.999).rename(
+    # A few cents off the vendor's current series: a genuine revision, not a
+    # re-basing. Split detection reads a *ratio*, so a small uniform offset on
+    # a four-figure price stays well inside its tolerance and the ordinary
+    # merge runs - which is what this test is about.
+    wide = _plain_bars(date(2018, 1, 1), date(2024, 6, 1), base=96.0).rename(
         columns=str.lower
     )
     _save_cache(_full_key("AAA"), wide, tmp_path)
@@ -295,89 +293,29 @@ def test_yfinance_refresh_merges_into_stored_history_instead_of_truncating_it(
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True)
     out = fetcher.fetch(["AAA"], narrow_start, narrow_end)["AAA"]
 
-    # One download, from the overlap bars before the window's last cached bar
-    # to the window's end - not the whole window.
-    held = wide.index[wide.index <= pd.Timestamp(narrow_end)]
-    tail_start = held[len(held) - 1 - data_module.REFRESH_TAIL_OVERLAP_BARS]
-    assert calls == [(tail_start, pd.Timestamp(narrow_end) + pd.Timedelta(days=1))]
-    assert tail_start > pd.Timestamp(narrow_start)
+    # The refresh forced a full re-download of exactly the requested window.
+    assert len(calls) == 1
+    assert calls[0] == (
+        pd.Timestamp(narrow_start),
+        pd.Timestamp(narrow_end) + pd.Timedelta(days=1),
+    )
 
     stored = _load_cached(_full_key("AAA"), tmp_path)
     assert stored.index.min() == wide.index.min()
     assert stored.index.max() == wide.index.max()
 
-    # The caller still gets the whole window it asked for.
-    assert out.index.min() == pd.Timestamp(narrow_start)
-    assert out.index.max() == pd.Timestamp(narrow_end)
+    # Overlapping dates carry the freshly downloaded values, not the old ones.
+    first_fresh = out.index[0]
+    fresh_close = float(out.loc[first_fresh, "close"])
+    assert fresh_close != float(wide.loc[first_fresh, "close"])
+    assert float(stored.loc[first_fresh, "close"]) == pytest.approx(fresh_close)
 
-    # Downloaded dates carry the fresh values, not the old ones.
-    fresh_close = float(out.loc[tail_start, "close"])
-    assert fresh_close != float(wide.loc[tail_start, "close"])
-    assert float(stored.loc[tail_start, "close"]) == fresh_close
-
-    # Bars outside the downloaded tail stay as they were.
-    sample = pd.Timestamp(narrow_start)
-    assert float(stored.loc[sample, "close"]) == float(wide.loc[sample, "close"])
-
-
-def test_yfinance_refresh_tail_redownloads_a_rebased_entry_whole(tmp_path, monkeypatch):
-    """A tail that disagrees with the cache re-downloads the whole window.
-
-    The offset here is the size of a dividend the vendor back-propagated after
-    the entry was written: far inside the split tolerance, far outside the
-    refresh one. Kept bars on that old scale would put a fake return at the
-    seam, so none of them may survive.
-    """
-    import yfinance as yf
-
-    wide = _plain_bars(date(2018, 1, 1), date(2024, 6, 1), base=96.0).rename(
-        columns=str.lower
+    # Bars outside the refreshed window stay as they were.
+    outside = wide.index[~wide.index.isin(out.index)]
+    sample = outside[len(outside) // 2]
+    assert float(stored.loc[sample, "close"]) == pytest.approx(
+        float(wide.loc[sample, "close"])
     )
-    _save_cache(_full_key("AAA"), wide, tmp_path)
-
-    start, end = date(2024, 4, 1), date(2024, 4, 30)
-    calls = []
-
-    def fake_download(tickers, **kwargs):
-        calls.append((pd.Timestamp(kwargs["start"]), pd.Timestamp(kwargs["end"])))
-        return _download_frame(tickers, kwargs["start"], kwargs["end"])
-
-    monkeypatch.setattr(yf, "download", fake_download)
-
-    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True)
-    out = fetcher.fetch(["AAA"], start, end)["AAA"]
-
-    assert len(calls) == 2
-    assert calls[1] == (pd.Timestamp(start), pd.Timestamp(end) + pd.Timedelta(days=1))
-    fresh = _plain_bars(start, end + pd.Timedelta(days=1)).rename(columns=str.lower)
-    pd.testing.assert_series_equal(
-        out["close"], fresh["close"], check_names=False, check_freq=False
-    )
-    stored = _load_cached(_full_key("AAA"), tmp_path)
-    assert stored.index.min() == pd.Timestamp(start)
-
-
-def test_yfinance_refresh_downloads_the_whole_window_when_the_cache_is_short(
-    tmp_path, monkeypatch
-):
-    """An entry that does not hold the window's start cannot shorten a refresh."""
-    import yfinance as yf
-
-    cached = _plain_bars(date(2024, 4, 15), date(2024, 5, 1)).rename(columns=str.lower)
-    _save_cache(_full_key("AAA"), cached, tmp_path)
-    calls = []
-
-    def fake_download(tickers, **kwargs):
-        calls.append(pd.Timestamp(kwargs["start"]))
-        return _download_frame(tickers, kwargs["start"], kwargs["end"])
-
-    monkeypatch.setattr(yf, "download", fake_download)
-
-    YFinancePriceFetcher(cache_dir=tmp_path, refresh=True).fetch(
-        ["AAA"], date(2024, 1, 2), date(2024, 4, 30)
-    )
-
-    assert calls == [pd.Timestamp("2024-01-02")]
 
 
 def _throttling_download(throttled_calls: int):

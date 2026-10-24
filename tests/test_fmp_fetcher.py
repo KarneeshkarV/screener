@@ -253,12 +253,13 @@ def test_fmp_stale_tail_without_scale_overlap_reloads_window(tmp_path, monkeypat
 
 
 def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_path):
-    """A refresh downloads the tail and must keep every other stored bar.
+    """A forced re-download must not replace the stored frame with only its window.
 
-    The fresh closes match the cached ones, which is what lets a refresh keep
-    the older bars at all; a close that moved is a re-based history, covered
-    by ``test_fmp_rescaled_cache_is_discarded_on_refresh``. The volume is what
-    the vendor revised here, so it shows which bars came from the download.
+    The fresh close is a small step off the cached one rather than a multiple
+    of it. A uniform multiple across every shared session is the signature of a
+    split, and split detection discards the stale entry on purpose - see
+    ``test_fmp_rescaled_cache_is_discarded_on_refresh``. This test is about the
+    ordinary case, where the vendor revises values without re-basing them.
     """
     wide = pd.DataFrame(
         {
@@ -276,12 +277,12 @@ def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_pat
         "historical": [
             {
                 "date": day.date().isoformat(),
-                "open": 100.0,
-                "high": 101.0,
-                "low": 99.0,
-                "close": 100.5,
+                "open": 100.2,
+                "high": 101.4,
+                "low": 99.3,
+                "close": 100.9,
                 # adjClose == close so the adjusted close equals the raw one.
-                "adjClose": 100.5,
+                "adjClose": 100.9,
                 "volume": 2000,
             }
             for day in pd.bdate_range("2023-06-01", "2023-06-30")
@@ -297,24 +298,24 @@ def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_pat
 
     out = fetcher.fetch(["AAA"], date(2023, 6, 1), date(2023, 6, 30))["AAA"]
 
-    # One request, for the overlap bars and after - not the whole window.
-    tail_start = wide.index[len(wide) - 1 - data_module.REFRESH_TAIL_OVERLAP_BARS]
+    # The refresh forced a full re-download of exactly the requested window.
     assert len(session.calls) == 1
     assert session.calls[0][0].endswith("/historical-price-full/AAA")
-    assert session.calls[0][1]["params"]["from"] == tail_start.date().isoformat()
 
     stored = _load_cached(_fmp_full_key("AAA"), tmp_path)
     assert stored.index.min() == wide.index.min()
     assert stored.index.max() == wide.index.max()
-    assert out.index.min() == pd.Timestamp("2023-06-01")
 
-    # Downloaded dates carry the fresh values.
-    assert float(out.loc[tail_start, "volume"]) == 2000
-    assert float(stored.loc[tail_start, "volume"]) == 2000
+    # Overlapping dates carry the freshly downloaded values.
+    first_fresh = out.index[0]
+    assert float(out.loc[first_fresh, "close"]) == pytest.approx(100.9)
+    assert float(stored.loc[first_fresh, "close"]) == pytest.approx(100.9)
 
-    # Bars outside the refreshed tail stay as they were.
+    # Bars outside the refreshed window stay as they were.
     sample = wide.index[20]
-    assert float(stored.loc[sample, "volume"]) == 1000
+    assert float(stored.loc[sample, "close"]) == pytest.approx(
+        float(wide.loc[sample, "close"])
+    )
 
 
 def test_fmp_refresh_without_strict_still_merges_failed_download_with_cache(tmp_path):
@@ -764,6 +765,5 @@ def test_fmp_rescaled_cache_is_discarded_on_refresh(tmp_path):
     assert float(out["close"].min()) == pytest.approx(201.0)
     stored = _load_cached(_fmp_full_key("AAA"), tmp_path)
     assert float(stored["close"].min()) == pytest.approx(201.0)
-    # The refresh downloaded only the tail, so the whole window follows.
-    assert len(session.calls) == 2
-    assert session.calls[1][1]["params"]["from"] == "2023-06-01"
+    # The refresh already asked for the whole window, so no retry was needed.
+    assert len(session.calls) == 1

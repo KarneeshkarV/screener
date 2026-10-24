@@ -78,8 +78,6 @@ from screener.backtester.price_frames import (
 )
 from screener.backtester.price_frames import (
     OHLCV_COLUMNS,
-    REFRESH_RESCALE_TOLERANCE,
-    RESCALE_TOLERANCE,
     cache_merge_needs_full_download,
     naive_normalized_index,
     normalize_price_frame,
@@ -274,51 +272,6 @@ YFINANCE_RETRY_DELAYS = (2.0, 4.0, 8.0)
 #: left spread over the workers instead of queueing behind one of them.
 YFINANCE_RETRY_BATCH = 10
 
-#: Cached daily bars a refresh downloads again before the newest one. They are
-#: the overlap the scale check compares, and three weeks of them also reach
-#: back past a dividend the vendor recorded some days after its ex-date.
-REFRESH_TAIL_OVERLAP_BARS = 15
-
-#: Oldest newest-bar a refresh still treats as a tail. One download serves
-#: every tail-refreshed name, from the earliest start among them, so a name
-#: cached months ago would widen every other name's window to match.
-REFRESH_TAIL_MAX_GAP = pd.Timedelta(days=31)
-
-
-def _refresh_tail_start(
-    stored: pd.DataFrame | None,
-    coverage: tuple[pd.Timestamp | None, pd.Timestamp | None],
-    start_ts: pd.Timestamp,
-    end_ts: pd.Timestamp,
-    interval: str,
-) -> pd.Timestamp | None:
-    """First bar a refresh downloads for ``stored``, or None for the window.
-
-    A refresh exists to make the newest bars the vendor's, not to download
-    bars the entry already holds. So a daily entry that holds the window's
-    body downloads only from :data:`REFRESH_TAIL_OVERLAP_BARS` before its
-    newest bar. None means the whole window: an intraday entry, an entry that
-    does not reach the window's start, or one whose newest bar is too old to
-    share a download with current names. ``coverage`` is the entry's vendor
-    bounds, so a name that listed inside the window still qualifies.
-    """
-    if interval != "1d" or stored is None or stored.empty:
-        return None
-    # Bars after the window are not the refresh's business, so the overlap is
-    # counted back from the window's end, not from the entry's newest bar.
-    held = int(stored.index.searchsorted(end_ts, side="right"))
-    if held <= REFRESH_TAIL_OVERLAP_BARS:
-        return None
-    if stored.index[held - 1] < end_ts - REFRESH_TAIL_MAX_GAP:
-        return None
-    covered_start, _covered_end = _covered_window(start_ts, end_ts, coverage)
-    if stored.index.min() > covered_start + pd.Timedelta(days=3):
-        return None
-    tail_start = pd.Timestamp(stored.index[held - 1 - REFRESH_TAIL_OVERLAP_BARS])
-    if tail_start <= start_ts:
-        return None
-    return tail_start
-
 
 def _retry_sleep(seconds: float) -> None:
     """``time.sleep``, named so tests can skip the rate-limit backoff."""
@@ -401,15 +354,8 @@ class YFinancePriceFetcher:
     Cache version 3 records this contract and rejects older entries, which may
     contain non-overlapping price scales or ambiguous split factors.
 
-    ``refresh=True`` forces a download even when a covering parquet already
-    exists. A daily entry that already holds the window's body downloads only
-    its tail: the last :data:`REFRESH_TAIL_OVERLAP_BARS` cached bars and
-    everything after them. Those overlap bars must match the vendor's to
-    :data:`~screener.backtester.price_frames.REFRESH_RESCALE_TOLERANCE`, or the
-    entry is re-downloaded whole, so a split or a newly applied dividend still
-    re-bases the history. Any other entry downloads the whole window.
-
-    A failed download is an empty frame,
+    ``refresh=True`` forces a download of the requested window even when a
+    covering parquet already exists. A failed download is an empty frame,
     and that empty frame is merged with leftover cache so the caller still
     has data. ``strict=True`` changes only that failure path, and only
     together with ``refresh``: leftover cache is refused with
@@ -589,11 +535,6 @@ class YFinancePriceFetcher:
         # emptiness claim from a group peer.
         window_by_ticker: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = {}
         tail_refresh_tickers: set[str] = set()
-        # The subset of ``tail_refresh_tickers`` that a refresh shortened. They
-        # keep cached bars a refresh would otherwise have re-downloaded, so
-        # their scale check is held to the refresh tolerance and a failed one
-        # re-downloads them whole.
-        refresh_tail_tickers: set[str] = set()
 
         def want(
             cause: str, ticker: str, first: pd.Timestamp, last: pd.Timestamp
@@ -608,8 +549,8 @@ class YFinancePriceFetcher:
             )
 
         # Load the stored frames even on a refresh. The save-time merge keeps
-        # bars outside the re-downloaded window, and a refresh of an entry
-        # that already holds the window's body downloads only its tail. The
+        # bars outside the re-downloaded window. ``cached`` stays None while
+        # refreshing, so every download decision below stays unchanged. The
         # merge keeps the LAST duplicate, so the fresh download still wins on
         # the dates it covers.
         #
@@ -640,11 +581,8 @@ class YFinancePriceFetcher:
             # Such an entry is re-downloaded whole, once, and the marker keeps
             # it to once - a microcap whose jump was real must not re-download
             # forever.
-            #
-            # A refresh runs the check too, because it may now keep the entry
-            # and download only the tail, which cannot reveal the seam either.
             if (
-                ticker not in force_full
+                not distrust_cache
                 and stored is not None
                 and not _has_scale_verified(cache_key, self.cache_dir)
             ):
@@ -667,26 +605,6 @@ class YFinancePriceFetcher:
                 else:
                     _record_scale_verified(cache_key, self.cache_dir)
             cached = None if distrust_cache else stored
-            refresh_tail_start = (
-                _refresh_tail_start(
-                    stored,
-                    _load_coverage(cache_key, self.cache_dir),
-                    start_ts,
-                    end_ts,
-                    self.interval,
-                )
-                if self.refresh and ticker not in force_full
-                else None
-            )
-            if refresh_tail_start is not None:
-                # The full window would re-download bars the entry already
-                # holds, and on a 5000-name field that is what made a refresh
-                # miss the live engine's deadline. The overlap bars are what
-                # the scale check below compares.
-                want("refresh_tail", ticker, refresh_tail_start, end_ts)
-                tail_refresh_tickers.add(ticker)
-                refresh_tail_tickers.add(ticker)
-                continue
             # The completeness test runs against what the vendor has, not
             # against what the caller asked for. A name that listed inside the
             # window has no bar at the window's start and never will, so
@@ -828,6 +746,8 @@ class YFinancePriceFetcher:
         def run_jobs(
             round_jobs: list[Job],
         ) -> list[tuple[Job, dict[str, pd.DataFrame], bool]]:
+            if not round_jobs:
+                return []
             if len(round_jobs) == 1:
                 return [download_job(round_jobs[0])]
             with ThreadPoolExecutor(
@@ -976,26 +896,17 @@ class YFinancePriceFetcher:
             # at the seam, and every return, momentum and volatility figure
             # computed across that seam is wrong. The stale side loses: the
             # cache entry is dropped and the ticker re-downloaded whole below.
-            # A refresh that kept the entry and downloaded only its tail holds
-            # the overlap to a tighter tolerance: the kept bars stand in for a
-            # re-download, so a dividend the vendor has applied since they were
-            # written re-bases them just as a split does.
-            tolerance = (
-                REFRESH_RESCALE_TOLERANCE
-                if ticker in refresh_tail_tickers
-                else RESCALE_TOLERANCE
-            )
             if ticker not in force_full and (
-                _overlap_rescaled(stored, norm, self.interval, tolerance=tolerance)
+                _overlap_rescaled(stored, norm, self.interval)
                 or cache_merge_needs_full_download(stored, norm)
             ):
-                # A refresh of the whole window already asked for every bar,
-                # so only the stale entry has to go; a retry would repeat that
-                # request for nothing. When the cache *did* shorten the
-                # download, the retry is the point: the fresh bars cover a
-                # tail, and the history they have to be merged with has just
-                # been thrown away.
-                retry = not self.refresh or ticker in refresh_tail_tickers
+                # A refresh already asked for the whole window, so only the
+                # stale entry has to go; a retry would repeat that request for
+                # nothing. When the cache *did* shorten the download, the
+                # retry is the point: the fresh bars cover a tail, and the
+                # history they have to be merged with has just been thrown
+                # away.
+                retry = not self.refresh
                 from screener.logging_config import get_logger
 
                 get_logger(__name__).warning(
@@ -1235,23 +1146,7 @@ class FMPPriceFetcher:
                 if distrust_cache
                 else _load_coverage(cache_key, self.cache_dir),
             )
-            # Same tail-only refresh as the yfinance leg. This leg sends one
-            # request per ticker, so the window is all it can save.
-            refresh_tail_start = (
-                _refresh_tail_start(
-                    stored,
-                    _load_coverage(cache_key, self.cache_dir),
-                    start_ts,
-                    end_ts,
-                    self.interval,
-                )
-                if self.refresh and not force_full
-                else None
-            )
-            if refresh_tail_start is not None:
-                fetch_start = refresh_tail_start
-                is_tail_refresh = True
-            elif (
+            if (
                 not distrust_cache
                 and cached is not None
                 and _has_range(cached, covered_start, covered_end, self.interval)
@@ -1350,22 +1245,12 @@ class FMPPriceFetcher:
             # history on a split, so a cache entry written before one prices
             # shared sessions on a scale the vendor has abandoned.
             rescaled_here = not force_full and (
-                _overlap_rescaled(
-                    stored,
-                    norm,
-                    self.interval,
-                    tolerance=REFRESH_RESCALE_TOLERANCE
-                    if refresh_tail_start is not None
-                    else RESCALE_TOLERANCE,
-                )
+                _overlap_rescaled(stored, norm, self.interval)
                 or cache_merge_needs_full_download(stored, norm)
             )
-            # Same reasoning as the yfinance leg: a refresh of the whole window
-            # needs the discard but not the retry; a refresh of the tail needs
-            # both.
-            was_rescaled = rescaled_here and (
-                not self.refresh or refresh_tail_start is not None
-            )
+            # Same reasoning as the yfinance leg: a refresh already requested
+            # the whole window, so it needs the discard but not the retry.
+            was_rescaled = rescaled_here and not self.refresh
             if rescaled_here:
                 from screener.logging_config import get_logger
 
