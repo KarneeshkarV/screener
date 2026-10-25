@@ -88,7 +88,12 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
     ("sortino", "Sortino", "ratio"),
     ("calmar", "Calmar", "ratio"),
     ("psr", "Probabilistic Sharpe", "pct"),
+    # Deflated Sharpe deflates PSR by the number of configurations a parameter
+    # search evaluated. A single backtest is one trial, where DSR is PSR by
+    # definition, so ``compute_metrics`` omits both keys there and the rows
+    # simply do not render — the same convention the Monte Carlo block uses.
     ("dsr", "Deflated Sharpe", "pct"),
+    ("dsr_trials", "DSR Trials", "int"),
     ("max_drawdown", "Max Drawdown", "pct"),
     ("hit_rate", "Hit Rate", "pct"),
     ("alpha_annual", "Alpha (ann.)", "pct"),
@@ -422,6 +427,29 @@ def _dsr(
     )
 
 
+def deflated_sharpe(
+    equity: pd.Series,
+    *,
+    n_trials: int,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+    sr_trial_std_annual: float = 0.5,
+) -> float:
+    """Deflated Sharpe of a finished equity curve, given the search that found it.
+
+    ``n_trials`` must be the number of parameter configurations the search
+    actually evaluated — the multiple-testing bias DSR corrects for is a
+    property of the search, not of the curve, so only a caller that ran the
+    search can supply it. Callers that hold a :class:`BacktestResult` rather
+    than a live ``compute_metrics`` call use this to deflate after the fact.
+    """
+    return _dsr(
+        bar_returns(equity),
+        n_trials=n_trials,
+        sr_trial_std_annual=sr_trial_std_annual,
+        periods_per_year=periods_per_year,
+    )
+
+
 def _invested_return(trades: Iterable[Trade]) -> float:
     """Capital-deployed-only total return.
 
@@ -542,6 +570,15 @@ def compute_metrics(
     n_trials: int = 1,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> dict:
+    """Every metric a backtest result renders, keyed by the result-view schema.
+
+    ``n_trials`` is the number of parameter configurations the run that
+    produced ``equity`` was selected from. At the default of 1 — every plain
+    ``backtest-historical`` / ``backtest-rolling`` run — no deflation is
+    possible, so ``dsr`` and ``dsr_trials`` are left out entirely rather than
+    printed as a second copy of ``psr`` under a name that claims a
+    multiple-testing correction nobody applied.
+    """
     daily = bar_returns(equity)
     bench_daily = (
         bar_returns(benchmark) if not benchmark.empty else pd.Series(dtype=float)
@@ -570,7 +607,6 @@ def compute_metrics(
         "sortino": _sortino(daily, periods_per_year=periods_per_year),
         "calmar": _calmar(equity, periods_per_year),
         "psr": _psr(daily, sr_benchmark_annual=0.0, periods_per_year=periods_per_year),
-        "dsr": _dsr(daily, n_trials=n_trials, periods_per_year=periods_per_year),
         "max_drawdown": _max_drawdown(equity),
         "hit_rate": hit_rate,
         "alpha_annual": alpha,
@@ -580,6 +616,11 @@ def compute_metrics(
         "trade_count": len(trades),
         "invested_return": _invested_return(trades),
     }
+    if n_trials > 1:
+        metrics["dsr"] = _dsr(
+            daily, n_trials=n_trials, periods_per_year=periods_per_year
+        )
+        metrics["dsr_trials"] = n_trials
     metrics.update(_trade_return_stats(trades))
     return metrics
 

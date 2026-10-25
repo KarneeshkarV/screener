@@ -260,6 +260,7 @@ def run_research_report(
     is_metric = float(best.score) if best is not None else 0.0
     console.print(
         f"Combos evaluated (returned): {len(grid_results)}  "
+        f"Trials (deflation base): {n_combos}  "
         f"Best params: {best_params}  "
         f"Best {metric}: {is_metric:.4f}"
     )
@@ -388,6 +389,9 @@ def run_research_report(
         },
         "grid": {
             "warning": GRID_IN_SAMPLE_DISCLAIMER,
+            # Configurations the grid evaluated. Every result's Deflated Sharpe
+            # is deflated against this count, so the report states it.
+            "trials": n_combos,
             "results": [r.model_dump(mode="json") for r in grid_results],
             "best_params": best_params,
             "best_score": is_metric if best is not None else None,

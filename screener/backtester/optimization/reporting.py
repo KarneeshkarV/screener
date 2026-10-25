@@ -393,7 +393,8 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
   <h2>Grid search</h2>
   <p class="banner">{html_lib.escape(str(disclaimer))}</p>
   <p class="meta">Best params: {html_lib.escape(json.dumps(grid.get("best_params") or {}, sort_keys=True))}
-  &nbsp;|&nbsp; Best score: {html_lib.escape(format_result_value(grid.get("best_score"), "ratio"))}</p>
+  &nbsp;|&nbsp; Best score: {html_lib.escape(format_result_value(grid.get("best_score"), "ratio"))}
+  &nbsp;|&nbsp; Trials (deflation base): {html_lib.escape(str(grid.get("trials", "-")))}</p>
   {grid_table}
 
   <h2>Parameter stability</h2>
