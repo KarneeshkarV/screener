@@ -45,6 +45,11 @@ _LAZY_COMMANDS: dict[str, tuple[str, str, str]] = {
         "rs_breakout",
         "Screen stocks for RS + SuperTrend + breakout/volume setups.",
     ),
+    "momentum-6-6": (
+        "screener.commands.momentum_6_6",
+        "momentum_6_6",
+        "Rank a universe by 6-month cross-sectional momentum (saves momentum_6_6).",
+    ),
     "garp": (
         "screener.commands.garp",
         "garp",
