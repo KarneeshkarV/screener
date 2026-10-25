@@ -10,7 +10,7 @@ Local bars are the canonical source for every eligibility rule and every
 fundamental value the screen and the backtest use.
 
 TradingView keeps exactly two jobs.
-It is a field cutter, narrowing the ticker list before bars are downloaded.
+It supplies the default ticker field before bars are downloaded.
 It supplies display and ranking columns for a screen's output table.
 
 A strategy is defined once, as an `ExpressionStrategySpec` with a
@@ -25,6 +25,13 @@ A criterion's TradingView filters survive only as a declared
 `tv_prefilter`, and only under one invariant: a prefilter may never drop a
 name the bar rule would have kept.
 `--universe` is the exact path and applies no prefilter at all.
+
+Live TradingView snapshots have no completed-session timestamp contract.
+A volume or trend cut can remove a name that passed the last completed local bar.
+The bar-based screen therefore does not apply live date-sensitive prefilters, even when a strategy profile declares one.
+A cross-sectional rule must also rank against the full declared reference field before candidate selection.
+Minervini declares no prefilter because a wider trend filter can still change its RS percentiles.
+Dated membership masks apply to returns before ranking, while price history remains available for indicator warmup.
 
 ## Context
 
