@@ -286,11 +286,16 @@ class _YfinanceRateLimitLog(logging.Filter):
     list out of that record and passes the record on unchanged, so it must sit
     ahead of :func:`~screener.logging_config.suppressed_yfinance_errors`,
     whose filter drops it.
+
+    yfinance logs the record in the thread that called ``yf.download``, so the
+    symbols are kept per thread. A worker then reads only what its own download
+    reported, and a 429 on one request is not blamed on another request for
+    the same symbol, such as another intraday chunk.
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self._symbols: set[str] = set()
+        self._symbols: dict[int, set[str]] = {}
         self._lock = threading.Lock()
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -309,14 +314,15 @@ class _YfinanceRateLimitLog(logging.Filter):
             return True
         if isinstance(symbols, list):
             with self._lock:
-                self._symbols.update(str(symbol).upper() for symbol in symbols)
+                self._symbols.setdefault(threading.get_ident(), set()).update(
+                    str(symbol).upper() for symbol in symbols
+                )
         return True
 
     def take(self) -> set[str]:
-        """The symbols collected since the last call, upper-cased."""
+        """The symbols this thread logged since its last call, upper-cased."""
         with self._lock:
-            symbols, self._symbols = self._symbols, set()
-        return symbols
+            return self._symbols.pop(threading.get_ident(), set())
 
 
 @contextlib.contextmanager
@@ -683,7 +689,9 @@ class YFinancePriceFetcher:
         # Each response is split into per-ticker frames in the worker that
         # downloaded it, so the split overlaps the other workers' requests
         # instead of running after all of them.
-        def download_job(job: Job) -> tuple[Job, dict[str, pd.DataFrame], bool]:
+        def download_job(
+            job: Job,
+        ) -> tuple[Job, dict[str, pd.DataFrame], bool, set[str]]:
             fetch_start, fetch_end, batch = job
             download_end = fetch_end + pd.Timedelta(days=1)
             if self.interval != "1d":
@@ -716,7 +724,8 @@ class YFinancePriceFetcher:
                 lambda: (True, yf.download(target, **download_kwargs)),
                 fallback=(False, pd.DataFrame()),
             )
-            return job, _split_download(raw, batch, self.interval), ok
+            throttled = throttle_log.take()
+            return job, _split_download(raw, batch, self.interval), ok, throttled
 
         # yfinance reports expected "possibly delisted" messages for empty
         # pre-listing ranges. The empty frame is enough for
@@ -745,7 +754,7 @@ class YFinancePriceFetcher:
         # empty answer is the request failing, not the history ending.
         def run_jobs(
             round_jobs: list[Job],
-        ) -> list[tuple[Job, dict[str, pd.DataFrame], bool]]:
+        ) -> list[tuple[Job, dict[str, pd.DataFrame], bool, set[str]]]:
             if not round_jobs:
                 return []
             if len(round_jobs) == 1:
@@ -784,11 +793,11 @@ class YFinancePriceFetcher:
                 if delay is not None:
                     _retry_sleep(delay)
                 round_downloads = run_jobs(pending)
-                throttled = throttle_log.take()
                 pending = []
                 rate_limited = set()
                 unserved = set()
-                for (window_start, window_end, batch), split, ok in round_downloads:
+                for job, split, ok, throttled in round_downloads:
+                    window_start, window_end, batch = job
                     downloads.append((batch, split, ok))
                     again = []
                     for t in batch:

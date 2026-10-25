@@ -163,6 +163,57 @@ def test_yfinance_one_minute_downloads_are_chunked_and_stitched(tmp_path, monkey
     assert out.index.max() == pd.Timestamp(end)
 
 
+def test_yfinance_intraday_rate_limit_retries_only_the_throttled_chunk(
+    tmp_path, monkeypatch
+):
+    """A 429 on one chunk must not mark the ticker's other chunks throttled."""
+    import logging
+
+    import yfinance as yf
+
+    from screener.backtester import data as data_module
+
+    end = date.today() - pd.Timedelta(days=1)
+    start = end - pd.Timedelta(days=20)
+    calls = []
+    throttled_start = []
+
+    def fake_download(tickers, **kwargs):
+        chunk_start = pd.Timestamp(kwargs["start"])
+        calls.append(chunk_start)
+        if not throttled_start:
+            throttled_start.append(chunk_start)
+            logging.getLogger("yfinance").error(
+                "['AAA']: YFRateLimitError('Too Many Requests. "
+                "Rate limited. Try after a while.')"
+            )
+            return pd.DataFrame()
+        idx = pd.date_range(
+            chunk_start, pd.Timestamp(kwargs["end"]) - pd.Timedelta(days=1), freq="D"
+        )
+        return pd.DataFrame(
+            {
+                "Open": range(len(idx)),
+                "High": range(1, len(idx) + 1),
+                "Low": range(len(idx)),
+                "Close": range(1, len(idx) + 1),
+                "Volume": [1000] * len(idx),
+            },
+            index=idx,
+        )
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setattr(data_module, "_retry_sleep", lambda _seconds: None)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1m")
+
+    out = fetcher.fetch(["AAA"], start, end)["AAA"]
+
+    assert len(calls) == 4  # three chunks, then the throttled one again
+    assert calls[-1] == throttled_start[0]
+    assert out.index.min() == pd.Timestamp(start)
+    assert out.index.max() == pd.Timestamp(end)
+
+
 def test_yfinance_intraday_window_past_retention_downloads_nothing(
     tmp_path, monkeypatch
 ):
