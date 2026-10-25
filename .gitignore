@@ -36,3 +36,4 @@ reports/
 
 # generated backtest analysis scratch (raw ledgers, per-combo metrics)
 profiling/_analysis/
+harness.py

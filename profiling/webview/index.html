@@ -27,13 +27,13 @@
 <body>
 <header>
   <h1>Screener backtester — flamegraph &amp; GPU offload analysis</h1>
-  <div class="sub">Rolling engine · 300 synthetic symbols · 3yr / 756 sessions · 709 trades · profile re-run 2026-08-03 (post #114–#119)</div>
+  <div class="sub">Rolling engine · 300 synthetic symbols · profile re-run 2026-08-10 (deps pinned)</div>
 </header>
 <main>
   <div class="card">
-    <h2>Profile re-run — after the rolling-backtest acceleration</h2>
+    <h2>Profile re-run — 2026-08-10</h2>
     <p>Every artifact on this page was regenerated on <strong>2026-08-03</strong> against <code>main@572d47b</code>, so it reflects the engine <em>after</em> PRs #114–#119. Interleaved A/B vs. the merge-base: <strong>0.61 s → 0.32 s per run (≈1.92×)</strong>, identical 709 trades. Preparation (<code>_prepare_simulation</code>) is now 61.2% of the engine; the old top bottleneck <code>_precompute_filter_signals</code> fell to 9.9%.</p>
-    <a class="btn" href="../flamegraph_analysis_2026_08_03.md">Re-run write-up (2026-08-03) →</a>
+    <a class="btn" href="../flamegraph_analysis_2026_08_10.md">Re-run write-up (2026-08-10) →</a>
     <a class="btn alt" href="../flamegraph_analysis_2026_07_28.md">Previous re-run (2026-07-28) →</a>
     <a class="btn alt" href="../flamegraph_gpu_analysis_2026_07_25.md">Original, superseded (2026-07-25) →</a>
   </div>
