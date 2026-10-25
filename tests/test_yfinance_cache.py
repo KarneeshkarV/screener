@@ -69,6 +69,9 @@ def test_yfinance_fetcher_batches_uncached_tickers(tmp_path, monkeypatch):
     assert len(calls) == 1
     assert calls[0][0] == "AAA BBB"
     assert calls[0][1]["timeout"] == data_module.YFINANCE_TIMEOUT_SECONDS
+    # The fetcher's workers are the concurrency; yfinance's own threads share
+    # one fixed process-wide pool that capped a large refresh.
+    assert calls[0][1]["threads"] is False
     assert set(out) == {"AAA", "BBB"}
     assert not out["AAA"].empty
     assert not out["BBB"].empty
@@ -315,6 +318,103 @@ def test_yfinance_refresh_merges_into_stored_history_instead_of_truncating_it(
     )
 
 
+def _throttling_download(throttled_calls: int):
+    """A ``yf.download`` stand-in that throttles like Yahoo does.
+
+    For the first ``throttled_calls`` calls every symbol gets the empty frame
+    yfinance substitutes for a 429, and the only trace of it is the error
+    record on the ``yfinance`` logger, in yfinance's own format.
+    """
+    import logging
+
+    calls: list[list[str]] = []
+
+    def fake_download(tickers, **kwargs):
+        batch = tickers.split() if isinstance(tickers, str) else list(tickers)
+        calls.append(batch)
+        if len(calls) <= throttled_calls:
+            logger = logging.getLogger("yfinance")
+            logger.error("\n%.f Failed downloads:" % len(batch))
+            logger.error(
+                f"{batch}: YFRateLimitError('Too Many Requests. "
+                "Rate limited. Try after a while.')"
+            )
+            return pd.DataFrame()
+        return _download_frame(batch, kwargs["start"], kwargs["end"])
+
+    return fake_download, calls
+
+
+def test_yfinance_rate_limited_names_are_downloaded_again(tmp_path, monkeypatch):
+    """A 429 is not an empty history: the throttled names are asked again."""
+    import yfinance as yf
+
+    cached = _plain_bars(date(2024, 1, 2), date(2024, 1, 20)).rename(columns=str.lower)
+    _save_cache(_full_key("AAA"), cached, tmp_path)
+    fake_download, calls = _throttling_download(throttled_calls=1)
+    monkeypatch.setattr(yf, "download", fake_download)
+    sleeps: list[float] = []
+    monkeypatch.setattr(data_module, "_retry_sleep", sleeps.append)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True, strict=True)
+    out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 2), date(2024, 1, 25))
+
+    assert calls == [["AAA", "BBB"], ["AAA", "BBB"]]  # throttled, then retried
+    assert sleeps == [data_module.YFINANCE_RETRY_DELAYS[0]]
+    assert out["AAA"].index.max() == pd.Timestamp("2024-01-25")
+    assert out["BBB"].index.max() == pd.Timestamp("2024-01-25")
+
+
+def test_yfinance_persistent_rate_limit_is_named_and_not_cached_as_empty(
+    tmp_path, monkeypatch
+):
+    """Throttled on every attempt: strict refuses it, and says why."""
+    import yfinance as yf
+
+    from screener.backtester.price_cache import empty_history_path
+
+    cached = _plain_bars(date(2024, 1, 2), date(2024, 1, 20)).rename(columns=str.lower)
+    _save_cache(_full_key("AAA"), cached, tmp_path)
+    fake_download, calls = _throttling_download(throttled_calls=10**6)
+    monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setattr(data_module, "_retry_sleep", lambda _seconds: None)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True, strict=True)
+    with pytest.raises(StaleDataError) as caught:
+        fetcher.fetch(["AAA", "BBB"], date(2024, 1, 2), date(2024, 1, 25))
+
+    assert "AAA (newest bar 2024-01-19" in str(caught.value)
+    assert "yfinance rate limited every attempt" in str(caught.value)
+    # BBB has no cache, so it is not refused, but the failure must not be
+    # remembered as "Yahoo has no bars for BBB".
+    assert not empty_history_path(_full_key("BBB"), tmp_path).exists()
+    retries = len(data_module.YFINANCE_RETRY_DELAYS)
+    assert len(calls) == 1 + retries
+
+
+def test_yfinance_rate_limit_capture_works_under_a_quiet_log_level(
+    tmp_path, monkeypatch
+):
+    """``--log-level ERROR`` or quieter must not hide a throttled name."""
+    import logging
+
+    import yfinance as yf
+
+    fake_download, calls = _throttling_download(throttled_calls=1)
+    monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setattr(data_module, "_retry_sleep", lambda _seconds: None)
+    logger = logging.getLogger("yfinance")
+    monkeypatch.setattr(logger, "level", logging.CRITICAL)
+
+    out = YFinancePriceFetcher(cache_dir=tmp_path).fetch(
+        ["AAA"], date(2024, 1, 2), date(2024, 1, 10)
+    )
+
+    assert len(calls) == 2
+    assert not out["AAA"].empty
+    assert logger.level == logging.CRITICAL
+
+
 def _empty_download(tmp_path, monkeypatch):
     """Force every yfinance download to the empty-frame fallback."""
     import yfinance as yf
@@ -344,6 +444,7 @@ def test_yfinance_strict_refresh_raises_instead_of_ranking_on_cache(
 ):
     """strict+refresh must not score leftover cache after a failed download."""
     cached = _empty_download(tmp_path, monkeypatch)
+    monkeypatch.setattr(data_module, "_retry_sleep", lambda _seconds: None)
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True, strict=True)
     last_bar = cached.index.max().date()
     as_of = date(2024, 1, 25)
@@ -355,8 +456,71 @@ def test_yfinance_strict_refresh_raises_instead_of_ranking_on_cache(
         fetcher.fetch(["AAA", "BBB"], date(2024, 1, 2), as_of)
 
     message = str(caught.value)
-    assert f"AAA (newest bar {last_bar}, {age_days} calendar days old)" in message
-    assert f"BBB (newest bar {last_bar}, {age_days} calendar days old)" in message
+    cause = "yfinance served no bars on every attempt"
+    assert f"AAA (newest bar {last_bar}, {age_days} calendar days old; {cause})" in (
+        message
+    )
+    assert f"BBB (newest bar {last_bar}, {age_days} calendar days old; {cause})" in (
+        message
+    )
+
+
+def test_yfinance_strict_refresh_asks_again_for_a_name_served_empty(
+    tmp_path, monkeypatch
+):
+    """Under load Yahoo serves some names nothing, with no 429, then serves them.
+
+    The name's cache holds bars inside the window, so the empty answer is the
+    request failing, and a strict refresh must ask again before it refuses.
+    """
+    import yfinance as yf
+
+    cached = _plain_bars(date(2024, 1, 2), date(2024, 1, 20)).rename(columns=str.lower)
+    _save_cache(_full_key("AAA"), cached, tmp_path)
+    _save_cache(_full_key("BBB"), cached, tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_download(tickers, **kwargs):
+        batch = tickers.split() if isinstance(tickers, str) else list(tickers)
+        calls.append(batch)
+        if len(calls) == 1:
+            # The first answer serves BBB and nothing for AAA.
+            return _download_frame(["BBB"], kwargs["start"], kwargs["end"])
+        return _download_frame(batch, kwargs["start"], kwargs["end"])
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    sleeps: list[float] = []
+    monkeypatch.setattr(data_module, "_retry_sleep", sleeps.append)
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, refresh=True, strict=True)
+    out = fetcher.fetch(["AAA", "BBB"], date(2024, 1, 2), date(2024, 1, 25))
+
+    assert calls == [["AAA", "BBB"], ["AAA"]]
+    assert sleeps == [data_module.YFINANCE_RETRY_DELAYS[0]]
+    assert out["AAA"].index.max() == pd.Timestamp("2024-01-25")
+
+
+def test_yfinance_refresh_without_strict_does_not_ask_again_for_an_empty_name(
+    tmp_path, monkeypatch
+):
+    """The retry exists for strict's refusal; elsewhere the cache serves."""
+    import yfinance as yf
+
+    cached = _plain_bars(date(2024, 1, 2), date(2024, 1, 20)).rename(columns=str.lower)
+    _save_cache(_full_key("AAA"), cached, tmp_path)
+    calls: list[object] = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append(tickers)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(yf, "download", fake_download)
+
+    YFinancePriceFetcher(cache_dir=tmp_path, refresh=True).fetch(
+        ["AAA"], date(2024, 1, 2), date(2024, 1, 25)
+    )
+
+    assert len(calls) == 1
 
 
 def test_yfinance_strict_without_refresh_keeps_cache(tmp_path, monkeypatch):
