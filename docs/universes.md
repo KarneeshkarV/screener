@@ -22,6 +22,10 @@ Run this daily or weekly from cron/CI. It writes a complete snapshot only when
 membership changes, so the resulting CSV becomes point-in-time history without
 manual addition/removal maintenance.
 
+The standalone Connors short research uses a stricter timestamped evidence contract when exact daily membership and data availability are required.
+See [Connors short research data contract](connors-pit-research.md).
+That path does not turn the observed snapshots below into verified effective-date history.
+
 ## Backfilling history you did not capture
 
 `universes sync` only builds history forward from the day you start running it.
