@@ -18,6 +18,7 @@ from screener.indicators.plugins.atr import atr
 from screener.indicators.plugins.bollinger_bands import bollinger_bands
 from screener.indicators.plugins.ema import ema
 from screener.indicators.plugins.rsi import rsi
+from screener.indicators.plugins.sar import sar
 from screener.indicators.plugins.sma import sma
 from screener.indicators.plugins.stdev import stdev
 from screener.indicators.plugins.supertrend import supertrend_dir
@@ -123,6 +124,17 @@ def test_supertrend_dir_matches_pandas_ta_signflip_tail(series):
     tail = slice(50, None)
     # Categorical agreement on the sign (uptrend/downtrend), reconciled by flip.
     assert np.all(np.sign(got[tail]) == -np.sign(ref_dir[tail]))
+
+
+def test_sar_matches_pandas_ta_psar_exact(series):
+    """Wilder's parabolic SAR: an uptrend seeds below price, and a reversal
+    restarts the recursion from the prior extreme point. The fixture opens
+    rising, so both sides seed the same way and agree from bar 1."""
+    got = sar(series["high"], series["low"], series["close"])
+    psar = pta.psar(pd.Series(series["high"]), pd.Series(series["low"]))
+    ref = psar.iloc[:, 0].fillna(psar.iloc[:, 1]).to_numpy()
+    assert psar.iloc[:, 3].sum() > 10  # the fixture exercises reversals
+    np.testing.assert_allclose(got[1:], ref[1:], atol=1e-12, rtol=0)
 
 
 # --------------------------------------------------------------------------- #
