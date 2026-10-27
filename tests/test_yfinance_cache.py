@@ -10,6 +10,7 @@ import pytest
 
 from screener.backtester import data as data_module
 from screener.backtester.data import YFinancePriceFetcher, _load_cached, _save_cache
+from screener.backtester.sessions import US_SESSION
 from screener.providers import StaleDataError
 
 
@@ -205,8 +206,10 @@ def test_yfinance_stale_tail_without_scale_overlap_reloads_window(
 
     # The newest *complete* session rather than today: a bar for a session
     # still trading is dropped on the way in and on the way out, so anchoring
-    # this on today would make the test read the clock.
-    today = date.today() - pd.Timedelta(days=1)
+    # this on today would make the test read the clock. Yesterday by the local
+    # clock is not enough either: ahead of New York (IST after midnight) it is
+    # a US session still trading.
+    today = US_SESSION.last_complete_date()
     start = today - pd.Timedelta(days=5)
     cached = _plain_bars(start, today + pd.Timedelta(days=1))
     fetcher = YFinancePriceFetcher(cache_dir=tmp_path)

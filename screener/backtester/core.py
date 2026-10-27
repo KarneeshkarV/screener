@@ -761,11 +761,10 @@ def _check_exit_at_bar(
             half_spread=state.half_spread,
         )
 
-    india_daily_exit = cfg.market.lower() == "india" and cfg.interval == "1d"
     if exit_phase != "remaining":
-        # An expression using the completed daily bar is actionable at the
-        # next open. Execute it before this bar's intraday range is available.
-        if india_daily_exit and i > state.entry_idx and state.exit_signal is not None:
+        # An expression using a completed bar is actionable at the next open.
+        # Execute it before this bar's range is available.
+        if i > state.entry_idx and state.exit_signal is not None:
             prior_exit = (
                 bool(state.exit_signal_values[i - 1])
                 if state.exit_signal_values is not None
@@ -791,14 +790,6 @@ def _check_exit_at_bar(
 
     state.peak = max(state.peak, high if targets_allowed else close)
 
-    if state.exit_signal is not None and not india_daily_exit:
-        fired = (
-            bool(state.exit_signal_values[i])
-            if state.exit_signal_values is not None
-            else bool(state.exit_signal.iloc[i])
-        )
-        if fired:
-            return _sell("exit_expr"), "exit_expr"
     if state.session_last is not None and state.session_last[i]:
         return _sell("session"), "session"
     if i >= state.hold_limit_idx:

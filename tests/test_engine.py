@@ -374,7 +374,7 @@ def test_trailing_stop_tracks_peak():
     assert outcome.trade.exit_price == pytest.approx(120.0 * 0.9)
 
 
-def test_exit_expression_triggers_at_close():
+def test_exit_expression_fills_at_next_open():
     bars = make_bars(n=15, seed=2)
     exit_ast = parse("close < open")
     # force bar 7 to have close<open, prior bars close>=open
@@ -389,8 +389,9 @@ def test_exit_expression_triggers_at_close():
     outcome = simulate_single_ticker(bars, signal_idx=3, cfg=cfg, exit_ast=exit_ast)
     assert outcome.trade is not None
     assert outcome.trade.exit_reason == "exit_expr"
-    assert outcome.trade.exit_date == bars.index[7].date()
-    assert outcome.trade.exit_price == pytest.approx(float(bars.iloc[7]["close"]))
+    # The completed bar 7 fires the rule; the order fills at bar 8's open.
+    assert outcome.trade.exit_date == bars.index[8].date()
+    assert outcome.trade.exit_price == pytest.approx(float(bars.iloc[8]["open"]))
 
 
 def test_time_exit_after_N_bars():

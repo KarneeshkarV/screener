@@ -14,6 +14,7 @@ from screener.backtester.core import _passes_entry_filters
 from screener.backtester.costs import (
     FlatCommission,
     IndiaDeliveryCosts,
+    apply_round_trip_costs,
     VestedUSCosts,
     build_cost_model,
     corwin_schultz_half_spread,
@@ -227,6 +228,19 @@ def test_portfolio_flat_fees_tracked_as_commission():
     pf.close("AAA", date(2024, 1, 10), 110.0, "time")
     assert set(pf.fees_paid) == {"commission"}
     assert pf.total_fees_paid > 0.0
+
+
+@pytest.mark.parametrize("exit_price", [200.0, 50.0])
+def test_round_trip_net_return_matches_portfolio_cash(exit_price):
+    """Earnings/PEAD net returns must equal what the portfolio books."""
+    model = FlatCommission(bps=100.0)
+    pf = Portfolio(101.0, 1, cost_model=model)
+    pf.open("AAA", date(2024, 1, 2), 100.0)
+    trade = pf.close("AAA", date(2024, 1, 10), exit_price, "time")
+    raw, net, fees = apply_round_trip_costs(100.0, exit_price, model)
+    assert raw == pytest.approx(exit_price / 100.0 - 1.0)
+    assert net == pytest.approx(trade.return_pct)
+    assert fees["commission"] == pytest.approx(1.0 + exit_price * 0.01)
 
 
 # ── Corwin-Schultz ───────────────────────────────────────────────────

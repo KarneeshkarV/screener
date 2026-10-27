@@ -47,7 +47,7 @@ from typing import Any, Union, cast
 import numpy as np
 import pandas as pd
 
-from screener.backtester.costs import CostModel, FlatCommission, Side
+from screener.backtester.costs import CostModel, FlatCommission, Side, bps_fraction
 from screener.backtester.models import Position, Trade
 from screener.ledger import ExitReason
 
@@ -97,6 +97,13 @@ def affordable_buy_shares(
 
     if buy_cost(upper) <= budget:
         return upper
+    if isinstance(cost_model, FlatCommission):
+        # A flat rate has a closed form; step down only past float rounding.
+        shares = budget / (price * (1.0 + max(bps_fraction(cost_model.bps), 0.0)))
+        shares = min(float(floor(shares)) if whole_shares else shares, upper)
+        while shares > 0 and buy_cost(shares) > budget:
+            shares = shares - 1.0 if whole_shares else float(np.nextafter(shares, 0.0))
+        return max(shares, 0.0)
     lower = 0.0
     # Keep the feasible endpoint. Returning a tolerance-rounded midpoint could
     # overdraw cash even when the difference is less than one cent.

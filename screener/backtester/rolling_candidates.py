@@ -418,6 +418,11 @@ def _build_rolling_candidate_matrices(
     any_score = False
     missing_score: list[str] = []
     master_ticks = _master_ticks(master_ix)
+    # A later session on the master calendar is known on the signal day; a
+    # later bar for this one ticker is not. Gating on the ticker's own history
+    # length dropped a name on its last recorded bar (a delisting, a feed
+    # gap) and let a lower-ranked name take the seat that day.
+    later_session = np.arange(n_days) + 1 < n_days
     for column, tv in enumerate(valid_tickers):
         bars = bars_by_tv[tv]
         close = _float_values(bars["close"])
@@ -434,7 +439,9 @@ def _build_rolling_candidate_matrices(
         bar_idx_np[:, column] = pos
         enough_history = (pos + 1 >= lookback_required + 1) & has_bar
         lookback_ok_np[:, column] = (
-            (enough_history & (pos + 1 < n)) if require_next_bar else enough_history
+            (enough_history & (later_session | (pos + 1 < n)))
+            if require_next_bar
+            else enough_history
         )
         close_np[:, column] = np.where(has_bar, close[pos], np.nan)
         volume_np[:, column] = np.where(has_bar, volume[pos], np.nan)
