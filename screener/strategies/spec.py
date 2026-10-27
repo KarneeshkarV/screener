@@ -24,6 +24,7 @@ whose vendor filters cut the field before bars are fetched.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
+from contextvars import ContextVar
 from datetime import date
 from typing import Any, Literal, TypeVar, cast
 
@@ -171,6 +172,31 @@ def bar_columns_lookback(bar_columns: Mapping[str, BarColumnFn]) -> int:
     return floor
 
 
+#: Intermediates shared by the recipes of one :func:`apply_bar_columns` call.
+#: ``None`` outside such a call, so a recipe invoked on its own computes afresh.
+_SHARED_INTERMEDIATES: ContextVar[dict[str, Any] | None] = ContextVar(
+    "_SHARED_INTERMEDIATES", default=None
+)
+
+
+def shared_intermediate(key: str, compute: Callable[[], V]) -> V:
+    """``compute()``, built once per frame while its bar columns are applied.
+
+    Several recipes of one strategy read the same intermediate - MACD's line
+    and signal both need EMA12 and EMA26, and AO is read at three lags - and
+    each recipe only sees the frame. Within one :func:`apply_bar_columns` call
+    every recipe gets the same frame, so the first recipe's result is reused by
+    the rest. ``key`` must therefore name everything the value depends on, and
+    the value must not be mutated by its readers.
+    """
+    memo = _SHARED_INTERMEDIATES.get()
+    if memo is None:
+        return compute()
+    if key not in memo:
+        memo[key] = compute()
+    return cast(V, memo[key])
+
+
 def apply_bar_columns(
     bar_columns: Mapping[str, BarColumnFn] | None, bars: pd.DataFrame
 ) -> pd.DataFrame:
@@ -178,8 +204,12 @@ def apply_bar_columns(
     if not bar_columns or bars is None or bars.empty:
         return bars
     frame = bars.copy()
-    for column, build in bar_columns.items():
-        frame[column] = build(frame)
+    token = _SHARED_INTERMEDIATES.set({})
+    try:
+        for column, build in bar_columns.items():
+            frame[column] = build(frame)
+    finally:
+        _SHARED_INTERMEDIATES.reset(token)
     return frame
 
 
