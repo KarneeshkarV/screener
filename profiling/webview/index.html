@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screener backtester — flamegraph &amp; GPU analysis</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+         margin: 0; line-height: 1.5; background: #0f1115; color: #e6e6e6; }
+  header { padding: 20px 28px; border-bottom: 1px solid #262a33; background:#151821; }
+  h1 { margin: 0 0 4px; font-size: 20px; }
+  .sub { color:#9aa4b2; font-size: 13px; }
+  main { padding: 20px 28px; max-width: 1100px; }
+  .card { border:1px solid #262a33; border-radius:10px; padding:16px 18px; margin:14px 0; background:#151821; }
+  .card h2 { margin:0 0 8px; font-size:16px; }
+  a.btn { display:inline-block; background:#2d6cdf; color:#fff; text-decoration:none;
+          padding:8px 14px; border-radius:8px; font-size:14px; margin:4px 8px 4px 0; }
+  a.btn.alt { background:#333a48; }
+  code { background:#20242e; padding:1px 5px; border-radius:4px; font-size:13px; }
+  .note { color:#f0b429; font-size:13px; }
+  iframe { width:100%; height:640px; border:1px solid #262a33; border-radius:8px; background:#fff; }
+  .grid { display:grid; gap:14px; }
+  ul { margin:6px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Screener backtester — flamegraph &amp; GPU offload analysis</h1>
+  <div class="sub">Rolling engine · 300 synthetic symbols · 3yr / 756 sessions · 709 trades · profile re-run 2026-08-03 (post #114–#119)</div>
+</header>
+<main>
+  <div class="card">
+    <h2>Profile re-run — after the rolling-backtest acceleration</h2>
+    <p>Every artifact on this page was regenerated on <strong>2026-08-03</strong> against <code>main@572d47b</code>, so it reflects the engine <em>after</em> PRs #114–#119. Interleaved A/B vs. the merge-base: <strong>0.61 s → 0.32 s per run (≈1.92×)</strong>, identical 709 trades. Preparation (<code>_prepare_simulation</code>) is now 61.2% of the engine; the old top bottleneck <code>_precompute_filter_signals</code> fell to 9.9%.</p>
+    <a class="btn" href="../flamegraph_analysis_2026_08_03.md">Re-run write-up (2026-08-03) →</a>
+    <a class="btn alt" href="../flamegraph_analysis_2026_07_28.md">Previous re-run (2026-07-28) →</a>
+    <a class="btn alt" href="../flamegraph_gpu_analysis_2026_07_25.md">Original, superseded (2026-07-25) →</a>
+  </div>
+
+  <div class="card">
+    <h2>Hold-time curve sweep (448 backtests)</h2>
+    <p>Sharpe / return / drawdown vs. hold cap {5,10,20,30,40,60,100,∞}, US + India, 7 strategies × top{5,10,20,40}. US peaks at ~20d; India lets winners run. Now also charts <strong>repeat-trade churn</strong> — a 5-day cap re-buys the same leaders 5.3× (93% re-entries) vs ~2× at ∞.</p>
+    <a class="btn" href="holdcurve.html">Open hold-time curve →</a>
+  </div>
+
+  <div class="card">
+    <h2>Analysis write-up</h2>
+    <p>Bottleneck ranking and GPU-offload assessment, rendered. <span class="note">Note: this page renders the 2026-07-25 analysis and is kept for the record — its numbers describe the pre-vectorization engine. The current ranking is in the 2026-08-03 re-run above.</span></p>
+    <a class="btn" href="analysis.html">Open analysis (2026-07-25) →</a>
+  </div>
+
+  <div class="card">
+    <h2>Interactive profile explorer (snakeviz)</h2>
+    <p>Drill into the cProfile call tree — icicle graph, sortable table, click to zoom.</p>
+    <a class="btn" href="http://159.89.224.249:8089/snakeviz/%2Froot%2Fscreneer_main%2Fscreener%2Fprofiling%2Fwebview%2Frolling.prof" target="_blank">Open snakeviz →</a>
+  </div>
+
+  <div class="card">
+    <h2>Flamegraph — cProfile (deterministic)</h2>
+    <p>Instrumented call-time flamegraph — 2,948,939 calls in 1.291 s instrumented (was 7,171,738 / 3.070 s before the vectorization work). Taken on a 16-core box with BLAS threads pinned to 1; absolute seconds are not comparable to the 07-25/07-28 runs.</p>
+    <a class="btn alt" href="flamegraph_cprofile.svg" target="_blank">Full screen ↗</a>
+    <iframe src="flamegraph_cprofile.svg" title="cProfile flamegraph"></iframe>
+  </div>
+
+  <div class="card">
+    <h2>Flamegraph — py-spy (sampling, 285 samples @250Hz)</h2>
+    <p>Native sampling profiler — includes C-extension frames the deterministic profiler can't see. The run is much shorter than the prior profile, so start-up dominates the small sample. <span class="note">≈48.2% of samples are <code>importlib</code> process start-up; the fixed import cost did not change, while engine time fell. Discount it when reading shares.</span></p>
+    <a class="btn alt" href="flamegraph_pyspy.svg" target="_blank">Full screen ↗</a>
+    <iframe src="flamegraph_pyspy.svg" title="py-spy flamegraph"></iframe>
+  </div>
+
+  <div class="card">
+    <h2>Raw artifacts</h2>
+    <ul>
+      <li><a href="pstats_tottime.txt">pstats — top 40 by internal time</a></li>
+      <li><a href="pstats_cumulative.txt">pstats — top 40 by cumulative time</a></li>
+      <li><a href="rolling.prof">rolling.prof</a> (cProfile binary, open in snakeviz) — current, post-#119</li>
+      <li><a href="rolling_pre_vectorization.prof">rolling_pre_vectorization.prof</a> — the merge-base (<code>98f8ea8</code>) profiled under the same conditions, so the before/after delta is reproducible</li>
+    </ul>
+  </div>
+</main>
+</body>
+</html>
