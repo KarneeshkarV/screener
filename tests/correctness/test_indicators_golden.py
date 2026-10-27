@@ -102,6 +102,15 @@ def test_the_two_rsi_implementations_are_now_the_same_number():
     )
 
 
+def test_wilder_rsi_is_100_on_a_flat_window_like_the_plugin():
+    """Pine ``ta.rsi`` gives 100 whenever the smoothed loss is zero, so a
+    fully flat window is 100, not 0/0. Both implementations must say so."""
+    close = np.full(40, 5.0)
+    pandas_side = wilder_rsi(pd.Series(close), 14, min_periods=14).to_numpy()
+    np.testing.assert_array_equal(pandas_side, rsi(close, 14))
+    assert pandas_side[-1] == 100.0
+
+
 def test_supertrend_direction_trend_contract():
     """Independent property: a strong uptrend ends uptrend (<0), downtrend ends >0."""
     up = np.linspace(100, 200, 60)
