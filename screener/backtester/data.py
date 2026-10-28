@@ -54,7 +54,13 @@ from screener.backtester.price_cache import (
     has_scale_verified as _has_scale_verified,
 )
 from screener.backtester.price_cache import (
+    frame_from_cached_table as _frame_from_cached_table,
+)
+from screener.backtester.price_cache import (
     load_cached_frame as _load_cached,
+)
+from screener.backtester.price_cache import (
+    read_cached_table as _read_cached_table,
 )
 from screener.backtester.price_cache import (
     load_coverage as _load_coverage,
@@ -501,18 +507,30 @@ class YFinancePriceFetcher:
     def _load_cache_entries(
         self, cache_keys: dict[str, str]
     ) -> dict[str, pd.DataFrame | None]:
-        """Every ticker's cached frame, read concurrently."""
+        """Every ticker's cached frame, read concurrently.
 
-        def read(cache_key: str) -> pd.DataFrame | None:
-            return _load_cached(cache_key, self.cache_dir, self.interval)
-
+        Only the parquet reads run on the pool. They release the GIL; the
+        pandas conversion after them does not, and on eight threads it took
+        longer than on one, so it runs here, one entry at a time.
+        """
         if len(cache_keys) < 2:
-            return {ticker: read(key) for ticker, key in cache_keys.items()}
+            return {
+                ticker: _load_cached(key, self.cache_dir, self.interval)
+                for ticker, key in cache_keys.items()
+            }
         with ThreadPoolExecutor(
             max_workers=min(self.CACHE_READ_WORKERS, len(cache_keys))
         ) as pool:
-            frames = list(pool.map(read, cache_keys.values()))
-        return dict(zip(cache_keys, frames))
+            tables = list(
+                pool.map(
+                    lambda key: _read_cached_table(key, self.cache_dir),
+                    cache_keys.values(),
+                )
+            )
+        return {
+            ticker: _frame_from_cached_table(table, self.interval)
+            for ticker, table in zip(cache_keys, tables)
+        }
 
     def _complete(self, ticker: str, frame: pd.DataFrame | None) -> pd.DataFrame | None:
         """``frame`` without the bar of a session that is still trading.
