@@ -35,6 +35,7 @@ from screener.backtester.optimization.trials import (
     classify_trial_status,
     default_experiment_id,
     load_trial_search_stats,
+    record_attempted_trials,
     record_trial,
     trial_config_identity,
 )
@@ -425,27 +426,6 @@ def _persist_trial(
     )
 
 
-def _mark_attempted(
-    *,
-    experiment_id: str,
-    params: dict[str, Any],
-    trial_key: str,
-    trial_db_path: Path | None,
-) -> None:
-    """Register search exposure before execution so interruption still counts."""
-    record_trial(
-        experiment_id,
-        params,
-        status="attempted",
-        score=None,
-        metrics=None,
-        trade_count=0,
-        trial_key=trial_key,
-        error=None,
-        db_path=trial_db_path,
-    )
-
-
 def _score_after_dsr_correction(
     *,
     metric: str,
@@ -685,13 +665,11 @@ def grid_search(
         return result, moments
 
     # Register ATTEMPTED before execution so interruption records exposure.
-    for params in pending:
-        _mark_attempted(
-            experiment_id=exp_id,
-            params=params,
-            trial_key=_key_for(params),
-            trial_db_path=trial_path,
-        )
+    record_attempted_trials(
+        exp_id,
+        [(_key_for(params), params) for params in pending],
+        db_path=trial_path,
+    )
 
     try:
         if pending and (max_workers or 1) != 1:
