@@ -697,10 +697,18 @@ def walk_forward_optimize(
     if oos_objective is not None and not math.isfinite(oos_objective):
         oos_objective = None
     # Aggregate train/test ratio uses the combined OOS objective, not mean fold.
+    # The ratio keeps its sign: a negative ratio means the OOS objective lost.
     if train_avg > 0 and oos_objective is not None:
-        ratio = train_avg / max(abs(oos_objective), 1e-9)
+        ratio = (
+            train_avg / oos_objective if abs(oos_objective) >= 1e-9 else 1.0 / 1e-9
+        )
     else:
         ratio = 0.0
+    # A positive train score that does not hold up out of sample is overfit
+    # however large the OOS loss, which a magnitude ratio would hide.
+    overfit = train_avg > 0 and (
+        ratio >= overfit_ratio or (oos_objective is not None and oos_objective <= 0)
+    )
 
     adequate = oos_evidence_adequate(
         equity=combined_equity if not combined_equity.empty else None,
@@ -755,7 +763,7 @@ def walk_forward_optimize(
         windows=results,
         stability_score=stability,
         aggregate_metrics=aggregate,
-        overfit_flag=bool(train_avg > 0 and ratio >= overfit_ratio),
+        overfit_flag=bool(overfit),
         train_test_score_ratio=ratio,
         oos_trades=tuple(oos_trades),
         oos_equity=combined_equity if not combined_equity.empty else None,
