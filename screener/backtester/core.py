@@ -324,9 +324,7 @@ def _liquidity_series(
         return cached
     vol = frame_cache.volume_arr
     valid_volume = ~np.isnan(vol)
-    vol_sum = sliding_window_view(np.where(valid_volume, vol, 0.0), window).sum(
-        axis=1
-    )
+    vol_sum = sliding_window_view(np.where(valid_volume, vol, 0.0), window).sum(axis=1)
     count = sliding_window_view(valid_volume, window).sum(axis=1)
     with np.errstate(divide="ignore", invalid="ignore"):
         adv = np.where(count > 0, vol_sum / count, 0.0)
@@ -339,6 +337,7 @@ def _liquidity_series(
     series = (adv, sigma, exact)
     frame_cache.liquidity_series[window] = series
     return series
+
 
 def _cached_trailing_liquidity(
     frame_cache: _FrameCache,
@@ -700,6 +699,7 @@ def _exit_expr_due(state: _SlotState, i: int) -> bool:
     if state.exit_signal_values is not None:
         return bool(state.exit_signal_values[i - 1])
     return bool(state.exit_signal.iloc[i - 1])
+
 
 def _fire_partial_exits_at_bar(
     state: _SlotState,

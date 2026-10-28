@@ -699,9 +699,7 @@ def walk_forward_optimize(
     # Aggregate train/test ratio uses the combined OOS objective, not mean fold.
     # The ratio keeps its sign: a negative ratio means the OOS objective lost.
     if train_avg > 0 and oos_objective is not None:
-        ratio = (
-            train_avg / oos_objective if abs(oos_objective) >= 1e-9 else 1.0 / 1e-9
-        )
+        ratio = train_avg / oos_objective if abs(oos_objective) >= 1e-9 else 1.0 / 1e-9
     else:
         ratio = 0.0
     # A positive train score that does not hold up out of sample is overfit

@@ -69,6 +69,7 @@ ON CONFLICT(experiment_id, trial_key) DO UPDATE SET
     created_ts=excluded.created_ts
 """
 
+
 def default_trial_db_path() -> Path:
     override = os.environ.get("SCREENER_OPTIMIZER_TRIALS_DB")
     if override:
@@ -243,6 +244,7 @@ def record_trial(
         conn.commit()
     finally:
         conn.close()
+
 
 def record_attempted_trials(
     experiment_id: str,

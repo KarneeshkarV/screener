@@ -198,9 +198,7 @@ def test_nse_board_meeting_notice_is_not_an_earnings_event(monkeypatch):
         ["RELIANCE.NS"], years=3, market="india", surprise_source="fmp"
     )
 
-    assert list(pd.to_datetime(events["earnings_date"])) == [
-        pd.Timestamp("2026-04-24")
-    ]
+    assert list(pd.to_datetime(events["earnings_date"])) == [pd.Timestamp("2026-04-24")]
     assert events["surprise_pct"].tolist() == [20.0]
 
 

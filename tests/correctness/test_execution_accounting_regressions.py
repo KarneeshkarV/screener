@@ -144,6 +144,7 @@ def test_target_gapped_through_at_open_beats_later_stop(engine):
     assert trade.exit_reason == "target"
     assert trade.exit_price == pytest.approx(125)
 
+
 @pytest.mark.parametrize(
     "tier",
     [(0.0, 0.5), (float("inf"), 0.5), (0.1, 0.0), (0.1, 1.1), (0.1, float("nan"))],

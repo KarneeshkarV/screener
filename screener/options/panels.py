@@ -72,9 +72,7 @@ def _history_metrics(group: pd.DataFrame) -> pd.DataFrame:
 
     # Share of observed IVs so far at or below today's, once two are seen.
     less_or_equal = iv.expanding(min_periods=2).rank(method="max")
-    ordered["iv_percentile"] = (less_or_equal / history_days * 100.0).where(
-        iv.notna()
-    )
+    ordered["iv_percentile"] = (less_or_equal / history_days * 100.0).where(iv.notna())
 
     volume = pd.to_numeric(cast(Any, ordered.get("options_volume")), errors="coerce")
     if not isinstance(volume, pd.Series):
