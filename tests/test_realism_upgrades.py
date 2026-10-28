@@ -82,6 +82,13 @@ def test_vol_impact_scales_with_sqrt_shares_over_adv():
     assert four_x == pytest.approx(2.0 * base, rel=1e-9)
 
 
+def test_vol_impact_sell_price_floors_at_zero():
+    # 1e6 shares against an ADV of 10 quotes a 31.6x adverse fraction.
+    model = VolumeImpactSlippage(k=0.1)
+    price = apply_slippage(model, 1.0, "sell", 1e6, adv=10.0, sigma_daily=1.0)
+    assert price == 0.0
+
+
 def test_composite_sums_components():
     a = FixedBpsSlippage(bps=5.0)
     b = HalfSpreadSlippage(half_spread_bps=3.0)

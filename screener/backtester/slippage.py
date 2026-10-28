@@ -71,7 +71,8 @@ def apply_slippage(
     frac = max(frac, 0.0)
     if side == "buy":
         return reference_price * (1.0 + frac)
-    return reference_price * (1.0 - frac)
+    # A sale cannot pay the buyer to take the shares: impact floors at zero.
+    return reference_price * (1.0 - min(frac, 1.0))
 
 
 def fixed_bps_fill(reference_price: float, side: Side, bps: float) -> float:

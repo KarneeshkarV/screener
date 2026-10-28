@@ -160,8 +160,9 @@ def test_pead_applies_slippage_and_commission(monkeypatch):
 
     entry = 110.0 * (1 + 5 / 10_000)
     exit_ = 115.0 * (1 - 5 / 10_000)
-    # commission_bps is per fill: 10 bps at entry plus 10 bps at exit.
-    expected = ((exit_ / entry - 1.0) - 2 * 10 / 10_000) * 100
+    # commission_bps is per fill: 10 bps at entry plus 10 bps at exit, booked
+    # as Portfolio does - proceeds after fees over cost including fees.
+    expected = ((exit_ * (1 - 10 / 10_000)) / (entry * (1 + 10 / 10_000)) - 1.0) * 100
     assert trades[0].return_pct == pytest.approx(expected, abs=1e-3)
     assert trades[0].details["raw_return_pct"] > trades[0].return_pct
 
@@ -392,8 +393,9 @@ def test_pead_dynamic_applies_slippage_and_commission(monkeypatch):
 
     entry = 110.0 * (1 + 5 / 10_000)
     exit_ = 121.0 * (1 - 5 / 10_000)
-    # commission_bps is per fill: 10 bps at entry plus 10 bps at exit.
-    expected = ((exit_ / entry - 1.0) - 2 * 10 / 10_000) * 100
+    # commission_bps is per fill: 10 bps at entry plus 10 bps at exit, booked
+    # as Portfolio does - proceeds after fees over cost including fees.
+    expected = ((exit_ * (1 - 10 / 10_000)) / (entry * (1 + 10 / 10_000)) - 1.0) * 100
     assert trades[0].return_pct == pytest.approx(expected, abs=1e-3)
     assert trades[0].details["raw_return_pct"] > trades[0].return_pct
 

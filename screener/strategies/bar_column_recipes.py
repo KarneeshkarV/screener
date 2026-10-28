@@ -26,7 +26,8 @@ from screener.indicators.plugins.bollinger_bands import bollinger_bands
 from screener.indicators.plugins.rsi import rsi
 from screener.indicators.plugins.sar import sar
 from screener.indicators.plugins.supertrend import supertrend_dir
-from screener.strategies.spec import bar_column
+from screener.indicators.plugins.ema import ema
+from screener.strategies.spec import bar_column, shared_intermediate
 
 ST_PERIOD = 10
 ST_MULT = 3.0
@@ -112,8 +113,11 @@ def donchian_prior_low_10(bars: pd.DataFrame) -> pd.Series:
 
 
 def _rsi_series(bars: pd.DataFrame) -> pd.Series:
-    return pd.Series(
-        rsi(bars["close"].to_numpy(dtype=float), 14), index=bars.index, dtype=float
+    return shared_intermediate(
+        "rsi14",
+        lambda: pd.Series(
+            rsi(bars["close"].to_numpy(dtype=float), 14), index=bars.index, dtype=float
+        ),
     )
 
 
@@ -139,24 +143,30 @@ def macd_line(bars: pd.DataFrame) -> pd.Series:
     Using the numpy one keeps the converted strategy faithful to the body it
     replaces instead of silently changing its warm-up.
     """
-    from screener.indicators.plugins.ema import ema
-
-    close = bars["close"].to_numpy(dtype=float)
-    return pd.Series(ema(close, 12) - ema(close, 26), index=bars.index, dtype=float)
+    return pd.Series(_macd(bars), index=bars.index, dtype=float)
 
 
 @bar_column(35)
 def macd_signal(bars: pd.DataFrame) -> pd.Series:
-    from screener.indicators.plugins.ema import ema
+    return pd.Series(ema(_macd(bars), 9), index=bars.index, dtype=float)
 
-    close = bars["close"].to_numpy(dtype=float)
-    macd = ema(close, 12) - ema(close, 26)
-    return pd.Series(ema(macd, 9), index=bars.index, dtype=float)
+
+def _macd(bars: pd.DataFrame) -> np.ndarray:
+    def build() -> np.ndarray:
+        close = bars["close"].to_numpy(dtype=float)
+        macd: np.ndarray = ema(close, 12) - ema(close, 26)
+        return macd
+
+    return shared_intermediate("macd_12_26", build)
 
 
 def _ao(bars: pd.DataFrame) -> pd.Series:
-    mid = (bars["high"].astype(float) + bars["low"].astype(float)) / 2.0
-    return mid.rolling(5, min_periods=5).mean() - mid.rolling(34, min_periods=34).mean()
+    def build() -> pd.Series:
+        mid = (bars["high"].astype(float) + bars["low"].astype(float)) / 2.0
+        fast = mid.rolling(5, min_periods=5).mean()
+        return fast - mid.rolling(34, min_periods=34).mean()
+
+    return shared_intermediate("ao_5_34", build)
 
 
 @bar_column(34)
@@ -176,11 +186,21 @@ def ao_prev2(bars: pd.DataFrame) -> pd.Series:
 
 
 def _red(bars: pd.DataFrame) -> pd.Series:
-    return (bars["open"].astype(float) > bars["close"].astype(float)).astype(float)
+    return shared_intermediate(
+        "red",
+        lambda: (bars["open"].astype(float) > bars["close"].astype(float)).astype(
+            float
+        ),
+    )
 
 
 def _green(bars: pd.DataFrame) -> pd.Series:
-    return (bars["open"].astype(float) < bars["close"].astype(float)).astype(float)
+    return shared_intermediate(
+        "green",
+        lambda: (bars["open"].astype(float) < bars["close"].astype(float)).astype(
+            float
+        ),
+    )
 
 
 @bar_column(2)

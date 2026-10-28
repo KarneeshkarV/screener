@@ -119,3 +119,37 @@ def test_mixed_history_lengths_are_still_exact():
         pd.testing.assert_frame_equal(
             prepared[tv], apply_bar_columns(BAR_COLUMNS, bars)
         )
+
+
+def test_shared_intermediates_are_reused_within_one_frame_only(monkeypatch):
+    """The MACD and AO recipes share their intermediates inside one
+    ``apply_bar_columns`` call, and the result is what each recipe gives alone.
+    """
+    columns = {
+        "macd_line": recipes.macd_line,
+        "macd_signal": recipes.macd_signal,
+        "ao": recipes.awesome_oscillator,
+        "ao_p1": recipes.ao_prev1,
+        "ao_p2": recipes.ao_prev2,
+    }
+    spans: list[int] = []
+    real_ema = recipes.ema
+
+    def counting_ema(x, n):
+        spans.append(n)
+        return real_ema(x, n)
+
+    monkeypatch.setattr(recipes, "ema", counting_ema)
+    first, second = _frame(21, 120), _frame(22, 120)
+    prepared = apply_bar_columns(columns, first)
+    assert sorted(spans) == [9, 12, 26]  # EMA12/26 once, not once per recipe
+    for column, build in columns.items():
+        pd.testing.assert_series_equal(
+            prepared[column], build(first), check_names=False
+        )
+
+    # A second frame must not see the first frame's intermediates.
+    other = apply_bar_columns(columns, second)
+    for column, build in columns.items():
+        pd.testing.assert_series_equal(other[column], build(second), check_names=False)
+    assert not other["macd_line"].equals(prepared["macd_line"])

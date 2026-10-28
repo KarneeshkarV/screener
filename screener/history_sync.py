@@ -114,9 +114,19 @@ def _run_batches(
         client.batch(statements[start : start + batch_size])
 
 
-def _remote_run_keys(client: SyncClient) -> set[tuple[str, str, str]]:
-    result = client.execute(f"SELECT run_ts, market, criteria FROM {REMOTE_RUNS_TABLE}")
-    return {(str(r[0]), str(r[1]), str(r[2])) for r in result.rows}
+def _remote_row_counts(client: SyncClient) -> dict[tuple[str, str, str], int]:
+    """Remote ``{run key: stored row count}``, including runs with no rows."""
+    result = client.execute(
+        f"""
+        SELECT r.run_ts, r.market, r.criteria, COUNT(rr.ticker)
+        FROM {REMOTE_RUNS_TABLE} r
+        LEFT JOIN {REMOTE_ROWS_TABLE} rr
+          ON rr.run_ts = r.run_ts AND rr.market = r.market
+         AND rr.criteria = r.criteria
+        GROUP BY r.run_ts, r.market, r.criteria
+        """
+    )
+    return {(str(r[0]), str(r[1]), str(r[2])): int(r[3]) for r in result.rows}
 
 
 def _remote_totals(client: SyncClient) -> tuple[int, int]:
@@ -125,14 +135,17 @@ def _remote_totals(client: SyncClient) -> tuple[int, int]:
     return int(runs), int(rows)
 
 
-def _local_runs() -> list[tuple[int, str, str, str, int]]:
+def _local_runs() -> list[tuple[int, str, str, str, int, int]]:
+    """Local runs as ``(id, run_ts, market, criteria, total, saved_rows)``."""
     conn = history._connect()
     try:
         return [
-            (int(r[0]), str(r[1]), str(r[2]), str(r[3]), int(r[4]))
+            (int(r[0]), str(r[1]), str(r[2]), str(r[3]), int(r[4]), int(r[5]))
             for r in conn.execute(
-                "SELECT id, run_ts, market, criteria, total_matches "
-                "FROM runs ORDER BY id"
+                "SELECT r.id, r.run_ts, r.market, r.criteria, r.total_matches, "
+                "COUNT(rr.ticker) FROM runs r "
+                "LEFT JOIN run_rows rr ON rr.run_id = r.id "
+                "GROUP BY r.id ORDER BY r.id"
             ).fetchall()
         ]
     finally:
@@ -155,29 +168,40 @@ def _local_rows(run_id: int) -> list[tuple[object, ...]]:
 
 
 def backup_history(client: SyncClient, *, batch_size: int = 200) -> BackupSummary:
-    """Push every local run not already on the remote, with its rows."""
+    """Push every local run the remote lacks or holds only partially.
+
+    A run counts as backed up only when the remote holds all of its rows, so a
+    backup that died between a run's header and its rows is repaired by the
+    next one instead of leaving that run permanently empty remotely. Each
+    run's header is queued directly before its rows.
+    """
     ensure_remote_tables(client)
-    existing = _remote_run_keys(client)
-    to_push = [run for run in _local_runs() if (run[1], run[2], run[3]) not in existing]
-
-    run_stmts: list[tuple[str, list[object]]] = [
-        (
-            f"""
-            INSERT INTO {REMOTE_RUNS_TABLE} (id, run_ts, market, criteria, total_matches)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(run_ts, market, criteria)
-            DO UPDATE SET id = excluded.id, total_matches = excluded.total_matches
-            """,
-            [run_id, run_ts, market, criteria, total],
-        )
-        for run_id, run_ts, market, criteria, total in to_push
+    remote_counts = _remote_row_counts(client)
+    # -1 marks a run missing remotely, so even a zero-row run gets its header.
+    to_push = [
+        run
+        for run in _local_runs()
+        if remote_counts.get((run[1], run[2], run[3]), -1) < run[5]
     ]
-    _run_batches(client, run_stmts, batch_size)
 
-    row_stmts: list[tuple[str, list[object]]] = []
-    for run_id, run_ts, market, criteria, _total in to_push:
+    stmts: list[tuple[str, list[object]]] = []
+    rows_pushed = 0
+    for run_id, run_ts, market, criteria, total, _saved in to_push:
+        stmts.append(
+            (
+                f"""
+                INSERT INTO {REMOTE_RUNS_TABLE}
+                    (id, run_ts, market, criteria, total_matches)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(run_ts, market, criteria)
+                DO UPDATE SET id = excluded.id, total_matches = excluded.total_matches
+                """,
+                [run_id, run_ts, market, criteria, total],
+            )
+        )
         for row in _local_rows(run_id):
-            row_stmts.append(
+            rows_pushed += 1
+            stmts.append(
                 (
                     f"""
                     INSERT INTO {REMOTE_ROWS_TABLE}
@@ -193,12 +217,12 @@ def backup_history(client: SyncClient, *, batch_size: int = 200) -> BackupSummar
                     [run_id, run_ts, market, criteria, *row],
                 )
             )
-    _run_batches(client, row_stmts, batch_size)
+    _run_batches(client, stmts, batch_size)
 
     remote_runs, remote_rows = _remote_totals(client)
     return BackupSummary(
         runs_pushed=len(to_push),
-        rows_pushed=len(row_stmts),
+        rows_pushed=rows_pushed,
         remote_runs=remote_runs,
         remote_rows=remote_rows,
     )
@@ -225,9 +249,11 @@ def restore_history(client: SyncClient) -> RestoreSummary:
     remote_runs = client.execute(
         f"SELECT run_ts, market, criteria, total_matches FROM {REMOTE_RUNS_TABLE}"
     ).rows
-    missing = [
-        r for r in remote_runs if (str(r[0]), str(r[1]), str(r[2])) not in local_keys
-    ]
+    # Insert oldest first so local ids among restored runs follow run_ts.
+    missing = sorted(
+        (r for r in remote_runs if (str(r[0]), str(r[1]), str(r[2])) not in local_keys),
+        key=lambda r: str(r[0]),
+    )
 
     runs_restored = 0
     rows_restored = 0

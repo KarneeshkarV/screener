@@ -469,8 +469,9 @@ def _supertrend(bars: pd.DataFrame | PanelBars, period: int, mult: float) -> Vec
 
     Delegates to the registered ``supertrend_dir`` indicator so the expression
     language and ``screener.strategies.plugins.supertrend`` cannot disagree.
-    The indicator is a bar-sequential numpy loop (the band carries state), so
-    the panel case runs it once per ticker column rather than vectorising.
+    The band carries state along time but not across tickers, so a panel goes
+    to the indicator's panel kernel in one call: it loops over bars once and
+    does every ticker column in numpy, matching the per-column result exactly.
     """
     high = _as_float(bars["high"])
     low = _as_float(bars["low"])
@@ -479,19 +480,18 @@ def _supertrend(bars: pd.DataFrame | PanelBars, period: int, mult: float) -> Vec
         high_f = cast(pd.DataFrame, high)
         low_f = cast(pd.DataFrame, low)
         close_f = cast(pd.DataFrame, close)
-        high_v = high_f.to_numpy(copy=False)
-        low_v = low_f.to_numpy(copy=False)
-        close_v = close_f.to_numpy(copy=False)
-        out = np.empty(high_v.shape, dtype=np.float64)
-        for column in range(high_v.shape[1]):
-            out[:, column] = supertrend_dir(
-                high_v[:, column],
-                low_v[:, column],
-                close_v[:, column],
-                period=period,
-                mult=mult,
-            )
-        return pd.DataFrame(out, index=high_f.index, columns=high_f.columns)
+        out = supertrend_dir(
+            high_f.to_numpy(dtype=np.float64, copy=False),
+            low_f.to_numpy(dtype=np.float64, copy=False),
+            close_f.to_numpy(dtype=np.float64, copy=False),
+            period=period,
+            mult=mult,
+        )
+        return pd.DataFrame(
+            np.asarray(out, dtype=np.float64),
+            index=high_f.index,
+            columns=high_f.columns,
+        )
     return pd.Series(
         supertrend_dir(
             cast(pd.Series, high).to_numpy(copy=False),
@@ -1070,42 +1070,42 @@ def evaluate_panel_many(
 
 
 def required_lookback(node: Node) -> int:
-    """Return the maximum rolling window length referenced in the expression.
+    """Return the bars of history the expression needs before the signal bar.
 
     Used by the engine to verify each ticker has enough history prior to the
-    signal bar. Functions like crossover/crossunder add 1 bar of lookback.
+    signal bar. A rolling window counts its full length, and a window over
+    another window adds to its source's need: ``sma(sma(close, 200), 200)``
+    has no value until about 400 bars in, not 200. Functions like
+    crossover/crossunder add 1 bar of lookback.
     """
-    max_len = 0
 
-    def visit(n: Node) -> None:
-        nonlocal max_len
+    def need(n: Node) -> int:
         if isinstance(n, Call):
+            inner = max((need(arg) for arg in n.args), default=0)
             if (
                 n.name in ROLLING_FUNCS
                 and len(n.args) == 2
                 and isinstance(n.args[1], Num)
             ):
-                max_len = max(max_len, int(n.args[1].value))
+                return need(n.args[0]) + int(n.args[1].value)
             if n.name == "atr" and len(n.args) == 1 and isinstance(n.args[0], Num):
-                max_len = max(max_len, int(n.args[0].value))
+                return max(inner, int(n.args[0].value))
             if (
                 n.name == "supertrend"
                 and len(n.args) == 2
                 and isinstance(n.args[0], Num)
             ):
-                max_len = max(max_len, int(n.args[0].value))
+                return max(inner, int(n.args[0].value))
             if n.name in {"crossover", "crossunder"}:
-                max_len = max(max_len, 1)
-            for arg in n.args:
-                visit(arg)
-        elif isinstance(n, (BinOp, Compare, BoolOp)):
-            visit(n.left)
-            visit(n.right)
-        elif isinstance(n, (UnaryOp, Not)):
-            visit(n.operand)
+                return max(inner, 1)
+            return inner
+        if isinstance(n, (BinOp, Compare, BoolOp)):
+            return max(need(n.left), need(n.right))
+        if isinstance(n, (UnaryOp, Not)):
+            return need(n.operand)
+        return 0
 
-    visit(node)
-    return max_len
+    return need(node)
 
 
 def collect_names(node: Node) -> set[str]:

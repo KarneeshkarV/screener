@@ -246,3 +246,32 @@ def test_us_filter_prefers_fmp_and_falls_back_to_yfinance():
     out = filter_promoter_increased(df, market="us")
 
     assert sorted(out["name"]) == ["AAA", "CCC", "DDD"]
+
+
+def test_screener_in_scrape_maps_tv_underscore_and_404_spares_breaker(
+    monkeypatch, tmp_path
+):
+    import io
+    import urllib.error
+    import urllib.request
+
+    from screener import resilience
+
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(resilience, "_BREAKERS", {})
+    urls: list[str] = []
+
+    def urlopen(req, timeout=None):
+        urls.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, io.BytesIO())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    out = insiders_module._fetch_openscreener_one(
+        "BAJAJ_AUTO", cache_ttl=1, refresh=True
+    )
+
+    assert out is None
+    # One request, to screener.in's real slug; a 404 is a miss, not an outage.
+    assert urls == ["https://www.screener.in/company/BAJAJ-AUTO/"]
+    assert resilience.get_breaker("screener-in")._failures == 0

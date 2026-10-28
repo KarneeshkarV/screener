@@ -53,6 +53,23 @@ CREATE INDEX IF NOT EXISTS idx_trials_experiment ON trials(experiment_id);
 """
 
 
+_UPSERT_TRIAL = """
+INSERT INTO trials (
+    experiment_id, trial_key, params_json, status, score, sharpe,
+    metrics_json, error, trade_count, created_ts
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+ON CONFLICT(experiment_id, trial_key) DO UPDATE SET
+    params_json=excluded.params_json,
+    status=excluded.status,
+    score=excluded.score,
+    sharpe=excluded.sharpe,
+    metrics_json=excluded.metrics_json,
+    error=excluded.error,
+    trade_count=excluded.trade_count,
+    created_ts=excluded.created_ts
+"""
+
+
 def default_trial_db_path() -> Path:
     override = os.environ.get("SCREENER_OPTIMIZER_TRIALS_DB")
     if override:
@@ -211,21 +228,7 @@ def record_trial(
     conn = _connect(path)
     try:
         conn.execute(
-            """
-            INSERT INTO trials (
-                experiment_id, trial_key, params_json, status, score, sharpe,
-                metrics_json, error, trade_count, created_ts
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(experiment_id, trial_key) DO UPDATE SET
-                params_json=excluded.params_json,
-                status=excluded.status,
-                score=excluded.score,
-                sharpe=excluded.sharpe,
-                metrics_json=excluded.metrics_json,
-                error=excluded.error,
-                trade_count=excluded.trade_count,
-                created_ts=excluded.created_ts
-            """,
+            _UPSERT_TRIAL,
             (
                 experiment_id,
                 trial_key,
@@ -237,6 +240,34 @@ def record_trial(
                 error,
                 int(trade_count),
             ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def record_attempted_trials(
+    experiment_id: str,
+    trials: list[tuple[str, dict[str, Any]]],
+    *,
+    db_path: Path | str | None = None,
+) -> None:
+    """Register ``(trial_key, params)`` pairs as ATTEMPTED in one transaction.
+
+    Same rows as one ``record_trial(status="attempted")`` call each, with a
+    single commit instead of one per trial.
+    """
+    if not trials:
+        return
+    conn = _connect(resolve_trial_db_path(db_path))
+    try:
+        conn.executemany(
+            _UPSERT_TRIAL,
+            [
+                (experiment_id, key, _params_key(params), "attempted")
+                + (None, None, None, None, 0)
+                for key, params in trials
+            ],
         )
         conn.commit()
     finally:

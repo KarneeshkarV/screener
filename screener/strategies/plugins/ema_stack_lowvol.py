@@ -14,6 +14,13 @@ and the rolling backtester fills its ``--top`` slots with the calmest names in
 the stack. Entry is unchanged: the volatility leg only orders the candidates,
 it never admits a name the stack rejected.
 
+It does drop names, though, for the reason ``low_volatility`` gives: a halted
+or stale-quoted name that stopped after a rally keeps the stack true while its
+downside volatility is exactly zero, so an ungated ranking hands it the first
+slot. ``downside_vol_60`` is therefore NaN wherever
+:func:`screener.tradeable.tradeable_span` says the window is not a market, and
+a NaN ``rank_score`` is not ranked at all.
+
 Why downside deviation rather than full realized volatility (``low_volatility``
 already offers the latter): upside dispersion is not a risk a long book should
 be penalized for, and the two are close substitutes here anyway - they correlate
@@ -56,6 +63,7 @@ from screener.strategies.spec import (
     PrepareCtx,
     register_expression_strategy,
 )
+from screener.tradeable import tradeable_span
 
 # The default `ema` criterion. EMA200 > 0 is the has-enough-history gate, and
 # mirrors the live TradingView filter one-for-one.
@@ -71,19 +79,27 @@ _SLOWEST_EMA = 200
 _ANNUAL = 252.0
 
 
-def downside_volatility(close: pd.Series, window: int = _VOL_WINDOW) -> pd.Series:
+def downside_volatility(
+    close: pd.Series,
+    window: int = _VOL_WINDOW,
+    volume: pd.Series | None = None,
+) -> pd.Series:
     """Annualized trailing semi-deviation of negative log returns.
 
     Semi-deviation about zero rather than about the mean: the quantity of
     interest is how hard the name falls, not how far its losses sit from its own
     average. Causal - the window at bar ``t`` ends at ``t``.
+
+    NaN where the ``window + 1`` closes the returns are made of do not rest on
+    real, traded prices.
     """
     prices = close.astype(float)
     log_prices = pd.Series(np.log(prices.where(prices > 0.0)), index=prices.index)
     log_returns = log_prices.diff()
     losses = log_returns.where(log_returns < 0.0, 0.0).where(log_returns.notna())
     mean_square = (losses**2).rolling(window, min_periods=window).mean()
-    return pd.Series(np.sqrt(mean_square) * np.sqrt(_ANNUAL), index=prices.index)
+    vol = pd.Series(np.sqrt(mean_square) * np.sqrt(_ANNUAL), index=prices.index)
+    return vol.where(tradeable_span(prices, volume, window=window + 1))
 
 
 def _prepare_lowvol(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
@@ -93,7 +109,7 @@ def _prepare_lowvol(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
             out[tv] = bars
             continue
         frame = bars.copy()
-        vol = downside_volatility(frame["close"])
+        vol = downside_volatility(frame["close"], volume=frame.get("volume"))
         frame["downside_vol_60"] = vol
         # Lower downside volatility ranks higher -> negate so the descending
         # ranker picks the calmest names in the stack first.

@@ -20,6 +20,7 @@ from screener.rs_breakout import (
     evaluate_symbol,
     normalize_bars,
     previous_completed_week_high,
+    previous_completed_week_high_series,
     scan_rs_breakouts,
     supertrend,
     write_json,
@@ -235,6 +236,24 @@ def test_previous_completed_week_high_excludes_current_week():
     bars.loc[previous_week_mask, "high"] = 123.0
 
     assert previous_completed_week_high(bars, date(2026, 4, 30)) == 123.0
+
+
+def test_previous_completed_week_high_matches_the_series_on_a_saturday():
+    # An NSE Budget Saturday falls in the W-FRI week ending the next Friday.
+    # The live value must read the same week as the backtest series, both on
+    # the Saturday and in the week after it.
+    bars = _trend_bars(100.0, 140.0)
+    saturday = pd.Timestamp("2026-04-18")
+    bars.loc[saturday] = bars.loc[pd.Timestamp("2026-04-17")]
+    bars = bars.sort_index()
+    bars.loc[saturday, "high"] = 1_000.0
+    series = previous_completed_week_high_series(bars)
+
+    for day in ("2026-04-17", "2026-04-18", "2026-04-22", "2026-04-29"):
+        ts = pd.Timestamp(day)
+        live = previous_completed_week_high(bars.loc[:ts], ts.date())
+        assert live == series.loc[ts], day
+    assert previous_completed_week_high(bars, date(2026, 4, 29)) == 1_000.0
 
 
 def test_evaluate_symbol_applies_volume_and_delivery_filters():

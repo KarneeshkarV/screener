@@ -70,9 +70,13 @@ def dashboard_frames(result: BacktestResult) -> dict[str, pd.DataFrame]:
 
     monthly = pd.DataFrame(columns=["month", "return_pct"])
     if not equity.empty:
-        monthly_equity = equity.set_index("date")["equity"].resample("ME").last()
+        daily_equity = equity.set_index("date")["equity"]
+        monthly_equity = daily_equity.resample("ME").last()
+        # The first month's base is the starting equity, not a prior month-end.
+        base = monthly_equity.shift(1)
+        base.iloc[0] = daily_equity.iloc[0]
         monthly = (
-            monthly_equity.pct_change().dropna().rename("return_pct").reset_index()
+            (monthly_equity / base - 1.0).dropna().rename("return_pct").reset_index()
         )
         monthly["month"] = monthly["date"].dt.strftime("%Y-%m")
         monthly = monthly[["month", "return_pct"]]

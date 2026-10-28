@@ -575,7 +575,9 @@ def run_options_position_backtest(
                 underlying_close=u_close,
                 carry=carry_marks.get(sym, {}),
             )
-            pos.hold_days += 1
+            # Count sessions held after entry, so max_hold=N holds N sessions.
+            if day > pos.entry_date:
+                pos.hold_days += 1
             pos.last_mark_premium = _mtm_premium(pos.legs, marks)
 
             exit_sig = (

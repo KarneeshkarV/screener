@@ -160,6 +160,21 @@ def warn_unadjustable_fmp_frames(
 #: vendor's own rounding, not a real price move.
 RESCALE_TOLERANCE = 0.01
 
+#: How far a settled daily close may move before the cache is judged re-based.
+#: A dividend re-bases every adjusted bar before its ex-date by
+#: ``1 - dividend / close``, usually well under :data:`RESCALE_TOLERANCE`, yet
+#: merged in it is a fake return at the seam. Parquet round-trips a float
+#: exactly, and a live Yahoo check (batch against batch, and single against
+#: batch) served every shared bar but the newest bit-identical, so anything
+#: above this is a re-base.
+REBASE_TOLERANCE = 1e-5
+
+#: Newest cached bars the tight check skips. The newest bar is the one the
+#: vendor still revises (it moved by up to 3.4e-4 between two requests two
+#: seconds apart, no older bar moved), and a second one is margin for a
+#: settled print corrected after the close.
+REBASE_UNSETTLED_BARS = 2
+
 #: Overlapping sessions needed before a scale verdict is trusted. One shared
 #: bar can differ for reasons that are not a rescale (a late vendor
 #: correction to a single session), so a verdict rests on a handful.
@@ -202,7 +217,11 @@ def has_price_seam(frame: pd.DataFrame | None) -> bool:
 
 
 def overlap_rescaled(
-    existing: pd.DataFrame | None, new: pd.DataFrame, interval: str = "1d"
+    existing: pd.DataFrame | None,
+    new: pd.DataFrame,
+    interval: str = "1d",
+    *,
+    tolerance: float = RESCALE_TOLERANCE,
 ) -> bool:
     """True when ``existing`` and ``new`` price the same sessions differently.
 
@@ -247,7 +266,25 @@ def overlap_rescaled(
     if int(usable.sum()) < RESCALE_MIN_OVERLAP:
         return False
     ratio = (new_shared[usable] / old_shared[usable]).abs()
-    return bool((ratio - 1.0).abs().max() > RESCALE_TOLERANCE)
+    return bool((ratio - 1.0).abs().max() > tolerance)
+
+
+def overlap_rebased(
+    existing: pd.DataFrame | None, new: pd.DataFrame, interval: str = "1d"
+) -> bool:
+    """True when ``new`` prices a settled cached daily session differently.
+
+    :func:`overlap_rescaled` only sees a split. A dividend the vendor has
+    back-adjusted since the entry was written moves the older bars by less,
+    and merging them stitches that move in as a one-day return. The newest
+    :data:`REBASE_UNSETTLED_BARS` cached bars are left out, because the
+    vendor's own revisions to them are not a re-base. Intraday bars are not
+    judged: their newest stretch is revised over more than a couple of bars.
+    """
+    if interval != "1d" or existing is None or len(existing) <= REBASE_UNSETTLED_BARS:
+        return False
+    settled = existing.iloc[:-REBASE_UNSETTLED_BARS]
+    return overlap_rescaled(settled, new, interval, tolerance=REBASE_TOLERANCE)
 
 
 def cache_merge_needs_full_download(
@@ -409,6 +446,7 @@ __all__ = [
     "empty_ohlcv_frame",
     "frame_has_range",
     "has_price_seam",
+    "overlap_rebased",
     "overlap_rescaled",
     "inclusive_fetch_bounds",
     "merge_price_frames",
