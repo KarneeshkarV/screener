@@ -641,6 +641,14 @@ def refresh_exit_liquidity(
         state.half_spread = _half_spread_at_signal(bars, prior, cfg, state.frame_cache)
 
 
+def _exit_expr_due(state: _SlotState, i: int) -> bool:
+    """Whether the prior completed bar's exit expression fires at this open."""
+    if i <= state.entry_idx or state.exit_signal is None:
+        return False
+    if state.exit_signal_values is not None:
+        return bool(state.exit_signal_values[i - 1])
+    return bool(state.exit_signal.iloc[i - 1])
+
 def _fire_partial_exits_at_bar(
     state: _SlotState,
     bars: pd.DataFrame,
@@ -648,9 +656,15 @@ def _fire_partial_exits_at_bar(
     cfg: BacktestConfig,
     portfolio: Portfolio,
     fill_model: FillModel,
+    *,
+    at_open: bool = False,
 ) -> None:
-    """Execute partial and full targets in price order, full first on ties."""
-    if not state.partial_targets:
+    """Execute partial and full targets in price order, full first on ties.
+
+    With ``at_open`` only levels at or below the open fill. The open is the
+    bar's first print, so those targets precede any stop later in the bar.
+    """
+    if not state.partial_targets and not at_open:
         return
     pos = portfolio.get_position(state.ticker)
     if pos is None or pos.shares <= 0:
@@ -671,8 +685,9 @@ def _fire_partial_exits_at_bar(
     ]
     if state.target_ref is not None:
         targets.append((state.target_ref, -1))
+    reach = bar_open if at_open else high
     for target_price, tier_idx in sorted(targets):
-        if high < target_price:
+        if reach < target_price:
             break
         pos = portfolio.get_position(state.ticker)
         if pos is None:
@@ -764,14 +779,8 @@ def _check_exit_at_bar(
     if exit_phase != "remaining":
         # An expression using a completed bar is actionable at the next open.
         # Execute it before this bar's range is available.
-        if i > state.entry_idx and state.exit_signal is not None:
-            prior_exit = (
-                bool(state.exit_signal_values[i - 1])
-                if state.exit_signal_values is not None
-                else bool(state.exit_signal.iloc[i - 1])
-            )
-            if prior_exit:
-                return _sell("exit_expr", at_open=True), "exit_expr"
+        if _exit_expr_due(state, i):
+            return _sell("exit_expr", at_open=True), "exit_expr"
         if trail_hit and (
             not stop_hit or cast(float, trail_ref) > cast(float, state.stop_ref)
         ):
