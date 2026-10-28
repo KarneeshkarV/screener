@@ -19,7 +19,7 @@ import requests
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from screener.cache import is_fresh
+from screener.cache import is_fresh, write_text
 from screener.resilience import call_with_resilience
 
 LOG = logging.getLogger(__name__)
@@ -347,7 +347,7 @@ def _write_cache(
         *(f"# {key}={value}" for key, value in (metadata or {}).items()),
         *symbols,
     ]
-    path.write_text("\n".join(lines) + "\n")
+    write_text(path, "\n".join(lines) + "\n")
     return path
 
 
@@ -574,7 +574,7 @@ def _fetch_sp500(*, use_cache: bool = True) -> tuple[list[str], str]:
     symbols = _dedupe(_normalize_sp500_symbols(df["Symbol"].dropna()).tolist())
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(symbols))
+        write_text(path, json.dumps(symbols))
     except (OSError, ValueError):
         LOG.debug("sp500 live cache at %s not writable", path)
     return symbols, _SP500_SOURCE
@@ -662,7 +662,7 @@ def _sp500_revision_id_at(as_of: date, *, use_cache: bool = True) -> int | None:
     revid = int(revisions[0]["revid"])
     if cacheable:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(revid))
+        write_text(path, json.dumps(revid))
     return revid
 
 
@@ -716,7 +716,7 @@ def _sp500_revision_members(revid: int, *, use_cache: bool = True) -> list[str] 
     if members is None:
         return None
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(members))
+    write_text(path, json.dumps(members))
     return members
 
 
@@ -1040,14 +1040,15 @@ def load_sp500_membership(
         membership[symbol] = added_ts.date() if pd.notna(added_ts) else None
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    write_text(
+        path,
         json.dumps(
             {
                 symbol: added.isoformat() if added else None
                 for symbol, added in membership.items()
             },
             indent=0,
-        )
+        ),
     )
     return membership
 

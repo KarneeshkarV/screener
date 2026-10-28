@@ -193,6 +193,21 @@ def test_sector_fetch_failure_blank_and_empty_input(monkeypatch, tmp_path) -> No
     ) == {"BLANK": UNKNOWN_SECTOR}
 
 
+def test_sector_fetch_failure_is_not_cached(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(sectors, "CACHE_DIR", tmp_path)
+
+    def rate_limited(symbol: str) -> dict:
+        raise RuntimeError("429 Too Many Requests")
+
+    assert sector_by_ticker(["AAPL"], "us", info_fetcher=rate_limited) == {
+        "AAPL": UNKNOWN_SECTOR
+    }
+    # The next healthy run must not be served the failure-derived UNKNOWN.
+    assert sector_by_ticker(
+        ["AAPL"], "us", info_fetcher=lambda symbol: {"sector": "Technology"}
+    ) == {"AAPL": "Technology"}
+
+
 def test_sector_neutralize_single_cell_frame():
     idx = pd.DatetimeIndex([pd.Timestamp("2024-01-02")])
     scores = pd.DataFrame({"AAA": [1.5]}, index=idx)

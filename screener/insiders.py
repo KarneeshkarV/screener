@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import urllib.request
 from typing import TYPE_CHECKING
+from urllib.error import HTTPError
 
 import pandas as pd
 
@@ -31,7 +32,7 @@ from screener.fmp import resolve_api_key
 from screener.parallel import parallel_map
 from screener.providers import CachedProvider, ProviderSpec
 from screener.resilience import call_with_resilience
-from screener.symbols import tv_to_yf
+from screener.symbols import restore_india_separator, tv_to_yf
 
 if TYPE_CHECKING:
     import yfinance as yf
@@ -353,15 +354,34 @@ class _HttpScraper:
     base_url = _SCREENER_URL
     consolidated = False
 
+    def __init__(self, *, resilient: bool = True) -> None:
+        # Callers already inside a "screener-in" CachedProvider pass
+        # resilient=False so that layer alone owns retries and rate tokens, and
+        # an outage raises (uncached) instead of returning "".
+        self.resilient = resilient
+
     def fetch_page(self, symbol: str) -> str:
+        # screener.in slugs use NSE's separators (BAJAJ-AUTO, M&M), not
+        # TradingView's underscore.
+        slug = restore_india_separator(symbol.upper())
+
         def _fetch() -> str:
             req = urllib.request.Request(
-                self.base_url.format(symbol=symbol.upper()), headers=_SCREENER_HEADERS
+                self.base_url.format(symbol=slug), headers=_SCREENER_HEADERS
             )
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                # urlopen's context manager is Any-typed; decode yields str.
-                return str(resp.read().decode("utf-8", "ignore"))
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    # urlopen's context manager is Any-typed; decode yields str.
+                    return str(resp.read().decode("utf-8", "ignore"))
+            except HTTPError as exc:
+                if exc.code == 404:
+                    # No such company page: a definitive miss, not an outage,
+                    # so it is neither retried nor counted against the breaker.
+                    return ""
+                raise
 
+        if not self.resilient:
+            return _fetch()
         return call_with_resilience(
             "screener-in",
             f"company page {symbol}",
@@ -384,7 +404,11 @@ def _fetch_openscreener_one(
             Stock = _optional.load("openscreener").Stock
         except ImportError:
             return None
-        rows = Stock(name, scraper=_HttpScraper()).shareholding_quarterly()
+        scraper = _HttpScraper(resilient=False)
+        html = scraper.fetch_page(name)
+        if not html:  # screener.in has no page for this name
+            return None
+        rows = Stock(name, scraper=scraper, page_html=html).shareholding_quarterly()
         if not rows:
             return None
         if len(rows) < 2:

@@ -43,7 +43,7 @@ def _seed_run(market, criteria, tickers, run_date):
     conn = sqlite3.connect(history_mod.DB_PATH)
     conn.execute(
         "UPDATE runs SET run_ts = ? WHERE id = ?",
-        (f"{run_date.isoformat()}T04:00:00+00:00", run_id),
+        (f"{run_date.isoformat()}T16:00:00+00:00", run_id),
     )
     conn.commit()
     conn.close()
