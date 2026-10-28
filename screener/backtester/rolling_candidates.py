@@ -159,6 +159,29 @@ def _last_positions(
     return np.searchsorted(ticks, master_ticks, side="right") - 1
 
 
+def _lagged_rolling_means(values: list[np.ndarray], window: int) -> list[np.ndarray]:
+    """``Series(v).shift(1).rolling(window, min_periods=window).mean()`` per array.
+
+    One rolling call over the arrays stacked as columns rather than one per
+    array: the per-call overhead was most of the cost on a wide universe.
+    Columns roll independently and the padding sits after each array's end, so
+    every value, NaN included, is bit-identical to the per-array call.
+    """
+    if not values:
+        return []
+    padded = np.full((max(len(v) for v in values), len(values)), np.nan)
+    for column, v in enumerate(values):
+        padded[: len(v), column] = v
+    rolled = (
+        pd.DataFrame(padded, copy=False)
+        .shift(1)
+        .rolling(window, min_periods=window)
+        .mean()
+        .to_numpy()
+    )
+    return [rolled[: len(v), column] for column, v in enumerate(values)]
+
+
 def _float_values(column: pd.Series) -> np.ndarray:
     """``column.astype(float).to_numpy()`` without the intermediate Series.
 
@@ -423,15 +446,22 @@ def _build_rolling_candidate_matrices(
     # length dropped a name on its last recorded bar (a delisting, a feed
     # gap) and let a lower-ranked name take the seat that day.
     later_session = np.arange(n_days) + 1 < n_days
+    dollar_volumes = [
+        _float_values(bars["dollar_volume"])
+        if "dollar_volume" in bars.columns
+        else _float_values(bars["close"]) * _float_values(bars["volume"])
+        for bars in (bars_by_tv[tv] for tv in valid_tickers)
+    ]
+    lagged_advs = (
+        _lagged_rolling_means(dollar_volumes, dynamic_universe_lookback)
+        if dynamic_universe_size is not None
+        else None
+    )
     for column, tv in enumerate(valid_tickers):
         bars = bars_by_tv[tv]
         close = _float_values(bars["close"])
         volume = _float_values(bars["volume"])
-        dollar_volume = (
-            _float_values(bars["dollar_volume"])
-            if "dollar_volume" in bars.columns
-            else close * volume
-        )
+        dollar_volume = dollar_volumes[column]
         pos = _last_positions(bars.index, master_ix, master_ticks)
         pos = np.where(pos < 0, -1, pos)
         n = len(bars)
@@ -446,16 +476,8 @@ def _build_rolling_candidate_matrices(
         close_np[:, column] = np.where(has_bar, close[pos], np.nan)
         volume_np[:, column] = np.where(has_bar, volume[pos], np.nan)
         dollar_vol_np[:, column] = np.where(has_bar, dollar_volume[pos], np.nan)
-        if dynamic_universe_size is not None:
-            lagged_adv = (
-                pd.Series(dollar_volume, index=bars.index)
-                .shift(1)
-                .rolling(
-                    dynamic_universe_lookback, min_periods=dynamic_universe_lookback
-                )
-                .mean()
-                .to_numpy()
-            )
+        if lagged_advs is not None:
+            lagged_adv = lagged_advs[column]
             assert dynamic_score_np is not None
             # ``pos`` carries the last bar forward, which is right for a price
             # and wrong for membership: a name whose history has ended (a
