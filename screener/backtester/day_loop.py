@@ -30,10 +30,12 @@ drives one ``CandidateSource`` and one ``DayLoop`` over a calendar:
 
 The exit sequence per slot, per day, is invariant:
 
-    dividends → tightest protective stop → price-ordered targets → remaining exits
+    dividends → open exit expression → targets gapped through at the open
+    → tightest protective stop → price-ordered targets → remaining exits
 
-Existing stops win when a daily bar also crosses a target.
-Stops raised by a partial target become active on the next bar.
+Existing stops win when a daily bar also crosses a target above its open.
+Stops raised by a partial target become active on the next bar, unless the
+target filled at the open, which precedes the rest of the bar.
 """
 
 from __future__ import annotations
@@ -48,6 +50,7 @@ import pandas as pd
 from screener.backtester.core import (
     _bar_label,
     _check_exit_at_bar,
+    _exit_expr_due,
     _fire_partial_exits_at_bar,
     _maybe_credit_dividends,
     _SlotState,
@@ -131,6 +134,16 @@ def _close_slot_at_day(
         slot_states[slot_id] = None
         return True
     targets_allowed = not entry_bar or state.entry_at_open
+    # A gap through a target fills at the open, the bar's first print, so it
+    # precedes a stop reached later in the bar.
+    if targets_allowed and cfg.gap_fills and not _exit_expr_due(state, i):
+        _fire_partial_exits_at_bar(
+            state, bars, i, cfg, portfolio, fill_model, at_open=True
+        )
+        position = portfolio.get_position(state.ticker)
+        if position is None:
+            slot_states[slot_id] = None
+            return True
     exit_ = _check_exit_at_bar(
         state,
         bars,

@@ -136,6 +136,15 @@ def test_full_target_wins_tie_and_gap(engine, partial_target):
     assert trades[0].exit_price == pytest.approx(125)
 
 
+def test_target_gapped_through_at_open_beats_later_stop(engine):
+    frame = bars()
+    frame.loc[frame.index[2], ["open", "high", "low", "close"]] = [125, 126, 90, 95]
+    result = run_engine(engine, {"AAA": frame}, stop_loss=0.05, take_profit=0.1)
+    trade = first_lot(result)[0]
+    assert trade.exit_reason == "target"
+    assert trade.exit_price == pytest.approx(125)
+
+
 @pytest.mark.parametrize(
     "tier",
     [(0.0, 0.5), (float("inf"), 0.5), (0.1, 0.0), (0.1, 1.1), (0.1, float("nan"))],

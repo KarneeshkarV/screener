@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from screener.backtester.dashboard import dashboard_frames, render_dashboard
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
@@ -108,6 +109,21 @@ def test_dashboard_frames_include_curves_trades_and_selection():
     assert "drawdown" in frames["curves"].columns
     assert "holding_days" in frames["trades"].columns
     assert frames["selection"].iloc[0]["ticker"] == "AAA"
+
+
+def test_monthly_returns_include_the_first_month():
+    idx = pd.bdate_range("2024-01-02", "2024-03-29")
+    equity = pd.Series(100_000.0, index=idx)
+    equity[idx >= "2024-01-31"] = 110_000.0
+    equity[idx >= "2024-03-29"] = 121_000.0
+    result = _result().model_copy(
+        update={"equity_curve": equity, "benchmark_curve": equity}
+    )
+
+    monthly = dashboard_frames(result)["monthly"]
+
+    assert monthly["month"].tolist() == ["2024-01", "2024-02", "2024-03"]
+    assert monthly["return_pct"].tolist() == pytest.approx([0.1, 0.0, 0.1])
 
 
 def test_render_dashboard_writes_expected_sections(tmp_path):

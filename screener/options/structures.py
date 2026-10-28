@@ -7,6 +7,7 @@ uses observed chain prices, never model prices.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from datetime import date
 from typing import Any
@@ -82,6 +83,10 @@ def _bs_delta(
     dte = (contract.expiry - as_of).days
     if dte < 1:
         return None
+    # A source delta uses the rate and day count its IV was inverted with;
+    # recomputing from that IV at r=0 would bias it.
+    if contract.delta is not None and math.isfinite(contract.delta):
+        return float(contract.delta)
     t = dte / _DAYS_PER_YEAR
     iv = contract.iv
     if iv is None or iv <= 0:
