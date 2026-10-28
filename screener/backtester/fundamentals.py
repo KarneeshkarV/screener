@@ -304,11 +304,25 @@ def _normalize_fmp_payload(
     income_by_date = _row_by_date(income_rows)
     records: list[dict[str, Any]] = []
     excluded_no_filing = 0
+    # A row's date is read once per field it publishes and again as a YoY and
+    # ``revenue_up_3q`` source, about eight parses per distinct row. Keyed by
+    # ``id``, which is stable because every payload row outlives the call. The
+    # empty stand-in for a missing prior-year row is a fresh dict each time,
+    # so it is answered directly (it has no filing date) and never cached.
+    effective_by_row: dict[int, pd.Timestamp | None] = {}
+
+    def effective_date(row: Mapping[str, Any]) -> pd.Timestamp | None:
+        if not row:
+            return None
+        key = id(row)
+        if key not in effective_by_row:
+            effective_by_row[key] = _effective_date(row, lag_days)
+        return effective_by_row[key]
 
     def publish(field: str, value: float | None, sources: list[dict[str, Any]]) -> None:
         if field not in fields or value is None:
             return
-        dates = [_effective_date(source, lag_days) for source in sources]
+        dates = [effective_date(source) for source in sources]
         if not dates or any(stamp is None for stamp in dates):
             return
         records.append(
@@ -341,7 +355,7 @@ def _normalize_fmp_payload(
     }
     for section, field_keys in section_fields.items():
         for row in _rows(payload, section):
-            if _effective_date(row, lag_days) is None:
+            if effective_date(row) is None:
                 excluded_no_filing += 1
                 continue
             for field, keys in field_keys.items():
@@ -353,7 +367,7 @@ def _normalize_fmp_payload(
         row_date = row.get("date")
         if not isinstance(row_date, str) or not row_date:
             continue
-        effective = _effective_date(row, lag_days)
+        effective = effective_date(row)
         if effective is None:
             # Period-end alone is not a publication time; drop rather than guess.
             excluded_no_filing += 1
