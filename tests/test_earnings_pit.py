@@ -152,6 +152,58 @@ def test_collect_prefers_nse_announcement_and_dedups(monkeypatch):
     assert dec_estimate in dates
 
 
+def test_nse_board_meeting_notice_is_not_an_earnings_event(monkeypatch):
+    # The notice names the results but precedes them by two weeks. Keeping it
+    # gave PEAD the quarter's FMP surprise before publication, and a duplicate.
+    anns = [
+        {
+            "desc": "Board Meeting Intimation",
+            "symbol": "RELIANCE",
+            "sort_date": "2026-04-10 18:00:00",
+            "attchmntText": "Board Meeting to be held on 24-Apr-2026 to consider"
+            " and approve the Audited Financial Results.",
+        },
+        {
+            "desc": "Outcome of Board Meeting",
+            "symbol": "RELIANCE",
+            "sort_date": "2026-04-24 19:30:00",
+            "attchmntText": "Audited Financial Results for the quarter ended"
+            " March 31, 2026",
+        },
+        {
+            "desc": "Financial Results",
+            "symbol": "RELIANCE",
+            "sort_date": "2026-04-25 09:00:00",
+            "attchmntText": "Audited Financial Results (revised filing)",
+        },
+    ]
+    module = types.ModuleType("jugaad_data.nse")
+    module.NSELive = lambda: types.SimpleNamespace(  # type: ignore[attr-defined]
+        corporate_announcements=lambda: anns
+    )
+    monkeypatch.setitem(sys.modules, "jugaad_data", types.ModuleType("jugaad_data"))
+    monkeypatch.setitem(sys.modules, "jugaad_data.nse", module)
+    fmp_row = {
+        "ticker": "RELIANCE.NS",
+        "earnings_date": pd.Timestamp("2026-04-24").date(),
+        "eps_estimate": 10.0,
+        "reported_eps": 12.0,
+        "surprise_pct": 20.0,
+    }
+    monkeypatch.setattr(
+        earnings_dates, "_fetch_fmp_earnings_rows", lambda *a: [fmp_row]
+    )
+
+    events = collect_earnings_events(
+        ["RELIANCE.NS"], years=3, market="india", surprise_source="fmp"
+    )
+
+    assert list(pd.to_datetime(events["earnings_date"])) == [
+        pd.Timestamp("2026-04-24")
+    ]
+    assert events["surprise_pct"].tolist() == [20.0]
+
+
 @pytest.mark.parametrize("delay_days", [20, 40, 55, 70, 89])
 def test_announcement_maps_to_reporting_quarter_independent_oracle(delay_days):
     """Across the full realistic filing-delay range, a Mar-2024 result's
