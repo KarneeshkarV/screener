@@ -8,6 +8,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 import pandas as pd
 
 from screener.backtester.costs import corwin_schultz_half_spread
@@ -158,6 +159,12 @@ class _FrameCache:
     liquidity_by_idx: dict[tuple[int, int], tuple[float, float]] = field(
         default_factory=dict
     )
+    # Lazily filled whole-frame ``(adv, sigma, exact)`` arrays per window,
+    # indexed by the window's first bar. Held slots read one every bar, so
+    # one vectorised pass replaces a per-bar slice and reduction.
+    liquidity_series: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = field(
+        default_factory=dict
+    )
     # Lazily filled Corwin-Schultz half-spread series (fraction), aligned to
     # ``bars.index``. None until first ``spread_proxy`` lookup for this frame.
     half_spread_s: pd.Series | None = None
@@ -301,6 +308,38 @@ class _RunCaches:
             self.store_exit_signal(ticker, result)
 
 
+def _liquidity_series(
+    frame_cache: _FrameCache, window: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Whole-frame trailing ADV and return std for full ``window``-bar windows.
+
+    Each row reduces the same values in the same order as the per-window path,
+    so the results are bit-identical. ``exact`` is false where a close or
+    return is missing; those windows keep the per-window path.
+    """
+    if window < 2 or frame_cache.close_arr.size < window:
+        return None
+    cached = frame_cache.liquidity_series.get(window)
+    if cached is not None:
+        return cached
+    vol = frame_cache.volume_arr
+    valid_volume = ~np.isnan(vol)
+    vol_sum = sliding_window_view(np.where(valid_volume, vol, 0.0), window).sum(
+        axis=1
+    )
+    count = sliding_window_view(valid_volume, window).sum(axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        adv = np.where(count > 0, vol_sum / count, 0.0)
+    rets = sliding_window_view(frame_cache.rets_arr[1:], window - 1)
+    # Keep pandas' reduction so optional bottleneck and ddof behavior match.
+    sigma = pd.DataFrame(rets, copy=False).std(axis=1).to_numpy(dtype=float)
+    missing = np.isnan(frame_cache.close_arr) | np.isnan(frame_cache.rets_arr)
+    missing[0] = np.isnan(frame_cache.close_arr[0])
+    exact = np.asarray(~sliding_window_view(missing, window).any(axis=1))
+    series = (adv, sigma, exact)
+    frame_cache.liquidity_series[window] = series
+    return series
+
 def _cached_trailing_liquidity(
     frame_cache: _FrameCache,
     bars: pd.DataFrame,
@@ -320,6 +359,19 @@ def _cached_trailing_liquidity(
     if cached is not None:
         return cached
     start = max(0, signal_idx - window + 1)
+    series = _liquidity_series(frame_cache, window)
+    if series is not None and signal_idx - window + 1 >= 0:
+        adv_s, sigma_s, exact = series
+        j = signal_idx - window + 1
+        if j < exact.size and exact[j]:
+            adv = float(adv_s[j])
+            sigma = float(sigma_s[j])
+            result = (
+                adv if np.isfinite(adv) else 0.0,
+                sigma if np.isfinite(sigma) else 0.0,
+            )
+            memo[(signal_idx, window)] = result
+            return result
     close_win = frame_cache.close_arr[start : signal_idx + 1]
     if close_win.size == 0:
         result = (0.0, 0.0)

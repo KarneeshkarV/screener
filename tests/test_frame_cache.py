@@ -155,6 +155,24 @@ def test_cached_liquidity_matches_original_reductions(label, window):
         )
 
 
+def test_cached_liquidity_long_frame_matches_with_gaps():
+    """The whole-frame series path must agree with the per-window reductions."""
+    rng = np.random.default_rng(3)
+    close = 100 + rng.normal(size=120).cumsum()
+    close[[30, 31, 75]] = np.nan
+    close[50] = 0.0
+    bars = _bars(120, close=close)
+    bars.loc[bars.index[::9], "volume"] = np.nan
+    cache = _build_frame_cache(bars)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        for window in (2, 20, 63):
+            for position in range(len(bars)):
+                assert _cached_trailing_liquidity(cache, bars, position, window) == (
+                    _trailing_liquidity(bars, position, window)
+                )
+
+
 @pytest.mark.parametrize("use_bottleneck", [False, True])
 def test_cached_liquidity_preserves_optional_reduction_behavior(use_bottleneck):
     rng = np.random.default_rng(42)
