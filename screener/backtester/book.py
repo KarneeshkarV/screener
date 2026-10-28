@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from screener.backtester.core import (
@@ -64,11 +65,19 @@ def fill_pending_entries(
         if day > bars.index[-1]:
             del pending_orders[slot_id]
             continue
-        entry_idx = int(bars.index.get_indexer(pd.DatetimeIndex([day]))[0])
+        frame_cache = caches.frame(order.ticker, bars)
+        index_i8 = frame_cache.index_i8
+        if index_i8 is not None:
+            pos = int(np.searchsorted(index_i8, day.value))
+            entry_idx = (
+                pos if pos < index_i8.size and index_i8[pos] == day.value else -1
+            )
+        else:
+            entry_idx = int(bars.index.get_indexer(pd.DatetimeIndex([day]))[0])
         if day <= pd.Timestamp(order.signal_date) or entry_idx <= order.signal_idx:
             continue
         index, reference, _warn = _resolve_entry_fill(
-            bars, order.signal_idx, cfg, caches.frame(order.ticker, bars), entry_idx
+            bars, order.signal_idx, cfg, frame_cache, entry_idx
         )
         if index is not None and reference is not None and 0 < reference < float("inf"):
             fillable.append((slot_id, order, entry_idx))
