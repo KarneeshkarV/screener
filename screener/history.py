@@ -3,6 +3,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -140,6 +141,21 @@ def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
         conn.close()
 
 
+def _market_date(run_ts: str, market: str) -> date:
+    """The exchange-local calendar date of a stored (UTC) ``run_ts``.
+
+    The UTC date would put a US screen run at 20:30 EDT on the next session,
+    replaying it with a one-day-late ``as_of``.
+    """
+    from screener.markets import MARKETS  # lazy: markets pulls in the CLI
+
+    ts = datetime.fromisoformat(run_ts)
+    spec = MARKETS.get(market)
+    if spec is None or ts.tzinfo is None:
+        return ts.date()
+    return ts.astimezone(ZoneInfo(spec.timezone)).date()
+
+
 @dataclass(frozen=True)
 class RunSnapshot:
     """A persisted screen run: its metadata plus the ranked rows that were shown."""
@@ -153,7 +169,7 @@ class RunSnapshot:
 
     @property
     def run_date(self) -> date:
-        return datetime.fromisoformat(self.run_ts).date()
+        return _market_date(self.run_ts, self.market)
 
     @property
     def tickers(self) -> list[str]:
@@ -201,15 +217,21 @@ def find_run(
         if on_or_before is None:
             row = conn.execute(
                 "SELECT id FROM runs WHERE market = ? AND criteria = ? "
-                "ORDER BY id DESC LIMIT 1",
+                "ORDER BY run_ts DESC, id DESC LIMIT 1",
                 (market, criteria),
             ).fetchone()
         else:
-            row = conn.execute(
-                "SELECT id FROM runs WHERE market = ? AND criteria = ? "
-                "AND substr(run_ts, 1, 10) <= ? ORDER BY id DESC LIMIT 1",
-                (market, criteria, on_or_before.isoformat()),
-            ).fetchone()
+            # Compare exchange-local dates, which SQLite cannot derive; the
+            # newest qualifying run is usually among the first rows read.
+            cursor = conn.execute(
+                "SELECT id, run_ts FROM runs WHERE market = ? AND criteria = ? "
+                "ORDER BY run_ts DESC, id DESC",
+                (market, criteria),
+            )
+            row = next(
+                (r for r in cursor if _market_date(r[1], market) <= on_or_before),
+                None,
+            )
         return int(row[0]) if row is not None else None
     finally:
         conn.close()
@@ -241,7 +263,7 @@ def list_runs(
             LEFT JOIN run_rows rr ON rr.run_id = r.id
             {where_sql}
             GROUP BY r.id
-            ORDER BY r.id DESC
+            ORDER BY r.run_ts DESC, r.id DESC
             LIMIT ?
             """,
             conn,
@@ -292,11 +314,14 @@ def resolve_replay_run(spec: str, min_age_days: int = 0) -> RunSnapshot:
 def previous_run(market: str, criteria: str, before_id: int) -> pd.DataFrame | None:
     conn = _connect()
     try:
+        # Recency is run_ts, not id: a restored backup gets fresh ids for
+        # older runs.
         prev = conn.execute(
             """
             SELECT id FROM runs
-            WHERE market = ? AND criteria = ? AND id < ?
-            ORDER BY id DESC
+            WHERE market = ? AND criteria = ?
+              AND (run_ts, id) < (SELECT run_ts, id FROM runs WHERE id = ?)
+            ORDER BY run_ts DESC, id DESC
             LIMIT 1
             """,
             (market, criteria, before_id),
