@@ -383,6 +383,29 @@ def test_pit_entry_after_signal():
     assert trade.entry_date > d0
 
 
+def test_max_hold_one_exits_on_the_next_session():
+    # max_hold=1 used to open and close on the same chain, paying only slippage.
+    d0, d1, d2 = date(2026, 7, 6), date(2026, 7, 7), date(2026, 7, 8)
+    schedule = {
+        d: _call_put_pair(d, call_last=10.0 + i, put_last=5.0)
+        for i, d in enumerate((d1, d2))
+    }
+    fetcher = StubPriceFetcher({"RELIANCE.NS": _underlying_bars(d0, d2)})
+    cfg = OptionsBacktestConfig(
+        tickers=("RELIANCE",),
+        start=d0,
+        end=d2,
+        structure="long_call",
+        entry_expr="true",
+        max_hold=1,
+        exit_dte=0,
+    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
+    trade = result.trades[0]
+    assert (trade.entry_date, trade.exit_date) == (d1, d2)
+    assert trade.exit_reason == "time"
+
+
 def test_summary_via_compute_backtest_summary():
     d0, d1, d2 = date(2026, 7, 6), date(2026, 7, 7), date(2026, 7, 8)
     schedule = {
