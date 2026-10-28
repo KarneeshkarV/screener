@@ -791,7 +791,14 @@ def grid_search(
         metric=metric,
         min_trades=min_trades,
     )
+    # Ties keep grid order, so the winner does not depend on worker timing.
+    grid_order = {_params_key(params): i for i, params in enumerate(combos)}
+    applied.sort(key=lambda item: grid_order.get(_params_key(item.params), 0))
     return sorted(applied, key=lambda item: item.score, reverse=True)[:top_n]
+
+
+def _params_key(params: dict[str, Any]) -> str:
+    return json.dumps(params, sort_keys=True, default=str)
 
 
 def _cache_key(
