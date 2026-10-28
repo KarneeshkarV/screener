@@ -70,19 +70,11 @@ def _history_metrics(group: pd.DataFrame) -> pd.DataFrame:
     ordered["iv_rank"] = ((iv - expanding_min) / spread * 100.0).where(spread > 0)
     ordered["iv_history_days"] = history_days.astype(int)
 
-    percentiles: list[float] = []
-    seen: list[float] = []
-    for raw in iv.tolist():
-        if pd.isna(raw):
-            percentiles.append(float("nan"))
-            continue
-        seen.append(float(raw))
-        if len(seen) < 2:
-            percentiles.append(float("nan"))
-            continue
-        less_or_equal = sum(value <= float(raw) for value in seen)
-        percentiles.append(less_or_equal / len(seen) * 100.0)
-    ordered["iv_percentile"] = percentiles
+    # Share of observed IVs so far at or below today's, once two are seen.
+    less_or_equal = iv.expanding(min_periods=2).rank(method="max")
+    ordered["iv_percentile"] = (less_or_equal / history_days * 100.0).where(
+        iv.notna()
+    )
 
     volume = pd.to_numeric(cast(Any, ordered.get("options_volume")), errors="coerce")
     if not isinstance(volume, pd.Series):
