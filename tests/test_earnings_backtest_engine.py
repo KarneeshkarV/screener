@@ -140,3 +140,63 @@ def test_earnings_india_cost_model_applies_more_cost_than_flat_zero(
     summary = compute_backtest_summary(india, strategy="price_momentum")
     assert float(summary["total_fees"]) > 0.0
     assert float(summary["fee_stt"]) > 0.0
+
+
+def test_earnings_total_fees_count_only_taken_trades(monkeypatch) -> None:
+    falling = _bars(IDX)
+    falling["close"] = [200.0 - i for i in range(len(IDX))]
+    data = {"UP": _bars(IDX), "DOWN": falling}
+    events = pd.concat(
+        [_events(IDX[30].date()).assign(ticker=ticker) for ticker in data],
+        ignore_index=True,
+    )
+    monkeypatch.setattr(
+        engine_module, "collect_earnings_events", lambda *a, **kw: events
+    )
+    monkeypatch.setattr(engine_module, "fetch_price_data", lambda *a, **kw: data)
+
+    trades = run_earnings_backtest(
+        market="us",
+        strategy="price_momentum",
+        min_score=0.55,
+        commission_bps=10.0,
+        slippage_bps=0.0,
+        tickers=list(data),
+    )
+
+    assert [t.passed_filter for t in trades] == [True, False]
+    summary = compute_backtest_summary(trades, strategy="price_momentum")
+    assert float(summary["total_fees"]) == pytest.approx(
+        sum(trades[0].details["fees"].values()), abs=1e-6
+    )
+
+
+def test_earnings_window_holds_signal_history_for_the_first_event(
+    monkeypatch,
+) -> None:
+    # Holidays leave fewer than 21 sessions in a 30-day pad, so the first
+    # event used to score 0 for missing data.
+    full = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=400)
+    first, second = full[200], full[300]
+    holidays = full[full.get_loc(first) - 15 : full.get_loc(first) - 12]
+    bars = _bars(full.drop(holidays))
+
+    def fetch(tickers, start, end, **kwargs):
+        return {t: bars.loc[str(start) : str(end)] for t in tickers}
+
+    events = pd.concat(
+        [_events(first.date()), _events(second.date())], ignore_index=True
+    )
+    monkeypatch.setattr(
+        engine_module, "collect_earnings_events", lambda *a, **kw: events
+    )
+    monkeypatch.setattr(engine_module, "fetch_price_data", fetch)
+
+    trades = run_earnings_backtest(
+        market="us",
+        strategy="price_momentum",
+        min_score=0.55,
+        tickers=["AAA"],
+    )
+
+    assert [t.passed_filter for t in trades] == [True, True]

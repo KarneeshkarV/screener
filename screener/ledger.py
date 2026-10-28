@@ -92,6 +92,8 @@ def _aggregate_event_fees(trades: Sequence[EventTradeSummary]) -> dict[str, floa
 
     out: dict[str, float] = {}
     for trade in trades:
+        if not trade.passed_filter:
+            continue
         details = getattr(trade, "details", None) or {}
         fees = details.get("fees") or {}
         if not isinstance(fees, dict):
