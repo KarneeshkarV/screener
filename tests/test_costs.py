@@ -524,3 +524,12 @@ def test_spread_proxy_worsens_fills_vs_off():
     # Buy-side half-spread raises entry; sell-side lowers exit → worse return.
     assert on.trades[0].entry_price >= off.trades[0].entry_price
     assert on.trades[0].return_pct <= off.trades[0].return_pct
+
+
+def test_flat_fee_affordability_buys_the_exact_budget_share():
+    """1,000 shares at 1.02 with 25 bps cost exactly 1,022.55."""
+    from screener.backtester.portfolio import affordable_buy_shares
+
+    model = FlatCommission(bps=25.0)
+    shares = affordable_buy_shares(model, 1.02, 1022.55, whole_shares=True)
+    assert shares == 1000.0

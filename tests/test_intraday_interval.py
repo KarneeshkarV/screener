@@ -404,7 +404,8 @@ def test_yfinance_intraday_failed_chunk_is_not_stored_as_complete(
     def fake_download(tickers, **kwargs):
         chunk_start = pd.Timestamp(kwargs["start"])
         if failing["on"] and chunk_start == pd.Timestamp(start) + pd.Timedelta(days=7):
-            raise RuntimeError("chunk timed out")
+            # yfinance catches a symbol's failure and serves it empty.
+            return pd.DataFrame()
         idx = pd.date_range(
             chunk_start, pd.Timestamp(kwargs["end"]) - pd.Timedelta(days=1), freq="D"
         )

@@ -1150,6 +1150,42 @@ def test_an_entry_written_before_the_window_s_last_sessions_is_extended(
     assert len(calls) == 1
 
 
+def test_a_holiday_after_the_newest_bar_does_not_hide_the_next_session(
+    tmp_path, monkeypatch
+):
+    """July 4 is a holiday, so an entry written that evening still lacks July 5."""
+    import yfinance as yf
+
+    calls = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append(pd.Timestamp(kwargs["start"]))
+        return _download_frame(tickers, kwargs["start"], kwargs["end"])
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setattr(
+        data_module,
+        "_last_complete_session",
+        lambda ticker: pd.Timestamp("2023-07-10"),
+    )
+
+    _save_cache(
+        _full_key("AAA"),
+        _plain_bars(date(2023, 6, 1), date(2023, 7, 4)).rename(columns=str.lower),
+        tmp_path,
+    )
+    holiday_evening = pd.Timestamp("2023-07-04 23:00", tz="UTC").timestamp()
+    os.utime(
+        tmp_path / (_full_key("AAA") + ".parquet"),
+        (holiday_evening, holiday_evening),
+    )
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    out = fetcher.fetch(["AAA"], date(2023, 6, 1), date(2023, 7, 5))["AAA"]
+    assert len(calls) == 1
+    assert out.index.max() == pd.Timestamp("2023-07-05")
+
+
 def test_a_long_halted_name_does_not_widen_the_tail_refresh(tmp_path, monkeypatch):
     """The tail group downloads one union window, so its oldest member sets it.
 

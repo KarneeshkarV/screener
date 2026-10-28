@@ -98,11 +98,20 @@ def affordable_buy_shares(
     if buy_cost(upper) <= budget:
         return upper
     if isinstance(cost_model, FlatCommission):
-        # A flat rate has a closed form; step down only past float rounding.
+        # A flat rate has a closed form. Float rounding can leave the quotient
+        # a step either side of the largest affordable size, so walk to it.
         shares = budget / (price * (1.0 + max(bps_fraction(cost_model.bps), 0.0)))
         shares = min(float(floor(shares)) if whole_shares else shares, upper)
+
+        def step(value: float, direction: float) -> float:
+            if whole_shares:
+                return value + direction
+            return float(np.nextafter(value, direction * np.inf))
+
         while shares > 0 and buy_cost(shares) > budget:
-            shares = shares - 1.0 if whole_shares else float(np.nextafter(shares, 0.0))
+            shares = step(shares, -1.0)
+        while (bigger := step(shares, 1.0)) <= upper and buy_cost(bigger) <= budget:
+            shares = bigger
         return max(shares, 0.0)
     lower = 0.0
     # Keep the feasible endpoint. Returning a tolerance-rounded midpoint could

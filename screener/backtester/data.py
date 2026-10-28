@@ -292,16 +292,20 @@ def _missing_final_sessions(
     The completeness test lets the newest bar sit three days short of the
     window's end, for weekends and holidays. That also accepted an entry
     written before the window's last sessions existed, and away from today no
-    tail refresh fills them. An entry is only suspect when the first weekday
-    after its newest bar is inside the window and the file predates that
-    day's close, so a weekend never triggers it and a holiday at most once.
+    tail refresh fills them. An entry is only suspect when the last weekday
+    the window could hold is newer than its newest bar and the file predates
+    that day's close, so a weekend never triggers it and a holiday at most
+    once. Checking the first weekday after the newest bar instead missed a
+    holiday followed by a session (July 4, then July 5).
     """
     session = session_for(ticker)
-    following = cached.index.max().normalize() + pd.offsets.BDay(1)
-    if following > min(end.normalize(), _last_complete_session(ticker)):
+    newest = pd.offsets.BDay().rollback(
+        min(end.normalize(), _last_complete_session(ticker))
+    )
+    if newest <= cached.index.max().normalize():
         return False
     closed = datetime.combine(
-        following.date(), session.close, tzinfo=ZoneInfo(session.timezone)
+        newest.date(), session.close, tzinfo=ZoneInfo(session.timezone)
     )
     try:
         return path.stat().st_mtime < closed.timestamp()
@@ -856,7 +860,9 @@ class YFinancePriceFetcher:
                 and not _range_slice(stored_frame, window_start, window_end).empty
             )
 
-        downloads: list[tuple[list[str], dict[str, pd.DataFrame], bool]] = []
+        downloads: list[
+            tuple[list[str], dict[str, pd.DataFrame], bool, pd.Timestamp]
+        ] = []
         rate_limited: set[str] = set()
         unserved: set[str] = set()
         with (
@@ -874,7 +880,7 @@ class YFinancePriceFetcher:
                 unserved = set()
                 for job, split, ok, throttled in round_downloads:
                     window_start, window_end, batch = job
-                    downloads.append((batch, split, ok))
+                    downloads.append((batch, split, ok, window_start))
                     again = []
                     for t in batch:
                         if t.upper() in throttled:
@@ -915,9 +921,14 @@ class YFinancePriceFetcher:
         # A ticker's history is only known-empty when every request covering it
         # came back from the vendor. One failed chunk leaves it unknown.
         download_ok: dict[str, bool] = {}
-        for batch, downloaded, ok in downloads:
+        served_by_chunk: dict[str, dict[pd.Timestamp, bool]] = {}
+        for batch, downloaded, ok, window_start in downloads:
             for ticker in batch:
                 norm = downloaded.get(ticker, _empty_ohlcv_frame())
+                served = served_by_chunk.setdefault(ticker, {})
+                served[window_start] = served.get(window_start, False) or not (
+                    norm.empty
+                )
                 if self.auto_adjust:
                     norm = apply_full_price_adjustment(norm)
                 downloaded_by_ticker[ticker] = _merge_cached(
@@ -929,6 +940,17 @@ class YFinancePriceFetcher:
         # So is a name served empty on every attempt although it has bars.
         for ticker in rate_limited | unserved:
             download_ok[ticker] = False
+        # yfinance also swallows a failed symbol in one chunk of a split window
+        # and returns it empty. A chunk with no bars between chunks that have
+        # them is that failure, not a week the venue was shut; stored, it is a
+        # hole the endpoint-only completeness test never sees again.
+        for ticker, served in served_by_chunk.items():
+            flags = [served[key] for key in sorted(served)]
+            if any(
+                not flag and any(flags[:i]) and any(flags[i + 1 :])
+                for i, flag in enumerate(flags)
+            ):
+                download_ok[ticker] = False
         leftover: list[tuple[str, pd.DataFrame]] = []
         rescaled: set[str] = set()
         for ticker in dict.fromkeys(t for group in missing.values() for t in group):
