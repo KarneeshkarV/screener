@@ -385,3 +385,50 @@ def test_rolling_daily_stamps_stay_dates():
     for trade in result.trades:
         assert isinstance(trade.entry_date, date)
         assert not isinstance(trade.entry_date, datetime)
+
+
+def test_yfinance_intraday_failed_chunk_is_not_stored_as_complete(
+    tmp_path, monkeypatch
+):
+    """A chunk that failed leaves a gap the completeness test cannot see.
+
+    It checks only the first and last bar, so a merged frame saved with a
+    hole in the middle was served as complete on every later run.
+    """
+    import yfinance as yf
+
+    end = date.today() - pd.Timedelta(days=1)
+    start = end - pd.Timedelta(days=20)
+    failing = {"on": True}
+
+    def fake_download(tickers, **kwargs):
+        chunk_start = pd.Timestamp(kwargs["start"])
+        if failing["on"] and chunk_start == pd.Timestamp(start) + pd.Timedelta(days=7):
+            raise RuntimeError("chunk timed out")
+        idx = pd.date_range(
+            chunk_start, pd.Timestamp(kwargs["end"]) - pd.Timedelta(days=1), freq="D"
+        )
+        return pd.DataFrame(
+            {
+                "Open": [100.0] * len(idx),
+                "High": [101.0] * len(idx),
+                "Low": [99.0] * len(idx),
+                "Close": [100.5] * len(idx),
+                "Volume": [1000] * len(idx),
+            },
+            index=idx,
+        )
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setattr("screener.resilience.time.sleep", lambda _seconds: None)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1m", max_workers=1)
+
+    first = fetcher.fetch(["AAA"], start, end)["AAA"]
+    assert first.index.to_series().diff().max() > pd.Timedelta(days=1)
+
+    failing["on"] = False
+    second = fetcher.fetch(["AAA"], start, end)["AAA"]
+
+    assert second.index.to_series().diff().max() == pd.Timedelta(days=1)
+    assert second.index.min() == pd.Timestamp(start)
+    assert second.index.max() == pd.Timestamp(end)

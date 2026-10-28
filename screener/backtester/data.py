@@ -23,13 +23,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol, TypeVar, cast
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 
 from screener import _optional
-from screener.backtester.sessions import drop_incomplete_sessions
+from screener.backtester.sessions import drop_incomplete_sessions, session_for
 from screener.backtester.price_cache import (
     CACHE_DIR,
     FMP_CACHE_DIR,
@@ -101,6 +102,9 @@ from screener.backtester.price_frames import (
 )
 from screener.backtester.price_frames import (
     has_price_seam as _has_price_seam,
+)
+from screener.backtester.price_frames import (
+    overlap_rebased as _overlap_rebased,
 )
 from screener.backtester.price_frames import (
     overlap_rescaled as _overlap_rescaled,
@@ -256,6 +260,47 @@ def _covered_window(
     if last is not None and last < end:
         end = max(last, start)
     return start, end
+
+
+def _last_complete_session(ticker: str) -> pd.Timestamp:
+    """Midnight of the newest session ``ticker``'s venue has finished."""
+    return pd.Timestamp(session_for(ticker).last_complete_date())
+
+
+def _vendor_requested_last(ticker: str, requested_last: pd.Timestamp) -> pd.Timestamp:
+    """The last bar a request could have been answered with.
+
+    A window that ends after the venue's last finished session always comes
+    back short, and recording that as where the vendor's history stops hid
+    every newer bar until the coverage TTL lapsed. Only the sessions that
+    exist can be evidence of a short answer.
+    """
+    return min(requested_last, _last_complete_session(ticker))
+
+
+def _missing_final_sessions(
+    ticker: str, cached: pd.DataFrame, end: pd.Timestamp, path: Path
+) -> bool:
+    """Whether a daily entry was written before a session it lacks had closed.
+
+    The completeness test lets the newest bar sit three days short of the
+    window's end, for weekends and holidays. That also accepted an entry
+    written before the window's last sessions existed, and away from today no
+    tail refresh fills them. An entry is only suspect when the first weekday
+    after its newest bar is inside the window and the file predates that
+    day's close, so a weekend never triggers it and a holiday at most once.
+    """
+    session = session_for(ticker)
+    following = cached.index.max().normalize() + pd.offsets.BDay(1)
+    if following > min(end.normalize(), _last_complete_session(ticker)):
+        return False
+    closed = datetime.combine(
+        following.date(), session.close, tzinfo=ZoneInfo(session.timezone)
+    )
+    try:
+        return path.stat().st_mtime < closed.timestamp()
+    except OSError:
+        return False
 
 
 #: Text yfinance puts in the error it records for a throttled symbol. The
@@ -616,22 +661,35 @@ class YFinancePriceFetcher:
             # window has no bar at the window's start and never will, so
             # measuring it against ``start_ts`` re-downloaded a complete,
             # current cache entry on every single run.
-            covered_start, covered_end = _covered_window(
-                start_ts,
-                end_ts,
+            coverage = (
                 (None, None)
                 if distrust_cache
-                else _load_coverage(cache_key, self.cache_dir),
+                else _load_coverage(cache_key, self.cache_dir)
             )
+            covered_start, covered_end = _covered_window(start_ts, end_ts, coverage)
             if (
                 not distrust_cache
                 and cached is not None
                 and _has_range(cached, covered_start, covered_end, self.interval)
             ):
-                if _needs_tail_refresh(_cache_path(cache_key, self.cache_dir), end_ts):
+                cache_file = _cache_path(cache_key, self.cache_dir)
+                # A name the vendor stopped serving long ago has nothing new
+                # to fetch, and its old newest bar would widen every other
+                # tail-refreshed name's download back to it.
+                vendor_last = coverage[1]
+                if _needs_tail_refresh(cache_file, end_ts) and not (
+                    vendor_last is not None
+                    and vendor_last < end_ts - pd.Timedelta(days=7)
+                ):
                     tail_start = cached.index.max() - pd.Timedelta(days=7)
                     want("tail", ticker, tail_start, end_ts)
                     tail_refresh_tickers.add(ticker)
+                elif self.interval == "1d" and _missing_final_sessions(
+                    ticker, cached, covered_end, cache_file
+                ):
+                    want(
+                        "extend", ticker, cached.index[max(0, len(cached) - 5)], end_ts
+                    )
                 else:
                     results[ticker] = _range_slice(cached, start_ts, end_ts)
                 continue
@@ -868,9 +926,11 @@ class YFinancePriceFetcher:
                         # window: a batch downloads the union of its group's
                         # windows, but what this ticker asked for is all this
                         # ticker's bounds may be inferred from.
+                        requested_first, requested_last = window_by_ticker[ticker]
                         _record_coverage(
                             cache_key,
-                            *window_by_ticker[ticker],
+                            requested_first,
+                            _vendor_requested_last(ticker, requested_last),
                             norm.index.min(),
                             norm.index.max(),
                             self.cache_dir,
@@ -887,9 +947,11 @@ class YFinancePriceFetcher:
                     # probe past its edges and come back with nothing.
                     stored_frame = cached_by_ticker.get(ticker)
                     if stored_frame is not None and not stored_frame.empty:
+                        requested_first, requested_last = window_by_ticker[ticker]
                         _record_coverage(
                             cache_key,
-                            *window_by_ticker[ticker],
+                            requested_first,
+                            _vendor_requested_last(ticker, requested_last),
                             stored_frame.index.min(),
                             stored_frame.index.max(),
                             self.cache_dir,
@@ -905,8 +967,11 @@ class YFinancePriceFetcher:
             # at the seam, and every return, momentum and volatility figure
             # computed across that seam is wrong. The stale side loses: the
             # cache entry is dropped and the ticker re-downloaded whole below.
+            # A dividend re-bases the history too, by too little for the split
+            # tolerance, so settled bars are also held to an exact match.
             if ticker not in force_full and (
                 _overlap_rescaled(stored, norm, self.interval)
+                or _overlap_rebased(stored, norm, self.interval)
                 or cache_merge_needs_full_download(stored, norm)
             ):
                 # A refresh already asked for the whole window, so only the
@@ -923,9 +988,9 @@ class YFinancePriceFetcher:
                     ticker=ticker,
                     reason=(
                         "cached bars price shared sessions differently from the "
-                        "vendor's current series (a split re-based the history); "
-                        "the stale cache entry is discarded and the ticker "
-                        "re-downloaded"
+                        "vendor's current series (a split or dividend re-based "
+                        "the history); the stale cache entry is discarded and "
+                        "the ticker re-downloaded"
                     ),
                 )
                 if retry:
@@ -949,8 +1014,13 @@ class YFinancePriceFetcher:
                 and not stored.empty
             ):
                 leftover.append((ticker, stored))
-            if not merged.empty and (
-                not norm.empty or ticker not in tail_refresh_tickers
+            # A failed request, even one chunk of an intraday window, leaves a
+            # gap the endpoint-only completeness test would never see again,
+            # so only a download that fully came back is stored.
+            if (
+                not merged.empty
+                and download_ok.get(ticker, False)
+                and (not norm.empty or ticker not in tail_refresh_tickers)
             ):
                 _save_cache(cache_key, merged, self.cache_dir)
                 # Whatever is stored now came from this download, not from a
@@ -1160,12 +1230,17 @@ class FMPPriceFetcher:
                 and cached is not None
                 and _has_range(cached, covered_start, covered_end, self.interval)
             ):
-                if not _needs_tail_refresh(
-                    _cache_path(cache_key, self.cache_dir), end_ts
-                ):
+                cache_file = _cache_path(cache_key, self.cache_dir)
+                # Same rule as the yfinance leg: an entry written before the
+                # window's final sessions closed downloads them, and keeps the
+                # bookkeeping of an ordinary request.
+                missing_final = self.interval == "1d" and _missing_final_sessions(
+                    ticker, cached, covered_end, cache_file
+                )
+                if not missing_final and not _needs_tail_refresh(cache_file, end_ts):
                     return ticker, _range_slice(cached, start_ts, end_ts), None, False
                 fetch_start = cached.index.max() - pd.Timedelta(days=7)
-                is_tail_refresh = True
+                is_tail_refresh = not missing_final
             else:
                 fetch_start = start_ts
                 is_tail_refresh = False
@@ -1216,7 +1291,7 @@ class FMPPriceFetcher:
                         _record_coverage(
                             cache_key,
                             fetch_start,
-                            end_ts,
+                            _vendor_requested_last(ticker, end_ts),
                             norm.index.min(),
                             norm.index.max(),
                             self.cache_dir,
@@ -1229,7 +1304,7 @@ class FMPPriceFetcher:
                         _record_coverage(
                             cache_key,
                             fetch_start,
-                            end_ts,
+                            _vendor_requested_last(ticker, end_ts),
                             stored.index.min(),
                             stored.index.max(),
                             self.cache_dir,
@@ -1253,6 +1328,8 @@ class FMPPriceFetcher:
             # reason: FMP's adjusted daily endpoint also re-bases its whole
             # history on a split, so a cache entry written before one prices
             # shared sessions on a scale the vendor has abandoned.
+            # The exact dividend check of the yfinance leg is not applied:
+            # FMP's run-to-run noise on settled adjusted bars is unmeasured.
             rescaled_here = not force_full and (
                 _overlap_rescaled(stored, norm, self.interval)
                 or cache_merge_needs_full_download(stored, norm)
@@ -1279,7 +1356,9 @@ class FMPPriceFetcher:
                 stored = None
             merged = _merge_cached(stored, norm, self.interval)
             if not merged.empty:
-                if not norm.empty or not is_tail_refresh:
+                # A failed request stores nothing: rewriting the old entry
+                # would date it after sessions it still lacks.
+                if not norm.empty or (ok and not is_tail_refresh):
                     _save_cache(cache_key, merged, self.cache_dir)
                 return (
                     ticker,
