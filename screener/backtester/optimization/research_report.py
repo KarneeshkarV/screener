@@ -703,5 +703,3 @@ def _print_final_summary(
     note = summary.get("evidence_integrity_note")
     if note:
         console.print(f"[dim]{note}[/dim]")
-    for warning in summary.get("holding_period_warnings") or []:
-        console.print(f"[yellow]warning:[/yellow] {warning}")

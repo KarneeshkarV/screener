@@ -415,6 +415,8 @@ just backtest-lab
 ### `factor-tearsheet`
 
 Computes factor IC and quantile tearsheet for a named strategy (or a `combo:name=w,...` weighting) that emits `rank_score`.
+Exploratory diagnostics: static universe list and close-to-close forward returns, not a rolling executable portfolio tearsheet.
+IC reports classical iid `t_stat` and Newey-West `t_stat_hac` with lag `horizon - 1`.
 
 ```bash
 uv run screener factor-tearsheet -m us --strategy momentum_12_1 --years 3
@@ -484,7 +486,8 @@ Default compatibility is unchanged when these flags are omitted.
 Train/test/step lengths are calendar days, not sessions.
 Each walk-forward fold force-closes flat at the test boundary.
 Evidence integrity PASS is a minimum data check, not validated alpha.
-The trial register records training searches only; test-fold scores are not written into DSR context.
+Walk-forward records train-fold searches only; test-fold scores are not written into DSR context.
+`research-report` also registers its descriptive full-period grid under the same experiment id, and fold DSR counts those rows too.
 
 ### `optimize grid`
 
@@ -528,13 +531,6 @@ The default instead falls back to the S&P 500 "date added" column, or to a survi
 uv run screener optimize research-report -m us --years 1 --strategy rs_breakout --top 10
 just research-report -m us --years 1 --strategy rs_breakout
 ```
-
-### `factor-tearsheet`
-
-Exploratory factor IC / quantile diagnostics.
-Uses a static universe list and close-to-close forward returns.
-It is not a rolling executable portfolio tearsheet.
-IC reports classical iid `t_stat` and Newey-West `t_stat_hac` with lag `horizon - 1`.
 
 ## Utility Commands
 
