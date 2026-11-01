@@ -102,7 +102,7 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
     ("dsr", "Deflated Sharpe", "pct"),
     ("dsr_trials", "DSR Trials", "count"),
     ("max_drawdown", "Max Drawdown", "pct"),
-    ("max_drawdown_duration_days", "Longest Drawdown (days)", "ratio"),
+    ("max_drawdown_duration_days", "Longest Drawdown (days)", "int"),
     ("expected_shortfall_95", "Expected Shortfall 95", "pct"),
     ("hit_rate", "Hit Rate", "pct"),
     ("alpha_annual", "Alpha (ann.)", "pct"),
@@ -366,17 +366,24 @@ def _max_drawdown_duration_days(equity: pd.Series) -> float:
     return float(longest)
 
 
+def _session_returns(equity: pd.Series) -> pd.Series:
+    """Per-calendar-day returns, so tail risk does not scale with bar size."""
+    if equity.empty or not isinstance(equity.index, pd.DatetimeIndex):
+        return bar_returns(equity)
+    last = equity.groupby(equity.index.normalize()).last()
+    return bar_returns(last)
+
+
 def _expected_shortfall(daily: pd.Series, *, alpha: float = 0.95) -> float:
-    """Mean of daily returns at or below the ``(1 - alpha)`` quantile (CVaR)."""
+    """Mean of the worst ``ceil((1 - alpha) * n)`` returns (CVaR)."""
     if daily.empty:
         return 0.0
     if not 0.0 < alpha < 1.0:
         raise ValueError(f"alpha must be in (0, 1), got {alpha!r}")
-    cutoff = float(daily.quantile(1.0 - alpha))
-    tail = daily[daily <= cutoff]
-    if tail.empty:
-        return 0.0
-    return float(tail.mean())
+    # Worst k returns, not "<= quantile": ties at the cutoff (flat days with
+    # exact 0.0 returns) would otherwise swell the tail and dilute the mean.
+    k = max(1, math.ceil(round((1.0 - alpha) * len(daily), 9)))
+    return float(daily.nsmallest(k).mean())
 
 
 def equity_curve_sharpe(
@@ -977,7 +984,9 @@ def compute_metrics(
         ),
         "max_drawdown": _max_drawdown(equity),
         "max_drawdown_duration_days": _max_drawdown_duration_days(equity),
-        "expected_shortfall_95": _expected_shortfall(daily, alpha=0.95),
+        "expected_shortfall_95": _expected_shortfall(
+            _session_returns(equity), alpha=0.95
+        ),
         "hit_rate": hit_rate,
         "alpha_annual": alpha,
         "beta": beta,

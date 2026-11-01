@@ -398,3 +398,14 @@ def test_optimize_grid_propagates_default_and_explicit_risk_free_rate(
 
     assert CliRunner().invoke(cli, [*argv, "--risk-free-rate", "0.06"]).exit_code == 0
     assert captured["cfg"].risk_free_rate == 0.06  # type: ignore[union-attr]
+
+
+def test_expected_shortfall_ignores_ties_at_the_cutoff():
+    returns = pd.Series([0.0] * 96 + [-0.10] * 4)
+    assert abs(_expected_shortfall(returns, alpha=0.95) - (-0.08)) < 1e-12
+
+
+def test_longest_drawdown_days_renders_unsigned():
+    from screener.backtester.metrics import format_result_value
+
+    assert format_result_value(217.0, "int") == "217"
