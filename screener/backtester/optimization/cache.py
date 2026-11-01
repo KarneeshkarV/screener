@@ -254,7 +254,9 @@ def _stable_fingerprint(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return {
             "__class__": f"{value.__class__.__module__}.{value.__class__.__qualname__}",
-            "fields": _stable_fingerprint(value.model_dump()),
+            "fields": _stable_fingerprint(
+                {name: getattr(value, name) for name in type(value).model_fields}
+            ),
         }
     return {
         "__class__": f"{value.__class__.__module__}.{value.__class__.__qualname__}",
@@ -289,7 +291,7 @@ def make_cache_key(
     payload = {
         "schema_version": CACHE_SCHEMA_VERSION,
         "code_fingerprint": code_fp if code_fp is not None else code_fingerprint(),
-        "config": config_fingerprint(cfg),
+        "config": config_fingerprint(cfg.validated_update(params)),
         "params": _stable_fingerprint(params),
         "runner": runner,
         "start_date": None if start_date is None else start_date.isoformat(),

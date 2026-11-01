@@ -184,9 +184,12 @@ def _frame_from_table(table: pa.Table) -> pd.DataFrame:
     return frame
 
 
-def load_cached_frame(
-    ticker: str, cache_dir: Path = CACHE_DIR, interval: str = "1d"
-) -> pd.DataFrame | None:
+def read_cached_table(ticker: str, cache_dir: Path = CACHE_DIR) -> pa.Table | None:
+    """The arrow table of one cache entry, or None when it is absent or unreadable.
+
+    This is the half of a read that releases the GIL, so it is the half a
+    thread pool should run. :func:`frame_from_cached_table` is the other half.
+    """
     path = cache_path(ticker, cache_dir)
     if not path.exists():
         return None
@@ -199,7 +202,24 @@ def load_cached_frame(
         # ``use_threads=False`` because the parallelism is already one thread
         # per file: arrow's own pool then only adds contention, and a cache
         # entry is one small row group anyway.
-        table = pq.read_table(path, use_threads=False)
+        return pq.read_table(path, use_threads=False)
+    except (OSError, ValueError, pa.ArrowException):
+        return None
+
+
+def frame_from_cached_table(
+    table: pa.Table | None, interval: str = "1d"
+) -> pd.DataFrame | None:
+    """The price frame for a table from :func:`read_cached_table`.
+
+    The pandas conversion holds the GIL, so threads running it contend rather
+    than overlap: 1000 warm entries converted in 0.35s on one thread and
+    0.8-1.7s on eight. A caller reading many entries runs this on its own
+    thread after the reads.
+    """
+    if table is None:
+        return None
+    try:
         missing = _has_missing(table, OHLCV_COLUMNS)
         frame = _frame_from_table(table)
         frame.index = _canonical_index(frame.index, interval)
@@ -209,6 +229,12 @@ def load_cached_frame(
         return frame
     except (OSError, pd.errors.ParserError, ValueError, pa.ArrowException):
         return None
+
+
+def load_cached_frame(
+    ticker: str, cache_dir: Path = CACHE_DIR, interval: str = "1d"
+) -> pd.DataFrame | None:
+    return frame_from_cached_table(read_cached_table(ticker, cache_dir), interval)
 
 
 def save_cached_frame(
@@ -489,7 +515,9 @@ __all__ = [
     "coverage_path",
     "empty_history_path",
     "has_empty_history",
+    "frame_from_cached_table",
     "load_cached_frame",
+    "read_cached_table",
     "load_coverage",
     "needs_tail_refresh",
     "record_coverage",

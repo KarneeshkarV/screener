@@ -19,6 +19,7 @@ from screener.backtester.data import (
     _save_cache,
     build_price_fetcher,
 )
+from screener.backtester.sessions import US_SESSION
 from screener.providers import StaleDataError
 
 
@@ -196,8 +197,10 @@ def test_fmp_parallel_fetch_deduplicates_tickers_preserving_order(tmp_path):
 def test_fmp_stale_tail_without_scale_overlap_reloads_window(tmp_path, monkeypatch):
     # The newest *complete* session rather than today: a daily bar for a
     # session still trading is dropped before it is cached or served, so
-    # anchoring this on today would make the test read the clock.
-    today = date.today() - pd.Timedelta(days=1)
+    # anchoring this on today would make the test read the clock. Yesterday by
+    # the local clock is not enough either: ahead of New York (IST after
+    # midnight) it is a US session still trading.
+    today = US_SESSION.last_complete_date()
     initial_payload = {
         "historical": [
             {

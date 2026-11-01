@@ -381,13 +381,15 @@ def test_check_exit_trail_beats_target():
 
 def test_check_exit_expr_beats_time():
     cfg = _cfg()
-    bars = _one_bar(open_=100, high=101, low=99, close=100)
-    exit_signal = pd.Series([True], index=bars.index)
-    # Both the exit expression and the hold limit fire on this bar; exit_expr wins.
-    state = _state(bars, hold_limit_idx=0, exit_signal=exit_signal)
-    result = _check_exit_at_bar(state, bars, 0, cfg, FillModel(cfg))
+    bars = _frame([_bar(100, 101, 99, 100), _bar(97, 101, 96, 100)])
+    exit_signal = pd.Series([True, False], index=bars.index)
+    # The prior bar's exit expression and this bar's hold limit both fire;
+    # exit_expr wins and fills at this bar's open.
+    state = _state(bars, hold_limit_idx=1, exit_signal=exit_signal)
+    result = _check_exit_at_bar(state, bars, 1, cfg, FillModel(cfg))
     assert result is not None
     assert result[1] == "exit_expr"
+    assert result[0] == pytest.approx(97.0)
 
 
 def test_check_exit_time_when_hold_reached():

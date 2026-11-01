@@ -236,6 +236,21 @@ def test_fmp_income_growth_waits_for_late_source_publication():
     assert frame.loc["2025-02-26", "revenue_up_3q"] == 1.0
 
 
+def test_fmp_same_publication_date_keeps_latest_fiscal_period():
+    payload = {
+        "income": [
+            {"date": "2023-12-31", "acceptedDate": "2024-02-05", "revenue": 150},
+            {"date": "2023-09-30", "acceptedDate": "2024-02-25", "revenue": 130},
+            {"date": "2023-06-30", "acceptedDate": "2023-08-01", "revenue": 120},
+            {"date": "2023-03-31", "acceptedDate": "2023-05-01", "revenue": 140},
+        ]
+    }
+    frame = fundamentals._normalize_fmp_payload(
+        payload, fields=("revenue_up_3q",), lag_days=1
+    )
+    assert frame.loc["2024-02-26", "revenue_up_3q"] == 1.0
+
+
 def test_fmp_undated_sections_are_not_published_with_income():
     payload = {
         "income": [

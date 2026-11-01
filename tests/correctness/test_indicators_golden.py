@@ -102,6 +102,15 @@ def test_the_two_rsi_implementations_are_now_the_same_number():
     )
 
 
+def test_wilder_rsi_is_100_on_a_flat_window_like_the_plugin():
+    """Pine ``ta.rsi`` gives 100 whenever the smoothed loss is zero, so a
+    fully flat window is 100, not 0/0. Both implementations must say so."""
+    close = np.full(40, 5.0)
+    pandas_side = wilder_rsi(pd.Series(close), 14, min_periods=14).to_numpy()
+    np.testing.assert_array_equal(pandas_side, rsi(close, 14))
+    assert pandas_side[-1] == 100.0
+
+
 def test_supertrend_direction_trend_contract():
     """Independent property: a strong uptrend ends uptrend (<0), downtrend ends >0."""
     up = np.linspace(100, 200, 60)
@@ -113,6 +122,25 @@ def test_supertrend_direction_trend_contract():
     high_dn, low_dn, close_dn = down + 1, down - 1, down
     dir_dn = supertrend_dir(high_dn, low_dn, close_dn, 10, 3.0)
     assert dir_dn[-1] > 0  # downtrend convention
+
+
+def test_supertrend_flips_on_the_active_band_after_an_up_gap():
+    """Pine ``ta.supertrend`` only tests the band of the current trend.
+
+    The gap ratchets the lower band above the held upper band, so the next
+    close sits below the lower band and above the upper one. That breaks the
+    uptrend; testing the stale upper band first would keep it. The panel form
+    must agree bit for bit.
+    """
+    close = np.r_[np.linspace(100.0, 115.0, 30), 200.0, 150.0, 150.0]
+    high, low = close + 1.0, close - 1.0
+    got = supertrend_dir(high, low, close, 10, 3.0)
+    assert got[30] < 0  # the gap bar itself keeps the uptrend
+    assert got[31] > 0  # the close below the active lower band flips it
+    panel = supertrend_dir(
+        np.c_[high, high], np.c_[low, low], np.c_[close, close], 10, 3.0
+    )
+    assert np.array_equal(panel[:, 1], got)
 
 
 def test_wilder_rsi_seeds_from_the_sma_like_pine_ta_rma():

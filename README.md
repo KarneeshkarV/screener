@@ -63,14 +63,14 @@ Other workflows need their extra:
 
 | Extra | Installs | Needed for |
 |---|---|---|
-| `report` | plotly | HTML reports and tear-sheets, i.e. `screen` without `--csv`, `dashboard`, `factor-tearsheet` |
+| `report` | nothing (kept for compatibility) | HTML reports render with a vendored ECharts bundle and need only the core install |
 | `prices` | yfinance, openscreener | every backtest, `garp`, `conviction`, `options` |
 | `india` | jugaad-data | `unusual-volume`, `operator-scan` |
 | `usage` | libsql-client | Turso history mirror and feature-usage tracking |
 | `all` | all of the above | the pre-split behaviour |
 
 ```bash
-uv add "screener[report] @ git+https://github.com/KarneeshkarV/screener@main"
+uv add "screener[prices] @ git+https://github.com/KarneeshkarV/screener@main"
 ```
 
 A missing extra raises an `ImportError` naming the one to install, rather than a bare `ModuleNotFoundError`.
@@ -200,6 +200,24 @@ uv run screener seasonality AAPL --years 10
 uv run screener seasonality RELIANCE -m india --csv
 just seasonality AAPL
 ```
+
+### `sector-rotation`
+
+Compare curated India or US sector, industry, and theme baskets with Nifty 500 or the S&P 500.
+Read business descriptions, drivers, risks, and sources offline with `--describe-groups`.
+The offline HTML report includes business details, group search, parent and kind filters, benchmark charts, and member details.
+Current selected stocks are research baskets, not historical index membership or trading signals.
+
+```bash
+uv run screener sector-rotation --list-groups
+uv run screener sector-rotation --period 3m --report rotation.html
+uv run screener sector-rotation --group cnc_machines --group shipbuilding --csv
+uv run screener sector-rotation --group cnc_machines --describe-groups
+uv run screener sector-rotation --market us --list-groups
+uv run screener sector-rotation --market us --period 3m --report rotation-us.html
+```
+
+See [docs/sector-rotation.md](docs/sector-rotation.md) for catalogue sources, return rules, and data limits.
 
 ### `rs-breakout`
 
@@ -502,6 +520,9 @@ just optimize validate --trades trades.csv --iterations 5000 --json validation.j
 
 One-command research pipeline: grid search → walk-forward → Monte Carlo, reusing a single price fetcher across stages.
 Writes `<out>.json` and `<out>.html` plus a stdout summary.
+With `--universe`, `--point-in-time` is on by default, matching `backtest-rolling`.
+A typed `--point-in-time` fails when no membership history is available.
+The default instead falls back to the S&P 500 "date added" column, or to a survivorship-biased static list, and records a warning in the report.
 
 ```bash
 uv run screener optimize research-report -m us --years 1 --strategy rs_breakout --top 10

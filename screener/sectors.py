@@ -70,8 +70,10 @@ def _resolve_one(
     try:
         info = info_fetcher(yf_symbol)
     except Exception as exc:  # noqa: BLE001 — provider failures -> UNKNOWN
+        # Not cached: a transient failure (e.g. a 429) must not pin UNKNOWN
+        # for the full cache TTL.
         LOG.debug("sector lookup failed for %s: %s", yf_symbol, exc)
-        info = {}
+        return UNKNOWN_SECTOR
     raw = info.get("sector") if isinstance(info, Mapping) else None
     sector = raw.strip() if isinstance(raw, str) and raw.strip() else UNKNOWN_SECTOR
     if use_cache:
