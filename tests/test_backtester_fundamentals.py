@@ -157,6 +157,7 @@ def test_merge_fundamentals_forward_fills_only_after_effective_date():
         {"AAA": fundamentals_frame},
         {"AAA": "AAA"},
         filing_lag_days=fundamentals.INDIA_FUNDAMENTAL_FILING_LAG_DAYS,
+        effective_date_kind=fundamentals.EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
     )["AAA"]
 
     assert pd.isna(merged.loc[pd.Timestamp("2024-02-05"), "roe_ttm"])
@@ -166,6 +167,7 @@ def test_merge_fundamentals_forward_fills_only_after_effective_date():
 
 class _StubFundamentalFetcher:
     lag_days = 0
+    effective_date_kind = fundamentals.EFFECTIVE_DATE_KIND_FILING_TIMESTAMP
 
     def __init__(self, frame: pd.DataFrame | None = None) -> None:
         self.frame = frame
@@ -641,9 +643,20 @@ def test_effective_date_accepts_filing_date_spelling():
     assert fundamentals._effective_date(
         {"fillingDate": "2024-05-10"}, lag_days=1
     ) == pd.Timestamp("2024-05-11")
+    # Intraday stamp with no lag: news may follow the close, so next day.
     assert fundamentals._effective_date(
         {"acceptedDate": "2024-05-10 16:30:00"}, lag_days=0
+    ) == pd.Timestamp("2024-05-11")
+    assert fundamentals._effective_date(
+        {"acceptedDate": "2024-05-10"}, lag_days=0
     ) == pd.Timestamp("2024-05-10")
+
+
+def test_effective_date_junk_first_key_falls_back_to_valid_key():
+    row = {"acceptedDate": "0000-00-00", "fillingDate": "2024-05-10"}
+    assert fundamentals._effective_date(row, 1) == pd.Timestamp("2024-05-11")
+    row = {"acceptedDate": float("nan"), "fillingDate": "2024-05-10"}
+    assert fundamentals._effective_date(row, 1) == pd.Timestamp("2024-05-11")
 
 
 def test_normalize_fmp_excludes_period_end_only_rows_and_warns(caplog):
@@ -955,6 +968,7 @@ def test_merge_fundamentals_skips_empty_or_none_bars():
         {},
         {},
         filing_lag_days=0,
+        effective_date_kind=fundamentals.EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
     )
     assert out["AAA"].empty
     assert out["BBB"] is None

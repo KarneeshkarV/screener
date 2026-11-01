@@ -610,3 +610,28 @@ def test_a_corrupt_sp500_day_cache_falls_back_to_the_scrape(
     )
 
     assert universes._fetch_sp500() == (["AAPL"], universes._SP500_SOURCE)
+
+
+def test_snapshot_effective_date_wins_over_observation_date(tmp_path: Path) -> None:
+    snapshots = tmp_path / "both.csv"
+    snapshots.write_text(
+        "effective_date,observation_date,symbol\n"
+        "2024-03-01,2024-02-20,AAA\n"
+        "2024-06-01,2024-05-20,AAA\n"
+    )
+    rows, role = universes._snapshot_rows(
+        {"path": "both.csv"}, base_dir=tmp_path, as_of=date(2024, 12, 31)
+    )
+    assert [day for day, _ in rows] == [date(2024, 3, 1), date(2024, 6, 1)]
+    assert "effective_date" in role
+
+
+def test_coverage_source_note_uses_report_threshold() -> None:
+    report = universes.report_snapshot_observation_coverage(
+        [date(2024, 1, 1), date(2024, 3, 1)],
+        as_of=date(2024, 3, 1),
+        gap_warn_days=30,
+    )
+    note = universes._coverage_source_note(report)
+    assert ">= 30d" in note
+    assert "180d" not in note

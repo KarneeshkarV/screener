@@ -70,3 +70,58 @@ def test_build_price_panel_records_empty_provider_history_without_live_fetch() -
         "no price-provider history" in warning and "BBB" in warning
         for warning in warnings
     )
+
+
+def test_build_price_panel_forwards_fetcher_effective_date_kind() -> None:
+    from screener.factors import BarFeatures
+    from screener.factors.fundamentals import (
+        EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG,
+        fundamental_provenance,
+    )
+
+    aaa = make_bars(start="2024-01-02", n=10)
+
+    class _Fetcher:
+        markets = frozenset({"us"})
+        lag_days = 60
+        effective_date_kind = EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
+
+        def fetch(self, tickers, start, end):  # noqa: ANN001, ANN201
+            return {
+                "AAA": pd.DataFrame(
+                    {"roe_ttm": [10.0]}, index=pd.DatetimeIndex(["2024-01-03"])
+                )
+            }
+
+    inputs = PricePanelInputs(
+        market="us",
+        benchmark="SPY",
+        tickers=("AAA",),
+        universe_file=None,
+        membership_windows=(),
+        dynamic_universe_size=None,
+        max_universe=0,
+        interval="1d",
+        price_adjustment="full",
+        strategy_name=None,
+        fundamentals_provider=None,
+    )
+    panel = build_price_panel(
+        inputs,
+        StubPriceFetcher({"AAA": aaa, "SPY": aaa}),
+        entry_ast=parse("close > 0"),
+        exit_ast=None,
+        lookback=2,
+        start_ts=pd.Timestamp("2024-01-03"),
+        end_ts=pd.Timestamp("2024-01-12"),
+        warnings=[],
+        fundamental_fetcher=_Fetcher(),
+    )
+    stamp = fundamental_provenance(panel.bars_by_tv["AAA"])
+    assert stamp is not None
+    assert stamp.effective_date_kind == EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
+    features = BarFeatures.from_frame(panel.bars_by_tv["AAA"])
+    assert (
+        features.fundamental_effective_date_kind
+        == EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
+    )

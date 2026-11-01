@@ -507,6 +507,7 @@ class TestT5FundamentalMerge:
             {"AAA": frame},
             {"AAA": "AAA"},
             filing_lag_days=60,
+            effective_date_kind="filing_timestamp",
         )["AAA"]
 
     @pytest.mark.parametrize("column", FUNDAMENTAL_COLUMNS)

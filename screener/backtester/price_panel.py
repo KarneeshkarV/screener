@@ -38,7 +38,6 @@ from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import Node
 from screener.backtester.rolling_candidates import _preview_warning
 from screener.backtester.warmup import _warmup_days_for_interval
-from screener.factors.fundamentals import EFFECTIVE_DATE_KIND_FILING_TIMESTAMP
 from screener.options.backtest import merge_referenced_options
 
 
@@ -225,17 +224,12 @@ def build_price_panel(
         fundamentals = fundamental_fetcher.fetch(
             yf_by_tv.values(), fetch_start, fetch_end
         )
-        date_kind = getattr(
-            fundamental_fetcher,
-            "effective_date_kind",
-            EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
-        )
         bars_by_tv = merge_fundamentals_into_bars(
             bars_by_tv,
             fundamentals,
             yf_by_tv,
             filing_lag_days=fundamental_fetcher.lag_days,
-            effective_date_kind=str(date_kind),
+            effective_date_kind=fundamental_fetcher.effective_date_kind,
         )
 
     bars_by_tv = merge_referenced_options(

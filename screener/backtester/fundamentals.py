@@ -202,21 +202,29 @@ def _prior_year_key(row_date: str) -> str | None:
     return (ts - pd.DateOffset(years=1)).date().isoformat()
 
 
-def _filing_publication_raw(row: Mapping[str, Any]) -> Any:
-    """Return the first real filing/publication timestamp field on ``row``.
+def _filing_publication_timestamp(row: Mapping[str, Any]) -> pd.Timestamp | None:
+    """Return the first parseable filing/publication timestamp on ``row``.
 
     Fiscal period-end ``date`` is intentionally ignored. Promoting quarter-end
     to a publication time with a one-day lag creates false point-in-time
-    confidence.
+    confidence. A present-but-junk key must not hide a valid later key.
     """
     for key in _FMP_FILING_PUBLICATION_KEYS:
-        raw = row.get(key)
-        if raw is None:
-            continue
-        if isinstance(raw, str) and not raw.strip():
-            continue
-        return raw
+        ts = _filing_timestamp(row.get(key))
+        if ts is not None:
+            return ts
     return None
+
+
+def _publication_has_intraday_time(row: Mapping[str, Any]) -> bool:
+    """True when the accepted publication stamp carries a non-midnight time."""
+    for key in _FMP_FILING_PUBLICATION_KEYS:
+        value = row.get(key)
+        if _filing_timestamp(value) is None:
+            continue
+        raw = pd.Timestamp(cast(Any, value)).tz_localize(None)
+        return bool(raw != raw.normalize())
+    return False
 
 
 def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | None:
@@ -225,14 +233,15 @@ def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | Non
     Returns ``None`` when no valid ``acceptedDate`` / ``fillingDate`` /
     ``filingDate`` is present. Does not fall back to period-end ``date``.
     """
-    raw = _filing_publication_raw(row)
-    if raw is None:
-        return None
-    ts = _filing_timestamp(raw)
+    ts = _filing_publication_timestamp(row)
     if ts is None:
         return None
     if lag_days > 0:
         ts += pd.Timedelta(days=lag_days)
+    elif _publication_has_intraday_time(row):
+        # With no lag, a same-day stamp could be news released after the close
+        # of the bar that is already executing. Make it knowable next day.
+        ts += pd.Timedelta(days=1)
     return ts
 
 
@@ -998,7 +1007,7 @@ def merge_fundamentals_into_bars(
     yf_by_tv: Mapping[str, str],
     *,
     filing_lag_days: int,
-    effective_date_kind: str = EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
+    effective_date_kind: str,
 ) -> dict[str, pd.DataFrame]:
     """Forward-fill dated fundamentals onto each ticker's OHLCV frame.
 

@@ -77,6 +77,9 @@ class BarFeatures:
     fundamentals: Mapping[str, pd.Series] = field(default_factory=dict)
     #: The reporting lag those series rest on, or ``None`` when there are none.
     fundamental_filing_lag_days: int | None = None
+    #: Provenance kind of the effective dates (filing timestamp vs estimated
+    #: period-end plus lag); ``None`` when the bars carry no fundamentals stamp.
+    fundamental_effective_date_kind: str | None = None
 
     def fundamental(self, name: str) -> pd.Series | None:
         """One point-in-time fundamental series, or ``None`` when absent."""
@@ -135,6 +138,9 @@ class BarFeatures:
             fundamentals=fundamentals,
             fundamental_filing_lag_days=(
                 stamp.filing_lag_days if stamp is not None else None
+            ),
+            fundamental_effective_date_kind=(
+                stamp.effective_date_kind if stamp is not None else None
             ),
         )
 
