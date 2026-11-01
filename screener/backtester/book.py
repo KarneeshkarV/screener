@@ -35,6 +35,8 @@ BOOK_CONFIG_FIELDS = frozenset(
         # Capital and slots.
         "top",
         "initial_capital",
+        # Report-only hurdle: changes metrics, never bars or signals.
+        "risk_free_rate",
         "reserve_multiple",
         "reinvest",
         "allow_reentry",

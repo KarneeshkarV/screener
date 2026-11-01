@@ -529,6 +529,7 @@ def run_research_report(
             "tickers": list(cfg.tickers) if cfg.tickers else None,
             "universe_file": cfg.universe_file,
             "initial_capital": cfg.initial_capital,
+            "risk_free_rate": cfg.risk_free_rate,
             "oos_evidence_criteria": OOS_EVIDENCE_CRITERIA,
             "evidence_integrity_note": EVIDENCE_INTEGRITY_NOTE,
         },
