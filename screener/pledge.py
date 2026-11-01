@@ -31,8 +31,8 @@ _OSC_PLEDGE_RE = re.compile(
 )
 
 # screener.in pledge scrape: 7d cache, "screener-in" circuit breaker. The
-# scraper (``_HttpScraper.fetch_page``) is already resilience-wrapped, so the
-# provider's breaker is a no-op belt-and-suspenders here.
+# provider owns retries, rate limiting and the breaker; the scraper inside it
+# runs unwrapped so each page costs one rate token.
 _OSC_PLEDGE_PROVIDER = CachedProvider(
     ProviderSpec(
         provider="screener-in", namespace="openscreener_pledge", ttl_seconds=7 * 86400
@@ -87,7 +87,9 @@ def fetch_openscreener_pledge(name: str, *, refresh: bool = False) -> float | No
     """Promoter-pledged % scraped from the screener.in shareholding section."""
 
     def _fetch() -> float | None:
-        html = _HttpScraper().fetch_page(name)
+        # Raw fetch: the provider owns retries, so an outage raises and is not
+        # cached; only a definitive miss (404 -> "") caches as None.
+        html = _HttpScraper(resilient=False).fetch_page(name)
         if not html:
             return None
         match = _OSC_PLEDGE_RE.search(html)

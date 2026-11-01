@@ -5,6 +5,7 @@ from __future__ import annotations
 from tradingview_screener import col
 
 from screener.criteria import criterion
+from screener.vendor_columns import DIVIDEND_YIELD_COLUMN
 
 
 @criterion("cheap_quality")
@@ -23,7 +24,7 @@ def cheap_quality() -> list:
 def dividend() -> list:
     """Dividend yield >3% with positive earnings and low debt."""
     return [
-        col("dividend_yield_recent") > 3,
+        col(DIVIDEND_YIELD_COLUMN) > 3,
         col("price_earnings_ttm") > 0,
         col("price_earnings_ttm") <= 25,
         col("debt_to_equity") < 1.5,

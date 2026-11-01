@@ -61,6 +61,10 @@ class _SoftBlock:
 _SOFT_BLOCK = _SoftBlock()
 
 
+class _NseFetchFailed(RuntimeError):
+    """Keeps a failed NSE fetch out of the TTL cache."""
+
+
 def _new_session() -> requests.Session:
     NSEArchives = _optional.load("jugaad_data.nse").NSEArchives
 
@@ -167,14 +171,28 @@ def nse_cached_json(
     ttl_seconds: float | None = 900.0,
     extra_prime_page: str | None = None,
 ) -> Any | None:
-    """TTL-cached ``fetch_nse_json`` (default 15 min, intraday-safe)."""
-    return cached_json_call(
-        namespace,
-        key_parts,
-        ttl_seconds=ttl_seconds,
-        refresh=refresh,
-        fetch=lambda: fetch_nse_json(url, operation, extra_prime_page=extra_prime_page),
-    )
+    """TTL-cached ``fetch_nse_json`` (default 15 min, intraday-safe).
+
+    A failed fetch (``None``) is returned but never cached, so one NSE blip
+    does not pin an empty answer for the whole TTL.
+    """
+
+    def _fetch() -> Any:
+        value = fetch_nse_json(url, operation, extra_prime_page=extra_prime_page)
+        if value is None:
+            raise _NseFetchFailed
+        return value
+
+    try:
+        return cached_json_call(
+            namespace,
+            key_parts,
+            ttl_seconds=ttl_seconds,
+            refresh=refresh,
+            fetch=_fetch,
+        )
+    except _NseFetchFailed:
+        return None
 
 
 def fetch_nse_text(url: str, operation: str, *, timeout: float = 8.0) -> str | None:
@@ -204,6 +222,26 @@ def fetch_nse_text(url: str, operation: str, *, timeout: float = 8.0) -> str | N
 # ── archive files ──────────────────────────────────────────────────────────
 
 
+def _discard_non_bhavcopy(path: Path) -> bool:
+    """Unlink ``path`` unless it starts with the bhavcopy ``SYMBOL`` header.
+
+    jugaad's ``full_bhavcopy_save`` writes the response body without checking
+    the HTTP status, so a not-yet-published day leaves NSE's HTML error page
+    under the ``.csv`` name. Dropping it keeps the day unavailable (and
+    refetchable) instead of cached forever. Returns True when discarded.
+    """
+    try:
+        with path.open("rb") as fp:
+            header = fp.readline(4096)
+    except OSError:
+        return False
+    if header.lstrip().startswith(b"SYMBOL"):
+        return False
+    LOG.debug("Discarding non-CSV NSE bhavcopy at %s", path)
+    path.unlink(missing_ok=True)
+    return True
+
+
 def save_delivery_bhavcopy(
     dt: date,
     cache_dir: Path,
@@ -221,6 +259,8 @@ def save_delivery_bhavcopy(
         fallback=None,
     )
     if path is None or not path or not os.path.isfile(path):
+        return None
+    if _discard_non_bhavcopy(Path(path)):
         return None
     return Path(path)
 
@@ -272,7 +312,7 @@ def read_cash_bhavcopy_raw(
             lambda: n.full_bhavcopy_save(d, str(path.parent)),
             fallback=None,
         )
-    if not path.exists():
+    if not path.exists() or _discard_non_bhavcopy(path):
         raise FileNotFoundError(path)
     df = pd.read_csv(path)
     df.columns = [str(c).strip() for c in df.columns]
@@ -463,30 +503,29 @@ SPECIAL_TRADING_SESSIONS: frozenset[date] = frozenset(
 
 
 def _parse_holiday_payload(raw: Any) -> set[date]:
-    """Extract trading-holiday dates from NSE's ``holiday-master`` payload.
+    """Extract equity trading-holiday dates from NSE's ``holiday-master`` payload.
 
     The endpoint returns ``{"<segment>": [{"tradingDate": "DD-Mon-YYYY", ...}]}``.
-    We union the dates across whatever segment lists are present.
+    Only the capital-market (``CM``) list is used: currency, interest-rate and
+    commodity segments close on days equities still trade. Every calendar
+    consumer reads NSE equity cash or equity F&O archives, and NSE publishes
+    the same holiday list for ``FO`` as for ``CM``.
     """
     out: set[date] = set()
-    if not isinstance(raw, dict):
+    rows = raw.get("CM") if isinstance(raw, dict) else None
+    if not isinstance(rows, list):
         return out
-    for rows in raw.values():
-        if not isinstance(rows, list):
+    for row in rows:
+        if not isinstance(row, dict):
             continue
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            value = row.get("tradingDate") or row.get("date")
-            if not value:
-                continue
-            try:
-                import pandas as pd
-
-                parsed = pd.to_datetime(str(value), dayfirst=True).date()
-            except (ValueError, TypeError):
-                continue
-            out.add(parsed)
+        value = row.get("tradingDate") or row.get("date")
+        if not value:
+            continue
+        try:
+            parsed = pd.to_datetime(str(value), dayfirst=True).date()
+        except (ValueError, TypeError):
+            continue
+        out.add(parsed)
     return out
 
 

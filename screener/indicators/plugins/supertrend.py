@@ -47,12 +47,12 @@ def supertrend_dir(high, low, close, period: int = 10, mult: float = 3.0) -> np.
             final_lower[i] = lower_b[i]
         else:
             final_lower[i] = final_lower[i - 1]
-        if close[i] > final_upper[i - 1]:
-            direction[i] = -1
-        elif close[i] < final_lower[i - 1]:
-            direction[i] = 1
+        # As in Pine, only the band of the current trend can flip it: after an
+        # up-gap the ratcheted lower band can sit above the held upper band.
+        if direction[i - 1] < 0:
+            direction[i] = 1 if close[i] < final_lower[i] else -1
         else:
-            direction[i] = direction[i - 1]
+            direction[i] = -1 if close[i] > final_upper[i] else 1
     return direction
 
 
@@ -101,9 +101,9 @@ def _supertrend_dir_panel(
         )
         if carry.any():
             crossed = np.where(
-                close[i] > previous_upper,
-                -1,
-                np.where(close[i] < previous_lower, 1, direction[i - 1]),
+                direction[i - 1] < 0,
+                np.where(close[i] < final_lower[i], 1, -1),
+                np.where(close[i] > final_upper[i], -1, 1),
             )
             direction[i] = np.where(carry, crossed, 1)
     return direction

@@ -181,3 +181,22 @@ def test_the_filter_does_not_admit_names_the_stack_rejects() -> None:
         end_date=_INDEX[-1].date(),
     )
     assert "FALLING" not in {t.ticker for t in result.trades}
+
+
+def test_a_halted_name_with_zero_downside_vol_is_not_ranked() -> None:
+    # A name that stops trading after a rally keeps the stack in bullish order
+    # while its repeated close has a downside volatility of exactly zero, the
+    # best possible score. tradeable_span must keep it out of the ranking.
+    halted = _noisy_trend(50.0, 0.002, noise=0.002, volume=900_000.0)
+    stale = halted.index[200:]
+    halted.loc[stale, ["open", "high", "low", "close"]] = halted["close"].iloc[199]
+    halted.loc[stale, "volume"] = 0.0
+    data = dict(_DATA)
+    data["HALTED"] = halted
+    result = run_rolling_backtest(
+        _cfg("ema_stack_lowvol", tickers=("CALM", "CHOPPY", "WILD", "HALTED")),
+        StubPriceFetcher(data),
+        start_date=_INDEX[260].date(),
+        end_date=_INDEX[-1].date(),
+    )
+    assert {t.ticker for t in result.trades} == {"CALM"}

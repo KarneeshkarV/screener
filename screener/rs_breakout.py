@@ -188,17 +188,20 @@ def supertrend(
 
 
 def previous_completed_week_high(bars: pd.DataFrame, as_of: date) -> float | None:
-    """High of the last fully completed Monday-Friday week before as_of."""
+    """High of the week before the one holding the last bar on or before as_of.
+
+    Read off :func:`previous_completed_week_high_series`, so the live scan and
+    the backtest share one week definition (``W-FRI``) and cannot drift. A
+    weekend session, such as an NSE Budget Saturday, belongs to the week that
+    ends the following Friday.
+    """
     if bars.empty:
         return None
-    as_ts = pd.Timestamp(as_of).normalize()
-    this_monday = as_ts - pd.Timedelta(days=as_ts.weekday())
-    prev_monday = this_monday - pd.Timedelta(days=7)
-    prev_friday = this_monday - pd.Timedelta(days=3)
-    week = bars[(bars.index >= prev_monday) & (bars.index <= prev_friday)]
-    if week.empty:
+    upto = bars[bars.index <= pd.Timestamp(as_of).normalize()]
+    if upto.empty:
         return None
-    return float(week["high"].max())
+    value = previous_completed_week_high_series(upto).iloc[-1]
+    return None if pd.isna(value) else float(value)
 
 
 def delivery_lookup(
@@ -290,7 +293,9 @@ def evaluate_symbol(
     if len(df) < max(RS_WINDOW + 1, VOLUME_WINDOW + 1, SUPERTREND_PERIOD + 1):
         return None
 
-    rs = relative_strength_ratio(df["close"], benchmark_close)
+    rs = relative_strength_ratio(
+        df["close"], benchmark_close, stock_volume=df["volume"]
+    )
     st = supertrend(df)
     vol_avg = (
         df["volume"].rolling(VOLUME_WINDOW, min_periods=VOLUME_WINDOW).mean().shift(1)
@@ -533,7 +538,9 @@ def build_signal_frame(
     # ``df``, so the extra ``copy`` it used to carry was one full duplicate of
     # every symbol's bars per run.
     df = bars.sort_index()
-    rs = relative_strength_ratio(df["close"], benchmark_close)
+    rs = relative_strength_ratio(
+        df["close"], benchmark_close, stock_volume=df["volume"].astype(float)
+    )
     st = supertrend(df)
     avg_volume = (
         df["volume"]

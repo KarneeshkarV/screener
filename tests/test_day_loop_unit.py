@@ -122,7 +122,8 @@ def _open(portfolio: Portfolio, state: _SlotState, cfg: BacktestConfig) -> None:
 
 def test_slot_with_no_bar_for_day_is_skipped():
     cfg = _cfg(stop_loss=0.05)
-    bars = _frame([_bar(100, 101, 99, 100), _bar(100, 101, 99, 100)])
+    # Mon 2024-01-01 .. Fri 2024-01-12: the weekend between is inside the span.
+    bars = _frame([_bar(100, 101, 99, 100)] * 10)
     state = _state(bars, stop_ref=95.0)
     portfolio = Portfolio(100_000.0, 1)
     _open(portfolio, state, cfg)
@@ -134,12 +135,41 @@ def test_slot_with_no_bar_for_day_is_skipped():
         fill_model=FillModel(cfg),
     )
 
-    # A calendar day the slot's frame does not contain: no close, not freed.
-    freed = loop.process_exits_for_day(pd.Timestamp("2024-06-01"))
+    # A day inside the frame's span that it has no bar for (a halt, a holiday
+    # on this venue): no close, not freed - the ticker trades again later.
+    freed = loop.process_exits_for_day(pd.Timestamp("2024-01-06"))
 
     assert freed == []
     assert portfolio.closed_trades() == []
     assert loop.slot_states[0] is state
+
+
+def test_slot_past_the_last_bar_is_closed_at_that_bars_close():
+    cfg = _cfg(stop_loss=0.05)
+    bars = _frame([_bar(100, 101, 99, 100), _bar(100, 104, 99, 103)])
+    state = _state(bars, stop_ref=95.0)
+    portfolio = Portfolio(100_000.0, 1)
+    _open(portfolio, state, cfg)
+    loop = DayLoop(
+        portfolio=portfolio,
+        cfg=cfg,
+        slot_states={0: state},
+        slot_bars={0: bars},
+        fill_model=FillModel(cfg),
+    )
+
+    # The frame ends on 2024-01-02 (a delisting, or a feed that stopped). No
+    # later bar will ever reach the exit checks, so the first day past it
+    # closes the position at the last close, stamped with the last bar, and
+    # frees the slot rather than holding it to the end of the window.
+    freed = loop.process_exits_for_day(pd.Timestamp("2024-06-03"))
+
+    assert freed == [FreedSlot(slot_id=0, state=state)]
+    assert loop.slot_states[0] is None
+    [trade] = portfolio.closed_trades()
+    assert trade.exit_reason == "eod"
+    assert trade.exit_date == date(2024, 1, 2)
+    assert trade.exit_price == pytest.approx(103.0)
 
 
 def test_pre_entry_bar_is_skipped():
@@ -207,12 +237,11 @@ def test_stop_exit_frees_slot_and_records_close():
     assert trades[0].exit_reason == "stop"
 
 
-def test_partial_fire_precedes_and_raises_stop_for_exit_check():
-    """A tier scales out first; the exit check then sees the raised stop."""
+def test_original_stop_precedes_ambiguous_partial_target():
+    """A daily bar cannot prove the target traded before the original stop."""
     cfg = _cfg(stop_loss=0.05, gap_fills=False)
     # Bar 1 both clears the +5% partial target (high 106 >= 105) and pierces the
-    # original 95 stop (low 94). The partial must fire first, raise the stop to
-    # entry (100), and the exit check then closes the remainder at that stop.
+    # original 95 stop (low 94). The conservative fill closes at the stop.
     bars = _frame([_bar(100, 101, 99, 100), _bar(100, 106, 94, 100)])
     state = _state(
         bars,
@@ -234,10 +263,9 @@ def test_partial_fire_precedes_and_raises_stop_for_exit_check():
 
     assert [f.slot_id for f in freed] == [0]
     trades = portfolio.closed_trades()
-    assert [t.exit_reason for t in trades] == ["target", "stop"]
-    assert state.partial_fired == [True]
-    # Stop was ratcheted up to the entry fill by the partial fire.
-    assert state.stop_ref == pytest.approx(100.0)
+    assert [t.exit_reason for t in trades] == ["stop"]
+    assert state.partial_fired == [False]
+    assert trades[0].exit_price == pytest.approx(95.0)
 
 
 def test_partial_full_close_frees_slot_without_exit_trade():
@@ -353,13 +381,15 @@ def test_check_exit_trail_beats_target():
 
 def test_check_exit_expr_beats_time():
     cfg = _cfg()
-    bars = _one_bar(open_=100, high=101, low=99, close=100)
-    exit_signal = pd.Series([True], index=bars.index)
-    # Both the exit expression and the hold limit fire on this bar; exit_expr wins.
-    state = _state(bars, hold_limit_idx=0, exit_signal=exit_signal)
-    result = _check_exit_at_bar(state, bars, 0, cfg, FillModel(cfg))
+    bars = _frame([_bar(100, 101, 99, 100), _bar(97, 101, 96, 100)])
+    exit_signal = pd.Series([True, False], index=bars.index)
+    # The prior bar's exit expression and this bar's hold limit both fire;
+    # exit_expr wins and fills at this bar's open.
+    state = _state(bars, hold_limit_idx=1, exit_signal=exit_signal)
+    result = _check_exit_at_bar(state, bars, 1, cfg, FillModel(cfg))
     assert result is not None
     assert result[1] == "exit_expr"
+    assert result[0] == pytest.approx(97.0)
 
 
 def test_check_exit_time_when_hold_reached():

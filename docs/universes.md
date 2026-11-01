@@ -58,19 +58,20 @@ wrong file.
 
 ### What the reconstruction can and cannot tell you
 
-- **It is lookahead-free.** Each snapshot is dated at the crawl that observed
-  it, which is on or after the day NSE published that membership, never before.
-  No name becomes eligible earlier than it really was in the index.
+- **Eligibility starts at the recorded observation.**
+  Archive observations can lag official index changes.
+  Their dates alone do not prove complete, unbiased historical membership.
 - **Archive observation dates are not index effective dates.** The CSV column
   may be named `effective_date`, but for archive-backed history that value is
-  the crawl observation day. Prefer an `observation_date` or `snapshot_date`
-  column when you control the file. Membership windows still use those dates
+  the crawl observation day. When a file carries both `effective_date` and an
+  observation column, `effective_date` is used, so a name is never eligible
+  before the reconstitution. Use `observation_date` or `snapshot_date` alone
+  when the file has only crawl days. Membership windows still use those dates
   as half-open eligibility bounds; they can lag the true index reconstitution.
-- **It is only as fine as the crawl cadence.** A membership change is dated at
-  the first crawl that saw it, not at its true effective date. An addition
-  enters late, and a deleted name stays eligible until the next crawl. It was a
-  real, tradeable listing over that stretch, so this is a resolution limit
-  rather than a bias toward names that turned out well.
+- **It is only as fine as the crawl cadence.**
+  A membership change is dated at the first crawl that saw it.
+  An addition can enter late, and a deleted name can stay eligible until the next crawl.
+  This can change selections and returns; it does not establish that the removed name remained tradable.
 - **Observation gaps are warned, not silently trusted.** When consecutive
   observation dates are at least `SNAPSHOT_OBSERVATION_GAP_WARN_DAYS`
   (180 calendar days) apart, or the final observation is that stale versus
@@ -87,8 +88,8 @@ wrong file.
 ## Shipped `nifty500_pit`
 
 `universes.yaml` in the repository root defines `nifty500_pit` over a committed
-backfill at `data/universes/nifty500_pit_snapshots.csv`. It carries 13
-snapshots from 2018-10 to 2026-08 and 850 names that were ever members, against
+backfill at `data/universes/nifty500_pit_snapshots.csv`. It carries 14
+snapshots from 2018-10 to 2026-09 and 842 names that were ever members, against
 the 500 the current NSE list reports.
 
 ```bash
@@ -203,6 +204,14 @@ therefore retains an auditable identity.
   the result as not point-in-time and warns.
   That fallback is survivorship-biased and must not be reported as a
   point-in-time result.
+- A rate-limited (HTTP 429) or failed revision request is retried, honouring
+  `Retry-After`, before it counts as unreadable.
+- Membership windows need every quarterly sample. If any past sample stays
+  unreadable, the whole window history is reported as unavailable rather than
+  stretching the previous snapshot over the gap, so a typed `--point-in-time`
+  fails and the default falls back to the "date added" column with a warning.
+- NSE `DUMMY*` rows, placeholders NSE lists while a demerged entity awaits
+  listing, are dropped when parsing a constituent CSV. They are not tradable.
 - Sensex uses the public Wikipedia constituent table because BSE does not expose
   a stable documented free constituent API.
 - yfinance may lack usable prices for removed or delisted securities. Missing

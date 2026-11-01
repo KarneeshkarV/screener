@@ -199,6 +199,7 @@ _RUN_OPTION_DECORATORS: tuple[OptionDecorator, ...] = (
     backtest_options(
         "rolling",
         "initial-capital",
+        "risk-free-rate",
         "benchmark",
         "min-price",
         "min-avg-dollar-volume",

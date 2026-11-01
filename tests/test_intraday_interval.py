@@ -101,16 +101,16 @@ def test_normalize_frame_does_not_collapse_intraday_bars():
 
 def test_cache_key_namespaces_intraday_but_not_daily():
     daily = YFinancePriceFetcher(interval="1d")
-    assert daily._cache_key("AAPL") == "AAPL"
+    assert daily._cache_key("AAPL") == "AAPL__full_turnover_v3"
 
     daily_raw = YFinancePriceFetcher(interval="1d", auto_adjust=False)
-    assert daily_raw._cache_key("AAPL") == "AAPL__raw"
+    assert daily_raw._cache_key("AAPL") == "AAPL__raw_split_contract_v3"
 
     intraday = YFinancePriceFetcher(interval="15m")
-    assert intraday._cache_key("AAPL") == "AAPL__15m"
+    assert intraday._cache_key("AAPL") == "AAPL__15m__full_turnover_v3"
 
     intraday_raw = YFinancePriceFetcher(interval="15m", auto_adjust=False)
-    assert intraday_raw._cache_key("AAPL") == "AAPL__15m__raw"
+    assert intraday_raw._cache_key("AAPL") == "AAPL__15m__raw_split_contract_v3"
 
 
 def test_yfinance_intraday_fetch_includes_whole_end_date_from_cache(tmp_path):
@@ -161,6 +161,73 @@ def test_yfinance_one_minute_downloads_are_chunked_and_stitched(tmp_path, monkey
     )
     assert out.index.min() == pd.Timestamp(start)
     assert out.index.max() == pd.Timestamp(end)
+
+
+def test_yfinance_intraday_rate_limit_retries_only_the_throttled_chunk(
+    tmp_path, monkeypatch
+):
+    """A 429 on one chunk must not mark the ticker's other chunks throttled."""
+    import logging
+
+    import yfinance as yf
+
+    from screener.backtester import data as data_module
+
+    end = date.today() - pd.Timedelta(days=1)
+    start = end - pd.Timedelta(days=20)
+    calls = []
+    throttled_start = []
+
+    def fake_download(tickers, **kwargs):
+        chunk_start = pd.Timestamp(kwargs["start"])
+        calls.append(chunk_start)
+        if not throttled_start:
+            throttled_start.append(chunk_start)
+            logging.getLogger("yfinance").error(
+                "['AAA']: YFRateLimitError('Too Many Requests. "
+                "Rate limited. Try after a while.')"
+            )
+            return pd.DataFrame()
+        idx = pd.date_range(
+            chunk_start, pd.Timestamp(kwargs["end"]) - pd.Timedelta(days=1), freq="D"
+        )
+        return pd.DataFrame(
+            {
+                "Open": range(len(idx)),
+                "High": range(1, len(idx) + 1),
+                "Low": range(len(idx)),
+                "Close": range(1, len(idx) + 1),
+                "Volume": [1000] * len(idx),
+            },
+            index=idx,
+        )
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setattr(data_module, "_retry_sleep", lambda _seconds: None)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1m")
+
+    out = fetcher.fetch(["AAA"], start, end)["AAA"]
+
+    assert len(calls) == 4  # three chunks, then the throttled one again
+    assert calls[-1] == throttled_start[0]
+    assert out.index.min() == pd.Timestamp(start)
+    assert out.index.max() == pd.Timestamp(end)
+
+
+def test_yfinance_intraday_window_past_retention_downloads_nothing(
+    tmp_path, monkeypatch
+):
+    """A window wholly before Yahoo's 1m retention has no request to send."""
+    import yfinance as yf
+
+    calls = []
+    monkeypatch.setattr(yf, "download", lambda *a, **k: calls.append(k))
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1m")
+
+    out = fetcher.fetch(["AAA"], date(2020, 1, 1), date(2020, 1, 2))
+
+    assert calls == []
+    assert out["AAA"].empty
 
 
 def test_yfinance_daily_window_remains_one_download(tmp_path, monkeypatch):
@@ -318,3 +385,51 @@ def test_rolling_daily_stamps_stay_dates():
     for trade in result.trades:
         assert isinstance(trade.entry_date, date)
         assert not isinstance(trade.entry_date, datetime)
+
+
+def test_yfinance_intraday_failed_chunk_is_not_stored_as_complete(
+    tmp_path, monkeypatch
+):
+    """A chunk that failed leaves a gap the completeness test cannot see.
+
+    It checks only the first and last bar, so a merged frame saved with a
+    hole in the middle was served as complete on every later run.
+    """
+    import yfinance as yf
+
+    end = date.today() - pd.Timedelta(days=1)
+    start = end - pd.Timedelta(days=20)
+    failing = {"on": True}
+
+    def fake_download(tickers, **kwargs):
+        chunk_start = pd.Timestamp(kwargs["start"])
+        if failing["on"] and chunk_start == pd.Timestamp(start) + pd.Timedelta(days=7):
+            # yfinance catches a symbol's failure and serves it empty.
+            return pd.DataFrame()
+        idx = pd.date_range(
+            chunk_start, pd.Timestamp(kwargs["end"]) - pd.Timedelta(days=1), freq="D"
+        )
+        return pd.DataFrame(
+            {
+                "Open": [100.0] * len(idx),
+                "High": [101.0] * len(idx),
+                "Low": [99.0] * len(idx),
+                "Close": [100.5] * len(idx),
+                "Volume": [1000] * len(idx),
+            },
+            index=idx,
+        )
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setattr("screener.resilience.time.sleep", lambda _seconds: None)
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path, interval="1m", max_workers=1)
+
+    first = fetcher.fetch(["AAA"], start, end)["AAA"]
+    assert first.index.to_series().diff().max() > pd.Timedelta(days=1)
+
+    failing["on"] = False
+    second = fetcher.fetch(["AAA"], start, end)["AAA"]
+
+    assert second.index.to_series().diff().max() == pd.Timedelta(days=1)
+    assert second.index.min() == pd.Timestamp(start)
+    assert second.index.max() == pd.Timestamp(end)

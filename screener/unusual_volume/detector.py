@@ -98,11 +98,13 @@ def bars_on_or_before_as_of(bars: pd.DataFrame | None, as_of: date) -> pd.DataFr
 
 def _rolling_pct_rank(series: pd.Series, window: int) -> pd.Series:
     """For each row, return the percentile rank of the row's value within
-    its trailing ``window`` of observations (last value inclusive)."""
+    its trailing ``window`` of observations (last value inclusive).
+
+    ``method="max"`` counts ties as at-or-below, the same ``<=`` share a
+    per-window Python callback computed about 90x slower.
+    """
     s = series.astype(float)
-    return s.rolling(window, min_periods=window).apply(
-        lambda x: (x <= x.iloc[-1]).sum() / len(x), raw=False
-    )
+    return s.rolling(window, min_periods=window).rank(method="max", pct=True)
 
 
 def _safe_ratio(num: float, denom: float) -> float:

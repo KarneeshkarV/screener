@@ -348,6 +348,43 @@ def test_operator_label_classifies_all_action_buckets():
     ]
 
 
+def test_operator_labels_match_scalar_reference_and_preserve_input():
+    import numpy as np
+
+    rng = np.random.default_rng(42)
+    df = pd.DataFrame(
+        {
+            "_is_fno": rng.random(500) > 0.2,
+            "%_Change_Price": rng.integers(-2, 3, 500).astype(float),
+            "%_Change_OI": rng.integers(-2, 3, 500).astype(float),
+            "%_Change_Delivery": rng.integers(80, 160, 500).astype(float),
+            "Dist_From_52W_High": rng.uniform(0, 30, 500),
+        }
+    )
+    df.loc[df.index[::9], "%_Change_Price"] = np.nan
+    before = df.copy(deep=True)
+    expected = pd.Series(
+        [screen._classify(row) for _, row in df.iterrows()],
+        dtype=object,
+        name="Operator_Action",
+    )
+    pd.testing.assert_series_equal(screen.label(df)["Operator_Action"], expected)
+    pd.testing.assert_frame_equal(df, before)
+
+
+def test_missing_futures_membership_does_not_label_nullable_rows():
+    frame = pd.DataFrame(
+        {
+            "_is_fno": pd.Series([pd.NA, True], dtype="boolean"),
+            "%_Change_Price": [1.0, 1.0],
+            "%_Change_OI": [1.0, 1.0],
+            "%_Change_Delivery": [150.0, 150.0],
+            "Dist_From_52W_High": [10.0, 10.0],
+        }
+    )
+    assert screen.label(frame)["Operator_Action"].tolist() == [None, "Long Build-up"]
+
+
 def test_operator_write_csv_sorts_and_filters_actions(tmp_path):
     df = pd.DataFrame(
         [

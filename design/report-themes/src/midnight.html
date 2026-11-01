@@ -1,0 +1,47 @@
+@@ title
+Midnight
+@@ lib
+Plotly.js 2.35 (same lib the CLI already ships)<br>navy glass · zoom/pan/export built in
+@@ head
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+@@ tokens
+:root{color-scheme:dark;
+  --bg:#0c0f1a;--surface:#131722;--surface-2:#1a1f2e;--ink:#e8ebf4;--muted:#8a93ab;--line:#252b3d;--line-soft:#1d2232;--hover:#1b2133;
+  --accent:#5b8cff;--series-1:#3569e7;--series-2:#cb7f00;--series-3:#ab58be;
+  --pos:#26a69a;--neg:#ef5350;--pos-ink:#4fd1c5;--neg-ink:#ff7a77;--div-mid:#1e2436;--on-strong:#0c0f1a;
+  --status-good:#0ca30c;--status-warning:#fab219;--status-critical:#d03b3b;
+  --font-ui:Manrope,system-ui,sans-serif;--font-display:Manrope,system-ui,sans-serif;--font-num:Manrope,sans-serif;--font-mono:"JetBrains Mono",monospace;
+  --h1-size:30px;--h1-weight:700;--h1-tracking:-.02em;--radius:14px;--gap:14px}
+@@ css
+body{background:radial-gradient(1200px 600px at 10% -10%,#1b2550 0%,transparent 60%),var(--bg)}
+.panel,.kpi{background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,0)),var(--surface)}
+.kpi .value{font-size:28px}
+@@ charts
+const R = REPORT;
+const font = { family: tok("font-ui"), color: tok("muted"), size: 11 };
+const AX = { gridcolor: tok("line-soft"), linecolor: tok("line"), zeroline: false, tickfont: font };
+const ax = () => structuredClone(AX);
+const layout = (extra) => ({ paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font, margin: { l: 56, r: 16, t: 8, b: 32 }, showlegend: false,
+  hoverlabel: { bgcolor: tok("surface-2"), bordercolor: tok("line"), font: { color: tok("ink"), family: tok("font-ui") } }, hovermode: "x unified", xaxis: ax(), yaxis: ax(), ...extra });
+const cfg = { displaylogo: false, responsive: true, modeBarButtonsToRemove: ["lasso2d", "select2d"] };
+Plotly.newPlot("equity", [
+  { x: R.dates, y: R.equity, name: "Strategy", line: { color: tok("series-1"), width: 2 }, fill: "tozeroy", fillcolor: "rgba(53,105,231,.12)", hovertemplate: "%{y:,.0f}" },
+  { x: R.dates, y: R.benchmark, name: "Benchmark", line: { color: tok("series-2"), width: 2 }, hovertemplate: "%{y:,.0f}" }],
+  layout({ yaxis: { ...ax(), range: [Math.min(...R.benchmark, ...R.equity) * 0.95, Math.max(...R.equity) * 1.03], tickformat: "~s" } }), cfg);
+Plotly.newPlot("drawdown", [{ x: R.dates, y: R.drawdown, name: "Drawdown", line: { color: tok("neg"), width: 1.5 }, fill: "tozeroy", fillcolor: "rgba(239,83,80,.18)", hovertemplate: "%{y:.1f}%" }],
+  layout({ yaxis: { ...ax(), ticksuffix: "%" } }), cfg);
+// Sync zoom between equity and drawdown.
+let syncing = false;
+const sync = (from, to) => document.getElementById(from).on("plotly_relayout", (e) => {
+  if (syncing) return; syncing = true;
+  const upd = e["xaxis.autorange"] ? { "xaxis.autorange": true } : e["xaxis.range[0]"] ? { "xaxis.range": [e["xaxis.range[0]"], e["xaxis.range[1]"]] } : null;
+  (upd ? Plotly.relayout(to, upd) : Promise.resolve()).then(() => (syncing = false)); });
+sync("equity", "drawdown"); sync("drawdown", "equity");
+Plotly.newPlot("hist", [{ type: "bar", x: HIST.map((b) => b.x0 + 1), y: HIST.map((b) => b.n), width: 1.8,
+  marker: { color: HIST.map((b) => (b.x0 >= 0 ? tok("pos") : tok("neg"))), cornerradius: 4 }, hovertemplate: "%{x}%: %{y} trades<extra></extra>" }],
+  layout({ hovermode: "closest", xaxis: { ...ax(), ticksuffix: "%" } }), cfg);
+const sec = [...R.sectorReturns].sort((a, b) => a.ret - b.ret);
+Plotly.newPlot("sectors", [{ type: "bar", orientation: "h", y: sec.map((s) => s.name), x: sec.map((s) => s.ret), text: sec.map((s) => fmtPct(s.ret)), textposition: "outside", textfont: { color: tok("ink") },
+  marker: { color: sec.map((s) => (s.ret >= 0 ? tok("pos") : tok("neg"))), cornerradius: 4 }, hovertemplate: "%{y}: %{x:.1f}%<extra></extra>", cliponaxis: false }],
+  layout({ hovermode: "closest", margin: { l: 88, r: 40, t: 8, b: 32 }, xaxis: { ...ax(), ticksuffix: "%", range: [-26, 14] } }), cfg);

@@ -24,6 +24,7 @@ whose vendor filters cut the field before bars are fetched.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
+from contextvars import ContextVar
 from datetime import date
 from typing import Any, Literal, TypeVar, cast
 
@@ -59,8 +60,35 @@ class PrepareCtx(BaseModel):
     end: date
     fetcher: SkipValidation[PriceFetcher]
     warnings: list[str]
+    membership_windows: tuple[tuple[str, date, date | None], ...] = ()
+    membership_added: tuple[tuple[str, date], ...] = ()
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def mask_rank_reference(self, scores: pd.DataFrame) -> pd.DataFrame:
+        """Exclude names outside dated membership before cross-sectional transforms.
+
+        Preserve all price history so an admitted member has valid indicators.
+        With no dated history, the explicitly selected fixed universe is used.
+        """
+        if self.membership_windows:
+            eligible = pd.DataFrame(False, index=scores.index, columns=scores.columns)
+            for ticker, start, end in self.membership_windows:
+                if ticker not in eligible.columns:
+                    continue
+                active = scores.index >= pd.Timestamp(start)
+                if end is not None:
+                    active &= scores.index < pd.Timestamp(end)
+                eligible.loc[active, ticker] = True
+            scores = scores.where(eligible)
+        if self.membership_added:
+            scores = scores.copy()
+            for ticker, added in self.membership_added:
+                if ticker in scores.columns:
+                    scores.loc[scores.index < pd.Timestamp(added), ticker] = float(
+                        "nan"
+                    )
+        return scores
 
 
 PrepareBarsFn = Callable[[PrepareCtx], dict[str, pd.DataFrame]]
@@ -144,6 +172,31 @@ def bar_columns_lookback(bar_columns: Mapping[str, BarColumnFn]) -> int:
     return floor
 
 
+#: Intermediates shared by the recipes of one :func:`apply_bar_columns` call.
+#: ``None`` outside such a call, so a recipe invoked on its own computes afresh.
+_SHARED_INTERMEDIATES: ContextVar[dict[str, Any] | None] = ContextVar(
+    "_SHARED_INTERMEDIATES", default=None
+)
+
+
+def shared_intermediate(key: str, compute: Callable[[], V]) -> V:
+    """``compute()``, built once per frame while its bar columns are applied.
+
+    Several recipes of one strategy read the same intermediate - MACD's line
+    and signal both need EMA12 and EMA26, and AO is read at three lags - and
+    each recipe only sees the frame. Within one :func:`apply_bar_columns` call
+    every recipe gets the same frame, so the first recipe's result is reused by
+    the rest. ``key`` must therefore name everything the value depends on, and
+    the value must not be mutated by its readers.
+    """
+    memo = _SHARED_INTERMEDIATES.get()
+    if memo is None:
+        return compute()
+    if key not in memo:
+        memo[key] = compute()
+    return cast(V, memo[key])
+
+
 def apply_bar_columns(
     bar_columns: Mapping[str, BarColumnFn] | None, bars: pd.DataFrame
 ) -> pd.DataFrame:
@@ -151,8 +204,12 @@ def apply_bar_columns(
     if not bar_columns or bars is None or bars.empty:
         return bars
     frame = bars.copy()
-    for column, build in bar_columns.items():
-        frame[column] = build(frame)
+    token = _SHARED_INTERMEDIATES.set({})
+    try:
+        for column, build in bar_columns.items():
+            frame[column] = build(frame)
+    finally:
+        _SHARED_INTERMEDIATES.reset(token)
     return frame
 
 

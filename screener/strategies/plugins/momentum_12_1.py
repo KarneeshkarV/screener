@@ -89,17 +89,24 @@ ENTRY_EMA10 = f"{ENTRY_PURE} and close > ema(close, {_SHORT_TREND_EMA})"
 ENTRY_RISKADJ = f"{ENTRY_PURE} and vol_252 > 0"
 
 
-def momentum_12_1_score(close: pd.Series) -> pd.Series:
-    """Return the causal 12-1 momentum series for one symbol's closes."""
-    return _momentum_12_1(close, lookback=_LOOKBACK, skip=_SKIP)
+def momentum_12_1_score(close: pd.Series, volume: pd.Series | None = None) -> pd.Series:
+    """Return the causal 12-1 momentum series for one symbol's closes.
+
+    ``volume`` feeds the recipe's tradeability gate (a stub quote or a series
+    the vendor carried forward is not a price); pass it whenever the frame
+    carries it.
+    """
+    return _momentum_12_1(close, volume, lookback=_LOOKBACK, skip=_SKIP)
 
 
-def risk_adjusted_momentum(close: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
+def risk_adjusted_momentum(
+    close: pd.Series, volume: pd.Series | None = None
+) -> tuple[pd.Series, pd.Series, pd.Series]:
     """Return ``(mom_12_1, vol_252, mom/vol)`` for one symbol's closes.
 
     ``mom/vol`` is NaN wherever either leg is missing or vol is non-positive.
     """
-    mom = momentum_12_1_score(close)
+    mom = momentum_12_1_score(close, volume)
     vol = realized_volatility(close)
     score = mom / vol
     score = score.where(vol > 0)
@@ -118,7 +125,9 @@ def _prepare_riskadj(ctx: PrepareCtx) -> dict[str, pd.DataFrame]:
             out[tv] = bars
             continue
         frame = bars.copy()
-        mom, vol, score = risk_adjusted_momentum(frame["close"])
+        mom, vol, score = risk_adjusted_momentum(
+            frame["close"], frame["volume"] if "volume" in frame.columns else None
+        )
         frame["mom_12_1"] = mom
         frame["vol_252"] = vol
         frame["rank_score"] = score

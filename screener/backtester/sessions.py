@@ -18,7 +18,7 @@ the price fetchers deal in vendor symbols and never see a market name.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import overload
 from zoneinfo import ZoneInfo
 
@@ -83,9 +83,27 @@ _SESSION_BY_SUFFIX: dict[str, ExchangeSession] = {
 }
 
 
+# Index symbols do not carry listing suffixes. Their venue is explicit.
+_SESSION_BY_SYMBOL: dict[str, ExchangeSession] = {
+    "^NSEI": INDIA_SESSION,
+    "^NSEBANK": INDIA_SESSION,
+    "^BSESN": INDIA_SESSION,
+}
+
+_INTRADAY_BAR_DURATION = {
+    "1m": timedelta(minutes=1),
+    "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "30m": timedelta(minutes=30),
+    "1h": timedelta(hours=1),
+}
+
+
 def session_for(symbol: str) -> ExchangeSession:
-    """The trading session ``symbol`` settles on."""
+    """The trading session ``symbol`` settles on, including benchmark indexes."""
     upper = symbol.upper()
+    if upper in _SESSION_BY_SYMBOL:
+        return _SESSION_BY_SYMBOL[upper]
     for suffix, session in _SESSION_BY_SUFFIX.items():
         if upper.endswith(suffix):
             return session
@@ -119,21 +137,32 @@ def drop_incomplete_sessions(
     interval: str = "1d",
     now: datetime | None = None,
 ) -> pd.DataFrame | None:
-    """Drop daily rows for sessions that have not closed yet.
+    """Drop bars whose session or UTC bar-start plus interval has not finished.
 
-    Intraday frames are returned untouched: their stamps are instants, and an
-    instant inside an open session is exactly what an intraday caller asked
-    for. Only a daily bar claims to summarise a whole session.
+    Intraday naive timestamps are UTC. A bar is available only at or after
+    its start plus its full interval, including the last bar of a session.
 
     A missing frame passes straight through, so a caller holding a cache read
     that may be ``None`` does not have to unwrap it first; the return type
     follows the argument.
     """
-    if interval != "1d" or frame is None or frame.empty:
+    if frame is None or frame.empty:
         return frame
     index = frame.index
     if not isinstance(index, pd.DatetimeIndex):
         return frame
+    if interval != "1d":
+        duration = _INTRADAY_BAR_DURATION.get(interval)
+        if duration is None:
+            raise ValueError(f"Unknown bar completion interval: {interval!r}")
+        clock = pd.Timestamp(now if now is not None else datetime.now(UTC))
+        clock = (
+            clock.tz_localize("UTC") if clock.tz is None else clock.tz_convert("UTC")
+        )
+        utc_index = (
+            index.tz_localize("UTC") if index.tz is None else index.tz_convert("UTC")
+        )
+        return frame.loc[utc_index + duration <= clock]
     cutoff = pd.Timestamp(session_for(symbol).last_complete_date(now))
     if index.max() <= cutoff:
         return frame

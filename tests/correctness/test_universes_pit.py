@@ -373,3 +373,65 @@ class warnings_as_errors:
 
     def __exit__(self, *exc):
         return self._ctx.__exit__(*exc)
+
+
+def test_membership_windows_unavailable_when_one_sample_is_unreadable(
+    monkeypatch, tmp_path
+):
+    """A skipped sample stretches the previous snapshot over it, which is not
+    point-in-time; a partial history must report as unavailable instead."""
+    _patch(monkeypatch, tmp_path)
+    original = universes._fetch_sp500_revision_snapshot
+
+    def flaky(as_of, **kwargs):
+        if as_of == date(2020, 7, 1):
+            return None
+        return original(as_of, **kwargs)
+
+    monkeypatch.setattr(universes, "_fetch_sp500_revision_snapshot", flaky)
+    assert (
+        universes.load_sp500_membership_windows(
+            start=date(2018, 1, 1), end=date(2021, 1, 1)
+        )
+        == ()
+    )
+
+
+def test_rate_limited_revision_lookup_is_retried(monkeypatch, tmp_path):
+    """A 429 must be retried by the resilience wrapper, not escape on attempt one."""
+    _patch(monkeypatch, tmp_path)
+    monkeypatch.setattr(universes, "call_with_resilience", _no_sleep_resilience())
+    real_get = universes.requests.get
+    calls = {"count": 0}
+
+    def rate_limited_once(url, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _http_error_response(429)
+        return real_get(url, **kwargs)
+
+    monkeypatch.setattr(universes, "requests", SimpleNamespace(get=rate_limited_once))
+    assert universes._sp500_revision_id_at(date(2018, 1, 1)) == _revid(date(2010, 1, 4))
+    assert calls["count"] == 2
+
+
+def _no_sleep_resilience():
+    from screener import resilience
+
+    def call(*args, **kwargs):
+        kwargs.setdefault("sleep", lambda _seconds: None)
+        kwargs.setdefault("rate_limiter", None)
+        return resilience.call_with_resilience(*args, **kwargs)
+
+    return call
+
+
+def _http_error_response(status: int):
+    import requests
+
+    def raise_for_status():
+        response = requests.Response()
+        response.status_code = status
+        raise requests.HTTPError(f"{status} error", response=response)
+
+    return SimpleNamespace(raise_for_status=raise_for_status)

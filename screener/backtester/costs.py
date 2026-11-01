@@ -228,15 +228,15 @@ def apply_round_trip_costs(
             if amt > 0.0:
                 fees[name] = fees.get(name, 0.0) + amt
 
-    buy_frac = (
-        sum(float(v) for v in buy_bd.values()) / buy_notional if buy_notional else 0.0
-    )
-    sell_frac = (
-        sum(float(v) for v in sell_bd.values()) / sell_notional
-        if sell_notional
-        else 0.0
-    )
-    return raw, raw - max(buy_frac, 0.0) - max(sell_frac, 0.0), fees
+    # Net return on the cash the trade used, as ``Portfolio`` books it: the
+    # sale proceeds after fees over the purchase cost including fees.
+    # Subtracting each side's fee rate from the price return instead dropped
+    # the price move from the sell fee and the buy fee from the capital.
+    buy_fee = max(sum(float(v) for v in buy_bd.values()), 0.0)
+    sell_fee = max(sum(float(v) for v in sell_bd.values()), 0.0)
+    entry_cost = buy_notional + buy_fee
+    net = (sell_notional - sell_fee) / entry_cost - 1.0 if entry_cost else 0.0
+    return raw, net, fees
 
 
 def net_round_trip_return(

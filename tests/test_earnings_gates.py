@@ -289,8 +289,70 @@ def test_rolling_backtest_loads_earnings_blackout_map(monkeypatch):
         end_date=bars.index[-1].date(),
     )
 
-    assert calls == [(["AAA"], "us", 3)]
+    assert [(tickers, market) for tickers, market, _years in calls] == [(["AAA"], "us")]
+    # The collectors keep dates after ``today - years * 365``; that cutoff must
+    # reach back to the window's start, whatever today is.
+    years = calls[0][2]
+    assert date.today() - timedelta(days=years * 365) <= bars.index[0].date()
     assert result.trades == []
+
+
+def test_earnings_blackout_span_reaches_an_old_window(monkeypatch):
+    """An old window still gets its own earnings dates.
+
+    The span was sized from the window's length, but the collectors count it
+    back from today, so a 2015-2016 backtest asked for three years and got
+    only recent dates: the gate was silently off for the whole run.
+    """
+    from screener.backtester.price_panel import PricePanel
+    from screener.backtester.signal_panel import (
+        SignalPanelInputs,
+        _resolve_earnings_blackout,
+    )
+
+    calls: list[int] = []
+
+    def load_map(tickers, market, *, years):
+        calls.append(years)
+        return {}
+
+    monkeypatch.setattr(
+        "screener.earnings_backtest.earnings_dates.load_earnings_dates_map", load_map
+    )
+    inputs = SignalPanelInputs(
+        market="us",
+        entry_expr="close > 0",
+        exit_expr=None,
+        regime_filter=(),
+        earnings_blackout_days=5,
+        sector_neutral=False,
+        min_price=None,
+        min_avg_dollar_volume=None,
+        avg_dollar_volume_window=20,
+        membership_added=(),
+        membership_windows=(),
+        dynamic_universe_size=None,
+        dynamic_universe_lookback=60,
+        dynamic_universe_rebalance="monthly",
+    )
+    panel = PricePanel(
+        tv_symbols=["NASDAQ:AAA"],
+        yf_by_tv={"NASDAQ:AAA": "AAA"},
+        bars_by_tv={},
+        benchmark=pd.Series(dtype=float),
+        lookback=1,
+        master_dates=[],
+    )
+    start = pd.Timestamp("2015-01-02")
+    _resolve_earnings_blackout(
+        inputs,
+        panel,
+        start_ts=start,
+        end_ts=pd.Timestamp("2016-12-30"),
+        injected=None,
+    )
+
+    assert date.today() - timedelta(days=calls[0] * 365) <= start.date()
 
 
 def test_enrich_days_to_earnings_and_buffer_filter():

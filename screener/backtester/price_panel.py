@@ -38,6 +38,7 @@ from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import Node
 from screener.backtester.rolling_candidates import _preview_warning
 from screener.backtester.warmup import _warmup_days_for_interval
+from screener.factors.fundamentals import EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
 from screener.options.backtest import merge_referenced_options
 
 
@@ -61,6 +62,12 @@ class PricePanelInputs:
     price_adjustment: Literal["full", "splits_only", "none"]
     strategy_name: str | None
     fundamentals_provider: str | None
+    membership_added: tuple[tuple[str, date], ...] = ()
+    dynamic_universe_lookback: int = 60
+    regime_filter: tuple[str, ...] = ()
+    avg_dollar_volume_window: int = 20
+    sizing_atr_window: int = 14
+    sizing_vol_window: int = 20
 
     @classmethod
     def from_config(cls, cfg: BacktestConfig) -> PricePanelInputs:
@@ -70,12 +77,18 @@ class PricePanelInputs:
             tickers=cfg.tickers,
             universe_file=cfg.universe_file,
             membership_windows=cfg.membership_windows,
+            membership_added=cfg.membership_added,
             dynamic_universe_size=cfg.dynamic_universe_size,
             max_universe=cfg.max_universe,
             interval=cfg.interval,
             price_adjustment=cfg.price_adjustment,
             strategy_name=cfg.strategy_name,
             fundamentals_provider=cfg.fundamentals_provider,
+            dynamic_universe_lookback=cfg.dynamic_universe_lookback,
+            regime_filter=cfg.regime_filter,
+            avg_dollar_volume_window=cfg.avg_dollar_volume_window,
+            sizing_atr_window=cfg.sizing_atr_window,
+            sizing_vol_window=cfg.sizing_vol_window,
         )
 
 
@@ -185,7 +198,21 @@ def build_price_panel(
     # and is unnecessary. Chunking longer intraday windows is Phase 2.
     # Buy enough history for prepared columns, not just the entry/exit AST.
     lookback = max(lookback, strategy_required_lookback(inputs.strategy_name, warnings))
-    warmup_days = _warmup_days_for_interval(lookback, inputs.interval)
+    # Fetch history for every causal consumer without turning a sizing or
+    # liquidity window into an entry-eligibility gate for a new listing.
+    from screener.regime import TREND_SLOW_WINDOW
+
+    fetch_lookback = max(
+        lookback,
+        inputs.dynamic_universe_lookback
+        if inputs.dynamic_universe_size is not None
+        else 0,
+        TREND_SLOW_WINDOW if inputs.regime_filter else 0,
+        inputs.avg_dollar_volume_window,
+        inputs.sizing_atr_window,
+        inputs.sizing_vol_window + 1,
+    )
+    warmup_days = _warmup_days_for_interval(fetch_lookback, inputs.interval)
     fetch_start = (start_ts - pd.Timedelta(days=warmup_days)).date()
     fetch_end = end_ts.date()
     price_panel = fetcher.fetch(yf_symbols, fetch_start, fetch_end)
@@ -218,18 +245,26 @@ def build_price_panel(
         warnings,
         market=inputs.market,
         benchmark=inputs.benchmark,
+        membership_windows=inputs.membership_windows,
+        membership_added=inputs.membership_added,
     )
 
     if fundamental_fetcher is not None:
         fundamentals = fundamental_fetcher.fetch(
             yf_by_tv.values(), fetch_start, fetch_end
         )
+        date_kind = fundamental_fetcher.effective_date_kind
+        if date_kind == EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG:
+            warnings.append(
+                "Fundamental dates are estimated period-end plus lag, not actual "
+                "publication timestamps; original restatement vintages are unavailable."
+            )
         bars_by_tv = merge_fundamentals_into_bars(
             bars_by_tv,
             fundamentals,
             yf_by_tv,
             filing_lag_days=fundamental_fetcher.lag_days,
-            effective_date_kind=fundamental_fetcher.effective_date_kind,
+            effective_date_kind=date_kind,
         )
 
     bars_by_tv = merge_referenced_options(

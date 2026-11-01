@@ -10,15 +10,13 @@ Those names are now *aliases* onto ``screener.strategies.spec.registry``. The
 rule is the strategy's entry expression, evaluated over local bars through
 :func:`screener.backtester.signal_panel.build_day_candidates` - the same
 function, over the same matrices, that the rolling backtester ranks with. The
-TradingView filters survive only as the strategy's declared
-``profile.tv_prefilter``: a field cut that runs before bars are downloaded and
-may only ever remove names the bar rule would have removed anyway.
+strategy's declared ``profile.tv_prefilter`` is retained as metadata, but live
+snapshot filters cannot safely cut a completed-bar screen or its rank reference.
 
 Two universe modes, and the mode is recorded in the run label:
 
-* **default** - TradingView answers "which names are worth downloading", then
-  the bar rule decides which of them are candidates. Fast, and the field cut
-  is the vendor's.
+* **default** - TradingView supplies the unfiltered ticker field and display
+  columns, then the local bar rule decides which names are candidates.
 * **``--universe``** - the exact path. The universe comes from
   ``screener.universes`` and no prefilter runs, so the answer depends on no
   vendor field at all. Slower, because every name in the universe is fetched.
@@ -34,11 +32,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
-from screener.criteria import registry as criteria_registry
 from screener.markets import get_market
 from screener.scoring.bar_scores import (
     DEFAULT_PRICE_ADJUSTMENT,
@@ -73,8 +70,8 @@ _WINDOW_SLACK_DAYS = 15
 #: Five quarters always contains at least one filing.
 _FUNDAMENTAL_WINDOW_DAYS = 460
 
-#: Names a bar-path screen must produce for history and display. ``save_run``
-#: reads ``name`` as the ticker, so it is not optional.
+#: Names a bar-path screen must produce for display. History keys on the
+#: canonical ``ticker`` column; ``name`` remains the plain display symbol.
 _DISPLAY_COLUMNS = (
     "name",
     "description",
@@ -189,6 +186,7 @@ def settings_fingerprint(
     *,
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT,
     interval: str = DEFAULT_INTERVAL,
+    universe_policy: Mapping[str, Any] | None = None,
 ) -> str:
     """A short stable digest of everything that decides who is a candidate.
 
@@ -211,6 +209,8 @@ def settings_fingerprint(
     }
     payload["price_adjustment"] = price_adjustment
     payload["interval"] = interval
+    if universe_policy is not None:
+        payload["universe_policy"] = dict(universe_policy)
     digest = hashlib.sha256(
         json.dumps(payload, sort_keys=True, default=str).encode()
     ).hexdigest()
@@ -247,15 +247,14 @@ def screen_label(
 
 
 def prefilter_filters(strategy: ScreenStrategy) -> list:
-    """The TradingView filters that cut the field for ``strategy``.
+    """Return no live field cuts for a completed-bar strategy screen.
 
-    Empty when the strategy declares no prefilter, which means the scan is
-    unfiltered and the bar rule does all the work.
+    Vendor snapshots have no completed-session timestamp contract.
+    Even a locally wider filter can drop yesterday's valid candidate today,
+    and cross-sectional strategies must retain their full rank reference.
+    Keep profile declarations for compatibility, but do not apply them here.
     """
-    name = strategy.tv_prefilter
-    if name is None:
-        return []
-    return list(criteria_registry.get(name)())
+    return []
 
 
 @dataclass(frozen=True)
@@ -269,6 +268,11 @@ class UniverseField:
 
     tickers: list[str]
     note: str = ""
+    benchmark: str | None = None
+    dynamic_size: int | None = None
+    dynamic_lookback: int = 60
+    dynamic_rebalance: str = "monthly"
+    policy: Mapping[str, Any] | None = None
 
 
 def _members_open_on(
@@ -298,13 +302,19 @@ def resolve_universe_field(
     *,
     config_path: str | Path | None = None,
     as_of: date | None = None,
+    dynamic_base: str | None = None,
+    dynamic_size: int = 100,
+    dynamic_lookback: int = 60,
+    dynamic_rebalance: str = "monthly",
 ) -> UniverseField:
     """Resolve a named universe, a config-defined universe, or a file.
 
     Built-ins win, then the ``--universe-config`` definitions, then the name is
     read as a path. That is the same order :func:`load_universe_selection` uses
     for ``backtest-rolling``, so one name cannot mean two different books
-    depending on which command asked.
+    depending on which command asked. The built-in ``dynamic`` universe goes
+    through that loader too, with the same ``dynamic_*`` policy arguments, so
+    the screen selects its lagged-ADV membership the way the backtest does.
     """
     from screener.universes import (
         UniverseRequest,
@@ -315,10 +325,18 @@ def resolve_universe_field(
     )
 
     is_index = universe in available_universes()
-    if not is_index and config_path is not None:
+    is_dynamic = universe.strip().lower() == "dynamic"
+    if is_dynamic or (not is_index and config_path is not None):
         today = as_of or date.today()
         selection = load_universe_selection(
-            universe, market=market, as_of=today, config_path=config_path
+            universe,
+            market=market,
+            as_of=today,
+            config_path=config_path,
+            dynamic_base=dynamic_base,
+            dynamic_size=dynamic_size,
+            dynamic_lookback=dynamic_lookback,
+            dynamic_rebalance=dynamic_rebalance,
         )
         if selection.membership_windows:
             tickers = _members_open_on(selection.membership_windows, today)
@@ -326,10 +344,50 @@ def resolve_universe_field(
                 tickers,
                 f"{selection.name}: {len(tickers)} names in the membership "
                 f"window open on {today.isoformat()} ({selection.source})",
+                benchmark=selection.benchmark,
             )
+        policy = None
+        if selection.dynamic_size is not None:
+            if is_dynamic:
+                base = (
+                    (dynamic_base or ("nifty500" if market == "india" else "sp500"))
+                    .strip()
+                    .lower()
+                )
+                definition_policy: Mapping[str, Any] = {"base": base}
+            else:
+                # Hash the selected definition, not the file digest or today's
+                # selected members. Other books and index churn are irrelevant.
+                from screener.universes import _config_entry
+
+                assert config_path is not None
+                entry, _ = _config_entry(universe.strip().lower(), Path(config_path))
+                if entry.get("symbols") is not None:
+                    definition_policy = {"symbols": sorted(selection.symbols)}
+                elif entry.get("path"):
+                    source_path = Path(str(entry["path"]))
+                    if not source_path.is_absolute():
+                        source_path = Path(config_path).parent / source_path
+                    definition_policy = {"path": str(source_path.resolve())}
+                else:
+                    definition_policy = {"base": str(entry["base"]).strip().lower()}
+            policy = {
+                "kind": "dynamic",
+                "market": selection.market,
+                "benchmark": selection.benchmark,
+                "size": selection.dynamic_size,
+                "lookback": selection.dynamic_lookback,
+                "rebalance": selection.dynamic_rebalance,
+                "definition": definition_policy,
+            }
         return UniverseField(
             list(selection.symbols),
             f"{selection.name}: {len(selection.symbols)} names ({selection.source})",
+            benchmark=selection.benchmark,
+            dynamic_size=selection.dynamic_size,
+            dynamic_lookback=selection.dynamic_lookback,
+            dynamic_rebalance=selection.dynamic_rebalance,
+            policy=policy,
         )
 
     source = UniverseSource.INDEX_CURRENT if is_index else UniverseSource.FILE
@@ -350,7 +408,9 @@ def resolve_universe_tickers(
     return resolve_universe_field(universe, market, config_path=config_path).tickers
 
 
-def _bar_display_row(bars: pd.DataFrame, ticker: str) -> dict[str, object]:
+def _bar_display_row(
+    bars: pd.DataFrame, ticker: str, as_of: pd.Timestamp | None = None
+) -> dict[str, object]:
     """Display columns for a ticker the TradingView scan never returned.
 
     ``--universe`` mode runs no scan, so there is no snapshot row to show. The
@@ -358,16 +418,14 @@ def _bar_display_row(bars: pd.DataFrame, ticker: str) -> dict[str, object]:
     honest source: ``market_cap_basic`` has no bar equivalent and stays NaN
     rather than being invented.
     """
+    if as_of is not None:
+        bars = bars.loc[bars.index <= as_of]
     close = float(bars["close"].iloc[-1])
     previous = float(bars["close"].iloc[-2]) if len(bars) > 1 else close
     change = (close / previous - 1.0) * 100.0 if previous else float("nan")
     return {
         "ticker": ticker,
-        # ``name`` is the plain symbol everywhere else - history keys on it and
-        # both enrichment paths look it up by it - so the exchange prefix that
-        # only the bar path carries has to come off here, or ``--earnings``
-        # answers None for every row and saved runs key differently from every
-        # other screen.
+        # Enrichment uses the plain symbol; persistence uses canonical ticker.
         "name": ticker.split(":", 1)[-1],
         "description": "",
         "close": close,
@@ -447,6 +505,10 @@ def screen_candidates(
     gates: StrategyProfile | None = None,
     interval: str = DEFAULT_INTERVAL,
     max_universe: int = 0,
+    benchmark: str | None = None,
+    dynamic_universe_size: int | None = None,
+    dynamic_universe_lookback: int = 60,
+    dynamic_universe_rebalance: str = "monthly",
     warnings: list[str],
 ) -> pd.DataFrame:
     """Rank ``tickers`` by ``strategy``'s entry rule as of ``as_of``.
@@ -510,7 +572,12 @@ def screen_candidates(
     # midnight - which is where a bare date lands and which would exclude every
     # bar of the day being asked about.
     end_ts = _end_of_window(as_of, interval)
-    start_ts = end_ts - pd.Timedelta(days=_window_days(fundamental_fetcher))
+    start_ts = _screen_window_start(
+        end_ts,
+        fundamental_fetcher=fundamental_fetcher,
+        dynamic_universe_size=dynamic_universe_size,
+        dynamic_universe_rebalance=dynamic_universe_rebalance,
+    )
 
     signal_inputs = SignalPanelInputs(
         market=market,
@@ -525,19 +592,19 @@ def screen_candidates(
         min_score=profile.min_score,
         membership_added=(),
         membership_windows=(),
-        dynamic_universe_size=None,
-        dynamic_universe_lookback=0,
-        dynamic_universe_rebalance="never",
+        dynamic_universe_size=dynamic_universe_size,
+        dynamic_universe_lookback=dynamic_universe_lookback,
+        dynamic_universe_rebalance=dynamic_universe_rebalance,
     )
     program = parse_signal_program(signal_inputs)
 
     panel_inputs = PricePanelInputs(
         market=market,
-        benchmark=venue.benchmark,
+        benchmark=benchmark or venue.benchmark,
         tickers=tuple(tickers),
         universe_file=None,
         membership_windows=(),
-        dynamic_universe_size=None,
+        dynamic_universe_size=dynamic_universe_size,
         max_universe=max_universe,
         interval=interval,
         price_adjustment=price_adjustment,
@@ -560,7 +627,11 @@ def screen_candidates(
         # rule itself needs less. A backtest's window is long enough that this
         # never bites; a screen's window is a fortnight, so without it the gate
         # would be judged on a handful of bars.
-        lookback=max(program.lookback, profile.avg_dollar_volume_window),
+        lookback=max(
+            program.lookback,
+            profile.avg_dollar_volume_window,
+            dynamic_universe_lookback if dynamic_universe_size is not None else 0,
+        ),
         start_ts=start_ts,
         end_ts=end_ts,
         warnings=warnings,
@@ -599,6 +670,7 @@ def screen_candidates(
         day.candidates,
         panel.bars_by_tv,
         scanned,
+        as_of=day.as_of,
         limit=limit,
         order_by=order_by,
         warnings=warnings,
@@ -613,6 +685,7 @@ def _candidate_frame(
     limit: int | None = None,
     order_by: str | None = None,
     warnings: list[str] | None = None,
+    as_of: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
     """Render candidates as the screen's result frame, in rank order.
 
@@ -628,13 +701,33 @@ def _candidate_frame(
     # recompute here - and nothing that could disagree with the ranking.
     scores = {c.ticker: c.setup_score for c in candidates}
     order = [c.ticker for c in candidates]
+    rank_order = order_by is None or order_by == OUTPUT_SCORE_COLUMN
+    if rank_order and limit is not None:
+        if scanned is None or scanned.empty or "ticker" not in scanned.columns:
+            order = [
+                ticker
+                for ticker in order
+                if ticker in bars_by_tv and not bars_by_tv[ticker].empty
+            ]
+        # ``DataFrame.head`` uses this same slicing rule for zero and negative
+        # limits. Clip before display-row construction, but only when no
+        # display column still needs the complete frame for sorting.
+        order = order[:limit]
 
     if scanned is not None and not scanned.empty and "ticker" in scanned.columns:
         rows = scanned.set_index("ticker").reindex(order).reset_index()
+        if as_of is not None:
+            for row_index, ticker in enumerate(order):
+                bars = bars_by_tv.get(ticker)
+                if bars is None or bars.empty:
+                    continue
+                display = _bar_display_row(bars, ticker, as_of)
+                for column in ("close", "change", "volume"):
+                    rows.at[row_index, column] = cast(float, display[column])
     else:
         rows = pd.DataFrame(
             [
-                _bar_display_row(bars_by_tv[t], t)
+                _bar_display_row(bars_by_tv[t], t, as_of)
                 for t in order
                 if t in bars_by_tv and not bars_by_tv[t].empty
             ]
@@ -644,7 +737,7 @@ def _candidate_frame(
         order = list(rows["ticker"])
     rows[OUTPUT_SCORE_COLUMN] = [float(scores[t]) for t in order]
     rows = _sorted_rows(rows, order_by, warnings)
-    if limit is not None:
+    if limit is not None and not rank_order:
         rows = rows.head(limit)
     return rows.reset_index(drop=True)
 
@@ -732,6 +825,39 @@ def _window_days(fundamental_fetcher: FundamentalFetcher | None) -> int:
         if fundamental_fetcher is None
         else max(_WINDOW_SLACK_DAYS, _FUNDAMENTAL_WINDOW_DAYS)
     )
+
+
+def _screen_window_start(
+    end_ts: pd.Timestamp,
+    *,
+    fundamental_fetcher: FundamentalFetcher | None,
+    dynamic_universe_size: int | None,
+    dynamic_universe_rebalance: str,
+) -> pd.Timestamp:
+    """Start at the active dynamic rebalance period's first calendar day.
+
+    The dynamic universe holds the membership selected on the first trading
+    bar of each period. A short fixed screen window can start after a monthly
+    or quarterly anchor and select from a later ADV observation instead.
+    Extending the master calendar to the period boundary reproduces the held
+    membership, while price-panel warmup supplies the lagged ADV lookback.
+
+    The window reaches back to the start of the period *before* ``end_ts``'s.
+    The bar actually screened is the last trading bar on or before ``end_ts``,
+    and on a weekend, a holiday, or a run before the day's bar exists, that
+    bar snaps back into the previous period. The trading calendar is not
+    known until the panel is built, so the extra period covers the snap.
+    """
+    ordinary = end_ts - pd.Timedelta(days=_window_days(fundamental_fetcher))
+    if dynamic_universe_size is None or dynamic_universe_rebalance == "daily":
+        return ordinary
+    period_frequency = {
+        "weekly": "W-FRI",
+        "monthly": "M",
+        "quarterly": "Q",
+    }[dynamic_universe_rebalance]
+    period_start = (end_ts.normalize().to_period(period_frequency) - 1).start_time
+    return min(ordinary, period_start)
 
 
 def _fundamentals_for(

@@ -44,6 +44,22 @@ def _screen_df(tickers):
 # --- A. Local SQLite hardening -------------------------------------------------
 
 
+def test_save_run_skips_missing_symbols_without_changing_ranks(history_db):
+    frame = pd.DataFrame(
+        {
+            "name": [" AAA ", None, pd.NA, "", "BBB"],
+            "close": [10.0, 20.0, 30.0, 40.0, 50.0],
+        }
+    )
+    run_id = history_mod.save_run("us", "ema", 5, frame)
+    snapshot = history_mod.load_run(run_id)
+    assert snapshot is not None
+    assert snapshot.tickers == ["AAA", "BBB"]
+    assert snapshot.rows["rank"].tolist() == [1, 5]
+    assert snapshot.rows["close"].tolist() == [10.0, 50.0]
+    assert snapshot.rows["name"].isna().all()
+
+
 def test_delete_run_cascades_to_rows(history_db):
     run_id = history_mod.save_run("us", "ema", 2, _screen_df(["AAA", "BBB"]))
 
@@ -164,6 +180,71 @@ def test_restore_pulls_missing_runs(history_db, tmp_path, monkeypatch):
     # Restoring again is a no-op now that the key exists locally.
     second = history_sync.restore_history(client)
     assert second.runs_restored == 0
+
+
+def test_backup_repairs_a_run_whose_rows_failed_to_push(history_db):
+    history_mod.save_run("us", "ema", 2, _screen_df(["AAA", "BBB"]))
+
+    class _RowsFailOnce(StubTursoClient):
+        fail = True
+
+        def batch(self, stmts):
+            if self.fail and any("screen_run_rows" in sql for sql, _ in stmts):
+                self.fail = False
+                # Header lands, the row batch is lost (e.g. connection reset).
+                self.execute(*stmts[0])
+                raise ConnectionError("turso: connection reset")
+            return super().batch(stmts)
+
+    client = _RowsFailOnce()
+    with pytest.raises(ConnectionError):
+        history_sync.backup_history(client, batch_size=1)
+
+    retry = history_sync.backup_history(client)
+    assert retry.runs_pushed == 1
+    assert retry.rows_pushed == 2
+    assert retry.remote_rows == 2
+
+
+def test_restored_older_run_does_not_shadow_newer_local_run(history_db):
+    def save(run_ts, tickers):
+        run_id = history_mod.save_run("us", "ema", 1, _screen_df(tickers))
+        conn = sqlite3.connect(history_mod.DB_PATH)
+        conn.execute("UPDATE runs SET run_ts = ? WHERE id = ?", (run_ts, run_id))
+        conn.commit()
+        conn.close()
+        return run_id
+
+    old_id = save("2026-09-01T14:00:00+00:00", ["OLD"])
+    client = StubTursoClient()
+    history_sync.backup_history(client)
+    conn = sqlite3.connect(history_mod.DB_PATH)
+    conn.execute("DELETE FROM runs WHERE id = ?", (old_id,))
+    conn.commit()
+    conn.close()
+    new_id = save("2026-10-20T14:00:00+00:00", ["NEW"])
+
+    history_sync.restore_history(client)  # old run comes back with a higher id
+
+    assert history_mod.find_run("us", "ema") == new_id
+    assert history_mod.list_runs().iloc[0]["id"] == new_id
+    restored_id = history_mod.find_run("us", "ema", datetime(2026, 9, 30).date())
+    assert restored_id is not None and restored_id > new_id
+    previous = history_mod.previous_run("us", "ema", new_id)
+    assert previous is not None and previous["ticker"].tolist() == ["OLD"]
+
+
+def test_run_date_is_the_exchange_local_date():
+    # 20:30 EDT on 2026-10-27 is already 2026-10-28 in UTC.
+    us = history_mod.RunSnapshot(
+        1, "2026-10-28T00:30:00+00:00", "us", "ema", 0, pd.DataFrame()
+    )
+    assert us.run_date == datetime(2026, 10, 27).date()
+    # 03:00 IST on 2026-10-28 is still 2026-10-27 in UTC.
+    india = history_mod.RunSnapshot(
+        1, "2026-10-27T21:30:00+00:00", "india", "ema", 0, pd.DataFrame()
+    )
+    assert india.run_date == datetime(2026, 10, 28).date()
 
 
 def test_connect_returns_none_without_credentials(monkeypatch):
