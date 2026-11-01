@@ -32,6 +32,9 @@ from screener.ledger import compute_event_trade_summary as compute_backtest_summ
 
 logger = logging.getLogger(__name__)
 
+# Bars price_momentum and volume_surge need through the entry bar.
+_SIGNAL_BARS = 21
+
 # ── Core engine ──────────────────────────────────────────────────────────
 
 
@@ -77,7 +80,9 @@ def run_earnings_backtest(
         load_universe=load_universe,
         collect_events=collect_earnings_events,
         fetch_prices=fetch_price_data,
-        price_window=_predrift_price_window,
+        price_window=lambda events_df, cutoff: _predrift_price_window(
+            events_df, cutoff, days_before
+        ),
     )
     events_df = prepared.events
     price_data = prepared.prices
@@ -176,8 +181,10 @@ def run_earnings_backtest(
         ret_raw, ret_net, trade_fees = apply_round_trip_costs(
             entry_price, exit_price, costs
         )
-        for name, amount in trade_fees.items():
-            fees_paid[name] = fees_paid.get(name, 0.0) + amount
+        # Only events that pass the filter are traded and pay fees.
+        if passed_filter:
+            for name, amount in trade_fees.items():
+                fees_paid[name] = fees_paid.get(name, 0.0) + amount
 
         trade = EarningsTrade(
             ticker=ticker,
@@ -211,16 +218,19 @@ def run_earnings_backtest(
 
 
 def _predrift_price_window(
-    events_df: pd.DataFrame, cutoff_date: date
+    events_df: pd.DataFrame, cutoff_date: date, days_before: int = 1
 ) -> tuple[date, date]:
-    """Drift window: ~30 sessions before the first event through E + 5 days.
+    """Drift window: the signal history before the first entry through E + 5 days.
 
-    The start is clamped to ``cutoff_date - 30d`` so a stray far-past event
+    The 21-bar signals read up to E - ``days_before``, so the start pads that
+    many sessions at ~1.6 calendar days each plus a holiday buffer. It is
+    clamped to the same pad before ``cutoff_date`` so a stray far-past event
     cannot widen the fetch beyond the look-back the run asked for.
     """
-    earliest = (events_df["earnings_date"].min() - pd.Timedelta(days=30)).date()
+    pad = timedelta(days=int((_SIGNAL_BARS + days_before) * 1.6) + 10)
+    earliest = events_df["earnings_date"].min().date() - pad
     latest = (events_df["earnings_date"].max() + pd.Timedelta(days=5)).date()
-    price_start = max(earliest, cutoff_date - timedelta(days=30))
+    price_start = max(earliest, cutoff_date - pad)
     return price_start, latest
 
 

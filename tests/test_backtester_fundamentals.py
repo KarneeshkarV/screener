@@ -66,16 +66,23 @@ def _sample_payload() -> dict[str, object]:
         "ratios": [
             {
                 "date": "2024-01-31",
+                "acceptedDate": "2024-02-05 16:30:00",
                 "priceEarningsRatio": 20.0,
                 "priceToBookRatio": 3.0,
                 "returnOnEquity": 0.18,
                 "debtEquityRatio": 0.4,
             }
         ],
-        "key_metrics": [{"date": "2024-01-31", "peRatioTTM": 19.0}],
+        "key_metrics": [
+            {"date": "2024-01-31", "acceptedDate": "2024-02-05", "peRatioTTM": 19.0}
+        ],
         "balance": [{"date": "2024-01-31", "totalDebt": 40.0}],
         "enterprise_values": [
-            {"date": "2024-01-31", "marketCapitalization": 5_000_000_000.0}
+            {
+                "date": "2024-01-31",
+                "acceptedDate": "2024-02-05",
+                "marketCapitalization": 5_000_000_000.0,
+            }
         ],
     }
 
@@ -643,7 +650,25 @@ def test_effective_date_accepts_filing_date_spelling():
     ) == pd.Timestamp("2024-05-11")
     assert fundamentals._effective_date(
         {"acceptedDate": "2024-05-10 16:30:00"}, lag_days=0
+    ) == pd.Timestamp("2024-05-11")
+
+
+def test_intraday_filing_is_not_visible_on_its_own_close_at_zero_lag():
+    """A same-day after-close filing must not reach that day's close bar."""
+    assert fundamentals._effective_date(
+        {"acceptedDate": "2024-05-10 16:30:00"}, lag_days=0
+    ) == pd.Timestamp("2024-05-11")
+    assert fundamentals._effective_date(
+        {"acceptedDate": "2024-05-10T20:30:00+00:00"}, lag_days=0
+    ) == pd.Timestamp("2024-05-11")
+    # A date-only stamp is already a day boundary and keeps lag 0 exact.
+    assert fundamentals._effective_date(
+        {"filingDate": "2024-05-10"}, lag_days=0
     ) == pd.Timestamp("2024-05-10")
+    # A positive lag already clears the filing day and is not stacked.
+    assert fundamentals._effective_date(
+        {"acceptedDate": "2024-05-10 16:30:00"}, lag_days=1
+    ) == pd.Timestamp("2024-05-11")
 
 
 def test_normalize_fmp_excludes_period_end_only_rows_and_warns(caplog):

@@ -3,9 +3,9 @@
 The default install carries the screen path only. Every other workflow's
 third-party dependency sits behind a ``[project.optional-dependencies]`` extra
 in ``pyproject.toml``, so that a codebase embedding :mod:`screener.api` does
-not drag in plotly, yfinance and a bhavcopy client to run one screen.
+not drag in yfinance and a bhavcopy client to run one screen.
 
-A bare ``ModuleNotFoundError: No module named 'plotly'`` tells a consumer
+A bare ``ModuleNotFoundError: No module named 'yfinance'`` tells a consumer
 nothing about how to fix it, so the import sites for these route through
 :func:`load`, which names the extra instead.
 
@@ -21,7 +21,6 @@ from typing import Any
 
 # Top-level module -> the extra that installs its distribution.
 EXTRA_FOR_MODULE: dict[str, str] = {
-    "plotly": "report",
     "yfinance": "prices",
     "openscreener": "prices",
     "jugaad_data": "india",
@@ -35,7 +34,7 @@ def load(module: str) -> Any:
     Only a failure to find ``module``'s own top-level package is rewritten. An
     ImportError raised from *inside* an installed optional dependency is a real
     fault in that package and propagates unchanged, so this never disguises a
-    broken plotly as a missing one.
+    broken yfinance as a missing one.
     """
     root = module.split(".")[0]
     try:

@@ -195,6 +195,12 @@ def _atomic_cache_write(path: Path) -> Iterator[Path]:
         tmp.unlink(missing_ok=True)
 
 
+def write_text(path: Path, text: str) -> None:
+    """Atomically save text, so a concurrent reader never sees a partial file."""
+    with _atomic_cache_write(path) as tmp:
+        tmp.write_text(text)
+
+
 def write_json(path: Path, value: Any) -> None:
     """Atomically save JSON without sharing temporary files with other writers."""
     with _atomic_cache_write(path) as tmp:

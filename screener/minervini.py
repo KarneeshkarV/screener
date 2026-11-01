@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 
@@ -51,6 +52,8 @@ def required_history_bars() -> int:
 
 def add_rs_rank_column(
     bars_by_symbol: dict[str, pd.DataFrame],
+    *,
+    mask_rank_reference: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Add 12-month relative-strength percentile, 0-100, across the universe."""
     usable = {
@@ -69,6 +72,7 @@ def add_rs_rank_column(
             if "volume" in bars
         },
         window=RS_RANK_WINDOW,
+        mask_rank_reference=mask_rank_reference,
     )
     if ranks.empty:
         return bars_by_symbol
@@ -89,8 +93,11 @@ def add_rs_rank_column(
 
 def prepare_backtest_frames(
     bars_by_symbol: dict[str, pd.DataFrame],
+    *,
+    mask_rank_reference: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> dict[str, pd.DataFrame]:
-    return add_rs_rank_column(bars_by_symbol)
+    """Prepare Minervini indicators without ranking out-of-membership stocks."""
+    return add_rs_rank_column(bars_by_symbol, mask_rank_reference=mask_rank_reference)
 
 
 def evaluate_symbol(

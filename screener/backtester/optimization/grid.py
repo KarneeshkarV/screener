@@ -35,6 +35,7 @@ from screener.backtester.optimization.trials import (
     classify_trial_status,
     default_experiment_id,
     load_trial_search_stats,
+    record_attempted_trials,
     record_trial,
     trial_config_identity,
 )
@@ -112,6 +113,11 @@ def validate_optimization_grid(
             if test_cfg.fundamentals_provider != cfg.fundamentals_provider:
                 raise ValueError(
                     "Cannot sweep fundamentals_provider with one resolved FundamentalFetcher"
+                )
+            configured_market = getattr(fundamental_fetcher, "market", test_cfg.market)
+            if configured_market != test_cfg.market:
+                raise ValueError(
+                    "FundamentalFetcher configured market must match the selected market"
                 )
             if test_cfg.market not in fundamental_fetcher.markets:
                 raise ValueError(
@@ -420,27 +426,6 @@ def _persist_trial(
     )
 
 
-def _mark_attempted(
-    *,
-    experiment_id: str,
-    params: dict[str, Any],
-    trial_key: str,
-    trial_db_path: Path | None,
-) -> None:
-    """Register search exposure before execution so interruption still counts."""
-    record_trial(
-        experiment_id,
-        params,
-        status="attempted",
-        score=None,
-        metrics=None,
-        trade_count=0,
-        trial_key=trial_key,
-        error=None,
-        db_path=trial_db_path,
-    )
-
-
 def _score_after_dsr_correction(
     *,
     metric: str,
@@ -680,13 +665,11 @@ def grid_search(
         return result, moments
 
     # Register ATTEMPTED before execution so interruption records exposure.
-    for params in pending:
-        _mark_attempted(
-            experiment_id=exp_id,
-            params=params,
-            trial_key=_key_for(params),
-            trial_db_path=trial_path,
-        )
+    record_attempted_trials(
+        exp_id,
+        [(_key_for(params), params) for params in pending],
+        db_path=trial_path,
+    )
 
     try:
         if pending and (max_workers or 1) != 1:
@@ -786,7 +769,14 @@ def grid_search(
         metric=metric,
         min_trades=min_trades,
     )
+    # Ties keep grid order, so the winner does not depend on worker timing.
+    grid_order = {_params_key(params): i for i, params in enumerate(combos)}
+    applied.sort(key=lambda item: grid_order.get(_params_key(item.params), 0))
     return sorted(applied, key=lambda item: item.score, reverse=True)[:top_n]
+
+
+def _params_key(params: dict[str, Any]) -> str:
+    return json.dumps(params, sort_keys=True, default=str)
 
 
 def _cache_key(

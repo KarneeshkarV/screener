@@ -187,3 +187,66 @@ def test_legacy_seam_entry_is_repaired_once(tmp_path, monkeypatch) -> None:
     # Second run: the marker is set, so a clean cache serves with no download.
     fetcher.fetch([ticker], date(2026, 1, 5), date(2026, 3, 2))
     assert len(calls) == first_calls
+
+
+def test_dividend_rebase_under_the_split_tolerance_is_not_stitched(
+    tmp_path, monkeypatch
+) -> None:
+    """A 0.5% dividend re-base re-downloads the entry instead of merging a seam.
+
+    With full adjustment the vendor scales every bar before an ex-date by
+    ``1 - dividend / close``. That is far under the split tolerance, so the
+    tail merge kept the old-scale history and served a fake -0.5% return.
+    """
+    import yfinance as yf
+
+    ticker = "DIVCO"
+    _save_cache(_full_key(ticker), _frame("2026-01-05", 40, 100.0), tmp_path)
+    scale_verified_path(_full_key(ticker), tmp_path).write_text("{}")
+
+    calls: list[tuple] = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append((kwargs["start"], kwargs["end"]))
+        return _download_frame(99.5, kwargs["start"], kwargs["end"])
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setattr(
+        "screener.backtester.data._needs_tail_refresh", lambda path, end: True
+    )
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    frames = fetcher.fetch([ticker], date(2026, 1, 5), date(2026, 3, 2))
+
+    assert (frames[ticker]["close"] == 99.5).all()
+    assert len(calls) == 2
+
+
+def test_a_revised_newest_bar_is_not_a_rebase(tmp_path, monkeypatch) -> None:
+    """The vendor revising its newest print must not re-download the entry."""
+    import yfinance as yf
+
+    ticker = "REVCO"
+    cached = _frame("2026-01-05", 40, 10.0)
+    _save_cache(_full_key(ticker), cached, tmp_path)
+    scale_verified_path(_full_key(ticker), tmp_path).write_text("{}")
+    newest = cached.index[-1]
+
+    calls: list[tuple] = []
+
+    def fake_download(tickers, **kwargs):
+        calls.append((kwargs["start"], kwargs["end"]))
+        frame = _download_frame(10.0, kwargs["start"], kwargs["end"])
+        frame.loc[frame.index == newest, "Close"] = 10.003
+        return frame
+
+    monkeypatch.setattr(yf, "download", fake_download)
+    monkeypatch.setattr(
+        "screener.backtester.data._needs_tail_refresh", lambda path, end: True
+    )
+
+    fetcher = YFinancePriceFetcher(cache_dir=tmp_path)
+    frames = fetcher.fetch([ticker], date(2026, 1, 5), date(2026, 3, 2))
+
+    assert frames[ticker].loc[newest, "close"] == 10.003
+    assert len(calls) == 1

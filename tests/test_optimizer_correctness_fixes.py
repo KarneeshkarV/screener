@@ -2,7 +2,6 @@
 
 from datetime import date
 import json
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -115,6 +114,27 @@ def test_invalid_grid_rejected_before_fetch_or_trial_register(tmp_path, params):
     trial_db = tmp_path / "invalid.db"
     with pytest.raises(ValueError):
         grid_search(_config(), NoFetch(), params, trial_db_path=trial_db)
+    assert not trial_db.exists()
+
+
+def test_optimizer_rejects_fetcher_configured_for_another_market(tmp_path):
+    from screener.backtester.fundamentals import FMPFundamentalFetcher
+
+    class NoFetch:
+        def fetch(self, *args, **kwargs):
+            pytest.fail("incompatible collaborator fetched bars")
+
+    trial_db = tmp_path / "wrong-market.db"
+    fetcher = FMPFundamentalFetcher(market="us", api_key="offline")
+    with pytest.raises(ValueError, match="configured market"):
+        grid_search(
+            _config(market="india", fundamentals_provider="fmp"),
+            NoFetch(),
+            {"hold": [2]},
+            runner="rolling",
+            fundamental_fetcher=fetcher,
+            trial_db_path=trial_db,
+        )
     assert not trial_db.exists()
 
 
@@ -580,6 +600,61 @@ def test_fundamental_lag_sweep_rejected_before_trial_register(prices, tmp_path):
     assert not (tmp_path / "trials.db").exists()
 
 
+def _report_without_membership_history(prices, tmp_path, monkeypatch, *extra):
+    import screener.universes as universes
+
+    bars, fetcher = prices
+    monkeypatch.setattr(
+        "screener.backtester.optimization.cli._fetcher", lambda: fetcher
+    )
+    monkeypatch.setattr(universes, "CACHE_DIR", tmp_path / "universe-cache")
+    monkeypatch.setattr(
+        universes, "_fetch_sp500_revision_snapshot", lambda as_of, **kwargs: None
+    )
+    monkeypatch.setattr(universes, "_fetch_sp500", lambda **kwargs: (["AAA"], "live"))
+    monkeypatch.setattr(
+        universes,
+        "load_sp500_membership",
+        lambda **kwargs: {"AAA": date(2000, 1, 3)},
+    )
+    with pytest.warns(UserWarning, match="NOT point-in-time"):
+        return CliRunner().invoke(
+            optimize,
+            report_args(bars, tmp_path)
+            + [
+                "--universe",
+                "sp500",
+                "--max-universe",
+                "0",
+                "--param",
+                "hold=3",
+                *extra,
+            ],
+        )
+
+
+def test_public_report_explicit_point_in_time_fails_without_history(
+    prices, tmp_path, monkeypatch
+):
+    """A typed --point-in-time must not silently run survivorship-biased."""
+    result = _report_without_membership_history(
+        prices, tmp_path, monkeypatch, "--point-in-time"
+    )
+    assert result.exit_code != 0
+    assert "--point-in-time is unavailable" in result.output
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_public_report_default_point_in_time_falls_back_to_date_added(
+    prices, tmp_path, monkeypatch
+):
+    result = _report_without_membership_history(prices, tmp_path, monkeypatch)
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "report.json").read_text())
+    assert payload["config"]["membership_added"]
+    assert any("'date added'" in w for w in payload["config"]["universe_warnings"])
+
+
 def test_cli_defaults_fundamental_lag_to_provider_filing_lag(
     prices, tmp_path, monkeypatch
 ):
@@ -628,36 +703,6 @@ def test_report_universe_market_mismatch_is_usage_error(prices, tmp_path):
     )
     assert result.exit_code == 2, result.output
     assert "Traceback" not in result.output
-
-
-def test_report_sp500_without_history_uses_date_added(prices, tmp_path, monkeypatch):
-    import screener.universes as universes
-
-    bars, fetcher = prices
-    monkeypatch.setattr(
-        "screener.backtester.optimization.cli._fetcher", lambda: fetcher
-    )
-    monkeypatch.setattr(universes, "CACHE_DIR", tmp_path / "universe-cache")
-    monkeypatch.setattr(
-        universes,
-        "load_universe_selection",
-        lambda *a, **k: SimpleNamespace(
-            name="sp500", symbols=("AAA",), membership_windows=(), warnings=()
-        ),
-    )
-    monkeypatch.setattr(
-        universes,
-        "load_sp500_membership",
-        lambda **k: {"AAA": date(2024, 4, 1)},
-    )
-    result = CliRunner().invoke(
-        optimize,
-        report_args(bars, tmp_path)
-        + ["--universe", "sp500", "--max-universe", "0", "--param", "hold=3"],
-    )
-    assert result.exit_code == 0, result.output
-    payload = json.loads((tmp_path / "report.json").read_text())
-    assert payload["config"]["membership_added"]
 
 
 def test_walk_forward_rejects_risk_free_sweep_before_any_grid(

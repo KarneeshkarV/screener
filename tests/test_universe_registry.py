@@ -596,6 +596,28 @@ def test_the_live_sp500_table_is_scraped_once_a_day(monkeypatch, tmp_path) -> No
     assert calls["count"] == 2
 
 
+def test_universe_cache_is_written_atomically(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(universes, "CACHE_DIR", tmp_path)
+    written: list[Path] = []
+
+    def fail_mid_write(self, text, *args, **kwargs):
+        # A writer that dies half way through, as a concurrent reader sees it.
+        written.append(self)
+        Path.write_bytes(self, text[: len(text) // 2].encode())
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", fail_mid_write)
+    with pytest.raises(OSError):
+        universes._write_cache(
+            "sp500", date(2024, 1, 2), ["AAA", "BBB"], "test", point_in_time=True
+        )
+
+    # The partial bytes went to a temp file, never to the cache path a
+    # reader (or a later run) would trust.
+    assert written and written[0] != universes._cache_path("sp500", date(2024, 1, 2))
+    assert universes._read_cache("sp500", date(2024, 1, 2)) is None
+
+
 def test_a_corrupt_sp500_day_cache_falls_back_to_the_scrape(
     monkeypatch, tmp_path
 ) -> None:

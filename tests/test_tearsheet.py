@@ -93,8 +93,15 @@ def test_render_tearsheet_from_engine_result(tmp_path, stub_fetcher_factory):
     assert "Median Trade" in html
     assert "Starting Capital" in html
     assert "Final Equity" in html
-    assert "--paper: #07090d" in html
-    assert '"plot_bgcolor":"#0d1117"' in html
+    assert "--surface:" in html
+    assert 'id="tearsheet-equity-vs-benchmark"' in html
+    assert 'id="tearsheet-drawdown-curve"' in html
+    assert 'id="tearsheet-trade-histogram"' in html
+    assert 'id="tearsheet-trade-timeline"' in html
+    assert '"token:series-1/0.22"' in html
+    assert '"token:series-2"' in html
+    assert "Backtest tear-sheet" in html
+    assert "plotly" not in html.lower()
 
 
 def test_backtest_rolling_report_option(tmp_path, stub_fetcher_factory):

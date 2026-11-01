@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
 import pandas as pd
 
@@ -46,8 +47,19 @@ def empty_ohlcv_frame() -> pd.DataFrame:
     )
 
 
-def normalize_price_frame(df: pd.DataFrame, interval: str = "1d") -> pd.DataFrame:
-    """Normalize one provider frame to the backtester's canonical schema."""
+def normalize_price_frame(
+    df: pd.DataFrame,
+    interval: str = "1d",
+    *,
+    source_adjustment: Literal["unadjusted", "splits", "full"] = "unadjusted",
+) -> pd.DataFrame:
+    """Normalize prices with an explicit provider adjustment contract.
+
+    ``split_factor`` is the adjustment still required by OHLC, volume, and
+    dividends, not a second copy of the provider's historical split events.
+    Providers that already adjust splits must pass ``source_adjustment``.
+    ``stock_splits`` always retains the events for audit.
+    """
     if df is None or df.empty:
         return empty_ohlcv_frame()
     if isinstance(df.columns, pd.MultiIndex):
@@ -66,7 +78,9 @@ def normalize_price_frame(df: pd.DataFrame, interval: str = "1d") -> pd.DataFram
     if "stock_splits" in df.columns:
         splits = df["stock_splits"].fillna(0.0).astype(float)
         factor = splits.replace(0.0, 1.0)[::-1].cumprod()[::-1].shift(-1).fillna(1.0)
-        out["split_factor"] = factor.astype(float)
+        out["split_factor"] = (
+            factor.astype(float) if source_adjustment == "unadjusted" else 1.0
+        )
         out["stock_splits"] = splits
     out.index = naive_normalized_index(out.index, interval)
     out = out[~out.index.duplicated(keep="last")].sort_index()
@@ -89,7 +103,11 @@ def apply_full_price_adjustment(frame: pd.DataFrame) -> pd.DataFrame:
 def apply_splits_only_adjustment(
     bars_by_ticker: dict[str, pd.DataFrame],
 ) -> dict[str, pd.DataFrame]:
-    """Back-adjust OHLC, volume, and dividends using explicit split factors."""
+    """Apply pending split factors once to OHLC, volume, and dividends.
+
+    The input contract defines ``split_factor`` as the remaining adjustment.
+    Yahoo frames carry 1.0 because Yahoo already adjusts for splits.
+    """
     adjusted_by_ticker: dict[str, pd.DataFrame] = {}
     for ticker, frame in bars_by_ticker.items():
         if frame is None or frame.empty or "split_factor" not in frame.columns:
@@ -105,6 +123,7 @@ def apply_splits_only_adjustment(
                 adjusted[column] = adjusted[column].astype(float) / factor
         if "volume" in adjusted.columns:
             adjusted["volume"] = adjusted["volume"].astype(float) * factor
+        adjusted["split_factor"] = 1.0
         adjusted_by_ticker[ticker] = adjusted
     return adjusted_by_ticker
 
@@ -140,6 +159,21 @@ def warn_unadjustable_fmp_frames(
 #: tolerance only has to absorb float round-trips through parquet and the
 #: vendor's own rounding, not a real price move.
 RESCALE_TOLERANCE = 0.01
+
+#: How far a settled daily close may move before the cache is judged re-based.
+#: A dividend re-bases every adjusted bar before its ex-date by
+#: ``1 - dividend / close``, usually well under :data:`RESCALE_TOLERANCE`, yet
+#: merged in it is a fake return at the seam. Parquet round-trips a float
+#: exactly, and a live Yahoo check (batch against batch, and single against
+#: batch) served every shared bar but the newest bit-identical, so anything
+#: above this is a re-base.
+REBASE_TOLERANCE = 1e-5
+
+#: Newest cached bars the tight check skips. The newest bar is the one the
+#: vendor still revises (it moved by up to 3.4e-4 between two requests two
+#: seconds apart, no older bar moved), and a second one is margin for a
+#: settled print corrected after the close.
+REBASE_UNSETTLED_BARS = 2
 
 #: Overlapping sessions needed before a scale verdict is trusted. One shared
 #: bar can differ for reasons that are not a rescale (a late vendor
@@ -183,7 +217,11 @@ def has_price_seam(frame: pd.DataFrame | None) -> bool:
 
 
 def overlap_rescaled(
-    existing: pd.DataFrame | None, new: pd.DataFrame, interval: str = "1d"
+    existing: pd.DataFrame | None,
+    new: pd.DataFrame,
+    interval: str = "1d",
+    *,
+    tolerance: float = RESCALE_TOLERANCE,
 ) -> bool:
     """True when ``existing`` and ``new`` price the same sessions differently.
 
@@ -228,7 +266,40 @@ def overlap_rescaled(
     if int(usable.sum()) < RESCALE_MIN_OVERLAP:
         return False
     ratio = (new_shared[usable] / old_shared[usable]).abs()
-    return bool((ratio - 1.0).abs().max() > RESCALE_TOLERANCE)
+    return bool((ratio - 1.0).abs().max() > tolerance)
+
+
+def overlap_rebased(
+    existing: pd.DataFrame | None, new: pd.DataFrame, interval: str = "1d"
+) -> bool:
+    """True when ``new`` prices a settled cached daily session differently.
+
+    :func:`overlap_rescaled` only sees a split. A dividend the vendor has
+    back-adjusted since the entry was written moves the older bars by less,
+    and merging them stitches that move in as a one-day return. The newest
+    :data:`REBASE_UNSETTLED_BARS` cached bars are left out, because the
+    vendor's own revisions to them are not a re-base. Intraday bars are not
+    judged: their newest stretch is revised over more than a couple of bars.
+    """
+    if interval != "1d" or existing is None or len(existing) <= REBASE_UNSETTLED_BARS:
+        return False
+    settled = existing.iloc[:-REBASE_UNSETTLED_BARS]
+    return overlap_rescaled(settled, new, interval, tolerance=REBASE_TOLERANCE)
+
+
+def cache_merge_needs_full_download(
+    existing: pd.DataFrame | None, new: pd.DataFrame
+) -> bool:
+    """Reject a partial cache merge without enough shared prices to verify scale."""
+    if existing is None or existing.empty or new.empty:
+        return False
+    if existing.index.difference(new.index).empty:
+        return False  # Every old row is replaced, so no old scale survives.
+    shared = existing.index.intersection(new.index)
+    old = existing["close"].reindex(shared)
+    fresh = new["close"].reindex(shared)
+    usable = old.notna() & fresh.notna() & (old > 0) & (fresh > 0)
+    return int(usable.sum()) < RESCALE_MIN_OVERLAP
 
 
 def merge_price_frames(
@@ -345,7 +416,9 @@ def split_yfinance_download(
         return {ticker: empty_ohlcv_frame() for ticker in tickers}
     if not isinstance(raw.columns, pd.MultiIndex):
         ticker = tickers[0] if tickers else ""
-        return {ticker: normalize_price_frame(raw, interval)}
+        return {
+            ticker: normalize_price_frame(raw, interval, source_adjustment="splits")
+        }
 
     frames: dict[str, pd.DataFrame] = {}
     level_values = [
@@ -359,7 +432,9 @@ def split_yfinance_download(
             selected = raw.xs(ticker, level=level, axis=1, drop_level=True)
             frame = selected.to_frame() if isinstance(selected, pd.Series) else selected
             break
-        frames[ticker] = normalize_price_frame(frame, interval)
+        frames[ticker] = normalize_price_frame(
+            frame, interval, source_adjustment="splits"
+        )
     return frames
 
 
@@ -367,9 +442,11 @@ __all__ = [
     "CORPORATE_ACTION_COLUMNS",
     "OHLCV_COLUMNS",
     "apply_splits_only_adjustment",
+    "cache_merge_needs_full_download",
     "empty_ohlcv_frame",
     "frame_has_range",
     "has_price_seam",
+    "overlap_rebased",
     "overlap_rescaled",
     "inclusive_fetch_bounds",
     "merge_price_frames",

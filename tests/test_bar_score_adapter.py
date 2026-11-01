@@ -328,6 +328,7 @@ def test_bar_scores_strict_refresh_raises_instead_of_ranking_on_cache(
     cached = _bars(100.0, 0.002)
     _save_cache(YFinancePriceFetcher()._cache_key("ALPHA.NS"), cached, tmp_path)
     monkeypatch.setattr(yf, "download", lambda *args, **kwargs: pd.DataFrame())
+    monkeypatch.setattr(backtester_data, "_retry_sleep", lambda seconds: None)
 
     def _builder(**kwargs: object) -> YFinancePriceFetcher:
         return YFinancePriceFetcher(cache_dir=tmp_path, **kwargs)  # type: ignore[arg-type]
@@ -348,9 +349,10 @@ def test_bar_scores_strict_refresh_raises_instead_of_ranking_on_cache(
 
     last_bar = cached.index.max().date()
     age_days = (_AS_OF - last_bar).days
-    assert f"ALPHA.NS (newest bar {last_bar}, {age_days} calendar days old)" in str(
-        caught.value
-    )
+    assert (
+        f"ALPHA.NS (newest bar {last_bar}, {age_days} calendar days old; "
+        "yfinance served no bars on every attempt)"
+    ) in str(caught.value)
 
 
 def test_bar_scores_refresh_without_strict_still_ranks_on_cache(

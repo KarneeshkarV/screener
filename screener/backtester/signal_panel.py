@@ -17,6 +17,7 @@ callers cannot disagree about who is a candidate.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Collection
 from dataclasses import dataclass, fields
 from datetime import date, datetime
@@ -204,10 +205,11 @@ def _resolve_earnings_blackout(
     from screener.earnings_backtest.earnings_dates import load_earnings_dates_map
 
     yf_tickers = list(dict.fromkeys(panel.yf_by_tv.values()))
-    span_years = max(
-        3,
-        int((end_ts.normalize() - start_ts.normalize()).days / 365) + 2,
-    )
+    # The collectors keep only dates after ``today - years``, so the span is
+    # counted back from today to the window's start, not across the window:
+    # sized by window length, a 2019-2020 backtest got no in-window dates.
+    days_back = (pd.Timestamp(date.today()) - start_ts.normalize()).days
+    span_years = max(3, math.ceil(days_back / 365) + 1)
     yf_map = load_earnings_dates_map(yf_tickers, inputs.market, years=span_years)
     # Invert yf -> list[tv] so multi-mapped symbols still gate correctly.
     resolved: dict[str, list[date]] = {}

@@ -13,6 +13,8 @@ This rate changes Sharpe, Sortino, PSR, and DSR, but does not credit interest to
 - An existing protective stop wins if the same daily bar also crosses a profit target.
   A stop raised after a partial sale starts on the next bar.
   This is a conservative daily-bar assumption; intraday sequencing is unknown.
+  A bar that opens at or beyond a target fills that target at the open first, because the open precedes the rest of the bar.
+  A stop raised by a partial sale at the open applies to the rest of that bar.
 - Indian entries and partial sales use whole shares.
   An order that cannot buy one share after costs is skipped.
   A partial target that would sell less than one share does not raise the stop.

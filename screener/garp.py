@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -335,6 +336,17 @@ def load_garp_universe(
     return df
 
 
+# Bump when the cached ``garp_india`` payload shape changes, so a stale entry
+# from the old shape is refetched instead of mapping to an all-``None`` row.
+_INDIA_PAYLOAD_VERSION = 2
+_INDIA_SECTIONS = (
+    "summary",
+    "profit_loss",
+    "balance_sheet",
+    "quarterly_results",
+)
+
+
 def _fetch_india_sections(symbol: str) -> dict[str, Any]:
     Stock = _optional.load("openscreener").Stock
 
@@ -345,68 +357,122 @@ def _fetch_india_sections(symbol: str) -> dict[str, Any]:
     # multiple GB of RSS. The section tables are server-rendered, so the
     # plain-HTTP scraper (shared with insiders/conviction) is sufficient.
     stock = Stock(symbol, scraper=_HttpScraper())
-    return {
-        "ratios": stock.fetch("ratios") or {},
-        "profit_loss": stock.fetch("profit_loss") or {},
-        "quarterly_results": stock.fetch("quarterly_results") or {},
-    }
+    # One fetch: every section parses the same cached page HTML. The result is
+    # keyed by section name; tables are lists of per-period row dicts.
+    return dict(stock.fetch(list(_INDIA_SECTIONS)))
+
+
+def _india_table(payload: dict[str, Any], section: str) -> list[dict[str, Any]]:
+    rows = payload.get(section)
+    if not isinstance(rows, list):
+        return []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _india_column(rows: list[dict[str, Any]], *keys: str) -> list[float | None]:
+    return [first_number(row, *keys) for row in rows]
+
+
+def _india_avg(values: list[float | None]) -> float | None:
+    present = [v for v in values if v is not None]
+    return float(sum(present) / len(present)) if present else None
 
 
 def _india_row(
     symbol: str, description: str | None, payload: dict[str, Any]
 ) -> NormalizedGarpRow:
-    ratios = cast(
-        dict[str, Any],
-        payload.get("ratios") if isinstance(payload.get("ratios"), dict) else {},
+    """Map openscreener section tables (crore, oldest period first) to GARP."""
+    summary = payload.get("summary")
+    top_ratios = summary.get("ratios") if isinstance(summary, dict) else None
+    top: dict[str, Any] = top_ratios if isinstance(top_ratios, dict) else {}
+
+    profit_loss = _india_table(payload, "profit_loss")
+    annual = [r for r in profit_loss if str(r.get("year", "")).upper() != "TTM"]
+    ttm = next(
+        (r for r in profit_loss if str(r.get("year", "")).upper() == "TTM"), None
     )
-    profit_loss = cast(
-        dict[str, Any],
-        payload.get("profit_loss")
-        if isinstance(payload.get("profit_loss"), dict)
-        else {},
+    # Banks and NBFCs report revenue / financing profit instead of sales /
+    # operating profit, and borrowing (singular) plus deposits.
+    sales = _india_column(annual, "sales", "revenue")
+    eps = _india_column(annual, "eps")
+    op_profit = _india_column(annual, "operating_profit", "financing_profit")
+
+    # Equity and capital employed are matched to the P&L year by its label and
+    # averaged with the prior year-end, as screener.in does for its own ROE and
+    # ROCE. The trailing half-year balance sheet column has no P&L partner.
+    def equity(bs: dict[str, Any]) -> float:
+        return (to_number(bs.get("equity_capital")) or 0.0) + (
+            to_number(bs.get("reserves")) or 0.0
+        )
+
+    def employed(bs: dict[str, Any]) -> float:
+        # A lender's interest line is interest paid on deposits, so deposits
+        # belong in capital employed for the ratio to stay consistent.
+        return (
+            equity(bs)
+            + (first_number(bs, "borrowings", "borrowing") or 0.0)
+            + (to_number(bs.get("deposits")) or 0.0)
+        )
+
+    balance = {str(r.get("year")): r for r in _india_table(payload, "balance_sheet")}
+    roe: list[float | None] = []
+    roce: list[float | None] = []
+    for prev_row, row in itertools.pairwise(annual):
+        bs = balance.get(str(row.get("year")))
+        prev_bs = balance.get(str(prev_row.get("year")))
+        if bs is None or prev_bs is None:
+            continue
+        avg_equity = (equity(prev_bs) + equity(bs)) / 2.0
+        avg_employed = (employed(prev_bs) + employed(bs)) / 2.0
+        net_profit = to_number(row.get("net_profit"))
+        pbt = to_number(row.get("profit_before_tax"))
+        interest = to_number(row.get("interest")) or 0.0
+        roe.append(
+            net_profit / avg_equity * 100.0
+            if net_profit is not None and avg_equity > 0
+            else None
+        )
+        roce.append(
+            (pbt + interest) / avg_employed * 100.0
+            if pbt is not None and avg_employed > 0
+            else None
+        )
+
+    eps_growth_5y = _cagr(eps[-1], eps[-6], 5) if len(eps) >= 6 else None
+    pe = first_number(top, "stock_p_e")
+    peg = (
+        pe / eps_growth_5y
+        if pe is not None and pe > 0 and eps_growth_5y is not None and eps_growth_5y > 0
+        else None
     )
-    metrics = {**profit_loss, **ratios}
-    quarterly = cast(
-        dict[str, Any],
-        payload.get("quarterly_results")
-        if isinstance(payload.get("quarterly_results"), dict)
-        else {},
+
+    # Latest quarter against the same quarter a year earlier.
+    quarterly_np = _india_column(
+        _india_table(payload, "quarterly_results"), "net_profit"
     )
-    expected_q_np = first_number(
-        ratios,
-        "expected_quarterly_net_profit",
-        "expected_quarterly_profit",
-        "expected_net_profit",
-    )
-    np_3q_back = first_number(
-        quarterly,
-        "net_profit_3quarters_back",
-        "net profit 3quarters back",
-        "net_profit_3q_back",
-    )
+    latest_q_np = quarterly_np[-1] if quarterly_np else None
+    year_ago_q_np = quarterly_np[-5] if len(quarterly_np) >= 5 else None
+
     return GarpFundamentals(
         name=symbol,
         description=description or "",
-        market_cap=first_number(metrics, "market_capitalization", "market_cap"),
-        sales=first_number(metrics, "sales", "sales_ttm", "revenue"),
-        peg=first_number(metrics, "peg_ratio", "peg"),
-        sales_growth_5y=first_number(metrics, "sales_growth_5years", "sales_growth_5y"),
-        operating_profit_growth=first_number(
-            metrics, "operating_profit_growth", "opm_growth"
+        market_cap=first_number(top, "market_cap"),
+        sales=(
+            first_number(ttm, "sales", "revenue")
+            if ttm
+            else (sales[-1] if sales else None)
         ),
-        eps_growth_5y=first_number(metrics, "eps_growth_5years", "eps_growth_5y"),
-        roe_5y=first_number(
-            metrics, "average_return_on_equity_5years", "average_roe_5y"
+        peg=peg,
+        sales_growth_5y=_cagr(sales[-1], sales[-6], 5) if len(sales) >= 6 else None,
+        operating_profit_growth=(
+            pct_change(op_profit[-1], op_profit[-2]) if len(op_profit) >= 2 else None
         ),
-        roce_or_roic=first_number(
-            metrics,
-            "average_return_on_capital_employed_3years",
-            "average_roce_3y",
-            "roce_percent",
-        ),
-        expected_quarterly_profit=expected_q_np,
-        profit_3q_back=np_3q_back,
-        quarterly_profit_growth=pct_change(expected_q_np, np_3q_back),
+        eps_growth_5y=eps_growth_5y,
+        roe_5y=_india_avg(roe[-5:]),
+        roce_or_roic=_india_avg(roce[-3:]),
+        expected_quarterly_profit=latest_q_np,
+        profit_3q_back=year_ago_q_np,
+        quarterly_profit_growth=pct_change(latest_q_np, year_ago_q_np),
     )
 
 
@@ -427,7 +493,7 @@ class OpenScreenerGarpAdapter:
     ) -> NormalizedGarpRow | None:
         payload = cached_json_call(
             "garp_india",
-            ("india", symbol),
+            ("india", symbol, _INDIA_PAYLOAD_VERSION),
             ttl_seconds=cache_ttl,
             refresh=refresh,
             fetch=lambda: _fetch_india_sections(symbol),
