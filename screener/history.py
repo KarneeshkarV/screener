@@ -3,6 +3,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -140,6 +141,21 @@ def save_run(market: str, criteria: str, total: int, df: pd.DataFrame) -> int:
         conn.close()
 
 
+def _market_date(run_ts: str, market: str) -> date:
+    """The exchange-local calendar date of a stored (UTC) ``run_ts``.
+
+    The UTC date would put a US screen run at 20:30 EDT on the next session,
+    replaying it with a one-day-late ``as_of``.
+    """
+    from screener.markets import MARKETS  # lazy: markets pulls in the CLI
+
+    ts = datetime.fromisoformat(run_ts)
+    spec = MARKETS.get(market)
+    if spec is None or ts.tzinfo is None:
+        return ts.date()
+    return ts.astimezone(ZoneInfo(spec.timezone)).date()
+
+
 @dataclass(frozen=True)
 class RunSnapshot:
     """A persisted screen run: its metadata plus the ranked rows that were shown."""
@@ -153,7 +169,7 @@ class RunSnapshot:
 
     @property
     def run_date(self) -> date:
-        return datetime.fromisoformat(self.run_ts).date()
+        return _market_date(self.run_ts, self.market)
 
     @property
     def tickers(self) -> list[str]:
@@ -205,11 +221,16 @@ def find_run(
                 (market, criteria),
             ).fetchone()
         else:
-            row = conn.execute(
-                "SELECT id FROM runs WHERE market = ? AND criteria = ? "
-                "AND substr(run_ts, 1, 10) <= ? ORDER BY id DESC LIMIT 1",
-                (market, criteria, on_or_before.isoformat()),
-            ).fetchone()
+            # Compare exchange-local dates, which SQLite cannot derive.
+            cursor = conn.execute(
+                "SELECT id, run_ts FROM runs WHERE market = ? AND criteria = ? "
+                "ORDER BY id DESC",
+                (market, criteria),
+            )
+            row = next(
+                (r for r in cursor if _market_date(r[1], market) <= on_or_before),
+                None,
+            )
         return int(row[0]) if row is not None else None
     finally:
         conn.close()

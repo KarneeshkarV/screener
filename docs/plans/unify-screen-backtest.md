@@ -32,7 +32,7 @@ All must pass before this work is done.
 | D6 | Equality is asserted at the candidate layer. Ranked top-N is a derived view. |
 | D7 | The rolling engine is the reference. |
 | D8 | Fundamentals come from the point-in-time fetchers in `backtester/fundamentals.py`, never from TradingView. |
-| D9 | Two universe modes. The TradingView prefilter is the default. `--universe` is the exact path. |
+| D9 | Two universe modes. The default is the unfiltered TradingView field (prefilters are declarations only, not applied; superseded after PR #188). `--universe` is the exact path. |
 | D10 | Callables convert to expressions over precomputed indicator columns. The Pine grammar does not grow. |
 | D11 | The `garp`, `conviction`, `rs_breakout` and `minervini` commands are frozen and out of scope. Do not add logic to them. |
 | D12 | `historical.py` is untouched and gets no guard test. It is deleted in later work. |

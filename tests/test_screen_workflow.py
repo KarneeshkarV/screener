@@ -235,7 +235,7 @@ def test_bar_screen_warns_when_the_prefilter_scan_hits_its_cap(monkeypatch, capl
         run_screen_workflow(_request())
 
     assert any(
-        "prefilter scan returned 3 of 9000" in record.message
+        "default-field scan returned 3 of 9000" in record.message
         for record in caplog.records
     ), caplog.text
 

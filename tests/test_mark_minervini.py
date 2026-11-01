@@ -60,7 +60,8 @@ def test_mark_minervini_strategy_expression_is_backtestable() -> None:
             "LEADER": _bars(50.0, 180.0),
             "MID": _bars(80.0, 120.0),
             "LAGGARD": _bars(120.0, 100.0),
-        }
+        },
+        mask_rank_reference=None,
     )
 
     signal = evaluate(parse(MINERVINI_ENTRY_EXPR), prepared["LEADER"])

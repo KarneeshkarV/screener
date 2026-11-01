@@ -258,3 +258,20 @@ def test_history_backup_command_restore(monkeypatch):
     res = CliRunner().invoke(cli, ["history-backup", "--restore"])
     assert res.exit_code == 0, res.output
     assert "Restored 2 runs (4 rows)" in res.output
+
+
+def test_run_date_uses_market_timezone(history_db):
+    # 00:30 UTC on the 2nd is still the 1st (20:30 EDT) in New York.
+    snap = history_mod.RunSnapshot(
+        run_id=1,
+        run_ts="2026-06-02T00:30:00+00:00",
+        market="us",
+        criteria="c",
+        total_matches=0,
+        rows=pd.DataFrame(),
+    )
+    assert snap.run_date.isoformat() == "2026-06-01"
+    assert (
+        history_mod._market_date("2026-06-02T00:30:00+00:00", "india").isoformat()
+        == "2026-06-02"
+    )

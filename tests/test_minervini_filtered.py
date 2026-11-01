@@ -116,3 +116,30 @@ def test_prep_attaches_rs_rank_and_quality_features():
     # ... and the entry-quality features are layered on top.
     assert "ext_above_sma50" in frame.columns
     assert "vol_20d_ann" in frame.columns
+
+
+def test_prep_masks_rank_reference_for_non_members():
+    bars = {
+        "AAA": make_bars(n=320, seed=1, drift=0.05),
+        "BBB": make_bars(n=320, seed=2, drift=0.05),
+    }
+    calls = []
+
+    def mask(scores):
+        calls.append(True)
+        masked = scores.copy()
+        masked["BBB"] = np.nan
+        return masked
+
+    ctx = PrepareCtx.model_construct(
+        market="us",
+        benchmark="SPY",
+        bars_by_tv=bars,
+        membership_windows=(),
+        membership_added=(),
+    )
+    object.__setattr__(ctx, "mask_rank_reference", mask)
+    out = mf._prep(ctx)
+    assert calls
+    assert out["AAA"]["rs_rank"].dropna().iloc[-1] == 100.0
+    assert out["BBB"]["rs_rank"].dropna().empty
