@@ -268,6 +268,8 @@ def _cagr(equity: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> f
     end = float(equity.iloc[-1])
     if start <= 0:
         return 0.0
+    if end <= 0:
+        return -1.0
     # Annualize over the elapsed return periods (N-1 for an N-point curve), not
     # the point count: an N-bar equity curve spans N-1 return periods, so the
     # horizon is (N-1)/periods_per_year years. Using len(equity)/... overstated
@@ -292,6 +294,8 @@ def _calendar_cagr(equity: pd.Series) -> float:
     end = float(equity.iloc[-1])
     if start <= 0:
         return 0.0
+    if end <= 0:
+        return -1.0
     t0 = pd.Timestamp(equity.index[0])
     t1 = pd.Timestamp(equity.index[-1])
     seconds = (t1 - t0).total_seconds()

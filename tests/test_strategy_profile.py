@@ -192,6 +192,8 @@ def test_only_strategies_with_a_tradingview_spelling_declare_a_prefilter():
         and resolve_strategy_profile(spec, market="us").tv_prefilter is not None
     }
 
+    # Minervini must retain the full cross-sectional RS reference population.
+    # Live declarations are metadata, not safe completed-bar field cuts.
     assert set(declared) == {"breakout"}
     for strategy_name, criterion in declared.items():
         assert criteria_registry.get_optional(criterion) is not None, strategy_name

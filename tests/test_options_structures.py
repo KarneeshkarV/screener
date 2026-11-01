@@ -124,6 +124,20 @@ def test_select_strike_delta_path_and_fallback():
     assert select_strike(bare, date(2026, 7, 31), "call", "delta:0.25") is None
 
 
+def test_select_strike_delta_uses_source_delta():
+    # Both contracts carry the same IV, so an r=0 recompute ranks 100 nearer
+    # 0.5. The source's own deltas (its rate and day count) favour 105.
+    chain = _chain(
+        _contract(strike=100, delta=0.62, symbol="C100"),
+        _contract(strike=105, delta=0.49, symbol="C105"),
+        spot=100.0,
+    )
+    picked = select_strike(
+        chain, date(2026, 7, 31), "call", "delta:0.50", as_of=date(2026, 7, 10)
+    )
+    assert picked is not None and picked.strike == 105.0
+
+
 def test_structure_leg_signs():
     expected = {
         "long_call": (("call", 1),),

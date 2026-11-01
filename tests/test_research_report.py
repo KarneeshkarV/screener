@@ -1427,7 +1427,8 @@ def test_varying_top_marks_exposure_unavailable(monkeypatch):
     )
 
 
-def test_train_test_ratio_uses_aggregate_oos_metric(monkeypatch):
+@pytest.mark.parametrize("growth", [0.10, -0.50])
+def test_train_test_ratio_uses_aggregate_oos_metric(monkeypatch, growth):
     import screener.backtester.optimization.walk_forward as wf_mod
 
     cfg = _config(initial_capital=100_000.0)
@@ -1445,7 +1446,7 @@ def test_train_test_ratio_uses_aggregate_oos_metric(monkeypatch):
     def fake_roll(cfg_arg, fetcher, *, start_date, end_date):
         idx = pd.bdate_range(start_date, end_date)
         start_cap = float(cfg_arg.initial_capital)
-        end_cap = start_cap * 1.10
+        end_cap = start_cap * (1.0 + growth)
         equity = pd.Series(
             [
                 start_cap + (end_cap - start_cap) * i / max(len(idx) - 1, 1)
@@ -1484,7 +1485,9 @@ def test_train_test_ratio_uses_aggregate_oos_metric(monkeypatch):
         min_trades=1,
     )
     oos = float(summary.aggregate_metrics["total_return"])
-    assert summary.train_test_score_ratio == pytest.approx(2.0 / max(abs(oos), 1e-9))
+    assert summary.train_test_score_ratio == pytest.approx(2.0 / oos)
+    # A large OOS loss gives |ratio| below 2 but is still overfit.
+    assert summary.overfit_flag is True
 
 
 def test_cli_rejects_bad_step_before_grid(tmp_path):

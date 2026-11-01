@@ -65,7 +65,7 @@ def temp_report_path(prefix: str) -> Path:
 
 
 def render_screen_report(*args: Any, **kwargs: Any) -> Path:
-    """Lazy wrapper: plotly lives behind screen_report, only imported on use."""
+    """Lazy wrapper: the report renderer (ECharts pages) is only imported on use."""
     from screener.commands.screen_report import render_screen_report as _impl
 
     return _impl(*args, **kwargs)
@@ -126,7 +126,7 @@ class ScreenRequest:
     # budget, so callers cap both together. None keeps the resilience default.
     retries: int | None = None
     # Hand the report back unrendered, as ``ScreenOutcome.render_report``, so
-    # the caller decides when it runs. Rendering imports plotly and lays out
+    # the caller decides when it runs. Rendering builds the chart specs and lays out
     # the whole page, which is about 0.4s the caller is otherwise blocked on
     # before it can show a result it already has. The CLI sets this and renders
     # after printing; every other caller keeps the report written for it.
@@ -304,7 +304,7 @@ def _run_bar_screen(
             # downstream can recover it. Say so rather than report a partial
             # field as the whole one.
             warnings.append(
-                f"default-field scan returned {len(tickers)} of {total} "
+                f"default-field scan returned {len(tickers)} of {total} matching "
                 f"names (cap {_PREFILTER_CANDIDATE_CAP}, ordered by volume), "
                 "so the low-volume tail was never evaluated against the bar "
                 "rule and this result may be missing candidates. Re-run with "
@@ -528,7 +528,7 @@ def _finish_screen(
 
     # Non-CSV always writes an HTML report (temp path when --report omitted).
     # render_screen_report / temp_report_path are lazy wrappers so the CSV path
-    # (above) never imports plotly.
+    # (above) never imports the report renderer.
     generated_report = request.report_path
     if generated_report is None:
         generated_report = temp_report_path("screen")

@@ -1,0 +1,21 @@
+<main>
+  <nav class="theme-bar" id="theme-bar"></nav>
+  <header>
+    <div><div class="eyebrow">Backtest tear-sheet</div><h1 id="title"></h1><div class="sub" id="subtitle"></div></div>
+    <div class="lib">__LIB__</div>
+  </header>
+  <section class="kpis" id="kpis"></section>
+  <section class="grid">
+    <div class="panel span-12"><h2>Equity vs benchmark</h2><p class="hint">Growth of 100,000 · hover for values</p>
+      <div class="legend"><span><i style="background:var(--series-1)"></i>Strategy</span><span><i style="background:var(--series-2)"></i>Benchmark</span></div>
+      <div class="chart" id="equity"></div></div>
+    <div class="panel span-12"><h2>Drawdown</h2><p class="hint">Distance below the running peak</p><div class="chart short" id="drawdown"></div></div>
+    <div class="panel span-7"><h2>Monthly returns</h2><p class="hint">Diverging scale · neutral = flat month</p><div id="heatmap" class="table-wrap"></div></div>
+    <div class="panel span-5"><h2>Trade return distribution</h2><p class="hint">Count of trades per 2% bucket</p><div class="chart" id="hist"></div></div>
+    <div class="panel span-5"><h2>Sector contribution</h2><p class="hint">Return attributed by sector</p><div class="chart" id="sectors"></div></div>
+    <div class="panel span-7"><h2>Trade ledger</h2><p class="hint">Sorted by PnL</p><div id="trades" class="table-wrap"></div></div>
+    <div class="panel span-6"><h2>Warnings</h2><p class="hint">Status colours always ship with an icon and label</p><ul class="warnings" id="warnings"></ul></div>
+    <div class="panel span-6"><h2>Colour tokens</h2><p class="hint">The full theme - every report reads only these</p><div class="swatches" id="swatches"></div></div>
+  </section>
+  <footer>Mockup with deterministic sample data · not a real backtest</footer>
+</main>

@@ -1,4 +1,8 @@
-"""Parabolic SAR (Stop and Reverse) indicator."""
+"""Parabolic SAR (Stop and Reverse) indicator, Wilder's recursion.
+
+Matches TA-Lib ``SAR`` and ``pandas_ta_classic.psar``. Pine ``ta.sar`` tests
+the reversal before the two-bar clamp, so it can flip a bar earlier or later.
+"""
 
 from __future__ import annotations
 
@@ -34,7 +38,7 @@ def sar(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
     af = np.zeros(n_len, dtype=np.float64)
 
     trend[1] = 1 if close[1] > close[0] else -1
-    calc_sar[1] = high[0] if trend[1] > 0 else low[0]
+    calc_sar[1] = low[0] if trend[1] > 0 else high[0]
     real_sar[1] = calc_sar[1]
     ep[1] = high[1] if trend[1] > 0 else low[1]
     af[1] = INITIAL_AF
@@ -54,6 +58,8 @@ def sar(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarray:
             ep[i] = max(high[i], ep[i - 1]) if trend[i] != 1 else high[i]
 
         if abs(trend[i]) == 1:
+            # A reversal restarts the recursion from the old extreme point.
+            calc_sar[i] = ep[i - 1]
             real_sar[i] = ep[i - 1]
             af[i] = INITIAL_AF
         else:
@@ -119,7 +125,8 @@ def _sar_panel(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarr
                 np.where(step_trend != 1, np.maximum(high[i], ep[i - 1]), high[i]),
             )
             reversing = np.abs(step_trend) == 1
-            step_real = np.where(reversing, ep[i - 1], step_sar)
+            # A reversal restarts the recursion from the old extreme point.
+            step_sar = np.where(reversing, ep[i - 1], step_sar)
             step_af = np.where(
                 reversing,
                 INITIAL_AF,
@@ -130,14 +137,14 @@ def _sar_panel(high: np.ndarray, low: np.ndarray, close: np.ndarray) -> np.ndarr
                 ),
             )
         else:
-            step_sar = step_trend = step_ep = step_real = step_af = blank
+            step_sar = step_trend = step_ep = step_af = blank
 
-        seed_sar = np.where(rising, high[i - 1], low[i - 1])
+        seed_sar = np.where(rising, low[i - 1], high[i - 1])
         trend[i] = np.where(
             seeding, np.where(rising, 1, -1), np.where(running, step_trend, 0)
         )
         calc_sar[i] = np.where(seeding, seed_sar, np.where(running, step_sar, 0.0))
-        real_sar[i] = np.where(seeding, seed_sar, np.where(running, step_real, 0.0))
+        real_sar[i] = calc_sar[i]
         ep[i] = np.where(
             seeding, np.where(rising, high[i], low[i]), np.where(running, step_ep, 0.0)
         )

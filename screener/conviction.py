@@ -438,7 +438,9 @@ def _load_smart_money_india(
     sym = india_symbol(symbol)
     rows = _OPENSCREENER_SHAREHOLDING_PROVIDER.fetch(
         ("shareholding_quarterly", sym),
-        lambda: Stock(sym, scraper=_HttpScraper()).shareholding_quarterly(),
+        lambda: Stock(
+            sym, scraper=_HttpScraper(resilient=False)
+        ).shareholding_quarterly(),
         refresh=refresh,
         fallback=None,
         ttl_seconds=cache_ttl,

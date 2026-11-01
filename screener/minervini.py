@@ -94,7 +94,7 @@ def add_rs_rank_column(
 def prepare_backtest_frames(
     bars_by_symbol: dict[str, pd.DataFrame],
     *,
-    mask_rank_reference: Callable[[pd.DataFrame], pd.DataFrame] | None,
+    mask_rank_reference: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Prepare Minervini indicators without ranking out-of-membership stocks."""
     return add_rs_rank_column(bars_by_symbol, mask_rank_reference=mask_rank_reference)

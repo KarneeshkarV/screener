@@ -217,14 +217,15 @@ def find_run(
         if on_or_before is None:
             row = conn.execute(
                 "SELECT id FROM runs WHERE market = ? AND criteria = ? "
-                "ORDER BY id DESC LIMIT 1",
+                "ORDER BY run_ts DESC, id DESC LIMIT 1",
                 (market, criteria),
             ).fetchone()
         else:
-            # Compare exchange-local dates, which SQLite cannot derive.
+            # Compare exchange-local dates, which SQLite cannot derive; the
+            # newest qualifying run is usually among the first rows read.
             cursor = conn.execute(
                 "SELECT id, run_ts FROM runs WHERE market = ? AND criteria = ? "
-                "ORDER BY id DESC",
+                "ORDER BY run_ts DESC, id DESC",
                 (market, criteria),
             )
             row = next(
@@ -262,7 +263,7 @@ def list_runs(
             LEFT JOIN run_rows rr ON rr.run_id = r.id
             {where_sql}
             GROUP BY r.id
-            ORDER BY r.id DESC
+            ORDER BY r.run_ts DESC, r.id DESC
             LIMIT ?
             """,
             conn,
@@ -313,11 +314,14 @@ def resolve_replay_run(spec: str, min_age_days: int = 0) -> RunSnapshot:
 def previous_run(market: str, criteria: str, before_id: int) -> pd.DataFrame | None:
     conn = _connect()
     try:
+        # Recency is run_ts, not id: a restored backup gets fresh ids for
+        # older runs.
         prev = conn.execute(
             """
             SELECT id FROM runs
-            WHERE market = ? AND criteria = ? AND id < ?
-            ORDER BY id DESC
+            WHERE market = ? AND criteria = ?
+              AND (run_ts, id) < (SELECT run_ts, id FROM runs WHERE id = ?)
+            ORDER BY run_ts DESC, id DESC
             LIMIT 1
             """,
             (market, criteria, before_id),

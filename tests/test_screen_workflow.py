@@ -269,7 +269,7 @@ def test_bar_screen_stays_quiet_when_the_scan_returns_the_whole_field(
     with caplog.at_level(logging.WARNING, logger=sw.LOG.name):
         run_screen_workflow(_request())
 
-    assert not any("prefilter scan returned" in r.message for r in caplog.records)
+    assert not any("default-field scan returned" in r.message for r in caplog.records)
 
 
 def test_deferred_report_is_written_only_when_the_caller_asks(monkeypatch, tmp_path):

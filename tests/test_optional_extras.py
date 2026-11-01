@@ -23,7 +23,6 @@ _ROOT = Path(__file__).resolve().parents[1]
 # Import name -> distribution name on the index. They differ for the two
 # packages that use a dash.
 _DISTRIBUTION = {
-    "plotly": "plotly",
     "yfinance": "yfinance",
     "openscreener": "openscreener",
     "jugaad_data": "jugaad-data",
