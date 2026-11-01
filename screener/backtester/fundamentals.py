@@ -202,6 +202,14 @@ def _prior_year_key(row_date: str) -> str | None:
     return (ts - pd.DateOffset(years=1)).date().isoformat()
 
 
+def _has_time_of_day(raw: Any) -> bool:
+    try:
+        stamp = pd.Timestamp(raw)
+    except (ValueError, TypeError, OverflowError):
+        return False
+    return stamp != stamp.normalize()
+
+
 def _filing_publication_raw(row: Mapping[str, Any]) -> Any:
     """Return the first real filing/publication timestamp field on ``row``.
 
@@ -234,6 +242,10 @@ def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | Non
         return None
     if lag_days > 0:
         ts += pd.Timedelta(days=lag_days)
+    elif _has_time_of_day(raw):
+        # An accepted-time stamp can fall after the close; with no lag the
+        # normalized date would be the filing day's own close bar.
+        ts += pd.Timedelta(days=1)
     return ts
 
 
@@ -295,15 +307,32 @@ def _normalize_fmp_payload(
     income_by_date = _row_by_date(income_rows)
     records: list[dict[str, Any]] = []
     excluded_no_filing = 0
+    effective_memo: dict[int, pd.Timestamp | None] = {}
 
-    def publish(field: str, value: float | None, sources: list[dict[str, Any]]) -> None:
+    def effective_of(row: Mapping[str, Any]) -> pd.Timestamp | None:
+        # Rows outlive this call, so id() is a stable key within it.
+        key = id(row)
+        if key not in effective_memo:
+            effective_memo[key] = _effective_date(row, lag_days)
+        return effective_memo[key]
+
+    def publish(
+        field: str,
+        value: float | None,
+        sources: list[dict[str, Any]],
+        period: str = "",
+    ) -> None:
         if field not in fields or value is None:
             return
-        dates = [_effective_date(source, lag_days) for source in sources]
+        dates = [effective_of(source) for source in sources]
         if not dates or any(stamp is None for stamp in dates):
             return
         records.append(
-            {"effective_date": max(cast(list[pd.Timestamp], dates)), field: value}
+            {
+                "effective_date": max(cast(list[pd.Timestamp], dates)),
+                "_period": period,
+                field: value,
+            }
         )
 
     # Income publication is not evidence of another section's availability.
@@ -328,25 +357,26 @@ def _normalize_fmp_payload(
     }
     for section, field_keys in section_fields.items():
         for row in _rows(payload, section):
-            if _effective_date(row, lag_days) is None:
+            if effective_of(row) is None:
                 excluded_no_filing += 1
                 continue
+            period = str(row.get("date", ""))
             for field, keys in field_keys.items():
                 value = first_number(row, *keys)
                 if field == "roe_ttm":
                     value = _as_percent(value)
-                publish(field, value, [row])
+                publish(field, value, [row], period)
     for current_pos, row in enumerate(income_rows):
         row_date = row.get("date")
         if not isinstance(row_date, str) or not row_date:
             continue
-        effective = _effective_date(row, lag_days)
+        effective = effective_of(row)
         if effective is None:
             # Period-end alone is not a publication time; drop rather than guess.
             excluded_no_filing += 1
             continue
         # Keep the income event even when the requested derived value is missing.
-        records.append({"effective_date": effective})
+        records.append({"effective_date": effective, "_period": row_date})
 
         prior_target = _prior_year_key(row_date)
         prior_income = income_by_date.get(prior_target, {}) if prior_target else {}
@@ -360,12 +390,13 @@ def _normalize_fmp_payload(
         )
 
         # A derived field cannot precede any observation used to compute it.
-        publish("revenue_growth_yoy", revenue_growth, [row, prior_income])
-        publish("eps_growth_yoy", eps_growth, [row, prior_income])
+        publish("revenue_growth_yoy", revenue_growth, [row, prior_income], row_date)
+        publish("eps_growth_yoy", eps_growth, [row, prior_income], row_date)
         publish(
             "revenue_up_3q",
             _increased_last_n_quarters(income_rows, current_pos, "revenue", 3),
             income_rows[current_pos : current_pos + 3],
+            row_date,
         )
 
     if excluded_no_filing:
@@ -380,6 +411,8 @@ def _normalize_fmp_payload(
         return pd.DataFrame(columns=list(fields), index=pd.DatetimeIndex([]))
 
     frame = pd.DataFrame(records)
+    # Later fiscal periods must win a same-date collision in ``last()`` below.
+    frame = frame.sort_values("_period", kind="stable").drop(columns="_period")
     frame.index = pd.to_datetime(frame.pop("effective_date"), errors="coerce")
     frame = frame[frame.index.notna()]
     frame.index = cast(pd.DatetimeIndex, frame.index).tz_localize(None).normalize()

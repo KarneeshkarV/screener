@@ -931,7 +931,10 @@ class FMPPriceFetcher:
             cache_key = _fmp_cache_key(ticker, self.auto_adjust, self.interval)
             # Same contract as YFinancePriceFetcher.fetch. The stored frame
             # loads even on a refresh and goes into the save-time merge, so a
-            # forced re-download never discards bars outside its window.
+            # forced re-download never discards bars outside its window. The
+            # one exception is a detected rescale below: bars on the abandoned
+            # scale cannot be kept, so that entry is rewritten with only the
+            # requested window and a wider run re-downloads the rest.
             stored = drop_incomplete_sessions(
                 _load_cached(cache_key, self.cache_dir, self.interval),
                 ticker,

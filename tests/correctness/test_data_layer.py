@@ -243,7 +243,7 @@ class TestNormalizeFrameSplitFactor:
 
     def test_no_splits_factor_all_ones(self):
         df = self._make_split_df([0.0, 0.0, 0.0, 0.0, 0.0])
-        out = _normalize_frame(df)
+        out = _normalize_frame(df, source_adjustment="unadjusted")
         assert "split_factor" in out.columns
         np.testing.assert_array_equal(
             out["split_factor"].values, [1.0, 1.0, 1.0, 1.0, 1.0]
@@ -253,7 +253,7 @@ class TestNormalizeFrameSplitFactor:
         """2:1 split on bar 2 → bars 0 and 1 get factor 2, bars 2,3,4 get factor 1."""
         # splits[2]=2.0, rest 0
         df = self._make_split_df([0.0, 0.0, 2.0, 0.0, 0.0])
-        out = _normalize_frame(df)
+        out = _normalize_frame(df, source_adjustment="unadjusted")
         expected = [2.0, 2.0, 1.0, 1.0, 1.0]
         np.testing.assert_array_equal(out["split_factor"].values, expected)
 
@@ -270,14 +270,14 @@ class TestNormalizeFrameSplitFactor:
           fillna(1)    = [6, 3, 3, 1, 1]
         """
         df = self._make_split_df([0.0, 2.0, 0.0, 3.0, 0.0])
-        out = _normalize_frame(df)
+        out = _normalize_frame(df, source_adjustment="unadjusted")
         expected = [6.0, 3.0, 3.0, 1.0, 1.0]
         np.testing.assert_array_equal(out["split_factor"].values, expected)
 
     def test_split_at_first_bar(self):
         """Split on bar 0 → shift(-1) moves it, bar 0 itself gets factor 1."""
         df = self._make_split_df([2.0, 0.0, 0.0])
-        out = _normalize_frame(df)
+        out = _normalize_frame(df, source_adjustment="unadjusted")
         # replace 0→1: [2,1,1]; reversed: [1,1,2]; cumprod: [1,1,2];
         # un-reverse: [2,1,1]; shift(-1): [1,1,NaN]; fillna: [1,1,1]
         expected = [1.0, 1.0, 1.0]
@@ -286,7 +286,7 @@ class TestNormalizeFrameSplitFactor:
     def test_split_at_last_bar(self):
         """Split on last bar → the shift makes all pre-bars adjusted."""
         df = self._make_split_df([0.0, 0.0, 2.0])
-        out = _normalize_frame(df)
+        out = _normalize_frame(df, source_adjustment="unadjusted")
         # replace: [1,1,2]; rev: [2,1,1]; cumprod: [2,2,2];
         # un-rev: [2,2,2]; shift(-1): [2,2,NaN]; fillna: [2,2,1]
         expected = [2.0, 2.0, 1.0]

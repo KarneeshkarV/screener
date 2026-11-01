@@ -650,7 +650,7 @@ def test_effective_date_accepts_filing_date_spelling():
     ) == pd.Timestamp("2024-05-11")
     assert fundamentals._effective_date(
         {"acceptedDate": "2024-05-10 16:30:00"}, lag_days=0
-    ) == pd.Timestamp("2024-05-10")
+    ) == pd.Timestamp("2024-05-11")
 
 
 def test_normalize_fmp_excludes_period_end_only_rows_and_warns(caplog):
@@ -970,3 +970,24 @@ def test_merge_fundamentals_skips_empty_or_none_bars():
 def test_invalid_accepted_date_uses_valid_filing_date_without_period_fallback():
     row = {"acceptedDate": "invalid", "filingDate": "2024-05-10", "date": "2024-03-31"}
     assert fundamentals._effective_date(row, 1) == pd.Timestamp("2024-05-11")
+
+
+def test_same_effective_date_prefers_newer_fiscal_period():
+    rows = [
+        {"date": "2023-12-31", "revenue": 140.0, "acceptedDate": "2024-02-05 10:00:00"},
+        {"date": "2023-09-30", "revenue": 130.0, "acceptedDate": "2024-02-25 10:00:00"},
+        {"date": "2023-06-30", "revenue": 120.0, "acceptedDate": "2023-08-01 10:00:00"},
+        {"date": "2023-03-31", "revenue": 110.0, "acceptedDate": "2023-05-01 10:00:00"},
+        {"date": "2022-12-31", "revenue": 100.0, "acceptedDate": "2023-02-01 10:00:00"},
+    ]
+    frame = fundamentals._normalize_fmp_payload(
+        {"income": rows}, fields=("revenue_up_3q",), lag_days=1
+    )
+    assert frame.loc[pd.Timestamp("2024-02-26"), "revenue_up_3q"] == 1.0
+
+
+def test_lag_zero_after_close_filing_is_not_same_day():
+    after = fundamentals._effective_date({"acceptedDate": "2024-05-10 16:30:00"}, 0)
+    assert after == pd.Timestamp("2024-05-11")
+    date_only = fundamentals._effective_date({"fillingDate": "2024-05-10"}, 0)
+    assert date_only == pd.Timestamp("2024-05-10")

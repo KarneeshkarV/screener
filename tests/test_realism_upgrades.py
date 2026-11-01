@@ -555,7 +555,7 @@ def test_split_factor_applied_to_ohlc_but_not_volume_in_normalize():
         },
         index=idx,
     )
-    norm = _normalize_frame(raw)
+    norm = _normalize_frame(raw, source_adjustment="unadjusted")
     # split_factor column present; volume left raw.
     assert "split_factor" in norm.columns
     # Reverse cumulative product shifted — pre-split bars get factor=2.
@@ -579,7 +579,7 @@ def test_dividend_column_preserved_in_normalize():
         },
         index=idx,
     )
-    norm = _normalize_frame(raw)
+    norm = _normalize_frame(raw, source_adjustment="unadjusted")
     assert "dividend" in norm.columns
     assert norm["dividend"].iloc[1] == pytest.approx(0.50)
     assert norm["dividend"].iloc[0] == pytest.approx(0.0)
