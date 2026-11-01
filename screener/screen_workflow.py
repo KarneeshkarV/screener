@@ -49,11 +49,11 @@ from screener.scoring import (
 
 LOG = logging.getLogger(__name__)
 
-#: Upper bound on the prefilter scan, which exists only to stop an unbounded
-#: vendor request - not to rank. It is well above the size of either market's
-#: listed universe, so in practice the scan returns every name the prefilter
-#: matched and the bar rule sees the whole field. When it does not,
-#: :func:`_run_bar_screen` warns rather than quietly screening a short field.
+#: Upper bound on the default-mode scan, which exists only to stop an
+#: unbounded vendor request - not to rank. The default field is unfiltered, and
+#: the US market lists more names than this cap, so the scan can be truncated
+#: (ordered by volume, the low-volume tail is dropped). :func:`_run_bar_screen`
+#: warns when that happens; ``--universe`` screens the exact field.
 _PREFILTER_CANDIDATE_CAP = 5000
 
 
@@ -297,14 +297,14 @@ def _run_bar_screen(
         # one. The vendor returns ``min(total, cap)`` rows, so truncation
         # happened exactly when the match count exceeded the cap.
         if total > _PREFILTER_CANDIDATE_CAP:
-            # The cap exists to bound the request, but a truncated scan is
-            # still a prefilter that dropped names the bar rule never saw -
-            # the one thing a prefilter may not do (D21). The scan orders by
+            # The cap exists to bound the request, but a truncated scan still
+            # drops names the bar rule never saw, and they are also missing
+            # from any cross-sectional rank reference. The scan orders by
             # volume, so what went missing is the low-volume tail, and nothing
             # downstream can recover it. Say so rather than report a partial
             # field as the whole one.
             warnings.append(
-                f"prefilter scan returned {len(tickers)} of {total} matching "
+                f"default-field scan returned {len(tickers)} of {total} matching "
                 f"names (cap {_PREFILTER_CANDIDATE_CAP}, ordered by volume), "
                 "so the low-volume tail was never evaluated against the bar "
                 "rule and this result may be missing candidates. Re-run with "
@@ -446,7 +446,9 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
                 ),
                 price_adjustment=request.price_adjustment,
                 interval=request.interval,
-                universe_policy=field.policy if field is not None else None,
+                universe_policy=(
+                    field.policy if field is not None else {"field": "tv_full"}
+                ),
             ),
         )
         return _finish_screen(
