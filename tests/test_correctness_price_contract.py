@@ -27,7 +27,7 @@ def yahoo_frame(index, close):
 def test_pending_split_adjustment_is_idempotent():
     raw = yahoo_frame(pd.bdate_range("2024-01-01", periods=3), [100, 50, 50])
     raw.iloc[1, raw.columns.get_loc("Stock Splits")] = 2.0
-    normalized = price_frames.normalize_price_frame(raw)
+    normalized = price_frames.normalize_price_frame(raw, source_adjustment="unadjusted")
     first = price_frames.apply_splits_only_adjustment({"AAA": normalized})
     second = price_frames.apply_splits_only_adjustment(first)
     pd.testing.assert_frame_equal(first["AAA"], second["AAA"])
@@ -113,3 +113,10 @@ def test_intraday_extension_without_usable_overlap_reloads_full_window(
     result = fetcher.fetch(["AAA"], date(2024, 1, 5), date(2024, 1, 15))["AAA"]
     assert result.close.eq(50.0).all()
     assert len(calls) == 3
+
+
+def test_normalize_price_frame_defaults_to_split_adjusted_source():
+    index = pd.date_range("2024-01-01", periods=3, freq="B")
+    raw = yahoo_frame(index, 100.0)
+    raw["Stock Splits"] = [0.0, 4.0, 0.0]
+    assert (price_frames.normalize_price_frame(raw)["split_factor"] == 1.0).all()

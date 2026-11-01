@@ -51,13 +51,14 @@ def normalize_price_frame(
     df: pd.DataFrame,
     interval: str = "1d",
     *,
-    source_adjustment: Literal["unadjusted", "splits", "full"] = "unadjusted",
+    source_adjustment: Literal["unadjusted", "splits", "full"] = "splits",
 ) -> pd.DataFrame:
     """Normalize prices with an explicit provider adjustment contract.
 
     ``split_factor`` is the adjustment still required by OHLC, volume, and
     dividends, not a second copy of the provider's historical split events.
-    Providers that already adjust splits must pass ``source_adjustment``.
+    The default is ``"splits"`` (Yahoo); a truly raw provider must pass
+    ``"unadjusted"``.
     ``stock_splits`` always retains the events for audit.
     """
     if df is None or df.empty:
