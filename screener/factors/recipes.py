@@ -27,6 +27,11 @@ import pandas as pd
 from screener.factors import BarFeatures, price_score
 from screener.indicators.plugins.heikin_ashi import heikin_ashi_ohlc
 from screener.indicators.plugins.rsi import rsi as _wilder_rsi
+from screener.tradeable import (
+    MIN_TRADEABLE_PRICE,
+    MIN_TRADED_FRACTION,
+    tradeable_window,
+)
 
 # Trading-day windows. 252 ~ 12 months, 21 ~ 1 month (the skipped reversal leg).
 MOMENTUM_LOOKBACK = 252
@@ -43,8 +48,26 @@ RVOL_WINDOW = 10
 PERF_Y_LOOKBACK = 252
 
 
+def tradeable_momentum_window(
+    close: pd.Series,
+    volume: pd.Series | None,
+    *,
+    lookback: int = MOMENTUM_LOOKBACK,
+    skip: int = MOMENTUM_SKIP,
+) -> pd.Series:
+    """Boolean mask: bars whose 12-1 window rests on real, traded prices.
+
+    The 12-1 spelling of :func:`screener.tradeable.tradeable_window`, which is
+    where the rules and the reasoning behind them live. Kept as a named
+    function because the momentum window's ``skip`` leg is particular to this
+    recipe and the name says what the mask means here.
+    """
+    return tradeable_window(close, volume, lookback=lookback, skip=skip)
+
+
 def momentum_12_1(
     close: pd.Series,
+    volume: pd.Series | None = None,
     *,
     lookback: int = MOMENTUM_LOOKBACK,
     skip: int = MOMENTUM_SKIP,
@@ -55,11 +78,20 @@ def momentum_12_1(
     ~12 months ago to ~1 month ago. Skipping the last 21 sessions avoids the
     short-term reversal that contaminates raw 12-month momentum.
 
-    Stays NaN until ``lookback`` prior closes exist. That NaN is the
-    eligibility signal for both adapters - it is never filled with 0.
+    Stays NaN until ``lookback`` prior closes exist, and wherever
+    :func:`tradeable_momentum_window` says the window does not rest on real
+    prices. Both NaNs are the eligibility signal for both adapters - neither
+    is ever filled with 0.
+
+    ``volume`` is optional only so a close-only caller still works; pass it
+    whenever the frame has it, because it is what rules out a series the
+    vendor carried forward rather than a market traded.
     """
     values = pd.to_numeric(close, errors="coerce").astype(float)
-    return values.shift(skip) / values.shift(lookback) - 1.0
+    raw = values.shift(skip) / values.shift(lookback) - 1.0
+    return raw.where(
+        tradeable_momentum_window(values, volume, lookback=lookback, skip=skip)
+    )
 
 
 @price_score(
@@ -75,7 +107,7 @@ def momentum_12_1(
     eligible_above=0.0,
 )
 def score_momentum_12_1(features: BarFeatures) -> pd.Series:
-    return momentum_12_1(features.close)
+    return momentum_12_1(features.close, features.volume)
 
 
 def ha_momentum(
@@ -83,6 +115,7 @@ def ha_momentum(
     high: pd.Series,
     low: pd.Series,
     close: pd.Series,
+    volume: pd.Series | None = None,
     *,
     lookback: int = MOMENTUM_LOOKBACK,
     skip: int = MOMENTUM_SKIP,
@@ -90,7 +123,8 @@ def ha_momentum(
 ) -> pd.Series:
     """12-1 momentum, confirmed by an active Heikin-Ashi uptrend.
 
-    Same ``mom_12_1`` value as :func:`momentum_12_1`, except a name only
+    Same ``mom_12_1`` value as :func:`momentum_12_1`, tradeability gate
+    included, except a name only
     carries a score while its Heikin-Ashi candles are on a bullish streak of
     at least ``min_streak`` bars (``ha_close > ha_open``, no wicks below the
     body: ``ha_open == ha_low``). Everywhere else the value is NaN, which
@@ -113,7 +147,7 @@ def ha_momentum(
     streak = running - running.where(~bullish).ffill().fillna(0)
     confirmed = streak >= min_streak
 
-    mom = momentum_12_1(close, lookback=lookback, skip=skip)
+    mom = momentum_12_1(close, volume, lookback=lookback, skip=skip)
     return mom.where(confirmed)
 
 
@@ -131,7 +165,13 @@ def ha_momentum(
 def score_ha_momentum(features: BarFeatures) -> pd.Series:
     if features.open is None or features.high is None or features.low is None:
         return pd.Series(np.nan, index=features.close.index, dtype=float)
-    return ha_momentum(features.open, features.high, features.low, features.close)
+    return ha_momentum(
+        features.open,
+        features.high,
+        features.low,
+        features.close,
+        features.volume,
+    )
 
 
 def rsi_14(close: pd.Series, *, period: int = RSI_PERIOD) -> pd.Series:
@@ -163,10 +203,23 @@ def relative_volume_10d(volume: pd.Series, *, window: int = RVOL_WINDOW) -> pd.S
     return values / average.where(average > 0)
 
 
-def perf_y(close: pd.Series, *, lookback: int = PERF_Y_LOOKBACK) -> pd.Series:
-    """Trailing one-year return in *percent*, the unit ``Perf.Y`` reports."""
+def perf_y(
+    close: pd.Series,
+    volume: pd.Series | None = None,
+    *,
+    lookback: int = PERF_Y_LOOKBACK,
+) -> pd.Series:
+    """Trailing one-year return in *percent*, the unit ``Perf.Y`` reports.
+
+    Same ratio shape as :func:`momentum_12_1` with no skipped leg, so it takes
+    the same tradeability gate: a sub-cent stub denominator turns this into a
+    five-figure percentage exactly as it did for momentum. NaN wherever the
+    window does not rest on real prices, which both adapters already read as
+    "not a candidate".
+    """
     values = pd.to_numeric(close, errors="coerce").astype(float)
-    return (values / values.shift(lookback) - 1.0) * 100.0
+    raw = (values / values.shift(lookback) - 1.0) * 100.0
+    return raw.where(tradeable_window(values, volume, lookback=lookback))
 
 
 @price_score(
@@ -201,11 +254,13 @@ def score_relative_volume_10d(features: BarFeatures) -> pd.Series:
     aux_column="perf_y",
 )
 def score_perf_y(features: BarFeatures) -> pd.Series:
-    return perf_y(features.close)
+    return perf_y(features.close, features.volume)
 
 
 __all__ = [
     "HA_STREAK_MIN",
+    "MIN_TRADEABLE_PRICE",
+    "MIN_TRADED_FRACTION",
     "MOMENTUM_LOOKBACK",
     "MOMENTUM_SKIP",
     "PERF_Y_LOOKBACK",
@@ -221,4 +276,5 @@ __all__ = [
     "score_perf_y",
     "score_relative_volume_10d",
     "score_rsi_14",
+    "tradeable_momentum_window",
 ]

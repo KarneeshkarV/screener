@@ -30,6 +30,8 @@ backtest-historical:
   hold: 20
   top: 10
   initial_capital: 100000
+  # Annual excess-return hurdle for Sharpe/Sortino (not cash interest).
+  risk_free_rate: 0.0
   slippage_bps: 0
   commission_bps: 0
   price_adjustment: full
@@ -40,6 +42,7 @@ backtest-rolling:
   hold: 20
   top: 10
   initial_capital: 100000
+  risk_free_rate: 0.0
   price_adjustment: full
 
 operator-scan:
@@ -57,6 +60,7 @@ optimize:
     min_trades: 1
     top_n: 10
     workers: 1
+    risk_free_rate: 0.0
   walk-forward:
     market: us
     years: 1
@@ -65,6 +69,7 @@ optimize:
     metric: sharpe
     train_days: 252
     test_days: 63
+    risk_free_rate: 0.0
   validate:
     iterations: 5000
     seed: 42

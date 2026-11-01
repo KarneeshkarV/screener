@@ -32,7 +32,11 @@ def optimization_metrics(result: BacktestResult, n_trials: int = 1) -> dict[str,
     values.setdefault("risk_adjusted_return", risk_adjusted_return(result))
     values.setdefault("trade_count", float(len(result.trades)))
     if n_trials > 1 and not result.equity_curve.empty:
-        values["dsr"] = deflated_sharpe(result.equity_curve, n_trials=n_trials)
+        values["dsr"] = deflated_sharpe(
+            result.equity_curve,
+            n_trials=n_trials,
+            rf=float(result.config.risk_free_rate),
+        )
         values["dsr_trials"] = float(n_trials)
     return values
 

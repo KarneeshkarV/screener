@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pandas as pd
+import pytest
 
 from screener import cache
 
@@ -56,6 +59,54 @@ def test_is_fresh_honors_ttl(tmp_path):
     assert cache.is_fresh(path, 60, now=now)
     os.utime(path, (now - 120, now - 120))
     assert not cache.is_fresh(path, 60, now=now)
+
+
+@pytest.mark.parametrize("kind", ["json", "parquet"])
+def test_concurrent_cache_writes_use_distinct_temporary_files(
+    tmp_path, monkeypatch, kind
+):
+    path = tmp_path / f"entry.{kind}"
+    barrier = Barrier(2)
+    replace = os.replace
+    sources = []
+
+    def synchronized_replace(source, destination):
+        sources.append(str(source))
+        barrier.wait(timeout=5)
+        replace(source, destination)
+
+    monkeypatch.setattr(cache.os, "replace", synchronized_replace)
+
+    def write(value):
+        if kind == "json":
+            cache.write_json(path, {"value": value})
+        else:
+            cache.write_frame(path, pd.DataFrame({"value": [value]}))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(write, [1, 2]))
+    assert len(set(sources)) == 2
+    if kind == "json":
+        assert cache.read_json(path)["value"] in {1, 2}
+    else:
+        assert cache.read_frame(path)["value"].tolist() in [[1], [2]]
+    assert list(tmp_path.iterdir()) == [path]
+
+
+def test_failed_cache_write_preserves_previous_entry_and_cleans_temp(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "entry.json"
+    cache.write_json(path, {"value": 1})
+
+    def fail_replace(source, destination):
+        raise OSError("simulated replacement failure")
+
+    monkeypatch.setattr(cache.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="simulated replacement failure"):
+        cache.write_json(path, {"value": 2})
+    assert cache.read_json(path) == {"value": 1}
+    assert list(tmp_path.iterdir()) == [path]
 
 
 def test_cache_area_registry_configures_paths(tmp_path):

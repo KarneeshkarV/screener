@@ -23,7 +23,12 @@ from requests.adapters import HTTPAdapter
 
 from screener import _optional
 from screener.backtester.data import load_env_file
-from screener.factors.fundamentals import FUNDAMENTAL_COLUMNS, stamp_fundamentals
+from screener.factors.fundamentals import (
+    EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG,
+    EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
+    FUNDAMENTAL_COLUMNS,
+    stamp_fundamentals,
+)
 from screener.financials import as_percent as _as_percent
 from screener.financials import first_number, pct_change
 from screener.provider_utils import fmp_get
@@ -36,6 +41,15 @@ INDIA_FUNDAMENTAL_FILING_LAG_DAYS = 60
 # ``screener.factors`` so the feature layer can check a column against it
 # without importing the backtester.
 DEFAULT_FUNDAMENTAL_FIELDS: tuple[str, ...] = FUNDAMENTAL_COLUMNS
+
+# FMP publication timestamps only. ``date`` is the fiscal period end and must
+# never be promoted to a publication time. ``fillingDate`` is FMP's historical
+# misspelling; ``filingDate`` is the corrected spelling some payloads use.
+_FMP_FILING_PUBLICATION_KEYS: tuple[str, ...] = (
+    "acceptedDate",
+    "fillingDate",
+    "filingDate",
+)
 
 
 _FMP_PROVIDER = CachedProvider(
@@ -65,6 +79,11 @@ class FundamentalFetcher(Protocol):
     #: knowable. Declared on the protocol because the merge records it as the
     #: provenance of every column it writes.
     lag_days: int
+    #: How effective dates were obtained. See
+    #: :data:`~screener.factors.fundamentals.EFFECTIVE_DATE_KIND_FILING_TIMESTAMP`
+    #: and
+    #: :data:`~screener.factors.fundamentals.EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG`.
+    effective_date_kind: str
 
     def fetch(
         self,
@@ -183,8 +202,38 @@ def _prior_year_key(row_date: str) -> str | None:
     return (ts - pd.DateOffset(years=1)).date().isoformat()
 
 
+def _filing_publication_raw(row: Mapping[str, Any]) -> Any:
+    """Return the first real filing/publication timestamp field on ``row``.
+
+    Fiscal period-end ``date`` is intentionally ignored. Promoting quarter-end
+    to a publication time with a one-day lag creates false point-in-time
+    confidence.
+    """
+    for key in _FMP_FILING_PUBLICATION_KEYS:
+        raw = row.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, str) and not raw.strip():
+            continue
+        if _filing_timestamp(raw) is not None:
+            return raw
+    return None
+
+
 def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | None:
-    raw = row.get("acceptedDate") or row.get("fillingDate") or row.get("date")
+    """Knowable date from a real filing/publication timestamp, plus lag.
+
+    Returns ``None`` when no valid ``acceptedDate`` / ``fillingDate`` /
+    ``filingDate`` is present. Does not fall back to period-end ``date``.
+
+    A timestamp that carries a time of day is never knowable before the next
+    day, whatever ``lag_days`` says. ``_filing_timestamp`` normalizes to
+    midnight, so with ``lag_days=0`` a 16:30 after-close filing would otherwise
+    be visible on that same day's close bar. Intraday filings are not split
+    into pre-open and after-close: FMP stamps are exchange-local without a zone,
+    so the conservative reading is the only safe one.
+    """
+    raw = _filing_publication_raw(row)
     if raw is None:
         return None
     ts = _filing_timestamp(raw)
@@ -192,6 +241,8 @@ def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | Non
         return None
     if lag_days > 0:
         ts += pd.Timedelta(days=lag_days)
+    elif pd.Timestamp(raw).tz_localize(None) != ts:
+        ts += pd.Timedelta(days=1)
     return ts
 
 
@@ -246,29 +297,83 @@ def _normalize_fmp_payload(
     fields: tuple[str, ...],
     lag_days: int,
 ) -> pd.DataFrame:
-    income_rows = _rows(payload, "income")
-    if not income_rows:
-        return pd.DataFrame(columns=list(fields), index=pd.DatetimeIndex([]))
-
-    ratio_by_date = _row_by_date(_rows(payload, "ratios"))
-    metrics_by_date = _row_by_date(_rows(payload, "key_metrics"))
-    balance_by_date = _row_by_date(_rows(payload, "balance"))
-    ev_by_date = _row_by_date(_rows(payload, "enterprise_values"))
+    """Publish fields on their own section dates; exclude undated sections."""
+    income_rows = sorted(
+        _rows(payload, "income"), key=lambda row: str(row.get("date", "")), reverse=True
+    )
     income_by_date = _row_by_date(income_rows)
-
     records: list[dict[str, Any]] = []
+    excluded_no_filing = 0
+    # A row's date is read once per field it publishes and again as a YoY and
+    # ``revenue_up_3q`` source, about eight parses per distinct row. Keyed by
+    # ``id``, which is stable because every payload row outlives the call. The
+    # empty stand-in for a missing prior-year row is a fresh dict each time,
+    # so it is answered directly (it has no filing date) and never cached.
+    effective_by_row: dict[int, pd.Timestamp | None] = {}
+
+    def effective_date(row: Mapping[str, Any]) -> pd.Timestamp | None:
+        if not row:
+            return None
+        key = id(row)
+        if key not in effective_by_row:
+            effective_by_row[key] = _effective_date(row, lag_days)
+        return effective_by_row[key]
+
+    def publish(field: str, value: float | None, sources: list[dict[str, Any]]) -> None:
+        if field not in fields or value is None:
+            return
+        dates = [effective_date(source) for source in sources]
+        if not dates or any(stamp is None for stamp in dates):
+            return
+        records.append(
+            {
+                "effective_date": max(cast(list[pd.Timestamp], dates)),
+                "fiscal_period": str(sources[0].get("date", "")),
+                field: value,
+            }
+        )
+
+    # Income publication is not evidence of another section's availability.
+    section_fields: dict[str, dict[str, tuple[str, ...]]] = {
+        "balance": {"debt_to_equity": ("totalDebtToEquity",)},
+        "ratios": {
+            "pe_ttm": ("priceEarningsRatio", "priceEarningsRatioTTM"),
+            "pb_ttm": ("priceToBookRatio", "priceBookValueRatio"),
+            "roe_ttm": ("returnOnEquity", "returnOnEquityTTM"),
+            "debt_to_equity": ("debtEquityRatio", "debtToEquity", "debtToEquityRatio"),
+        },
+        "key_metrics": {
+            "pe_ttm": (
+                "peRatioTTM",
+                "peRatio",
+                "priceEarningsRatioTTM",
+                "priceEarningsRatio",
+            ),
+            "pb_ttm": ("pbRatioTTM", "pbRatio", "priceToBookRatio"),
+        },
+        "enterprise_values": {"market_cap": ("marketCapitalization", "marketCap")},
+    }
+    for section, field_keys in section_fields.items():
+        for row in _rows(payload, section):
+            if effective_date(row) is None:
+                excluded_no_filing += 1
+                continue
+            for field, keys in field_keys.items():
+                value = first_number(row, *keys)
+                if field == "roe_ttm":
+                    value = _as_percent(value)
+                publish(field, value, [row])
     for current_pos, row in enumerate(income_rows):
         row_date = row.get("date")
         if not isinstance(row_date, str) or not row_date:
             continue
-        effective = _effective_date(row, lag_days)
+        effective = effective_date(row)
         if effective is None:
+            # Period-end alone is not a publication time; drop rather than guess.
+            excluded_no_filing += 1
             continue
-
-        ratio = ratio_by_date.get(row_date, {})
-        metrics = metrics_by_date.get(row_date, {})
-        balance = balance_by_date.get(row_date, {})
-        enterprise = ev_by_date.get(row_date, {})
+        # Keep the income event even when the requested derived value is missing.
+        records.append({"effective_date": effective, "fiscal_period": row_date})
 
         prior_target = _prior_year_key(row_date)
         prior_income = income_by_date.get(prior_target, {}) if prior_target else {}
@@ -281,46 +386,52 @@ def _normalize_fmp_payload(
             first_number(prior_income, "eps", "epsdiluted"),
         )
 
-        record = {
-            "effective_date": effective,
-            "pe_ttm": first_number(
-                metrics,
-                "peRatioTTM",
-                "peRatio",
-                "priceEarningsRatioTTM",
-                "priceEarningsRatio",
-            )
-            or first_number(ratio, "priceEarningsRatio", "priceEarningsRatioTTM"),
-            "pb_ttm": first_number(metrics, "pbRatioTTM", "pbRatio", "priceToBookRatio")
-            or first_number(ratio, "priceToBookRatio", "priceBookValueRatio"),
-            "roe_ttm": _as_percent(
-                first_number(ratio, "returnOnEquity", "returnOnEquityTTM")
-            ),
-            "debt_to_equity": first_number(
-                ratio, "debtEquityRatio", "debtToEquity", "debtToEquityRatio"
-            )
-            or first_number(balance, "totalDebtToEquity"),
-            "revenue_growth_yoy": revenue_growth,
-            "eps_growth_yoy": eps_growth,
-            "revenue_up_3q": _increased_last_n_quarters(
-                income_rows, current_pos, "revenue", 3
-            ),
-            "market_cap": first_number(enterprise, "marketCapitalization", "marketCap"),
-        }
-        records.append({key: record.get(key) for key in ("effective_date", *fields)})
+        # A derived field cannot precede any observation used to compute it.
+        publish("revenue_growth_yoy", revenue_growth, [row, prior_income])
+        publish("eps_growth_yoy", eps_growth, [row, prior_income])
+        publish(
+            "revenue_up_3q",
+            _increased_last_n_quarters(income_rows, current_pos, "revenue", 3),
+            income_rows[current_pos : current_pos + 3],
+        )
+
+    if excluded_no_filing:
+        LOG.warning(
+            "Excluded %s FMP fundamental row(s) without a valid acceptedDate/"
+            "fillingDate/filingDate publication timestamp; period-end date alone "
+            "is not treated as publication time",
+            excluded_no_filing,
+        )
 
     if not records:
         return pd.DataFrame(columns=list(fields), index=pd.DatetimeIndex([]))
 
-    frame = pd.DataFrame(records)
+    # Latest fiscal periods win same-date collisions, not provider row order.
+    frame = pd.DataFrame(records).sort_values("fiscal_period", kind="stable")
+    frame = frame.drop(columns="fiscal_period")
     frame.index = pd.to_datetime(frame.pop("effective_date"), errors="coerce")
     frame = frame[frame.index.notna()]
     frame.index = cast(pd.DatetimeIndex, frame.index).tz_localize(None).normalize()
     for col in fields:
         if col in frame.columns:
             frame[col] = pd.to_numeric(frame[col], errors="coerce")
-    frame = frame[~frame.index.duplicated(keep="last")].sort_index()
+    # Sparse section events on the same date must retain every field.
+    frame = frame.groupby(level=0, sort=True).last()
     return frame.reindex(columns=list(fields))
+
+
+def _fundamental_window_with_prior(
+    frame: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp
+) -> pd.DataFrame:
+    """Keep window events plus the latest prior effective observation per field."""
+    if frame.empty:
+        return frame
+    frame = frame.loc[frame.index <= end].sort_index()
+    prior = frame.loc[frame.index < start]
+    prior_dates = {
+        values.last_valid_index() for _, values in prior.items() if values.notna().any()
+    }
+    return frame.loc[(frame.index >= start) | frame.index.isin(prior_dates)]
 
 
 def _empty_frame(fields: tuple[str, ...]) -> pd.DataFrame:
@@ -425,6 +536,7 @@ class FMPFundamentalFetcher:
     """Fetch dated US or India fundamentals from FMP and normalize expression columns."""
 
     markets = frozenset({"us", "india"})
+    effective_date_kind = EFFECTIVE_DATE_KIND_FILING_TIMESTAMP
 
     def __init__(
         self,
@@ -570,8 +682,7 @@ class FMPFundamentalFetcher:
                 fields=self.fields,
                 lag_days=self.lag_days,
             )
-            if not frame.empty:
-                frame = frame.loc[(frame.index >= start_ts) & (frame.index <= end_ts)]
+            frame = _fundamental_window_with_prior(frame, start_ts, end_ts)
             return ticker, frame
 
         try:
@@ -662,13 +773,30 @@ def _normalize_openscreener_payload(
     fields: tuple[str, ...],
     lag_days: int,
 ) -> pd.DataFrame:
+    """Normalize India quarterly rows whose dates are period-end estimates.
+
+    Openscreener and yfinance India rows are keyed by fiscal period end, not
+    by actual announcement time. The effective index is period-end plus
+    ``lag_days``. That estimate is not actual publication time and is not
+    original restatement-vintage history. Missing historical dates are not
+    invented beyond that documented lag.
+    """
     quarterly = _rows(payload, "quarterly_results")
     dated_rows: list[tuple[pd.Timestamp, dict[str, Any]]] = []
+    skipped_undated = 0
     for row in quarterly:
         period_end = _parse_india_period_end(row.get("date"))
-        if period_end is not None:
-            dated_rows.append((period_end, row))
+        if period_end is None:
+            skipped_undated += 1
+            continue
+        dated_rows.append((period_end, row))
     if not dated_rows:
+        if skipped_undated:
+            LOG.warning(
+                "Excluded %s openscreener/yfinance fundamental row(s) with no "
+                "parseable period-end date; missing historical dates are not invented",
+                skipped_undated,
+            )
         return pd.DataFrame(columns=list(fields), index=pd.DatetimeIndex([]))
 
     dated_rows.sort(key=lambda item: item[0], reverse=True)
@@ -680,6 +808,13 @@ def _normalize_openscreener_payload(
         if "revenue_up_3q" in fields:
             record["revenue_up_3q"] = _increased_last_n_revenues(sorted_rows, pos, 3)
         records.append({key: record.get(key) for key in ("effective_date", *fields)})
+
+    if skipped_undated:
+        LOG.warning(
+            "Excluded %s openscreener/yfinance fundamental row(s) with no "
+            "parseable period-end date; missing historical dates are not invented",
+            skipped_undated,
+        )
 
     frame = pd.DataFrame(records)
     frame.index = pd.to_datetime(frame.pop("effective_date"), errors="coerce")
@@ -696,6 +831,7 @@ class OpenScreenerFundamentalFetcher:
     """Fetch India quarterly fundamentals from openscreener/screener.in."""
 
     markets = frozenset({"india"})
+    effective_date_kind = EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
 
     def __init__(
         self,
@@ -721,6 +857,14 @@ class OpenScreenerFundamentalFetcher:
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
         ticker_list = [t for t in dict.fromkeys(tickers) if t]
+        if ticker_list:
+            LOG.warning(
+                "India fundamental effective dates from openscreener are estimated "
+                "as period-end plus %s calendar day(s) (%s); they are not actual "
+                "publication timestamps or original restatement-vintage history",
+                self.lag_days,
+                self.effective_date_kind,
+            )
 
         def fetch_one(ticker: str) -> tuple[str, pd.DataFrame]:
             symbol = ticker.replace(".NS", "").replace(".BO", "").upper()
@@ -761,8 +905,7 @@ class OpenScreenerFundamentalFetcher:
                     fields=self.fields,
                     lag_days=self.lag_days,
                 )
-            if not frame.empty:
-                frame = frame.loc[(frame.index >= start_ts) & (frame.index <= end_ts)]
+            frame = _fundamental_window_with_prior(frame, start_ts, end_ts)
             return ticker, frame
 
         return _fan_out(
@@ -777,6 +920,7 @@ class YFinanceFundamentalFetcher:
     """Fetch India quarterly revenue fundamentals from yfinance."""
 
     markets = frozenset({"india"})
+    effective_date_kind = EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
 
     def __init__(
         self,
@@ -802,6 +946,14 @@ class YFinanceFundamentalFetcher:
         start_ts = pd.Timestamp(start).normalize()
         end_ts = pd.Timestamp(end).normalize()
         ticker_list = [t for t in dict.fromkeys(tickers) if t]
+        if ticker_list:
+            LOG.warning(
+                "India fundamental effective dates from yfinance are estimated "
+                "as period-end plus %s calendar day(s) (%s); they are not actual "
+                "publication timestamps or original restatement-vintage history",
+                self.lag_days,
+                self.effective_date_kind,
+            )
 
         def fetch_one(ticker: str) -> tuple[str, pd.DataFrame]:
             fallback: dict[str, Any] = {}
@@ -822,8 +974,7 @@ class YFinanceFundamentalFetcher:
                 fields=self.fields,
                 lag_days=self.lag_days,
             )
-            if not frame.empty:
-                frame = frame.loc[(frame.index >= start_ts) & (frame.index <= end_ts)]
+            frame = _fundamental_window_with_prior(frame, start_ts, end_ts)
             return ticker, frame
 
         return _fan_out(
@@ -903,6 +1054,7 @@ def merge_fundamentals_into_bars(
     yf_by_tv: Mapping[str, str],
     *,
     filing_lag_days: int,
+    effective_date_kind: str = EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
 ) -> dict[str, pd.DataFrame]:
     """Forward-fill dated fundamentals onto each ticker's OHLCV frame.
 
@@ -917,6 +1069,10 @@ def merge_fundamentals_into_bars(
     frames. That turns "these columns are point-in-time" from a convention into
     something the feature layer checks. The stamp is written *after* the join
     because pandas drops ``attrs`` across ``DataFrame.join``.
+
+    ``effective_date_kind`` records whether those dates are real filing
+    timestamps or estimated period-end plus lag. Estimated dates must not be
+    reported as actual publication time.
     """
     out: dict[str, pd.DataFrame] = {}
     for tv_symbol, bars in bars_by_tv.items():
@@ -927,11 +1083,13 @@ def merge_fundamentals_into_bars(
         if fundamentals is None or fundamentals.empty:
             out[tv_symbol] = bars
             continue
-        aligned = fundamentals.sort_index().reindex(bars.index, method="ffill")
+        # Fill sparse events per field before aligning to the bar calendar.
+        aligned = fundamentals.sort_index().ffill().reindex(bars.index, method="ffill")
         merged = bars.join(aligned, how="left")
         out[tv_symbol] = stamp_fundamentals(
             merged,
             columns=tuple(aligned.columns),
             filing_lag_days=filing_lag_days,
+            effective_date_kind=effective_date_kind,
         )
     return out

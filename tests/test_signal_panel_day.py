@@ -493,3 +493,49 @@ def test_min_coverage_defaults_off_for_the_rolling_engine(window) -> None:
     """Not passing the floor keeps the snap the rolling engine has always had."""
     signals, _complete, partial = _panel_with_partial_session(window)
     assert day_candidates_from_panel(signals, partial.date()).as_of == partial
+
+
+def test_one_day_read_does_not_evaluate_the_exit_expression(window, monkeypatch):
+    """Exits belong to held positions; a one-day read opens none, so it skips them.
+
+    The exit here references a column no bar carries. Evaluating it would
+    only record a per-ticker failure nobody reads; the candidates must be the
+    ones the entry rule alone produces, and the evaluator must never see it.
+    """
+    import screener.backtester.signal_panel as signal_panel
+
+    inputs, price_panel, program = window
+    exit_ast = parse("no_such_column > 0")
+    seen: list[tuple] = []
+    evaluate = signal_panel.evaluate_panel_many
+
+    def recording(asts, *args, **kwargs):
+        seen.append(tuple(asts))
+        return evaluate(asts, *args, **kwargs)
+
+    signals = _panel(window)
+    day = next(
+        day
+        for day in reversed(price_panel.master_dates)
+        if day_candidates_from_panel(signals, day).candidates
+    )
+    monkeypatch.setattr(signal_panel, "evaluate_panel_many", recording)
+    common = dict(
+        as_of=day,
+        start_ts=price_panel.master_dates[0],
+        end_ts=price_panel.master_dates[-1],
+        warnings=[],
+        require_next_bar=False,
+    )
+
+    with_exit = build_day_candidates(
+        inputs,
+        price_panel,
+        program=SignalProgram(program.entry_ast, exit_ast, program.lookback),
+        **common,
+    )
+    without_exit = build_day_candidates(inputs, price_panel, program=program, **common)
+
+    assert with_exit == without_exit
+    assert with_exit.candidates
+    assert all(exit_ast not in asts for asts in seen)

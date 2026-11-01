@@ -75,12 +75,15 @@ def test_screen_report_avoids_scientific_notation_and_collapsed_charts(tmp_path:
     assert "+14.84%" in numeric
     assert "Symbol" in results
 
-    assert "name=%{x}" not in html
-    assert "Ticker=%{y}" in html
-    assert '"orientation":"h"' in html
+    assert 'data-echart="screen-top-change-spec"' in html
     assert 'id="screen-top-change"' in html
-    assert 'style="height:320px;width:100%"' in html
-    assert 'style="height:630px;width:100%"' in html
+    top_spec = html.split('id="screen-top-change-spec"', 1)[1].split("</script>", 1)[0]
+    assert '"yAxis":{"type":"category"' in top_spec
+    assert "RELIANCE" in top_spec
+    assert "token:pos" in top_spec
+    assert 'data-echart="screen-setup-score-distribution-spec"' in html
+    assert 'style="height:320px"' in html
+    assert 'style="height:630px"' in html
 
 
 def test_screen_report_us_market_cap_uses_billions(tmp_path: Path):

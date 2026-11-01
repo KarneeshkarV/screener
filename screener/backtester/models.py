@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from datetime import date, datetime
 from typing import Any, Literal, TypeAlias, cast
 
@@ -28,7 +30,8 @@ class BacktestConfig(BaseModel):
 
     Every knob lives directly on the config; construction and attribute access
     are flat throughout (``cfg.hold``, ``cfg.top``, ``cfg.interval``). The
-    optimization grid and ``model_copy`` updates address these same field names.
+    optimization grid and ``validated_update`` address these same field names.
+    Use ``validated_update`` for config changes; ``model_copy`` does not validate.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True, extra="forbid")
@@ -80,11 +83,11 @@ class BacktestConfig(BaseModel):
     # one-bar hold instead of meaning "no time exit". Bounded here as well as on
     # the CLI so a direct construction cannot smuggle the collapsed value in.
     hold: int = Field(ge=1)
-    stop_loss: float | None
-    take_profit: float | None
-    trailing_stop: float | None
-    slippage_bps: float
-    commission_bps: float
+    stop_loss: float | None = Field(ge=0.0, lt=1.0)
+    take_profit: float | None = Field(ge=0.0)
+    trailing_stop: float | None = Field(ge=0.0, lt=1.0)
+    slippage_bps: float = Field(ge=0.0, lt=10_000.0)
+    commission_bps: float = Field(ge=0.0)
     slippage_model: SlippageModel | None = None
     # Statutory fee model name (cash impact, not fill-price). ``flat`` uses
     # ``commission_bps`` exactly as before; ``india`` applies NSE delivery fees;
@@ -109,8 +112,8 @@ class BacktestConfig(BaseModel):
     rank_universe_size: int = Field(default=50, ge=1)
 
     # Portfolio
-    top: int
-    initial_capital: float
+    top: int = Field(ge=1)
+    initial_capital: float = Field(gt=0.0)
     min_price: float | None = None
     min_avg_dollar_volume: float | None = None
     avg_dollar_volume_window: int = 20
@@ -139,6 +142,59 @@ class BacktestConfig(BaseModel):
     sizing_atr_window: int = Field(default=14, gt=0)
     sizing_atr_multiple: float = Field(default=2.0, gt=0.0)
     sizing_vol_window: int = Field(default=20, gt=1)
+    # Annual excess-return hurdle for Sharpe/Sortino/PSR/DSR. Explicit zero
+    # default (not an invented Indian cash rate). This is a research hurdle,
+    # not interest credited to idle cash in the portfolio.
+    risk_free_rate: float = Field(default=0.0, ge=0.0)
+
+    def validated_update(self, updates: Mapping[str, Any]) -> BacktestConfig:
+        """Validate config updates without serializing protocol collaborators.
+
+        A slippage_bps update replaces exactly one built-in fixed-bps component,
+        including in nested composites, and preserves all other components.
+        Models without a unique fixed component require an explicit replacement
+        slippage_model. An explicit model always takes precedence.
+        """
+        data = {name: getattr(self, name) for name in type(self).model_fields}
+        data.update(updates)
+        if "slippage_bps" in updates and "slippage_model" not in updates:
+            count = 0
+
+            def replace_fixed(model: SlippageModel) -> SlippageModel:
+                nonlocal count
+                # HalfSpreadSlippage inherits FixedBpsSlippage but does not use bps.
+                if type(model) is FixedBpsSlippage:
+                    count += 1
+                    return FixedBpsSlippage(bps=updates["slippage_bps"])
+                if isinstance(model, CompositeSlippage):
+                    return CompositeSlippage(
+                        models=tuple(replace_fixed(item) for item in model.models)
+                    )
+                return model
+
+            data["slippage_model"] = replace_fixed(
+                cast(SlippageModel, self.slippage_model)
+            )
+            if count != 1:
+                raise ValueError(
+                    "slippage_bps update requires exactly one FixedBpsSlippage "
+                    "component; supply an explicit slippage_model replacement"
+                )
+        return type(self).model_validate(data)
+
+    @field_validator(
+        "stop_loss",
+        "take_profit",
+        "trailing_stop",
+        "slippage_bps",
+        "commission_bps",
+        "initial_capital",
+    )
+    @classmethod
+    def _validate_finite_execution(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("execution parameters must be finite")
+        return value
 
     @field_validator("interval")
     @classmethod
@@ -170,6 +226,14 @@ class BacktestConfig(BaseModel):
                 f"{', '.join(available_sizing_rules())}"
             )
         return value
+
+    @field_validator("risk_free_rate")
+    @classmethod
+    def _validate_risk_free_rate(cls, value: float) -> float:
+        rate = float(value)
+        if not math.isfinite(rate):
+            raise ValueError("risk_free_rate must be a finite number >= 0")
+        return rate
 
     @model_validator(mode="before")
     @classmethod

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from screener.backtester.dashboard import dashboard_frames, render_dashboard
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
@@ -110,6 +111,21 @@ def test_dashboard_frames_include_curves_trades_and_selection():
     assert frames["selection"].iloc[0]["ticker"] == "AAA"
 
 
+def test_monthly_returns_include_the_first_month():
+    idx = pd.bdate_range("2024-01-02", "2024-03-29")
+    equity = pd.Series(100_000.0, index=idx)
+    equity[idx >= "2024-01-31"] = 110_000.0
+    equity[idx >= "2024-03-29"] = 121_000.0
+    result = _result().model_copy(
+        update={"equity_curve": equity, "benchmark_curve": equity}
+    )
+
+    monthly = dashboard_frames(result)["monthly"]
+
+    assert monthly["month"].tolist() == ["2024-01", "2024-02", "2024-03"]
+    assert monthly["return_pct"].tolist() == pytest.approx([0.1, 0.0, 0.1])
+
+
 def test_render_dashboard_writes_expected_sections(tmp_path):
     path = render_dashboard(_result(), tmp_path)
 
@@ -124,4 +140,27 @@ def test_render_dashboard_writes_expected_sections(tmp_path):
     assert 'id="trade-diagnostics"' in html
     assert 'id="selection-diagnostics"' in html
     assert 'id="trade-ledger-table"' in html
-    assert 'style="height:320px;width:100%"' in html
+    assert 'id="equity-vs-benchmark" data-echart="equity-vs-benchmark-spec"' in html
+    assert 'data-echart-group="perf"' in html
+    assert 'id="drawdown-curve"' in html
+    assert 'id="monthly-return-bars"' in html
+    assert 'id="return-distribution"' in html
+    assert 'id="exit-reason-breakdown"' in html
+    assert 'id="holding-period-distribution"' in html
+    assert 'id="ticker-contribution"' in html
+    assert 'id="signal-count-by-day"' in html
+    assert 'id="rank-distribution"' in html
+    assert "Rolling backtest</div>" in html
+    assert "plotly" not in html.lower()
+
+
+def test_render_dashboard_chart_specs_use_theme_tokens(tmp_path):
+    html = render_dashboard(_result(), tmp_path).read_text(encoding="utf-8")
+
+    assert '"token:series-1"' in html
+    assert '"token:series-2"' in html
+    assert '"token:neg"' in html
+    assert '"token:pos"' in html
+    assert '"fmt:pct0"' in html
+    assert "--paper" not in html
+    assert "#0f766e" not in html

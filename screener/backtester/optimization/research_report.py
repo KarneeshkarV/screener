@@ -29,11 +29,14 @@ from rich.console import Console
 from rich.table import Table
 
 from screener.backtester.data import PriceFetcher
+from screener.backtester.fundamentals import FundamentalFetcher
 from screener.backtester.models import BacktestConfig
 from screener.backtester.optimization.grid import (
     GridSearchResult,
     grid_search,
+    fundamental_execution_kwargs,
     parameter_combinations,
+    validate_optimization_grid,
 )
 from screener.backtester.optimization.monte_carlo import (
     EquityMonteCarloResult,
@@ -301,6 +304,8 @@ def run_research_report(
     experiment_id: str | None = None,
     trial_db_path: Path | str | None = None,
     n_trials_effective: int | None = None,
+    fundamental_fetcher: FundamentalFetcher | None = None,
+    universe_warnings: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Run grid → walk-forward → Monte Carlo and write JSON/HTML reports.
 
@@ -312,18 +317,25 @@ def run_research_report(
     train/test/step lengths are calendar days with forced-flat fold boundaries.
 
     Trial register / DSR: the descriptive full-period grid may record trials
-    under ``experiment_id``. Walk-forward records training-fold searches only.
+    under a descriptive child of ``experiment_id``. Walk-forward records each
+    training period in a separate child scope.
     Test-fold scores are never written into the trial register. Pass the same
-    explicit ``experiment_id`` and ``trial_db_path`` to share one family history.
+    explicit ``experiment_id`` and ``trial_db_path`` to retain repeated searches
+    within the same training period without using later-period statistics.
     ``n_trials_effective`` applies to the descriptive grid stage; walk-forward
-    folds reuse the shared register's nominal count so fold DSR is not forced
-    below the still-growing family size on early folds.
+    folds use their own nominal count. A full-study effective count is not an
+    estimate for each isolated training period.
     """
     console = console or Console()
     out = Path(out_path)
     timings: dict[str, float] = {}
 
     require_daily_walk_forward_scope(cfg, parameter_grid)
+    validate_optimization_grid(
+        cfg, parameter_grid, fundamental_fetcher=fundamental_fetcher
+    )
+    for warning in universe_warnings:
+        console.print(f"[yellow]warning:[/yellow] {warning}")
     # Validate MC flags before any expensive stage, including empty-evidence paths.
     validate_equity_monte_carlo_flags(
         iterations=int(mc_iterations),
@@ -357,9 +369,12 @@ def run_research_report(
         runner="rolling",
         start_date=start_date,
         end_date=end_date,
-        experiment_id=experiment_id,
+        experiment_id=(
+            f"{experiment_id}::descriptive" if experiment_id is not None else None
+        ),
         trial_db_path=trial_db_path,
         n_trials_effective=n_trials_effective,
+        **fundamental_execution_kwargs(fundamental_fetcher),
     )
     stability = compute_parameter_stability(grid_results, parameter_grid, metric=metric)
     best = _descriptive_grid_best(grid_results, min_trades=min_trades)
@@ -404,9 +419,9 @@ def run_research_report(
         cache_path=wf_cache,
         experiment_id=experiment_id,
         trial_db_path=trial_db_path,
-        # Do not force n_trials_effective onto early folds: family nominal may
-        # still be smaller than the caller estimate until trials accumulate.
+        # The full-study estimate does not describe each isolated train period.
         n_trials_effective=None,
+        **fundamental_execution_kwargs(fundamental_fetcher),
     )
     oos_metric = _finite_or_none(walk_forward.aggregate_metrics.get(metric))
     # IS metric is the mean of eligible per-fold train scores only.
@@ -565,7 +580,14 @@ def run_research_report(
             "parameter_grid": parameter_grid,
             "tickers": list(cfg.tickers) if cfg.tickers else None,
             "universe_file": cfg.universe_file,
+            "membership_windows": cfg.membership_windows,
+            "membership_added": cfg.membership_added,
+            "universe_warnings": list(universe_warnings),
+            "fundamentals_provider": cfg.fundamentals_provider,
+            "fundamental_fields": cfg.fundamental_fields,
+            "fundamental_lag_days": cfg.fundamental_lag_days,
             "initial_capital": cfg.initial_capital,
+            "risk_free_rate": cfg.risk_free_rate,
             "experiment_id": experiment_id,
             "trial_db_path": str(trial_db_path) if trial_db_path else None,
             "n_trials_effective": n_trials_effective,

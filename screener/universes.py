@@ -19,7 +19,7 @@ import requests
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from screener.cache import is_fresh
+from screener.cache import is_fresh, write_text
 from screener.resilience import call_with_resilience
 
 LOG = logging.getLogger(__name__)
@@ -65,6 +65,41 @@ class UniverseDefinition:
     loader: Callable[[], tuple[list[str], str]]
 
 
+# Calendar days between consecutive snapshot observation dates above which
+# callers and reports are warned. Archive crawl cadence for Nifty 500 in this
+# repo is often two to six months; gaps at or above this threshold (including
+# the known 309-day and 495-day stretches) mean incomplete observation coverage.
+# A long unchanged membership list is not proof the index was wrong or static.
+SNAPSHOT_OBSERVATION_GAP_WARN_DAYS = 180
+
+
+@dataclass(frozen=True)
+class SnapshotCoverageGap:
+    """One interval between consecutive archive observation dates."""
+
+    prior_observation: date
+    next_observation: date
+    gap_days: int
+
+
+@dataclass(frozen=True)
+class SnapshotCoverageReport:
+    """Coverage diagnostics for dated snapshot membership history.
+
+    ``observation_dates`` are archive capture / CSV row dates. They are not
+    guaranteed index reconstitution effective dates. Membership changes are
+    dated when first observed, which can lag the true index change.
+    """
+
+    observation_dates: tuple[date, ...]
+    date_role: str
+    gaps: tuple[SnapshotCoverageGap, ...]
+    warned_gaps: tuple[SnapshotCoverageGap, ...]
+    stale_final_days: int | None
+    as_of: date
+    warnings: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class UniverseSelection:
     """Resolved universe plus optional point-in-time selection policy.
@@ -72,6 +107,10 @@ class UniverseSelection:
     ``membership_windows`` contains half-open ``[start, end)`` eligibility
     intervals. ``dynamic_*`` fields request a lagged ADV-ranked universe that
     is recomputed by the rolling engine on each configured rebalance date.
+
+    ``warnings`` carries bounded data-evidence notes (for example snapshot
+    observation gaps). ``source`` may also carry a short coverage summary so
+    existing universe-note paths surface the issue without a separate channel.
     """
 
     name: str
@@ -83,6 +122,7 @@ class UniverseSelection:
     dynamic_size: int | None = None
     dynamic_lookback: int = 60
     dynamic_rebalance: str = "monthly"
+    warnings: tuple[str, ...] = ()
 
 
 _UNIVERSE_REGISTRY: dict[str, UniverseDefinition] = {}
@@ -307,7 +347,7 @@ def _write_cache(
         *(f"# {key}={value}" for key, value in (metadata or {}).items()),
         *symbols,
     ]
-    path.write_text("\n".join(lines) + "\n")
+    write_text(path, "\n".join(lines) + "\n")
     return path
 
 
@@ -534,10 +574,23 @@ def _fetch_sp500(*, use_cache: bool = True) -> tuple[list[str], str]:
     symbols = _dedupe(_normalize_sp500_symbols(df["Symbol"].dropna()).tolist())
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(symbols))
+        write_text(path, json.dumps(symbols))
     except (OSError, ValueError):
         LOG.debug("sp500 live cache at %s not writable", path)
     return symbols, _SP500_SOURCE
+
+
+def _checked_get(url: str, **kwargs: Any) -> Any:
+    """``requests.get`` that raises on an HTTP error status.
+
+    Raising inside the callable handed to ``call_with_resilience`` is what lets
+    a 429 be retried with its ``Retry-After``. Checking the status after the
+    wrapper returned let one rate-limited response escape on the first attempt,
+    which silently dropped that revision from a point-in-time reconstruction.
+    """
+    resp = requests.get(url, **kwargs)
+    resp.raise_for_status()
+    return resp
 
 
 def _sp500_revision_cache_path(revid: int) -> Path:
@@ -582,7 +635,7 @@ def _sp500_revision_id_at(as_of: date, *, use_cache: bool = True) -> int | None:
     resp = call_with_resilience(
         "wikipedia",
         "sp500 revision id",
-        lambda: requests.get(
+        lambda: _checked_get(
             _WIKIPEDIA_API,
             params={
                 "action": "query",
@@ -602,7 +655,6 @@ def _sp500_revision_id_at(as_of: date, *, use_cache: bool = True) -> int | None:
     )
     if resp is None:
         return None
-    resp.raise_for_status()
     pages = cast(list[Any], resp.json()["query"]["pages"])
     revisions = pages[0].get("revisions") if pages else None
     if not revisions:
@@ -610,7 +662,7 @@ def _sp500_revision_id_at(as_of: date, *, use_cache: bool = True) -> int | None:
     revid = int(revisions[0]["revid"])
     if cacheable:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(revid))
+        write_text(path, json.dumps(revid))
     return revid
 
 
@@ -644,7 +696,7 @@ def _sp500_revision_members(revid: int, *, use_cache: bool = True) -> list[str] 
     resp = call_with_resilience(
         "wikipedia",
         "sp500 revision constituents",
-        lambda: requests.get(
+        lambda: _checked_get(
             _WIKIPEDIA_API,
             params={
                 "action": "parse",
@@ -660,12 +712,11 @@ def _sp500_revision_members(revid: int, *, use_cache: bool = True) -> list[str] 
     )
     if resp is None:
         return None
-    resp.raise_for_status()
     members = _sp500_symbols_from_revision_html(resp.json()["parse"]["text"])
     if members is None:
         return None
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(members))
+    write_text(path, json.dumps(members))
     return members
 
 
@@ -737,8 +788,9 @@ def load_sp500_membership_windows(
     index's own scheduled rebalance cadence; an off-cycle change lands at the
     next sample rather than on its announcement date.
 
-    Returns ``()`` when no revision could be read, which the caller must treat
-    as "no point-in-time history available" rather than "nobody was a member".
+    Returns ``()`` when any past sample's revision could not be read, which the
+    caller must treat as "no point-in-time history available" rather than
+    "nobody was a member".
     """
     if end < start:
         raise ValueError("membership window end precedes start")
@@ -751,6 +803,7 @@ def load_sp500_membership_windows(
     if sample_dates[-1] < end:
         sample_dates.append(end)
     snapshots: list[tuple[date, tuple[str, ...]]] = []
+    missing: list[date] = []
     for sample in sample_dates:
         # Deliberately not _fetch_sp500_pit: for a past date its fallback to
         # today's members is discarded here anyway, and that fallback is an
@@ -762,11 +815,25 @@ def load_sp500_membership_windows(
         else:
             snapshot = _fetch_sp500_revision_snapshot(sample, use_cache=use_cache)
             if snapshot is None:
+                missing.append(sample)
                 continue
             members = tuple(snapshot[1])
         if snapshots and snapshots[-1][1] == members:
             continue
         snapshots.append((sample, members))
+    if missing and snapshots:
+        # Skipping a sample would stretch the previous snapshot's windows over
+        # it, admitting names removed in the gap and missing names added in it,
+        # while the run still claimed revision-snapshot membership. A partial
+        # history is not point-in-time, so report it as unavailable.
+        LOG.warning(
+            "S&P 500 revision history unreadable for %d of %d sample(s) (%s); "
+            "treating point-in-time membership as unavailable",
+            len(missing),
+            len(sample_dates),
+            ", ".join(day.isoformat() for day in missing),
+        )
+        return ()
     if not snapshots:
         return ()
     return _windows_from_snapshots(snapshots)
@@ -780,6 +847,9 @@ NSE_REQUEST_HEADERS = {
 }
 
 
+_NSE_PLACEHOLDER_PREFIX = "DUMMY"
+
+
 def parse_nse_index_csv(text: str, *, label: str, suffix: str = "") -> list[str]:
     """Return deduped symbols from an NSE index constituent CSV.
 
@@ -788,6 +858,10 @@ def parse_nse_index_csv(text: str, *, label: str, suffix: str = "") -> list[str]
     into exactly the vocabulary the live loader would produce. Letting the two
     drift would make a point-in-time membership window name a symbol that never
     matches a price column, silently dropping the name from the backtest.
+
+    ``DUMMY*`` rows are dropped. NSE parks a placeholder in the index while a
+    demerged entity awaits listing (``DUMMYVEDL1``, ``DUMMYHDLVR``); it is not a
+    tradable security and has no price history.
     """
     from io import StringIO
 
@@ -796,7 +870,13 @@ def parse_nse_index_csv(text: str, *, label: str, suffix: str = "") -> list[str]
     if symbol_col not in df.columns:
         raise RuntimeError(f"{label} CSV missing Symbol column")
     symbols = df[symbol_col].dropna().astype(str).str.strip().str.upper().tolist()
-    return _dedupe([f"{symbol}{suffix}" for symbol in symbols])
+    return _dedupe(
+        [
+            f"{symbol}{suffix}"
+            for symbol in symbols
+            if not symbol.startswith(_NSE_PLACEHOLDER_PREFIX)
+        ]
+    )
 
 
 def _fetch_nifty50() -> tuple[list[str], str]:
@@ -960,14 +1040,15 @@ def load_sp500_membership(
         membership[symbol] = added_ts.date() if pd.notna(added_ts) else None
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    write_text(
+        path,
         json.dumps(
             {
                 symbol: added.isoformat() if added else None
                 for symbol, added in membership.items()
             },
             indent=0,
-        )
+        ),
     )
     return membership
 
@@ -1100,11 +1181,98 @@ def _read_snapshot_source(source: str, *, base_dir: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def _snapshot_date_column(frame: pd.DataFrame) -> str:
+    """Prefer an explicit observation column over a loosely named date column.
+
+    Archive-backed CSVs often label the crawl day ``effective_date`` even though
+    that day is an observation date, not the index reconstitution effective
+    date. Prefer ``observation_date`` / ``snapshot_date`` when present so the
+    role is stated in the file itself.
+    """
+    for column in ("observation_date", "snapshot_date", "effective_date", "date"):
+        if column in frame.columns:
+            return column
+    raise ValueError(
+        "snapshot CSV requires symbol and observation_date/snapshot_date/"
+        "effective_date columns"
+    )
+
+
+def _snapshot_date_role(column: str) -> str:
+    if column in {"observation_date", "snapshot_date"}:
+        return "archive_observation_date"
+    # A column name cannot establish whether the source uses official index
+    # effective dates or archive capture dates. Keep that uncertainty explicit.
+    return "declared_date_role_unverified"
+
+
+def report_snapshot_observation_coverage(
+    observation_dates: list[date] | tuple[date, ...],
+    *,
+    as_of: date,
+    date_role: str = "archive_observation_date",
+    gap_warn_days: int = SNAPSHOT_OBSERVATION_GAP_WARN_DAYS,
+) -> SnapshotCoverageReport:
+    """Build gap and stale-final warnings for snapshot observation dates.
+
+    A gap at or above ``gap_warn_days`` is incomplete observation coverage.
+    It is not a claim that the index membership was wrong or frozen for that
+    whole stretch. ``stale_final_days`` is how long the last observation has
+    been reused through ``as_of``.
+    """
+    dates = tuple(sorted({day for day in observation_dates if day <= as_of}))
+    gaps: list[SnapshotCoverageGap] = []
+    for prior, nxt in zip(dates, dates[1:]):
+        gaps.append(
+            SnapshotCoverageGap(
+                prior_observation=prior,
+                next_observation=nxt,
+                gap_days=(nxt - prior).days,
+            )
+        )
+    warned_gaps = tuple(gap for gap in gaps if gap.gap_days >= gap_warn_days)
+    stale_final_days = (as_of - dates[-1]).days if dates else None
+    warnings: list[str] = []
+    if warned_gaps:
+        largest = max(warned_gaps, key=lambda gap: gap.gap_days)
+        preview = "; ".join(
+            f"{gap.prior_observation.isoformat()}->{gap.next_observation.isoformat()}"
+            f" ({gap.gap_days}d)"
+            for gap in warned_gaps[:5]
+        )
+        more = "" if len(warned_gaps) <= 5 else f" (+{len(warned_gaps) - 5} more)"
+        warnings.append(
+            f"snapshot observation coverage has {len(warned_gaps)} gap(s) of "
+            f"{gap_warn_days}+ calendar days (largest {largest.gap_days}d); "
+            f"dates are {date_role}, not guaranteed index effective dates: "
+            f"{preview}{more}. A long unchanged membership list is incomplete "
+            "observation coverage, not proof the index was static or wrong."
+        )
+    if stale_final_days is not None and stale_final_days >= gap_warn_days:
+        warnings.append(
+            f"final snapshot observation {dates[-1].isoformat()} is "
+            f"{stale_final_days} calendar days before as_of {as_of.isoformat()}; "
+            f"membership is held forward from that {date_role} until the next "
+            "observation, which may lag the true index change date."
+        )
+    return SnapshotCoverageReport(
+        observation_dates=dates,
+        date_role=date_role,
+        gaps=tuple(gaps),
+        warned_gaps=warned_gaps,
+        stale_final_days=stale_final_days,
+        as_of=as_of,
+        warnings=tuple(warnings),
+    )
+
+
 def _snapshot_rows(
     entry: Mapping[str, Any], *, base_dir: Path, as_of: date
-) -> list[tuple[date, tuple[str, ...]]]:
+) -> tuple[list[tuple[date, tuple[str, ...]]], str]:
+    """Return ``(snapshots, date_role)`` for membership windows and coverage."""
     raw_snapshots = entry.get("snapshots")
     rows: list[tuple[date, tuple[str, ...]]] = []
+    date_role = "archive_observation_date"
     if isinstance(raw_snapshots, Mapping):
         for raw_date, raw_symbols in raw_snapshots.items():
             snapshot_date = date.fromisoformat(str(raw_date))
@@ -1115,18 +1283,13 @@ def _snapshot_rows(
         if not source:
             raise ValueError("snapshot universe requires snapshots, path, or url")
         frame = _read_snapshot_source(str(source), base_dir=base_dir)
-        date_col = next(
-            (
-                column
-                for column in ("effective_date", "snapshot_date", "date")
-                if column in frame.columns
-            ),
-            None,
-        )
-        if date_col is None or "symbol" not in frame.columns:
+        if "symbol" not in frame.columns:
             raise ValueError(
-                "snapshot CSV requires symbol and effective_date/snapshot_date columns"
+                "snapshot CSV requires symbol and observation_date/snapshot_date/"
+                "effective_date columns"
             )
+        date_col = _snapshot_date_column(frame)
+        date_role = _snapshot_date_role(date_col)
         frame = frame.copy()
         frame[date_col] = pd.to_datetime(frame[date_col], errors="coerce")
         frame = frame[frame[date_col].notna()]
@@ -1139,7 +1302,7 @@ def _snapshot_rows(
     rows.sort(key=lambda row: row[0])
     if not rows:
         raise ValueError("snapshot universe has no snapshots on or before --end")
-    return rows
+    return rows, date_role
 
 
 def _windows_from_snapshots(
@@ -1150,6 +1313,29 @@ def _windows_from_snapshots(
         until = snapshots[index + 1][0] if index + 1 < len(snapshots) else None
         windows.extend((symbol, effective, until) for symbol in symbols)
     return tuple(windows)
+
+
+def _coverage_source_note(report: SnapshotCoverageReport) -> str:
+    """Short note for ``UniverseSelection.source`` / universe-note paths."""
+    parts: list[str] = []
+    if report.warned_gaps:
+        largest = max(gap.gap_days for gap in report.warned_gaps)
+        parts.append(
+            f"{len(report.warned_gaps)} observation gap(s) >= "
+            f"{SNAPSHOT_OBSERVATION_GAP_WARN_DAYS}d (largest {largest}d)"
+        )
+    if (
+        report.stale_final_days is not None
+        and report.stale_final_days >= SNAPSHOT_OBSERVATION_GAP_WARN_DAYS
+    ):
+        parts.append(f"final observation stale by {report.stale_final_days}d vs as_of")
+    if not parts:
+        return ""
+    return (
+        "; snapshot coverage: "
+        + "; ".join(parts)
+        + f"; dates are {report.date_role}, not guaranteed index effective dates"
+    )
 
 
 def load_universe_selection(
@@ -1234,17 +1420,26 @@ def load_universe_selection(
         symbols = _normalized_symbols(entry.get("symbols"))
         return UniverseSelection(key, market, benchmark, symbols, source)
     if kind == "snapshots":
-        snapshots = _snapshot_rows(entry, base_dir=path.parent, as_of=as_of)
+        snapshots, date_role = _snapshot_rows(entry, base_dir=path.parent, as_of=as_of)
         symbols = tuple(
             dict.fromkeys(symbol for _, members in snapshots for symbol in members)
         )
+        coverage = report_snapshot_observation_coverage(
+            [day for day, _members in snapshots],
+            as_of=as_of,
+            date_role=date_role,
+        )
+        for warning in coverage.warnings:
+            LOG.warning("%s: %s", key, warning)
+        source_with_coverage = source + _coverage_source_note(coverage)
         return UniverseSelection(
             key,
             market,
             benchmark,
             symbols,
-            source,
+            source_with_coverage,
             membership_windows=_windows_from_snapshots(snapshots),
+            warnings=coverage.warnings,
         )
     if kind == "dynamic":
         if entry.get("symbols") is not None:

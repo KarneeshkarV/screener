@@ -5,9 +5,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 import pandas as pd
 
 from screener.backtester.costs import corwin_schultz_half_spread
@@ -63,6 +64,16 @@ class LiquidityFilterSpec(Protocol):
 
     @property
     def avg_dollar_volume_window(self) -> int: ...
+
+
+@dataclass(frozen=True)
+class PendingEntryOrder:
+    """An entry order awaiting its execution bar, with no cash debit yet."""
+
+    ticker: str
+    signal_idx: int
+    rank: int
+    signal_date: date | datetime
 
 
 def _bar_label(ts, cfg: BacktestConfig) -> date | datetime:
@@ -125,7 +136,7 @@ class _FrameCache:
     let the per-bar hot loops (``_check_exit_at_bar``, ``_close_slot_at_day``,
     ``_fire_partial_exits_at_bar``) run on integer positions instead of the
     pandas scalar-access family (``bars.iloc[i]`` / ``Index.get_loc``). The
-    float volume Series and precomputed close-to-close returns back
+    Float volume and precomputed close-to-close returns back
     :func:`_cached_trailing_liquidity` so per-slot liquidity stats reuse the
     exact original arithmetic without re-slicing the frame. Built lazily by
     :meth:`_RunCaches.frame`.
@@ -141,11 +152,17 @@ class _FrameCache:
     # None otherwise; callers keep ``Index.get_loc`` (duplicates, tz-aware,
     # exotic dtypes). Non-ns resolutions are converted via ``as_unit("ns")``.
     index_i8: np.ndarray | None
-    volume_f: pd.Series
+    volume_arr: np.ndarray
     # close[i] / close[i-1] - 1: the exact ``pct_change`` arithmetic for
     # NaN-free windows (NaN-containing windows fall back to the original).
-    rets_f: pd.Series
+    rets_arr: np.ndarray
     liquidity_by_idx: dict[tuple[int, int], tuple[float, float]] = field(
+        default_factory=dict
+    )
+    # Lazily filled whole-frame ``(adv, sigma, exact)`` arrays per window,
+    # indexed by the window's first bar. Held slots read one every bar, so
+    # one vectorised pass replaces a per-bar slice and reduction.
+    liquidity_series: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = field(
         default_factory=dict
     )
     # Lazily filled Corwin-Schultz half-spread series (fraction), aligned to
@@ -171,6 +188,8 @@ def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
         and isinstance(index.dtype, np.dtype)
         and np.issubdtype(index.dtype, np.datetime64)
         and index.is_unique
+        and index.is_monotonic_increasing
+        and not index.hasnans
     ):
         # day_loop compares against Timestamp.value, which is always nanoseconds.
         # Pandas 3 defaults many calendars to datetime64[us]; viewing those as i8
@@ -190,8 +209,8 @@ def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
             bars["dividend"].to_numpy() if "dividend" in bars.columns else None
         ),
         index_i8=index_i8,
-        volume_f=bars["volume"].astype(float),
-        rets_f=pd.Series(rets, index=bars.index),
+        volume_arr=bars["volume"].to_numpy(dtype=float),
+        rets_arr=rets,
     )
 
 
@@ -289,6 +308,37 @@ class _RunCaches:
             self.store_exit_signal(ticker, result)
 
 
+def _liquidity_series(
+    frame_cache: _FrameCache, window: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Whole-frame trailing ADV and return std for full ``window``-bar windows.
+
+    Each row reduces the same values in the same order as the per-window path,
+    so the results are bit-identical. ``exact`` is false where a close or
+    return is missing; those windows keep the per-window path.
+    """
+    if window < 2 or frame_cache.close_arr.size < window:
+        return None
+    cached = frame_cache.liquidity_series.get(window)
+    if cached is not None:
+        return cached
+    vol = frame_cache.volume_arr
+    valid_volume = ~np.isnan(vol)
+    vol_sum = sliding_window_view(np.where(valid_volume, vol, 0.0), window).sum(axis=1)
+    count = sliding_window_view(valid_volume, window).sum(axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        adv = np.where(count > 0, vol_sum / count, 0.0)
+    rets = sliding_window_view(frame_cache.rets_arr[1:], window - 1)
+    # Keep pandas' reduction so optional bottleneck and ddof behavior match.
+    sigma = pd.DataFrame(rets, copy=False).std(axis=1).to_numpy(dtype=float)
+    missing = np.isnan(frame_cache.close_arr) | np.isnan(frame_cache.rets_arr)
+    missing[0] = np.isnan(frame_cache.close_arr[0])
+    exact = np.asarray(~sliding_window_view(missing, window).any(axis=1))
+    series = (adv, sigma, exact)
+    frame_cache.liquidity_series[window] = series
+    return series
+
+
 def _cached_trailing_liquidity(
     frame_cache: _FrameCache,
     bars: pd.DataFrame,
@@ -297,10 +347,9 @@ def _cached_trailing_liquidity(
 ) -> tuple[float, float]:
     """:func:`_trailing_liquidity` backed by a :class:`_FrameCache`.
 
-    Identical arithmetic: the volume mean and return std run over the same
-    float values in the same order (pandas ``Series.mean``/``std``), just
-    without re-slicing the frame and re-converting dtypes per slot open, and
-    memoised per ``(signal_idx, window)``.
+    The volume mean and pandas return std use the same float values in the
+    same order, without slicing pandas indexes or converting dtypes per bar.
+    Results are memoised per ``(signal_idx, window)``.
     """
     if signal_idx < 0 or window <= 0:
         return 0.0, 0.0
@@ -309,22 +358,43 @@ def _cached_trailing_liquidity(
     if cached is not None:
         return cached
     start = max(0, signal_idx - window + 1)
+    series = _liquidity_series(frame_cache, window)
+    if series is not None and signal_idx - window + 1 >= 0:
+        adv_s, sigma_s, exact = series
+        j = signal_idx - window + 1
+        if j < exact.size and exact[j]:
+            adv = float(adv_s[j])
+            sigma = float(sigma_s[j])
+            result = (
+                adv if np.isfinite(adv) else 0.0,
+                sigma if np.isfinite(sigma) else 0.0,
+            )
+            memo[(signal_idx, window)] = result
+            return result
     close_win = frame_cache.close_arr[start : signal_idx + 1]
     if close_win.size == 0:
         result = (0.0, 0.0)
     elif np.isnan(close_win).any():
-        # A NaN close inside the window changes ``pct_change``'s pad-fill
-        # across the window boundary; defer to the original slice-based
-        # computation for exact parity.
+        # Keep the original slice-based handling for missing close values.
         result = _trailing_liquidity(bars, signal_idx, window)
     else:
-        vol = frame_cache.volume_f.iloc[start : signal_idx + 1]
-        adv = float(vol.mean()) if vol.size else 0.0
+        vol = frame_cache.volume_arr[start : signal_idx + 1]
+        if vol.size:
+            valid_volume = ~np.isnan(vol)
+            count = int(valid_volume.sum())
+            adv = (
+                float(np.where(valid_volume, vol, 0.0).sum() / count) if count else 0.0
+            )
+        else:
+            adv = 0.0
         if close_win.size < 2:
             sigma = 0.0
         else:
-            rets = frame_cache.rets_f.iloc[start + 1 : signal_idx + 1].dropna()
-            sigma = float(rets.std()) if rets.size else 0.0
+            rets = frame_cache.rets_arr[start + 1 : signal_idx + 1]
+            # Keep pandas' reduction so optional bottleneck and ddof behavior
+            # remain exact, without index slicing or a dropna frame copy.
+            rets = rets[~np.isnan(rets)]
+            sigma = float(pd.Series(rets, copy=False).std()) if rets.size else 0.0
         if not np.isfinite(adv):
             adv = 0.0
         if not np.isfinite(
@@ -367,7 +437,12 @@ def _passes_entry_filters(
         tail = bars.iloc[start:pos]
         if tail.empty:  # pragma: no cover - pos>0 guarantees a non-empty tail
             return False, "no volume history"
-        adv = float((tail["close"] * tail["volume"]).mean())
+        turnover = (
+            tail["dollar_volume"]
+            if "dollar_volume" in tail.columns
+            else tail["close"] * tail["volume"]
+        )
+        adv = float(turnover.mean())
         if not np.isfinite(adv) or adv < cfg.min_avg_dollar_volume:
             return False, f"adv {adv:.0f} < {cfg.min_avg_dollar_volume}"
     return True, None
@@ -401,14 +476,15 @@ class _SlotState:
     exit_signal_values: np.ndarray | None = None
     # Session-last mask aligned to ``bars.index`` when ``cfg.intraday_only``.
     session_last: np.ndarray | None = None
-    # Size used by a liquidity-sensitive FillModel and passed unchanged to
-    # Portfolio.open. Fixed-price models retain legacy portfolio sizing.
-    # See docs/adr/0001-pre-impact-entry-sizing.md.
+    # Pre-impact quote capped by exact affordability at the fixed fill price.
+    # See docs/adr/0005-causal-entry-orders-and-exact-affordability.md.
     entry_shares: float | None = None
     # Rank-exit rebalance flag (rolling engine): set between sweeps when the
     # ticker left the prior bar's top-N ranking; the shared exit sweep then
     # closes the slot through the normal dividend -> partial -> exit sequence.
     rank_exit: bool = False
+    # An intrabar limit fill cannot claim the bar's earlier high as profit.
+    entry_at_open: bool = True
 
 
 def _half_spread_at_signal(
@@ -453,6 +529,7 @@ def _make_slot_state(
     fill_model: FillModel | None = None,
     caches: _RunCaches | None = None,
     entry_budget: float | None = None,
+    limit_bar_idx: int | None = None,
 ) -> tuple[_SlotState | None, str | None]:
     """Build the per-slot state used by both historical and rolling flows."""
     fills = fill_model if fill_model is not None else FillModel(cfg)
@@ -474,6 +551,7 @@ def _make_slot_state(
         sigma_daily=sigma_daily,
         half_spread=half_spread,
         arrays=frame_cache,
+        limit_bar_idx=limit_bar_idx,
     )
     if entry_idx is None or entry_fill is None:
         return None, entry_warn
@@ -544,7 +622,20 @@ def _make_slot_state(
             frame_cache=frame_cache,
             exit_signal_values=exit_signal_values,
             session_last=session_last,
-            entry_shares=(entry_shares if fills.needs_liquidity_inputs else None),
+            entry_shares=(
+                entry_shares
+                if fills.needs_liquidity_inputs or cfg.market.lower() == "india"
+                else None
+            ),
+            entry_at_open=(
+                cfg.entry_order_type == "moo"
+                or (
+                    cfg.entry_order_type == "limit"
+                    and float(bars["open"].iloc[entry_idx])
+                    <= float(bars["close"].iloc[signal_idx])
+                    * (1.0 - float(cfg.entry_limit_bps or 0.0) / 10_000.0)
+                )
+            ),
         ),
         None,
     )
@@ -580,6 +671,36 @@ def _maybe_credit_dividends(
     portfolio.credit_dividends(state.ticker, div)
 
 
+def refresh_exit_liquidity(
+    state: _SlotState,
+    bars: pd.DataFrame,
+    i: int,
+    cfg: BacktestConfig,
+    fill_model: FillModel,
+) -> None:
+    """Use prior completed bars for exit volume, volatility, and spread inputs."""
+    if not fill_model.needs_liquidity_inputs:
+        return
+    prior = i - 1
+    if state.frame_cache is not None:
+        state.adv_shares, state.sigma_daily = _cached_trailing_liquidity(
+            state.frame_cache, bars, prior
+        )
+    else:
+        state.adv_shares, state.sigma_daily = _trailing_liquidity(bars, prior)
+    if prior >= 0:
+        state.half_spread = _half_spread_at_signal(bars, prior, cfg, state.frame_cache)
+
+
+def _exit_expr_due(state: _SlotState, i: int) -> bool:
+    """Whether the prior completed bar's exit expression fires at this open."""
+    if i <= state.entry_idx or state.exit_signal is None:
+        return False
+    if state.exit_signal_values is not None:
+        return bool(state.exit_signal_values[i - 1])
+    return bool(state.exit_signal.iloc[i - 1])
+
+
 def _fire_partial_exits_at_bar(
     state: _SlotState,
     bars: pd.DataFrame,
@@ -587,9 +708,15 @@ def _fire_partial_exits_at_bar(
     cfg: BacktestConfig,
     portfolio: Portfolio,
     fill_model: FillModel,
+    *,
+    at_open: bool = False,
 ) -> None:
-    """Close configured partial-exit tranches if their target prices trade."""
-    if not state.partial_targets:
+    """Execute partial and full targets in price order, full first on ties.
+
+    With ``at_open`` only levels at or below the open fill. The open is the
+    bar's first print, so those targets precede any stop later in the bar.
+    """
+    if not state.partial_targets and not at_open:
         return
     pos = portfolio.get_position(state.ticker)
     if pos is None or pos.shares <= 0:
@@ -603,14 +730,42 @@ def _fire_partial_exits_at_bar(
         bar_open = float(bar["open"])
         high = float(bar["high"])
     bar_date = _bar_label(bars.index[i], cfg)
-    for tier_idx, target_price in enumerate(state.partial_targets):
-        if state.partial_fired[tier_idx] or high < target_price:
+    targets = [
+        (price, tier)
+        for tier, price in enumerate(state.partial_targets)
+        if not state.partial_fired[tier]
+    ]
+    if state.target_ref is not None:
+        targets.append((state.target_ref, -1))
+    reach = bar_open if at_open else high
+    for target_price, tier_idx in sorted(targets):
+        if reach < target_price:
+            break
+        pos = portfolio.get_position(state.ticker)
+        if pos is None:
+            break
+        if tier_idx == -1:
+            fill = fill_model.exit_price(
+                reason="target",
+                bar_open=bar_open,
+                level=target_price,
+                shares=pos.shares,
+                adv_shares=state.adv_shares,
+                sigma_daily=state.sigma_daily,
+                half_spread=state.half_spread,
+            )
+            portfolio.close(state.ticker, bar_date, fill, "target")
+            break
+        close_shares = portfolio.partial_exit_shares(
+            pos.shares, state.partial_fractions[tier_idx]
+        )
+        if close_shares <= 0:
             continue
         fill = fill_model.exit_price(
             reason="target",
             bar_open=bar_open,
             level=target_price,
-            shares=pos.shares * state.partial_fractions[tier_idx],
+            shares=close_shares,
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
             half_spread=state.half_spread,
@@ -634,8 +789,11 @@ def _check_exit_at_bar(
     cfg: BacktestConfig,
     fill_model: FillModel,
     shares: float = 0.0,
+    *,
+    exit_phase: Literal["all", "protection", "remaining"] = "all",
+    targets_allowed: bool = True,
 ) -> tuple[float, ExitReason] | None:
-    """Evaluate exit rules for ``state`` at ``bars[i]``."""
+    """Evaluate protection before partial targets, then remaining exit rules."""
     frame_cache = state.frame_cache
     if frame_cache is not None:
         bar_open = float(frame_cache.open_arr[i])
@@ -651,27 +809,38 @@ def _check_exit_at_bar(
 
     trail_ref = state.peak * (1.0 - cfg.trailing_stop) if cfg.trailing_stop else None
     stop_hit = state.stop_ref is not None and low <= state.stop_ref
-    target_hit = state.target_ref is not None and high >= state.target_ref
+    target_hit = (
+        targets_allowed and state.target_ref is not None and high >= state.target_ref
+    )
     trail_hit = trail_ref is not None and low <= trail_ref
 
-    def _sell(reason: ExitReason, level: float | None = None) -> float:
+    def _sell(
+        reason: ExitReason, level: float | None = None, *, at_open: bool = False
+    ) -> float:
         return fill_model.exit_price(
             reason=reason,
             bar_open=bar_open,
             level=level,
-            close=close,
+            close=bar_open if at_open else close,
             shares=shares,
             adv_shares=state.adv_shares,
             sigma_daily=state.sigma_daily,
             half_spread=state.half_spread,
         )
 
-    if stop_hit and target_hit:
-        return _sell("stop", state.stop_ref), "stop"
-    if stop_hit:
-        return _sell("stop", state.stop_ref), "stop"
-    if trail_hit:
-        return _sell("trail", trail_ref), "trail"
+    if exit_phase != "remaining":
+        # An expression using a completed bar is actionable at the next open.
+        # Execute it before this bar's range is available.
+        if _exit_expr_due(state, i):
+            return _sell("exit_expr", at_open=True), "exit_expr"
+        if trail_hit and (
+            not stop_hit or cast(float, trail_ref) > cast(float, state.stop_ref)
+        ):
+            return _sell("trail", trail_ref), "trail"
+        if stop_hit:
+            return _sell("stop", state.stop_ref), "stop"
+    if exit_phase == "protection":
+        return None
     if target_hit:
         return _sell("target", state.target_ref), "target"
 
@@ -680,16 +849,8 @@ def _check_exit_at_bar(
     if state.rank_exit:
         return _sell("rank"), "rank"
 
-    state.peak = max(state.peak, high)
+    state.peak = max(state.peak, high if targets_allowed else close)
 
-    if state.exit_signal is not None:
-        fired = (
-            bool(state.exit_signal_values[i])
-            if state.exit_signal_values is not None
-            else bool(state.exit_signal.iloc[i])
-        )
-        if fired:
-            return _sell("exit_expr"), "exit_expr"
     if state.session_last is not None and state.session_last[i]:
         return _sell("session"), "session"
     if i >= state.hold_limit_idx:
@@ -788,6 +949,8 @@ def prepare_strategy_bars(
     *,
     market: str,
     benchmark: str,
+    membership_windows: tuple[tuple[str, date, date | None], ...] = (),
+    membership_added: tuple[tuple[str, date], ...] = (),
 ) -> dict[str, pd.DataFrame]:
     """Resolve a strategy and run its bar-preparation hook.
 
@@ -821,6 +984,8 @@ def prepare_strategy_bars(
         end=end,
         fetcher=fetcher,
         warnings=warnings,
+        membership_windows=membership_windows,
+        membership_added=membership_added,
     )
     return spec.prepare_bars(ctx)
 
@@ -1052,8 +1217,15 @@ def _filter_signals_for_group(
     if cfg.min_avg_dollar_volume is not None:
         dollar_vol = np.empty((n_bars, n_tickers), dtype=float)
         for position, frame in enumerate(frames):
-            dollar_vol[:, position] = frame["volume"].to_numpy(dtype=float, copy=False)
-        dollar_vol *= close_block
+            if "dollar_volume" in frame.columns:
+                dollar_vol[:, position] = frame["dollar_volume"].to_numpy(
+                    dtype=float, copy=False
+                )
+            else:
+                dollar_vol[:, position] = (
+                    frame["volume"].to_numpy(dtype=float, copy=False)
+                    * close_block[:, position]
+                )
         # One columnwise rolling pass for the whole group; arithmetic matches
         # pandas ``rolling(window, min_periods=1).mean()`` (skipna).
         adv = _rolling_mean_min_periods_1(dollar_vol, window)

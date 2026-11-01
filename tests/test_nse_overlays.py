@@ -251,6 +251,60 @@ def test_calendar_degrades_to_weekday_only_when_holiday_fetch_fails(monkeypatch)
     assert cal.last_trading_day_on_or_before(date(2026, 1, 3)) == date(2026, 1, 2)
 
 
+def test_holiday_payload_uses_only_equity_segment():
+    # 2026-04-01 closes only the currency/interest-rate segments; equities
+    # trade, so it must not become a holiday for the equity calendar.
+    raw = {
+        "CM": [{"tradingDate": "26-Jan-2026"}],
+        "FO": [{"tradingDate": "26-Jan-2026"}],
+        "CD": [{"tradingDate": "01-Apr-2026"}],
+        "COM": [{"tradingDate": "01-Jan-2026"}],
+    }
+    assert nse_client._parse_holiday_payload(raw) == {date(2026, 1, 26)}
+
+
+def test_nse_cached_json_does_not_cache_a_failed_fetch(monkeypatch, tmp_path):
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    payloads = iter([None, {"CM": []}])
+    monkeypatch.setattr(nse_client, "fetch_nse_json", lambda *a, **k: next(payloads))
+
+    def call():
+        return nse_client.nse_cached_json("nse_test", ("k",), "u", "op")
+
+    assert call() is None  # outage
+    assert call() == {"CM": []}  # NSE back: refetched, not a cached null
+
+
+def test_html_error_bhavcopy_is_discarded_and_refetched(monkeypatch, tmp_path):
+    bodies = iter(
+        ["<!DOCTYPE html>\n<html>not found</html>\n", "SYMBOL, SERIES\nAAA, EQ\n"]
+    )
+
+    def full_bhavcopy_save(dt, dest):  # mirrors jugaad: no HTTP status check
+        path = Path(dest) / "bhav.csv"
+        if not path.exists():
+            path.write_text(next(bodies))
+        return str(path)
+
+    monkeypatch.setattr(
+        nse_client._optional,
+        "load",
+        lambda name: type("M", (), {"full_bhavcopy_save": full_bhavcopy_save}),
+    )
+
+    def resilient(_provider, _operation, fn, fallback=None):
+        return fn()
+
+    def load():
+        return nse_client.load_delivery_bhavcopy_csv(
+            date(2026, 10, 22), tmp_path, resilience_call=resilient
+        )
+
+    assert load() is None  # HTML page before publication
+    assert not (tmp_path / "bhav.csv").exists()
+    assert load()["SYMBOL"].tolist() == ["AAA"]
+
+
 def test_calendar_includes_weekend_special_sessions():
     cal = nse_client.TradingCalendar()
     cal._holidays = set()
@@ -606,12 +660,81 @@ def test_openscreener_pledge_regex(monkeypatch, tmp_path):
     html = "<div>... Pledged percentage</span> <span>13.37%</span> ...</div>"
 
     class _S:
+        def __init__(self, **_kwargs):
+            pass
+
         def fetch_page(self, name):
             return html
 
     monkeypatch.setattr(pledge, "_HttpScraper", _S)
     val = pledge.fetch_openscreener_pledge("ZZZ", refresh=True)
     assert val == 13.37
+
+
+def test_openscreener_pledge_outage_is_not_cached(monkeypatch, tmp_path):
+    import urllib.request
+
+    from screener import providers
+
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    real = providers.call_with_resilience
+    monkeypatch.setattr(
+        providers,
+        "call_with_resilience",
+        lambda *a, **k: real(*a, sleep=lambda _s: None, rate_limiter=None, **k),
+    )
+    pages = iter([OSError("down")] * 3 + [b"Pledged percentage</span> 23.45%"])
+
+    class _Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return self.body
+
+    def urlopen(req, timeout=None):
+        page = next(pages)
+        if isinstance(page, Exception):
+            raise page
+        return _Resp(page)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert pledge.fetch_openscreener_pledge("OUTAGECO") is None
+    assert pledge.fetch_openscreener_pledge("OUTAGECO") == 23.45
+
+
+def test_openscreener_pledge_takes_one_rate_token_per_page(monkeypatch, tmp_path):
+    import urllib.request
+
+    from screener import resilience
+
+    monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
+    tokens: list[str] = []
+    monkeypatch.setattr(
+        resilience._RATE_LIMITER,
+        "wait",
+        lambda provider, rate, **_k: tokens.append(provider),
+    )
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"Pledged percentage</span> 1.0%"
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+    assert pledge.fetch_openscreener_pledge("ONETOKEN") == 1.0
+    assert tokens == ["screener-in"]
 
 
 # ── US regression: new fields stay None ────────────────────────────────────

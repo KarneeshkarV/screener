@@ -37,13 +37,21 @@ from screener.backtester.metrics import (
     periods_per_year_for_interval,
 )
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
+from screener.backtester.fundamentals import FundamentalFetcher
 from screener.backtester.optimization.grid import (
     GridSearchResult,
     grid_search,
+    fundamental_execution_kwargs,
     parameter_combinations,
+    validate_optimization_grid,
 )
 from screener.backtester.optimization.metrics import optimization_metrics
 from screener.backtester.rolling_simulation import run_rolling_backtest
+
+
+class RiskFreeHurdleAmbiguity(ValueError):
+    """Selected fold hurdles cannot define one aggregate excess-return metric."""
+
 
 FOLD_BOUNDARY_POLICY = "close_flat_at_fold_boundary_with_configured_costs"
 CAPITAL_POLICY = "carry_ending_capital_restart_flat"
@@ -269,14 +277,16 @@ def holding_period_fold_warnings(
     if not holds:
         return []
     max_hold = max(holds)
-    # A calendar-day fold holds roughly 5/7 as many sessions (weekends alone),
-    # so convert the session hold to calendar days before comparing.
-    if max_hold * 7 / 5 < test_days:
+    # Upper bound on weekdays in any window this long; exchange holidays
+    # can reduce it further. Entry also consumes one session before hold age.
+    max_sessions = (test_days // 7) * 5 + min(test_days % 7, 5)
+    if max_hold < max_sessions:
         return []
     return [
         (
             f"{HOLDING_PERIOD_FIT_WARNING_PREFIX}"
-            f"max hold={max_hold} sessions vs test_days={test_days} calendar days; "
+            f"max hold={max_hold} sessions vs test_days={test_days} calendar days "
+            f"(at most {max_sessions} weekdays, fewer with holidays); "
             f"folds use {FOLD_BOUNDARY_POLICY} so long holds cannot behave normally"
         )
     ]
@@ -409,15 +419,22 @@ def walk_forward_optimize(
     experiment_id: str | None = None,
     trial_db_path: Path | str | None = None,
     n_trials_effective: int | None = None,
+    fundamental_fetcher: FundamentalFetcher | None = None,
 ) -> WalkForwardSummary:
     """Walk-forward with per-fold train selection only.
 
     Trial register / DSR context uses training-window ``grid_search`` calls
     only. Test-fold scores are never written into the trial register.
+    Aggregate excess-return metrics use the selected constant risk-free hurdle.
+    Different selected hurdles across folds are rejected as ambiguous.
     Reuse the same explicit ``experiment_id`` and ``trial_db_path`` across
-    folds and repeated research runs when one family history is required.
+    repeated research runs. Each training period has a separate register scope
+    so later observations cannot alter earlier fold selection or DSR.
     """
     require_daily_walk_forward_scope(cfg, parameter_grid)
+    validate_optimization_grid(
+        cfg, parameter_grid, fundamental_fetcher=fundamental_fetcher
+    )
     trade_floor = evidence_trade_floor(min_trades)
     windows = generate_walk_forward_windows(
         start_date,
@@ -428,6 +445,7 @@ def walk_forward_optimize(
     )
     results: list[WalkForwardResult] = []
     train_scores: list[float] = []
+    selected_hurdles: set[float] = set()
     oos_trades: list[Trade] = []
     equity_pieces: list[pd.Series] = []
     missing_eligible_folds = 0
@@ -458,9 +476,14 @@ def walk_forward_optimize(
             runner="rolling",
             start_date=window.train_start,
             end_date=window.train_end,
-            experiment_id=experiment_id,
+            experiment_id=(
+                f"{experiment_id}::train:{window.train_start}:{window.train_end}"
+                if experiment_id is not None
+                else None
+            ),
             trial_db_path=trial_db_path,
             n_trials_effective=n_trials_effective,
+            **fundamental_execution_kwargs(fundamental_fetcher),
         )
         # An infinite score can rank first while a lower result is eligible.
         best = next(
@@ -529,14 +552,22 @@ def walk_forward_optimize(
             )
             continue
 
-        test_cfg = cfg.model_copy(
-            update={**best.params, "initial_capital": float(capital)}
+        test_cfg = cfg.validated_update(
+            {**best.params, "initial_capital": float(capital)}
         )
+        selected_hurdle = float(test_cfg.risk_free_rate)
+        if selected_hurdles and selected_hurdle not in selected_hurdles:
+            raise RiskFreeHurdleAmbiguity(
+                "Walk-forward aggregate risk_free_rate is ambiguous: selected "
+                "risk-free hurdles vary across folds; use a constant hurdle"
+            )
+        selected_hurdles.add(selected_hurdle)
         test_result = run_rolling_backtest(
             test_cfg,
             fetcher,
             start_date=window.test_start,
             end_date=window.test_end,
+            **fundamental_execution_kwargs(fundamental_fetcher),
         )
         # Engine force-closes open slots at end_ts with configured costs
         # (fold_boundary_policy). Next fold restarts flat at carried capital.
@@ -623,6 +654,7 @@ def walk_forward_optimize(
     else:
         benchmark_aligned = pd.Series(dtype=float)
 
+    aggregate_hurdle = next(iter(selected_hurdles), float(cfg.risk_free_rate))
     if not combined_equity.empty:
         combined_metrics = compute_metrics(
             combined_equity,
@@ -630,6 +662,7 @@ def walk_forward_optimize(
             list(oos_trades),
             slot_count,
             periods_per_year=periods_per_year_for_interval(SUPPORTED_INTERVAL),
+            risk_free_rate=aggregate_hurdle,
         )
         if exposure_reason is not None:
             combined_metrics["exposure"] = float("nan")
@@ -641,7 +674,7 @@ def walk_forward_optimize(
             )
         aggregate = optimization_metrics(
             BacktestResult(
-                config=cfg,
+                config=cfg.validated_update({"risk_free_rate": aggregate_hurdle}),
                 trades=list(oos_trades),
                 equity_curve=combined_equity,
                 benchmark_curve=benchmark_aligned,
@@ -664,10 +697,16 @@ def walk_forward_optimize(
     if oos_objective is not None and not math.isfinite(oos_objective):
         oos_objective = None
     # Aggregate train/test ratio uses the combined OOS objective, not mean fold.
+    # The ratio keeps its sign: a negative ratio means the OOS objective lost.
     if train_avg > 0 and oos_objective is not None:
-        ratio = train_avg / max(abs(oos_objective), 1e-9)
+        ratio = train_avg / oos_objective if abs(oos_objective) >= 1e-9 else 1.0 / 1e-9
     else:
         ratio = 0.0
+    # A positive train score that does not hold up out of sample is overfit
+    # however large the OOS loss, which a magnitude ratio would hide.
+    overfit = train_avg > 0 and (
+        ratio >= overfit_ratio or (oos_objective is not None and oos_objective <= 0)
+    )
 
     adequate = oos_evidence_adequate(
         equity=combined_equity if not combined_equity.empty else None,
@@ -703,6 +742,8 @@ def walk_forward_optimize(
         "adequate": adequate,
         "fold_boundary_policy": FOLD_BOUNDARY_POLICY,
         "capital_policy": CAPITAL_POLICY,
+        "aggregate_risk_free_rate": aggregate_hurdle,
+        "risk_free_policy": "selected_constant_hurdle_reject_varying_folds",
         "window_length_unit": WINDOW_LENGTH_UNIT,
         "train_days": train_days,
         "test_days": test_days,
@@ -713,14 +754,14 @@ def walk_forward_optimize(
         "engine_same_bar_dependency": ENGINE_SAME_BAR_DEPENDENCY,
         "holding_period_warnings": hold_fit_warnings,
         "experiment_id": experiment_id,
-        "trial_register_scope": "train_folds_only",
+        "trial_register_scope": "isolated_training_periods",
     }
 
     return WalkForwardSummary(
         windows=results,
         stability_score=stability,
         aggregate_metrics=aggregate,
-        overfit_flag=bool(train_avg > 0 and ratio >= overfit_ratio),
+        overfit_flag=bool(overfit),
         train_test_score_ratio=ratio,
         oos_trades=tuple(oos_trades),
         oos_equity=combined_equity if not combined_equity.empty else None,

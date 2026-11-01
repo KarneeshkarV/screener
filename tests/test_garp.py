@@ -62,15 +62,7 @@ def test_openscreener_adapter_preserves_cache_contract(monkeypatch) -> None:
         captured["ttl_seconds"] = ttl_seconds
         captured["refresh"] = refresh
         captured["fetch_result"] = fetch()
-        return {
-            "ratios": {
-                "market_capitalization": 1500.0,
-                "sales": 1600.0,
-                "peg_ratio": 1.2,
-            },
-            "profit_loss": {},
-            "quarterly_results": {},
-        }
+        return _india_sections()
 
     monkeypatch.setattr(garp_module, "cached_json_call", fake_cached_json_call)
     monkeypatch.setattr(
@@ -83,7 +75,7 @@ def test_openscreener_adapter_preserves_cache_contract(monkeypatch) -> None:
 
     assert captured == {
         "namespace": "garp_india",
-        "key_parts": ("india", "AAA"),
+        "key_parts": ("india", "AAA", garp_module._INDIA_PAYLOAD_VERSION),
         "ttl_seconds": 123.0,
         "refresh": True,
         "fetch_result": {"raw": "AAA"},
@@ -91,7 +83,7 @@ def test_openscreener_adapter_preserves_cache_contract(monkeypatch) -> None:
     assert row is not None
     assert row["name"] == "AAA"
     assert row["description"] == "Alpha"
-    assert row["peg"] == pytest.approx(1.2)
+    assert row["peg"] == pytest.approx(_INDIA_PEG)
 
 
 def test_garp_cli_emits_csv(monkeypatch) -> None:
@@ -412,6 +404,53 @@ def test_screen_us_garp_falls_back_when_fmp_has_no_statements(
 
 # ── public per-symbol GARP loader (used by the conviction card) ─────────────
 
+_INDIA_SALES_CAGR = ((2200.0 / 1000.0) ** (1 / 5) - 1) * 100.0
+_INDIA_EPS_CAGR = ((40.0 / 16.0) ** (1 / 5) - 1) * 100.0
+_INDIA_PEG = 30.0 / _INDIA_EPS_CAGR
+
+
+def _india_sections() -> dict:
+    """openscreener section payloads: tables are lists, oldest period first."""
+    years = [f"Mar {y}" for y in range(2019, 2026)]
+    sales = [900.0, 1000.0, 1200.0, 1400.0, 1600.0, 1800.0, 2200.0]
+    eps = [15.0, 16.0, 20.0, 24.0, 28.0, 32.0, 40.0]
+    op_profit = [150.0, 180.0, 220.0, 260.0, 300.0, 320.0, 400.0]
+    profit_loss: list[dict] = [
+        {
+            "year": year,
+            "sales": s,
+            "operating_profit": op,
+            "interest": 50.0,
+            "profit_before_tax": 200.0,
+            "net_profit": 200.0,
+            "eps": e,
+        }
+        for year, s, op, e in zip(years, sales, op_profit, eps, strict=True)
+    ]
+    profit_loss.append(
+        {"year": "TTM", "sales": 2100.0, "net_profit": 220.0, "eps": 42.0}
+    )
+    balance_sheet = [
+        {"year": year, "equity_capital": 100.0, "reserves": 900.0, "borrowings": 0.0}
+        for year in years
+    ]
+    # Trailing half-year column has no P&L partner and must be ignored.
+    balance_sheet.append(
+        {"year": "Sep 2025", "equity_capital": 1.0, "reserves": 1.0, "borrowings": 0.0}
+    )
+    quarters = ["Sep 2024", "Dec 2024", "Mar 2025", "Jun 2025", "Sep 2025"]
+    quarterly = [
+        {"date": q, "net_profit": np}
+        for q, np in zip(quarters, [40.0, 45.0, 50.0, 55.0, 60.0], strict=True)
+    ]
+    return {
+        "summary": {"ratios": {"market_cap": 5000.0, "stock_p_e": 30.0}},
+        "profit_loss": profit_loss,
+        "balance_sheet": balance_sheet,
+        "quarterly_results": quarterly,
+    }
+
+
 _GARP_ROW_KEYS = (
     "peg",
     "sales_growth_5y",
@@ -424,18 +463,7 @@ _GARP_ROW_KEYS = (
 
 
 def test_load_garp_row_india_returns_scorer_shape(monkeypatch) -> None:
-    sections = {
-        "ratios": {
-            "peg_ratio": 1.2,
-            "sales_growth_5years": 20.0,
-            "operating_profit_growth": 15.0,
-            "eps_growth_5years": 18.0,
-            "average_return_on_equity_5years": 20.0,
-            "average_return_on_capital_employed_3years": 22.0,
-        },
-        "profit_loss": {},
-        "quarterly_results": {},
-    }
+    sections = _india_sections()
     monkeypatch.setattr(
         garp_module,
         "cached_json_call",
@@ -448,7 +476,67 @@ def test_load_garp_row_india_returns_scorer_shape(monkeypatch) -> None:
     assert row is not None
     assert row["name"] == "RELIANCE"
     assert set(_GARP_ROW_KEYS) <= set(row)
-    assert row["peg"] == pytest.approx(1.2)
+    assert row["market_cap"] == pytest.approx(5000.0)
+    assert row["sales"] == pytest.approx(2100.0)  # TTM, not the last fiscal year
+    assert row["sales_growth_5y"] == pytest.approx(_INDIA_SALES_CAGR)
+    assert row["eps_growth_5y"] == pytest.approx(_INDIA_EPS_CAGR)
+    assert row["peg"] == pytest.approx(_INDIA_PEG)
+    assert row["operating_profit_growth"] == pytest.approx(25.0)
+    # Net profit / (equity capital + reserves), last five fiscal years.
+    assert row["roe_5y"] == pytest.approx(20.0)
+    # (PBT + interest) / (equity + borrowings), last three fiscal years.
+    assert row["roce_or_roic"] == pytest.approx(25.0)
+    # Latest quarter against the same quarter a year earlier.
+    assert row["quarterly_profit_growth"] == pytest.approx(50.0)
+
+
+def test_india_garp_passes_on_openscreener_tables() -> None:
+    row = garp_module._india_row("AAA", "Alpha", _india_sections())
+
+    assert garp_module._passes_garp(row, INDIA_THRESHOLDS) is True
+
+
+def test_india_row_averages_opening_and_closing_balances() -> None:
+    # screener.in divides by the mean of the prior and current year-end
+    # balances; closing balances alone understate a growing company.
+    sections = _india_sections()
+    for i, bs in enumerate(sections["balance_sheet"][:-1]):
+        bs["reserves"] = 900.0 + 100.0 * i
+        bs["borrowings"] = 100.0 * i
+
+    row = garp_module._india_row("AAA", "", sections)
+
+    # Equity at year-ends 2..6 is 1200..1600, so the five averages are
+    # 1150..1550; net profit is 200 each year.
+    equity_avgs = [1150.0, 1250.0, 1350.0, 1450.0, 1550.0]
+    assert row.roe_5y == pytest.approx(sum(200.0 / e * 100.0 for e in equity_avgs) / 5)
+    # Capital employed adds borrowings 100*i, so the last three averages are
+    # 1350+350, 1450+450, 1550+550 against PBT + interest of 250.
+    employed_avgs = [1700.0, 1900.0, 2100.0]
+    assert row.roce_or_roic == pytest.approx(
+        sum(250.0 / e * 100.0 for e in employed_avgs) / 3
+    )
+
+
+def test_india_row_reads_lender_table_columns() -> None:
+    # Banks and NBFCs label the same lines revenue / financing_profit and keep
+    # borrowing (singular) plus deposits on the balance sheet.
+    sections = _india_sections()
+    for row in sections["profit_loss"]:
+        row["revenue"] = row.pop("sales")
+        if "operating_profit" in row:
+            row["financing_profit"] = row.pop("operating_profit")
+    for bs in sections["balance_sheet"]:
+        bs["borrowing"] = bs.pop("borrowings")
+        bs["deposits"] = 1000.0
+
+    row = garp_module._india_row("BANK", "", sections)
+
+    assert row.sales == pytest.approx(2100.0)
+    assert row.sales_growth_5y == pytest.approx(_INDIA_SALES_CAGR)
+    assert row.operating_profit_growth == pytest.approx(25.0)
+    # Deposits double capital employed: (200 + 50) / (1000 + 1000).
+    assert row.roce_or_roic == pytest.approx(12.5)
 
 
 def test_load_garp_row_india_non_dict_payload(monkeypatch) -> None:

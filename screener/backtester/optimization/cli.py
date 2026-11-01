@@ -4,21 +4,36 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from typing import Any, ParamSpec, TypeVar
 from typing import cast as type_cast
 
 import click
+from pydantic import ValidationError
 
-from screener.backtester.cli_common import resolve_min_filters
+from screener.backtester.cli_common import (
+    referenced_fundamental_fields,
+    resolve_min_filters,
+)
 from screener.backtester.data import PriceFetcher
+from screener.backtester.fundamentals import (
+    FundamentalFetcher,
+    resolve_fundamental_provider,
+)
 from screener.backtester.models import BacktestConfig, Trade
-from screener.backtester.optimization.grid import grid_search, parameter_combinations
+from screener.backtester.optimization.grid import (
+    grid_search,
+    parameter_combinations,
+    validate_optimization_grid,
+)
 from screener.backtester.optimization.monte_carlo import (
     simulate_monte_carlo,
     validate_equity_monte_carlo_flags,
+    validate_ruin_threshold,
 )
 from screener.backtester.optimization.reporting import (
     GRID_IN_SAMPLE_DISCLAIMER,
@@ -29,6 +44,7 @@ from screener.backtester.optimization.reporting import (
 )
 from screener.backtester.optimization.walk_forward import (
     FOLD_BOUNDARY_POLICY,
+    RiskFreeHurdleAmbiguity,
     generate_walk_forward_windows,
     require_daily_walk_forward_scope,
     walk_forward_optimize,
@@ -60,6 +76,10 @@ def _parse_values(
             start = float(pieces[0])
             end = float(pieces[1])
             step = float(pieces[2]) if len(pieces) == 3 else 1.0
+            if not all(math.isfinite(value) for value in (start, end, step)):
+                raise click.UsageError(
+                    "Parameter range bounds and step must be finite."
+                )
             if step <= 0:
                 raise click.UsageError("Range step must be positive.")
             current = start
@@ -74,10 +94,8 @@ def _parse_values(
 def _validate_hold_values(values: list[Any]) -> list[Any]:
     """Reject a swept ``hold`` below 1 at parse time, before any bar is fetched.
 
-    ``BacktestConfig`` bounds ``hold`` at ``ge=1``, but the sweep applies each
-    grid point with ``model_copy(update=...)``, which pydantic does not
-    re-validate. Without this check a ``--hold 5,0`` grid would run the whole
-    combination silently as a one-bar hold instead of failing.
+    The API validates every derived config with ``validated_update``.
+    This parse-time check gives CLI users a direct ``--hold`` error.
     """
     for value in values:
         if value is None or int(value) < 1:
@@ -176,6 +194,7 @@ def _base_config(
     min_avg_dollar_volume: float | None,
     adv_window: int,
     compounding: bool,
+    risk_free_rate: float = 0.0,
 ) -> BacktestConfig:
     from screener.strategies.expressions import resolve_strategy
 
@@ -218,7 +237,54 @@ def _base_config(
         avg_dollar_volume_window=int(adv_window),
         reinvest=True,
         compounding=bool(compounding),
+        risk_free_rate=float(risk_free_rate),
+        fundamental_fields=tuple(
+            sorted(referenced_fundamental_fields(entry_expr, exit_expr))
+        ),
     )
+
+
+def _optimization_collaborators(
+    cfg: BacktestConfig,
+    parameter_grid: dict[str, list[Any]],
+    provider: str | None,
+    lag_days: int,
+) -> tuple[BacktestConfig, FundamentalFetcher | None]:
+    """Resolve opt-in fundamentals and validate all CLI configs before price fetches."""
+    try:
+        resolved = resolve_fundamental_provider(provider)
+        fields = set(cfg.fundamental_fields)
+        for params in parameter_combinations(parameter_grid):
+            test_cfg = cfg.validated_update(params)
+            fields |= referenced_fundamental_fields(
+                test_cfg.entry_expr, test_cfg.exit_expr
+            )
+        if fields and resolved is None:
+            raise ValueError(
+                "Fundamental optimization requires --fundamentals-provider; "
+                "no provider is enabled by default"
+            )
+        cfg = cfg.validated_update(
+            {
+                "fundamentals_provider": resolved,
+                "fundamental_fields": tuple(sorted(fields)),
+                "fundamental_lag_days": lag_days,
+            }
+        )
+        from screener.backtester.fundamentals import build_fundamental_fetcher
+
+        collaborator = build_fundamental_fetcher(
+            resolved,
+            market=cfg.market,
+            fields=cfg.fundamental_fields,
+            lag_days=lag_days,
+        )
+        validate_optimization_grid(
+            cfg, parameter_grid, fundamental_fetcher=collaborator
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    return cfg, collaborator
 
 
 def _resolve_dates(start_arg, end_arg, years) -> tuple[date, date]:
@@ -263,6 +329,17 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
         click.option("--entry", "entry_expr", default=None),
         click.option("--exit", "exit_expr", default=None),
         click.option("--strategy", "strategy_name", default=None),
+        click.option(
+            "--fundamentals-provider",
+            default=None,
+            help="Explicit fundamental provider; disabled by default.",
+        ),
+        click.option(
+            "--fundamental-lag-days",
+            type=click.IntRange(min=0),
+            default=1,
+            show_default=True,
+        ),
         click.option("--tickers", default=None),
         click.option("--universe-file", default=None),
         click.option("--max-universe", type=int, default=200, show_default=True),
@@ -273,6 +350,16 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
         click.option("--slippage-bps", type=float, default=0.0),
         click.option("--commission-bps", type=float, default=0.0),
         click.option("--initial-capital", type=float, default=100_000.0),
+        click.option(
+            "--risk-free-rate",
+            type=float,
+            default=0.0,
+            show_default=True,
+            help=(
+                "Annual risk-free hurdle for excess-return Sharpe/Sortino/PSR/DSR "
+                "(fraction). Default 0.0. Not cash interest on idle balances."
+            ),
+        ),
         click.option(
             "--compounding/--no-compounding",
             default=True,
@@ -285,7 +372,12 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
         ),
         click.option("--benchmark", default=None),
         click.option("--min-price", type=float, default=None),
-        click.option("--min-avg-dollar-volume", type=float, default=None),
+        click.option(
+            "--min-avg-dollar-volume",
+            type=float,
+            default=None,
+            help="Minimum rolling turnover in market currency (INR for India; close*volume).",
+        ),
         click.option("--adv-window", type=int, default=20),
         click.option(
             "--metric",
@@ -343,9 +435,20 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
             "--html", "html_path", type=click.Path(path_type=Path), default=None
         ),
     ]
+
+    @wraps(fn)
+    def checked_command(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return fn(*args, **kwargs)
+        except RiskFreeHurdleAmbiguity as exc:
+            raise click.ClickException(str(exc)) from exc
+        except ValidationError as exc:
+            raise click.UsageError(str(exc)) from exc
+
+    wrapped = checked_command
     for option in reversed(options):
-        fn = option(fn)
-    return fn
+        wrapped = option(wrapped)
+    return wrapped
 
 
 @optimize.command(name="grid")
@@ -385,6 +488,13 @@ def optimize_grid(**kwargs) -> None:
         min_avg_dollar_volume=kwargs["min_avg_dollar_volume"],
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
+        risk_free_rate=kwargs["risk_free_rate"],
+    )
+    cfg, fundamental_fetcher = _optimization_collaborators(
+        cfg,
+        parameter_grid,
+        kwargs["fundamentals_provider"],
+        kwargs["fundamental_lag_days"],
     )
     results = grid_search(
         cfg,
@@ -398,6 +508,7 @@ def optimize_grid(**kwargs) -> None:
         runner="rolling",
         start_date=start_date,
         end_date=end_date,
+        fundamental_fetcher=fundamental_fetcher,
         **trial_identity,
     )
     print_grid_table(results)
@@ -484,6 +595,7 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         min_avg_dollar_volume=kwargs["min_avg_dollar_volume"],
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
+        risk_free_rate=kwargs["risk_free_rate"],
     )
     try:
         require_daily_walk_forward_scope(cfg, parameter_grid)
@@ -496,6 +608,12 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    cfg, fundamental_fetcher = _optimization_collaborators(
+        cfg,
+        parameter_grid,
+        kwargs["fundamentals_provider"],
+        kwargs["fundamental_lag_days"],
+    )
     summary = walk_forward_optimize(
         cfg,
         _fetcher(),
@@ -509,6 +627,7 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         min_trades=kwargs["min_trades"],
         max_workers=kwargs["workers"],
         cache_path=kwargs["cache_path"],
+        fundamental_fetcher=fundamental_fetcher,
         **trial_identity,
     )
     print_walk_forward_table(summary)
@@ -517,6 +636,20 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         write_json_report(payload, kwargs["json_path"])
     if kwargs["html_path"]:
         write_html_report(payload, kwargs["html_path"], "Walk-Forward Report")
+
+
+def _ledger_stamp(value: object) -> date | datetime:
+    """A ledger's trade stamp: a ``date`` for daily runs, else a ``datetime``.
+
+    An intraday ledger stamps every fill with a time of day, which
+    ``date.fromisoformat`` rejects, so ``optimize validate`` could not read the
+    ledger an intraday backtest had just written.
+    """
+    text = str(value).strip()
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return datetime.fromisoformat(text)
 
 
 def _load_trades(path: Path) -> list[Trade]:
@@ -533,12 +666,12 @@ def _load_trades(path: Path) -> list[Trade]:
             Trade(
                 ticker=str(row.get("ticker", "")),
                 rank=int(row.get("rank") or idx),
-                signal_date=date.fromisoformat(
-                    str(row.get("signal_date") or row.get("entry_date"))
+                signal_date=_ledger_stamp(
+                    row.get("signal_date") or row.get("entry_date")
                 ),
-                entry_date=date.fromisoformat(str(row.get("entry_date"))),
+                entry_date=_ledger_stamp(row.get("entry_date")),
                 entry_price=float(row.get("entry_price") or 0.0),
-                exit_date=date.fromisoformat(str(row.get("exit_date"))),
+                exit_date=_ledger_stamp(row.get("exit_date")),
                 exit_price=float(row.get("exit_price") or 0.0),
                 # Trade (pydantic) re-validates this Literal at construction.
                 exit_reason=type_cast(
@@ -573,6 +706,12 @@ def optimize_validate(
     from rich.console import Console
     from rich.table import Table
 
+    try:
+        validate_ruin_threshold(float(ruin_threshold))
+    except ValueError as exc:
+        message = str(exc).replace("ruin_threshold", "--ruin-threshold", 1)
+        raise click.UsageError(message) from exc
+
     result = simulate_monte_carlo(
         _load_trades(trades_path),
         iterations=iterations,
@@ -605,6 +744,8 @@ def _parse_param_specs(params: tuple[str, ...]) -> dict[str, list[Any]]:
         name = name.strip()
         if not name:
             raise click.UsageError(f"Invalid --param {spec!r}; missing name.")
+        if name not in BacktestConfig.model_fields:
+            raise click.UsageError(f"Unknown optimization parameter {name!r}.")
         cast: type = int if name in {"hold", "top"} else float
         allow_none = name not in {"hold", "top"}
         values = _parse_values(raw, cast, allow_none=allow_none)
@@ -666,6 +807,16 @@ def _resolve_universe_tickers(
     help="Index universe when --tickers/--universe-file are omitted.",
 )
 @click.option(
+    "--point-in-time/--no-point-in-time",
+    default=True,
+    show_default=True,
+    help=(
+        "Gate --universe candidates on point-in-time membership. On by default "
+        "and downgraded with a warning when no membership history is available; "
+        "pass it explicitly to make that an error instead."
+    ),
+)
+@click.option(
     "--train-days",
     type=int,
     default=252,
@@ -703,6 +854,7 @@ def _resolve_universe_tickers(
 def research_report(
     param_specs: tuple[str, ...],
     universe: str | None,
+    point_in_time: bool,
     train_days: int,
     test_days: int,
     step_days: int,
@@ -748,6 +900,7 @@ def research_report(
         raise click.UsageError(
             "Empty parameter grid; pass --param and/or hold/stop/take/trail ranges."
         )
+
     _check_effective_trials_fit_grid(trial_identity, parameter_grid)
 
     hold_values = parameter_grid.get("hold") or _validate_hold_values(
@@ -757,14 +910,72 @@ def research_report(
     top_values = parameter_grid.get("top")
     top0 = int(top_values[0]) if top_values else int(kwargs["top"])
 
-    tickers_csv, universe_file = _resolve_universe_tickers(
-        market=kwargs["market"],
-        tickers=kwargs["tickers"],
-        universe_file=kwargs["universe_file"],
-        universe=universe,
-        end_date=end_date,
-        max_universe=int(kwargs["max_universe"]),
+    # Anything but DEFAULT counts as asked-for, as in backtest-rolling: a
+    # --config file reaches Click as DEFAULT_MAP and means it just as much.
+    point_in_time_was_explicit = (
+        click.get_current_context().get_parameter_source("point_in_time")
+        is not click.core.ParameterSource.DEFAULT
     )
+    membership_windows: tuple[tuple[str, date, date | None], ...] = ()
+    membership_added: tuple[tuple[str, date], ...] = ()
+    universe_warnings: tuple[str, ...] = ()
+    tickers_csv, universe_file = kwargs["tickers"], kwargs["universe_file"]
+    if universe and not tickers_csv and not universe_file:
+        from screener.universes import load_sp500_membership, load_universe_selection
+
+        selection = load_universe_selection(
+            universe,
+            market=kwargs["market"],
+            as_of=end_date,
+            start=start_date,
+            point_in_time=point_in_time,
+        )
+        symbols = selection.symbols
+        if int(kwargs["max_universe"]) > 0:
+            symbols = symbols[: int(kwargs["max_universe"])]
+        if not symbols:
+            raise click.UsageError(f"Universe {universe!r} resolved to zero symbols.")
+        tickers_csv = ",".join(symbols)
+        membership_windows = tuple(
+            w for w in selection.membership_windows if w[0] in symbols
+        )
+        universe_warnings = selection.warnings
+        if not point_in_time:
+            universe_warnings += (
+                "Point-in-time membership is off; using a static universe with survivorship bias.",
+            )
+        elif not membership_windows:
+            if point_in_time_was_explicit:
+                raise click.UsageError(
+                    f"--point-in-time is unavailable: universe {universe!r} served "
+                    "no membership history for this window."
+                )
+            if universe == "sp500":
+                # Same weaker fallback backtest-rolling uses: the "date added"
+                # column keeps post-as-of additions out but cannot bring removed
+                # ex-members back.
+                try:
+                    added_by_symbol = load_sp500_membership(as_of=end_date)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    added_by_symbol = {}
+                    universe_warnings += (
+                        f"'date added' membership is unavailable ({exc}).",
+                    )
+                membership_added = tuple(
+                    (symbol, added)
+                    for symbol, added in added_by_symbol.items()
+                    if added is not None and symbol in symbols
+                )
+            if membership_added:
+                universe_warnings += (
+                    "Point-in-time membership unavailable; gating entries on the "
+                    "'date added' column, so removed ex-members are not "
+                    "reconstructed (survivorship bias).",
+                )
+            else:
+                universe_warnings += (
+                    "Point-in-time membership unavailable; using a static universe with survivorship bias.",
+                )
     cfg = _base_config(
         market=kwargs["market"],
         end_date=end_date,
@@ -787,6 +998,19 @@ def research_report(
         min_avg_dollar_volume=kwargs["min_avg_dollar_volume"],
         adv_window=kwargs["adv_window"],
         compounding=kwargs["compounding"],
+        risk_free_rate=kwargs["risk_free_rate"],
+    )
+    cfg = cfg.validated_update(
+        {
+            "membership_windows": membership_windows,
+            "membership_added": membership_added,
+        }
+    )
+    cfg, fundamental_fetcher = _optimization_collaborators(
+        cfg,
+        parameter_grid,
+        kwargs["fundamentals_provider"],
+        kwargs["fundamental_lag_days"],
     )
     # Validate window/interval/MC flags before costly grid work. Do not wrap the
     # full report run: runtime bugs must surface as themselves.
@@ -825,6 +1049,8 @@ def research_report(
         mc_seed=mc_seed,
         mc_block=mc_block,
         ruin_threshold=ruin_threshold,
+        fundamental_fetcher=fundamental_fetcher,
+        universe_warnings=universe_warnings,
         top_n=kwargs["top_n"],
         out_path=out_path,
         **trial_identity,

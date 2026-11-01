@@ -289,6 +289,42 @@ def test_rolling_grid_worker_modes_match(tmp_path):
         assert trades == par_map[key][1]
 
 
+def test_grid_ties_keep_grid_order_when_one_combo_is_cached(tmp_path):
+    # A 95% stop never triggers, so both combos tie. Cached rows used to be
+    # ranked first, so a warm cache (or worker timing) changed the winner.
+    bars = make_bars(n=120, seed=7, drift=0.2)
+    frames = {"AAA": bars, "SPY": make_bars(n=120, seed=9)}
+    cfg = _config(tickers=("AAA",), top=1)
+    kwargs = dict(
+        runner="rolling",
+        start_date=bars.index[10].date(),
+        end_date=bars.index[-1].date(),
+        metric="total_return",
+        top_n=2,
+        max_workers=1,
+        cache_path=tmp_path / "cache.sqlite",
+        frozen_input_identity=build_frozen_input_identity(cfg, frames),
+    )
+    grid_search(
+        cfg,
+        StubPriceFetcher(frames),
+        {"stop_loss": [0.95]},
+        trial_db_path=tmp_path / "warm.db",
+        experiment_id="warm",
+        **kwargs,
+    )
+    ranked = grid_search(
+        cfg,
+        StubPriceFetcher(frames),
+        {"stop_loss": [None, 0.95]},
+        trial_db_path=tmp_path / "ranked.db",
+        experiment_id="ranked",
+        **kwargs,
+    )
+    assert ranked[0].score == ranked[1].score
+    assert [r.params["stop_loss"] for r in ranked] == [None, 0.95]
+
+
 def test_dsr_no_silent_half_std_assumption():
     rng = np.random.default_rng(0)
     daily = pd.Series(rng.normal(0.001, 0.01, 252))

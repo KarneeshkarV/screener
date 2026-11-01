@@ -19,7 +19,12 @@ from screener.backtester.data import (
     _save_cache,
     build_price_fetcher,
 )
+from screener.backtester.sessions import US_SESSION
 from screener.providers import StaleDataError
+
+
+def _fmp_full_key(ticker: str) -> str:
+    return data_module._fmp_cache_key(ticker, True)
 
 
 class DummyResponse:
@@ -112,6 +117,7 @@ def test_fmp_fetcher_uses_api_key_and_normalizes_adjusted_prices(tmp_path):
         "close",
         "volume",
         "adj_close",
+        "dollar_volume",
     ]
     assert frame.index.tolist() == [
         pd.Timestamp("2024-01-02"),
@@ -119,6 +125,7 @@ def test_fmp_fetcher_uses_api_key_and_normalizes_adjusted_prices(tmp_path):
     ]
     assert frame.loc[pd.Timestamp("2024-01-02"), "close"] == 52
     assert frame.loc[pd.Timestamp("2024-01-03"), "open"] == 52.5
+    assert frame.loc[pd.Timestamp("2024-01-02"), "dollar_volume"] == 104_000
 
 
 def test_fmp_fetcher_uses_cache_on_second_call(tmp_path):
@@ -187,11 +194,13 @@ def test_fmp_parallel_fetch_deduplicates_tickers_preserving_order(tmp_path):
     }
 
 
-def test_fmp_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch):
+def test_fmp_stale_tail_without_scale_overlap_reloads_window(tmp_path, monkeypatch):
     # The newest *complete* session rather than today: a daily bar for a
     # session still trading is dropped before it is cached or served, so
-    # anchoring this on today would make the test read the clock.
-    today = date.today() - pd.Timedelta(days=1)
+    # anchoring this on today would make the test read the clock. Yesterday by
+    # the local clock is not enough either: ahead of New York (IST after
+    # midnight) it is a US session still trading.
+    today = US_SESSION.last_complete_date()
     initial_payload = {
         "historical": [
             {
@@ -213,7 +222,7 @@ def test_fmp_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch)
         session=session,  # type: ignore[arg-type]
     )
     fetcher.fetch(["AAA"], today - pd.Timedelta(days=5), today)
-    cache_path = tmp_path / "fmp_AAA.parquet"
+    cache_path = tmp_path / (_fmp_full_key("AAA") + ".parquet")
     old_mtime = time.time() - 7200
     os.utime(cache_path, (old_mtime, old_mtime))
     session.payload = {
@@ -233,16 +242,28 @@ def test_fmp_stale_recent_cache_refreshes_and_merges_tail(tmp_path, monkeypatch)
 
     out = fetcher.fetch(["AAA"], today - pd.Timedelta(days=5), today)["AAA"]
 
-    assert len(session.calls) == 2
+    assert len(session.calls) == 3
     assert (
-        session.calls[-1][1]["params"]["from"]
+        session.calls[-2][1]["params"]["from"]
         == (pd.Timestamp(today) - pd.Timedelta(days=7)).date().isoformat()
     )
+    assert (
+        session.calls[-1][1]["params"]["from"]
+        == (pd.Timestamp(today) - pd.Timedelta(days=5)).date().isoformat()
+    )
+    assert len(out) == 1
     assert out.loc[pd.Timestamp(today), "close"] == 201
 
 
 def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_path):
-    """A forced re-download must not replace the stored frame with only its window."""
+    """A forced re-download must not replace the stored frame with only its window.
+
+    The fresh close is a small step off the cached one rather than a multiple
+    of it. A uniform multiple across every shared session is the signature of a
+    split, and split detection discards the stale entry on purpose - see
+    ``test_fmp_rescaled_cache_is_discarded_on_refresh``. This test is about the
+    ordinary case, where the vendor revises values without re-basing them.
+    """
     wide = pd.DataFrame(
         {
             "open": 100.0,
@@ -253,18 +274,18 @@ def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_pat
         },
         index=pd.bdate_range("2023-01-02", "2023-06-30"),
     )
-    _save_cache("fmp_AAA", wide, tmp_path)
+    _save_cache(_fmp_full_key("AAA"), wide, tmp_path)
 
     narrow = {
         "historical": [
             {
                 "date": day.date().isoformat(),
-                "open": 200,
-                "high": 202,
-                "low": 199,
-                "close": 201,
+                "open": 100.2,
+                "high": 101.4,
+                "low": 99.3,
+                "close": 100.9,
                 # adjClose == close so the adjusted close equals the raw one.
-                "adjClose": 201,
+                "adjClose": 100.9,
                 "volume": 2000,
             }
             for day in pd.bdate_range("2023-06-01", "2023-06-30")
@@ -284,14 +305,14 @@ def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_pat
     assert len(session.calls) == 1
     assert session.calls[0][0].endswith("/historical-price-full/AAA")
 
-    stored = _load_cached("fmp_AAA", tmp_path)
+    stored = _load_cached(_fmp_full_key("AAA"), tmp_path)
     assert stored.index.min() == wide.index.min()
     assert stored.index.max() == wide.index.max()
 
     # Overlapping dates carry the freshly downloaded values.
     first_fresh = out.index[0]
-    assert float(out.loc[first_fresh, "close"]) == pytest.approx(201.0)
-    assert float(stored.loc[first_fresh, "close"]) == pytest.approx(201.0)
+    assert float(out.loc[first_fresh, "close"]) == pytest.approx(100.9)
+    assert float(stored.loc[first_fresh, "close"]) == pytest.approx(100.9)
 
     # Bars outside the refreshed window stay as they were.
     sample = wide.index[20]
@@ -312,7 +333,7 @@ def test_fmp_refresh_without_strict_still_merges_failed_download_with_cache(tmp_
         },
         index=pd.bdate_range("2024-01-02", "2024-01-19"),
     )
-    _save_cache("fmp_AAA", cached, tmp_path)
+    _save_cache(_fmp_full_key("AAA"), cached, tmp_path)
     session = DummySession({})
     fetcher = FMPPriceFetcher(
         api_key="test-key",
@@ -339,7 +360,7 @@ def test_fmp_strict_refresh_raises_instead_of_ranking_on_cache(tmp_path):
         },
         index=pd.bdate_range("2024-01-02", "2024-01-19"),
     )
-    _save_cache("fmp_AAA", cached, tmp_path)
+    _save_cache(_fmp_full_key("AAA"), cached, tmp_path)
     session = DummySession({})
     fetcher = FMPPriceFetcher(
         api_key="test-key",
@@ -373,7 +394,7 @@ def test_fmp_strict_without_refresh_keeps_cache(tmp_path):
         },
         index=pd.bdate_range("2024-01-02", "2024-01-19"),
     )
-    _save_cache("fmp_AAA", cached, tmp_path)
+    _save_cache(_fmp_full_key("AAA"), cached, tmp_path)
     session = DummySession({})
     fetcher = FMPPriceFetcher(
         api_key="test-key",
@@ -473,10 +494,13 @@ def test_fmp_intraday_fetch_includes_whole_end_date(tmp_path):
 
 
 def test_fmp_intraday_cache_key_is_namespaced_per_interval():
-    assert data_module._fmp_cache_key("AAA", True) == "fmp_AAA"
-    assert data_module._fmp_cache_key("AAA", False) == "fmp_AAA__raw"
-    assert data_module._fmp_cache_key("AAA", True, "15m") == "fmp_AAA__15m"
-    assert data_module._fmp_cache_key("AAA", False, "15m") == "fmp_AAA__15m__raw"
+    assert data_module._fmp_cache_key("AAA", True) == "fmp_AAA__full_turnover_v3"
+    assert data_module._fmp_cache_key("AAA", False) == "fmp_AAA__raw_v3"
+    assert (
+        data_module._fmp_cache_key("AAA", True, "15m")
+        == "fmp_AAA__15m__full_turnover_v3"
+    )
+    assert data_module._fmp_cache_key("AAA", False, "15m") == "fmp_AAA__15m__raw_v3"
 
 
 def test_fmp_fetcher_rejects_unsupported_interval():
@@ -673,7 +697,7 @@ def test_a_failed_fmp_request_is_never_recorded_as_empty_history(tmp_path):
     out = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 5))
 
     assert out["AAA"].empty
-    assert not empty_history_path("fmp_AAA", tmp_path).exists()
+    assert not empty_history_path(_fmp_full_key("AAA"), tmp_path).exists()
 
     before = session.calls
     fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 5))
@@ -694,8 +718,55 @@ def test_an_empty_fmp_payload_is_recorded_as_empty_history(tmp_path):
     out = fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 5))
 
     assert out["AAA"].empty
-    assert empty_history_path("fmp_AAA", tmp_path).exists()
+    assert empty_history_path(_fmp_full_key("AAA"), tmp_path).exists()
 
     before = len(session.calls)
     fetcher.fetch(["AAA"], date(2024, 1, 1), date(2024, 1, 5))
     assert len(session.calls) == before, "the known-empty window is not re-asked"
+
+
+def test_fmp_rescaled_cache_is_discarded_on_refresh(tmp_path):
+    """A split re-bases FMP's history too, so the stale entry cannot be merged.
+
+    The bars outside the requested window are the ones this throws away, and
+    that is the point: they are the bars still on the abandoned scale. Keeping
+    them is what stitches a fake jump into the series at the seam.
+    """
+    wide = pd.DataFrame(
+        {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 1000},
+        index=pd.bdate_range("2023-01-02", "2023-06-30"),
+    )
+    _save_cache(_fmp_full_key("AAA"), wide, tmp_path)
+
+    # Every shared session now prices at exactly 2x: a 1:2 reverse split.
+    payload = {
+        "historical": [
+            {
+                "date": day.date().isoformat(),
+                "open": 200,
+                "high": 202,
+                "low": 199,
+                "close": 201,
+                "adjClose": 201,
+                "volume": 500,
+            }
+            for day in pd.bdate_range("2023-06-01", "2023-06-30")
+        ]
+    }
+    session = DummySession(payload)
+    fetcher = FMPPriceFetcher(
+        api_key="test-key",
+        cache_dir=tmp_path,
+        session=session,  # type: ignore[arg-type]
+        refresh=True,
+    )
+
+    out = fetcher.fetch(["AAA"], date(2023, 6, 1), date(2023, 6, 30))["AAA"]
+
+    # No bar on the superseded scale survives, so no seam can be computed across.
+    assert not out.empty
+    assert float(out["close"].min()) == pytest.approx(201.0)
+    stored = _load_cached(_fmp_full_key("AAA"), tmp_path)
+    assert float(stored["close"].min()) == pytest.approx(201.0)
+    # The refresh already asked for the whole window, so no retry was needed.
+    assert len(session.calls) == 1

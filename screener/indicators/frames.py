@@ -162,7 +162,8 @@ def wilder_rsi(
         avg_loss = avg_loss.where(enough)
     rs = avg_gain / avg_loss.replace(0.0, np.nan)
     result = 100.0 - (100.0 / (1.0 + rs))
-    condition = ~((avg_loss == 0.0) & (avg_gain > 0.0))
+    # Pine ``down == 0 ? 100``: a window with no losses is 100, flat or not.
+    condition = ~((avg_loss == 0.0) & avg_gain.notna())
     if isinstance(result, pd.Series):
         return result.where(cast(pd.Series, condition), 100.0)
     return result.where(cast(pd.DataFrame, condition), 100.0)

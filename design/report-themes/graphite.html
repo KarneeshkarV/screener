@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Graphite - report theme</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono&display=swap" rel="stylesheet">
+  <style>
+:root{color-scheme:dark;
+  --bg:#09090b;--surface:#18181b;--surface-2:#1f1f23;--ink:#fafafa;--muted:#a1a1aa;--line:#27272a;--line-soft:#202024;--hover:#202024;
+  --accent:#2dd4bf;--series-1:#00a38f;--series-2:#8e71d6;--series-3:#cf7b00;
+  --pos:#10b981;--neg:#f43f5e;--pos-ink:#34d399;--neg-ink:#fb7185;--div-mid:#232327;--on-strong:#09090b;
+  --status-good:#0ca30c;--status-warning:#fab219;--status-critical:#d03b3b;
+  --font-ui:Geist,Inter,system-ui,sans-serif;--font-display:Geist,system-ui,sans-serif;--font-num:"Geist Mono",monospace;--font-mono:"Geist Mono",monospace;
+  --h1-size:26px;--h1-weight:600;--h1-tracking:-.03em;--radius:8px;--gap:12px}
+/* Shared report layout. Every theme supplies only the tokens below; nothing in
+   this file names a raw colour, so a theme swap is a token swap. */
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--font-ui);-webkit-font-smoothing:antialiased}
+main{max-width:1280px;margin:0 auto;padding:40px 32px 64px}
+.theme-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;font:12px var(--font-ui);color:var(--muted);margin-bottom:28px}
+.theme-bar a{color:var(--muted);text-decoration:none;padding:4px 10px;border:1px solid var(--line);border-radius:var(--radius)}
+.theme-bar a[aria-current]{color:var(--ink);border-color:var(--accent)}
+header{display:flex;justify-content:space-between;gap:24px;align-items:end;padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:24px}
+.eyebrow{font:600 11px var(--font-ui);letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+h1{font:var(--h1-weight) var(--h1-size)/1.15 var(--font-display);margin:6px 0 4px;letter-spacing:var(--h1-tracking)}
+.sub{color:var(--muted);font-size:13px}
+.lib{font:12px var(--font-mono);color:var(--muted);text-align:right;white-space:nowrap}
+.kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:var(--gap);margin-bottom:var(--gap)}
+.kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+.kpi .label{font-size:12px;color:var(--muted)}
+.kpi .value{font:600 26px/1.2 var(--font-num);font-variant-numeric:tabular-nums;margin-top:6px}
+.kpi .delta{font-size:12px;color:var(--muted);margin-top:2px}
+.kpi .delta::before{content:"";display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;background:var(--line)}
+.kpi[data-tone=pos] .delta::before{background:var(--pos)}.kpi[data-tone=neg] .delta::before{background:var(--neg)}
+.grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:var(--gap)}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px 18px 14px;min-width:0}
+.panel h2{font:600 13px var(--font-ui);margin:0 0 2px;letter-spacing:.01em}
+.panel .hint{font-size:12px;color:var(--muted);margin:0 0 12px}
+.span-12{grid-column:span 12}.span-8{grid-column:span 8}.span-7{grid-column:span 7}.span-6{grid-column:span 6}.span-5{grid-column:span 5}.span-4{grid-column:span 4}
+.chart{height:300px}#hist{height:220px}.chart.short{height:180px}
+.legend{display:flex;gap:16px;font-size:12px;color:var(--muted);margin:0 0 8px}
+.legend i{display:inline-block;width:14px;height:2px;vertical-align:middle;margin-right:6px;border-radius:1px}
+table{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums}
+th{font-weight:500;color:var(--muted);text-align:right;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{text-align:right;padding:6px 8px;border-bottom:1px solid var(--line-soft);white-space:nowrap;font-family:var(--font-num)}
+th:first-child,td:first-child{text-align:left}
+tbody tr:hover td{background:var(--hover)}
+.num-pos{color:var(--pos-ink)}.num-neg{color:var(--neg-ink)}
+.heatmap td{padding:7px 4px;text-align:center;font-size:11.5px;border:2px solid var(--surface)}
+.heatmap td.strong{color:var(--on-strong)}
+.heatmap td.empty{background:transparent}
+.table-wrap{overflow:auto;max-height:340px}
+.warnings{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.warnings li{display:flex;gap:10px;align-items:flex-start;font-size:13px;padding:10px 12px;border-radius:var(--radius);background:var(--surface-2)}
+.warnings .badge{font:600 11px var(--font-ui);padding:1px 8px;border-radius:999px;color:var(--bg);white-space:nowrap}
+.badge.good{background:var(--status-good)}.badge.warning{background:var(--status-warning)}.badge.critical{background:var(--status-critical)}
+.swatches{display:flex;gap:6px;flex-wrap:wrap}
+.swatch{display:flex;align-items:center;gap:6px;font:11px var(--font-mono);color:var(--muted);padding:4px 8px 4px 4px;border:1px solid var(--line);border-radius:var(--radius)}
+.swatch b{width:18px;height:18px;border-radius:calc(var(--radius) / 2);display:block;border:1px solid var(--line)}
+footer{margin-top:32px;color:var(--muted);font-size:12px;border-top:1px solid var(--line);padding-top:16px}
+@media (max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.grid>*{grid-column:span 12!important}header{display:block}.lib{text-align:left;margin-top:8px}}
+
+.kpi .value{font-size:24px;font-weight:500}
+.chart{position:relative}
+  </style>
+</head>
+<body>
+<main>
+  <nav class="theme-bar" id="theme-bar"></nav>
+  <header>
+    <div><div class="eyebrow">Backtest tear-sheet</div><h1 id="title"></h1><div class="sub" id="subtitle"></div></div>
+    <div class="lib">Chart.js 4.4<br>Linear/Vercel-style · zinc + teal · compact</div>
+  </header>
+  <section class="kpis" id="kpis"></section>
+  <section class="grid">
+    <div class="panel span-12"><h2>Equity vs benchmark</h2><p class="hint">Growth of 100,000 · hover for values</p>
+      <div class="legend"><span><i style="background:var(--series-1)"></i>Strategy</span><span><i style="background:var(--series-2)"></i>Benchmark</span></div>
+      <div class="chart" id="equity"></div></div>
+    <div class="panel span-12"><h2>Drawdown</h2><p class="hint">Distance below the running peak</p><div class="chart short" id="drawdown"></div></div>
+    <div class="panel span-7"><h2>Monthly returns</h2><p class="hint">Diverging scale · neutral = flat month</p><div id="heatmap" class="table-wrap"></div></div>
+    <div class="panel span-5"><h2>Trade return distribution</h2><p class="hint">Count of trades per 2% bucket</p><div class="chart" id="hist"></div></div>
+    <div class="panel span-5"><h2>Sector contribution</h2><p class="hint">Return attributed by sector</p><div class="chart" id="sectors"></div></div>
+    <div class="panel span-7"><h2>Trade ledger</h2><p class="hint">Sorted by PnL</p><div id="trades" class="table-wrap"></div></div>
+    <div class="panel span-6"><h2>Warnings</h2><p class="hint">Status colours always ship with an icon and label</p><ul class="warnings" id="warnings"></ul></div>
+    <div class="panel span-6"><h2>Colour tokens</h2><p class="hint">The full theme - every report reads only these</p><div class="swatches" id="swatches"></div></div>
+  </section>
+  <footer>Mockup with deterministic sample data · not a real backtest</footer>
+</main>
+
+<script>// Deterministic sample data shared by every theme mockup (seeded PRNG).
+(function () {
+  let s = 42;
+  const rnd = () => ((s = (s * 1664525 + 1013904223) % 4294967296) / 4294967296);
+  const gauss = () => Math.sqrt(-2 * Math.log(rnd() + 1e-9)) * Math.cos(2 * Math.PI * rnd());
+  const dates = [], equity = [], benchmark = [], drawdown = [];
+  let e = 100000, b = 100000, peak = e;
+  const d0 = new Date(Date.UTC(2022, 0, 3));
+  for (let i = 0, d = new Date(d0); equity.length < 756; d.setUTCDate(d.getUTCDate() + 1)) {
+    const wd = d.getUTCDay(); if (wd === 0 || wd === 6) continue;
+    const m = gauss();
+    b *= 1 + 0.0003 + 0.011 * m;
+    e *= 1 + 0.0007 + 0.008 * m + 0.006 * gauss();
+    peak = Math.max(peak, e);
+    dates.push(d.toISOString().slice(0, 10));
+    equity.push(+e.toFixed(2)); benchmark.push(+b.toFixed(2));
+    drawdown.push(+((e / peak - 1) * 100).toFixed(2)); i++;
+  }
+  const monthly = {}; // {year: [12 monthly % returns or null]}
+  let prev = equity[0], prevKey = dates[0].slice(0, 7);
+  dates.forEach((dt, i) => {
+    const key = dt.slice(0, 7);
+    const last = i === dates.length - 1;
+    if (key !== prevKey || last) {
+      const endVal = last ? equity[i] : equity[i - 1];
+      const [y, mo] = prevKey.split("-").map(Number);
+      (monthly[y] ||= Array(12).fill(null))[mo - 1] = +((endVal / prev - 1) * 100).toFixed(2);
+      prev = endVal; prevKey = key;
+    }
+  });
+  const tickers = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "AAPL", "MSFT", "NVDA", "AMZN", "ICICIBANK", "META", "TSLA", "LT"];
+  const trades = [];
+  for (let i = 0; i < 64; i++) {
+    const r = +(gauss() * 7 + 1.4).toFixed(2);
+    const entry = dates[Math.floor(rnd() * 700)];
+    trades.push({ ticker: tickers[Math.floor(rnd() * tickers.length)], entry, hold: 3 + Math.floor(rnd() * 40),
+      ret: r, pnl: Math.round(r * 120 + gauss() * 40), exit: rnd() < 0.6 ? "time" : rnd() < 0.5 ? "stop" : "target" });
+  }
+  const sectors = ["Tech", "Financials", "Energy", "Healthcare", "Industrials", "Consumer"];
+  const sectorReturns = sectors.map((name, k) => ({ name, ret: +(gauss() * 9 + 3 - k).toFixed(1) }));
+  const final = equity.at(-1), years = equity.length / 252;
+  window.REPORT = {
+    title: "Momentum Breakout - NIFTY 50 + S&P 100",
+    subtitle: "2022-01-03 to " + dates.at(-1) + " · daily bars · 5 slots · 10 bps costs",
+    dates, equity, benchmark, drawdown, monthly, trades, sectorReturns,
+    metrics: [
+      { label: "Total return", value: ((final / 100000 - 1) * 100).toFixed(1) + "%", delta: "+" + ((final / 100000 - benchmark.at(-1) / 100000) * 100).toFixed(1) + " pp vs bench", tone: "pos" },
+      { label: "CAGR", value: ((Math.pow(final / 100000, 1 / years) - 1) * 100).toFixed(1) + "%", tone: "pos" },
+      { label: "Sharpe", value: "1.42", tone: "neutral" },
+      { label: "Max drawdown", value: Math.min(...drawdown).toFixed(1) + "%", tone: "neg" },
+      { label: "Win rate", value: Math.round(trades.filter(t => t.ret > 0).length / trades.length * 100) + "%", tone: "neutral" },
+      { label: "Trades", value: String(trades.length), tone: "neutral" },
+    ],
+    warnings: [
+      { level: "warning", text: "3 tickers had fewer than 200 bars of history and were skipped." },
+      { level: "good", text: "No look-ahead detected in signal alignment." },
+    ],
+  };
+})();
+</script>
+<script>// Renders the library-independent parts of every mockup (KPIs, heatmap,
+// tables, warnings, palette strip) from window.REPORT and the theme's CSS tokens.
+(function () {
+  const R = window.REPORT;
+  const css = getComputedStyle(document.documentElement);
+  const tok = (n) => css.getPropertyValue("--" + n).trim();
+  window.tok = tok;
+  const $ = (id) => document.getElementById(id);
+  const fmtPct = (v) => (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(1) + "%";
+  window.fmtPct = fmtPct;
+  const sign = (v) => (v >= 0 ? "num-pos" : "num-neg");
+
+  const THEMES = [["terminal", "Terminal"], ["editorial", "Editorial"], ["slate", "Slate"],
+    ["midnight", "Midnight"], ["graphite", "Graphite"], ["forest", "Forest"]];
+  const here = location.pathname.split("/").pop().replace(".html", "");
+  $("theme-bar").innerHTML = "<span>Theme:</span>" + THEMES.map(([f, n]) =>
+    `<a href="${f}.html"${f === here ? ' aria-current="page"' : ""}>${n}</a>`).join("");
+
+  $("title").textContent = R.title;
+  $("subtitle").textContent = R.subtitle;
+  $("kpis").innerHTML = R.metrics.map((m) => `<div class="kpi" data-tone="${m.tone}">
+    <div class="label">${m.label}</div><div class="value">${m.value}</div>
+    <div class="delta">${m.delta || (m.tone === "pos" ? "above target" : m.tone === "neg" ? "worst peak-to-trough" : "&nbsp;")}</div></div>`).join("");
+
+  // Diverging heatmap: theme pos/neg poles mixed into a neutral midpoint.
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const all = Object.values(R.monthly).flat().filter((v) => v !== null);
+  const max = Math.max(...all.map(Math.abs));
+  const cell = (v) => {
+    if (v === null) return '<td class="empty"></td>';
+    const t = Math.min(1, Math.abs(v) / max), pole = v >= 0 ? "var(--pos)" : "var(--neg)";
+    const bg = `color-mix(in oklab, ${pole} ${Math.round(12 + t * 78)}%, var(--div-mid))`;
+    return `<td class="${t > 0.55 ? "strong" : ""}" style="background:${bg}" title="${fmtPct(v)}">${fmtPct(v)}</td>`;
+  };
+  $("heatmap").innerHTML = `<table class="heatmap"><thead><tr><th>Year</th>${months.map((m) => `<th style="text-align:center">${m}</th>`).join("")}</tr></thead><tbody>` +
+    Object.entries(R.monthly).map(([y, row]) => `<tr><td>${y}</td>${row.map(cell).join("")}</tr>`).join("") + "</tbody></table>";
+
+  const top = [...R.trades].sort((a, b) => b.pnl - a.pnl);
+  $("trades").innerHTML = `<table><thead><tr><th>Ticker</th><th>Entry</th><th>Hold</th><th>Exit</th><th>Return</th><th>PnL</th></tr></thead><tbody>` +
+    top.map((t) => `<tr><td>${t.ticker}</td><td>${t.entry}</td><td>${t.hold}d</td><td>${t.exit}</td><td class="${sign(t.ret)}">${fmtPct(t.ret)}</td><td class="${sign(t.pnl)}">${t.pnl >= 0 ? "+" : "−"}${Math.abs(t.pnl).toLocaleString()}</td></tr>`).join("") + "</tbody></table>";
+
+  $("warnings").innerHTML = R.warnings.map((w) => `<li><span class="badge ${w.level}">${w.level === "good" ? "✓ OK" : w.level === "warning" ? "! Warning" : "✕ Critical"}</span><span>${w.text}</span></li>`).join("");
+
+  const sw = ["bg", "surface", "ink", "muted", "accent", "series-1", "series-2", "series-3", "pos", "neg", "status-good", "status-warning", "status-critical"];
+  $("swatches").innerHTML = sw.map((n) => `<span class="swatch"><b style="background:var(--${n})"></b>--${n} ${tok(n)}</span>`).join("");
+
+  // Histogram bins shared by every library.
+  const lo = -20, hi = 22, w = 2, bins = [];
+  for (let x = lo; x < hi; x += w) bins.push({ x0: x, x1: x + w, n: R.trades.filter((t) => t.ret >= x && t.ret < x + w).length });
+  window.HIST = bins;
+})();
+</script>
+<script>
+const R = REPORT;
+Chart.defaults.color = tok("muted"); Chart.defaults.font.family = tok("font-ui"); Chart.defaults.font.size = 11;
+Chart.defaults.borderColor = tok("line-soft");
+Object.assign(Chart.defaults.plugins.tooltip, { backgroundColor: tok("surface-2"), borderColor: tok("line"), borderWidth: 1, titleColor: tok("ink"), bodyColor: tok("ink"), padding: 10, cornerRadius: 6, boxPadding: 4 });
+const canvas = (id) => { const el = document.getElementById(id); el.innerHTML = "<canvas></canvas>"; return el.firstChild; };
+const time = { ticks: { maxTicksLimit: 7, maxRotation: 0 }, grid: { display: false } };
+const common = { responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false }, plugins: { legend: { display: false } } };
+const sparse = (arr) => arr.filter((_, i) => i % 2 === 0);
+const labels = sparse(R.dates);
+const g = (ctx, c) => { const gr = ctx.chart.ctx.createLinearGradient(0, 0, 0, ctx.chart.height); gr.addColorStop(0, c + "40"); gr.addColorStop(1, c + "00"); return gr; };
+new Chart(canvas("equity"), { type: "line", data: { labels, datasets: [
+  { label: "Strategy", data: sparse(R.equity), borderColor: tok("series-1"), backgroundColor: (c) => g(c, tok("series-1")), fill: true, borderWidth: 2, pointRadius: 0, tension: 0.2 },
+  { label: "Benchmark", data: sparse(R.benchmark), borderColor: tok("series-2"), borderWidth: 2, pointRadius: 0, tension: 0.2 }] },
+  options: { ...common, scales: { x: time, y: { ticks: { callback: (v) => v / 1000 + "k" } } },
+    plugins: { ...common.plugins, tooltip: { callbacks: { label: (c) => ` ${c.dataset.label}  ${Math.round(c.raw).toLocaleString()}` } } } } });
+new Chart(canvas("drawdown"), { type: "line", data: { labels, datasets: [{ label: "Drawdown", data: sparse(R.drawdown), borderColor: tok("neg"), backgroundColor: tok("neg") + "2e", fill: true, borderWidth: 1.5, pointRadius: 0 }] },
+  options: { ...common, scales: { x: time, y: { ticks: { callback: (v) => v + "%" } } } } });
+new Chart(canvas("hist"), { type: "bar", data: { labels: HIST.map((b) => b.x0 + "%"), datasets: [{ label: "Trades", data: HIST.map((b) => b.n),
+  backgroundColor: HIST.map((b) => (b.x0 >= 0 ? tok("pos") : tok("neg"))), borderRadius: 4, borderSkipped: "start", categoryPercentage: 0.94, barPercentage: 1 }] },
+  options: { ...common, scales: { x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } } } } });
+const sec = [...R.sectorReturns].sort((a, b) => b.ret - a.ret);
+new Chart(canvas("sectors"), { type: "bar", data: { labels: sec.map((s) => s.name), datasets: [{ label: "Return", data: sec.map((s) => s.ret),
+  backgroundColor: sec.map((s) => (s.ret >= 0 ? tok("pos") : tok("neg"))), borderRadius: 4, borderSkipped: false, barPercentage: 0.6 }] },
+  options: { ...common, indexAxis: "y", scales: { x: { ticks: { callback: (v) => v + "%" } }, y: { grid: { display: false } } },
+    plugins: { ...common.plugins, tooltip: { callbacks: { label: (c) => " " + fmtPct(c.raw) } } } } });
+</script>
+</body>
+</html>
