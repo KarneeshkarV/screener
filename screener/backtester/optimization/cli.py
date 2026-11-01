@@ -22,6 +22,7 @@ from screener.backtester.cli_common import (
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fundamentals import (
     FundamentalFetcher,
+    fundamental_filing_lag_days,
     resolve_fundamental_provider,
 )
 from screener.backtester.models import BacktestConfig, Trade
@@ -248,11 +249,13 @@ def _optimization_collaborators(
     cfg: BacktestConfig,
     parameter_grid: dict[str, list[Any]],
     provider: str | None,
-    lag_days: int,
+    lag_days: int | None,
 ) -> tuple[BacktestConfig, FundamentalFetcher | None]:
     """Resolve opt-in fundamentals and validate all CLI configs before price fetches."""
     try:
         resolved = resolve_fundamental_provider(provider)
+        if lag_days is None:
+            lag_days = fundamental_filing_lag_days(resolved)
         fields = set(cfg.fundamental_fields)
         for params in parameter_combinations(parameter_grid):
             test_cfg = cfg.validated_update(params)
@@ -337,8 +340,8 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
         click.option(
             "--fundamental-lag-days",
             type=click.IntRange(min=0),
-            default=1,
-            show_default=True,
+            default=None,
+            help="Reporting lag in days; defaults to the provider's filing lag.",
         ),
         click.option("--tickers", default=None),
         click.option("--universe-file", default=None),
@@ -923,13 +926,16 @@ def research_report(
     if universe and not tickers_csv and not universe_file:
         from screener.universes import load_sp500_membership, load_universe_selection
 
-        selection = load_universe_selection(
-            universe,
-            market=kwargs["market"],
-            as_of=end_date,
-            start=start_date,
-            point_in_time=point_in_time,
-        )
+        try:
+            selection = load_universe_selection(
+                universe,
+                market=kwargs["market"],
+                as_of=end_date,
+                start=start_date,
+                point_in_time=point_in_time,
+            )
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
         symbols = selection.symbols
         if int(kwargs["max_universe"]) > 0:
             symbols = symbols[: int(kwargs["max_universe"])]
