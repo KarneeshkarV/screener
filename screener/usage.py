@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import getpass
 import json
 import logging
@@ -41,6 +42,7 @@ _invocations_table_ready = False
 # Non-blocking write path: stage rows, flush on a daemon thread, best-effort join.
 # SCREENER_USAGE_FLUSH_MS overrides the join budget (default 50 ms).
 _DEFAULT_FLUSH_TIMEOUT_S = 0.05
+_EXIT_FLUSH_TIMEOUT_S = 2.0
 _pending_lock = threading.Lock()
 _pending_usage: dict[str, Any] | None = None
 _pending_invocation: dict[str, Any] | None = None
@@ -260,28 +262,47 @@ def _write_invocation_row(
     )
 
 
+def _identity() -> tuple[str, str]:
+    """Return (username, hostname); never raise (telemetry must not fail a command)."""
+    try:
+        username = getpass.getuser()
+    except Exception:
+        username = "unknown"
+    try:
+        hostname = platform.node()
+    except Exception:
+        hostname = "unknown"
+    return username, hostname
+
+
 def _flush_pending_sync() -> None:
     """Write any staged usage/invocation rows on one connection (sync)."""
     global _pending_usage, _pending_invocation
-    with _pending_lock:
-        usage_row = _pending_usage
-        inv_row = _pending_invocation
-        _pending_usage = None
-        _pending_invocation = None
-    if usage_row is None and inv_row is None:
-        return
-    try:
-        client = _connect()
-        if client is None:
+    while True:
+        with _pending_lock:
+            usage_row = _pending_usage
+            inv_row = _pending_invocation
+        if usage_row is None and inv_row is None:
             return
-        if usage_row is not None:
-            _write_usage_row(client, **usage_row)
-        if inv_row is not None:
-            _write_invocation_row(client, **inv_row)
-    except Exception as exc:  # pragma: no cover - defensive telemetry path
-        logger.debug("feature usage flush failed: %s", exc)
-    finally:
-        _close_client()
+        try:
+            client = _connect()
+            if client is None:
+                return
+            if usage_row is not None:
+                _write_usage_row(client, **usage_row)
+                with _pending_lock:
+                    if _pending_usage is usage_row:
+                        _pending_usage = None
+            if inv_row is not None:
+                _write_invocation_row(client, **inv_row)
+                with _pending_lock:
+                    if _pending_invocation is inv_row:
+                        _pending_invocation = None
+        except Exception as exc:  # pragma: no cover - defensive telemetry path
+            logger.debug("feature usage flush failed: %s", exc)
+            return
+        finally:
+            _close_client()
 
 
 def flush_usage(timeout_s: float | None = None) -> None:
@@ -315,6 +336,17 @@ def _schedule_flush() -> None:
             _flush_thread = thread
             thread.start()
     thread.join(timeout=_flush_timeout_s())
+
+
+def _flush_at_exit() -> None:
+    """Give an unfinished background flush a bounded last chance at exit."""
+    with _pending_lock:
+        thread = _flush_thread
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=_EXIT_FLUSH_TIMEOUT_S)
+
+
+atexit.register(_flush_at_exit)
 
 
 def ensure_usage_table(client: UsageClient) -> None:
@@ -423,13 +455,14 @@ def record_feature_invocation(
     global _pending_invocation
     # Capture identity on the calling thread (getpass/platform can be slow-ish
     # but stay off the Turso critical path relative to HTTPS).
+    username, hostname = _identity()
     row = {
         "feature": feature,
         "duration_ms": int(duration_ms),
         "status": status,
         "params": dict(params or {}),
-        "username": getpass.getuser(),
-        "hostname": platform.node(),
+        "username": username,
+        "hostname": hostname,
     }
     with _pending_lock:
         _pending_invocation = row
@@ -544,13 +577,14 @@ def record_feature_usage(
     if _usage_disabled():
         return
     global _pending_usage
+    username, hostname = _identity()
     row = {
         "feature": feature,
         "command_path": command_path,
         "status": status,
         "duration_ms": int(duration_ms),
-        "username": getpass.getuser(),
-        "hostname": platform.node(),
+        "username": username,
+        "hostname": hostname,
     }
     with _pending_lock:
         _pending_usage = row

@@ -23,8 +23,6 @@ import json
 import os
 import statistics
 import subprocess
-import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -50,7 +48,9 @@ def _mean(samples: list[float]) -> float:
     return statistics.fmean(samples) if samples else float("nan")
 
 
-def _shell_time(cmd: list[str], *, cwd: Path | None = None, env: dict | None = None) -> float:
+def _shell_time(
+    cmd: list[str], *, cwd: Path | None = None, env: dict | None = None
+) -> float:
     """Wall seconds via /usr/bin/time -f %e (process tree wall clock)."""
     time_cmd = ["/usr/bin/time", "-f", "%e", *cmd]
     proc = subprocess.run(
@@ -114,10 +114,7 @@ def _turso_available() -> bool:
 
 
 def _versions() -> dict[str, str]:
-    code = (
-        "import numpy, pandas; "
-        "print(pandas.__version__); print(numpy.__version__)"
-    )
+    code = "import numpy, pandas; print(pandas.__version__); print(numpy.__version__)"
     proc = subprocess.run(
         [str(VENV_PYTHON), "-c", code],
         cwd=str(REPO_ROOT),

@@ -470,3 +470,15 @@ optimize:
     assert captured["parameter_grid"]["hold"] == [5, 10]
     assert captured["kwargs"]["metric"] == "total_return"
     assert captured["kwargs"]["top_n"] == 4
+
+
+def test_every_lazy_command_spec_resolves():
+    import importlib
+
+    import click
+
+    from screener.cli import _LAZY_COMMANDS
+
+    for name, (module, attr, _short) in _LAZY_COMMANDS.items():
+        obj = getattr(importlib.import_module(module), attr)
+        assert isinstance(obj, click.Command), name

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import types
 
 import pytest
@@ -248,9 +249,11 @@ def test_record_pair_is_non_blocking_for_slow_client(monkeypatch):
     """Flush join budget must not wait for the full remote RTT."""
     import time as time_mod
 
+    release = threading.Event()
+
     class SlowClient(FakeClient):
         def execute(self, stmt: str, args: list[object] | None = None):
-            time_mod.sleep(0.4)
+            release.wait(timeout=0.4)
             return super().execute(stmt, args)
 
     client = SlowClient()
@@ -272,6 +275,8 @@ def test_record_pair_is_non_blocking_for_slow_client(monkeypatch):
     elapsed = time_mod.perf_counter() - t0
     # Default flush budget is ~50 ms; slow client takes 400 ms+ per execute.
     assert elapsed < 0.25
+    release.set()
+    usage.flush_usage(timeout_s=5.0)
 
 
 def test_usage_invocation_normalizers_cover_scalar_and_empty_values():
@@ -415,3 +420,53 @@ def test_usage_report_renders_counts(monkeypatch):
     assert result.exit_code == 0
     assert "screen" in result.output
     assert "garp" in result.output
+
+
+def test_default_flush_writes_row_for_fast_client(monkeypatch):
+    client = FakeClient()
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("SCREENER_USAGE_FLUSH_MS", raising=False)
+    monkeypatch.setattr(usage, "_connect", lambda: client)
+    usage.record_feature_invocation(
+        "screen", command_path="screener screen", duration_ms=1, status="success"
+    )
+    usage.flush_usage(timeout_s=2.0)
+    assert any(
+        "INSERT INTO feature_usage_invocations" in s for s, _ in client.statements
+    )
+
+
+def test_rows_staged_while_flush_runs_are_not_lost(monkeypatch):
+    gate = threading.Event()
+    client = FakeClient()
+    orig = client.execute
+
+    def slow(stmt, args=None):
+        gate.wait(timeout=2.0)
+        return orig(stmt, args)
+
+    client.execute = slow  # type: ignore[method-assign]
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("SCREENER_USAGE_FLUSH_MS", "10")
+    monkeypatch.setattr(usage, "_connect", lambda: client)
+    for n in (1, 2):
+        usage.record_feature_invocation(
+            "screen", command_path="x", duration_ms=n, status="success"
+        )
+    gate.set()
+    usage.flush_usage(timeout_s=5.0)
+    inserts = [
+        a for s, a in client.statements if "INSERT INTO feature_usage_invocations" in s
+    ]
+    assert [a[9] for a in inserts][-1] == 2
+
+
+def test_identity_failure_does_not_raise(monkeypatch):
+    def boom():
+        raise KeyError("no passwd entry")
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(usage, "_connect", lambda: None)
+    monkeypatch.setattr(usage.getpass, "getuser", boom)
+    usage.record_feature_usage("screen", command_path="x", duration_ms=1)
+    assert usage._identity()[0] == "unknown"

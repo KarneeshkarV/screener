@@ -39,6 +39,10 @@ Workflow scan itself was ~10ms warm.
 | M7_usage_pair | 0.415 | 0.232 | 0.100 | 0.100 | 0.100 | 0.100 | **0.050** | **-87.9%** |
 | M8_cli_warm_csv_no_turso | 0.640 | 0.667 | 0.657 | 0.510 | 0.513 | 0.420 | **0.430** | **-32.8%** |
 
+Note: the final numbers predate db81630 (restore of the default HTML report) and are not re-measured at HEAD.
+M2 and M5 were measured with the report off, so they do not describe the default non-CSV `screen` path.
+Each log section records the parent SHA of its commit.
+
 Full per-commit samples: `profiling/_analysis/screen_bench_log.md`.
 
 ## What each commit moved
@@ -48,7 +52,7 @@ Full per-commit samples: `profiling/_analysis/screen_bench_log.md`.
 | C1 client reuse | M7, M1 | M7 0.415 → 0.232 (one connect + DDL cache) |
 | C2 non-blocking | M1, M7 | M1 near no-Turso; M7 ≈ flush budget |
 | C3 lazy CLI | M3, M6, M1 | Help/import ~0.14s; no eager backtester/plotly |
-| C4 opt-in report | M2, M5 | M5 ~0.05s (history only); table path near CSV |
+| C4 opt-in report | M2, M5 | Measured with the report off (later reverted by db81630) |
 | C5 lazy plotly | M1, M4 path | CSV workflow never imports plotly |
 | flush 50ms | M1, M7 | Residual Turso wait cut in half |
 
@@ -73,6 +77,6 @@ Full per-commit samples: `profiling/_analysis/screen_bench_log.md`.
 | --- | --- |
 | M1 ≥50% better with Turso | 1.080 → 0.507 (**53.1%**) |
 | M3 ≥40% better | 0.627 → 0.140 (**77.7%**) |
-| M5 no Plotly by default | 0.045 ≈ M4 + history |
+| M5 no Plotly by default | Not valid at HEAD: db81630 restored the default HTML report |
 | Warm CSV returns 50 rows | verified |
 | No fetch_limit change | not changed |
