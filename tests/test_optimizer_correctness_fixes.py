@@ -2,6 +2,7 @@
 
 from datetime import date
 import json
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -577,3 +578,107 @@ def test_fundamental_lag_sweep_rejected_before_trial_register(prices, tmp_path):
             trial_db_path=tmp_path / "trials.db",
         )
     assert not (tmp_path / "trials.db").exists()
+
+
+def test_cli_defaults_fundamental_lag_to_provider_filing_lag(
+    prices, tmp_path, monkeypatch
+):
+    bars, fetcher = prices
+    seen = {}
+
+    def build(provider, **kwargs):
+        seen.update(kwargs)
+        stub = FundamentalStub()
+        stub.lag_days = kwargs["lag_days"]
+        stub.markets = frozenset({"us", "india"})
+        return stub
+
+    monkeypatch.setattr(
+        "screener.backtester.optimization.cli._fetcher", lambda: fetcher
+    )
+    monkeypatch.setattr(
+        "screener.backtester.fundamentals.build_fundamental_fetcher", build
+    )
+    result = CliRunner().invoke(
+        optimize,
+        report_args(bars, tmp_path)
+        + [
+            "--tickers",
+            "AAA",
+            "--entry",
+            "roe_ttm > 10",
+            "--fundamentals-provider",
+            "openscreener",
+            "--param",
+            "hold=3",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["lag_days"] == 60
+    payload = json.loads((tmp_path / "report.json").read_text())
+    assert payload["config"]["fundamental_lag_days"] == 60
+
+
+def test_report_universe_market_mismatch_is_usage_error(prices, tmp_path):
+    bars, _ = prices
+    result = CliRunner().invoke(
+        optimize,
+        report_args(bars, tmp_path)
+        + ["--universe", "sp500", "-m", "india", "--param", "hold=3"],
+    )
+    assert result.exit_code == 2, result.output
+    assert "Traceback" not in result.output
+
+
+def test_report_sp500_without_history_uses_date_added(prices, tmp_path, monkeypatch):
+    import screener.universes as universes
+
+    bars, fetcher = prices
+    monkeypatch.setattr(
+        "screener.backtester.optimization.cli._fetcher", lambda: fetcher
+    )
+    monkeypatch.setattr(universes, "CACHE_DIR", tmp_path / "universe-cache")
+    monkeypatch.setattr(
+        universes,
+        "load_universe_selection",
+        lambda *a, **k: SimpleNamespace(
+            name="sp500", symbols=("AAA",), membership_windows=(), warnings=()
+        ),
+    )
+    monkeypatch.setattr(
+        universes,
+        "load_sp500_membership",
+        lambda **k: {"AAA": date(2024, 4, 1)},
+    )
+    result = CliRunner().invoke(
+        optimize,
+        report_args(bars, tmp_path)
+        + ["--universe", "sp500", "--max-universe", "0", "--param", "hold=3"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "report.json").read_text())
+    assert payload["config"]["membership_added"]
+
+
+def test_walk_forward_rejects_risk_free_sweep_before_any_grid(
+    prices, tmp_path, monkeypatch
+):
+    from screener.backtester.optimization import walk_forward as wf_module
+
+    bars, fetcher = prices
+    monkeypatch.setattr(
+        wf_module,
+        "grid_search",
+        lambda *a, **k: pytest.fail("grid ran before hurdle check"),
+    )
+    with pytest.raises(ValueError, match="risk_free_rate is ambiguous"):
+        walk_forward_optimize(
+            _config(entry_expr="close > 0"),
+            fetcher,
+            {"risk_free_rate": [0.1, 0.2]},
+            start_date=bars.index[5].date(),
+            end_date=bars.index[-1].date(),
+            train_days=30,
+            test_days=15,
+            trial_db_path=tmp_path / "trials.db",
+        )

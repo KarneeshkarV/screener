@@ -22,6 +22,7 @@ from screener.backtester.cli_common import (
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fundamentals import (
     FundamentalFetcher,
+    fundamental_filing_lag_days,
     resolve_fundamental_provider,
 )
 from screener.backtester.models import BacktestConfig, Trade
@@ -229,11 +230,13 @@ def _optimization_collaborators(
     cfg: BacktestConfig,
     parameter_grid: dict[str, list[Any]],
     provider: str | None,
-    lag_days: int,
+    lag_days: int | None,
 ) -> tuple[BacktestConfig, FundamentalFetcher | None]:
     """Resolve opt-in fundamentals and validate all CLI configs before price fetches."""
     try:
         resolved = resolve_fundamental_provider(provider)
+        if lag_days is None:
+            lag_days = fundamental_filing_lag_days(resolved)
         fields = set(cfg.fundamental_fields)
         for params in parameter_combinations(parameter_grid):
             test_cfg = cfg.validated_update(params)
@@ -318,8 +321,8 @@ def _common_options(fn: Callable[P, R]) -> Callable[P, R]:
         click.option(
             "--fundamental-lag-days",
             type=click.IntRange(min=0),
-            default=1,
-            show_default=True,
+            default=None,
+            help="Reporting lag in days; defaults to the provider's filing lag.",
         ),
         click.option("--tickers", default=None),
         click.option("--universe-file", default=None),
@@ -740,40 +743,6 @@ def _parse_param_specs(params: tuple[str, ...]) -> dict[str, list[Any]]:
     return grid
 
 
-def _resolve_universe_tickers(
-    *,
-    market: str,
-    tickers: str | None,
-    universe_file: str | None,
-    universe: str | None,
-    end_date: date,
-    max_universe: int,
-) -> tuple[str | None, str | None]:
-    """Return ``(tickers_csv, universe_file)`` for :func:`_base_config`."""
-    if tickers or universe_file:
-        return tickers, universe_file
-    if universe is None:
-        return tickers, universe_file
-    from screener.universes import (
-        UniverseRequest,
-        UniverseSource,
-        resolve_universe,
-    )
-
-    symbols = resolve_universe(
-        UniverseRequest(
-            source=UniverseSource.INDEX_PIT,
-            index_name=universe,
-            as_of=end_date,
-        )
-    )
-    if max_universe and max_universe > 0:
-        symbols = symbols[: int(max_universe)]
-    if not symbols:
-        raise click.UsageError(f"Universe {universe!r} resolved to zero symbols.")
-    return ",".join(symbols), None
-
-
 @optimize.command(name="research-report")
 @_common_options
 @click.option(
@@ -881,18 +850,22 @@ def research_report(
     top0 = int(top_values[0]) if top_values else int(kwargs["top"])
 
     membership_windows: tuple[tuple[str, date, date | None], ...] = ()
+    membership_added: tuple[tuple[str, date], ...] = ()
     universe_warnings: tuple[str, ...] = ()
     tickers_csv, universe_file = kwargs["tickers"], kwargs["universe_file"]
     if universe and not tickers_csv and not universe_file:
         from screener.universes import load_universe_selection
 
-        selection = load_universe_selection(
-            universe,
-            market=kwargs["market"],
-            as_of=end_date,
-            start=start_date,
-            point_in_time=True,
-        )
+        try:
+            selection = load_universe_selection(
+                universe,
+                market=kwargs["market"],
+                as_of=end_date,
+                start=start_date,
+                point_in_time=True,
+            )
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
         symbols = selection.symbols
         if int(kwargs["max_universe"]) > 0:
             symbols = symbols[: int(kwargs["max_universe"])]
@@ -907,6 +880,26 @@ def research_report(
             universe_warnings += (
                 "Point-in-time membership unavailable; using a static universe with survivorship bias.",
             )
+            if selection.name == "sp500":
+                from screener.universes import load_sp500_membership
+
+                try:
+                    added_by_symbol = load_sp500_membership(as_of=end_date)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    universe_warnings += (
+                        f"'date added' membership is unavailable ({exc}).",
+                    )
+                else:
+                    membership_added = tuple(
+                        (symbol, added)
+                        for symbol, added in added_by_symbol.items()
+                        if added is not None and symbol in symbols
+                    )
+                    if membership_added:
+                        universe_warnings += (
+                            "Falling back to 'date added' membership; removed "
+                            "ex-members are not reconstructed.",
+                        )
     cfg = _base_config(
         market=kwargs["market"],
         end_date=end_date,
@@ -931,7 +924,12 @@ def research_report(
         compounding=kwargs["compounding"],
         risk_free_rate=kwargs["risk_free_rate"],
     )
-    cfg = cfg.validated_update({"membership_windows": membership_windows})
+    cfg = cfg.validated_update(
+        {
+            "membership_windows": membership_windows,
+            "membership_added": membership_added,
+        }
+    )
     cfg, fundamental_fetcher = _optimization_collaborators(
         cfg,
         parameter_grid,

@@ -443,6 +443,12 @@ def walk_forward_optimize(
         test_days=test_days,
         step_days=step_days,
     )
+    if len(windows) > 1 and len(set(parameter_grid.get("risk_free_rate", []))) > 1:
+        raise RiskFreeHurdleAmbiguity(
+            "Walk-forward aggregate risk_free_rate is ambiguous: a multi-value "
+            "risk_free_rate sweep can select hurdles that vary across folds; "
+            "use a constant hurdle"
+        )
     results: list[WalkForwardResult] = []
     train_scores: list[float] = []
     selected_hurdles: set[float] = set()

@@ -581,6 +581,7 @@ def run_research_report(
             "tickers": list(cfg.tickers) if cfg.tickers else None,
             "universe_file": cfg.universe_file,
             "membership_windows": cfg.membership_windows,
+            "membership_added": cfg.membership_added,
             "universe_warnings": list(universe_warnings),
             "fundamentals_provider": cfg.fundamentals_provider,
             "fundamental_fields": cfg.fundamental_fields,

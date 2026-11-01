@@ -6,9 +6,7 @@ import json
 import re
 from datetime import date
 from pathlib import Path
-from types import SimpleNamespace
 
-import click
 import pandas as pd
 import pytest
 from click.testing import CliRunner
@@ -884,49 +882,6 @@ def test_walk_forward_combined_compounding_and_exposure(monkeypatch):
     assert summary.aggregate_metrics["exposure"] > 0.0
     assert summary.fold_boundary_policy.startswith("close_flat")
     assert summary.capital_policy.startswith("carry_ending")
-
-
-def test_resolve_universe_tickers_branches(monkeypatch):
-    import screener.backtester.optimization.cli as optimization_cli
-    from screener import universes
-
-    assert optimization_cli._resolve_universe_tickers(
-        market="us",
-        tickers=None,
-        universe_file=None,
-        universe=None,
-        end_date=date(2024, 1, 1),
-        max_universe=0,
-    ) == (None, None)
-
-    monkeypatch.setattr(
-        universes,
-        "load_current_universe",
-        lambda *args, **kwargs: SimpleNamespace(symbols=("AAA", "BBB")),
-    )
-    assert optimization_cli._resolve_universe_tickers(
-        market="us",
-        tickers=None,
-        universe_file=None,
-        universe="sp500",
-        end_date=date(2024, 1, 1),
-        max_universe=1,
-    ) == ("AAA", None)
-
-    monkeypatch.setattr(
-        universes,
-        "load_current_universe",
-        lambda *args, **kwargs: SimpleNamespace(symbols=()),
-    )
-    with pytest.raises(click.UsageError, match="zero symbols"):
-        optimization_cli._resolve_universe_tickers(
-            market="us",
-            tickers=None,
-            universe_file=None,
-            universe="sp500",
-            end_date=date(2024, 1, 1),
-            max_universe=0,
-        )
 
 
 def test_backtest_config_rejects_unknown_interval():
