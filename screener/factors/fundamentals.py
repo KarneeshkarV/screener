@@ -62,7 +62,7 @@ class FundamentalProvenance:
     #: Whether effective dates are real filing/publication timestamps or an
     #: estimated period-end plus lag. Callers must not treat the estimated kind
     #: as actual announcement time or original restatement history.
-    effective_date_kind: str = EFFECTIVE_DATE_KIND_FILING_TIMESTAMP
+    effective_date_kind: str
 
 
 def stamp_fundamentals(
@@ -70,7 +70,7 @@ def stamp_fundamentals(
     *,
     columns: tuple[str, ...],
     filing_lag_days: int,
-    effective_date_kind: str = EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
+    effective_date_kind: str,
 ) -> pd.DataFrame:
     """Record on ``frame`` that ``columns`` arrived through the lagged join.
 

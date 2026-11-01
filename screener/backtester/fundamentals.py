@@ -1054,7 +1054,7 @@ def merge_fundamentals_into_bars(
     yf_by_tv: Mapping[str, str],
     *,
     filing_lag_days: int,
-    effective_date_kind: str = EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
+    effective_date_kind: str,
 ) -> dict[str, pd.DataFrame]:
     """Forward-fill dated fundamentals onto each ticker's OHLCV frame.
 

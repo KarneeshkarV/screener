@@ -164,6 +164,7 @@ def test_merge_fundamentals_forward_fills_only_after_effective_date():
         {"AAA": fundamentals_frame},
         {"AAA": "AAA"},
         filing_lag_days=fundamentals.INDIA_FUNDAMENTAL_FILING_LAG_DAYS,
+        effective_date_kind=fundamentals.EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
     )["AAA"]
 
     assert pd.isna(merged.loc[pd.Timestamp("2024-02-05"), "roe_ttm"])
@@ -173,6 +174,7 @@ def test_merge_fundamentals_forward_fills_only_after_effective_date():
 
 class _StubFundamentalFetcher:
     lag_days = 0
+    effective_date_kind = fundamentals.EFFECTIVE_DATE_KIND_FILING_TIMESTAMP
 
     def __init__(self, frame: pd.DataFrame | None = None) -> None:
         self.frame = frame
@@ -980,6 +982,7 @@ def test_merge_fundamentals_skips_empty_or_none_bars():
         {},
         {},
         filing_lag_days=0,
+        effective_date_kind=fundamentals.EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
     )
     assert out["AAA"].empty
     assert out["BBB"] is None

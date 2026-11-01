@@ -305,6 +305,7 @@ def test_fundamental_fetch_retains_latest_prior_observation_per_field(
         {"AAA": result},
         {"AAA": "AAA"},
         filing_lag_days=1,
+        effective_date_kind=fundamentals.EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
     )["AAA"]
     assert enriched.roe_ttm.eq(18.0).all()
     assert enriched.loc["2024-03-01", "debt_to_equity"].eq(0.4).all()

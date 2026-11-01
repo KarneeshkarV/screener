@@ -253,11 +253,7 @@ def build_price_panel(
         fundamentals = fundamental_fetcher.fetch(
             yf_by_tv.values(), fetch_start, fetch_end
         )
-        date_kind = getattr(
-            fundamental_fetcher,
-            "effective_date_kind",
-            "unknown",
-        )
+        date_kind = fundamental_fetcher.effective_date_kind
         if date_kind == EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG:
             warnings.append(
                 "Fundamental dates are estimated period-end plus lag, not actual "
@@ -268,7 +264,7 @@ def build_price_panel(
             fundamentals,
             yf_by_tv,
             filing_lag_days=fundamental_fetcher.lag_days,
-            effective_date_kind=str(date_kind),
+            effective_date_kind=date_kind,
         )
 
     bars_by_tv = merge_referenced_options(

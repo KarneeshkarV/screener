@@ -98,6 +98,7 @@ class SnapshotCoverageReport:
     stale_final_days: int | None
     as_of: date
     warnings: tuple[str, ...]
+    gap_warn_days: int = SNAPSHOT_OBSERVATION_GAP_WARN_DAYS
 
 
 @dataclass(frozen=True)
@@ -1182,14 +1183,15 @@ def _read_snapshot_source(source: str, *, base_dir: Path) -> pd.DataFrame:
 
 
 def _snapshot_date_column(frame: pd.DataFrame) -> str:
-    """Prefer an explicit observation column over a loosely named date column.
+    """Pick the membership date column.
 
-    Archive-backed CSVs often label the crawl day ``effective_date`` even though
-    that day is an observation date, not the index reconstitution effective
-    date. Prefer ``observation_date`` / ``snapshot_date`` when present so the
-    role is stated in the file itself.
+    ``effective_date`` wins when present: a file carrying both it and an
+    observation column may have captured a snapshot before the index
+    reconstitution, and starting the window at the earlier observation would
+    make a name eligible early. ``observation_date`` / ``snapshot_date`` state
+    the role of the date when no effective column exists.
     """
-    for column in ("observation_date", "snapshot_date", "effective_date", "date"):
+    for column in ("effective_date", "observation_date", "snapshot_date", "date"):
         if column in frame.columns:
             return column
     raise ValueError(
@@ -1263,6 +1265,7 @@ def report_snapshot_observation_coverage(
         stale_final_days=stale_final_days,
         as_of=as_of,
         warnings=tuple(warnings),
+        gap_warn_days=gap_warn_days,
     )
 
 
@@ -1322,11 +1325,11 @@ def _coverage_source_note(report: SnapshotCoverageReport) -> str:
         largest = max(gap.gap_days for gap in report.warned_gaps)
         parts.append(
             f"{len(report.warned_gaps)} observation gap(s) >= "
-            f"{SNAPSHOT_OBSERVATION_GAP_WARN_DAYS}d (largest {largest}d)"
+            f"{report.gap_warn_days}d (largest {largest}d)"
         )
     if (
         report.stale_final_days is not None
-        and report.stale_final_days >= SNAPSHOT_OBSERVATION_GAP_WARN_DAYS
+        and report.stale_final_days >= report.gap_warn_days
     ):
         parts.append(f"final observation stale by {report.stale_final_days}d vs as_of")
     if not parts:

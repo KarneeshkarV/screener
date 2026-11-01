@@ -63,8 +63,10 @@ wrong file.
   Their dates alone do not prove complete, unbiased historical membership.
 - **Archive observation dates are not index effective dates.** The CSV column
   may be named `effective_date`, but for archive-backed history that value is
-  the crawl observation day. Prefer an `observation_date` or `snapshot_date`
-  column when you control the file. Membership windows still use those dates
+  the crawl observation day. When a file carries both `effective_date` and an
+  observation column, `effective_date` is used, so a name is never eligible
+  before the reconstitution. Use `observation_date` or `snapshot_date` alone
+  when the file has only crawl days. Membership windows still use those dates
   as half-open eligibility bounds; they can lag the true index reconstitution.
 - **It is only as fine as the crawl cadence.**
   A membership change is dated at the first crawl that saw it.
