@@ -17,6 +17,7 @@ import pandas as pd
 
 from screener.backtester.metrics import (
     _cagr,
+    _calendar_cagr,
     _calmar,
     bar_returns,
     _max_drawdown,
@@ -189,6 +190,15 @@ def test_max_drawdown_matches_empyrical_on_random_equity():
 # ---------------------------------------------------------------------------
 # _calmar golden
 # ---------------------------------------------------------------------------
+
+
+def test_cagr_of_wiped_out_equity_is_total_loss():
+    """A curve ending at or below zero has lost everything: CAGR -100%."""
+    equity = pd.Series(
+        [100.0, 50.0, -10.0], index=pd.bdate_range("2024-01-01", periods=3)
+    )
+    assert _cagr(equity) == -1.0
+    assert _calendar_cagr(equity) == -1.0
 
 
 def test_calmar_matches_empyrical_oracle():

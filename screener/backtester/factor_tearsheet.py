@@ -7,6 +7,11 @@ next changes; splitting them now would add import churn without changing behavio
 Score at day ``t`` predicts the forward return from ``t`` to ``t+h``
 (close[t+h] / close[t] - 1). The score itself is causal (no lookahead);
 only the *evaluation* labels use future closes.
+
+This tearsheet is exploratory factor diagnostics only. It uses a static
+universe list and close-to-close forward returns. It is not a rolling
+executable portfolio backtest and does not provide full point-in-time
+membership or fill modeling.
 """
 
 from __future__ import annotations
@@ -31,6 +36,14 @@ from screener.universes import available_universes, load_current_universe
 
 # ── pure computation ────────────────────────────────────────────────
 
+FACTOR_TEARSHEET_LIMITATIONS = (
+    "Factor tearsheet limitations: static universe list (not dated membership "
+    "masks); close-to-close forward returns (not next-open fills or rolling "
+    "executable portfolio returns); no full point-in-time execution support. "
+    "IC t_stat is the classical iid SE; t_stat_hac is Newey-West with lag "
+    "tied to the forward horizon (lag = horizon - 1)."
+)
+
 
 def forward_returns(close_mat: pd.DataFrame, horizon: int) -> pd.DataFrame:
     """Return dates × tickers matrix of h-bar forward returns.
@@ -49,17 +62,12 @@ def daily_spearman_ic(scores: pd.DataFrame, fwd_returns: pd.DataFrame) -> pd.Ser
     if aligned_scores.empty:
         return pd.Series(dtype=float, name="ic")
 
-    def _day_ic(row_score: pd.Series) -> float:
-        day = row_score.name
-        s = row_score
-        r = cast("pd.Series[Any]", aligned_fwd.loc[cast(Any, day)])
-        mask = s.notna() & r.notna()
-        if int(mask.sum()) < 3:
-            return float("nan")
-        # Spearman = Pearson of ranks.
-        return float(s[mask].rank().corr(r[mask].rank()))
-
-    ic = aligned_scores.apply(_day_ic, axis=1)
+    paired = aligned_scores.notna() & aligned_fwd.notna()
+    score_ranks = aligned_scores.where(paired).rank(axis=1)
+    return_ranks = aligned_fwd.where(paired).rank(axis=1)
+    # Rank only paired observations. Ranking each unmasked matrix first would
+    # let a missing forward return change the cross-sectional correlation.
+    ic = score_ranks.corrwith(return_ranks, axis=1).where(paired.sum(axis=1) >= 3)
     ic.name = "ic"
     return ic
 
@@ -73,12 +81,63 @@ class ICSummary:
     t_stat: float
     pct_positive: float
     n_days: int
+    # Dependence-aware mean t-stat (Newey-West / HAC). Defaults keep older
+    # positional constructors working in tests.
+    t_stat_hac: float = float("nan")
+    hac_lag: int = 0
+
+
+def newey_west_hac_lag_for_horizon(horizon: int) -> int:
+    """Bartlett Newey-West lag for overlapping h-bar forward returns.
+
+    Forward returns of length ``horizon`` overlap for ``horizon - 1`` bars, so
+    the documented default lag is ``max(horizon - 1, 0)``.
+    """
+    if horizon < 1:
+        raise ValueError(f"horizon must be >= 1, got {horizon}")
+    return max(int(horizon) - 1, 0)
+
+
+def newey_west_mean_t_stat(values: pd.Series | np.ndarray, *, lag: int) -> float:
+    """t-statistic of the sample mean with Newey-West HAC standard errors.
+
+    Uses Bartlett weights ``1 - k / (lag + 1)`` for lags ``1..lag``. When
+    ``lag == 0`` this matches the classical iid mean t-stat (ddof=1 SE).
+    """
+    if lag < 0:
+        raise ValueError(f"lag must be >= 0, got {lag}")
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    n = int(arr.size)
+    if n < 2:
+        return float("nan")
+    mean = float(arr.mean())
+    resid = arr - mean
+    gamma0 = float(np.dot(resid, resid) / n)
+    hac = gamma0
+    max_lag = min(int(lag), n - 1)
+    for k in range(1, max_lag + 1):
+        gamma_k = float(np.dot(resid[k:], resid[:-k]) / n)
+        weight = 1.0 - (k / (max_lag + 1))
+        hac += 2.0 * weight * gamma_k
+    if not math.isfinite(hac) or hac <= 0.0:
+        return float("nan")
+    se = math.sqrt(hac / (n - 1))
+    if se <= 0.0 or not math.isfinite(se):
+        return float("nan")
+    return mean / se
 
 
 def summarize_ic(ic: pd.Series, *, horizon: int) -> ICSummary:
-    """Summary stats over a daily IC series (NaNs dropped)."""
+    """Summary stats over a daily IC series (NaNs dropped).
+
+    ``t_stat`` is the classical iid mean t-statistic. Overlapping multi-day
+    forward returns make that optimistic, so ``t_stat_hac`` reports a
+    Newey-West estimate with lag ``horizon - 1``.
+    """
     clean = ic.dropna().astype(float)
     n = len(clean)
+    hac_lag = newey_west_hac_lag_for_horizon(horizon)
     if n == 0:
         return ICSummary(
             horizon=horizon,
@@ -88,6 +147,8 @@ def summarize_ic(ic: pd.Series, *, horizon: int) -> ICSummary:
             t_stat=float("nan"),
             pct_positive=float("nan"),
             n_days=0,
+            t_stat_hac=float("nan"),
+            hac_lag=hac_lag,
         )
     mean = float(clean.mean())
     std = float(clean.std(ddof=1)) if n > 1 else float("nan")
@@ -97,6 +158,7 @@ def summarize_ic(ic: pd.Series, *, horizon: int) -> ICSummary:
         if std and std > 0 and math.isfinite(std)
         else float("nan")
     )
+    t_stat_hac = newey_west_mean_t_stat(clean, lag=hac_lag)
     pct_pos = float((clean > 0).mean())
     return ICSummary(
         horizon=horizon,
@@ -106,6 +168,8 @@ def summarize_ic(ic: pd.Series, *, horizon: int) -> ICSummary:
         t_stat=t_stat,
         pct_positive=pct_pos,
         n_days=n,
+        t_stat_hac=t_stat_hac,
+        hac_lag=hac_lag,
     )
 
 
@@ -141,6 +205,25 @@ def _quantile_labels(row: pd.Series, n_quantiles: int) -> pd.Series:
     return out
 
 
+def _quantile_label_matrix(scores: pd.DataFrame, n_quantiles: int) -> pd.DataFrame:
+    """Batch qcut-equivalent score bins, with column-order tie breaking."""
+    ranks = scores.rank(axis=1, method="first").to_numpy(dtype=float)
+    counts = scores.notna().sum(axis=1).to_numpy()
+    quantiles = np.linspace(0.0, 1.0, n_quantiles + 1)
+    # Match qcut's upward rounding at fractions not exactly representable.
+    quantiles = np.where(
+        n_quantiles * quantiles != np.arange(n_quantiles + 1),
+        np.nextafter(quantiles, 1.0),
+        quantiles,
+    )
+    labels = np.ones(ranks.shape, dtype=float)
+    for quantile in quantiles[1:-1]:
+        boundary = 1.0 + (counts - 1) * quantile
+        labels += ranks > boundary[:, None]
+    labels[np.isnan(ranks) | (counts[:, None] < n_quantiles)] = np.nan
+    return pd.DataFrame(labels, index=scores.index, columns=scores.columns)
+
+
 def quantile_mean_returns(
     scores: pd.DataFrame,
     fwd_returns: pd.DataFrame,
@@ -151,9 +234,7 @@ def quantile_mean_returns(
     if n_quantiles < 2:
         raise ValueError(f"n_quantiles must be >= 2, got {n_quantiles}")
     aligned_scores, aligned_fwd = scores.align(fwd_returns, join="inner")
-    labels = aligned_scores.apply(
-        lambda row: _quantile_labels(row, n_quantiles), axis=1
-    )
+    labels = _quantile_label_matrix(aligned_scores, n_quantiles)
     # Per-quantile pooled mean of all (day, name) cells.
     means: dict[int, float] = {}
     for q in range(1, n_quantiles + 1):
@@ -177,22 +258,26 @@ def top_quantile_turnover(scores: pd.DataFrame, *, n_quantiles: int) -> float:
     """
     if n_quantiles < 2:
         raise ValueError(f"n_quantiles must be >= 2, got {n_quantiles}")
-    labels = scores.apply(lambda row: _quantile_labels(row, n_quantiles), axis=1)
-    turnovers: list[float] = []
-    prev: set[str] | None = None
-    for day in labels.index:
-        row = labels.loc[day]
-        members = set(row.index[row == n_quantiles].astype(str))
-        if not members:
-            prev = None
-            continue
-        if prev is not None and prev:
-            overlap = len(members & prev)
-            turnovers.append(1.0 - overlap / len(members))
-        prev = members
-    if not turnovers:
+    # The old set-based calculation identifies members by string label.
+    # Preserve that behavior for unusual duplicate or colliding labels.
+    names = scores.columns.astype(str)
+    if not names.is_unique:
+        labels = _quantile_label_matrix(scores, n_quantiles)
+        turnovers: list[float] = []
+        prev: set[str] | None = None
+        for row in labels.to_numpy():
+            members = set(names[row == n_quantiles])
+            if members and prev:
+                turnovers.append(1.0 - len(members & prev) / len(members))
+            prev = members or None
+        return float(np.mean(turnovers)) if turnovers else float("nan")
+    top = _quantile_label_matrix(scores, n_quantiles).to_numpy() == n_quantiles
+    counts = top.sum(axis=1)
+    valid = (counts[1:] > 0) & (counts[:-1] > 0)
+    if not valid.any():
         return float("nan")
-    return float(np.mean(turnovers))
+    overlap = (top[1:] & top[:-1]).sum(axis=1)
+    return float(np.mean(1.0 - overlap[valid] / counts[1:][valid]))
 
 
 def analyze_horizon(
@@ -385,6 +470,7 @@ def tearsheet_to_dict(
         "start": start.isoformat(),
         "end": end.isoformat(),
         "quantiles": quantiles,
+        "limitations": FACTOR_TEARSHEET_LIMITATIONS,
         "ic": [
             {
                 "horizon": s.horizon,
@@ -392,6 +478,10 @@ def tearsheet_to_dict(
                 "ic_std": _finite_or_none(s.ic_std),
                 "ic_ir": _finite_or_none(s.ic_ir),
                 "t_stat": _finite_or_none(s.t_stat),
+                "t_stat_iid": _finite_or_none(s.t_stat),
+                "t_stat_hac": _finite_or_none(s.t_stat_hac),
+                "hac_lag": s.hac_lag,
+                "hac_method": "newey_west_bartlett",
                 "pct_positive": _finite_or_none(s.pct_positive),
                 "n_days": s.n_days,
             }
@@ -433,7 +523,9 @@ def print_tearsheet(
         "IC Mean",
         "IC Std",
         "IC IR",
-        "t-stat",
+        "t-stat iid",
+        "t-stat HAC",
+        "HAC lag",
         "% Pos",
         "N days",
     ]:
@@ -445,10 +537,13 @@ def print_tearsheet(
             f"{s.ic_std:.4f}" if math.isfinite(s.ic_std) else "n/a",
             f"{s.ic_ir:.3f}" if math.isfinite(s.ic_ir) else "n/a",
             f"{s.t_stat:.2f}" if math.isfinite(s.t_stat) else "n/a",
+            f"{s.t_stat_hac:.2f}" if math.isfinite(s.t_stat_hac) else "n/a",
+            str(s.hac_lag),
             f"{s.pct_positive * 100:.1f}%" if math.isfinite(s.pct_positive) else "n/a",
             str(s.n_days),
         )
     console.print(ic_table)
+    console.print(f"[dim]{FACTOR_TEARSHEET_LIMITATIONS}[/dim]")
 
     for q in quantile_results:
         q_table = Table(
@@ -522,6 +617,22 @@ def write_tearsheet_csv(
                 "horizon": s.horizon,
                 "metric": "t_stat",
                 "value": s.t_stat,
+            }
+        )
+        rows.append(
+            {
+                "section": "ic",
+                "horizon": s.horizon,
+                "metric": "t_stat_hac",
+                "value": s.t_stat_hac,
+            }
+        )
+        rows.append(
+            {
+                "section": "ic",
+                "horizon": s.horizon,
+                "metric": "hac_lag",
+                "value": s.hac_lag,
             }
         )
         rows.append(
@@ -651,7 +762,11 @@ def factor_tearsheet(
     csv_path: Path | None,
     json_path: Path | None,
 ) -> None:
-    """Compute factor IC and quantile tearsheet for a named strategy."""
+    """Compute factor IC and quantile tearsheet for a named strategy.
+
+    Exploratory only: static universe and close-to-close forward returns.
+    Not a rolling executable portfolio tearsheet.
+    """
     if quantiles < 2:
         raise click.UsageError("--quantiles must be >= 2")
     horizon_list = _parse_int_list(horizons, name="horizons")
@@ -675,7 +790,7 @@ def factor_tearsheet(
         end_date=end_date,
         no_universe_cache=no_universe_cache,
     )
-    warnings: list[str] = []
+    warnings: list[str] = [FACTOR_TEARSHEET_LIMITATIONS]
     if universe_note:
         warnings.append(universe_note)
 

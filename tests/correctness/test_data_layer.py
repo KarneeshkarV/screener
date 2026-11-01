@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -28,6 +29,12 @@ from screener.backtester.data import (
     _naive_normalized_index,
     _normalize_frame,
     tv_to_yf,
+)
+from screener.backtester.core import _precompute_filter_signals
+from screener.backtester.price_frames import apply_full_price_adjustment
+from screener.backtester.rolling_candidates import (
+    _build_rolling_candidate_matrices,
+    _candidate_rows_for_day,
 )
 from screener.operator.fetch import (
     _parse_bhavcopy_date,
@@ -121,6 +128,47 @@ class TestNormalizeFrameColumns:
         )
         out = _normalize_frame(df)
         assert list(out.columns) == OHLCV_COLUMNS
+
+    def test_dividend_adjustment_keeps_raw_turnover_for_adv(self):
+        raw = _make_raw_df(["2024-01-02"], [(100, 102, 99, 100, 100)]).assign(
+            **{"Adj Close": 90.0}
+        )
+        adjusted = apply_full_price_adjustment(_normalize_frame(raw))
+        gates = SimpleNamespace(
+            min_price=0.0,
+            min_avg_dollar_volume=9_500.0,
+            avg_dollar_volume_window=1,
+        )
+
+        assert adjusted["close"].iloc[0] == 90.0
+        assert adjusted["dollar_volume"].iloc[0] == 10_000.0
+        assert bool(_precompute_filter_signals({"AAA": adjusted}, gates)["AAA"].iloc[0])
+
+    def test_candidate_rank_uses_raw_turnover_with_adjusted_prices(self):
+        dates = pd.bdate_range("2024-01-02", periods=2)
+        first = pd.DataFrame(
+            {
+                "close": [90.0, 90.0],
+                "volume": [100.0, 100.0],
+                "dollar_volume": [10_000.0, 10_000.0],
+            },
+            index=dates,
+        )
+        second = pd.DataFrame(
+            {"close": [95.0, 95.0], "volume": [100.0, 100.0]}, index=dates
+        )
+        matrices = _build_rolling_candidate_matrices(
+            {"AAA": first, "BBB": second},
+            {"AAA": pd.Series(True, index=dates), "BBB": pd.Series(True, index=dates)},
+            {},
+            list(dates),
+            lookback_required=0,
+            require_next_bar=False,
+        )
+
+        ranked, _ = _candidate_rows_for_day(dates[-1], matrices, exclude=set())
+
+        assert [row["ticker"] for row in ranked] == ["AAA", "BBB"]
 
     def test_extra_columns_dropped(self):
         df = _make_raw_df(

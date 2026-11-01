@@ -115,6 +115,14 @@ def test_monte_carlo_reproducible_with_same_seed():
     assert a == b
 
 
+@pytest.mark.parametrize("ruin_threshold", [0.0, -0.1, 1.5, float("nan"), float("inf")])
+def test_trade_monte_carlo_rejects_invalid_ruin_threshold(ruin_threshold):
+    with pytest.raises(ValueError, match="ruin_threshold must be a fraction"):
+        simulate_monte_carlo(
+            [_trade(10.0, 0.10)], ruin_threshold=ruin_threshold, iterations=10
+        )
+
+
 def test_monte_carlo_bootstrap_has_terminal_return_distribution():
     trades = [
         _trade(10.0, 0.10),
@@ -124,6 +132,80 @@ def test_monte_carlo_bootstrap_has_terminal_return_distribution():
     ]
     result = simulate_monte_carlo(trades, iterations=1000, seed=7)
     assert result.return_p05 < result.return_p95
+
+
+@pytest.mark.parametrize("chunk_cells", [1, 7, 1_000_000])
+def test_monte_carlo_chunked_draw_matches_per_iteration_draw(monkeypatch, chunk_cells):
+    from screener.backtester.optimization import monte_carlo
+
+    monkeypatch.setattr(monte_carlo, "_CHUNK_CELLS", chunk_cells)
+    returns = [0.10, -0.05, 0.03, -0.02, -0.30]
+    trades = [_trade(100.0 * r, r) for r in returns]
+
+    result = simulate_monte_carlo(trades, iterations=23, seed=4, ruin_threshold=0.8)
+
+    # The loop this replaced: one ``choice`` per iteration from one generator.
+    rng = np.random.default_rng(4)
+    terminal, drawdowns, ruined = [], [], 0
+    for _ in range(23):
+        path = 100_000.0 * np.cumprod(1.0 + rng.choice(returns, size=len(returns)))
+        levels = np.concatenate(([100_000.0], path))
+        peak = np.maximum.accumulate(levels)
+        terminal.append(path[-1] / 100_000.0 - 1.0)
+        drawdowns.append(((levels - peak) / peak).min())
+        ruined += bool(path.min() <= 80_000.0)
+    assert result.median_return == float(np.median(terminal))
+    assert result.return_p05 == float(np.percentile(terminal, 5))
+    assert result.worst_drawdown == float(np.min(drawdowns))
+    assert result.drawdown_p05 == float(np.percentile(drawdowns, 5))
+    assert result.risk_of_ruin == ruined / 23
+
+
+@pytest.mark.parametrize("ruin_threshold", ["0", "-0.1", "1.5", "nan", "inf"])
+def test_optimize_validate_rejects_ruin_threshold_before_reading_trades(
+    tmp_path, monkeypatch, ruin_threshold
+):
+    ledger = tmp_path / "ledger.csv"
+    ledger.write_text("not,a,valid,ledger\n")
+
+    def unexpected_load(_path):
+        raise AssertionError("trade file must not be loaded for an invalid threshold")
+
+    monkeypatch.setattr(
+        "screener.backtester.optimization.cli._load_trades", unexpected_load
+    )
+    res = CliRunner().invoke(
+        cli,
+        [
+            "optimize",
+            "validate",
+            "--trades",
+            str(ledger),
+            "--ruin-threshold",
+            ruin_threshold,
+        ],
+    )
+
+    assert res.exit_code == 2
+    assert "--ruin-threshold must be a fraction" in res.output
+
+
+def test_optimize_validate_reads_an_intraday_ledger(tmp_path):
+    ledger = tmp_path / "ledger.csv"
+    ledger.write_text(
+        "ticker,rank,signal_date,entry_date,entry_price,exit_date,exit_price,"
+        "exit_reason,shares,entry_cost,exit_value,pnl,return_pct\n"
+        "AAA,1,2024-03-04 14:30:00,2024-03-04 14:45:00,100,2024-03-04 15:45:00,"
+        "101,time,1,100,101,1,0.01\n"
+        "BBB,2,2024-03-04,2024-03-05,50,2024-03-06,49,stop,2,100,98,-2,-0.02\n"
+    )
+
+    res = CliRunner().invoke(
+        cli, ["optimize", "validate", "--trades", str(ledger), "--iterations", "20"]
+    )
+
+    assert res.exit_code == 0, res.output
+    assert "Monte Carlo Validation" in res.output
 
 
 def test_grid_cache_key_includes_min_trades(monkeypatch, tmp_path):
@@ -422,3 +504,235 @@ def test_optimize_rejects_a_swept_hold_below_one():
     assert res.exit_code == 2, res.output
     assert "--hold" in res.output
     assert "must be >= 1" in res.output
+
+
+def test_cli_help_exposes_trial_identity_options():
+    runner = CliRunner()
+    for command in ("grid", "walk-forward", "research-report"):
+        res = runner.invoke(cli, ["optimize", command, "--help"])
+        assert res.exit_code == 0, res.output
+        assert "--experiment-id" in res.output
+        assert "--trial-db" in res.output
+        assert "--n-trials-effective" in res.output
+        if command in {"walk-forward", "research-report"}:
+            assert "calendar days" in res.output.lower()
+
+
+def test_cli_rejects_invalid_trial_identity_options():
+    runner = CliRunner()
+    bars = make_bars(n=40, seed=3, open_base=100.0)
+    fetcher = StubPriceFetcher({"AAA": bars, "SPY": bars})
+    res = runner.invoke(
+        cli,
+        [
+            "optimize",
+            "grid",
+            "--tickers",
+            "AAA",
+            "--entry",
+            "close > sma(close, 3)",
+            "--hold",
+            "5",
+            "--n-trials-effective",
+            "0",
+        ],
+        obj=fetcher,
+    )
+    assert res.exit_code == 2, res.output
+    assert "--n-trials-effective" in res.output
+
+    res = runner.invoke(
+        cli,
+        [
+            "optimize",
+            "grid",
+            "--tickers",
+            "AAA",
+            "--entry",
+            "close > sma(close, 3)",
+            "--hold",
+            "5",
+            "--experiment-id",
+            "   ",
+        ],
+        obj=fetcher,
+    )
+    assert res.exit_code == 2, res.output
+    assert "--experiment-id" in res.output
+
+
+def test_cli_grid_persists_rejected_trials_under_explicit_family(tmp_path):
+    """End-to-end offline CLI: rejected trials remain in the shared family DB."""
+    import sqlite3
+
+    from screener.backtester.optimization.trials import load_trial_search_stats
+
+    bars_a = make_bars(n=80, seed=21, open_base=100.0)
+    bars_b = make_bars(n=80, seed=22, open_base=50.0)
+    spy = make_bars(n=80, seed=99, open_base=400.0)
+    fetcher = StubPriceFetcher({"AAA": bars_a, "BBB": bars_b, "SPY": spy})
+    trial_db = tmp_path / "family_trials.db"
+    exp = "cli-family-identity"
+    start = bars_a.index[20].date().isoformat()
+    end = bars_a.index[60].date().isoformat()
+    runner = CliRunner()
+
+    # High min-trades forces rejection while still recording the attempt.
+    res = runner.invoke(
+        cli,
+        [
+            "optimize",
+            "grid",
+            "--tickers",
+            "AAA,BBB",
+            "--start",
+            start,
+            "--end",
+            end,
+            "--entry",
+            "close > sma(close, 3)",
+            "--stop-loss",
+            "none",
+            "--take-profit",
+            "none",
+            "--trailing-stop",
+            "none",
+            "--hold",
+            "5,8",
+            "--min-trades",
+            "500",
+            "--top-n",
+            "1",
+            "--workers",
+            "1",
+            "--experiment-id",
+            exp,
+            "--trial-db",
+            str(trial_db),
+        ],
+        obj=fetcher,
+    )
+    assert res.exit_code == 0, res.output
+    assert trial_db.exists()
+
+    conn = sqlite3.connect(trial_db)
+    try:
+        rows = conn.execute(
+            "SELECT status, params_json FROM trials WHERE experiment_id = ?",
+            (exp,),
+        ).fetchall()
+    finally:
+        conn.close()
+    assert len(rows) >= 2
+    assert any(status == "rejected" for status, _ in rows)
+
+    # Second search under the same family accumulates history.
+    res2 = runner.invoke(
+        cli,
+        [
+            "optimize",
+            "grid",
+            "--tickers",
+            "AAA,BBB",
+            "--start",
+            start,
+            "--end",
+            end,
+            "--entry",
+            "close > sma(close, 3)",
+            "--stop-loss",
+            "none",
+            "--take-profit",
+            "none",
+            "--trailing-stop",
+            "none",
+            "--hold",
+            "5,8,13",
+            "--min-trades",
+            "500",
+            "--top-n",
+            "1",
+            "--workers",
+            "1",
+            "--experiment-id",
+            exp,
+            "--trial-db",
+            str(trial_db),
+            "--n-trials-effective",
+            "2",
+        ],
+        obj=fetcher,
+    )
+    assert res2.exit_code == 0, res2.output
+    stats = load_trial_search_stats(exp, db_path=trial_db, n_trials_effective=2)
+    assert stats.n_trials_nominal >= 3
+    assert stats.n_trials_effective == 2
+
+
+def test_holding_period_fold_warnings_for_long_holds():
+    from screener.backtester.optimization.walk_forward import (
+        HOLDING_PERIOD_FIT_WARNING_PREFIX,
+        holding_period_fold_warnings,
+    )
+
+    assert holding_period_fold_warnings({"hold": [5, 10]}, test_days=63) == []
+    assert holding_period_fold_warnings({"hold": [50]}, test_days=63)
+    warnings = holding_period_fold_warnings({"hold": [21, 126]}, test_days=63)
+    assert len(warnings) == 1
+    assert warnings[0].startswith(HOLDING_PERIOD_FIT_WARNING_PREFIX)
+    assert "126" in warnings[0] and "63" in warnings[0]
+
+    selected = holding_period_fold_warnings(
+        {"hold": [5]}, test_days=10, selected_holds=[21]
+    )
+    assert selected and "21" in selected[0]
+
+
+def test_research_report_isolates_descriptive_and_each_training_period(tmp_path):
+    import sqlite3
+
+    from screener.backtester.optimization.research_report import run_research_report
+
+    bars = make_bars(n=95, seed=71, open_base=100.0)
+    cfg = BacktestConfig(
+        market="india",
+        as_of=bars.index[0].date(),
+        tickers=("AAA",),
+        benchmark="^NSEI",
+        entry_expr="close > 0",
+        exit_expr=None,
+        hold=3,
+        top=1,
+        initial_capital=100_000,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0,
+        commission_bps=0,
+    )
+    database = tmp_path / "trials.db"
+    run_research_report(
+        cfg,
+        StubPriceFetcher({"AAA": bars, "AAA.NS": bars, "^NSEI": bars}),
+        {"hold": [3, 5]},
+        start_date=bars.index[0].date(),
+        end_date=bars.index[-1].date(),
+        train_days=35,
+        test_days=28,
+        min_trades=1,
+        max_workers=1,
+        mc_iterations=10,
+        mc_block=2,
+        out_path=tmp_path / "report",
+        experiment_id="india-family",
+        trial_db_path=database,
+    )
+    with sqlite3.connect(database) as connection:
+        ids = {
+            row[0]
+            for row in connection.execute("SELECT DISTINCT experiment_id FROM trials")
+        }
+    assert "india-family::descriptive" in ids
+    training_ids = ids - {"india-family::descriptive"}
+    assert len(training_ids) >= 2
+    assert all(value.startswith("india-family::train:") for value in training_ids)

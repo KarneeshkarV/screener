@@ -231,7 +231,9 @@ def score_trend(bars: pd.DataFrame, benchmark_close: pd.Series) -> PillarResult:
     rsi_value = float(rsi(close, 14)[-1])
     rsi_pts = _rsi_points(rsi_value)
 
-    rel = relative_strength_spread(bars["close"], benchmark_close)
+    rel = relative_strength_spread(
+        bars["close"], benchmark_close, stock_volume=bars.get("volume")
+    )
 
     stack_count = int(stack // 10)
     if rel is None:
@@ -291,7 +293,9 @@ def score_breakout(
     rs_pts: float | None = None
     rs_note = "RS55 n/a"
     if benchmark_close is not None and not benchmark_close.empty:
-        rs = relative_strength_ratio(df["close"], benchmark_close)
+        rs = relative_strength_ratio(
+            df["close"], benchmark_close, stock_volume=df["volume"]
+        )
         if not rs.empty and not pd.isna(rs.iloc[-1]):
             rs_last = float(rs.iloc[-1])
             rs_pts = 20.0 if rs_last > 0 else 0.0
@@ -434,7 +438,9 @@ def _load_smart_money_india(
     sym = india_symbol(symbol)
     rows = _OPENSCREENER_SHAREHOLDING_PROVIDER.fetch(
         ("shareholding_quarterly", sym),
-        lambda: Stock(sym, scraper=_HttpScraper()).shareholding_quarterly(),
+        lambda: Stock(
+            sym, scraper=_HttpScraper(resilient=False)
+        ).shareholding_quarterly(),
         refresh=refresh,
         fallback=None,
         ttl_seconds=cache_ttl,

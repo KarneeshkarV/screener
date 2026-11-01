@@ -13,7 +13,7 @@ import logging
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -25,6 +25,7 @@ from screener.criteria import resolve_criteria
 from screener.screen_candidates import (
     DEFAULT_INTERVAL,
     ScreenStrategy,
+    UniverseField,
     UnscreenableStrategyError,
     prefilter_filters,
     resolve_screen_strategy,
@@ -36,6 +37,7 @@ from screener.screen_candidates import (
 )
 from screener.enrich import enrich_days_to_earnings, filter_earnings_buffer
 from screener.history import diff, previous_run, save_run
+from screener.markets import get_market
 from screener.scanner import scan
 from screener.scoring import (
     DEFAULT_PRICE_ADJUSTMENT,
@@ -63,7 +65,7 @@ def temp_report_path(prefix: str) -> Path:
 
 
 def render_screen_report(*args: Any, **kwargs: Any) -> Path:
-    """Lazy wrapper: plotly lives behind screen_report, only imported on use."""
+    """Lazy wrapper: the report renderer (ECharts pages) is only imported on use."""
     from screener.commands.screen_report import render_screen_report as _impl
 
     return _impl(*args, **kwargs)
@@ -93,8 +95,8 @@ class ScreenRequest:
     # Price adjustment for bar-derived ranking scores. Same spelling as the
     # backtester's ``--price-adjustment``. Snapshot scorers ignore it.
     price_adjustment: PriceAdjustment = DEFAULT_PRICE_ADJUSTMENT
-    # Named universe or universe file for the exact path (D9). ``None`` keeps
-    # the TradingView prefilter, which is the default. Only a criterion that
+    # Named universe or universe file for the exact path (D9). ``None`` uses
+    # the unfiltered TradingView field. Only a criterion that
     # aliases a strategy has a bar rule to run, so this is refused otherwise.
     universe: str | None = None
     # TOML/YAML/JSON definitions for custom static, snapshot, or dynamic
@@ -102,6 +104,13 @@ class ScreenRequest:
     # A snapshot universe is screened on the membership window that is open
     # today, so the live screen sees the book the backtest would have held.
     universe_config: str | None = None
+    # Selection policy for ``--universe dynamic``, spelled and defaulted as on
+    # ``backtest-rolling`` so the screen holds the book the backtest would.
+    # Ignored by every other universe, as it is there.
+    dynamic_base: str | None = None
+    dynamic_size: int = 100
+    dynamic_lookback: int = 60
+    dynamic_rebalance: str = "monthly"
     # Raise StaleDataError instead of serving stale cache when the live scan
     # fails. When ranking by a bar-derived setup_score, the same flag is
     # forwarded to the price fetcher, so a failed bar refresh also raises
@@ -117,7 +126,7 @@ class ScreenRequest:
     # budget, so callers cap both together. None keeps the resilience default.
     retries: int | None = None
     # Hand the report back unrendered, as ``ScreenOutcome.render_report``, so
-    # the caller decides when it runs. Rendering imports plotly and lays out
+    # the caller decides when it runs. Rendering builds the chart specs and lays out
     # the whole page, which is about 0.4s the caller is otherwise blocked on
     # before it can show a result it already has. The CLI sets this and renders
     # after printing; every other caller keeps the report written for it.
@@ -167,7 +176,8 @@ class ScreenOutcome:
     total: int
     df: pd.DataFrame
     # When the payload behind this result was fetched - not when this workflow
-    # returned. A cache hit carries the original fetch time. With --universe
+    # returned, always timezone-aware UTC. A cache hit carries the original
+    # fetch time. With --universe
     # there is no vendor payload, so it is when the bars were read.
     as_of: datetime
     added: tuple[str, ...] = ()
@@ -228,24 +238,29 @@ def _plain_float(value: Any, *, positive: bool = False) -> float | None:
 def _run_bar_screen(
     request: ScreenRequest,
     strategy: ScreenStrategy,
+    field: UniverseField | None = None,
 ) -> tuple[int, pd.DataFrame, datetime]:
     """Screen by ``strategy``'s entry rule instead of by TradingView filters.
 
     Two modes, differing only in where the field comes from. With
     ``--universe`` the names come from ``screener.universes`` and no vendor
-    field is consulted at all. Without it the TradingView prefilter narrows the
-    field first, which is only sound because a prefilter may not drop a name
-    the bar rule would have kept - the property
-    ``tests/correctness`` pins. The cap on that scan can break the property on
-    a field wider than it, so the two counts are compared and a short scan is
-    warned about instead of being reported as a whole one.
+    field is consulted at all. Without it TradingView supplies an unfiltered
+    field: live filters cannot cut completed-session candidates or change a
+    cross-sectional rank reference. The cap can still truncate that field,
+    so a short scan is warned about rather than reported as a whole one.
     """
     warnings: list[str] = []
     signal_date = date.today()
 
     if request.universe:
-        field = resolve_universe_field(
-            request.universe, request.market, config_path=request.universe_config
+        field = field or resolve_universe_field(
+            request.universe,
+            request.market,
+            config_path=request.universe_config,
+            dynamic_base=request.dynamic_base,
+            dynamic_size=request.dynamic_size,
+            dynamic_lookback=request.dynamic_lookback,
+            dynamic_rebalance=request.dynamic_rebalance,
         )
         tickers = field.tickers
         if field.note:
@@ -254,7 +269,7 @@ def _run_bar_screen(
         total = len(tickers)
         # No vendor payload in this mode, so the freshness the outcome reports
         # is the local bar read, which happens now.
-        fetched_at = datetime.now()
+        fetched_at = datetime.now(UTC)
     else:
         total, scanned, fetched_at = scan(
             market=request.market,
@@ -312,6 +327,12 @@ def _run_bar_screen(
         ),
         interval=request.interval,
         max_universe=request.max_universe,
+        benchmark=field.benchmark if field is not None else None,
+        dynamic_universe_size=field.dynamic_size if field is not None else None,
+        dynamic_universe_lookback=(field.dynamic_lookback if field is not None else 60),
+        dynamic_universe_rebalance=(
+            field.dynamic_rebalance if field is not None else "monthly"
+        ),
         warnings=warnings,
     )
     for warning in warnings:
@@ -327,6 +348,31 @@ _BAR_PATH_ONLY: tuple[tuple[str, str], ...] = (
     ("interval", "--interval"),
     ("max_universe", "--max-universe"),
 )
+
+
+def _with_market_price_floor(filters: list, *, market: str) -> list:
+    """``filters`` plus the venue's minimum close, which is not optional.
+
+    The bar path floors candidates on ``StrategyProfile.min_price``, which
+    falls back to ``markets.py`` when the user types no ``--min-price`` (D24).
+    The TradingView-filter path had no equivalent, so a criteria-only screen
+    ranked whatever the vendor returned - including OTC and grey-market lines
+    carried at a flat sub-cent stub, where a halving inside one $0.0001 tick
+    prints as an exact ``change`` of +100.0% and takes a top slot on
+    ``intraday_breakout``. That is the same defect
+    :mod:`screener.tradeable` gates on the bar path, arriving through the
+    vendor's own daily-change column rather than through a ratio this package
+    computes, so no factor-level gate can reach it: the floor has to be part
+    of the question asked of the vendor.
+
+    Applied as a vendor-side filter rather than a post-scan cut so the field
+    the scan returns is already floored, and the ``-n`` rows reported are
+    ``-n`` real names instead of ``-n`` minus however many stubs matched.
+    """
+    from tradingview_screener import col
+
+    floor = get_market(market).screen_min_close
+    return [*filters, col("close") >= floor]
 
 
 def _refuse_bar_path_options(request: ScreenRequest) -> None:
@@ -372,6 +418,19 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
             "a local universe."
         )
     if strategy is not None:
+        field = (
+            resolve_universe_field(
+                request.universe,
+                request.market,
+                config_path=request.universe_config,
+                dynamic_base=request.dynamic_base,
+                dynamic_size=request.dynamic_size,
+                dynamic_lookback=request.dynamic_lookback,
+                dynamic_rebalance=request.dynamic_rebalance,
+            )
+            if request.universe
+            else None
+        )
         label = screen_label(
             request.criteria_names,
             strategy=strategy,
@@ -387,11 +446,15 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
                 ),
                 price_adjustment=request.price_adjustment,
                 interval=request.interval,
+                universe_policy=field.policy if field is not None else None,
             ),
         )
-        return _finish_screen(request, label, *_run_bar_screen(request, strategy))
+        return _finish_screen(
+            request, label, *_run_bar_screen(request, strategy, field)
+        )
 
     selection = resolve_criteria(request.criteria_names)
+    filters = _with_market_price_floor(selection.filters, market=request.market)
     # Only the ``setup_score`` ranking consumes a scorer, and resolving one can
     # refuse a criteria combination whose scores are incomparable. Skip the
     # resolution when the run sorts by a TradingView column, so a refusal fires
@@ -404,7 +467,7 @@ def run_screen_workflow(request: ScreenRequest) -> ScreenOutcome:
 
     total, df, as_of = scan(
         market=request.market,
-        filters=selection.filters,
+        filters=filters,
         limit=request.limit,
         order_by=request.order_by,
         detail=request.detail,
@@ -433,6 +496,8 @@ def _finish_screen(
     selected and in nothing else, so the earnings filter, the history diff and
     the report must not be written twice.
     """
+    # Legacy cache timestamps may be naive; they were written in UTC.
+    as_of = as_of.replace(tzinfo=UTC) if as_of.tzinfo is None else as_of.astimezone(UTC)
     # Earnings enrichment is opt-in and runs only on final result rows.
     if request.earnings or request.earnings_buffer is not None:
         df = enrich_days_to_earnings(df, request.market)
@@ -461,7 +526,7 @@ def _finish_screen(
 
     # Non-CSV always writes an HTML report (temp path when --report omitted).
     # render_screen_report / temp_report_path are lazy wrappers so the CSV path
-    # (above) never imports plotly.
+    # (above) never imports the report renderer.
     generated_report = request.report_path
     if generated_report is None:
         generated_report = temp_report_path("screen")

@@ -264,6 +264,34 @@ def test_metrics_render_with_declared_labels():
     assert kinds["mc_iterations"] == "int"
 
 
+def test_summary_run_skips_chart_only_band_percentiles(monkeypatch):
+    equity = _equity(120, seed=5)
+    percentile = np.percentile
+    input_dimensions: list[int] = []
+
+    def recording_percentile(values, *args, **kwargs):
+        input_dimensions.append(np.asarray(values).ndim)
+        return percentile(values, *args, **kwargs)
+
+    monkeypatch.setattr(monte_carlo.np, "percentile", recording_percentile)
+
+    simulate_equity_monte_carlo(equity, iterations=100, block=10, seed=7)
+
+    assert input_dimensions == [1, 1, 1]
+
+
+def test_paths_api_keep_paths_zero_keeps_band_output_contract():
+    equity = _equity(120, seed=5)
+
+    result, paths = simulate_equity_monte_carlo_paths(
+        equity, iterations=100, block=10, seed=7, keep_paths=0
+    )
+
+    assert paths.paths.shape == (0, result.bars)
+    assert paths.bands.shape == (len(_BAND_PERCENTILES), result.bars + 1)
+    assert paths.band_iterations == 100
+
+
 def test_paths_variant_matches_the_summary_only_run():
     equity = _equity(120, seed=5)
     summary = simulate_equity_monte_carlo(equity, iterations=100, block=10, seed=7)
@@ -654,11 +682,12 @@ def test_cli_rejects_negative_seed_before_resolving_the_backtest(monkeypatch):
 def test_flat_distribution_marker_labels_have_separate_positions(monkeypatch):
     captured = {}
 
-    def capture_figure(fig, _div_id):
-        captured["figure"] = fig
+    def capture_option(div_id, option, **_kwargs):
+        captured["div_id"] = div_id
+        captured["option"] = option
         return ""
 
-    monkeypatch.setattr(tearsheet, "figure_html", capture_figure)
+    monkeypatch.setattr(tearsheet, "chart_html", capture_option)
 
     tearsheet._distribution_html(
         np.zeros(20),
@@ -667,14 +696,17 @@ def test_flat_distribution_marker_labels_have_separate_positions(monkeypatch):
         label="Return",
     )
 
-    annotations = captured["figure"].layout.annotations
-    assert {annotation.text for annotation in annotations} == {
+    assert captured["div_id"] == "flat-distribution"
+    mark_data = captured["option"]["series"][0]["markLine"]["data"]
+    labels = [item["label"] for item in mark_data]
+    assert [label["formatter"] for label in labels] == [
         "p05",
         "median",
         "p95",
         "realized",
-    }
-    assert len({annotation.yshift for annotation in annotations}) == 4
+    ]
+    placements = {(label["position"], label["distance"]) for label in labels}
+    assert len(placements) == 4
 
 
 def test_cli_help_lists_monte_carlo_and_shared_run_flags():
@@ -748,7 +780,7 @@ def test_the_fan_chart_size_stays_bounded_as_bars_grow():
     """The fan is a texture, so its cost must not scale with the bar count.
 
     One trace per drawn bar put 4.4 MB of equity levels into a 10-year daily
-    report, on top of the plotly bundle, on every run.
+    report, on top of the chart bundle, on every run.
     """
     sizes = []
     for bars in (600, 2520):
@@ -785,3 +817,71 @@ def test_the_realized_return_row_reads_the_metric_the_overview_tab_prints():
 
     assert "<th>Realized return</th><td>+12.34%</td>" in html
     assert "<th>Realized max drawdown</th><td>-5.67%</td>" in html
+
+
+def _per_iteration_reference(equity: pd.Series, *, iterations, block, seed, ruin):
+    """The bootstrap written one iteration at a time, as it was before chunking."""
+    returns = equity.pct_change().dropna().to_numpy(dtype=float)
+    n = returns.size
+    capital = float(equity.iloc[0])
+    rng = np.random.default_rng(seed)
+    draws = -(-n // block)
+    offsets = np.arange(block)
+    terminal, drawdowns, paths, ruined = [], [], [], 0
+    for _ in range(iterations):
+        starts = rng.integers(0, n, size=draws)
+        index = (starts[:, None] + offsets) % n
+        path = capital * np.cumprod(1.0 + returns[index.reshape(-1)[:n]])
+        levels = np.concatenate(([capital], path))
+        peak = np.maximum.accumulate(levels)
+        terminal.append(path[-1] / capital - 1.0)
+        drawdowns.append(((levels - peak) / peak).min())
+        paths.append(path)
+        ruined += bool(path.min() <= capital * ruin)
+    return np.array(terminal), np.array(drawdowns), np.array(paths), ruined
+
+
+@pytest.mark.parametrize("chunk_cells", [1, 97, 10_000_000])
+def test_chunked_draw_reproduces_the_per_iteration_draw_bit_for_bit(
+    monkeypatch, chunk_cells
+):
+    # Chunk sizes that split the run into one row per chunk, into uneven
+    # chunks that do not divide the iteration count, and into a single chunk.
+    monkeypatch.setattr(monte_carlo, "_CHUNK_CELLS", chunk_cells)
+    equity = _equity(n=60, drift=-0.004, seed=11)
+
+    result, paths = simulate_equity_monte_carlo_paths(
+        equity, iterations=37, block=7, seed=5, ruin_threshold=0.9, keep_paths=37
+    )
+    terminal, drawdowns, reference_paths, ruined = _per_iteration_reference(
+        equity, iterations=37, block=7, seed=5, ruin=0.9
+    )
+
+    assert np.array_equal(paths.terminal_returns, terminal)
+    assert np.array_equal(paths.drawdowns, drawdowns)
+    assert np.array_equal(paths.paths, reference_paths.astype(np.float32))
+    assert result.risk_of_ruin == ruined / 37
+    expected_bands = np.percentile(
+        reference_paths.astype(np.float32), _BAND_PERCENTILES, axis=0
+    )
+    assert np.array_equal(paths.bands[:, 1:], expected_bands)
+
+
+def test_strided_bands_pick_the_same_iterations_across_chunks(monkeypatch):
+    monkeypatch.setattr(monte_carlo, "_CHUNK_CELLS", 130)
+    monkeypatch.setattr(monte_carlo, "_BAND_CELL_BUDGET", 600)
+    equity = _equity(n=61, seed=2)
+
+    _, paths = simulate_equity_monte_carlo_paths(
+        equity, iterations=41, block=5, seed=9, keep_paths=0
+    )
+    _, _, reference_paths, _ = _per_iteration_reference(
+        equity, iterations=41, block=5, seed=9, ruin=0.5
+    )
+
+    # 600 cells / 60 bars = 10 rows, so every 5th of the 41 iterations.
+    assert paths.band_iterations == 9
+    expected = np.percentile(
+        reference_paths[::5].astype(np.float32), _BAND_PERCENTILES, axis=0
+    )
+    assert np.array_equal(paths.bands[:, 1:], expected)

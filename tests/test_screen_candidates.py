@@ -18,10 +18,10 @@ import pytest
 from screener import screen_workflow
 from screener.backtester.signal_panel import Candidate
 from screener.criteria import CRITERIA
-from screener.criteria import registry as criteria_registry
 from screener.screen_candidates import (
     OUTPUT_SCORE_COLUMN,
     _candidate_frame,
+    _screen_window_start,
     _warn_thin_field,
     _fundamentals_for,
     ScreenStrategy,
@@ -193,7 +193,7 @@ class TestLabel:
 # rule written on 21/252 session offsets, which leaves no sound leg at all.
 _PREFILTER_OF: dict[str, str | None] = {
     "breakout": "above_avg_volume",
-    "mark_minervini": "mark_minervini",
+    "mark_minervini": None,
     "momentum_12_1": None,
     "momentum_12_1_ema10": None,
 }
@@ -212,9 +212,8 @@ class TestPrefilter:
     def test_the_prefilter_yields_that_criterion_s_own_filters(self, name: str) -> None:
         strategy = resolve_screen_strategy((name,))
         assert strategy is not None
-        criterion = _PREFILTER_OF[name]
-        expected = [] if criterion is None else list(criteria_registry.get(criterion)())
-        assert prefilter_filters(strategy) == expected
+        # Live snapshot fields cannot cut a completed-session candidate field.
+        assert prefilter_filters(strategy) == []
 
     def test_a_strategy_without_a_prefilter_scans_unfiltered(self) -> None:
         # No declared prefilter means no field cut, which is always sound: the
@@ -273,6 +272,60 @@ class TestUniverseMode:
         assert field.tickers == ["STAY.NS", "JOINED.NS"]
         assert "book_pit" in field.note
 
+    def test_a_dynamic_universe_keeps_its_selection_policy(self, tmp_path) -> None:
+        config = tmp_path / "universes.yaml"
+        config.write_text(
+            "universes:\n"
+            "  liquid_one:\n"
+            "    type: dynamic\n"
+            "    market: us\n"
+            "    symbols: [AAA, BBB]\n"
+            "    size: 1\n"
+            "    lookback: 20\n"
+            "    rebalance: quarterly\n",
+            encoding="utf-8",
+        )
+
+        field = resolve_universe_field("liquid_one", "us", config_path=config)
+
+        assert field.tickers == ["AAA", "BBB"]
+        assert field.dynamic_size == 1
+        assert field.dynamic_lookback == 20
+        assert field.dynamic_rebalance == "quarterly"
+
+    def test_the_built_in_dynamic_universe_keeps_its_selection_policy(
+        self, monkeypatch
+    ) -> None:
+        # ``--universe dynamic`` is a built-in on backtest-rolling. Read as a
+        # file path here, it crashed, and a screen could not hold the book the
+        # backtest selects.
+        from types import SimpleNamespace
+
+        from screener import universes
+
+        bases: list[str] = []
+
+        def fake_current(name: str, **kwargs: object) -> SimpleNamespace:
+            bases.append(name)
+            return SimpleNamespace(symbols=("AAA.NS", "BBB.NS"), source="fake")
+
+        monkeypatch.setattr(universes, "load_current_universe", fake_current)
+
+        field = resolve_universe_field(
+            "dynamic",
+            "india",
+            dynamic_size=1,
+            dynamic_lookback=20,
+            dynamic_rebalance="weekly",
+        )
+
+        assert bases == ["nifty500"]
+        assert field.tickers == ["AAA.NS", "BBB.NS"]
+        assert field.benchmark == "^NSEI"
+        assert field.dynamic_size == 1
+        assert field.dynamic_lookback == 20
+        assert field.dynamic_rebalance == "weekly"
+
     def test_a_config_universe_needs_its_config(self) -> None:
         # Without --universe-config the name falls through to the file reader,
         # which is the honest failure: there is nowhere else it could be.
@@ -319,9 +372,7 @@ class TestWorkflowWiring:
         outcome = run_screen_workflow(_request(criteria_names=("breakout",)))
 
         assert captured["scorer"] is None
-        assert captured["filters"] == list(
-            criteria_registry.get(_PREFILTER_OF["breakout"])()
-        )
+        assert captured["filters"] == []
         assert captured["tickers"] == ["NSE:AAA", "NSE:BBB"]
         assert captured["strategy"] == "breakout"
         # The digest is the settings fingerprint; the readable part is what
@@ -403,7 +454,7 @@ class TestWorkflowWiring:
         monkeypatch.setattr(
             screen_workflow,
             "resolve_universe_field",
-            lambda universe, market, config_path=None: UniverseField(
+            lambda universe, market, **kwargs: UniverseField(
                 ["NSE:AAA", "NSE:BBB", "NSE:CCC"]
             ),
         )
@@ -418,6 +469,128 @@ class TestWorkflowWiring:
         # `total` is the field the rule judged, which in this mode is the whole
         # universe rather than a vendor-narrowed slice.
         assert outcome.total == 3
+
+    def test_universe_mode_forwards_the_dynamic_selection_policy(
+        self, monkeypatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_candidates(strategy, **kwargs: object) -> pd.DataFrame:
+            captured.update(kwargs)
+            return pd.DataFrame({"name": ["AAA"], OUTPUT_SCORE_COLUMN: [100.0]})
+
+        monkeypatch.setattr(screen_workflow, "screen_candidates", fake_candidates)
+        monkeypatch.setattr(
+            screen_workflow,
+            "resolve_universe_field",
+            lambda universe, market, **kwargs: UniverseField(
+                ["AAA", "BBB"],
+                dynamic_size=1,
+                dynamic_lookback=20,
+                dynamic_rebalance="quarterly",
+            ),
+        )
+
+        run_screen_workflow(
+            _request(criteria_names=("breakout",), universe="liquid_one")
+        )
+
+        assert captured["dynamic_universe_size"] == 1
+        assert captured["dynamic_universe_lookback"] == 20
+        assert captured["dynamic_universe_rebalance"] == "quarterly"
+
+    def test_universe_mode_forwards_the_dynamic_flags_to_the_resolver(
+        self, monkeypatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_field(universe: str, market: str, **kwargs: object) -> UniverseField:
+            captured.update(kwargs)
+            return UniverseField(["AAA"])
+
+        monkeypatch.setattr(
+            screen_workflow,
+            "screen_candidates",
+            lambda strategy, **kwargs: pd.DataFrame(
+                {"name": ["AAA"], OUTPUT_SCORE_COLUMN: [100.0]}
+            ),
+        )
+        monkeypatch.setattr(screen_workflow, "resolve_universe_field", fake_field)
+
+        run_screen_workflow(
+            _request(
+                criteria_names=("breakout",),
+                universe="dynamic",
+                dynamic_base="nifty50",
+                dynamic_size=7,
+                dynamic_lookback=30,
+                dynamic_rebalance="weekly",
+            )
+        )
+
+        assert captured["dynamic_base"] == "nifty50"
+        assert captured["dynamic_size"] == 7
+        assert captured["dynamic_lookback"] == 30
+        assert captured["dynamic_rebalance"] == "weekly"
+
+
+class TestScreenWindow:
+    @pytest.mark.parametrize(
+        ("rebalance", "expected"),
+        [
+            ("weekly", "2024-06-05"),
+            ("monthly", "2024-05-01"),
+            ("quarterly", "2024-01-01"),
+        ],
+    )
+    def test_dynamic_window_includes_the_active_rebalance_period(
+        self, rebalance, expected
+    ) -> None:
+        start = _screen_window_start(
+            pd.Timestamp("2024-06-20"),
+            fundamental_fetcher=None,
+            dynamic_universe_size=1,
+            dynamic_universe_rebalance=rebalance,
+        )
+
+        assert start == pd.Timestamp(expected)
+
+    @pytest.mark.parametrize(
+        ("end", "rebalance", "snapped_period_start"),
+        [
+            # A Sunday the 1st snaps back to Friday Oct 30, in October.
+            ("2026-11-01", "monthly", "2026-10-01"),
+            # New Year's Day snaps to Dec 31, in the October quarter.
+            ("2027-01-01", "quarterly", "2026-10-01"),
+        ],
+    )
+    def test_dynamic_window_covers_the_period_of_a_snapped_as_of_bar(
+        self, end, rebalance, snapped_period_start
+    ) -> None:
+        # The screened bar is the last trading bar on or before ``end``. When
+        # it falls in the previous period, that period's first bar must be in
+        # the window or membership is selected on a later bar than the
+        # rolling engine uses.
+        start = _screen_window_start(
+            pd.Timestamp(end),
+            fundamental_fetcher=None,
+            dynamic_universe_size=1,
+            dynamic_universe_rebalance=rebalance,
+        )
+
+        assert start <= pd.Timestamp(snapped_period_start)
+
+    def test_daily_dynamic_window_keeps_the_normal_screen_span(self) -> None:
+        end = pd.Timestamp("2024-06-20")
+
+        start = _screen_window_start(
+            end,
+            fundamental_fetcher=None,
+            dynamic_universe_size=1,
+            dynamic_universe_rebalance="daily",
+        )
+
+        assert start == end - pd.Timedelta(days=15)
 
 
 class TestCandidateFrame:
@@ -570,6 +743,21 @@ class TestResultFrame:
         assert row["volume"] == pytest.approx(2_000.0)
         assert pd.isna(row["market_cap_basic"])
 
+    def test_display_prices_use_the_candidate_day_when_newer_bars_exist(self) -> None:
+        candidates = [_candidate("NSE:AAA", 1, 5.0)]
+        bars = {"NSE:AAA": _bars(close=120.0, previous=100.0, volume=2_000.0)}
+        as_of = bars["NSE:AAA"].index[0]
+        scanned = pd.DataFrame(
+            {"ticker": ["NSE:AAA"], "close": [120.0], "volume": [2_000.0]}
+        )
+
+        universe = _candidate_frame(candidates, bars, None, as_of=as_of)
+        vendor = _candidate_frame(candidates, bars, scanned, as_of=as_of)
+
+        for result in (universe, vendor):
+            assert result.iloc[0]["close"] == pytest.approx(100.0)
+            assert result.iloc[0]["change"] == pytest.approx(0.0)
+
     def test_sort_reorders_the_finished_rows_by_a_display_column(self) -> None:
         # Membership still comes from the rule; only the presentation order
         # changes, exactly as --sort re-sorts a snapshot scan.
@@ -593,6 +781,43 @@ class TestResultFrame:
 
         assert df["ticker"].tolist() == ["NSE:AAA"]
         assert any("market_cap_basic" in w for w in warnings)
+
+    def test_rank_order_limit_only_builds_display_rows_for_the_result(
+        self, monkeypatch
+    ) -> None:
+        candidates = [
+            _candidate(f"NSE:TICKER{i}", i, float(20 - i)) for i in range(1, 11)
+        ]
+        bars = {
+            candidate.ticker: _bars(close=100.0, previous=99.0, volume=1_000.0)
+            for candidate in candidates
+        }
+        rendered: list[str] = []
+
+        def count_display_rows(frame, ticker, as_of=None):
+            rendered.append(ticker)
+            return {
+                "ticker": ticker,
+                "name": ticker.split(":", 1)[-1],
+                "description": "",
+                "close": 100.0,
+                "change": 0.0,
+                "volume": 1_000.0,
+                "market_cap_basic": float("nan"),
+            }
+
+        monkeypatch.setattr(
+            "screener.screen_candidates._bar_display_row", count_display_rows
+        )
+
+        result = _candidate_frame(candidates, bars, None, limit=3)
+
+        assert result["ticker"].tolist() == [
+            "NSE:TICKER1",
+            "NSE:TICKER2",
+            "NSE:TICKER3",
+        ]
+        assert rendered == result["ticker"].tolist()
 
     def test_the_score_does_not_depend_on_the_result_limit(self) -> None:
         # setup_score used to be a percentile of the truncated top-N, so the
@@ -653,7 +878,10 @@ class TestFundamentalWiring:
             None,
         )
 
-    def test_the_us_default_provider_matches_the_backtester_s(self) -> None:
+    def test_the_us_default_provider_matches_the_backtester_s(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setenv("FMP_API_KEY", "offline-test-key")
         _fetcher, provider = _fundamentals_for(
             "eps_growth_yoy > 0", None, market="us", refresh=False
         )

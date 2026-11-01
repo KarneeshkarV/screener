@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling_simulation import run_rolling_backtest
@@ -86,3 +87,39 @@ def test_combo_blends_both_factors() -> None:
     )
     traded = {t.ticker for t in result.trades}
     assert traded == {"BEST"}, traded
+
+
+@pytest.mark.parametrize(
+    "strategy", ["mom_lowvol_combo", "combo:momentum_12_1=0.5,low_volatility=0.5"]
+)
+def test_dated_combo_matches_reference_without_future_members(strategy):
+    from screener.backtester.core import prepare_strategy_bars
+
+    discover_plugins()
+    active = {ticker: _DATA[ticker] for ticker in ("HIMOM", "BEST", "LOVOL")}
+    union = {**active, "MEH": _DATA["MEH"]}
+    windows = tuple((ticker, _INDEX[0].date(), None) for ticker in active)
+    windows += (("MEH", (_INDEX[-1] + pd.Timedelta(days=1)).date(), None),)
+
+    def prepare(frames, membership):
+        return prepare_strategy_bars(
+            strategy,
+            frames,
+            frames,
+            list(frames),
+            _INDEX[0].date(),
+            _INDEX[-1].date(),
+            StubPriceFetcher(frames),
+            [],
+            market="india",
+            benchmark="^NSEI",
+            membership_windows=membership,
+        )
+
+    expected = prepare(active, ())
+    actual = prepare(union, windows)
+    for ticker in active:
+        pd.testing.assert_series_equal(
+            actual[ticker]["rank_score"], expected[ticker]["rank_score"]
+        )
+    assert actual["MEH"]["rank_score"].isna().all()

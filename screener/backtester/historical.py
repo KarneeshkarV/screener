@@ -7,15 +7,16 @@ from collections import deque
 import numpy as np
 import pandas as pd
 
+from screener.backtester.book import fill_pending_entries
 from screener.backtester.core import (
     _bar_label,
     _benchmark_series_from_panel,
     _eligible_reserve_signal_idx,
-    _make_slot_state,
     _passes_entry_filters,
     _resolve_universe,
     _RunCaches,
     _SlotState,
+    PendingEntryOrder,
     prepare_strategy_bars,
     strategy_required_lookback,
 )
@@ -41,10 +42,9 @@ from screener.backtester.models import (
     BacktestResult,
 )
 from screener.backtester.pine import PineError, parse, required_lookback
-from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.backtester.portfolio import Portfolio, build_portfolio_curve
 from screener.backtester.sizing import (
     entry_budget_for,
-    entry_opens_no_shares,
     marked_portfolio_equity,
     sizing_allows_slot_growth,
 )
@@ -103,12 +103,13 @@ def select_candidates(
         last_bar = bars.iloc[pos]
         close = float(last_bar["close"])
         volume = float(last_bar["volume"])
+        dollar_volume = float(last_bar.get("dollar_volume", close * volume))
         rows.append(
             {
                 "ticker": ticker,
                 "as_of_close": close,
                 "as_of_volume": volume,
-                "as_of_dollar_vol": close * volume,
+                "as_of_dollar_vol": dollar_volume,
             }
         )
     if filtered_count:
@@ -160,6 +161,7 @@ class _ReserveRotationSource:
         slot_bars: dict[int, pd.DataFrame],
         reentries_left: dict[int, int],
         pending_reentry: dict[int, str],
+        pending_entry_orders: dict[int, PendingEntryOrder],
         reserve_queue: deque[dict],
         taken: set[str],
         warnings: list[str],
@@ -176,15 +178,33 @@ class _ReserveRotationSource:
         self.slot_bars = slot_bars
         self.reentries_left = reentries_left
         self.pending_reentry = pending_reentry
+        self.pending_entry_orders = pending_entry_orders
         self.reserve_queue = reserve_queue
         self.taken = taken
         self.warnings = warnings
         self.caches = caches
 
+    def _fill_pending(self, day: pd.Timestamp, *, at_close: bool) -> None:
+        fill_pending_entries(
+            day=day,
+            at_close=at_close,
+            pending_orders=self.pending_entry_orders,
+            bars_by_ticker=self.bars_by_tv,
+            cfg=self.cfg,
+            portfolio=self.portfolio,
+            slot_states=self.slot_states,
+            slot_bars=self.slot_bars,
+            fill_model=self.fill_model,
+            caches=self.caches,
+            exit_ast=self.exit_ast,
+            warnings=self.warnings,
+        )
+
     def before_exits(self, day: pd.Timestamp) -> None:
         cfg = self.cfg
         portfolio = self.portfolio
         grows_slots = sizing_allows_slot_growth(cfg.sizing_rule)
+        self._fill_pending(day, at_close=False)
         if self.pending_reentry:
             # Only a reinvesting rule reads marked equity; every other rule
             # sizes off realized equity (or, frozen, off initial capital),
@@ -225,40 +245,20 @@ class _ReserveRotationSource:
                     free_slots=slots_left + 1,
                     series_cache=self.caches.frame(ticker, slot_frame).sizing_series,
                 )
-                state, warn = _make_slot_state(
-                    ticker,
-                    slot_frame,
-                    reentry_signal_idx,
-                    cfg,
-                    self.exit_ast,
-                    new_rank,
-                    self.fill_model,
-                    caches=self.caches,
-                    entry_budget=entry_budget,
-                )
-                if state is None:
-                    if warn:
-                        self.warnings.append(f"{ticker} re-entry: {warn}")
-                    del self.pending_reentry[slot_id]
+                if entry_budget <= 0:
                     continue
-                if entry_opens_no_shares(entry_budget, state.entry_shares):
-                    # Zero budget / shares still occupies a slot; leave pending.
-                    continue
-                portfolio.assign(ticker, new_rank, _bar_label(day, cfg))
-                portfolio.open(
+                self.pending_entry_orders[slot_id] = PendingEntryOrder(
                     ticker=ticker,
-                    entry_date=state.entry_date,
-                    entry_price=state.entry_fill,
-                    budget=entry_budget,
-                    shares=state.entry_shares,
-                    allow_slot_growth=sizing_allows_slot_growth(cfg.sizing_rule),
+                    signal_idx=reentry_signal_idx,
+                    rank=new_rank,
+                    signal_date=_bar_label(day, cfg),
                 )
-                self.slot_states[slot_id] = state
                 del self.pending_reentry[slot_id]
 
     def after_exits(self, day: pd.Timestamp, freed_slots: list[FreedSlot]) -> None:
         cfg = self.cfg
         portfolio = self.portfolio
+        self._fill_pending(day, at_close=True)
         freed: list[int] = []
         for freed_slot in freed_slots:
             slot_id = freed_slot.slot_id
@@ -267,6 +267,16 @@ class _ReserveRotationSource:
                 self.reentries_left[slot_id] -= 1
                 self.pending_reentry[slot_id] = freed_slot.state.ticker
 
+        # A rejected or expired queued entry also releases its slot today.
+        # Rotate reserves now, never back on the earlier signal day.
+        freed.extend(
+            slot_id
+            for slot_id, state in self.slot_states.items()
+            if state is None
+            and slot_id not in freed
+            and slot_id not in self.pending_entry_orders
+            and slot_id not in self.pending_reentry
+        )
         if not cfg.reinvest or not freed:
             return
 
@@ -309,33 +319,14 @@ class _ReserveRotationSource:
                     free_slots=slots_left + 1,
                     series_cache=self.caches.frame(ticker, reserve_bars).sizing_series,
                 )
-                state, warn = _make_slot_state(
-                    ticker,
-                    reserve_bars,
-                    reserve_signal_idx,
-                    cfg,
-                    self.exit_ast,
-                    int(reserve["rank"]),
-                    self.fill_model,
-                    caches=self.caches,
-                    entry_budget=entry_budget,
-                )
-                if state is None:
-                    if warn:
-                        self.warnings.append(f"{ticker}: {warn}")
+                if entry_budget <= 0:
                     continue
-                if entry_opens_no_shares(entry_budget, state.entry_shares):
-                    continue
-                portfolio.assign(ticker, int(reserve["rank"]), _bar_label(day, cfg))
-                portfolio.open(
+                self.pending_entry_orders[slot_id] = PendingEntryOrder(
                     ticker=ticker,
-                    entry_date=state.entry_date,
-                    entry_price=state.entry_fill,
-                    budget=entry_budget,
-                    shares=state.entry_shares,
-                    allow_slot_growth=sizing_allows_slot_growth(cfg.sizing_rule),
+                    signal_idx=reserve_signal_idx,
+                    rank=int(reserve["rank"]),
+                    signal_date=_bar_label(day, cfg),
                 )
-                self.slot_states[slot_id] = state
                 self.slot_bars[slot_id] = reserve_bars
                 self.taken.add(ticker)
                 break
@@ -368,6 +359,7 @@ def _run_event_driven_sim(
     slot_bars: dict[int, pd.DataFrame] = {}
     reentries_left: dict[int, int] = {}
     pending_reentry: dict[int, str] = {}
+    pending_entry_orders: dict[int, PendingEntryOrder] = {}
     grows_slots = sizing_allows_slot_growth(cfg.sizing_rule)
     initial_equity = (
         marked_portfolio_equity(portfolio, bars_by_tv, as_of_ts)
@@ -400,42 +392,22 @@ def _run_event_driven_sim(
             free_slots=slots_left + 1,
             series_cache=caches.frame(ticker, bars).sizing_series,
         )
-        state, warn = _make_slot_state(
-            ticker,
-            bars,
-            signal_idx,
-            cfg,
-            exit_ast,
-            int(row["rank"]),
-            fill_model,
-            caches=caches,
-            entry_budget=entry_budget,
-        )
-        if state is None:
-            if warn:
-                warnings.append(f"{ticker}: {warn}")
-            slot_states[slot_id] = None
-            continue
-        if entry_opens_no_shares(entry_budget, state.entry_shares):
-            slot_states[slot_id] = None
-            continue
-        portfolio.assign(ticker, int(row["rank"]), cfg.as_of)
-        portfolio.open(
-            ticker=ticker,
-            entry_date=state.entry_date,
-            entry_price=state.entry_fill,
-            budget=entry_budget,
-            shares=state.entry_shares,
-            allow_slot_growth=sizing_allows_slot_growth(cfg.sizing_rule),
-        )
-        slot_states[slot_id] = state
-        slot_bars[slot_id] = bars
+        slot_states[slot_id] = None
+        if entry_budget > 0:
+            pending_entry_orders[slot_id] = PendingEntryOrder(
+                ticker=ticker,
+                signal_idx=signal_idx,
+                rank=int(row["rank"]),
+                signal_date=_bar_label(as_of_ts, cfg),
+            )
+            slot_bars[slot_id] = bars
         reentries_left[slot_id] = cfg.max_reentries if cfg.allow_reentry else 0
 
     taken = {state.ticker for state in slot_states.values() if state is not None}
+    taken.update(order.ticker for order in pending_entry_orders.values())
     reserve_queue: deque[dict] = deque(reserves_df.to_dict("records"))
 
-    horizon_end = as_of_ts + pd.Timedelta(days=max(cfg.hold * 3 + 60, 90))
+    horizon_end = _historical_horizon_end(as_of_ts, cfg)
     day_set: set[pd.Timestamp] = set()
     for bars in bars_by_tv.values():
         if bars is None or bars.empty:
@@ -464,6 +436,7 @@ def _run_event_driven_sim(
         slot_bars=slot_bars,
         reentries_left=reentries_left,
         pending_reentry=pending_reentry,
+        pending_entry_orders=pending_entry_orders,
         reserve_queue=reserve_queue,
         taken=taken,
         warnings=warnings,
@@ -481,6 +454,11 @@ def _run_event_driven_sim(
     )
 
     return master_dates
+
+
+def _historical_horizon_end(as_of: pd.Timestamp, cfg: BacktestConfig) -> pd.Timestamp:
+    """Use the same full horizon for historical fetching and reserve simulation."""
+    return as_of + pd.Timedelta(days=max(cfg.hold * 3 + 60, 90))
 
 
 def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
@@ -507,7 +485,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     start = (
         as_of_ts - pd.Timedelta(days=_warmup_days_for_interval(lookback, cfg.interval))
     ).date()
-    end = (as_of_ts + pd.Timedelta(days=cfg.hold * 2 + 30)).date()
+    end = _historical_horizon_end(as_of_ts, cfg).date()
     price_panel = fetcher.fetch(yf_symbols, start, end)
 
     if cfg.price_adjustment == "splits_only":
@@ -570,6 +548,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         slot_count,
         cost_model=cost_model_from_config(cfg),
         compounding=cfg.compounding,
+        whole_shares=cfg.market.lower() == "india",
     )
 
     master_dates = _run_event_driven_sim(
@@ -610,13 +589,14 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
             ).tolist()
         )
     calendar = pd.DatetimeIndex(sorted(date_set))
-    equity = build_equity_curve(
+    portfolio_curve = build_portfolio_curve(
         calendar,
         trades,
         bars_by_tv,
         cfg.initial_capital,
         price_adjustment=cfg.price_adjustment,
     )
+    equity = portfolio_curve["equity"].rename(None)
 
     benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
@@ -627,6 +607,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         slot_count,
         periods_per_year=periods_per_year_for_interval(cfg.interval),
         risk_free_rate=float(cfg.risk_free_rate),
+        holdings_value=portfolio_curve["holdings_value"],
     )
     metrics.update(compute_regime_metrics(benchmark, trades))
     metrics.update(

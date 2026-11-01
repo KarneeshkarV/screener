@@ -10,8 +10,8 @@ pass a non-zero rate when they want a cash-rate comparison.
 
 ``exposure`` remains the serialized key for average slot occupancy (open
 positions / slot count). It is not capital invested. Marked capital exposure
-(holdings mark-to-market / equity) needs a daily holdings series from the
-engine; see the note on :func:`_exposure`.
+(holdings mark-to-market / equity) uses the daily holdings series emitted
+by ``build_portfolio_curve``.
 """
 
 from __future__ import annotations
@@ -110,6 +110,8 @@ _RESULT_VIEW_ORDER: tuple[tuple[str, str, MetricKind], ...] = (
     # Serialized key stays ``exposure`` for compatibility; the value is slot
     # occupancy (open positions / slots), not capital invested.
     ("exposure", "Avg Slot Occupancy", "pct"),
+    ("avg_capital_exposure", "Avg Capital Invested", "pct"),
+    ("max_capital_exposure", "Max Capital Invested", "pct"),
     ("risk_free_rate", "Risk-Free Hurdle (ann.)", "pct"),
     ("benchmark_return", "Benchmark Return", "pct"),
     ("trade_count", "Trades", "count"),
@@ -266,6 +268,8 @@ def _cagr(equity: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> f
     end = float(equity.iloc[-1])
     if start <= 0:
         return 0.0
+    if end <= 0:
+        return -1.0
     # Annualize over the elapsed return periods (N-1 for an N-point curve), not
     # the point count: an N-bar equity curve spans N-1 return periods, so the
     # horizon is (N-1)/periods_per_year years. Using len(equity)/... overstated
@@ -290,6 +294,8 @@ def _calendar_cagr(equity: pd.Series) -> float:
     end = float(equity.iloc[-1])
     if start <= 0:
         return 0.0
+    if end <= 0:
+        return -1.0
     t0 = pd.Timestamp(equity.index[0])
     t1 = pd.Timestamp(equity.index[-1])
     seconds = (t1 - t0).total_seconds()
@@ -318,6 +324,23 @@ def _max_drawdown_duration_days(equity: pd.Series) -> float:
         return 0.0
     values = equity.to_numpy(dtype=float)
     times = pd.DatetimeIndex(equity.index)
+    if (
+        np.isfinite(values).all()
+        and times.is_monotonic_increasing
+        and not times.hasnans
+    ):
+        # Each new or equal high resets the peak timestamp. A completed
+        # drawdown ends at its recovery bar, not at its last underwater bar.
+        at_peak = values >= np.maximum.accumulate(values)
+        peak_positions = np.flatnonzero(at_peak)
+        next_positions = np.append(peak_positions[1:], len(values) - 1)
+        underwater = np.append(np.diff(peak_positions) > 1, not at_peak[-1])
+        if not underwater.any():
+            return 0.0
+        durations = times.take(next_positions[underwater]) - times.take(
+            peak_positions[underwater]
+        )
+        return float(durations.max().total_seconds() / 86400.0)
     peak = values[0]
     peak_time = times[0]
     longest = 0.0
@@ -457,13 +480,9 @@ def _exposure(
 ) -> float:
     """Average slot occupancy: mean open positions / ``slot_count``.
 
-    This is not capital exposure. Marked capital invested / equity needs a
-    daily holdings mark-to-market series. Reconstructing that here from trades
-    alone would either ignore marks or duplicate ``portfolio.build_equity_curve``
-    same-bar, dividend, and forward-fill rules. Required seam for parent:
-    emit ``holdings_value`` alongside the equity curve from
-    ``build_equity_curve`` / ``Portfolio``, then average
-    ``holdings_value / equity`` where equity > 0.
+    Capital exposure uses daily holdings values from ``build_portfolio_curve``.
+    Same-day round trips have zero end-of-day holdings, even though they used
+    capital intraday; neither measure is an intraday peak exposure measure.
     """
     trades = list(trades)
     if not trades or len(equity_index) == 0:
@@ -919,6 +938,7 @@ def compute_metrics(
     sr_trial_std_annual: float | None = None,
     *,
     risk_free_rate: float = 0.0,
+    holdings_value: pd.Series | None = None,
 ) -> dict:
     """Compute portfolio metrics from an equity curve and trade ledger.
 
@@ -988,6 +1008,12 @@ def compute_metrics(
             rf=rf,
         )
         metrics["dsr_trials"] = n_trials
+    if holdings_value is not None:
+        capital_exposure = holdings_value.reindex(equity.index).div(
+            equity.where(equity > 0)
+        )
+        metrics["avg_capital_exposure"] = float(capital_exposure.mean())
+        metrics["max_capital_exposure"] = float(capital_exposure.max())
     metrics.update(_trade_return_stats(trades))
     return metrics
 

@@ -10,15 +10,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from screener.backtester.book import BOOK_CONFIG_FIELDS, open_book
+from screener.backtester.book import BOOK_CONFIG_FIELDS, fill_pending_entries, open_book
 from screener.backtester.core import (
     _active_or_pending_tickers,
     _bar_label,
-    _build_frame_cache,
     _FrameCache,
-    _make_slot_state,
     _RunCaches,
     _SlotState,
+    PendingEntryOrder,
 )
 from screener.backtester.data import PriceFetcher
 from screener.backtester.day_loop import (
@@ -39,7 +38,11 @@ from screener.backtester.models import (
     BacktestConfig,
     BacktestResult,
 )
-from screener.backtester.portfolio import Portfolio, build_equity_curve
+from screener.backtester.portfolio import (
+    Portfolio,
+    affordable_buy_shares,
+    build_portfolio_curve,
+)
 from screener.backtester.price_panel import (
     PRICE_PANEL_CONFIG_FIELDS,
     PricePanelInputs,
@@ -57,7 +60,6 @@ from screener.backtester.signal_panel import (
 )
 from screener.backtester.sizing import (
     entry_budget_for,
-    entry_opens_no_shares,
     marked_portfolio_equity,
     sizing_allows_slot_growth,
 )
@@ -198,6 +200,7 @@ class _DailyRankingSource:
         # membership is judged on the prior completed bar, fires every Nth bar.
         self._day_count = 0
         self._prev_day: pd.Timestamp | None = None
+        self.pending_entry_orders: dict[int, PendingEntryOrder] = {}
         # Per-run memo: exit-AST evaluations and frame primitives are computed
         # once per ticker instead of once per slot open. Exit signals are filled
         # up front in one panel pass rather than one interpreted AST walk per
@@ -214,7 +217,49 @@ class _DailyRankingSource:
             frames=frame_caches,
         )
 
+    def _fill_pending(self, day: pd.Timestamp, *, at_close: bool) -> None:
+        filled = fill_pending_entries(
+            day=day,
+            at_close=at_close,
+            pending_orders=self.pending_entry_orders,
+            bars_by_ticker=self.bars_by_tv,
+            cfg=self.cfg,
+            portfolio=self.portfolio,
+            slot_states=self.slot_states,
+            slot_bars=self.slot_bars,
+            fill_model=self.fill_model,
+            caches=self.caches,
+            exit_ast=self.exit_ast,
+            warnings=self.warnings,
+        )
+        for order in filled:
+            # Limits keep their existing filled-selection convention.
+            # Market selection is recorded when the order is queued, before
+            # any future price or affordability result is known.
+            if self.cfg.entry_order_type != "limit":
+                continue
+            bars = self.bars_by_tv[order.ticker]
+            self.selection_rows.append(
+                {
+                    "ticker": order.ticker,
+                    "signal_date": order.signal_date,
+                    "as_of_close": float(bars["close"].iloc[order.signal_idx]),
+                    "as_of_volume": float(bars["volume"].iloc[order.signal_idx]),
+                    "as_of_dollar_vol": float(
+                        self.candidate_matrices.dollar_vol_np[
+                            self.candidate_matrices.row_by_day[
+                                pd.Timestamp(order.signal_date)
+                            ],
+                            self.candidate_matrices.col_by_ticker[order.ticker],
+                        ]
+                    ),
+                    "rank": order.rank,
+                    "role": "active",
+                }
+            )
+
     def before_exits(self, day: pd.Timestamp) -> None:
+        self._fill_pending(day, at_close=False)
         if self.cfg.rank_exit_every is not None:
             self._day_count += 1
             if (
@@ -238,12 +283,15 @@ class _DailyRankingSource:
         """
         cfg = self.cfg
         portfolio = self.portfolio
+        self._fill_pending(day, at_close=True)
         slot_states = self.slot_states
         # Treat every slot that is now empty (whether already idle or freed
         # today) as available for refill. Order is slot-id ascending, matching
         # the original interleaved loop.
         free_slots: list[int] = [
-            slot_id for slot_id, state in slot_states.items() if state is None
+            slot_id
+            for slot_id, state in slot_states.items()
+            if state is None and slot_id not in self.pending_entry_orders
         ]
 
         if not free_slots:
@@ -264,27 +312,46 @@ class _DailyRankingSource:
         # updated as slots open so the inner loop is an O(1) membership check
         # instead of rescanning slot_states per candidate.
         active_tickers = _active_or_pending_tickers(slot_states)
-
-        # Rank the full eligible set but only materialise top-N plus a small
-        # overfetch for open failures (session-last, quote gaps). Without the
-        # cap every free day built list[dict] for the whole universe.
-        overfetch = max(8, int(cfg.top))
-        materialise_limit = max(len(free_slots), int(cfg.top)) + overfetch
-        candidates, day_warnings = _candidate_rows_for_day(
-            day,
-            self.candidate_matrices,
-            exclude=active_tickers,
-            limit=materialise_limit,
+        active_tickers.update(
+            order.ticker for order in self.pending_entry_orders.values()
         )
-        self.warnings.extend(day_warnings)
-        if not candidates:
-            return
-        candidate_queue: deque[dict] = deque(candidates)
+        # Keep the rank field fixed across batches. Newly opened names are in
+        # already-consumed prefixes, so excluding them from later batches would
+        # shift every offset and skip one unconsumed candidate per open.
+        rank_exclude = set(active_tickers)
+
+        # Rank the full eligible set but materialise dictionaries in stable
+        # batches. Most days need only one batch; failed opens can continue
+        # through every lower rank without imposing full-universe dict work on
+        # the normal large-universe path.
+        batch_size = max(len(free_slots), int(cfg.top), 8)
+        candidate_offset = 0
+        candidate_queue: deque[dict] = deque()
+        candidates_exhausted = False
+
+        def fill_candidate_queue() -> None:
+            nonlocal candidate_offset, candidates_exhausted
+            if candidate_queue or candidates_exhausted:
+                return
+            candidates, day_warnings = _candidate_rows_for_day(
+                day,
+                self.candidate_matrices,
+                exclude=rank_exclude,
+                limit=batch_size,
+                offset=candidate_offset,
+            )
+            self.warnings.extend(day_warnings)
+            candidate_queue.extend(candidates)
+            candidate_offset += len(candidates)
+            candidates_exhausted = len(candidates) < batch_size
 
         for slot_id in free_slots:
             slots_left -= 1
             opened = False
-            while candidate_queue and not opened:
+            while not opened:
+                fill_candidate_queue()
+                if not candidate_queue:
+                    break
                 row = candidate_queue.popleft()
                 ticker = str(row["ticker"])
                 if (
@@ -308,43 +375,32 @@ class _DailyRankingSource:
                     free_slots=slots_left + 1,
                     series_cache=self.caches.frame(ticker, bars).sizing_series,
                 )
-                state, warn = _make_slot_state(
-                    ticker,
-                    bars,
-                    int(row["signal_idx"]),
-                    cfg,
-                    self.exit_ast,
-                    int(row["rank"]),
-                    self.fill_model,
-                    caches=self.caches,
-                    entry_budget=entry_budget,
-                )
-                if (
-                    state is None
-                ):  # pragma: no cover - lookback_ok guarantees a post-signal bar
-                    if warn:
-                        self.warnings.append(f"{ticker}: {warn}")
+                if entry_budget <= 0:
                     continue
                 if (
-                    pd.Timestamp(state.entry_date) > self.end_ts
-                ):  # pragma: no cover - fetch_end == end_ts
+                    cfg.entry_order_type != "limit"
+                    and cfg.market.lower() == "india"
+                    and affordable_buy_shares(
+                        portfolio.cost_model,
+                        float(row["as_of_close"]),
+                        entry_budget,
+                        whole_shares=True,
+                    )
+                    <= 0
+                ):
+                    # Reject using only the completed signal close. The future
+                    # execution price must not choose a lower-ranked order.
                     continue
-                if entry_opens_no_shares(entry_budget, state.entry_shares):
-                    # Zero budget / shares still occupies a slot and consumes
-                    # the ticker under equal_slot; leave the slot free instead.
-                    continue
-                portfolio.assign(ticker, int(row["rank"]), _bar_label(day, cfg))
-                portfolio.open(
+                self.pending_entry_orders[slot_id] = PendingEntryOrder(
                     ticker=ticker,
-                    entry_date=state.entry_date,
-                    entry_price=state.entry_fill,
-                    budget=entry_budget,
-                    shares=state.entry_shares,
-                    allow_slot_growth=sizing_allows_slot_growth(cfg.sizing_rule),
+                    signal_idx=int(row["signal_idx"]),
+                    rank=int(row["rank"]),
+                    signal_date=_bar_label(day, cfg),
                 )
-                slot_states[slot_id] = state
-                self.slot_bars[slot_id] = bars
                 active_tickers.add(ticker)
+                opened = True
+                if cfg.entry_order_type == "limit":
+                    continue
                 self.selection_rows.append(
                     {
                         "ticker": ticker,
@@ -377,13 +433,14 @@ def _assemble_results(
     # already present; rebuilding the same union once per trade only repeats
     # thousands of Index.searchsorted/slice/tolist operations.
     calendar = pd.DatetimeIndex(master_dates)
-    equity = build_equity_curve(
+    portfolio_curve = build_portfolio_curve(
         calendar,
         trades,
         bars_by_tv,
         cfg.initial_capital,
         price_adjustment=cfg.price_adjustment,
     )
+    equity = portfolio_curve["equity"].rename(None)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
     metrics = compute_metrics(
         equity,
@@ -392,6 +449,7 @@ def _assemble_results(
         max(cfg.top, 1),
         periods_per_year=periods_per_year_for_interval(cfg.interval),
         risk_free_rate=float(cfg.risk_free_rate),
+        holdings_value=portfolio_curve["holdings_value"],
     )
     metrics["unique_tickers"] = len({trade.ticker for trade in trades})
     metrics.update(compute_regime_metrics(benchmark, trades))
@@ -485,15 +543,12 @@ def prepare_rolling_backtest(
     prepared_warnings = (
         tuple(early_result.warnings) if early_result is not None else tuple(warnings)
     )
-    # Prebuild frame primitives once for the whole universe. Sequential runs that
-    # reuse this prepared object (parameter sweeps) then skip the lazy first-open
-    # construction, and the first simulation no longer pays for it on the hot day
-    # path either.
-    frame_caches = {
-        tv: _build_frame_cache(bars)
-        for tv, bars in panel.bars_by_tv.items()
-        if bars is not None and not bars.empty
-    }
+    # Frame primitives are built on a ticker's first slot open, not here. The
+    # dictionary is shared by reference with every run's ``_RunCaches``, so a
+    # sweep reusing this prepared object still builds each frame once; what
+    # prebuilding added was ~0.7 ms for every name in the universe, traded or
+    # not, which on a 2,000-name field was more than the simulation itself.
+    frame_caches: dict[str, _FrameCache] = {}
     return PreparedRollingBacktest(
         config_fingerprint=_preparation_fingerprint(cfg),
         start_ts=start_ts,

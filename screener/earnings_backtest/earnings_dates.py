@@ -140,6 +140,10 @@ def fetch_earnings_dates_nse() -> pd.DataFrame | None:
             for ann in announcements:
                 desc = str(ann.get("desc", "")).lower()
                 text = str(ann.get("attchmntText", "")).lower()
+                # A prior notice names the results it will consider, but its
+                # date precedes their publication.
+                if "intimation" in desc or "board meeting to be held" in text:
+                    continue
                 # Filter for financial results announcements
                 if any(
                     kw in desc or kw in text
@@ -519,15 +523,20 @@ def _collect_india_fmp_events(
 
     rows: list[dict[str, Any]] = []
     matched_fmp: set[tuple[str, pd.Period]] = set()
+    nse_quarters: set[tuple[str, pd.Period]] = set()
 
     nse_events = fetch_earnings_dates_nse()
     if nse_events is not None and not nse_events.empty:
         ticker_set = set(tickers)
         filtered = nse_events[nse_events["ticker"].isin(ticker_set)]
         filtered = filtered[filtered["earnings_date"] >= cutoff]
-        for _, row in filtered.iterrows():
+        for _, row in filtered.sort_values("earnings_date").iterrows():
             ann = pd.Timestamp(row["earnings_date"])
             key = (str(row["ticker"]), _reported_quarter(ann))
+            # One event per quarter: the first results filing.
+            if key in nse_quarters:
+                continue
+            nse_quarters.add(key)
             fmp_match = fmp_by_quarter.get(key)
             if fmp_match is not None:
                 matched_fmp.add(key)
@@ -607,7 +616,7 @@ def collect_earnings_events(
             # Convert to unified format
             cutoff = pd.Timestamp(date.today() - timedelta(days=years * 365))
             filtered = filtered[filtered["earnings_date"] >= cutoff]
-            for _, row in filtered.iterrows():
+            for _, row in filtered.sort_values("earnings_date").iterrows():
                 ann = pd.Timestamp(row["earnings_date"])
                 # Map the announcement back to the fiscal quarter it reports on:
                 # the quarter that ended most recently BEFORE the announcement
@@ -617,6 +626,9 @@ def collect_earnings_events(
                 # NEXT quarter once the delay exceeds 45d, which broke dedup and
                 # double-counted the result against the openscreener estimate.
                 reported_quarter = (ann + pd.offsets.QuarterEnd(-1)).to_period("Q")
+                # One event per quarter: the first results filing.
+                if (str(row["ticker"]), reported_quarter) in nse_quarters:
+                    continue
                 nse_quarters.add((str(row["ticker"]), reported_quarter))
                 rows.append(
                     {

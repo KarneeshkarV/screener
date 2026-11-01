@@ -131,6 +131,7 @@ def _frame_from_table(table: pa.Table) -> pd.DataFrame:
         described = json.loads(metadata)
         index_columns = described["index_columns"]
         column_indexes = described.get("column_indexes") or [{}]
+        column_metadata = described["columns"]
     except (ValueError, KeyError, TypeError):
         return cast(pd.DataFrame, table.to_pandas())
     if len(index_columns) != 1 or len(column_indexes) != 1:
@@ -138,6 +139,26 @@ def _frame_from_table(table: pa.Table) -> pd.DataFrame:
     index_name = index_columns[0]
     if not isinstance(index_name, str) or index_name not in table.column_names:
         return cast(pd.DataFrame, table.to_pandas())
+
+    # Arrow buffers alone do not retain time zones, extension dtypes, or
+    # non-string column labels. Let pandas restore these from its metadata.
+    if column_indexes[0].get("pandas_type") != "unicode":
+        return cast(pd.DataFrame, table.to_pandas())
+    index_metadata = next(
+        (column for column in column_metadata if column["field_name"] == index_name),
+        None,
+    )
+    if index_metadata is None or index_metadata.get("pandas_type") != "datetime":
+        return cast(pd.DataFrame, table.to_pandas())
+    for column in column_metadata:
+        if column["field_name"] == index_name:
+            continue
+        try:
+            dtype = np.dtype(column["numpy_type"])
+        except (TypeError, ValueError):
+            return cast(pd.DataFrame, table.to_pandas())
+        if dtype.kind not in "fi":
+            return cast(pd.DataFrame, table.to_pandas())
 
     index: np.ndarray | None = None
     columns: dict[str, np.ndarray] = {}
@@ -155,15 +176,20 @@ def _frame_from_table(table: pa.Table) -> pd.DataFrame:
     frame = pd.DataFrame(columns, copy=False)
     # An unnamed index is stored under pandas' own placeholder name, which
     # ``to_pandas`` strips back off on the way out.
-    restored = None if index_name.startswith("__index_level_") else index_name
+    restored = index_metadata["name"]
+    if restored == "__index_level_0__":
+        restored = None
     frame.index = pd.DatetimeIndex(index, name=restored)
     frame.columns.name = column_indexes[0].get("name")
     return frame
 
 
-def load_cached_frame(
-    ticker: str, cache_dir: Path = CACHE_DIR, interval: str = "1d"
-) -> pd.DataFrame | None:
+def read_cached_table(ticker: str, cache_dir: Path = CACHE_DIR) -> pa.Table | None:
+    """The arrow table of one cache entry, or None when it is absent or unreadable.
+
+    This is the half of a read that releases the GIL, so it is the half a
+    thread pool should run. :func:`frame_from_cached_table` is the other half.
+    """
     path = cache_path(ticker, cache_dir)
     if not path.exists():
         return None
@@ -176,7 +202,24 @@ def load_cached_frame(
         # ``use_threads=False`` because the parallelism is already one thread
         # per file: arrow's own pool then only adds contention, and a cache
         # entry is one small row group anyway.
-        table = pq.read_table(path, use_threads=False)
+        return pq.read_table(path, use_threads=False)
+    except (OSError, ValueError, pa.ArrowException):
+        return None
+
+
+def frame_from_cached_table(
+    table: pa.Table | None, interval: str = "1d"
+) -> pd.DataFrame | None:
+    """The price frame for a table from :func:`read_cached_table`.
+
+    The pandas conversion holds the GIL, so threads running it contend rather
+    than overlap: 1000 warm entries converted in 0.35s on one thread and
+    0.8-1.7s on eight. A caller reading many entries runs this on its own
+    thread after the reads.
+    """
+    if table is None:
+        return None
+    try:
         missing = _has_missing(table, OHLCV_COLUMNS)
         frame = _frame_from_table(table)
         frame.index = _canonical_index(frame.index, interval)
@@ -186,6 +229,12 @@ def load_cached_frame(
         return frame
     except (OSError, pd.errors.ParserError, ValueError, pa.ArrowException):
         return None
+
+
+def load_cached_frame(
+    ticker: str, cache_dir: Path = CACHE_DIR, interval: str = "1d"
+) -> pd.DataFrame | None:
+    return frame_from_cached_table(read_cached_table(ticker, cache_dir), interval)
 
 
 def save_cached_frame(
@@ -408,6 +457,32 @@ def record_coverage(
         return
 
 
+def scale_verified_path(ticker: str, cache_dir: Path = CACHE_DIR) -> Path:
+    """Sidecar marking an entry as downloaded whole under split detection."""
+    return cache_path(ticker, cache_dir).with_suffix(".scale.json")
+
+
+def has_scale_verified(ticker: str, cache_dir: Path = CACHE_DIR) -> bool:
+    """Whether this entry's price scale has already been verified against the vendor.
+
+    Entries written before split detection existed may carry a stitched seam
+    that no tail refresh can reveal, so they are re-downloaded whole once. The
+    marker is what makes that *once*: without it, a name whose large jump is a
+    real move (microcaps do quadruple) would re-download on every run forever.
+    """
+    return scale_verified_path(ticker, cache_dir).exists()
+
+
+def record_scale_verified(ticker: str, cache_dir: Path = CACHE_DIR) -> None:
+    """Mark this entry as fully re-downloaded under split detection."""
+    path = scale_verified_path(ticker, cache_dir)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"verified": pd.Timestamp.now("UTC").isoformat()}))
+    except (OSError, ValueError):
+        return
+
+
 def needs_tail_refresh(path: Path, end: pd.Timestamp) -> bool:
     """Return whether a near-present cache is old enough for a tail refresh."""
     if abs((end.date() - date.today()).days) > 2:
@@ -426,6 +501,9 @@ def needs_tail_refresh(path: Path, end: pd.Timestamp) -> bool:
 
 __all__ = [
     "CACHE_DIR",
+    "has_scale_verified",
+    "record_scale_verified",
+    "scale_verified_path",
     "COVERAGE_TOLERANCE",
     "COVERAGE_TTL_SECONDS",
     "EMPTY_HISTORY_TTL_SECONDS",
@@ -437,7 +515,9 @@ __all__ = [
     "coverage_path",
     "empty_history_path",
     "has_empty_history",
+    "frame_from_cached_table",
     "load_cached_frame",
+    "read_cached_table",
     "load_coverage",
     "needs_tail_refresh",
     "record_coverage",

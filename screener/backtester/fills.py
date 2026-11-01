@@ -33,6 +33,7 @@ import pandas as pd
 
 from screener.backtester.costs import CostModel, bps_fraction, cost_model_from_config
 from screener.backtester.models import BacktestConfig
+from screener.backtester.portfolio import affordable_buy_shares
 from screener.backtester.slippage import Side, apply_slippage, needs_liquidity_inputs
 
 
@@ -53,9 +54,12 @@ def _resolve_entry_fill(
     signal_idx: int,
     cfg: BacktestConfig,
     arrays: PriceArrays | None = None,
+    limit_bar_idx: int | None = None,
 ) -> tuple[int | None, float | None, str | None]:
     """Resolve entry bar index and reference fill price from order settings.
 
+    ``limit_bar_idx`` is the current execution bar for queued orders, including
+    market orders. Without it, direct quote callers use the next signal bar.
     When ``arrays`` is supplied the prices are read from the caller's cached
     NumPy columns instead of ``bars.iloc[i][col]``, which builds a throwaway
     row Series per lookup. Same values, same order — the exit path already
@@ -65,12 +69,16 @@ def _resolve_entry_fill(
         return None, None, "no post-signal entry bar"
     order = cfg.entry_order_type
     if order == "moo":
-        entry_idx = signal_idx + 1
+        entry_idx = signal_idx + 1 if limit_bar_idx is None else limit_bar_idx
+        if entry_idx <= signal_idx or entry_idx >= len(bars):
+            return None, None, "market order has no current execution bar"
         if arrays is not None:
             return entry_idx, float(arrays.open_arr[entry_idx]), None
         return entry_idx, float(bars.iloc[entry_idx]["open"]), None
     if order == "moc":
-        entry_idx = signal_idx + 1
+        entry_idx = signal_idx + 1 if limit_bar_idx is None else limit_bar_idx
+        if entry_idx <= signal_idx or entry_idx >= len(bars):
+            return None, None, "market order has no current execution bar"
         if arrays is not None:
             return entry_idx, float(arrays.close_arr[entry_idx]), None
         return entry_idx, float(bars.iloc[entry_idx]["close"]), None
@@ -82,6 +90,22 @@ def _resolve_entry_fill(
         else:
             signal_close = float(bars.iloc[signal_idx]["close"])
         limit_price = signal_close * (1.0 - bps_fraction(cfg.entry_limit_bps))
+        if limit_bar_idx is not None:
+            if limit_bar_idx <= signal_idx or limit_bar_idx >= len(bars):
+                return None, None, "limit order has no current bar"
+            low = (
+                float(arrays.low_arr[limit_bar_idx])
+                if arrays is not None
+                else float(bars.iloc[limit_bar_idx]["low"])
+            )
+            if not np.isfinite(low) or low > limit_price:
+                return None, None, "limit order not touched on current bar"
+            bar_open = (
+                float(arrays.open_arr[limit_bar_idx])
+                if arrays is not None
+                else float(bars.iloc[limit_bar_idx]["open"])
+            )
+            return limit_bar_idx, min(bar_open, limit_price), None
         if arrays is not None:
             for i in range(signal_idx + 1, len(bars)):
                 if float(arrays.low_arr[i]) <= limit_price:
@@ -127,6 +151,11 @@ class FillModel:
         *,
         cost_model: CostModel | None = None,
     ) -> None:
+        for target, fraction in cfg.partial_exits:
+            if not np.isfinite(target) or target <= 0:
+                raise ValueError("Partial exit target must be finite and positive")
+            if not np.isfinite(fraction) or not 0 < fraction <= 1:
+                raise ValueError("Partial exit fraction must be finite and in (0, 1]")
         self.cfg = cfg
         self.cost_model = (
             cost_model if cost_model is not None else cost_model_from_config(cfg)
@@ -203,36 +232,29 @@ class FillModel:
         sigma_daily: float = 0.0,
         half_spread: float = 0.0,
         arrays: PriceArrays | None = None,
+        limit_bar_idx: int | None = None,
     ) -> tuple[int | None, float | None, float, str | None]:
         """Return entry index, slipped fill, pre-impact shares, and warning.
 
         Shares are deliberately sized from the pre-slippage reference and the
         configured buy-side cost model. This breaks the impact/size cycle at a
         documented, deterministic point. For liquidity-sensitive slippage, the
-        resulting count is carried into ``Portfolio.open`` unchanged; it is not
-        recomputed from ``fill``.
+        resulting count is an upper bound for ``Portfolio.open``.
+        Exact affordability can reduce it without recomputing slippage.
         """
         entry_idx, entry_ref, warn = _resolve_entry_fill(
-            bars, signal_idx, self.cfg, arrays
+            bars, signal_idx, self.cfg, arrays, limit_bar_idx
         )
         if entry_idx is None or entry_ref is None:
             return None, None, 0.0, warn
         if budget is None:
             budget = self.cfg.initial_capital / max(self.cfg.top, 1)
-        commission = self.cost_model.side_cost_fraction("buy", budget)
-        gross_reference = entry_ref * (1.0 + max(float(commission), 0.0))
-        shares = budget / gross_reference if gross_reference > 0.0 else 0.0
-        # The fraction API is necessarily approximate for a capped schedule.
-        # Reprice fees once at the fixed reference so the quoted pre-impact
-        # order respects the budget. This is not a joint impact/size solve.
-        breakdown_fn = getattr(self.cost_model, "side_cost_breakdown", None)
-        if callable(breakdown_fn) and shares > 0.0 and entry_ref > 0.0:
-            fees = sum(
-                max(float(amount), 0.0)
-                for amount in breakdown_fn("buy", shares * entry_ref, shares).values()
-            )
-            if shares * entry_ref + fees > budget:
-                shares = max((budget - fees) / entry_ref, 0.0)
+        shares = affordable_buy_shares(
+            self.cost_model,
+            entry_ref,
+            budget,
+            whole_shares=self.cfg.market.lower() == "india",
+        )
         fill = self._apply_slip(
             entry_ref,
             "buy",
@@ -240,6 +262,13 @@ class FillModel:
             adv_shares=adv_shares,
             sigma_daily=sigma_daily,
             half_spread=half_spread,
+        )
+        shares = affordable_buy_shares(
+            self.cost_model,
+            fill,
+            budget,
+            maximum_shares=shares,
+            whole_shares=self.cfg.market.lower() == "india",
         )
         return entry_idx, fill, shares, None
 

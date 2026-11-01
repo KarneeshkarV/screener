@@ -19,6 +19,7 @@ from screener.scoring import (
     get_scorer,
     resolve_scorer,
 )
+from screener.vendor_columns import DIVIDEND_YIELD_COLUMN
 
 
 def test_every_criterion_has_a_scorer() -> None:
@@ -216,7 +217,7 @@ def test_negative_debt_to_equity_does_not_win_low_debt_rank() -> None:
     )
     for name in ("quality", "dividend"):
         scored = apply_score(
-            df.assign(dividend_yield_recent=2.0, price_earnings_ttm=15.0),
+            df.assign(**{DIVIDEND_YIELD_COLUMN: 2.0}, price_earnings_ttm=15.0),
             get_scorer(name),
         ).set_index("name")
         assert (
