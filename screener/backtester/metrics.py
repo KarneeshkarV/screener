@@ -376,6 +376,42 @@ def _phi_inv(p: float) -> float:
     return 0.5 * (lo + hi)
 
 
+def _psr_moments(
+    daily: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR
+) -> dict[str, float] | None:
+    """Sample statistics PSR needs, or ``None`` when the sample is too short."""
+    if daily.empty or len(daily) < 30:
+        return None
+    sr_annual = equity_curve_sharpe(daily, periods_per_year=periods_per_year)
+    flat = not daily.std(ddof=0)
+    return {
+        "sr_annual": float(sr_annual),
+        "skew": 0.0 if flat else float(cast(Any, daily.skew())),
+        "kurt_excess": 0.0 if flat else float(cast(Any, daily.kurt())),
+        "n_obs": float(len(daily)),
+    }
+
+
+def _psr_from_moments(
+    moments: dict[str, float] | None,
+    sr_benchmark_annual: float,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> float:
+    if moments is None:
+        return 0.0
+    T = int(moments["n_obs"])
+    sr_per = moments["sr_annual"] / math.sqrt(periods_per_year)
+    sr_bench_per = sr_benchmark_annual / math.sqrt(periods_per_year)
+    denom_sq = (
+        1.0
+        - moments["skew"] * sr_per
+        + (moments["kurt_excess"] / 4.0) * sr_per * sr_per
+    )
+    denom = math.sqrt(max(denom_sq, 1e-12))
+    z = (sr_per - sr_bench_per) * math.sqrt(max(T - 1, 1)) / denom
+    return _phi(z)
+
+
 def _psr(
     daily: pd.Series,
     sr_benchmark_annual: float = 0.0,
@@ -387,19 +423,16 @@ def _psr(
     corrected for sample size and non-normality (skew, excess kurtosis). Returns
     a value in [0, 1].
     """
-    if daily.empty or len(daily) < 30:
-        return 0.0
-    T = len(daily)
-    sr_per = equity_curve_sharpe(daily, periods_per_year=periods_per_year) / math.sqrt(
-        periods_per_year
+    return _psr_from_moments(
+        _psr_moments(daily, periods_per_year), sr_benchmark_annual, periods_per_year
     )
-    sr_bench_per = sr_benchmark_annual / math.sqrt(periods_per_year)
-    skew = float(cast(Any, daily.skew())) if daily.std(ddof=0) else 0.0
-    kurt_excess = float(cast(Any, daily.kurt())) if daily.std(ddof=0) else 0.0
-    denom_sq = 1.0 - skew * sr_per + (kurt_excess / 4.0) * sr_per * sr_per
-    denom = math.sqrt(max(denom_sq, 1e-12))
-    z = (sr_per - sr_bench_per) * math.sqrt(max(T - 1, 1)) / denom
-    return _phi(z)
+
+
+def _expected_max_sharpe(n_trials: int, sr_trial_std_annual: float) -> float:
+    return sr_trial_std_annual * (
+        (1.0 - _EULER_MASCHERONI) * _phi_inv(1.0 - 1.0 / n_trials)
+        + _EULER_MASCHERONI * _phi_inv(1.0 - 1.0 / (n_trials * math.e))
+    )
 
 
 def _dsr(
@@ -418,36 +451,34 @@ def _dsr(
     """
     if n_trials <= 1:
         return _psr(daily, 0.0, periods_per_year=periods_per_year)
-    sr0_annual = sr_trial_std_annual * (
-        (1.0 - _EULER_MASCHERONI) * _phi_inv(1.0 - 1.0 / n_trials)
-        + _EULER_MASCHERONI * _phi_inv(1.0 - 1.0 / (n_trials * math.e))
-    )
+    sr0_annual = _expected_max_sharpe(n_trials, sr_trial_std_annual)
     return _psr(
         daily, sr_benchmark_annual=sr0_annual, periods_per_year=periods_per_year
     )
 
 
-def deflated_sharpe(
-    equity: pd.Series,
+def sharpe_moments(
+    equity: pd.Series, *, periods_per_year: int = TRADING_DAYS_PER_YEAR
+) -> dict[str, float] | None:
+    """Per-curve statistics a later Deflated Sharpe needs, or ``None`` if too short.
+
+    A parameter search only knows its trial count and the cross-trial Sharpe
+    dispersion after every configuration has run, so each run keeps these
+    moments and the search deflates once, at the end.
+    """
+    return _psr_moments(bar_returns(equity), periods_per_year)
+
+
+def deflate_sharpe(
+    moments: dict[str, float] | None,
     *,
     n_trials: int,
-    periods_per_year: int = TRADING_DAYS_PER_YEAR,
     sr_trial_std_annual: float = 0.5,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> float:
-    """Deflated Sharpe of a finished equity curve, given the search that found it.
-
-    ``n_trials`` must be the number of parameter configurations the search
-    actually evaluated — the multiple-testing bias DSR corrects for is a
-    property of the search, not of the curve, so only a caller that ran the
-    search can supply it. Callers that hold a :class:`BacktestResult` rather
-    than a live ``compute_metrics`` call use this to deflate after the fact.
-    """
-    return _dsr(
-        bar_returns(equity),
-        n_trials=n_trials,
-        sr_trial_std_annual=sr_trial_std_annual,
-        periods_per_year=periods_per_year,
-    )
+    """Deflated Sharpe from :func:`sharpe_moments`, for a search of ``n_trials``."""
+    sr0 = _expected_max_sharpe(n_trials, sr_trial_std_annual) if n_trials > 1 else 0.0
+    return _psr_from_moments(moments, sr0, periods_per_year)
 
 
 def _invested_return(trades: Iterable[Trade]) -> float:

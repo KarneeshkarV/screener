@@ -15,7 +15,12 @@ from pydantic import BaseModel, ConfigDict
 
 from screener.backtester.data import PriceFetcher
 from screener.backtester.historical import run_backtest
-from screener.backtester.models import BacktestConfig
+from screener.backtester.metrics import (
+    deflate_sharpe,
+    periods_per_year_for_interval,
+    sharpe_moments,
+)
+from screener.backtester.models import BacktestConfig, BacktestResult
 from screener.backtester.optimization.metrics import optimization_metrics, score_result
 from screener.backtester.rolling_simulation import (
     PreparedRollingBacktest,
@@ -35,6 +40,9 @@ class GridSearchResult(BaseModel):
     metrics: dict[str, float]
     trade_count: int
     cached: bool = False
+    # Inputs for the search-level Deflated Sharpe; see ``_deflate``.
+    sharpe_moments: dict[str, float] | None = None
+    periods_per_year: int = 252
     error: str | None = None
 
 
@@ -96,7 +104,6 @@ def _cache_key(
     end_date: date | None,
     metric: str,
     min_trades: int,
-    n_trials: int,
 ) -> str:
     payload = {
         "config": _config_fingerprint(cfg),
@@ -106,10 +113,9 @@ def _cache_key(
         "end_date": end_date,
         "metric": metric,
         "min_trades": min_trades,
-        # The Deflated Sharpe stored in a cached result was deflated against
-        # the size of the grid that produced it, so a grid of a different size
-        # is a different result and must not reuse this entry.
-        "n_trials": n_trials,
+        # Entries carry the Sharpe moments the search deflates from; entries
+        # written before that lack them and must not be reused.
+        "result_schema": 2,
     }
     raw = json.dumps(payload, sort_keys=True, default=_json_default)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -133,6 +139,58 @@ def _save_cache(path: Path | None, cache: dict[str, dict[str, Any]]) -> None:
     tmp.replace(path)
 
 
+def _to_grid_result(
+    params: dict[str, Any], result: BacktestResult, metric: str, min_trades: int
+) -> GridSearchResult:
+    trade_count = len(result.trades)
+    score = score_result(result, metric) if trade_count >= min_trades else float("-inf")
+    periods = periods_per_year_for_interval(result.config.interval)
+    return GridSearchResult(
+        params=params,
+        score=score,
+        metrics=optimization_metrics(result),
+        trade_count=trade_count,
+        sharpe_moments=sharpe_moments(result.equity_curve, periods_per_year=periods),
+        periods_per_year=periods,
+    )
+
+
+def _deflate(
+    results: list[GridSearchResult], n_trials: int, metric: str
+) -> list[GridSearchResult]:
+    """Apply the Deflated Sharpe to every row of a finished search.
+
+    Every combination is one trial, whether it ran now or came from cache, and
+    the cross-trial Sharpe dispersion is measured over the rows that produced a
+    Sharpe. With fewer than two such rows the dispersion is unknown and
+    ``deflate_sharpe`` falls back to its default. At one trial nothing is
+    deflated and no ``dsr`` key is produced.
+    """
+    if n_trials <= 1:
+        return results
+    sharpes = [
+        r.sharpe_moments["sr_annual"] for r in results if r.sharpe_moments is not None
+    ]
+    std = float(np.std(sharpes, ddof=1)) if len(sharpes) >= 2 else 0.0
+    kwargs = {"sr_trial_std_annual": std} if std > 0 else {}
+    out: list[GridSearchResult] = []
+    for r in results:
+        if r.error is not None or not r.metrics:
+            out.append(r)
+            continue
+        dsr = deflate_sharpe(
+            r.sharpe_moments,
+            n_trials=n_trials,
+            periods_per_year=r.periods_per_year,
+            **kwargs,
+        )
+        metrics = {**r.metrics, "dsr": dsr, "dsr_trials": float(n_trials)}
+        # Ranking by ``dsr`` must rank by the deflated value, not the absent one.
+        score = dsr if metric == "dsr" and np.isfinite(r.score) else r.score
+        out.append(r.model_copy(update={"metrics": metrics, "score": score}))
+    return out
+
+
 def _run_one(
     cfg: BacktestConfig,
     params: dict[str, Any],
@@ -142,7 +200,6 @@ def _run_one(
     end_date: date | None,
     metric: str,
     min_trades: int,
-    n_trials: int,
 ) -> GridSearchResult:
     test_cfg = cfg.model_copy(update=params)
     if runner == "rolling":
@@ -156,15 +213,7 @@ def _run_one(
         )
     else:
         result = run_backtest(test_cfg, fetcher)
-    metrics = optimization_metrics(result, n_trials=n_trials)
-    trade_count = len(result.trades)
-    score = score_result(result, metric) if trade_count >= min_trades else float("-inf")
-    return GridSearchResult(
-        params=params,
-        score=score,
-        metrics=metrics,
-        trade_count=trade_count,
-    )
+    return _to_grid_result(params, result, metric, min_trades)
 
 
 def _run_one_prepared(
@@ -173,19 +222,10 @@ def _run_one_prepared(
     prepared: PreparedRollingBacktest,
     metric: str,
     min_trades: int,
-    n_trials: int,
 ) -> GridSearchResult:
     test_cfg = cfg.model_copy(update=params)
     result = run_prepared_rolling_backtest(prepared, test_cfg)
-    metrics = optimization_metrics(result, n_trials=n_trials)
-    trade_count = len(result.trades)
-    score = score_result(result, metric) if trade_count >= min_trades else float("-inf")
-    return GridSearchResult(
-        params=params,
-        score=score,
-        metrics=metrics,
-        trade_count=trade_count,
-    )
+    return _to_grid_result(params, result, metric, min_trades)
 
 
 def _run_one_safe(args: tuple[Any, ...]) -> GridSearchResult:
@@ -198,7 +238,6 @@ def _run_one_safe(args: tuple[Any, ...]) -> GridSearchResult:
         end_date,
         metric,
         min_trades,
-        n_trials,
     ) = args
     try:
         return _run_one(
@@ -210,7 +249,6 @@ def _run_one_safe(args: tuple[Any, ...]) -> GridSearchResult:
             end_date,
             metric,
             min_trades,
-            n_trials,
         )
     except KeyboardInterrupt:
         raise
@@ -235,7 +273,6 @@ def _run_chunk_safe(args: tuple[Any, ...]) -> list[GridSearchResult]:
         end_date,
         metric,
         min_trades,
-        n_trials,
     ) = args
     prepared: PreparedRollingBacktest | None = None
     if runner == "rolling" and params_chunk:
@@ -268,9 +305,7 @@ def _run_chunk_safe(args: tuple[Any, ...]) -> list[GridSearchResult]:
         if prepared is not None and prepared.supports(test_cfg):
             try:
                 results.append(
-                    _run_one_prepared(
-                        cfg, params, prepared, metric, min_trades, n_trials
-                    )
+                    _run_one_prepared(cfg, params, prepared, metric, min_trades)
                 )
             except KeyboardInterrupt:
                 raise
@@ -296,7 +331,6 @@ def _run_chunk_safe(args: tuple[Any, ...]) -> list[GridSearchResult]:
                         end_date,
                         metric,
                         min_trades,
-                        n_trials,
                     )
                 )
             )
@@ -310,6 +344,8 @@ def _from_cache(record: dict[str, Any]) -> GridSearchResult:
         metrics={k: float(v) for k, v in record.get("metrics", {}).items()},
         trade_count=int(record.get("trade_count", 0)),
         cached=True,
+        sharpe_moments=record.get("sharpe_moments"),
+        periods_per_year=int(record.get("periods_per_year", 252)),
         error=record.get("error"),
     )
 
@@ -347,7 +383,6 @@ def grid_search(
             end_date=end_date,
             metric=metric,
             min_trades=min_trades,
-            n_trials=n_trials,
         )
         if key in cache:
             results.append(_from_cache(cache[key]))
@@ -364,7 +399,6 @@ def grid_search(
             end_date,
             metric,
             min_trades,
-            n_trials,
         )
         for params in pending
     ]
@@ -385,7 +419,6 @@ def grid_search(
                             end_date,
                             metric,
                             min_trades,
-                            n_trials,
                         ),
                     ): chunk
                     for chunk in chunks
@@ -402,7 +435,6 @@ def grid_search(
                             end_date=end_date,
                             metric=metric,
                             min_trades=min_trades,
-                            n_trials=n_trials,
                         )
                         cache[key] = result.model_dump()
                         _save_cache(cache_file, cache)
@@ -431,7 +463,7 @@ def grid_search(
                 if prepared is not None and prepared.supports(test_cfg):
                     try:
                         result = _run_one_prepared(
-                            cfg, params, prepared, metric, min_trades, n_trials
+                            cfg, params, prepared, metric, min_trades
                         )
                     except KeyboardInterrupt:
                         raise
@@ -454,7 +486,6 @@ def grid_search(
                     end_date=end_date,
                     metric=metric,
                     min_trades=min_trades,
-                    n_trials=n_trials,
                 )
                 cache[key] = result.model_dump()
                 _save_cache(cache_file, cache)
@@ -462,4 +493,5 @@ def grid_search(
         _save_cache(cache_file, cache)
         raise
 
+    results = _deflate(results, n_trials, metric)
     return sorted(results, key=lambda item: item.score, reverse=True)[:top_n]

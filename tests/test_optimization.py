@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
+import numpy as np
 import pandas as pd
 import pytest
 from click.testing import CliRunner
@@ -280,3 +281,82 @@ def test_optimize_grid_offline_with_injected_fetcher():
     )
     assert res.exit_code == 0, res.output
     assert "Grid Search Results" in res.output
+
+
+def _curve(seed: int, drift: float, n: int = 260) -> pd.Series:
+    rng = np.random.default_rng(seed)
+    return pd.Series(100_000.0 * np.cumprod(1.0 + rng.normal(drift, 0.01, n)))
+
+
+def test_compute_metrics_dsr_keys_only_with_multiple_trials():
+    from screener.backtester.metrics import compute_metrics
+
+    equity = _curve(1, 0.001)
+    one = compute_metrics(equity, equity, [], 1)
+    many = compute_metrics(equity, equity, [], 1, n_trials=50)
+
+    assert "dsr" not in one
+    assert "dsr_trials" not in one
+    assert many["dsr_trials"] == 50
+    assert many["dsr"] < many["psr"]
+
+
+def test_grid_search_deflates_by_grid_size_and_measured_dispersion(monkeypatch):
+    drifts = {5: 0.0005, 10: 0.001, 20: 0.0015}
+
+    def fake_run_backtest(cfg, fetcher):
+        equity = _curve(cfg.hold, drifts[cfg.hold])
+        return BacktestResult(
+            config=cfg,
+            trades=[_trade(10.0, 0.10)],
+            equity_curve=equity,
+            benchmark_curve=equity,
+            metrics={"total_return": 0.01},
+        )
+
+    monkeypatch.setattr(grid_module, "run_backtest", fake_run_backtest)
+    rows = grid_search(
+        _config(),
+        StubPriceFetcher({}),
+        {"hold": [5, 10, 20]},
+        metric="sharpe",
+        top_n=10,
+    )
+
+    assert len(rows) == 3
+    assert {r.metrics["dsr_trials"] for r in rows} == {3.0}
+    assert all(0.0 <= r.metrics["dsr"] <= 1.0 for r in rows)
+    assert all(r.sharpe_moments is not None for r in rows)
+
+
+def test_grid_cache_hits_survive_grid_size_change_and_redeflate(monkeypatch, tmp_path):
+    calls = 0
+
+    def fake_run_backtest(cfg, fetcher):
+        nonlocal calls
+        calls += 1
+        equity = _curve(cfg.hold, 0.001)
+        return BacktestResult(
+            config=cfg,
+            trades=[_trade(10.0, 0.10)],
+            equity_curve=equity,
+            benchmark_curve=equity,
+            metrics={"total_return": 0.01},
+        )
+
+    monkeypatch.setattr(grid_module, "run_backtest", fake_run_backtest)
+    cache_path = tmp_path / "grid.json"
+    kwargs = {"metric": "sharpe", "cache_path": cache_path}
+    grid_search(_config(), StubPriceFetcher({}), {"hold": [5, 10]}, **kwargs)
+    assert calls == 2
+    rows = grid_search(_config(), StubPriceFetcher({}), {"hold": [5, 10, 20]}, **kwargs)
+
+    assert calls == 3  # only the new config ran
+    assert {r.metrics["dsr_trials"] for r in rows} == {3.0}
+    assert sum(r.cached for r in rows) == 2
+
+
+def test_cache_key_ignores_grid_size():
+    import inspect
+
+    assert "n_trials" not in inspect.signature(_cache_key).parameters
