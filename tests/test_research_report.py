@@ -26,6 +26,7 @@ from screener.backtester.optimization.research_report import (
 from screener.backtester.optimization.walk_forward import (
     WalkForwardSummary,
     generate_walk_forward_windows,
+    holding_period_fold_warnings,
     require_daily_walk_forward_scope,
     train_result_eligible,
     walk_forward_optimize,
@@ -654,6 +655,82 @@ def test_full_grid_reaches_each_train_fold(monkeypatch):
     assert summary.insufficient_data is False
     assert summary.oos_equity is not None
     assert len(summary.oos_equity) >= 3
+
+
+def test_walk_forward_forwards_trial_identity_to_grid_search(monkeypatch, tmp_path):
+    import screener.backtester.optimization.walk_forward as wf_mod
+
+    cfg = _config()
+    captured: list[dict[str, object]] = []
+
+    def fake_grid(cfg_arg, fetcher, parameter_grid, **kwargs):
+        captured.append(kwargs)
+        return []
+
+    monkeypatch.setattr(wf_mod, "grid_search", fake_grid)
+    monkeypatch.setattr(
+        wf_mod,
+        "fetch_benchmark",
+        lambda symbol, start, end, fetcher: pd.Series(
+            400.0, index=pd.bdate_range(start, end), dtype=float
+        ),
+    )
+    db = tmp_path / "trials.db"
+    walk_forward_optimize(
+        cfg,
+        StubPriceFetcher({}),
+        {"hold": [5, 10]},
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 6, 30),
+        train_days=40,
+        test_days=20,
+        step_days=20,
+        metric="sharpe",
+        min_trades=1,
+        experiment_id="fam",
+        trial_db_path=db,
+        n_trials_effective=2,
+    )
+    assert captured
+    for kwargs in captured:
+        assert kwargs["experiment_id"] == "fam"
+        assert kwargs["trial_db_path"] == db
+        assert kwargs["n_trials_effective"] == 2
+
+
+def test_holding_period_warning_converts_sessions_to_calendar_days():
+    # 45 sessions need about 63 calendar days, so a 63-day fold cannot fit it.
+    assert holding_period_fold_warnings({"hold": [10, 45]}, test_days=63)
+    assert holding_period_fold_warnings({"hold": [10, 44]}, test_days=63) == []
+    assert holding_period_fold_warnings({"hold": [10]}, test_days=63) == []
+
+
+def test_n_trials_effective_above_grid_fails_before_any_run():
+    fetcher = StubPriceFetcher({})
+    res = CliRunner().invoke(
+        cli,
+        [
+            "optimize",
+            "grid",
+            "--tickers",
+            "AAA",
+            "--entry",
+            "close > sma(close, 3)",
+            "--hold",
+            "5",
+            "--stop-loss",
+            "none",
+            "--take-profit",
+            "none",
+            "--trailing-stop",
+            "none",
+            "--n-trials-effective",
+            "5",
+        ],
+        obj=fetcher,
+    )
+    assert res.exit_code == 2, res.output
+    assert "--n-trials-effective" in res.output
 
 
 def test_nan_inf_train_scores_rejected(monkeypatch):

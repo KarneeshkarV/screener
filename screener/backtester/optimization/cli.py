@@ -15,7 +15,7 @@ import click
 from screener.backtester.cli_common import resolve_min_filters
 from screener.backtester.data import PriceFetcher
 from screener.backtester.models import BacktestConfig, Trade
-from screener.backtester.optimization.grid import grid_search
+from screener.backtester.optimization.grid import grid_search, parameter_combinations
 from screener.backtester.optimization.monte_carlo import (
     simulate_monte_carlo,
     validate_equity_monte_carlo_flags,
@@ -30,7 +30,6 @@ from screener.backtester.optimization.reporting import (
 from screener.backtester.optimization.walk_forward import (
     FOLD_BOUNDARY_POLICY,
     generate_walk_forward_windows,
-    holding_period_fold_warnings,
     require_daily_walk_forward_scope,
     walk_forward_optimize,
 )
@@ -120,6 +119,26 @@ def _pop_trial_identity(kwargs: dict[str, Any]) -> dict[str, Any]:
             kwargs.pop("n_trials_effective", None)
         ),
     }
+
+
+def _check_effective_trials_fit_grid(
+    trial_identity: dict[str, Any], parameter_grid: dict[str, list[Any]]
+) -> None:
+    """Fail before any backtest when ``--n-trials-effective`` exceeds the grid.
+
+    The register holds at least one row per grid combination by the time the
+    effective count is checked, so a larger value can never be valid. Catching
+    it here avoids a crash after the costly stages have run.
+    """
+    effective = trial_identity.get("n_trials_effective")
+    if effective is None:
+        return
+    nominal = len(parameter_combinations(parameter_grid))
+    if effective > nominal:
+        raise click.BadParameter(
+            f"{effective} exceeds the {nominal} parameter combinations in the grid",
+            param_hint="--n-trials-effective",
+        )
 
 
 def _parameter_grid(
@@ -343,6 +362,7 @@ def optimize_grid(**kwargs) -> None:
         kwargs["trailing_stop"],
         kwargs["hold"],
     )
+    _check_effective_trials_fit_grid(trial_identity, parameter_grid)
     cfg = _base_config(
         market=kwargs["market"],
         end_date=end_date,
@@ -441,6 +461,7 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         kwargs["trailing_stop"],
         kwargs["hold"],
     )
+    _check_effective_trials_fit_grid(trial_identity, parameter_grid)
     cfg = _base_config(
         market=kwargs["market"],
         end_date=end_date,
@@ -475,10 +496,6 @@ def optimize_walk_forward(train_days, test_days, step_days, **kwargs) -> None:
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    for warning in holding_period_fold_warnings(
-        parameter_grid, test_days=int(test_days)
-    ):
-        click.echo(f"warning: {warning}", err=True)
     summary = walk_forward_optimize(
         cfg,
         _fetcher(),
@@ -731,6 +748,7 @@ def research_report(
         raise click.UsageError(
             "Empty parameter grid; pass --param and/or hold/stop/take/trail ranges."
         )
+    _check_effective_trials_fit_grid(trial_identity, parameter_grid)
 
     hold_values = parameter_grid.get("hold") or _validate_hold_values(
         _parse_values(kwargs["hold"], int, allow_none=False)
@@ -790,10 +808,6 @@ def research_report(
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    for warning in holding_period_fold_warnings(
-        parameter_grid, test_days=int(test_days)
-    ):
-        click.echo(f"warning: {warning}", err=True)
     run_research_report(
         cfg,
         _fetcher(),

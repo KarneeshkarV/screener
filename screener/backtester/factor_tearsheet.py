@@ -107,7 +107,9 @@ def newey_west_mean_t_stat(values: pd.Series | np.ndarray, *, lag: int) -> float
     """t-statistic of the sample mean with Newey-West HAC standard errors.
 
     Uses Bartlett weights ``1 - k / (lag + 1)`` for lags ``1..lag``. When
-    ``lag == 0`` this matches the classical iid mean t-stat (ddof=1 SE).
+    ``lag == 0`` the variance uses the population divisor ``n`` (standard HAC
+    convention), so it is slightly larger than the classical iid t-stat, which
+    uses ``ddof=1``.
     """
     if lag < 0:
         raise ValueError(f"lag must be >= 0, got {lag}")
@@ -163,7 +165,7 @@ def summarize_ic(ic: pd.Series, *, horizon: int) -> ICSummary:
         if std and std > 0 and math.isfinite(std)
         else float("nan")
     )
-    # lag 0 matches the classical iid t-stat (ddof=1). Positive lags use HAC.
+    # lag 0 reuses the classical iid t-stat (ddof=1). Positive lags use HAC.
     t_stat_hac = t_stat if hac_lag == 0 else newey_west_mean_t_stat(clean, lag=hac_lag)
     pct_pos = float((clean > 0).mean())
     return ICSummary(
@@ -528,7 +530,6 @@ def print_tearsheet(
             str(s.n_days),
         )
     console.print(ic_table)
-    console.print(f"[dim]{FACTOR_TEARSHEET_LIMITATIONS}[/dim]")
 
     for q in quantile_results:
         q_table = Table(

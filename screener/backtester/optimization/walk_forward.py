@@ -269,9 +269,9 @@ def holding_period_fold_warnings(
     if not holds:
         return []
     max_hold = max(holds)
-    # Calendar days are an upper bound on sessions in the fold; equality is
-    # already too tight because weekends/holidays shrink available bars.
-    if max_hold < test_days:
+    # A calendar-day fold holds roughly 5/7 as many sessions (weekends alone),
+    # so convert the session hold to calendar days before comparing.
+    if max_hold * 7 / 5 < test_days:
         return []
     return [
         (
