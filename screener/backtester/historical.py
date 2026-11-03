@@ -260,22 +260,25 @@ class _ReserveRotationSource:
         portfolio = self.portfolio
         self._fill_pending(day, at_close=True)
         freed: list[int] = []
+        held_for_reentry: set[int] = set()
         for freed_slot in freed_slots:
             slot_id = freed_slot.slot_id
             freed.append(slot_id)
             if cfg.allow_reentry and self.reentries_left.get(slot_id, 0) > 0:
                 self.reentries_left[slot_id] -= 1
                 self.pending_reentry[slot_id] = freed_slot.state.ticker
+                held_for_reentry.add(slot_id)
 
         # A rejected or expired queued entry also releases its slot today.
-        # Rotate reserves now, never back on the earlier signal day.
+        # Rotate reserves now, never back on the earlier signal day. A slot
+        # still waiting for a re-entry is offered too: the re-entry had its
+        # chance in before_exits today and did not fire.
         freed.extend(
             slot_id
             for slot_id, state in self.slot_states.items()
             if state is None
             and slot_id not in freed
             and slot_id not in self.pending_entry_orders
-            and slot_id not in self.pending_reentry
         )
         if not cfg.reinvest or not freed:
             return
@@ -286,11 +289,15 @@ class _ReserveRotationSource:
             if grows_slots
             else None
         )
-        refillable = [s for s in freed if s not in self.pending_reentry]
+        # The exit day belongs to the re-entry: it is first checked tomorrow.
+        refillable = [s for s in freed if s not in held_for_reentry]
         slots_left = len(refillable)
 
         for slot_id in refillable:
             slots_left -= 1
+            # A reserve whose signal or budget fails today stays queued for a
+            # later day; only taken or bar-less names leave the queue.
+            deferred: deque[dict] = deque()
             while self.reserve_queue:
                 reserve = self.reserve_queue.popleft()
                 ticker = str(reserve["ticker"])
@@ -309,6 +316,7 @@ class _ReserveRotationSource:
                     caches=self.caches,
                 )
                 if reserve_signal_idx is None:
+                    deferred.append(reserve)
                     continue
                 entry_budget = entry_budget_for(
                     cfg,
@@ -320,6 +328,7 @@ class _ReserveRotationSource:
                     series_cache=self.caches.frame(ticker, reserve_bars).sizing_series,
                 )
                 if entry_budget <= 0:
+                    deferred.append(reserve)
                     continue
                 self.pending_entry_orders[slot_id] = PendingEntryOrder(
                     ticker=ticker,
@@ -329,7 +338,11 @@ class _ReserveRotationSource:
                 )
                 self.slot_bars[slot_id] = reserve_bars
                 self.taken.add(ticker)
+                if self.pending_reentry.pop(slot_id, None) is not None:
+                    # The re-entry never fired, so it did not use its count.
+                    self.reentries_left[slot_id] += 1
                 break
+            self.reserve_queue.extendleft(reversed(deferred))
 
 
 def _run_event_driven_sim(
@@ -406,6 +419,11 @@ def _run_event_driven_sim(
     taken = {state.ticker for state in slot_states.values() if state is not None}
     taken.update(order.ticker for order in pending_entry_orders.values())
     reserve_queue: deque[dict] = deque(reserves_df.to_dict("records"))
+    if cfg.allow_reentry and cfg.max_reentries <= 0:
+        warnings.append(
+            "allow_reentry is on but max_reentries is 0, so no re-entry can "
+            "happen; pass --max-reentries N to allow N re-entries per slot"
+        )
 
     horizon_end = _historical_horizon_end(as_of_ts, cfg)
     day_set: set[pd.Timestamp] = set()
@@ -473,6 +491,14 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     # Prepared columns (rank scores, trailing-vol columns) are invisible to the
     # entry/exit AST. Raise the fetch window now or those columns stay NaN.
     lookback = max(lookback, strategy_required_lookback(cfg.strategy_name, warnings))
+    # Fetch history for the liquidity and sizing windows too, as the rolling
+    # panel does, without making them an entry-eligibility gate.
+    fetch_lookback = max(
+        lookback,
+        cfg.avg_dollar_volume_window,
+        cfg.sizing_atr_window,
+        cfg.sizing_vol_window + 1,
+    )
 
     from screener.backtester.data import tv_to_yf
 
@@ -483,7 +509,8 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     yf_symbols = list(dict.fromkeys(list(yf_by_tv.values()) + [cfg.benchmark]))
 
     start = (
-        as_of_ts - pd.Timedelta(days=_warmup_days_for_interval(lookback, cfg.interval))
+        as_of_ts
+        - pd.Timedelta(days=_warmup_days_for_interval(fetch_lookback, cfg.interval))
     ).date()
     end = _historical_horizon_end(as_of_ts, cfg).date()
     price_panel = fetcher.fetch(yf_symbols, start, end)
@@ -571,6 +598,13 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     # where every slot is simultaneously flat is dropped from the index, and the
     # bar-count annualization in metrics.py silently compresses elapsed time,
     # wildly inflating cagr/sharpe/vol. Mirrors rolling.py's _assemble_results.
+    #
+    # The calendar ends at the last exit. The simulated horizon is only a
+    # fetch bound; bars after the book went flat for good would add a flat
+    # tail whose length depends on how much future data the provider holds.
+    if trades:
+        last_exit = max(pd.Timestamp(trade.exit_date) for trade in trades)
+        master_dates = [d for d in master_dates if d <= last_exit]
     date_set: set[pd.Timestamp] = set(master_dates)
     date_set.add(as_of_ts.normalize())
     for trade in trades:
@@ -605,10 +639,11 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         benchmark_aligned,
         trades,
         slot_count,
-        periods_per_year=periods_per_year_for_interval(cfg.interval),
+        periods_per_year=periods_per_year_for_interval(cfg.interval, cfg.market),
         risk_free_rate=float(cfg.risk_free_rate),
         holdings_value=portfolio_curve["holdings_value"],
     )
+    metrics["unique_tickers"] = len({trade.ticker for trade in trades})
     metrics.update(compute_regime_metrics(benchmark, trades))
     metrics.update(
         compute_cost_metrics(
