@@ -213,6 +213,7 @@ class _ReserveRotationSource:
         self.pending_entry_orders = pending_entry_orders
         self.reserve_queue = reserve_queue
         self.taken = taken
+        self._reserve_rows = {str(row["ticker"]): row for row in reserve_queue}
         self.warnings = warnings
         self.caches = caches
 
@@ -236,14 +237,17 @@ class _ReserveRotationSource:
         )
         # A queued order dropped without a fill (no bar left, a non-finite
         # reference price, no affordable share) never held the name, so the
-        # name goes back to the pool. Otherwise a reserve cancelled once
-        # could never be rotated in again.
+        # name goes back to the pool and a reserve back to the queue front.
+        # Otherwise a reserve cancelled once could never be rotated in again.
         for slot_id, ticker in queued.items():
             if slot_id in self.pending_entry_orders:
                 continue
             state = self.slot_states.get(slot_id)
             if state is None or state.ticker != ticker:
                 self.taken.discard(ticker)
+                reserve = self._reserve_rows.get(ticker)
+                if reserve is not None and reserve not in self.reserve_queue:
+                    self.reserve_queue.appendleft(reserve)
 
     def before_exits(self, day: pd.Timestamp) -> None:
         cfg = self.cfg
