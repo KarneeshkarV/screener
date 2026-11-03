@@ -912,11 +912,13 @@ def compute_cost_metrics(
 
 
 def compute_regime_metrics(benchmark: pd.Series, trades: list[Trade]) -> dict:
-    """Per-regime trade stats keyed by each trade's entry-date regime.
+    """Per-regime trade stats keyed by each trade's signal-date regime.
 
     The regime is classified from the (point-in-time) benchmark close curve;
-    each trade is bucketed by the benchmark regime in force on its entry date
-    (most recent benchmark date at or before entry). Returns keys of the form
+    each trade is bucketed by the benchmark regime in force on its signal date
+    (most recent benchmark date at or before the signal), the regime the
+    decision was made in. The rolling regime gate reads the same bar, so a
+    trade the gate admitted is never reported under a regime it would block. Returns keys of the form
     ``regime_<label>_trades`` / ``regime_<label>_win_rate`` /
     ``regime_<label>_avg_return`` for each label with at least one trade.
     """
@@ -926,7 +928,7 @@ def compute_regime_metrics(benchmark: pd.Series, trades: list[Trade]) -> dict:
     idx = regimes.index
     by_label: dict[str, list[float]] = {}
     for t in trades:
-        pos = int(idx.searchsorted(pd.Timestamp(t.entry_date), side="right")) - 1
+        pos = int(idx.searchsorted(pd.Timestamp(t.signal_date), side="right")) - 1
         label = str(regimes.iloc[pos]) if pos >= 0 else "unknown"
         by_label.setdefault(label, []).append(float(t.return_pct))
     out: dict = {}

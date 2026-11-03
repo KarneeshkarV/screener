@@ -411,9 +411,11 @@ def _passes_entry_filters(
     as_of_ts: pd.Timestamp,
     cfg: BacktestConfig,
 ) -> tuple[bool, str | None]:
-    """Check min-price and liquidity filters against history up to ``as_of_ts``."""
-    if cfg.min_price is None and cfg.min_avg_dollar_volume is None:
-        return True, None
+    """Check min-price and liquidity filters against history up to ``as_of_ts``.
+
+    A non-finite close fails even when no price or liquidity floor is set: a
+    NaN close cannot be filled or sized, so it must never pass an entry filter.
+    """
     # bars.index is a sorted DatetimeIndex; use searchsorted for O(log n) lookup.
     pos = int(bars.index.searchsorted(as_of_ts, side="right"))
     if pos <= 0:
@@ -424,6 +426,8 @@ def _passes_entry_filters(
     # by an ADV mean that would otherwise skip its missing value.
     if not np.isfinite(close):
         return False, f"price filter requires a finite close (close={close:.4f})"
+    if cfg.min_price is None and cfg.min_avg_dollar_volume is None:
+        return True, None
     if cfg.min_price is not None:
         min_price = float(cfg.min_price)
         if not np.isfinite(min_price) or close < min_price:
@@ -1035,6 +1039,11 @@ def _eligible_reserve_signal_idx(
     # bars.index is a sorted DatetimeIndex; searchsorted is O(log n).
     pos = int(bars.index.searchsorted(exit_day, side="right")) - 1
     if pos < 0:
+        return None
+    # A name with no bar on ``exit_day`` has no signal that day. Reading its
+    # last earlier bar would act on a stale signal; the rolling engine aligns
+    # signals on the exact day label and reports False for the same name.
+    if bars.index[pos] != exit_day:
         return None
     if pos + 1 < lookback + 1:
         return None

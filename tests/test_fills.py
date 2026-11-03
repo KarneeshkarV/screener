@@ -85,10 +85,20 @@ def test_entry_limit_fills_at_min_of_open_and_limit():
 
 
 def test_entry_limit_requires_limit_bps():
-    fm = FillModel(_cfg(entry_order_type="limit", entry_limit_bps=None))
+    # The config refuses this pair; the fill seam still guards a config built
+    # around validation.
+    cfg = _cfg(entry_order_type="limit", entry_limit_bps=100.0).model_copy(
+        update={"entry_limit_bps": None}
+    )
+    fm = FillModel(cfg)
     idx, fill, warn = fm.entry_price(_bars(), signal_idx=0)
     assert idx is None and fill is None
     assert "requires entry_limit_bps" in (warn or "")
+
+
+def test_config_refuses_limit_without_limit_bps():
+    with pytest.raises(ValueError, match="requires entry_limit_bps"):
+        _cfg(entry_order_type="limit", entry_limit_bps=None)
 
 
 def test_entry_no_post_signal_bar_warns():

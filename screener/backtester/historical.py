@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
@@ -42,6 +43,7 @@ from screener.backtester.models import (
     BacktestResult,
 )
 from screener.backtester.pine import PineError, parse, required_lookback
+from screener.backtester.rolling_candidates import _apply_min_score, _setup_scores
 from screener.backtester.portfolio import Portfolio, build_portfolio_curve
 from screener.backtester.sizing import (
     entry_budget_for,
@@ -104,14 +106,15 @@ def select_candidates(
         close = float(last_bar["close"])
         volume = float(last_bar["volume"])
         dollar_volume = float(last_bar.get("dollar_volume", close * volume))
-        rows.append(
-            {
-                "ticker": ticker,
-                "as_of_close": close,
-                "as_of_volume": volume,
-                "as_of_dollar_vol": dollar_volume,
-            }
-        )
+        row = {
+            "ticker": ticker,
+            "as_of_close": close,
+            "as_of_volume": volume,
+            "as_of_dollar_vol": dollar_volume,
+        }
+        if "rank_score" in bars.columns:
+            row["rank_score"] = float(last_bar["rank_score"])
+        rows.append(row)
     if filtered_count:
         warnings.append(f"filtered {filtered_count} tickers on price/liquidity filters")
     if not rows:
@@ -125,15 +128,44 @@ def select_candidates(
                 "role",
             ]
         ), warnings
-    df = (
-        pd.DataFrame(rows)
-        .sort_values("as_of_dollar_vol", ascending=False, kind="stable")
-        .reset_index(drop=True)
+    df = _rank_candidates(
+        pd.DataFrame(rows), cfg.min_score if cfg is not None else None
     )
     df = df.head(pool_limit).reset_index(drop=True)
     df["rank"] = df.index + 1
     df["role"] = ["active" if i < top_n else "reserve" for i in range(len(df))]
     return df, warnings
+
+
+def _rank_candidates(df: pd.DataFrame, min_score: float | None) -> pd.DataFrame:
+    """Order signal-day candidates the way the rolling engine does.
+
+    Mirrors ``rolling_candidates._candidate_rows_for_day``: a factor strategy
+    (one whose prepared bars carry ``rank_score``) ranks by score descending,
+    ties broken by dollar volume, and a name with a NaN score or dollar volume
+    is not a candidate. Every other strategy keeps the dollar-volume order.
+    ``min_score`` drops names below that setup-score percentile of the field.
+    The two engines must agree on who is bought.
+    """
+    df = df[~np.isnan(df["as_of_dollar_vol"].to_numpy(dtype=float))]
+    key = "rank_score" if "rank_score" in df.columns else "as_of_dollar_vol"
+    if key == "rank_score":
+        df = df[~np.isnan(df["rank_score"].to_numpy(dtype=float))]
+    if min_score is not None and not df.empty:
+        values = df[key].to_numpy(dtype=float)
+        everyone = np.ones(values.shape, dtype=bool)
+        df = df[_apply_min_score(everyone, _setup_scores(values, everyone), min_score)]
+    if key == "rank_score":
+        order = np.lexsort(
+            (
+                -df["as_of_dollar_vol"].to_numpy(dtype=float),
+                -df["rank_score"].to_numpy(dtype=float),
+            )
+        )
+        df = df.iloc[order].drop(columns="rank_score")
+    else:
+        df = df.sort_values("as_of_dollar_vol", ascending=False, kind="stable")
+    return df.reset_index(drop=True)
 
 
 class _ReserveRotationSource:
@@ -185,6 +217,9 @@ class _ReserveRotationSource:
         self.caches = caches
 
     def _fill_pending(self, day: pd.Timestamp, *, at_close: bool) -> None:
+        queued = {
+            slot: order.ticker for slot, order in self.pending_entry_orders.items()
+        }
         fill_pending_entries(
             day=day,
             at_close=at_close,
@@ -199,6 +234,16 @@ class _ReserveRotationSource:
             exit_ast=self.exit_ast,
             warnings=self.warnings,
         )
+        # A queued order dropped without a fill (no bar left, a non-finite
+        # reference price, no affordable share) never held the name, so the
+        # name goes back to the pool. Otherwise a reserve cancelled once
+        # could never be rotated in again.
+        for slot_id, ticker in queued.items():
+            if slot_id in self.pending_entry_orders:
+                continue
+            state = self.slot_states.get(slot_id)
+            if state is None or state.ticker != ticker:
+                self.taken.discard(ticker)
 
     def before_exits(self, day: pd.Timestamp) -> None:
         cfg = self.cfg
@@ -474,14 +519,76 @@ def _run_event_driven_sim(
     return master_dates
 
 
+def _session_cutoff(as_of: date | datetime) -> pd.Timestamp:
+    """Latest instant a bar may carry and still be visible at ``as_of``.
+
+    A plain date covers its whole session, so on an intraday interval the
+    16:00 bar of that date is in and its first bar is not skipped. An instant
+    stays an instant. Mirrors ``signal_panel._resolve_as_of_bar``.
+    """
+    if isinstance(as_of, datetime):
+        return pd.Timestamp(as_of)
+    return pd.Timestamp(as_of) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+
+
+def _resolve_signal_bar(
+    bars_by_tv: dict[str, pd.DataFrame], cutoff: pd.Timestamp
+) -> pd.Timestamp | None:
+    """Last bar any ticker printed at or before ``cutoff``: the signal bar.
+
+    A weekend or holiday ``as_of`` therefore signs on the prior session's
+    bar and stamps that bar as ``signal_date``, never a day nobody traded.
+    """
+    last: pd.Timestamp | None = None
+    for bars in bars_by_tv.values():
+        if bars is None or bars.empty:
+            continue
+        pos = int(bars.index.searchsorted(cutoff, side="right")) - 1
+        if pos >= 0:
+            stamp = pd.Timestamp(bars.index[pos])
+            if last is None or stamp > last:
+                last = stamp
+    return last
+
+
 def _historical_horizon_end(as_of: pd.Timestamp, cfg: BacktestConfig) -> pd.Timestamp:
     """Use the same full horizon for historical fetching and reserve simulation."""
     return as_of + pd.Timedelta(days=max(cfg.hold * 3 + 60, 90))
 
 
+def _rolling_only_gate_warnings(cfg: BacktestConfig) -> list[str]:
+    """Name every set gate the historical engine does not apply.
+
+    These gates read a per-day cross-section (regime state, earnings calendar,
+    sector groups, a dated membership or ADV-ranked universe), so they exist
+    only in the rolling engine. A one-date backtest must say it ignored them
+    rather than report numbers that look gated.
+    """
+    ignored = [
+        name
+        for name, active in (
+            ("regime_filter", bool(cfg.regime_filter)),
+            ("earnings_blackout_days", cfg.earnings_blackout_days is not None),
+            ("sector_neutral", cfg.sector_neutral),
+            ("membership_windows", bool(cfg.membership_windows)),
+            ("membership_added", bool(cfg.membership_added)),
+            ("dynamic_universe_size", cfg.dynamic_universe_size is not None),
+        )
+        if active
+    ]
+    if not ignored:
+        return []
+    return [
+        "historical backtest ignores rolling-only gates: "
+        + ", ".join(ignored)
+        + "; use the rolling backtest to apply them"
+    ]
+
+
 def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     warnings: list[str] = []
     as_of_ts = pd.Timestamp(cfg.as_of)
+    warnings.extend(_rolling_only_gate_warnings(cfg))
 
     entry_ast = parse(cfg.entry_expr)
     exit_ast = parse(cfg.exit_expr) if cfg.exit_expr else None
@@ -549,6 +656,10 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         exit_ast=exit_ast,
         warnings=warnings,
     )
+
+    signal_bar = _resolve_signal_bar(bars_by_tv, _session_cutoff(cfg.as_of))
+    if signal_bar is not None:
+        as_of_ts = signal_bar
 
     caches = _RunCaches()
     selection, sel_warnings = select_candidates(

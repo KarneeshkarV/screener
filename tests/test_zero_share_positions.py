@@ -245,9 +245,17 @@ def test_historical_reserve_refill_skips_zero_share_equal_slot():
     )
     result = run_backtest(cfg, StubPriceFetcher(panel))
     _assert_no_ghost_trades(result.trades)
-    # First lossy refill previously opened R3 at shares=0; it must stay out.
-    assert all(t.ticker != "R3" or t.shares > 0.0 for t in result.trades)
-    assert not any(t.ticker == "R3" for t in result.trades)
+    # First lossy refill previously opened R3 at shares=0. With no cash on that
+    # refill R3 must not open; it stays queued and opens only once an exit has
+    # freed cash, with real shares.
+    r3 = [t for t in result.trades if t.ticker == "R3"]
+    assert all(t.shares > 0.0 for t in r3)
+    first_reserve_signal = min(
+        pd.Timestamp(t.signal_date)
+        for t in result.trades
+        if t.ticker != "R3" and t.ticker.startswith("R")
+    )
+    assert all(pd.Timestamp(t.signal_date) > first_reserve_signal for t in r3)
 
 
 def test_tiny_positive_cash_still_opens_fractional_shares():
