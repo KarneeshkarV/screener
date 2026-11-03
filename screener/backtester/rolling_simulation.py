@@ -447,7 +447,7 @@ def _assemble_results(
         benchmark_aligned,
         trades,
         max(cfg.top, 1),
-        periods_per_year=periods_per_year_for_interval(cfg.interval),
+        periods_per_year=periods_per_year_for_interval(cfg.interval, cfg.market),
         risk_free_rate=float(cfg.risk_free_rate),
         holdings_value=portfolio_curve["holdings_value"],
     )

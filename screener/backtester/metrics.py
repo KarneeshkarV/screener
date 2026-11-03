@@ -31,13 +31,15 @@ from screener.regime import classify_regimes
 TRADING_DAYS_PER_YEAR = 252
 _EULER_MASCHERONI = 0.5772156649015329
 
-# Regular-session bars per trading day for each supported interval (US markets:
-# a 6.5h session). Used to scale the 252-trading-day annualization factor so
-# intraday equity curves annualize over the right number of periods. Daily is
-# 1 bar/day, reproducing the legacy 252 factor exactly. India sessions are
-# shorter (~6.25h), so India intraday annualization is slightly off; no behavior
-# change intended.
+# Regular-session bars per trading day for each supported interval. Used to
+# scale the 252-trading-day annualization factor so intraday equity curves
+# annualize over the right number of periods. Daily is 1 bar/day, reproducing
+# the legacy 252 factor exactly. US: a 6.5h session (09:30-16:00). India: a
+# 6.25h NSE session (09:15-15:30); a partial last bar counts as one bar.
 _BARS_PER_SESSION = {"1d": 1, "1h": 7, "30m": 13, "15m": 26, "5m": 78, "1m": 390}
+_BARS_PER_SESSION_BY_MARKET = {
+    "india": {"1d": 1, "1h": 7, "30m": 13, "15m": 25, "5m": 75, "1m": 375},
+}
 
 
 MetricKind = Literal["pct", "money", "ratio", "count", "int"]
@@ -246,13 +248,15 @@ def result_view_columns(metric_sets: Iterable[Mapping[str, Any]]) -> ResultView:
     return result_view({key: 0 for key in keys})
 
 
-def periods_per_year_for_interval(interval: str) -> int:
-    """Return the annualization period count for ``interval``.
+def periods_per_year_for_interval(interval: str, market: str = "us") -> int:
+    """Return the annualization period count for ``interval`` in ``market``.
 
     ``1d`` -> 252 (unchanged); intraday intervals scale 252 by the number of
-    regular-session bars per day so Sharpe/vol/CAGR annualize consistently.
+    regular-session bars per day in that market's session so Sharpe/vol/CAGR
+    annualize consistently.
     """
-    return TRADING_DAYS_PER_YEAR * _BARS_PER_SESSION.get(interval, 1)
+    bars = _BARS_PER_SESSION_BY_MARKET.get(market.lower(), _BARS_PER_SESSION)
+    return TRADING_DAYS_PER_YEAR * bars.get(interval, 1)
 
 
 def bar_returns(equity: pd.Series) -> pd.Series:
@@ -391,9 +395,14 @@ def equity_curve_sharpe(
     rf: float = 0.0,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> float:
-    if daily.empty or daily.std(ddof=0) == 0:
+    if daily.empty:
         return 0.0
     excess = daily - rf / periods_per_year
+    if daily.std(ddof=0) == 0:
+        # No volatility: Sharpe is 0 only when the book also met the hurdle
+        # exactly. A constant shortfall (cash under a positive rf) or surplus
+        # has no finite ratio, so report it as undefined, not as 0.
+        return 0.0 if float(excess.mean()) == 0.0 else float("nan")
     return float(excess.mean() / excess.std(ddof=0) * np.sqrt(periods_per_year))
 
 
@@ -1041,7 +1050,7 @@ def no_trades_result(
         benchmark_aligned,
         [],
         max(cfg.top, 1),
-        periods_per_year=periods_per_year_for_interval(cfg.interval),
+        periods_per_year=periods_per_year_for_interval(cfg.interval, cfg.market),
         risk_free_rate=float(cfg.risk_free_rate),
     )
     metrics["unique_tickers"] = 0

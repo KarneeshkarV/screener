@@ -507,8 +507,9 @@ def test_partial_exit_run_reports_the_same_exposure_as_one_whole_position(
     assert {t.open_seq for t in scaled.trades} == {1}
     assert {t.entry_date for t in scaled.trades} == {whole.trades[0].entry_date}
 
-    # 6 of the 17 curve sessions are occupied, with or without the scale-outs.
-    assert scaled.metrics["exposure"] == pytest.approx(6 / 17)
+    # 6 of the 7 curve sessions (as_of through the last exit) are occupied,
+    # with or without the scale-outs.
+    assert scaled.metrics["exposure"] == pytest.approx(6 / 7)
     assert scaled.metrics["exposure"] == pytest.approx(whole.metrics["exposure"])
     assert scaled.metrics["exposure"] <= 1.0
 
