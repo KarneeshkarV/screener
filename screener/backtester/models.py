@@ -261,6 +261,9 @@ class BacktestConfig(BaseModel):
                 "spread_proxy and EstimatedHalfSpreadSlippage must be enabled together"
             )
 
+        if self.entry_order_type == "limit" and self.entry_limit_bps is None:
+            raise ValueError("entry_order_type 'limit' requires entry_limit_bps")
+
         if self.sizing_rule == "fixed_risk" and (
             self.stop_loss is None or self.stop_loss <= 0
         ):
