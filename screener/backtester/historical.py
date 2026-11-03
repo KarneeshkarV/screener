@@ -717,7 +717,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         last_exit = max(pd.Timestamp(trade.exit_date) for trade in trades)
         master_dates = [d for d in master_dates if d <= last_exit]
     date_set: set[pd.Timestamp] = set(master_dates)
-    date_set.add(as_of_ts.normalize())
+    date_set.add(as_of_ts)
     for trade in trades:
         frame = bars_by_tv.get(trade.ticker)
         if frame is None or frame.empty:  # pragma: no cover - traded ticker has bars

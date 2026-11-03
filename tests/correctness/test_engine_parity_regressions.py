@@ -170,6 +170,26 @@ def test_intraday_date_as_of_reads_that_session():
     assert pd.Timestamp(trade.entry_date) == pd.Timestamp("2024-03-06 14:00")
 
 
+def test_intraday_benchmark_starts_at_the_signal_bar():
+    hours = pd.DatetimeIndex(
+        [
+            pd.Timestamp(f"{day.date()} {hour}:00")
+            for day in pd.bdate_range("2024-03-04", periods=4)
+            for hour in (14, 15, 16)
+        ]
+    )
+    sig = [stamp == pd.Timestamp("2024-03-05 16:00") for stamp in hours]
+    # The benchmark doubles before the signal bar and is flat after it.
+    spy = _frame(hours)
+    spy.loc[hours >= pd.Timestamp("2024-03-05 16:00"), ["open", "close"]] = 200.0
+    panel = {"AAA": _frame(hours, signal=sig), "SPY": spy}
+    result = run_backtest(
+        _cfg(tickers=("AAA",), as_of=date(2024, 3, 5), interval="1h"),
+        StubPriceFetcher(panel),
+    )
+    assert result.metrics["benchmark_return"] == pytest.approx(0.0)
+
+
 def test_halted_reserve_does_not_trade_its_last_stale_signal():
     # Halted from the first bar after as_of through every possible exit day.
     halted_days = _DAYS.delete(list(range(6, 14)))
