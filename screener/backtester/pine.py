@@ -1026,7 +1026,7 @@ def evaluate_panel_many(
         frames = [bars_by_ticker[t] for t in tickers]
         try:
             panel = _build_panel(tickers, frames, names)
-        except (PineError, TypeError, ValueError):
+        except (PineError, TypeError, ValueError, OverflowError):
             for ticker in tickers:
                 eval_one(ticker)
             continue

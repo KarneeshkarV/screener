@@ -214,6 +214,10 @@ def _build_frame_cache(bars: pd.DataFrame) -> _FrameCache:
     )
 
 
+# Tickers per prewarm panel: about 20 MB per referenced column at 2,520 bars.
+_PREWARM_BATCH = 1_000
+
+
 @dataclass
 class _RunCaches:
     """Per-run memoisation shared across slot opens and candidate checks.
@@ -246,11 +250,44 @@ class _RunCaches:
         cached = self.entry_signals.get(ticker)
         if cached is None:
             try:
-                cached = evaluate(entry_ast, bars)
+                # Unnamed, so a prewarmed entry and a lazy one are the same
+                # Series: a panel column cannot carry the name pandas gives
+                # the lazy result, and no caller reads it.
+                cached = evaluate(entry_ast, bars).rename(None)
             except PineError as exc:
                 cached = exc
             self.entry_signals[ticker] = cached
         return cached
+
+    def prewarm_entry_signals(
+        self, bars_by_ticker: dict[str, pd.DataFrame], entry_ast
+    ) -> None:
+        """Cache the entry Series of every ticker in panel passes.
+
+        :meth:`entry_signal` otherwise walks the entry AST once per ticker.
+        :func:`~screener.backtester.pine.evaluate_panel` returns, per ticker,
+        the values :func:`evaluate` would return. Each is cached on the
+        ticker's own index, so index metadata matches the lazy path too.
+
+        A failure is not cached here: its traceback holds the panel frames
+        alive for the whole run. :meth:`entry_signal` evaluates that ticker
+        alone and caches the error it raises, as without a prewarm. Tickers go
+        in batches of ``_PREWARM_BATCH`` to bound the panel's peak memory.
+        """
+        todo = [
+            (ticker, bars)
+            for ticker, bars in bars_by_ticker.items()
+            if ticker not in self.entry_signals
+        ]
+        for start in range(0, len(todo), _PREWARM_BATCH):
+            batch = dict(todo[start : start + _PREWARM_BATCH])
+            for ticker, result in evaluate_panel(entry_ast, batch).items():
+                if isinstance(result, pd.Series):
+                    self.entry_signals[ticker] = pd.Series(
+                        result.to_numpy(copy=False),
+                        index=batch[ticker].index,
+                        copy=False,
+                    )
 
     def store_exit_signal(self, ticker: str, signal: pd.Series) -> pd.Series:
         """Normalise, cache, and return a boolean exit Series for ``ticker``."""
