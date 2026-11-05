@@ -65,6 +65,9 @@ def select_candidates(
 ) -> tuple[pd.DataFrame, list[str]]:
     """Evaluate entry AST at ``as_of`` for each ticker and rank survivors.
 
+    ``as_of`` is the signal bar's own stamp. A ticker with no bar at that
+    stamp is not a candidate.
+
     The entry AST is evaluated once over each ticker's full frame and indexed
     positionally at the ``as_of`` bar (every Pine op is causal, so this matches
     the truncated-history evaluation — the same discipline the rolling engine's
@@ -74,6 +77,7 @@ def select_candidates(
     rows = []
     warnings: list[str] = []
     filtered_count = 0
+    stale_count = 0
     reserve_multiple = cfg.reserve_multiple if cfg is not None else 1
     pool_limit = max(top_n * max(reserve_multiple, 1), top_n)
     if caches is None:
@@ -87,6 +91,13 @@ def select_candidates(
         pos = int(bars.index.searchsorted(as_of, side="right")) - 1
         if pos + 1 < lookback_required + 1:
             warnings.append(f"insufficient lookback ({pos + 1} bars): {ticker}")
+            continue
+        # The signal must print on the signal bar itself. A name whose last
+        # bar is older (a delisting, a halt, a feed that stopped) did not
+        # trade at ``as_of``; carrying its old bar forward ranked it as live.
+        # The rolling engine aligns signals by exact label for the same reason.
+        if bars.index[pos] != as_of:
+            stale_count += 1
             continue
         if cfg is not None:
             passes, _reason = _passes_entry_filters(bars, as_of, cfg)
@@ -115,6 +126,8 @@ def select_candidates(
         if "rank_score" in bars.columns:
             row["rank_score"] = float(last_bar["rank_score"])
         rows.append(row)
+    if stale_count:
+        warnings.append(f"skipped {stale_count} tickers with no bar at as_of")
     if filtered_count:
         warnings.append(f"filtered {filtered_count} tickers on price/liquidity filters")
     if not rows:

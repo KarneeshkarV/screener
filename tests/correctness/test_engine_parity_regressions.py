@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from screener.backtester import BacktestConfig, run_backtest
+from screener.backtester import BacktestConfig, run_backtest, run_rolling_backtest
 from screener.backtester.core import _SlotState
 from screener.backtester.historical import (
     _rolling_only_gate_warnings,
@@ -280,3 +280,38 @@ def test_rank_exit_spares_a_name_picked_from_the_ranking_it_is_judged_on(
     )
     assert fresh.rank_exit is False
     assert old.rank_exit is True
+
+
+@pytest.mark.parametrize(
+    "gone",
+    [
+        pytest.param(_DAYS[:11], id="delisted-before-as-of"),
+        pytest.param(_DAYS[:11].append(_DAYS[21:]), id="halted-through-as-of"),
+    ],
+)
+def test_a_ticker_with_no_bar_at_as_of_is_not_a_candidate(gone):
+    as_of = _DAYS[20]
+    live = _frame(_DAYS, volume=10_000.0)
+    stale = _frame(gone, volume=5_000_000.0)
+    selection, warnings = select_candidates(
+        {"LIVE": live, "STALE": stale},
+        parse("sig > 0"),
+        as_of,
+        top_n=1,
+        lookback_required=0,
+        cfg=_cfg(reserve_multiple=3),
+    )
+    assert selection["ticker"].tolist() == ["LIVE"]
+    assert "skipped 1 tickers with no bar at as_of" in warnings
+
+    panel = {"LIVE": live, "STALE": stale}
+    historical = _run(panel, as_of=as_of.date(), reserve_multiple=1)
+    rolling = run_rolling_backtest(
+        _cfg(tickers=("LIVE", "STALE"), as_of=as_of.date(), reserve_multiple=1),
+        StubPriceFetcher({**panel, "SPY": _frame(_DAYS)}),
+        start_date=as_of.date(),
+        end_date=_DAYS[30].date(),
+    )
+    for result in (historical, rolling):
+        trade = result.trades[0]
+        assert pd.Timestamp(trade.entry_date) == _DAYS[21]
