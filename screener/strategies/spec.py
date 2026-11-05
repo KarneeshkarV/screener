@@ -592,6 +592,7 @@ def discover_plugins() -> None:
         bb_breakout,
         bb_pattern,
         breakout,
+        dist_from_52w_high,
         donchian_breakout,
         ema150_200_revenue,
         ema_stack_lowvol,
