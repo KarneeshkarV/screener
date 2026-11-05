@@ -1166,3 +1166,131 @@ def test_fetch_price_data_default_fetcher(monkeypatch):
     out = ebd.fetch_price_data(["AAA"], date(2024, 1, 1), date(2024, 2, 1))
     assert "AAA" in out
     assert captured["auto_adjust"] is True
+
+
+# ── release time against the session close ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("stamp", "ticker", "expected"),
+    [
+        (pd.Timestamp("2024-01-25 06:00", tz="America/New_York"), "JPM", True),
+        (pd.Timestamp("2024-01-25 16:00", tz="America/New_York"), "AAPL", False),
+        # 10:30 UTC is 16:00 Kolkata: after the 15:30 NSE close.
+        (pd.Timestamp("2024-01-25 10:30", tz="UTC"), "TCS.NS", False),
+        (pd.Timestamp("2024-01-25 09:00"), "RELIANCE.NS", True),
+        (pd.Timestamp("2024-01-25 19:30"), "RELIANCE.NS", False),
+        (pd.Timestamp("2024-01-25"), "AAPL", None),
+    ],
+)
+def test_released_before_close_reads_the_exchange_clock(stamp, ticker, expected):
+    assert earnings_dates._released_before_close(stamp, ticker) is expected
+
+
+def test_yfinance_rows_keep_the_release_time(monkeypatch, no_disk_cache):
+    day = pd.Timestamp(date.today() - timedelta(days=30))
+    stamps = pd.DatetimeIndex(
+        [day + pd.Timedelta(hours=6), day - pd.Timedelta(days=91, hours=-16)],
+        tz="America/New_York",
+    )
+    df = pd.DataFrame(
+        {
+            "EPS Estimate": [1.0, 1.0],
+            "Reported EPS": [1.1, 1.1],
+            "Surprise(%)": [10.0, 10.0],
+        },
+        index=stamps,
+    )
+    monkeypatch.setattr(yf, "Ticker", lambda tk: _FakeTicker(earnings_dates=df))
+
+    events = earnings_dates.collect_earnings_events(["JPM"], years=3, market="us")
+
+    by_date = dict(
+        zip(
+            pd.to_datetime(events["earnings_date"]),
+            events["released_before_close"],
+            strict=True,
+        )
+    )
+    assert by_date == {
+        day.normalize(): True,
+        (day - pd.Timedelta(days=91)).normalize(): False,
+    }
+
+
+def test_fmp_bmo_and_amc_tags_become_the_release_flag(monkeypatch, no_disk_cache):
+    recent = date.today() - timedelta(days=30)
+    earlier = recent - timedelta(days=91)
+    oldest = earlier - timedelta(days=91)
+    payload = [
+        {"date": recent.isoformat(), "eps": 1.2, "epsEstimated": 1.0, "time": "bmo"},
+        {"date": earlier.isoformat(), "eps": 1.2, "epsEstimated": 1.0, "time": "amc"},
+        {"date": oldest.isoformat(), "eps": 1.2, "epsEstimated": 1.0, "time": "--"},
+    ]
+    _inject_fmp(monkeypatch, payload=payload)
+
+    rows = earnings_dates._fmp_earnings_rows_for_ticker("RELIANCE.NS", years=3)
+
+    assert {r["earnings_date"]: r["released_before_close"] for r in rows} == {
+        recent: True,
+        earlier: False,
+        oldest: None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (np.bool_(True), True),
+        (False, False),
+        (None, None),
+        (float("nan"), None),
+        (pd.NA, None),
+    ],
+)
+def test_release_flag_is_a_strict_tri_state(value, expected):
+    assert earnings_dates._release_flag(value) is expected
+
+
+@pytest.mark.parametrize("evening_first", [True, False])
+@pytest.mark.parametrize("surprise_source", [None, "fmp"])
+def test_the_earliest_nse_filing_of_a_day_sets_the_release_flag(
+    monkeypatch, no_disk_cache, evening_first, surprise_source
+):
+    day = (date.today() - timedelta(days=30)).isoformat()
+    filings = [
+        {
+            "desc": "Financial Results",
+            "attchmntText": "",
+            "symbol": "RELIANCE",
+            "sort_date": f"{day} {hour}",
+        }
+        for hour in ("17:00:00", "10:00:00")
+    ]
+    if not evening_first:
+        filings.reverse()
+    _inject_nselive(
+        monkeypatch, types.SimpleNamespace(corporate_announcements=lambda: filings)
+    )
+    monkeypatch.setattr(
+        earnings_dates, "_fetch_openscreener_earnings_rows", lambda *a, **kw: []
+    )
+    monkeypatch.setattr(earnings_dates, "_fetch_fmp_earnings_rows", lambda *a, **kw: [])
+    kwargs = {"surprise_source": surprise_source} if surprise_source else {}
+
+    out = earnings_dates.collect_earnings_events(
+        ["RELIANCE.NS"], years=1, market="india", **kwargs
+    )
+
+    assert len(out) == 1
+    # The 10:00 filing came before the 15:30 close, so that close priced it.
+    assert earnings_dates._release_flag(out["released_before_close"].iloc[0]) is True
+
+
+def test_a_release_between_an_early_and_the_regular_close_reads_as_before():
+    # NYSE closed at 13:00 on 2024-11-29. A 14:00 release missed that close,
+    # but the regular-close table reads it as before: the backtest then exits a
+    # bar early, which is the safe side, never holding through a priced report.
+    stamp = pd.Timestamp("2024-11-29 14:00", tz="America/New_York")
+    assert earnings_dates._released_before_close(stamp, "AAPL") is True

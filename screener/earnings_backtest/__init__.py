@@ -1,7 +1,8 @@
 """Earnings-drift backtest module.
 
 Entry: buy at close of E-N (N = days_before, default 1).
-Exit:  sell at close of earnings day E.
+Exit:  sell at close of earnings day E, or of the session before it when the
+       report came out before E's close.
 Sentiment strategies filter which earnings events are traded.
 
 PEAD mode (``earnings-pead``): select events by EPS-surprise threshold,
