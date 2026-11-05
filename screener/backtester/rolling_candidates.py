@@ -738,10 +738,11 @@ def _candidate_rows_for_day(
         eligible_cols = np.nonzero(eligible)[0]
         if eligible_cols.size == 0:
             return [], warnings
-        # Match ``sort_values(ascending=False, kind="mergesort")`` exactly: pandas
-        # reverses the stable ascending order, so ties land in reversed column
-        # order (see pandas ``nargsort``).
-        order = dollar_vol[eligible_cols].argsort(kind="mergesort")[::-1]
+        # Stable descending sort: names tied on dollar volume keep ascending
+        # column order, the same order ``historical._rank_candidates`` keeps.
+        # Reversing a stable ascending argsort would flip ties and let the two
+        # engines buy different names on the same day.
+        order = np.argsort(-dollar_vol[eligible_cols], kind="stable")
     rank_start = max(offset, 0)
     rank_end = None if limit is None or limit < 0 else rank_start + limit
     order = order[rank_start:rank_end]

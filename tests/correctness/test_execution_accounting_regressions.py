@@ -362,3 +362,45 @@ def test_impact_fill_respects_risk_budget(engine):
     trade = result.trades[0]
     assert trade.entry_price > 100
     assert trade.entry_cost <= 1000
+
+
+@pytest.mark.parametrize("slippage_bps", [10.0, 50.0])
+def test_buy_limit_never_fills_above_its_limit(engine, slippage_bps):
+    """Slippage on a touched buy limit is capped at the limit price."""
+    frame = bars()
+    frame.iloc[1] = [100.0, 100.5, 98.0, 99.5, 10000.0]
+    result = run_engine(
+        engine,
+        {"AAA": frame},
+        entry_order_type="limit",
+        entry_limit_bps=100.0,
+        slippage_bps=slippage_bps,
+    )
+    trade = first_lot(result)[0]
+    assert trade.entry_date == date(2024, 1, 2)
+    assert trade.entry_price == pytest.approx(99.0)
+
+
+def test_buy_limit_keeps_slippage_below_the_limit(engine):
+    """A gap below the limit still pays slippage, up to the limit."""
+    frame = bars()
+    frame.iloc[1] = [95.0, 96.0, 94.0, 95.5, 10000.0]
+    result = run_engine(
+        engine,
+        {"AAA": frame},
+        entry_order_type="limit",
+        entry_limit_bps=100.0,
+        slippage_bps=10.0,
+    )
+    assert first_lot(result)[0].entry_price == pytest.approx(95.0 * 1.001)
+
+
+@pytest.mark.parametrize("tickers", [("AAA", "ZZZ"), ("ZZZ", "AAA")])
+def test_engines_break_dollar_volume_ties_the_same_way(tickers):
+    """Equal dollar volume: both engines buy the first listed name."""
+    frames = {ticker: bars() for ticker in tickers}
+    picks = {
+        engine: first_lot(run_engine(engine, frames))[0].ticker
+        for engine in ("historical", "rolling")
+    }
+    assert picks == {"historical": tickers[0], "rolling": tickers[0]}
