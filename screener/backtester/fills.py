@@ -49,6 +49,20 @@ class PriceArrays(Protocol):
     close_arr: np.ndarray
 
 
+def _limit_price(
+    bars: pd.DataFrame,
+    signal_idx: int,
+    cfg: BacktestConfig,
+    arrays: PriceArrays | None = None,
+) -> float:
+    """Buy limit price: the signal close less ``cfg.entry_limit_bps``."""
+    if arrays is not None:
+        signal_close = float(arrays.close_arr[signal_idx])
+    else:
+        signal_close = float(bars.iloc[signal_idx]["close"])
+    return signal_close * (1.0 - bps_fraction(cfg.entry_limit_bps or 0.0))
+
+
 def _resolve_entry_fill(
     bars: pd.DataFrame,
     signal_idx: int,
@@ -85,11 +99,7 @@ def _resolve_entry_fill(
     if order == "limit":
         if cfg.entry_limit_bps is None:
             return None, None, "limit order requires entry_limit_bps"
-        if arrays is not None:
-            signal_close = float(arrays.close_arr[signal_idx])
-        else:
-            signal_close = float(bars.iloc[signal_idx]["close"])
-        limit_price = signal_close * (1.0 - bps_fraction(cfg.entry_limit_bps))
+        limit_price = _limit_price(bars, signal_idx, cfg, arrays)
         if limit_bar_idx is not None:
             if limit_bar_idx <= signal_idx or limit_bar_idx >= len(bars):
                 return None, None, "limit order has no current bar"
@@ -263,6 +273,10 @@ class FillModel:
             sigma_daily=sigma_daily,
             half_spread=half_spread,
         )
+        if self.cfg.entry_order_type == "limit":
+            # A buy limit never pays more than its limit: slippage can eat the
+            # gap-down improvement below it, but not push the fill above it.
+            fill = min(fill, _limit_price(bars, signal_idx, self.cfg, arrays))
         shares = affordable_buy_shares(
             self.cost_model,
             fill,
