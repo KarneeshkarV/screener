@@ -23,7 +23,10 @@ import pandas as pd
 import pytest
 
 from screener.backtester.pine import evaluate, parse
-from screener.factors.fundamentals import stamp_fundamentals
+from screener.factors.fundamentals import (
+    EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
+    stamp_fundamentals,
+)
 from screener.strategies.spec import (
     ExpressionStrategySpec,
     PrepareCtx,
@@ -80,7 +83,10 @@ def _bars(seed: int, n: int = _BARS) -> pd.DataFrame:
     # and the factor layer refuses to read one. These are constants standing in
     # for an already-lagged join, so stamp them as the real merge would.
     return stamp_fundamentals(
-        frame, columns=tuple(_FUNDAMENTAL_COLUMNS), filing_lag_days=0
+        frame,
+        columns=tuple(_FUNDAMENTAL_COLUMNS),
+        filing_lag_days=0,
+        effective_date_kind=EFFECTIVE_DATE_KIND_FILING_TIMESTAMP,
     )
 
 
