@@ -200,3 +200,89 @@ def test_earnings_window_holds_signal_history_for_the_first_event(
     )
 
     assert [t.passed_filter for t in trades] == [True, True]
+
+
+def test_report_before_the_close_exits_at_the_prior_close(monkeypatch) -> None:
+    # yfinance stamps a pre-market report at 06:00 New York. That day's close
+    # already prices the result, so the pre-earnings trade must exit one bar
+    # earlier; exiting at it booked the report-day jump as drift.
+    from screener.earnings_backtest import earnings_dates
+
+    report_day = IDX[30]
+    bars = _bars(IDX)
+    bars.loc[report_day, ["open", "high", "low", "close"]] = [
+        150.0,
+        151.0,
+        149.0,
+        150.0,
+    ]
+    stamps = pd.DatetimeIndex(
+        [report_day + pd.Timedelta(hours=6)], tz="America/New_York"
+    )
+    reports = pd.DataFrame(
+        {"EPS Estimate": [1.0], "Reported EPS": [1.1], "Surprise(%)": [10.0]},
+        index=stamps,
+    )
+    monkeypatch.setattr(earnings_dates, "_configure_yfinance", lambda: None)
+    monkeypatch.setattr(
+        earnings_dates, "cached_json_call", lambda *a, **kw: kw["fetch"]()
+    )
+    monkeypatch.setattr(
+        earnings_dates.yf,
+        "Ticker",
+        lambda ticker: type("T", (), {"earnings_dates": reports})(),
+    )
+    monkeypatch.setattr(
+        engine_module, "fetch_price_data", lambda *a, **kw: {"AAA": bars}
+    )
+
+    trades = run_earnings_backtest(
+        market="us",
+        strategy="price_momentum",
+        days_before=1,
+        min_score=0.0,
+        tickers=["AAA"],
+    )
+
+    assert len(trades) == 1
+    assert trades[0].earnings_date == report_day.date()
+    assert trades[0].entry_date == IDX[28].date()
+    assert trades[0].exit_date == IDX[29].date()
+    assert trades[0].exit_price < 150.0
+
+
+def test_report_after_the_close_still_exits_at_its_own_close(monkeypatch) -> None:
+    from screener.earnings_backtest import earnings_dates
+
+    report_day = IDX[30]
+    stamps = pd.DatetimeIndex(
+        [report_day + pd.Timedelta(hours=16)], tz="America/New_York"
+    )
+    reports = pd.DataFrame(
+        {"EPS Estimate": [1.0], "Reported EPS": [1.1], "Surprise(%)": [10.0]},
+        index=stamps,
+    )
+    monkeypatch.setattr(earnings_dates, "_configure_yfinance", lambda: None)
+    monkeypatch.setattr(
+        earnings_dates, "cached_json_call", lambda *a, **kw: kw["fetch"]()
+    )
+    monkeypatch.setattr(
+        earnings_dates.yf,
+        "Ticker",
+        lambda ticker: type("T", (), {"earnings_dates": reports})(),
+    )
+    monkeypatch.setattr(
+        engine_module, "fetch_price_data", lambda *a, **kw: {"AAA": _bars(IDX)}
+    )
+
+    trades = run_earnings_backtest(
+        market="us",
+        strategy="price_momentum",
+        days_before=1,
+        min_score=0.0,
+        tickers=["AAA"],
+    )
+
+    assert [(t.entry_date, t.exit_date) for t in trades] == [
+        (IDX[29].date(), report_day.date())
+    ]

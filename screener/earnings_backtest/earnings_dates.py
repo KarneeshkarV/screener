@@ -15,12 +15,14 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
+from datetime import time as clock_time
 from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
 from screener import _optional
 from screener.backtester.data import _configure_yfinance, call_yfinance_with_timeout
+from screener.backtester.sessions import session_for
 from screener.cache import cached_json_call
 from screener.earnings_backtest.common import (
     EARNINGS_CACHE_DAYS,
@@ -51,20 +53,85 @@ logger = logging.getLogger(__name__)
 INDIA_EARNINGS_FILING_LAG_DAYS = 60
 
 
-def _earnings_to_records(ed: pd.DataFrame) -> list[dict[str, Any]]:
+def _released_before_close(stamp: pd.Timestamp, ticker: str) -> bool | None:
+    """Whether a release stamp falls before the session close of its own date.
+
+    A tz-aware stamp is read on the ticker's exchange clock; a naive one is
+    taken as already local. ``None`` when the vendor gave no time of day: a bare
+    date parses to midnight, and no exchange reports at midnight.
+
+    The close is the regular one. On a shortened session (NYSE closes at 13:00
+    on some holiday eves) a release between the early and the regular close
+    reads as before the close. That errs on the safe side: the backtest exits
+    one bar early instead of holding through a close that priced the report.
+    """
+    session = session_for(ticker)
+    ts = pd.Timestamp(stamp)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert(session.timezone).tz_localize(None)
+    if ts.time() == clock_time(0):
+        return None
+    return ts.time() < session.close
+
+
+def _earnings_to_records(
+    ed: pd.DataFrame, ticker: str | None = None
+) -> list[dict[str, Any]]:
+    """Serialize an earnings frame, keeping the release time as one flag.
+
+    The date is stored without its time of day, so with a ``ticker`` the
+    stamp's position against that ticker's session close is kept as
+    ``released_before_close``.
+    """
     records: list[dict[str, Any]] = []
     for idx, row in ed.iterrows():
         # iterrows() types the index label as Hashable; it is a datetime here.
-        ts = pd.Timestamp(cast(Any, idx)).tz_localize(None).normalize()
+        stamp = pd.Timestamp(cast(Any, idx))
+        ts = stamp.tz_localize(None).normalize()
         records.append(
             {
                 "earnings_date": ts.date().isoformat(),
+                "released_before_close": (
+                    _released_before_close(stamp, ticker) if ticker else None
+                ),
                 "eps_estimate": jsonable(row.get("EPS Estimate", float("nan"))),
                 "reported_eps": jsonable(row.get("Reported EPS", float("nan"))),
                 "surprise_pct": jsonable(row.get("Surprise(%)", float("nan"))),
             }
         )
     return records
+
+
+def _release_flag(value: Any) -> bool | None:
+    """``released_before_close`` as a strict tri-state; NaN and absent are None."""
+    if value is None or value is pd.NA:
+        return None
+    if isinstance(value, float) and value != value:
+        return None
+    return bool(value)
+
+
+def _first_filing_first(events: pd.DataFrame) -> pd.DataFrame:
+    """NSE filings by date, with the most cautious same-day release flag first.
+
+    A company can file several results notices on one day, and the collectors
+    keep the first row per quarter. Ordering a date's rows True, False, then
+    unknown makes that row carry the earliest filing's flag whatever order the
+    vendor listed them in: one filing before the close already priced the
+    result into that close.
+    """
+    if "released_before_close" not in events:
+        return events.sort_values("earnings_date", kind="stable")
+    rank_by_flag: dict[bool | None, int] = {True: 0, False: 1, None: 2}
+    rank = events["released_before_close"].map(
+        lambda value: rank_by_flag[_release_flag(value)]
+    )
+    order = (
+        events.assign(_release_rank=rank)
+        .sort_values(["earnings_date", "_release_rank"], kind="stable")
+        .index
+    )
+    return events.loc[order]
 
 
 def _earnings_from_records(records: list[dict[str, Any]]) -> pd.DataFrame | None:
@@ -101,10 +168,15 @@ def fetch_earnings_dates_yf(
             if ed is None or ed.empty:
                 return []
             ed = ed.copy()
-            ed.index = pd.to_datetime(ed.index).tz_localize(None).normalize()
+            # Keep the time of day until the records are built: a report
+            # before the close moves the reaction onto its own date's bar.
+            stamps = pd.to_datetime(ed.index)
+            if stamps.tz is not None:
+                stamps = stamps.tz_convert(session_for(ticker).timezone)
+            ed.index = stamps.tz_localize(None)
             cutoff = pd.Timestamp(date.today() - timedelta(days=years * 365))
-            ed = ed[ed.index >= cutoff]
-            return _earnings_to_records(ed) if not ed.empty else []
+            ed = ed[ed.index.normalize() >= cutoff]
+            return _earnings_to_records(ed, ticker) if not ed.empty else []
 
         try:
             return call_yfinance_with_timeout(_request)
@@ -116,7 +188,8 @@ def fetch_earnings_dates_yf(
 
     records = cached_json_call(
         "earnings_yf",
-        (ticker, years),
+        # "release-time" retires cache entries written without the flag.
+        (ticker, years, "release-time"),
         ttl_seconds=EARNINGS_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
@@ -167,6 +240,9 @@ def fetch_earnings_dates_nse() -> pd.DataFrame | None:
                         {
                             "ticker": f"{symbol}.NS",
                             "earnings_date": ann_date,
+                            "released_before_close": _released_before_close(
+                                pd.Timestamp(dt_str), f"{symbol}.NS"
+                            ),
                             "desc": ann.get("desc", ""),
                         }
                     )
@@ -184,7 +260,7 @@ def fetch_earnings_dates_nse() -> pd.DataFrame | None:
 
     cached = cached_json_call(
         "earnings_nse",
-        "corporate_announcements",
+        ("corporate_announcements", "release-time"),
         ttl_seconds=SENTIMENT_CACHE_DAYS * 86_400,
         refresh=False,
         fetch=_fetch,
@@ -206,6 +282,9 @@ def _earnings_rows_for_ticker(ticker: str, years: int) -> list[dict[str, Any]]:
             {
                 "ticker": ticker,
                 "earnings_date": idx.date() if hasattr(idx, "date") else idx,
+                "released_before_close": _release_flag(
+                    row.get("released_before_close")
+                ),
                 "eps_estimate": row.get("EPS Estimate", float("nan")),
                 "reported_eps": row.get("Reported EPS", float("nan")),
                 "surprise_pct": row.get("Surprise(%)", float("nan")),
@@ -411,6 +490,9 @@ def fetch_earnings_dates_fmp(
             ed = ts.normalize()
             if ed < cutoff:
                 continue
+            # FMP tags the release "bmo" (before open) or "amc" (after close).
+            when = str(item.get("time") or "").lower()
+            released_before_close = {"bmo": True, "amc": False}.get(when)
             eps = item.get("eps")
             eps_est = item.get("epsEstimated")
             surprise = None
@@ -419,6 +501,7 @@ def fetch_earnings_dates_fmp(
             records.append(
                 {
                     "earnings_date": ed.date().isoformat(),
+                    "released_before_close": released_before_close,
                     "eps_estimate": jsonable(eps_est),
                     "reported_eps": jsonable(eps),
                     "surprise_pct": jsonable(surprise),
@@ -429,7 +512,7 @@ def fetch_earnings_dates_fmp(
     try:
         records = cached_json_call(
             "earnings_fmp",
-            (ticker, years),
+            (ticker, years, "release-time"),
             ttl_seconds=EARNINGS_CACHE_DAYS * 86_400,
             refresh=False,
             fetch=_fetch,
@@ -452,6 +535,9 @@ def _fmp_earnings_rows_for_ticker(ticker: str, years: int) -> list[dict[str, Any
             {
                 "ticker": ticker,
                 "earnings_date": idx.date() if hasattr(idx, "date") else idx,
+                "released_before_close": _release_flag(
+                    row.get("released_before_close")
+                ),
                 "eps_estimate": row.get("EPS Estimate", float("nan")),
                 "reported_eps": row.get("Reported EPS", float("nan")),
                 "surprise_pct": row.get("Surprise(%)", float("nan")),
@@ -530,7 +616,7 @@ def _collect_india_fmp_events(
         ticker_set = set(tickers)
         filtered = nse_events[nse_events["ticker"].isin(ticker_set)]
         filtered = filtered[filtered["earnings_date"] >= cutoff]
-        for _, row in filtered.sort_values("earnings_date").iterrows():
+        for _, row in _first_filing_first(filtered).iterrows():
             ann = pd.Timestamp(row["earnings_date"])
             key = (str(row["ticker"]), _reported_quarter(ann))
             # One event per quarter: the first results filing.
@@ -544,6 +630,9 @@ def _collect_india_fmp_events(
                 {
                     "ticker": row["ticker"],
                     "earnings_date": row["earnings_date"],
+                    "released_before_close": _release_flag(
+                        row.get("released_before_close")
+                    ),
                     "eps_estimate": (
                         fmp_match["eps_estimate"] if fmp_match else float("nan")
                     ),
@@ -566,6 +655,7 @@ def _collect_india_fmp_events(
             {
                 "ticker": fmp_row["ticker"],
                 "earnings_date": fmp_row["earnings_date"],
+                "released_before_close": fmp_row.get("released_before_close"),
                 "eps_estimate": fmp_row["eps_estimate"],
                 "reported_eps": fmp_row["reported_eps"],
                 "surprise_pct": fmp_row["surprise_pct"],
@@ -616,7 +706,7 @@ def collect_earnings_events(
             # Convert to unified format
             cutoff = pd.Timestamp(date.today() - timedelta(days=years * 365))
             filtered = filtered[filtered["earnings_date"] >= cutoff]
-            for _, row in filtered.sort_values("earnings_date").iterrows():
+            for _, row in _first_filing_first(filtered).iterrows():
                 ann = pd.Timestamp(row["earnings_date"])
                 # Map the announcement back to the fiscal quarter it reports on:
                 # the quarter that ended most recently BEFORE the announcement
@@ -634,6 +724,9 @@ def collect_earnings_events(
                     {
                         "ticker": row["ticker"],
                         "earnings_date": row["earnings_date"],
+                        "released_before_close": _release_flag(
+                            row.get("released_before_close")
+                        ),
                         "eps_estimate": float("nan"),
                         "reported_eps": float("nan"),
                         "surprise_pct": float("nan"),

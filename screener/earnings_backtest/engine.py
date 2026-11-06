@@ -17,7 +17,10 @@ from screener.earnings_backtest.data import (
     fetch_price_data,
     load_universe,
 )
-from screener.earnings_backtest.earnings_dates import collect_earnings_events
+from screener.earnings_backtest.earnings_dates import (
+    _release_flag,
+    collect_earnings_events,
+)
 from screener.earnings_backtest.models import EarningsTrade
 from screener.earnings_backtest.prepare import prepare_earnings_run
 from screener.earnings_backtest.sentiment import (
@@ -109,7 +112,13 @@ def run_earnings_backtest(
             continue
 
         # Find the E-N bar (entry) and E bar (exit)
-        entry_date, exit_date = _find_entry_exit(bars, ed, days_before)
+        entry_date, exit_date = _find_entry_exit(
+            bars,
+            ed,
+            days_before,
+            released_before_close=_release_flag(event.get("released_before_close"))
+            is True,
+        )
         if entry_date is None or exit_date is None:
             continue
 
@@ -261,18 +270,24 @@ def _find_entry_exit(
     bars: pd.DataFrame,
     earnings_date: pd.Timestamp,
     days_before: int,
+    *,
+    released_before_close: bool = False,
 ) -> tuple[date | None, date | None]:
     """Find the entry date (E-days_before) and exit date (E) from price bars.
 
-    E is the earnings day: we use the bar ON or JUST BEFORE the earnings date.
+    E is the last close before the report is public: the bar ON or JUST BEFORE
+    the earnings date, or STRICTLY BEFORE it when the report came out before
+    that date's close, since that close already prices the result.
     E-N is N trading days before E.
 
     Returns (entry_date, exit_date) or (None, None) if not found.
     """
     ed = pd.Timestamp(earnings_date).normalize()
 
-    # Find the exit bar: the bar on or just before earnings_date
-    exit_bars = bars[bars.index <= ed]
+    # Find the exit bar: the last close the report could not have moved
+    exit_bars = (
+        bars[bars.index < ed] if released_before_close else bars[bars.index <= ed]
+    )
     if exit_bars.empty:
         return None, None
 
