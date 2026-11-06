@@ -52,6 +52,16 @@ _FMP_FILING_PUBLICATION_KEYS: tuple[str, ...] = (
 )
 
 
+# Fields read from FMP sections that have no publication timestamp of their
+# own (ratios, key_metrics, enterprise_values), plus the one balance field.
+_FMP_STATEMENT_DATED_FIELDS: tuple[str, ...] = (
+    "pe_ttm",
+    "pb_ttm",
+    "roe_ttm",
+    "debt_to_equity",
+    "market_cap",
+)
+
 _FMP_PROVIDER = CachedProvider(
     ProviderSpec(
         provider="fmp", namespace="backtester_fmp_fundamentals", ttl_seconds=86400
@@ -246,6 +256,35 @@ def _effective_date(row: Mapping[str, Any], lag_days: int) -> pd.Timestamp | Non
     return ts
 
 
+# FMP sections that publish no timestamp of their own. Their rows are dated
+# from the same period's income and balance statements instead.
+_FMP_UNDATED_SECTIONS = frozenset({"ratios", "key_metrics", "enterprise_values"})
+
+
+def _fmp_row_effective_date(
+    row: Mapping[str, Any], lag_days: int
+) -> pd.Timestamp | None:
+    """FMP knowable date, with a placeholder filing stamp treated as estimated.
+
+    FMP's India rows carry an ``acceptedDate`` equal to the period end, which
+    no company can meet: SEBI LODR allows 45 days after a quarter and 60 after
+    the year. A filing stamp on or before the period end is therefore not a
+    publication time, and the row is placed at period end plus
+    ``INDIA_FUNDAMENTAL_FILING_LAG_DAYS``, the openscreener estimate.
+    """
+    effective = _effective_date(row, lag_days)
+    if effective is None:
+        return None
+    period_end = _filing_timestamp(row.get("date"))
+    raw = _filing_publication_raw(row)
+    filed = _filing_timestamp(raw) if raw is not None else None
+    if period_end is None or filed is None or filed > period_end:
+        return effective
+    return period_end + pd.Timedelta(
+        days=max(lag_days, INDIA_FUNDAMENTAL_FILING_LAG_DAYS)
+    )
+
+
 _FMP_TIMEOUT = 30.0
 
 
@@ -272,7 +311,10 @@ def _fetch_fmp_sections(
     payload: dict[str, Any] = {
         "income": _fmp_get(session, f"income-statement/{symbol}", params, api_key),
     }
-    if any(field in fields for field in ("debt_to_equity",)):
+    # Ratio, key-metric and enterprise-value rows carry no filing date of
+    # their own; they are dated from the income and balance statements of the
+    # same fiscal period, so the balance sheet is fetched whenever they are.
+    if any(field in fields for field in _FMP_STATEMENT_DATED_FIELDS):
         payload["balance"] = _fmp_get(
             session, f"balance-sheet-statement/{symbol}", params, api_key
         )
@@ -316,24 +358,52 @@ def _normalize_fmp_payload(
             return None
         key = id(row)
         if key not in effective_by_row:
-            effective_by_row[key] = _effective_date(row, lag_days)
+            effective_by_row[key] = _fmp_row_effective_date(row, lag_days)
         return effective_by_row[key]
 
-    def publish(field: str, value: float | None, sources: list[dict[str, Any]]) -> None:
+    balance_by_date = _row_by_date(_rows(payload, "balance"))
+
+    def statement_effective_date(row: Mapping[str, Any]) -> pd.Timestamp | None:
+        """Date an undated ratio row from its fiscal period's statements.
+
+        FMP computes these rows from the income statement and balance sheet
+        of the same period (plus the period-end price, which is already
+        public). They cannot be known before both statements are, and both
+        must be dated, so an income filing alone never publishes them.
+        """
+        row_date = row.get("date")
+        if not isinstance(row_date, str) or not row_date:
+            return None
+        income_date = effective_date(income_by_date.get(row_date, {}))
+        balance_date = effective_date(balance_by_date.get(row_date, {}))
+        if income_date is None or balance_date is None:
+            return None
+        return max(income_date, balance_date)
+
+    def publish(
+        field: str,
+        value: float | None,
+        sources: list[dict[str, Any]],
+        *,
+        effective: pd.Timestamp | None = None,
+    ) -> None:
         if field not in fields or value is None:
             return
-        dates = [effective_date(source) for source in sources]
-        if not dates or any(stamp is None for stamp in dates):
-            return
+        if effective is None:
+            dates = [effective_date(source) for source in sources]
+            if not dates or any(stamp is None for stamp in dates):
+                return
+            effective = max(cast(list[pd.Timestamp], dates))
         records.append(
             {
-                "effective_date": max(cast(list[pd.Timestamp], dates)),
+                "effective_date": effective,
                 "fiscal_period": str(sources[0].get("date", "")),
                 field: value,
             }
         )
 
-    # Income publication is not evidence of another section's availability.
+    # Income publication alone is not evidence of another section's
+    # availability; an undated section waits for its period's statements.
     section_fields: dict[str, dict[str, tuple[str, ...]]] = {
         "balance": {"debt_to_equity": ("totalDebtToEquity",)},
         "ratios": {
@@ -355,14 +425,17 @@ def _normalize_fmp_payload(
     }
     for section, field_keys in section_fields.items():
         for row in _rows(payload, section):
-            if effective_date(row) is None:
+            row_effective = effective_date(row)
+            if row_effective is None and section in _FMP_UNDATED_SECTIONS:
+                row_effective = statement_effective_date(row)
+            if row_effective is None:
                 excluded_no_filing += 1
                 continue
             for field, keys in field_keys.items():
                 value = first_number(row, *keys)
                 if field == "roe_ttm":
                     value = _as_percent(value)
-                publish(field, value, [row])
+                publish(field, value, [row], effective=row_effective)
     for current_pos, row in enumerate(income_rows):
         row_date = row.get("date")
         if not isinstance(row_date, str) or not row_date:
@@ -398,8 +471,9 @@ def _normalize_fmp_payload(
     if excluded_no_filing:
         LOG.warning(
             "Excluded %s FMP fundamental row(s) without a valid acceptedDate/"
-            "fillingDate/filingDate publication timestamp; period-end date alone "
-            "is not treated as publication time",
+            "fillingDate/filingDate publication timestamp or dated statements "
+            "for the same period; period-end date alone is not treated as "
+            "publication time",
             excluded_no_filing,
         )
 
@@ -558,6 +632,10 @@ class FMPFundamentalFetcher:
                 "FMP fundamentals currently support only the US and India markets"
             )
         self.market = market
+        if market == "india":
+            # FMP India filing stamps equal the period end, so India rows are
+            # placed at an estimated period-end lag (see _fmp_row_effective_date).
+            self.effective_date_kind = EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
         if not self.api_key:
             raise ValueError("FMP_API_KEY is required to use FMP fundamentals")
         self.fields = tuple(dict.fromkeys(fields or DEFAULT_FUNDAMENTAL_FIELDS))
