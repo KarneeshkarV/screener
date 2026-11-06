@@ -611,8 +611,6 @@ def _normalize_fmp_payload(
             effective_by_row[key] = _fmp_row_effective_date(row, lag_days)
         return effective_by_row[key]
 
-    balance_by_date = _row_by_date(_rows(payload, "balance"))
-
     def statement_effective_date(row: Mapping[str, Any]) -> pd.Timestamp | None:
         """Date an undated ratio row from its fiscal period's statements.
 
@@ -630,6 +628,12 @@ def _normalize_fmp_payload(
             return None
         return max(income_date, balance_date)
 
+    # Rows of undated sections (EV feeds fcf_yield and z_score) take their
+    # period's statement date when used as a source.
+    undated_rows = {
+        id(row) for section in _FMP_UNDATED_SECTIONS for row in _rows(payload, section)
+    }
+
     def publish(
         field: str,
         value: float | None,
@@ -640,7 +644,12 @@ def _normalize_fmp_payload(
         if field not in fields or value is None:
             return
         if effective is None:
-            dates = [effective_date(source) for source in sources]
+            dates = [
+                effective_date(source)
+                if id(source) not in undated_rows
+                else statement_effective_date(source)
+                for source in sources
+            ]
             if not dates or any(stamp is None for stamp in dates):
                 return
             effective = max(cast(list[pd.Timestamp], dates))
