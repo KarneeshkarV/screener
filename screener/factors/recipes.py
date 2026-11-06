@@ -30,6 +30,7 @@ from screener.indicators.plugins.rsi import rsi as _wilder_rsi
 from screener.tradeable import (
     MIN_TRADEABLE_PRICE,
     MIN_TRADED_FRACTION,
+    tradeable_span,
     tradeable_window,
 )
 
@@ -46,6 +47,8 @@ RSI_PERIOD = 14
 RVOL_WINDOW = 10
 #: TradingView's ``Perf.Y`` is a trailing one-year return.
 PERF_Y_LOOKBACK = 252
+#: The 52-week high window: one year of trading sessions.
+HIGH_52W_LOOKBACK = 252
 
 
 def tradeable_momentum_window(
@@ -257,8 +260,50 @@ def score_perf_y(features: BarFeatures) -> pd.Series:
     return perf_y(features.close, features.volume)
 
 
+def dist_from_52w_high(
+    close: pd.Series,
+    volume: pd.Series | None = None,
+    *,
+    lookback: int = HIGH_52W_LOOKBACK,
+) -> pd.Series:
+    """Percent below the trailing ``lookback``-session closing high, ``<= 0``.
+
+    ``(close[t] / max(close[t-lookback+1 : t]) - 1) * 100``: 0 means the name
+    closes at its own one-year high, -25 means it sits 25% below it. Larger is
+    nearer the high, so a descending rank selects the names closest to their
+    high - the George-Hwang (2004) 52-week high factor.
+
+    The rolling max reads *every* close in the window, so the tradeability gate
+    is :func:`screener.tradeable.tradeable_span` rather than ``tradeable_window``
+    - one stub quote anywhere inside the window would set a fake high and make a
+    real stock look depressed. NaN means ineligible and is never filled.
+    """
+    values = pd.to_numeric(close, errors="coerce").astype(float)
+    high = values.rolling(int(lookback), min_periods=int(lookback)).max()
+    distance = (values / high.where(high > 0) - 1.0) * 100.0
+    return distance.where(tradeable_span(values, volume, window=lookback))
+
+
+@price_score(
+    "dist_from_52w_high",
+    required_lookback=HIGH_52W_LOOKBACK,
+    description=(
+        "Percent below the trailing 252-session closing high, <= 0: the "
+        "George-Hwang 52-week high factor (0 = at the high)"
+    ),
+    aux_column="dist_from_52w_high",
+    # Every real close gives a value in (-100, 0], so the floor only rules out
+    # the NaN of an untradeable window - there is no level a name must clear to
+    # be ranked, which is the point of a pure cross-sectional sort.
+    eligible_above=-100.0,
+)
+def score_dist_from_52w_high(features: BarFeatures) -> pd.Series:
+    return dist_from_52w_high(features.close, features.volume)
+
+
 __all__ = [
     "HA_STREAK_MIN",
+    "HIGH_52W_LOOKBACK",
     "MIN_TRADEABLE_PRICE",
     "MIN_TRADED_FRACTION",
     "MOMENTUM_LOOKBACK",
@@ -269,11 +314,13 @@ __all__ = [
     "ha_momentum",
     "momentum_12_1",
     "perf_y",
+    "dist_from_52w_high",
     "relative_volume_10d",
     "rsi_14",
     "score_ha_momentum",
     "score_momentum_12_1",
     "score_perf_y",
+    "score_dist_from_52w_high",
     "score_relative_volume_10d",
     "score_rsi_14",
     "tradeable_momentum_window",
