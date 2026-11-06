@@ -251,7 +251,7 @@ def test_fmp_same_publication_date_keeps_latest_fiscal_period():
     assert frame.loc["2024-02-26", "revenue_up_3q"] == 1.0
 
 
-def test_fmp_undated_sections_are_not_published_with_income():
+def test_fmp_undated_sections_are_not_published_with_income_alone():
     payload = {
         "income": [
             {"date": "2023-12-31", "acceptedDate": "2024-02-05", "revenue": 100}
@@ -262,6 +262,68 @@ def test_fmp_undated_sections_are_not_published_with_income():
         payload, fields=("roe_ttm",), lag_days=1
     )
     assert frame.roe_ttm.dropna().empty
+
+
+def test_fmp_undated_sections_wait_for_both_period_statements():
+    payload = {
+        "income": [
+            {"date": "2023-12-31", "acceptedDate": "2024-02-05", "revenue": 100}
+        ],
+        "balance": [{"date": "2023-12-31", "acceptedDate": "2024-02-20"}],
+        "ratios": [{"date": "2023-12-31", "returnOnEquity": 0.18}],
+        "key_metrics": [{"date": "2023-12-31", "peRatioTTM": 19}],
+        "enterprise_values": [
+            {"date": "2023-12-31", "marketCapitalization": 1000000},
+            # No statements for this period, so it is never published.
+            {"date": "2023-09-30", "marketCapitalization": 900000},
+        ],
+    }
+    frame = fundamentals._normalize_fmp_payload(
+        payload, fields=("roe_ttm", "pe_ttm", "market_cap"), lag_days=1
+    )
+    for field, value in {"roe_ttm": 18, "pe_ttm": 19, "market_cap": 1000000}.items():
+        assert frame[field].first_valid_index() == pd.Timestamp("2024-02-21")
+        assert frame.loc["2024-02-21", field] == value
+    assert frame.market_cap.dropna().tolist() == [1000000]
+
+
+def test_fmp_placeholder_filing_stamp_uses_estimated_period_end_lag():
+    # FMP India stamps acceptedDate at the period end itself.
+    payload = {
+        "income": [
+            {
+                "date": "2024-03-31",
+                "acceptedDate": "2024-03-31 00:00:00",
+                "revenue": 100,
+            }
+        ],
+        "balance": [
+            {
+                "date": "2024-03-31",
+                "acceptedDate": "2024-03-31 00:00:00",
+                "totalDebtToEquity": 0.4,
+            }
+        ],
+        "ratios": [{"date": "2024-03-31", "returnOnEquity": 0.18}],
+    }
+    frame = fundamentals._normalize_fmp_payload(
+        payload, fields=("roe_ttm", "debt_to_equity"), lag_days=1
+    )
+    lagged = pd.Timestamp("2024-03-31") + pd.Timedelta(
+        days=fundamentals.INDIA_FUNDAMENTAL_FILING_LAG_DAYS
+    )
+    assert frame.roe_ttm.first_valid_index() == lagged
+    assert frame.debt_to_equity.first_valid_index() == lagged
+
+
+def test_fmp_india_fetcher_reports_estimated_dates():
+    us = fundamentals.FMPFundamentalFetcher(api_key="offline", market="us")
+    india = fundamentals.FMPFundamentalFetcher(api_key="offline", market="india")
+    assert us.effective_date_kind == fundamentals.EFFECTIVE_DATE_KIND_FILING_TIMESTAMP
+    assert (
+        india.effective_date_kind
+        == fundamentals.EFFECTIVE_DATE_KIND_ESTIMATED_PERIOD_END_LAG
+    )
 
 
 @pytest.mark.parametrize("provider", ["fmp", "openscreener", "yfinance"])
