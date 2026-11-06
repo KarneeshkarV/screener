@@ -128,6 +128,26 @@ def _master_dates(
         if bars is None or bars.empty:
             continue
         idx = bars.index
+        if (
+            isinstance(idx, pd.DatetimeIndex)
+            and not pd.isna(start_ts)
+            and not pd.isna(end_ts)
+            and idx.is_monotonic_increasing
+        ):
+            # A sorted index holds the window as one contiguous slice; two
+            # binary searches replace a full-length boolean mask per ticker.
+            # pandas refuses a bound it cannot convert to the index unit
+            # exactly (finer unit, out of range, other timezone); the mask
+            # below then gives the same answer as before.
+            try:
+                lo = idx.searchsorted(start_ts, side="left")
+                hi = idx.searchsorted(end_ts, side="right")
+            except (TypeError, ValueError, OverflowError):
+                pass
+            else:
+                if hi > lo:
+                    day_arrays.append(idx.to_numpy()[lo:hi])
+                continue
         mask = (idx >= start_ts) & (idx <= end_ts)
         if mask.any():
             day_arrays.append(idx[mask].to_numpy())
