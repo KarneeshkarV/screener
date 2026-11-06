@@ -260,9 +260,13 @@ def periods_per_year_for_interval(interval: str, market: str = "us") -> int:
 
 
 def bar_returns(equity: pd.Series) -> pd.Series:
-    if equity.empty or len(equity) < 2:
+    # A missing mark is skipped, not a break: the next valid point's return is
+    # taken against the last valid point, so one gap drops one return, not two.
+    equity = equity.dropna()
+    if len(equity) < 2:
         return pd.Series(dtype=float)
-    return equity.pct_change().dropna()
+    # A move from a zero balance has no percentage return: drop it, as before.
+    return equity.pct_change().iloc[1:].dropna()
 
 
 def _cagr(equity: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
@@ -390,6 +394,22 @@ def _expected_shortfall(daily: pd.Series, *, alpha: float = 0.95) -> float:
     return float(daily.nsmallest(k).mean())
 
 
+def _is_constant(returns: pd.Series) -> bool:
+    """True when ``returns`` differ only by floating-point rounding.
+
+    A curve that compounds at a fixed rate yields returns that agree to about
+    1e-16, not exactly, and dividing by that noise reports a Sharpe near 1e14.
+    """
+    values = returns.dropna().to_numpy(dtype=float)
+    if values.size == 0:
+        return True
+    # A return is a ratio near 1 minus 1, so its rounding error scales with
+    # 1 + |r|, not with |r|: measured at about 3 ulp. 16 ulp leaves margin and
+    # still keeps any variation a real book can produce.
+    scale = 1.0 + float(np.abs(values).max())
+    return bool(np.ptp(values) <= 16 * np.finfo(float).eps * scale)
+
+
 def equity_curve_sharpe(
     daily: pd.Series,
     rf: float = 0.0,
@@ -398,7 +418,7 @@ def equity_curve_sharpe(
     if daily.empty:
         return 0.0
     excess = daily - rf / periods_per_year
-    if daily.std(ddof=0) == 0:
+    if _is_constant(daily):
         # No volatility: Sharpe is 0 only when the book also met the hurdle
         # exactly. A constant shortfall (cash under a positive rf) or surplus
         # has no finite ratio, so report it as undefined, not as 0.
@@ -414,20 +434,46 @@ def _vol_annual(
     return float(daily.std(ddof=0) * np.sqrt(periods_per_year))
 
 
+def _paired_returns(
+    equity: pd.Series, benchmark: pd.Series
+) -> tuple[pd.Series, pd.Series]:
+    """Book and benchmark returns over the same intervals, for regression.
+
+    Each series' own :func:`bar_returns` skips its missing marks, so a gap in
+    one curve paired a two-bar return with a one-bar return of the other and
+    biased beta and alpha. Only one-bar intervals of the book's calendar where
+    both curves have a mark at each end are kept: the regression hurdle and
+    the alpha annualization are per bar, so a pair spanning a gap would be
+    charged one bar of hurdle for several bars of return.
+    """
+    if equity.empty or benchmark.empty:
+        return pd.Series(dtype=float), pd.Series(dtype=float)
+    both = pd.concat([equity, benchmark.reindex(equity.index)], axis=1)
+    paired = both.pct_change(fill_method=None).iloc[1:].dropna()
+    return paired.iloc[:, 0], paired.iloc[:, 1]
+
+
 def _alpha_beta(
     daily: pd.Series,
     bench_daily: pd.Series,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
+    rf: float = 0.0,
 ) -> tuple[float, float]:
     if daily.empty or bench_daily.empty:
         return 0.0, 0.0
     aligned = pd.concat([daily, bench_daily], axis=1).dropna()
     if len(aligned) < 2:
         return 0.0, 0.0
-    x = aligned.iloc[:, 1].to_numpy()
-    y = aligned.iloc[:, 0].to_numpy()
-    if x.std() == 0:
+    # Jensen's alpha regresses excess returns on excess returns. On raw returns
+    # the intercept also carries rf * (1 - beta), so a non-zero hurdle would
+    # change alpha for every beta other than 1.
+    # A flat benchmark has no slope to fit. Test it before the hurdle is
+    # subtracted: the subtraction leaves rounding noise that is not zero.
+    if _is_constant(aligned.iloc[:, 1]):
         return 0.0, 0.0
+    rf_per_period = rf / periods_per_year
+    x = aligned.iloc[:, 1].to_numpy() - rf_per_period
+    y = aligned.iloc[:, 0].to_numpy() - rf_per_period
     slope, intercept = np.polyfit(x, y, 1)
     # annualize alpha geometrically (intercept is per-period): (1+a)^ppy - 1.
     # Matches empyrical/quantstats; arithmetic intercept*ppy ignored compounding.
@@ -959,9 +1005,7 @@ def compute_metrics(
     ``calendar_cagr`` for wall-clock years. ``exposure`` is slot occupancy.
     """
     daily = bar_returns(equity)
-    bench_daily = (
-        bar_returns(benchmark) if not benchmark.empty else pd.Series(dtype=float)
-    )
+    paired_daily, paired_bench = _paired_returns(equity, benchmark)
     starting_equity = float(equity.iloc[0]) if not equity.empty else 0.0
     final_equity = float(equity.iloc[-1]) if not equity.empty else 0.0
     total_return = (
@@ -969,14 +1013,14 @@ def compute_metrics(
         if len(equity) >= 2 and equity.iloc[0] > 0
         else 0.0
     )
-    alpha, beta = _alpha_beta(daily, bench_daily, periods_per_year)
+    rf = float(risk_free_rate)
+    alpha, beta = _alpha_beta(paired_daily, paired_bench, periods_per_year, rf)
     hit_rate = positive_pnl_rate(trades)
     bench_return = (
         float(benchmark.iloc[-1] / benchmark.iloc[0] - 1.0)
         if len(benchmark) >= 2 and benchmark.iloc[0] > 0
         else 0.0
     )
-    rf = float(risk_free_rate)
     metrics = {
         "starting_equity": starting_equity,
         "final_equity": final_equity,

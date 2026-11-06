@@ -7,6 +7,7 @@ A mismatch is a real defect, not a snapshot drift.
 from __future__ import annotations
 
 import math
+import warnings
 from datetime import date
 
 import numpy as np
@@ -16,12 +17,14 @@ from click.testing import CliRunner
 from pydantic import ValidationError
 
 from screener.backtester.metrics import (
+    _paired_returns,
     _calendar_cagr,
     _cagr,
     _expected_shortfall,
     _max_drawdown_duration_days,
     _psr,
     _sortino,
+    bar_returns,
     compute_metrics,
     equity_curve_sharpe,
     result_view,
@@ -123,11 +126,12 @@ def test_compute_metrics_zero_hurdle_matches_legacy_sharpe_sortino():
 
 def test_compute_metrics_explicit_hurdle_lowers_smooth_low_return_sharpe():
     """A smooth ~5% path looks fine at rf=0 and weaker at rf=0.06."""
-    # Constant daily growth that compounds to about 5% over 252 bars.
+    # Daily growth that compounds to about 5% over 252 bars, with an
+    # alternating +-0.01% wiggle so the returns have a real (non-rounding)
+    # volatility and the Sharpe ratio is defined.
     daily_r = (1.05) ** (1 / 252) - 1
-    values = 100_000.0 * np.cumprod(
-        np.concatenate([[1.0], np.full(252, 1.0 + daily_r)])
-    )
+    wiggle = np.where(np.arange(252) % 2 == 0, 1e-4, -1e-4)
+    values = 100_000.0 * np.cumprod(np.concatenate([[1.0], 1.0 + daily_r + wiggle]))
     equity = pd.Series(
         values, index=pd.date_range("2022-01-03", periods=len(values), freq="B")
     )
@@ -409,3 +413,162 @@ def test_longest_drawdown_days_renders_unsigned():
     from screener.backtester.metrics import format_result_value
 
     assert format_result_value(217.0, "int") == "217"
+
+
+def test_sharpe_is_undefined_for_constant_compounding_with_rounding_noise():
+    """A curve growing 0.1% every bar has returns equal up to ~1e-16.
+
+    Dividing by that noise reported a Sharpe near 1e14. The returns are
+    constant, so the ratio is undefined, the same as an exactly flat curve
+    that misses the hurdle.
+    """
+    index = pd.bdate_range("2024-01-01", periods=60)
+    equity = pd.Series(100_000.0 * 1.001 ** np.arange(60), index=index)
+    benchmark = pd.Series(np.linspace(100.0, 110.0, 60), index=index)
+
+    metrics = compute_metrics(equity, benchmark, [], 1)
+
+    assert math.isnan(metrics["sharpe"])
+
+
+def test_alpha_regresses_excess_returns_on_the_hurdle():
+    """Jensen's alpha: (r - rf) = alpha + beta * (b - rf).
+
+    With r = 0.5 * b exactly, raw OLS gives intercept 0 and beta 0.5.
+    Substituting b = x + rf_d into y = 0.5 * b - rf_d gives
+    y = 0.5 * x - 0.5 * rf_d: half the book earns nothing while the hurdle
+    asks rf on all of it. Annualized: (1 - 0.5 * rf_d) ** 252 - 1.
+    """
+    index = pd.bdate_range("2024-01-01", periods=121)
+    bench_returns = np.random.default_rng(5).normal(0.0004, 0.01, 120)
+    benchmark = pd.Series(
+        100.0 * np.r_[1.0, np.cumprod(1 + bench_returns)], index=index
+    )
+    equity = pd.Series(
+        100_000.0 * np.r_[1.0, np.cumprod(1 + 0.5 * bench_returns)], index=index
+    )
+    rf = 0.06
+    rf_d = rf / 252
+
+    zero = compute_metrics(equity, benchmark, [], 1)
+    hurdle = compute_metrics(equity, benchmark, [], 1, risk_free_rate=rf)
+
+    assert zero["alpha_annual"] == pytest.approx(0.0, abs=1e-9)
+    assert hurdle["beta"] == pytest.approx(0.5)
+    assert hurdle["alpha_annual"] == pytest.approx((1 - 0.5 * rf_d) ** 252 - 1)
+
+
+def test_one_missing_equity_mark_drops_one_return_not_two():
+    """[100, 110, NaN, 121, 133.1] grows 10% per valid step.
+
+    The returns are 110/100 - 1 = 0.10, 121/110 - 1 = 0.10 and
+    133.1/121 - 1 = 0.10. The gap must not discard 121/110.
+    """
+    index = pd.bdate_range("2024-01-01", periods=5)
+    equity = pd.Series([100.0, 110.0, np.nan, 121.0, 133.1], index=index)
+
+    returns = bar_returns(equity)
+
+    assert list(returns.index) == [index[1], index[3], index[4]]
+    assert returns.to_numpy() == pytest.approx([0.10, 0.10, 0.10])
+
+
+def test_a_missing_book_mark_does_not_bias_beta_or_alpha():
+    """The book tracks the benchmark exactly, except one missing mark.
+
+    Each curve's own returns skip its gaps, so the book's return across the
+    gap spans two bars while the benchmark's spans one. Regressing those pairs
+    gave beta 0.67 and a large alpha. Pairing returns over the stamps both
+    curves share keeps beta 1 and alpha 0.
+    """
+    index = pd.bdate_range("2024-01-01", periods=121)
+    bench_returns = np.random.default_rng(11).normal(0.0004, 0.02, 120)
+    benchmark = pd.Series(
+        100.0 * np.r_[1.0, np.cumprod(1 + bench_returns)], index=index
+    )
+    equity = benchmark * 1_000.0
+    for gap in (20, 55, 90):
+        equity.iloc[gap] = np.nan
+
+    metrics = compute_metrics(equity, benchmark, [], 1)
+
+    assert metrics["beta"] == pytest.approx(1.0)
+    assert metrics["alpha_annual"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_sharpe_keeps_a_real_but_tiny_volatility():
+    """Returns of 1e-9 +- 4e-13 vary by far more than rounding noise.
+
+    A relative tolerance of 1e-12 called them constant and reported NaN.
+    """
+    index = pd.bdate_range("2024-01-01", periods=61)
+    returns = 1e-9 + np.where(np.arange(60) % 2 == 0, 4e-13, -4e-13)
+    equity = pd.Series(100_000.0 * np.r_[1.0, np.cumprod(1 + returns)], index=index)
+
+    sharpe = equity_curve_sharpe(bar_returns(equity))
+
+    assert math.isfinite(sharpe)
+    assert sharpe > 0
+
+
+def test_a_book_earning_the_hurdle_has_zero_alpha_across_benchmark_gaps():
+    """A book that earns exactly rf per bar has excess return 0 on every bar.
+
+    Regressing 0 on anything gives intercept 0, so alpha is 0. When missing
+    benchmark marks made pairs span two bars, each pair carried two bars of
+    return against one bar of hurdle, and alpha read about 6% a year.
+    """
+    rf = 0.06
+    index = pd.bdate_range("2024-01-01", periods=121)
+    equity = pd.Series(100.0 * (1 + rf / 252) ** np.arange(121), index=index)
+    bench_returns = np.random.default_rng(5).normal(0.0004, 0.02, 120)
+    benchmark = pd.Series(
+        100.0 * np.r_[1.0, np.cumprod(1 + bench_returns)], index=index
+    )
+    benchmark.iloc[3:-1:4] = np.nan
+
+    metrics = compute_metrics(equity, benchmark, [], 1, risk_free_rate=rf)
+    paired, _ = _paired_returns(equity, benchmark)
+
+    # Each gap drops the two one-bar pairs that touch it; the rest stay.
+    assert len(paired) == 120 - 2 * 30
+    assert metrics["alpha_annual"] == pytest.approx(0.0, abs=1e-9)
+    assert metrics["beta"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_a_wiped_out_book_has_an_undefined_sharpe_without_warnings():
+    """Equity 100, 0, 0, 0: one return of -100%, then no percentage return.
+
+    The moves from a zero balance are 0/0. Keeping them as NaN let them past
+    the constant-return check and the Sharpe read -inf with a warning.
+    """
+    index = pd.bdate_range("2024-01-01", periods=4)
+    equity = pd.Series([100.0, 0.0, 0.0, 0.0], index=index)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        returns = bar_returns(equity)
+        metrics = compute_metrics(equity, pd.Series(dtype=float), [], 1)
+        direct = equity_curve_sharpe(pd.Series([-1.0, np.nan, np.nan]))
+
+    assert returns.tolist() == [-1.0]
+    assert math.isnan(metrics["sharpe"])
+    assert math.isnan(direct)
+
+
+def test_a_flat_benchmark_has_no_beta_or_alpha_under_a_hurdle():
+    """A benchmark fixed at 100 has no variance, so the regression is undefined.
+
+    Subtracting the hurdle left rounding noise that passed an exact zero
+    check, and the fit read beta -1.6 and alpha 10% with a RankWarning.
+    """
+    index = pd.bdate_range("2024-01-01", periods=61)
+    equity = pd.Series(100 * 1.001 ** np.arange(61), index=index)
+    benchmark = pd.Series(100.0, index=index)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        metrics = compute_metrics(equity, benchmark, [], 1, risk_free_rate=0.06)
+
+    assert metrics["beta"] == 0.0
+    assert metrics["alpha_annual"] == 0.0
