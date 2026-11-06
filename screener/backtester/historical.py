@@ -78,21 +78,36 @@ def select_candidates(
     pool_limit = max(top_n * max(reserve_multiple, 1), top_n)
     if caches is None:
         caches = _RunCaches()
+    # Price, liquidity, and history checks run before any entry evaluation, so
+    # a rejected name is never evaluated, as on the per-ticker path.
+    eligible: dict[str, int] = {}
+    skipped: dict[str, str] = {}
     for ticker, bars in bars_by_ticker.items():
         if bars is None or bars.empty:
-            warnings.append(f"no data: {ticker}")
+            skipped[ticker] = f"no data: {ticker}"
             continue
         # bars.index is a sorted DatetimeIndex; searchsorted mirrors the
         # previous ``bars.index <= as_of`` mask without copying the history.
         pos = int(bars.index.searchsorted(as_of, side="right")) - 1
         if pos + 1 < lookback_required + 1:
-            warnings.append(f"insufficient lookback ({pos + 1} bars): {ticker}")
+            skipped[ticker] = f"insufficient lookback ({pos + 1} bars): {ticker}"
             continue
         if cfg is not None:
             passes, _reason = _passes_entry_filters(bars, as_of, cfg)
             if not passes:
                 filtered_count += 1
                 continue
+        eligible[ticker] = pos
+    caches.prewarm_entry_signals(
+        {ticker: bars_by_ticker[ticker] for ticker in eligible}, entry_ast
+    )
+    for ticker, bars in bars_by_ticker.items():
+        if ticker in skipped:
+            warnings.append(skipped[ticker])
+            continue
+        if ticker not in eligible:
+            continue
+        pos = eligible[ticker]
         signal = caches.entry_signal(ticker, bars, entry_ast)
         if isinstance(signal, PineError):
             warnings.append(f"entry eval failed: {ticker}: {signal}")
