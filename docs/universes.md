@@ -22,6 +22,10 @@ Run this daily or weekly from cron/CI. It writes a complete snapshot only when
 membership changes, so the resulting CSV becomes point-in-time history without
 manual addition/removal maintenance.
 
+A standalone timestamped market-data loader validates daily membership and historical data availability without importing strategy code.
+See [Timestamped PIT market data contract](pit-market-data.md).
+That path does not turn the observed snapshots below into verified effective-date history.
+
 ## Backfilling history you did not capture
 
 `universes sync` only builds history forward from the day you start running it.
