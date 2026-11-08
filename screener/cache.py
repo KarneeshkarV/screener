@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 import time
+import uuid
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -345,18 +346,25 @@ def cached_frame_call(
 
 FrameWithMeta = tuple[pd.DataFrame, dict[str, Any]]
 
+# One token per write, stored in both files of a frame-plus-metadata entry.
+# Each file is replaced atomically, but the pair is not: a crash between the two
+# writes, or two writers that interleave, can leave a parquet from one fetch
+# next to the JSON of another. Different tokens identify that pair.
+_GENERATION_KEY = "_screener_cache_generation"
 
 def frame_meta_paths(namespace: str, key_parts: Any) -> tuple[Path, Path]:
     """``(parquet, json)`` pair backing one frame-plus-metadata cache entry."""
     key = stable_key(key_parts)
     return cache_path(namespace, key, "parquet"), cache_path(namespace, key, "json")
 
-
 def read_frame_meta(namespace: str, key_parts: Any) -> FrameWithMeta | None:
     """Read a frame-plus-metadata entry ignoring freshness, or ``None``.
 
-    Both files must be readable: a lone parquet has lost the metadata that
-    describes it, so a half-written entry is a miss rather than a partial hit.
+    Both files must be readable and come from the same write: a lone parquet
+    has lost the metadata that describes it, and a parquet next to the JSON of
+    another write is not one entry, so either is a miss rather than a partial
+    hit. Entries written before the generation token existed carry no token in
+    either file and are still read.
     """
     frame_path, meta_path = frame_meta_paths(namespace, key_parts)
     frame = read_frame(frame_path)
@@ -366,8 +374,10 @@ def read_frame_meta(namespace: str, key_parts: Any) -> FrameWithMeta | None:
     meta = read_json(meta_path, default=missing)
     if meta is missing or not isinstance(meta, dict):
         return None
+    meta = dict(meta)
+    if frame.attrs.pop(_GENERATION_KEY, None) != meta.pop(_GENERATION_KEY, None):
+        return None
     return frame, cast(dict[str, Any], meta)
-
 
 def cached_frame_meta_call(
     namespace: str,
@@ -390,6 +400,9 @@ def cached_frame_meta_call(
         if cached is not None:
             return cached
     frame, meta = fetch()
-    write_frame(frame_path, frame)
-    write_json(meta_path, meta)
+    generation = uuid.uuid4().hex
+    stored = frame.copy(deep=False)
+    stored.attrs = {**frame.attrs, _GENERATION_KEY: generation}
+    write_frame(frame_path, stored)
+    write_json(meta_path, {**meta, _GENERATION_KEY: generation})
     return frame, meta
