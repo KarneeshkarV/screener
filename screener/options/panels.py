@@ -133,20 +133,16 @@ def enrich_panel_history(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def append_metrics_rows(panel_name: str, rows: pd.DataFrame) -> pd.DataFrame:
-    """Merge rows, recompute causal history fields, and atomically persist."""
-    existing = read_frame(panel_path(panel_name))
-    combined = (
-        pd.concat([existing, rows], ignore_index=True)
-        if existing is not None and not existing.empty
-        else rows.copy()
-    )
-    if combined.empty:
-        return existing if existing is not None else pd.DataFrame()
-    enriched = enrich_panel_history(combined)
+    """Merge rows, recompute causal history fields, and atomically persist.
+
+    The history fields depend on every earlier row of a symbol, so they are
+    recomputed inside the panel lock from the panel as it is on disk then.
+    """
     return append_panel_snapshot(
         panel_name,
-        enriched,
+        rows,
         dedupe_keys=PANEL_DEDUPE_KEYS,
+        transform=enrich_panel_history,
     )
 
 

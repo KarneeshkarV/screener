@@ -277,7 +277,11 @@ def _file_lock(path: Path) -> Iterator[None]:
 
 
 def append_panel_snapshot(
-    name: str, rows: pd.DataFrame, *, dedupe_keys: list[str]
+    name: str,
+    rows: pd.DataFrame,
+    *,
+    dedupe_keys: list[str],
+    transform: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> pd.DataFrame:
     """Append ``rows`` to the named panel, dedupe (keep last), persist, return.
 
@@ -288,6 +292,10 @@ def append_panel_snapshot(
     POSIX file lock and the parquet is written via a per-writer unique temp
     file + atomic ``os.replace`` so concurrent processes can't lose rows or
     clobber each other's ``.tmp``.
+
+    ``transform`` runs on the merged panel inside the lock, before the write.
+    Use it for fields derived from the whole panel, so they are computed from
+    the rows another writer committed just before this one.
     """
     if rows is None or rows.empty:
         existing = read_frame(panel_path(name))
@@ -303,6 +311,8 @@ def append_panel_snapshot(
         )
         merged = merged.drop_duplicates(subset=dedupe_keys, keep="last")
         merged = merged.sort_values(dedupe_keys).reset_index(drop=True)
+        if transform is not None:
+            merged = transform(merged)
         write_frame(path, merged)
     return merged
 
