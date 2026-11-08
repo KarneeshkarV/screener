@@ -362,10 +362,12 @@ FrameWithMeta = tuple[pd.DataFrame, dict[str, Any]]
 # next to the JSON of another. Different tokens identify that pair.
 _GENERATION_KEY = "_screener_cache_generation"
 
+
 def frame_meta_paths(namespace: str, key_parts: Any) -> tuple[Path, Path]:
     """``(parquet, json)`` pair backing one frame-plus-metadata cache entry."""
     key = stable_key(key_parts)
     return cache_path(namespace, key, "parquet"), cache_path(namespace, key, "json")
+
 
 def read_frame_meta(namespace: str, key_parts: Any) -> FrameWithMeta | None:
     """Read a frame-plus-metadata entry ignoring freshness, or ``None``.
@@ -388,6 +390,7 @@ def read_frame_meta(namespace: str, key_parts: Any) -> FrameWithMeta | None:
     if frame.attrs.pop(_GENERATION_KEY, None) != meta.pop(_GENERATION_KEY, None):
         return None
     return frame, cast(dict[str, Any], meta)
+
 
 def cached_frame_meta_call(
     namespace: str,

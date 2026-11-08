@@ -641,6 +641,7 @@ def test_attempted_registration_does_not_lower_a_finished_trial(tmp_path):
     assert after.n_trials_scored == before.n_trials_scored == 3
     assert after.n_trials_nominal == 4  # the new key is still exposure
 
+
 def test_universe_file_identity_hashes_contents_not_path(tmp_path):
     from screener.backtester.optimization.cache import (
         universe_membership_identity_from_config,

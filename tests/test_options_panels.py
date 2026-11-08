@@ -315,9 +315,7 @@ def test_append_metrics_rows_enriches_with_rows_committed_by_another_writer(
         if target == path and not injected["done"]:
             injected["done"] = True
             current = real_read(path)
-            cache.write_frame(
-                path, pd.concat([current, pd.DataFrame([row(2, 0.4)])])
-            )
+            cache.write_frame(path, pd.concat([current, pd.DataFrame([row(2, 0.4)])]))
         return real_read(target)
 
     monkeypatch.setattr(cache, "read_frame", read_after_other_writer)
@@ -327,6 +325,7 @@ def test_append_metrics_rows_enriches_with_rows_committed_by_another_writer(
     assert stored["as_of"].dt.day.tolist() == [1, 2, 3]
     assert last["iv_history_days"] == 3  # day 2 is part of day 3's history
     assert last["iv_rank"] == pytest.approx(50)
+
 
 def test_append_read_show_and_build_panel(sample_frame: pd.DataFrame, panel_root: Path):
     chain = normalize_bhavcopy_options(sample_frame, as_of=date(2026, 7, 8))["RELIANCE"]

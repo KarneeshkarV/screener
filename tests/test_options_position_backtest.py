@@ -379,6 +379,7 @@ def test_entry_with_no_chain_on_the_next_session_is_dropped():
     assert result.trades == []
     assert any("entry from 2026-07-06 dropped" in w for w in result.warnings)
 
+
 def test_expiry_without_settle_or_spot_is_labelled_carried():
     # Expiry day has no chain and no underlying bar: the exit cannot be a
     # settle, so it must say it used the carried mark.
@@ -401,6 +402,7 @@ def test_expiry_without_settle_or_spot_is_labelled_carried():
     assert (trade.exit_date, trade.exit_reason) == (expiry, "expiry")
     assert trade.details["exit_mark"] == "carried"
     assert any("settled at the last carried mark" in w for w in result.warnings)
+
 
 def test_pit_entry_after_signal():
     d0, d1 = date(2026, 7, 6), date(2026, 7, 7)

@@ -241,6 +241,7 @@ def test_cancelled_reentry_order_waits_for_the_next_signal():
     signals = [pd.Timestamp(t.signal_date) for t in result.trades]
     assert signals == [_DAYS[5], _DAYS[14]]
 
+
 def test_regime_metrics_bucket_by_signal_date():
     benchmark = pd.Series(
         np.r_[np.linspace(100.0, 200.0, 260), [50.0]],

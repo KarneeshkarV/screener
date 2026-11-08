@@ -80,6 +80,7 @@ INSERT INTO trials (
 ON CONFLICT(experiment_id, trial_key) DO NOTHING
 """
 
+
 def default_trial_db_path() -> Path:
     override = os.environ.get("SCREENER_OPTIMIZER_TRIALS_DB")
     if override:

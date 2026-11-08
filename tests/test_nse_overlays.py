@@ -274,16 +274,16 @@ def test_calendar_fetches_the_holiday_list_of_the_queried_year(monkeypatch):
         (("holidays", "2026"), f"{nse_client._HOLIDAYS_URL}&year=2026"),
     ]
 
+
 def test_calendar_retries_a_year_whose_holiday_fetch_failed(monkeypatch):
     payloads = iter([None, {"CM": [{"tradingDate": "22-Jan-2024"}]}])
-    monkeypatch.setattr(
-        nse_client, "nse_cached_json", lambda *a, **k: next(payloads)
-    )
+    monkeypatch.setattr(nse_client, "nse_cached_json", lambda *a, **k: next(payloads))
     cal = nse_client.TradingCalendar()
     # Outage: weekday-only for this query, but the empty set is not kept.
     assert cal.is_trading_day(date(2024, 1, 22)) is True
     # NSE back: the year is fetched again and the holiday is seen.
     assert cal.is_trading_day(date(2024, 1, 22)) is False
+
 
 def test_failed_homepage_warmup_does_not_mark_the_session_primed(monkeypatch):
     responses = iter([None, type("R", (), {"status_code": 200})()])
@@ -297,6 +297,7 @@ def test_failed_homepage_warmup_does_not_mark_the_session_primed(monkeypatch):
     assert nse_client._tls.primed is False  # warm-up failed: retry next call
     nse_client.get_primed_session()
     assert nse_client._tls.primed is True
+
 
 def test_holiday_payload_uses_only_equity_segment():
     # 2026-04-01 closes only the currency/interest-rate segments; equities

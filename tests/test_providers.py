@@ -283,6 +283,7 @@ def test_frame_meta_pair_from_two_writes_forces_a_refetch(tmp_path, monkeypatch)
     assert frame["a"].tolist() == [3]
     assert meta == {"count": 3}
 
+
 def test_stale_frame_meta_cache_is_served_on_failure(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(cache, "CACHE_ROOT", tmp_path)
     provider = _frame_meta_provider(ttl=None)
