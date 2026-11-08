@@ -249,10 +249,12 @@ def test_backup_adds_the_digest_column_to_a_legacy_remote_table(history_db):
 
     first = history_sync.backup_history(client)
     again = history_sync.backup_history(client)
+    columns = client.execute("SELECT name FROM pragma_table_info('screen_runs')").rows
 
     assert first.runs_pushed == 1
     assert again.runs_pushed == 0
     assert again.remote_rows == 2
+    assert ("digest",) in columns
 
 
 def test_restored_older_run_does_not_shadow_newer_local_run(history_db):

@@ -553,7 +553,8 @@ class TradingCalendar:
             known = self._holidays.get(year)
             if known is None:
                 known = self._load_holidays(year)
-                if known is not None:
+                # Empty means an outage or a year NSE has not published yet.
+                if known:
                     self._holidays[year] = known
         return known if known is not None else set()
 

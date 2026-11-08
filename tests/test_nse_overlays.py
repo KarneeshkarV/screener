@@ -275,8 +275,9 @@ def test_calendar_fetches_the_holiday_list_of_the_queried_year(monkeypatch):
     ]
 
 
-def test_calendar_retries_a_year_whose_holiday_fetch_failed(monkeypatch):
-    payloads = iter([None, {"CM": [{"tradingDate": "22-Jan-2024"}]}])
+@pytest.mark.parametrize("first_payload", [None, {}], ids=["outage", "unpublished"])
+def test_calendar_retries_a_year_whose_holiday_fetch_failed(monkeypatch, first_payload):
+    payloads = iter([first_payload, {"CM": [{"tradingDate": "22-Jan-2024"}]}])
     monkeypatch.setattr(nse_client, "nse_cached_json", lambda *a, **k: next(payloads))
     cal = nse_client.TradingCalendar()
     # Outage: weekday-only for this query, but the empty set is not kept.

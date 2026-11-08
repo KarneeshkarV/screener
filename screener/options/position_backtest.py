@@ -615,7 +615,7 @@ def run_options_position_backtest(
                 if carried_exit:
                     warnings.append(
                         f"{sym}: no settle price or underlying close on expiry "
-                        f"{day}; settled at the last carried mark"
+                        f"{day}; settled at the last known mark"
                     )
                 trade = _close_position(
                     pos,

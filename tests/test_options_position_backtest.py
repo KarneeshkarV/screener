@@ -401,7 +401,7 @@ def test_expiry_without_settle_or_spot_is_labelled_carried():
     trade = result.trades[0]
     assert (trade.exit_date, trade.exit_reason) == (expiry, "expiry")
     assert trade.details["exit_mark"] == "carried"
-    assert any("settled at the last carried mark" in w for w in result.warnings)
+    assert any("settled at the last known mark" in w for w in result.warnings)
 
 
 def test_pit_entry_after_signal():
