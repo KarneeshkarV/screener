@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Nifty 500 point-in-time ATR-stop sweep over the momentum strategies.
+"""Point-in-time ATR-stop sweep over the momentum strategies.
 
 Crosses every momentum-family strategy against an ATR stop grid over nested
 trailing windows, so the question "does a per-ticker stop help, and at what
@@ -8,6 +8,11 @@ width" gets one answer per strategy per horizon instead of one anecdote.
     uv run python scripts/run_momentum_atr_stop_sweep.py
     uv run python scripts/run_momentum_atr_stop_sweep.py --smoke
     uv run python scripts/run_momentum_atr_stop_sweep.py --report-only
+    uv run python scripts/run_momentum_atr_stop_sweep.py --market us
+
+``--market india`` (the default) runs the Nifty 500 point-in-time universe
+against ``^NSEI``; ``--market us`` runs the S&P 500 point-in-time universe
+against ``SPY``. Everything else is the same grid.
 
 Grid, per strategy:
 
@@ -54,7 +59,28 @@ from scripts.run_nifty500_pit_strategy_sweep import (  # noqa: E402
     write_run,
 )
 
-DEFAULT_OUT_DIR = ROOT / "reports" / "momentum_atr_stop_sweep"
+# Per market: request overrides, the universe label for the run record, the
+# report title and the default output directory. ``benchmark`` stays None so
+# the market default (``^NSEI`` / ``SPY``) applies.
+MARKETS: dict[str, dict[str, Any]] = {
+    "india": {
+        "request": {},
+        "exclude": (),
+        "universe": "nifty500_pit",
+        "title": "Nifty 500 point-in-time",
+        "out_dir": ROOT / "reports" / "momentum_atr_stop_sweep",
+    },
+    "us": {
+        "request": {"market": "us", "universe": "sp500", "universe_config": None},
+        # FMP reassigned ``PARA`` after Paramount delisted: its history before
+        # 2025 is ~$1,000,000 bars with volume 1 and repeated 10x one-day
+        # jumps, which put +900% trades into every momentum strategy.
+        "exclude": ("PARA",),
+        "universe": "sp500",
+        "title": "S&P 500 point-in-time",
+        "out_dir": ROOT / "reports" / "momentum_atr_stop_sweep_us",
+    },
+}
 END_DATE = date(2026, 9, 12)
 YEARS = (5, 3, 2, 1)
 HOLD = 20
@@ -134,6 +160,7 @@ def result_record(
     error: str | None,
     elapsed: float,
     universe_note: str | None,
+    universe: str,
 ) -> dict[str, Any]:
     return {
         "strategy": strategy,
@@ -148,7 +175,7 @@ def result_record(
         "stop_atr_window": cfg.stop_atr_window,
         "stop_loss": cfg.stop_loss,
         "sizing_rule": cfg.sizing_rule,
-        "universe": "nifty500_pit",
+        "universe": universe,
         "benchmark": cfg.benchmark,
         "point_in_time": True,
         "universe_note": universe_note,
@@ -174,6 +201,27 @@ def stop_exit_share(result: Any | None) -> float | None:
     return round(stopped / len(result.trades), 4)
 
 
+class _ExcludingFetcher:
+    """Price fetcher that serves no bars for ``excluded`` symbols.
+
+    The engine already treats a symbol with no bars as a vendor gap and lists
+    it in the run warnings, so this drops a known-corrupt series visibly.
+    """
+
+    def __init__(self, inner: Any, excluded: tuple[str, ...]) -> None:
+        self._inner = inner
+        self._excluded = set(excluded)
+
+    def fetch(self, tickers: Any, start: date, end: date) -> dict[str, pd.DataFrame]:
+        # Keep the columns: strategy prepare hooks index ``close`` on every
+        # frame, and a column-less frame is not what a real gap looks like.
+        panel = self._inner.fetch(tickers, start, end)
+        return {
+            t: frame.iloc[0:0] if t in self._excluded else frame
+            for t, frame in panel.items()
+        }
+
+
 def sweep_strategy(payload: dict[str, Any]) -> dict[str, Any]:
     """One strategy: prepare the 5-year panel once, then every window x arm."""
     from screener.backtester.rolling_simulation import (
@@ -185,6 +233,7 @@ def sweep_strategy(payload: dict[str, Any]) -> dict[str, Any]:
     strategy = str(payload["strategy"])
     out_dir = Path(payload["out_dir"])
     smoke = bool(payload["smoke"])
+    market = MARKETS[str(payload["market"])]
     years_list = [1] if smoke else list(YEARS)
     arms = stop_arms()[:2] if smoke else stop_arms()
 
@@ -219,12 +268,16 @@ def sweep_strategy(payload: dict[str, Any]) -> dict[str, Any]:
                 window_start(prepare_years), datetime.min.time()
             ),
             end_arg=datetime.combine(END_DATE, datetime.min.time()),
+            **market["request"],
         )
         run = resolve_backtest_run(request)
         assert run.start_date is not None and run.end_date is not None
+        fetcher = run.price_fetcher
+        if market["exclude"]:
+            fetcher = _ExcludingFetcher(fetcher, market["exclude"])
         prepared = prepare_rolling_backtest(
             run.config,
-            run.price_fetcher,
+            fetcher,
             start_date=run.start_date,
             end_date=run.end_date,
             fundamental_fetcher=run.fundamental_fetcher,
@@ -265,6 +318,7 @@ def sweep_strategy(payload: dict[str, Any]) -> dict[str, Any]:
                         error=error,
                         elapsed=time.time() - t_run,
                         universe_note=run.universe_note,
+                        universe=market["universe"],
                     ),
                 )
                 done += 1
@@ -325,7 +379,7 @@ def _markdown_table(pivot: pd.DataFrame, digits: int) -> str:
     return "\n".join("| " + " | ".join(row) + " |" for row in rows)
 
 
-def write_report(out_dir: Path, frame: pd.DataFrame) -> None:
+def write_report(out_dir: Path, frame: pd.DataFrame, title: str) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     frame.to_csv(out_dir / "runs.csv", index=False)
 
@@ -335,7 +389,7 @@ def write_report(out_dir: Path, frame: pd.DataFrame) -> None:
         return
 
     lines = [
-        "# Momentum x ATR stop sweep - Nifty 500 point-in-time",
+        f"# Momentum x ATR stop sweep - {title}",
         "",
         f"Generated {datetime.now().isoformat(timespec='seconds')}. "
         f"Windows end {END_DATE.isoformat()} and are nested. "
@@ -365,14 +419,16 @@ def write_report(out_dir: Path, frame: pd.DataFrame) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument("--market", choices=sorted(MARKETS), default="india")
+    parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--report-only", action="store_true")
     parser.add_argument("--strategies", default=None, help="Comma-separated override.")
     args = parser.parse_args()
 
-    out_dir = Path(args.out_dir)
+    market = MARKETS[args.market]
+    out_dir = Path(args.out_dir or market["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if not args.report_only:
@@ -395,7 +451,12 @@ def main() -> int:
         )
 
         payloads = [
-            {"strategy": s, "out_dir": str(out_dir), "smoke": args.smoke}
+            {
+                "strategy": s,
+                "out_dir": str(out_dir),
+                "smoke": args.smoke,
+                "market": args.market,
+            }
             for s in strategies
         ]
         with ProcessPoolExecutor(max_workers=args.workers) as pool:
@@ -416,7 +477,7 @@ def main() -> int:
     if frame.empty:
         print("no runs on disk")
         return 1
-    write_report(out_dir, frame)
+    write_report(out_dir, frame, market["title"])
     print(f"wrote {out_dir / 'runs.csv'} and {out_dir / 'summary.md'}")
     return 0
 

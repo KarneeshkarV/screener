@@ -5,6 +5,9 @@ Scope: 960 rolling backtests, 0 failures.
 Universe: `nifty500_pit`, point-in-time membership (841 candidate symbols, 6507 membership windows).
 Reproduce with `uv run python scripts/run_momentum_atr_stop_sweep.py`.
 
+The same sweep on the S&P 500 is in [atr-stop-momentum-sp500-2026-09-12.md](atr-stop-momentum-sp500-2026-09-12.md).
+Tight stops hurt there too, but wide ATR stops do not deepen drawdown and beat a fixed stop matched on firing rate, so the conclusions below are for Nifty 500 only.
+
 The first version of this doc ran on an older main (850 symbols, 6520 windows).
 Main moved between the two runs, and the numbers below replace the old ones.
 Two conclusions changed: `pct_20` now ties `no_stop` on mean Sharpe, and the drawdown damage is clear only at 3 and 5 years.
