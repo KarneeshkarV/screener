@@ -363,7 +363,7 @@ def test_missing_day_carry_forward():
 def test_entry_with_no_chain_on_the_next_session_is_dropped():
     # Signal on d0 only. No chain on d1, so the D+1 entry cannot fill. It must
     # not fill on d3 from a signal three sessions old.
-    d0, d1, d3 = date(2026, 7, 6), date(2026, 7, 7), date(2026, 7, 9)
+    d0, d3 = date(2026, 7, 6), date(2026, 7, 9)
     schedule = {d3: _call_put_pair(d3, call_last=10.0, put_last=5.0)}
     bars = _underlying_bars(d0, d3)
     fetcher = StubPriceFetcher({"RELIANCE.NS": bars})
