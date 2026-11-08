@@ -70,6 +70,16 @@ ON CONFLICT(experiment_id, trial_key) DO UPDATE SET
 """
 
 
+# Registration before a run must not lower a row a previous run finished: an
+# interrupted rerun would otherwise turn scored trials back into ATTEMPTED.
+_INSERT_ATTEMPTED_TRIAL = """
+INSERT INTO trials (
+    experiment_id, trial_key, params_json, status, score, sharpe,
+    metrics_json, error, trade_count, created_ts
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+ON CONFLICT(experiment_id, trial_key) DO NOTHING
+"""
+
 def default_trial_db_path() -> Path:
     override = os.environ.get("SCREENER_OPTIMIZER_TRIALS_DB")
     if override:
@@ -254,15 +264,15 @@ def record_attempted_trials(
 ) -> None:
     """Register ``(trial_key, params)`` pairs as ATTEMPTED in one transaction.
 
-    Same rows as one ``record_trial(status="attempted")`` call each, with a
-    single commit instead of one per trial.
+    Only keys with no row yet are inserted. A key that already has a row keeps
+    it, so a rerun that is interrupted keeps the scores of the earlier run.
     """
     if not trials:
         return
     conn = _connect(resolve_trial_db_path(db_path))
     try:
         conn.executemany(
-            _UPSERT_TRIAL,
+            _INSERT_ATTEMPTED_TRIAL,
             [
                 (experiment_id, key, _params_key(params), "attempted")
                 + (None, None, None, None, 0)
