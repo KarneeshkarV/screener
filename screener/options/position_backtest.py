@@ -277,10 +277,13 @@ def _mark_legs(
     as_of: date,
     underlying_close: float | None,
     carry: Mapping[tuple[str, float, date], float],
-) -> tuple[list[float], dict[tuple[str, float, date], float]]:
-    """Return per-leg mark prices and an updated carry-forward map."""
+) -> tuple[list[float], dict[tuple[str, float, date], float], bool]:
+    """Return per-leg mark prices, an updated carry-forward map, and whether
+    every mark came from ``as_of`` data (a chain price or expiry intrinsic)
+    rather than a carried or entry price."""
     marks: list[float] = []
     updated = dict(carry)
+    fresh = True
     for leg in pos.legs:
         key = (leg.right, leg.strike, leg.expiry)
         contract = _find_contract(
@@ -291,13 +294,14 @@ def _mark_legs(
             # On/after expiry use intrinsic against underlying close.
             px = _intrinsic(leg.right, leg.strike, underlying_close)
         if px is None:
+            fresh = False
             px = updated.get(key)
         if px is None:
             px = leg.entry_price  # last resort
         else:
             updated[key] = px
         marks.append(float(px))
-    return marks, updated
+    return marks, updated, fresh
 
 
 def _close_position(
@@ -308,6 +312,7 @@ def _close_position(
     exit_reason: ExitReason,
     cfg: OptionsBacktestConfig,
     at_expiry: bool = False,
+    carried_exit: bool = False,
 ) -> OptionPositionTrade:
     closed_legs: list[LegFill] = []
     exit_costs = 0.0
@@ -342,6 +347,7 @@ def _close_position(
             "entry_costs": pos.entry_costs,
             "exit_costs": exit_costs,
             "hold_days": pos.hold_days,
+            **({"exit_mark": "carried"} if carried_exit else {}),
         },
     )
 
@@ -361,9 +367,8 @@ def _check_exit(
     dte = (nearest_expiry - day).days
 
     if dte <= 0:
-        # Force settle at intrinsic when we have a spot; marks already prefer settle.
-        if underlying_close is not None:
-            return "expiry", True
+        # The position cannot be held past expiry. The caller settles at
+        # intrinsic when it has a spot; marks already prefer settle.
         return "expiry", True
 
     mark_premium = _mtm_premium(pos.legs, marks)
@@ -534,7 +539,13 @@ def run_options_position_backtest(
                 continue
             chain = chains.get(sym)
             if chain is None:
-                # Missing archive day: keep pending if within range.
+                # The entry fills on the session after the signal or not at
+                # all. Filling on a later session would act on a stale signal;
+                # step 3 re-evaluates the signal on this session instead.
+                warnings.append(
+                    f"{sym}: no chain on {day}; entry from {signal_date} dropped"
+                )
+                del pending_entries[sym]
                 continue
             fills = _open_structure(
                 chain, structure, as_of=day, cfg=cfg, warnings=warnings
@@ -568,7 +579,7 @@ def run_options_position_backtest(
         # 2) MTM + exits for open positions.
         for sym, pos in list(open_positions.items()):
             u_close = _underlying_close(sym, day)
-            marks, carry_marks[sym] = _mark_legs(
+            marks, carry_marks[sym], fresh = _mark_legs(
                 pos,
                 chains.get(sym),  # only today's chain for fresh marks
                 as_of=day,
@@ -598,6 +609,14 @@ def run_options_position_backtest(
                     marks = [
                         _intrinsic(leg.right, leg.strike, u_close) for leg in pos.legs
                     ]
+                # No settle price and no spot on expiry day: the exit uses a
+                # carried mark. Label it, so it is not read as a settle.
+                carried_exit = at_expiry and u_close is None and not fresh
+                if carried_exit:
+                    warnings.append(
+                        f"{sym}: no settle price or underlying close on expiry "
+                        f"{day}; settled at the last carried mark"
+                    )
                 trade = _close_position(
                     pos,
                     marks,
@@ -605,6 +624,7 @@ def run_options_position_backtest(
                     exit_reason=reason,
                     cfg=cfg,
                     at_expiry=at_expiry,
+                    carried_exit=carried_exit,
                 )
                 trades.append(trade)
                 cash_pnl += trade.pnl
@@ -626,7 +646,7 @@ def run_options_position_backtest(
         for sym, pos in list(open_positions.items()):
             chain = last_chains.get(sym)
             u_close = _underlying_close(sym, last_day)
-            marks, _ = _mark_legs(
+            marks, _, _ = _mark_legs(
                 pos,
                 chain,
                 as_of=last_day,
