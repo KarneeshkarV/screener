@@ -10,6 +10,8 @@ repeating a backup never duplicates data.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -82,10 +84,17 @@ def ensure_remote_tables(client: SyncClient) -> None:
             market        TEXT NOT NULL,
             criteria      TEXT NOT NULL,
             total_matches INTEGER NOT NULL,
+            digest        TEXT,
             UNIQUE(run_ts, market, criteria)
         )
         """
     )
+    columns = client.execute(
+        f"SELECT name FROM pragma_table_info('{REMOTE_RUNS_TABLE}')"
+    ).rows
+    if "digest" not in {str(c[0]) for c in columns}:
+        # Tables created before the digest existed; NULL digests re-push once.
+        client.execute(f"ALTER TABLE {REMOTE_RUNS_TABLE} ADD COLUMN digest TEXT")
     client.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {REMOTE_ROWS_TABLE} (
@@ -114,19 +123,21 @@ def _run_batches(
         client.batch(statements[start : start + batch_size])
 
 
-def _remote_row_counts(client: SyncClient) -> dict[tuple[str, str, str], int]:
-    """Remote ``{run key: stored row count}``, including runs with no rows."""
+def _remote_digests(client: SyncClient) -> dict[tuple[str, str, str], str | None]:
+    """Remote ``{run key: digest of the snapshot its rows hold}``."""
     result = client.execute(
-        f"""
-        SELECT r.run_ts, r.market, r.criteria, COUNT(rr.ticker)
-        FROM {REMOTE_RUNS_TABLE} r
-        LEFT JOIN {REMOTE_ROWS_TABLE} rr
-          ON rr.run_ts = r.run_ts AND rr.market = r.market
-         AND rr.criteria = r.criteria
-        GROUP BY r.run_ts, r.market, r.criteria
-        """
+        f"SELECT run_ts, market, criteria, digest FROM {REMOTE_RUNS_TABLE}"
     )
-    return {(str(r[0]), str(r[1]), str(r[2])): int(r[3]) for r in result.rows}
+    return {
+        (str(r[0]), str(r[1]), str(r[2])): None if r[3] is None else str(r[3])
+        for r in result.rows
+    }
+
+
+def _snapshot_digest(total: int, rows: list[tuple[object, ...]]) -> str:
+    """Fingerprint of one run's header total and its ranked rows."""
+    payload = json.dumps([total, [list(row) for row in rows]], default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _remote_totals(client: SyncClient) -> tuple[int, int]:
@@ -168,38 +179,35 @@ def _local_rows(run_id: int) -> list[tuple[object, ...]]:
 
 
 def backup_history(client: SyncClient, *, batch_size: int = 200) -> BackupSummary:
-    """Push every local run the remote lacks or holds only partially.
+    """Push every local run whose snapshot the remote does not hold.
 
-    A run counts as backed up only when the remote holds all of its rows, so a
-    backup that died between a run's header and its rows is repaired by the
-    next one instead of leaving that run permanently empty remotely. Each
-    run's header is queued directly before its rows.
+    A run counts as backed up only when its remote header carries the digest
+    of the local snapshot. The header is queued after the run's rows, so a
+    backup that dies part way leaves the old (or no) digest and the next
+    backup pushes the run again. A run that ``history.save_run`` re-saved
+    under the same key gets a new digest, so its remote rows are replaced
+    too, including tickers that left the screen.
     """
     ensure_remote_tables(client)
-    remote_counts = _remote_row_counts(client)
-    # -1 marks a run missing remotely, so even a zero-row run gets its header.
-    to_push = [
-        run
-        for run in _local_runs()
-        if remote_counts.get((run[1], run[2], run[3]), -1) < run[5]
-    ]
+    remote_digests = _remote_digests(client)
+    to_push = []
+    for run_id, run_ts, market, criteria, total, _saved in _local_runs():
+        rows = _local_rows(run_id)
+        digest = _snapshot_digest(total, rows)
+        if remote_digests.get((run_ts, market, criteria)) != digest:
+            to_push.append((run_id, run_ts, market, criteria, total, rows, digest))
 
     stmts: list[tuple[str, list[object]]] = []
     rows_pushed = 0
-    for run_id, run_ts, market, criteria, total, _saved in to_push:
+    for run_id, run_ts, market, criteria, total, rows, digest in to_push:
         stmts.append(
             (
-                f"""
-                INSERT INTO {REMOTE_RUNS_TABLE}
-                    (id, run_ts, market, criteria, total_matches)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(run_ts, market, criteria)
-                DO UPDATE SET id = excluded.id, total_matches = excluded.total_matches
-                """,
-                [run_id, run_ts, market, criteria, total],
+                f"DELETE FROM {REMOTE_ROWS_TABLE} "
+                "WHERE run_ts = ? AND market = ? AND criteria = ?",
+                [run_ts, market, criteria],
             )
         )
-        for row in _local_rows(run_id):
+        for row in rows:
             rows_pushed += 1
             stmts.append(
                 (
@@ -217,6 +225,19 @@ def backup_history(client: SyncClient, *, batch_size: int = 200) -> BackupSummar
                     [run_id, run_ts, market, criteria, *row],
                 )
             )
+        stmts.append(
+            (
+                f"""
+                INSERT INTO {REMOTE_RUNS_TABLE}
+                    (id, run_ts, market, criteria, total_matches, digest)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_ts, market, criteria)
+                DO UPDATE SET id = excluded.id,
+                    total_matches = excluded.total_matches, digest = excluded.digest
+                """,
+                [run_id, run_ts, market, criteria, total, digest],
+            )
+        )
     _run_batches(client, stmts, batch_size)
 
     remote_runs, remote_rows = _remote_totals(client)
