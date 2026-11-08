@@ -242,6 +242,8 @@ class _ReserveRotationSource:
         self.reserve_queue = reserve_queue
         self.taken = taken
         self._reserve_rows = {str(row["ticker"]): row for row in reserve_queue}
+        # Slots whose queued order is a re-entry, not a reserve rotation.
+        self._reentry_orders: set[int] = set()
         self.warnings = warnings
         self.caches = caches
 
@@ -267,11 +269,18 @@ class _ReserveRotationSource:
         # reference price, no affordable share) never held the name, so the
         # name goes back to the pool and a reserve back to the queue front.
         # Otherwise a reserve cancelled once could never be rotated in again.
+        # A dropped re-entry waits for its next signal again: it never fired,
+        # so it keeps the re-entry count it took when the slot freed.
         for slot_id, ticker in queued.items():
             if slot_id in self.pending_entry_orders:
                 continue
+            reentry = slot_id in self._reentry_orders
+            self._reentry_orders.discard(slot_id)
             state = self.slot_states.get(slot_id)
             if state is None or state.ticker != ticker:
+                if reentry:
+                    self.pending_reentry[slot_id] = ticker
+                    continue
                 self.taken.discard(ticker)
                 reserve = self._reserve_rows.get(ticker)
                 if reserve is not None and reserve not in self.reserve_queue:
@@ -330,6 +339,7 @@ class _ReserveRotationSource:
                     rank=new_rank,
                     signal_date=_bar_label(day, cfg),
                 )
+                self._reentry_orders.add(slot_id)
                 del self.pending_reentry[slot_id]
 
     def after_exits(self, day: pd.Timestamp, freed_slots: list[FreedSlot]) -> None:

@@ -231,6 +231,16 @@ def test_cancelled_reserve_order_frees_the_name_for_a_later_rotation():
     assert flaky_trades, "a cancelled order must not blacklist the name"
 
 
+def test_cancelled_reentry_order_waits_for_the_next_signal():
+    # The re-entry signals on day 10, but its entry bar (day 11) has no open,
+    # so the order is dropped. It never fired, so it keeps its re-entry count
+    # and fills on the next signal (day 14).
+    active = _frame(_DAYS, signal=_signal_on(5, 10, 14))
+    active.iloc[11, active.columns.get_loc("open")] = np.nan
+    result = _run({"ACTIVE": active}, allow_reentry=True, max_reentries=1)
+    signals = [pd.Timestamp(t.signal_date) for t in result.trades]
+    assert signals == [_DAYS[5], _DAYS[14]]
+
 def test_regime_metrics_bucket_by_signal_date():
     benchmark = pd.Series(
         np.r_[np.linspace(100.0, 200.0, 260), [50.0]],
