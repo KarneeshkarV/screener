@@ -610,6 +610,38 @@ def test_attempted_registered_before_execution_on_interrupt(tmp_path, monkeypatc
     assert stats.n_trials_nominal == 2
 
 
+def test_attempted_registration_does_not_lower_a_finished_trial(tmp_path):
+    """An interrupted rerun must keep the scores the earlier run recorded."""
+    from screener.backtester.optimization.trials import (
+        load_trial_search_stats,
+        record_attempted_trials,
+        record_trial,
+    )
+
+    trial_db = tmp_path / "rerun.db"
+    for i, score in enumerate([1.0, 2.0, 3.0]):
+        record_trial(
+            "exp",
+            {"p": i},
+            status="completed",
+            score=score,
+            metrics={"sharpe": score},
+            trade_count=50,
+            trial_key=f"k{i}",
+            db_path=trial_db,
+        )
+    before = load_trial_search_stats("exp", db_path=trial_db)
+
+    # The rerun registers every key, then is interrupted before any finishes.
+    record_attempted_trials(
+        "exp", [(f"k{i}", {"p": i}) for i in range(4)], db_path=trial_db
+    )
+
+    after = load_trial_search_stats("exp", db_path=trial_db)
+    assert after.n_trials_scored == before.n_trials_scored == 3
+    assert after.n_trials_nominal == 4  # the new key is still exposure
+
+
 def test_universe_file_identity_hashes_contents_not_path(tmp_path):
     from screener.backtester.optimization.cache import (
         universe_membership_identity_from_config,

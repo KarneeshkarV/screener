@@ -360,6 +360,50 @@ def test_missing_day_carry_forward():
     assert result.trades[0].exit_reason == "target"
 
 
+def test_entry_with_no_chain_on_the_next_session_is_dropped():
+    # Signal on d0 only. No chain on d1, so the D+1 entry cannot fill. It must
+    # not fill on d3 from a signal three sessions old.
+    d0, d3 = date(2026, 7, 6), date(2026, 7, 9)
+    schedule = {d3: _call_put_pair(d3, call_last=10.0, put_last=5.0)}
+    bars = _underlying_bars(d0, d3)
+    fetcher = StubPriceFetcher({"RELIANCE.NS": bars})
+    cfg = OptionsBacktestConfig(
+        tickers=("RELIANCE",),
+        start=d0,
+        end=d3,
+        structure="long_call",
+        entry_expr="close > 1295 and close < 1297",  # true on d0 only
+        exit_dte=1,
+    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
+    assert result.trades == []
+    assert any("entry from 2026-07-06 dropped" in w for w in result.warnings)
+
+
+def test_expiry_without_settle_or_spot_is_labelled_carried():
+    # Expiry day has no chain and no underlying bar: the exit cannot be a
+    # settle, so it must say it used the carried mark.
+    expiry = date(2026, 7, 10)
+    d0, d1 = date(2026, 7, 8), date(2026, 7, 9)
+    schedule = {d1: _call_put_pair(d1, call_last=10.0, put_last=5.0, expiry=expiry)}
+    bars = _underlying_bars(d0, d1)  # no bar on expiry day
+    fetcher = StubPriceFetcher({"RELIANCE.NS": bars})
+    cfg = OptionsBacktestConfig(
+        tickers=("RELIANCE",),
+        start=d0,
+        end=expiry,
+        structure="long_call",
+        entry_expr="true",
+        exit_dte=0,
+        max_hold=None,
+    )
+    result = _run(cfg, chain_loader=_synthetic_loader(schedule), price_fetcher=fetcher)
+    trade = result.trades[0]
+    assert (trade.exit_date, trade.exit_reason) == (expiry, "expiry")
+    assert trade.details["exit_mark"] == "carried"
+    assert any("settled at the last known mark" in w for w in result.warnings)
+
+
 def test_pit_entry_after_signal():
     d0, d1 = date(2026, 7, 6), date(2026, 7, 7)
     schedule = {

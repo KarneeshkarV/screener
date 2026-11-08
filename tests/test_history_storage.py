@@ -206,6 +206,57 @@ def test_backup_repairs_a_run_whose_rows_failed_to_push(history_db):
     assert retry.remote_rows == 2
 
 
+@pytest.mark.parametrize(
+    ("second_tickers", "second_total"),
+    [(["CCC"], 1), (["CCC", "DDD"], 2)],
+    ids=["fewer-rows", "same-row-count"],
+)
+def test_backup_replaces_a_run_resaved_after_it_was_pushed(
+    history_db, monkeypatch, second_tickers, second_total
+):
+    frozen = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen if tz is None else frozen.astimezone(tz)
+
+    monkeypatch.setattr(history_mod, "datetime", _FrozenDatetime)
+    history_mod.save_run("us", "ema", 2, _screen_df(["AAA", "BBB"]))
+    client = StubTursoClient()
+    history_sync.backup_history(client)
+
+    # A second screen in the same second replaces the run's rows locally.
+    history_mod.save_run("us", "ema", second_total, _screen_df(second_tickers))
+    summary = history_sync.backup_history(client)
+
+    assert summary.runs_pushed == 1
+    assert summary.remote_rows == len(second_tickers)
+    remote = client.execute("SELECT ticker FROM screen_run_rows ORDER BY rank").rows
+    assert [r[0] for r in remote] == second_tickers
+    total = client.execute("SELECT total_matches FROM screen_runs").rows
+    assert total == [(second_total,)]
+
+
+def test_backup_adds_the_digest_column_to_a_legacy_remote_table(history_db):
+    history_mod.save_run("us", "ema", 2, _screen_df(["AAA", "BBB"]))
+    client = StubTursoClient()
+    client.execute(
+        "CREATE TABLE screen_runs (id INTEGER, run_ts TEXT NOT NULL, "
+        "market TEXT NOT NULL, criteria TEXT NOT NULL, "
+        "total_matches INTEGER NOT NULL, UNIQUE(run_ts, market, criteria))"
+    )
+
+    first = history_sync.backup_history(client)
+    again = history_sync.backup_history(client)
+    columns = client.execute("SELECT name FROM pragma_table_info('screen_runs')").rows
+
+    assert first.runs_pushed == 1
+    assert again.runs_pushed == 0
+    assert again.remote_rows == 2
+    assert ("digest",) in columns
+
+
 def test_restored_older_run_does_not_shadow_newer_local_run(history_db):
     def save(run_ts, tickers):
         run_id = history_mod.save_run("us", "ema", 1, _screen_df(tickers))

@@ -289,6 +289,44 @@ def test_metrics_row_and_causal_history_fields():
         enrich_panel_history(pd.DataFrame({"SYMBOL": ["ABC"]}))
 
 
+def test_append_metrics_rows_enriches_with_rows_committed_by_another_writer(
+    monkeypatch, panel_root: Path
+):
+    from screener.options.panels import append_metrics_rows
+
+    def row(day: int, iv: float) -> dict[str, object]:
+        return {
+            "as_of": pd.Timestamp(2026, 7, day),
+            "SYMBOL": "ABC",
+            "median_iv": iv,
+            "options_volume": 100,
+            "call_oi": 100,
+            "put_oi": 90,
+        }
+
+    append_metrics_rows("options_race", pd.DataFrame([row(1, 0.2)]))
+
+    # Another writer commits day 2 just before this writer takes the lock.
+    path = cache.panel_path("options_race")
+    real_read = cache.read_frame
+    injected = {"done": False}
+
+    def read_after_other_writer(target: Path) -> pd.DataFrame | None:
+        if target == path and not injected["done"]:
+            injected["done"] = True
+            current = real_read(path)
+            cache.write_frame(path, pd.concat([current, pd.DataFrame([row(2, 0.4)])]))
+        return real_read(target)
+
+    monkeypatch.setattr(cache, "read_frame", read_after_other_writer)
+    stored = append_metrics_rows("options_race", pd.DataFrame([row(3, 0.3)]))
+
+    last = stored.sort_values("as_of").iloc[-1]
+    assert stored["as_of"].dt.day.tolist() == [1, 2, 3]
+    assert last["iv_history_days"] == 3  # day 2 is part of day 3's history
+    assert last["iv_rank"] == pytest.approx(50)
+
+
 def test_append_read_show_and_build_panel(sample_frame: pd.DataFrame, panel_root: Path):
     chain = normalize_bhavcopy_options(sample_frame, as_of=date(2026, 7, 8))["RELIANCE"]
     stored = append_chains({"RELIANCE": chain}, market="india")

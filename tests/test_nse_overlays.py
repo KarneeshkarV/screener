@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import multiprocessing as mp
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -233,7 +234,7 @@ def test_calendar_walk_back_skips_stubbed_holiday():
     cal = nse_client.TradingCalendar()
     # Thu 01-01 + Fri 01-02 are stubbed holidays, Sat 01-03/Sun 01-04 weekends,
     # so on-or-before Sat 2026-01-03 walks back to Wed 2025-12-31.
-    cal._holidays = {date(2026, 1, 1), date(2026, 1, 2)}
+    cal._holidays = {2025: set(), 2026: {date(2026, 1, 1), date(2026, 1, 2)}}
     assert cal.is_trading_day(date(2026, 1, 1)) is False
     assert cal.is_trading_day(date(2026, 1, 2)) is False
     assert cal.is_trading_day(date(2025, 12, 31)) is True
@@ -246,9 +247,57 @@ def test_calendar_degrades_to_weekday_only_when_holiday_fetch_fails(monkeypatch)
     monkeypatch.setattr(nse_client, "nse_cached_json", lambda *a, **k: None)
     # No holidays known -> weekday-only. 2026-01-03 is a Saturday; walk back to
     # Friday 2026-01-02 (which, holiday-unaware, is treated as a trading day).
-    assert cal._holiday_set() == set()
+    assert cal._holiday_set(2026) == set()
     assert cal.is_trading_day(date(2026, 1, 3)) is False  # Saturday
     assert cal.last_trading_day_on_or_before(date(2026, 1, 3)) == date(2026, 1, 2)
+
+
+def test_calendar_fetches_the_holiday_list_of_the_queried_year(monkeypatch):
+    # NSE returns one calendar year per call. A backtest over 2024 must see
+    # the 2024 list (22-Jan-2024 was a one-off market holiday), not the
+    # current year's list.
+    calls: list[tuple[tuple[str, ...], str]] = []
+
+    def fake(namespace, key_parts, url, operation, **kwargs):
+        calls.append((tuple(key_parts), url))
+        if url.endswith("&year=2024"):
+            return {"CM": [{"tradingDate": "22-Jan-2024"}]}
+        return {"CM": [{"tradingDate": "26-Jan-2026"}]}
+
+    monkeypatch.setattr(nse_client, "nse_cached_json", fake)
+    cal = nse_client.TradingCalendar()
+    assert cal.is_trading_day(date(2024, 1, 22)) is False
+    assert cal.is_trading_day(date(2026, 1, 26)) is False
+    assert cal.is_trading_day(date(2024, 1, 23)) is True
+    assert calls == [
+        (("holidays", "2024"), f"{nse_client._HOLIDAYS_URL}&year=2024"),
+        (("holidays", "2026"), f"{nse_client._HOLIDAYS_URL}&year=2026"),
+    ]
+
+
+@pytest.mark.parametrize("first_payload", [None, {}], ids=["outage", "unpublished"])
+def test_calendar_retries_a_year_whose_holiday_fetch_failed(monkeypatch, first_payload):
+    payloads = iter([first_payload, {"CM": [{"tradingDate": "22-Jan-2024"}]}])
+    monkeypatch.setattr(nse_client, "nse_cached_json", lambda *a, **k: next(payloads))
+    cal = nse_client.TradingCalendar()
+    # Outage: weekday-only for this query, but the empty set is not kept.
+    assert cal.is_trading_day(date(2024, 1, 22)) is True
+    # NSE back: the year is fetched again and the holiday is seen.
+    assert cal.is_trading_day(date(2024, 1, 22)) is False
+
+
+def test_failed_homepage_warmup_does_not_mark_the_session_primed(monkeypatch):
+    responses = iter([None, type("R", (), {"status_code": 200})()])
+    monkeypatch.setattr(
+        nse_client,
+        "call_with_resilience",
+        lambda provider, operation, fn, fallback=None: next(responses),
+    )
+    monkeypatch.setattr(nse_client, "_tls", threading.local())
+    nse_client.get_primed_session()
+    assert nse_client._tls.primed is False  # warm-up failed: retry next call
+    nse_client.get_primed_session()
+    assert nse_client._tls.primed is True
 
 
 def test_holiday_payload_uses_only_equity_segment():
@@ -307,7 +356,7 @@ def test_html_error_bhavcopy_is_discarded_and_refetched(monkeypatch, tmp_path):
 
 def test_calendar_includes_weekend_special_sessions():
     cal = nse_client.TradingCalendar()
-    cal._holidays = set()
+    cal._holidays = {2026: set()}
     # A known NSE weekend special session is a trading day despite being a
     # weekend; a plain weekend is not; a stubbed weekday holiday still isn't.
     special = date(2026, 2, 1)  # Sunday, Union Budget session
@@ -315,7 +364,7 @@ def test_calendar_includes_weekend_special_sessions():
     assert special.weekday() >= 5
     assert cal.is_trading_day(special) is True
     assert cal.is_trading_day(date(2026, 1, 3)) is False  # plain Saturday
-    cal._holidays = {date(2026, 1, 26)}  # Republic Day (a Monday)
+    cal._holidays = {2026: {date(2026, 1, 26)}}  # Republic Day (a Monday)
     assert cal.is_trading_day(date(2026, 1, 26)) is False
 
 

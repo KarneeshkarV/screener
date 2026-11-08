@@ -87,13 +87,15 @@ def get_primed_session() -> requests.Session:
         _tls.primed = False
         _tls.primed_pages = {}
     if not getattr(_tls, "primed", False):
-        call_with_resilience(
+        resp = call_with_resilience(
             "nse",
             "nse homepage warmup",
             lambda: session.get(f"{_NSE_HOME}/", timeout=10),
             fallback=None,
         )
-        _tls.primed = True
+        # A failed warm-up seeds no cookies; leave the flag down so the next
+        # call warms up again instead of reusing a cookie-less session.
+        _tls.primed = resp is not None and resp.status_code < 400
     return session
 
 
@@ -530,33 +532,42 @@ def _parse_holiday_payload(raw: Any) -> set[date]:
 
 
 class TradingCalendar:
-    """NSE trading-day arithmetic: weekday check + a lazily-loaded holiday set.
+    """NSE trading-day arithmetic: weekday check + lazily-loaded holiday sets.
 
-    Holidays are fetched once (cached 24h through the disk cache) the first
-    time a holiday-sensitive query runs. If the fetch fails the calendar
-    degrades to weekday-only behaviour — exactly today's logic — so nothing
-    breaks when NSE is unreachable or in offline tests.
+    NSE's ``holiday-master`` endpoint returns one calendar year, so holidays
+    are fetched per year (cached 24h through the disk cache) the first time a
+    date in that year is queried. If a fetch fails the calendar degrades to
+    weekday-only behaviour for that query and retries on the next one, so
+    nothing breaks when NSE is unreachable or in offline tests.
     """
 
     def __init__(self) -> None:
-        self._holidays: set[date] | None = None
+        self._holidays: dict[int, set[date]] = {}
         self._lock = threading.Lock()
 
-    def _holiday_set(self) -> set[date]:
-        if self._holidays is None:
-            with self._lock:
-                if self._holidays is None:
-                    self._holidays = self._load_holidays()
-        return self._holidays
+    def _holiday_set(self, year: int) -> set[date]:
+        known = self._holidays.get(year)
+        if known is not None:
+            return known
+        with self._lock:
+            known = self._holidays.get(year)
+            if known is None:
+                known = self._load_holidays(year)
+                # Empty means an outage or a year NSE has not published yet.
+                if known:
+                    self._holidays[year] = known
+        return known if known is not None else set()
 
-    def _load_holidays(self) -> set[date]:
+    def _load_holidays(self, year: int) -> set[date] | None:
         raw = nse_cached_json(
             "nse_holidays",
-            ("holidays", str(date.today().year)),
-            _HOLIDAYS_URL,
+            ("holidays", str(year)),
+            f"{_HOLIDAYS_URL}&year={year}",
             "nse holiday master",
             ttl_seconds=24 * 3600,
         )
+        if raw is None:
+            return None
         return _parse_holiday_payload(raw)
 
     def is_trading_day(self, d: date) -> bool:
@@ -570,7 +581,7 @@ class TradingCalendar:
             return True
         if d.weekday() >= 5:
             return False
-        return d not in self._holiday_set()
+        return d not in self._holiday_set(d.year)
 
     def last_trading_day_on_or_before(self, d: date, *, lookback: int = 7) -> date:
         """Walk back from ``d`` to the nearest trading day, bounded by lookback.
