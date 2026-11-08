@@ -1,20 +1,20 @@
 # Paper-Factor Research Round 2: accounting anomalies, reversal, risk factors, earnings momentum, trend/TSMOM
 
-**Date**: first run 2026-08-12/13, base matrix rerun 2026-11-06 on main at `2ff190e` plus this branch.
+**Date**: first run 2026-08-12/13, base matrix rerun 2026-11-06 on main at `2ff190e` plus this branch, India rerun on the point-in-time universe 2026-11-08.
 **Method**: `screener backtest-rolling`, base config.
 **Data**: yfinance prices, FMP fundamentals (new opt-in accounting fields).
-**Universes**: India Nifty 500, US S&P 500 (point-in-time snapshots).
+**Universes**: India `nifty500_pit` (`--universe-config universes.yaml --point-in-time`, 840 candidate symbols, 6007 membership windows), US `sp500` (point-in-time from Wikipedia revisions, the default).
 **Costs**: NSE statutory + 10 bps slippage for India; flat 1 bp commission + 5 bps slippage for US.
 **Capital**: 100,000, top 10, equal slots.
 **Windows**: trailing 1/2/3/5y, all ending 2026-08-12.
 **Runs**: 160 base runs (20 strategies x 2 markets x 4 windows), 0 errors, 0 runs with zero trades.
-Raw: `findings/paper_factors/results_paper_factors.csv` (the 160 rerun rows).
+Raw: `findings/paper_factors/results_paper_factors.csv` (the 160 rerun rows, India rows on `nifty500_pit`).
 `findings/paper_factors/results_paper_factors_all.csv` keeps the 197 runs of the first version, including the lever variants, for history only.
 
 ## What changed since the first version
 
 The numbers in this report replace the first version (2026-08-12/13).
-Three things moved them.
+Four things moved them.
 
 1. **The 9 fundamental strategies made 0 trades after the rebase onto main.**
    FMP `ratios`, `key_metrics` and `enterprise_values` rows have no filing date, so main dropped them all, and `pe_ttm`, `pb_ttm`, `roe_ttm`, `market_cap` and `fcf_yield` were NaN.
@@ -25,11 +25,18 @@ Three things moved them.
    FMP India stamps `acceptedDate` at the period end itself, which is a placeholder and not a filing date.
    The first run used it as the filing date, so India fundamentals were visible about 45 to 60 days before Indian companies publish.
    Main now treats those rows as period end + 60 days (`INDIA_FUNDAMENTAL_FILING_LAG_DAYS`) and labels them estimated.
-   India `piotroski_value` falls from 1.35 to 0.79 mean Sharpe and `fcf_yield_value` from 1.09 to 0.53, which fits a lookahead that was removed.
+   On the same (non-PIT) universe, India `piotroski_value` fell from 1.35 to 0.79 mean Sharpe and `fcf_yield_value` from 1.09 to 0.53, which fits a lookahead that was removed.
 3. **The non-fundamental strategies also moved.**
    They use no fundamentals, but main changed between the two runs, and the price data was fetched again.
-   For example, India `ma_timing_200` went from 0.91 to 1.73 and US `tsmom_12_1` from 1.72 to 1.32.
+   For example, India `ma_timing_200` (non-PIT) went from 0.91 to 1.73 and US `tsmom_12_1` from 1.72 to 1.32.
    Treat the size of these moves as a measure of how sensitive single-path results are, not as a finding about the strategies.
+4. **India now runs on the point-in-time Nifty 500.**
+   The first version and the 2026-11-06 rerun used `--universe nifty500`, which applies today's 500 members to every past date.
+   Today's members are the stocks that survived and grew into the index, so that universe has survivorship bias.
+   The India rows now use `nifty500_pit`, where a name is eligible only on days it was in the index.
+   Same code, same windows: India `ma_timing_200` 2y is +0.97 on today's list and -0.66 on PIT, and `hurst_trend_quality` 5y is +1.83 and +1.04.
+   The "non-PIT mean" column in the India table is the 2026-11-06 result, for comparison.
+   US rows did not change: `sp500` was already point-in-time.
 
 The lever experiments below were not rerun.
 Their numbers come from the first version.
@@ -53,40 +60,41 @@ Sharpe (rf hurdle) by window, base config, sorted by the mean of the four window
 F marks a strategy that reads FMP fundamentals.
 Hold is 126 days except `pead_drift` and `kama_trend` (63), `hs_same_month` and `str_reversal_trend` (21), and `ma_timing_200` (250).
 
-### India (Nifty 500)
+### India (Nifty 500, point-in-time)
 
 Benchmark `^NSEI`: -0.2% (1y), +0.4% (2y), +25.7% (3y), +47.8% (5y), total return.
 
-| Strategy | 1y | 2y | 3y | 5y | mean | min | trades (1y/2y/3y/5y) |
-|---|---|---|---|---|---|---|---|
-| `hurst_trend_quality` | 2.68 | 1.13 | 1.76 | 1.83 | **1.85** | **1.13** | 40/69/94/149 |
-| `ma_timing_200` | 2.79 | 0.97 | 1.75 | 1.40 | 1.73 | 0.97 | 25/53/62/98 |
-| `pead_drift` F | 2.14 | 0.97 | 1.38 | 1.38 | 1.47 | 0.97 | 40/80/120/200 |
-| `tsmom_12_1` | 1.63 | 0.69 | 1.51 | 1.75 | 1.39 | 0.69 | 23/43/62/107 |
-| `betting_against_beta` | 1.32 | 1.31 | 1.63 | 0.41 | 1.17 | 0.41 | 20/40/60/100 |
-| `downside_risk` | 0.97 | 0.75 | 1.60 | 0.73 | 1.01 | 0.73 | 20/40/60/100 |
-| `conservative_investment` F | 0.93 | 0.48 | 1.14 | 1.41 | 0.99 | 0.48 | 17/32/52/91 |
-| `earnings_momentum` F | 1.40 | 0.28 | 0.80 | 1.16 | 0.91 | 0.28 | 20/40/60/100 |
-| `max_avoidance` F | 0.92 | 0.12 | 1.23 | 1.35 | 0.91 | 0.12 | 20/40/58/97 |
-| `qmj_quality` F | 0.12 | 0.15 | 1.92 | 1.35 | 0.88 | 0.12 | 9/18/33/60 |
-| `piotroski_value` F | 0.65 | 0.26 | 1.14 | 1.10 | 0.79 | 0.26 | 20/40/60/100 |
-| `gw52_proximity` | 0.09 | 0.15 | 1.55 | 1.04 | 0.71 | 0.09 | 20/40/60/100 |
-| `str_reversal_trend` | 0.62 | 0.39 | 0.94 | 0.78 | 0.69 | 0.39 | 120/230/340/565 |
-| `lt_reversal_path` | 0.39 | 0.16 | 0.84 | 0.90 | 0.57 | 0.16 | 20/40/60/100 |
-| `hs_same_month` | 0.47 | -0.06 | 1.07 | 0.80 | 0.57 | -0.06 | 120/230/340/570 |
-| `fcf_yield_value` F | 0.87 | -0.01 | 0.63 | 0.63 | 0.53 | -0.01 | 20/40/60/100 |
-| `low_idio_vol` | 0.17 | 0.30 | 0.86 | 0.65 | 0.50 | 0.17 | 20/40/60/100 |
-| `gross_profitability` F | -0.57 | 0.02 | 0.69 | 1.04 | 0.30 | -0.57 | 6/10/18/49 |
-| `sloan_low_accruals` F | 0.43 | -0.30 | 0.78 | 0.17 | 0.27 | -0.30 | 20/40/60/100 |
-| `kama_trend` | -0.17 | -0.30 | 0.04 | -0.05 | -0.12 | -0.30 | 271/552/835/1394 |
+| Strategy | 1y | 2y | 3y | 5y | mean | min | non-PIT mean | trades (1y/2y/3y/5y) |
+|---|---|---|---|---|---|---|---|---|
+| `hurst_trend_quality` | 1.97 | 0.57 | 1.43 | 1.04 | **1.25** | **0.57** | 1.85 | 41/79/104/163 |
+| `tsmom_12_1` | 1.21 | 0.39 | 1.19 | 1.10 | 0.97 | 0.39 | 1.39 | 24/44/66/108 |
+| `piotroski_value` F | 0.98 | 0.46 | 1.01 | 1.08 | 0.88 | 0.46 | 0.79 | 20/40/60/100 |
+| `fcf_yield_value` F | 1.39 | 0.09 | 0.51 | 0.70 | 0.67 | 0.09 | 0.53 | 20/40/61/101 |
+| `earnings_momentum` F | 1.39 | 0.20 | 0.48 | 0.59 | 0.67 | 0.20 | 0.91 | 20/41/61/101 |
+| `gw52_proximity` | 0.12 | 0.20 | 1.23 | 0.89 | 0.61 | 0.12 | 0.71 | 20/40/60/100 |
+| `conservative_investment` F | 0.93 | -0.32 | 0.80 | 0.87 | 0.57 | -0.32 | 0.99 | 18/35/57/95 |
+| `qmj_quality` F | -0.25 | 0.04 | 1.57 | 0.82 | 0.54 | -0.25 | 0.88 | 11/21/37/64 |
+| `downside_risk` | 0.12 | 0.42 | 1.10 | 0.42 | 0.52 | 0.12 | 1.01 | 20/40/60/100 |
+| `max_avoidance` F | 0.73 | -0.04 | 0.65 | 0.52 | 0.47 | -0.04 | 0.91 | 20/40/60/99 |
+| `betting_against_beta` | 0.31 | 0.39 | 0.81 | 0.29 | 0.45 | 0.29 | 1.17 | 20/40/60/100 |
+| `sloan_low_accruals` F | 0.71 | -0.10 | 0.70 | 0.32 | 0.41 | -0.10 | 0.27 | 20/41/61/100 |
+| `str_reversal_trend` | 0.54 | -0.01 | 0.70 | 0.37 | 0.40 | -0.01 | 0.69 | 120/230/340/562 |
+| `low_idio_vol` | 0.10 | 0.09 | 0.73 | 0.63 | 0.39 | 0.09 | 0.50 | 20/40/60/100 |
+| `pead_drift` F | 0.27 | -0.44 | 0.66 | 0.55 | 0.26 | -0.44 | 1.47 | 40/81/120/200 |
+| `lt_reversal_path` | 0.15 | -0.18 | 0.51 | 0.45 | 0.23 | -0.18 | 0.57 | 20/40/60/100 |
+| `hs_same_month` | 0.36 | -0.33 | 0.64 | -0.06 | 0.15 | -0.33 | 0.57 | 120/230/340/570 |
+| `ma_timing_200` | 0.37 | -0.66 | 0.37 | 0.44 | 0.13 | -0.66 | 1.73 | 29/74/85/123 |
+| `gross_profitability` F | -0.76 | -0.61 | 0.47 | 0.54 | -0.09 | -0.76 | 0.30 | 7/15/24/61 |
+| `kama_trend` | -0.50 | -1.04 | -0.71 | -1.16 | -0.85 | -1.16 | -0.12 | 273/572/847/1466 |
 
-**India verdict**: `hurst_trend_quality` is the best and the most stable strategy in this round.
-Its mean Sharpe is 1.85, no window is below 1.13, and it trades 149 times in 5 years.
-Its 5-year max drawdown is -33%, so the high Sharpe does not mean a shallow drawdown.
-The three trend strategies (`hurst_trend_quality`, `ma_timing_200`, `tsmom_12_1`) take three of the top four places.
-`pead_drift` is now the best India fundamental strategy (mean 1.47, min 0.97).
-The accounting value screens are weak once the lookahead is removed: `piotroski_value` 0.79 and `fcf_yield_value` 0.53.
-`kama_trend` is the only strategy with a negative mean, and it trades too much (1394 trades in 5 years).
+**India verdict**: `hurst_trend_quality` is still the best India strategy, but much weaker than on the survivorship-biased list.
+Its mean Sharpe is 1.25 (non-PIT 1.85), its worst window is 0.57 (2y), and its 5-year max drawdown is -35%.
+`tsmom_12_1` is second (0.97), so price trend persistence is the only family that holds up.
+`piotroski_value` is third (0.88, min 0.46) and is now the best India fundamental strategy.
+It is one of only three strategies that did not fall on PIT, together with `fcf_yield_value` and `sloan_low_accruals`.
+`ma_timing_200` (1.73 to 0.13) and `pead_drift` (1.47 to 0.26) lose most of their result, so their non-PIT numbers came mostly from survivorship.
+No India strategy has every window above 0.6.
+`kama_trend` is negative in every window and trades too much (1466 trades in 5 years).
 
 ### US (S&P 500)
 
@@ -124,15 +132,16 @@ US filing dates are real FMP timestamps, so this result did not depend on the In
 
 ### Across markets
 
-Only trend persistence works well in both markets: `ma_timing_200` and `tsmom_12_1` are in the top four of both tables.
-The accounting value screens work in the US and not in India.
-`pead_drift` is the reverse: first among India fundamental strategies, tenth in the US.
+`tsmom_12_1` and `piotroski_value` are the only strategies in the top four of both tables.
+`piotroski_value` is first in the US (1.85) and third in India (0.88).
+`ma_timing_200` is third in the US (1.37) but near last in India on PIT (0.13).
+`pead_drift` is mid-table in the US (0.87) and weak in India on PIT (0.26).
 `gross_profitability` is last or near last in both markets, and it trades thinly.
 
 ## Lever experiments (32 runs, first version, not rerun)
 
 These ran on the first version and the old data path.
-The India fundamental lever (relaxed F-Score) used the placeholder filing dates with lookahead.
+The India levers used today's Nifty 500 list (survivorship bias), and the India fundamental lever (relaxed F-Score) also used the placeholder filing dates with lookahead.
 Read them as directions to test again, not as results.
 
 - **Moreira-Muir vol targeting** (`--sizing inverse_vol --sizing-risk-pct 0.002`): the default 0.01 risk-pct never binds (equal-slot cap).
@@ -158,7 +167,9 @@ Read them as directions to test again, not as results.
 - India fundamental dates are estimated (period end + 60 days), not real publication dates, and original restatement vintages are not available.
 - FMP India cash-flow coverage is gappy (0-filled quarters, for example RELIANCE).
   Those names go NaN and fail closed, so India F-Score, accruals and fcf_yield screens see a thinner universe.
-- The Nifty 500 universe applies today's members to history (survivorship bias); the S&P 500 runs use point-in-time snapshots.
+- Both universes are point-in-time.
+  `nifty500_pit` has 4 observation gaps of 180 days or more (largest 648 days), and its dates are snapshot dates, not guaranteed index effective dates.
+  97 historical members have no yfinance price history (delisted or renamed), so they cannot be selected; this leaves some survivorship bias.
 - `piotroski_value` US 1y Sharpe 2.99 is one 20-trade window with an 85% hit rate; the 2/3/5y figures (1.69/1.49/1.25) are the reliable ones.
 - India 1y and 2y are flat regimes (benchmark -0.2% and +0.4%), so long-only results there depend on stock selection more than on market exposure.
 - Research, not financial advice.
