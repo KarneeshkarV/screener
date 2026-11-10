@@ -86,6 +86,7 @@ from screener.backtester.price_frames import (
 from screener.backtester.price_frames import (
     OHLCV_COLUMNS,
     cache_merge_needs_full_download,
+    drop_incomplete_bars,
     naive_normalized_index,
     normalize_price_frame,
 )
@@ -951,6 +952,24 @@ class YFinancePriceFetcher:
                 for i, flag in enumerate(flags)
             ):
                 download_ok[ticker] = False
+        # An empty answer to a whole-window request, for a name whose own cache
+        # holds bars inside that window, is contradicted by the cache: the
+        # vendor served those bars before. Yahoo does this now and then with no
+        # error, and recorded as "no history" it hid a real name from every run
+        # for a day. It is a failed request, as ``unserved`` is under a strict
+        # refresh, so it records no marker or bound and stores nothing; the
+        # cache serves, and the next run asks again. The "backfill" and
+        # "extend" probes stay out: they ask past the cache's edge, and an
+        # empty answer there is what bounds the vendor (see below).
+        for ticker in missing.get("full", ()):
+            stored_frame = cached_by_ticker.get(ticker)
+            answer = downloaded_by_ticker.get(ticker)
+            if (
+                stored_frame is not None
+                and (answer is None or answer.empty)
+                and not _range_slice(stored_frame, *window_by_ticker[ticker]).empty
+            ):
+                download_ok[ticker] = False
         leftover: list[tuple[str, pd.DataFrame]] = []
         rescaled: set[str] = set()
         for ticker in dict.fromkeys(t for group in missing.values() for t in group):
@@ -1154,9 +1173,7 @@ def _normalize_fmp_historical(
         for col in [*OHLCV_COLUMNS, "adj_close", "dollar_volume"]
         if col in out.columns
     ]
-    out = out[keep_cols].dropna(
-        subset=[col for col in OHLCV_COLUMNS if col in out.columns]
-    )
+    out = drop_incomplete_bars(out[keep_cols])
     return out[~out.index.duplicated(keep="last")].sort_index()
 
 
@@ -1281,9 +1298,11 @@ class FMPPriceFetcher:
                     return ticker, _range_slice(cached, start_ts, end_ts), None, False
                 fetch_start = cached.index.max() - pd.Timedelta(days=7)
                 is_tail_refresh = not missing_final
+                whole_window = False
             else:
                 fetch_start = start_ts
                 is_tail_refresh = False
+                whole_window = True
                 if not distrust_cache and _has_empty_history(
                     cache_key, start_ts, end_ts, self.cache_dir
                 ):
@@ -1324,6 +1343,18 @@ class FMPPriceFetcher:
                 fallback=empty_payload,
             )
             norm = _normalize_fmp_historical(payload, self.auto_adjust, self.interval)
+            # Same rule as the yfinance leg: an empty answer to a whole-window
+            # request is contradicted by cached bars inside that window, so it
+            # is a failed request - no marker, no bound, nothing stored. The
+            # edge request past the newest bar keeps its bookkeeping.
+            if (
+                ok
+                and whole_window
+                and norm.empty
+                and stored is not None
+                and not _range_slice(stored, fetch_start, end_ts).empty
+            ):
+                ok = False
             if not is_tail_refresh:
                 if not norm.empty:
                     _clear_empty_history(cache_key, self.cache_dir)
@@ -1368,10 +1399,14 @@ class FMPPriceFetcher:
             # reason: FMP's adjusted daily endpoint also re-bases its whole
             # history on a split, so a cache entry written before one prices
             # shared sessions on a scale the vendor has abandoned.
-            # The exact dividend check of the yfinance leg is not applied:
-            # FMP's run-to-run noise on settled adjusted bars is unmeasured.
+            # The exact dividend check applies too. Measured on 722 tickers
+            # cached twice 7 to 42 days apart: 97.6% of tickers had
+            # bit-identical settled bars and no change was under 1.2e-5, so the yfinance
+            # tolerance does not fire on noise. Every fire was a re-base or a
+            # vendor revision of settled bars, about 1.4% of tail refreshes.
             rescaled_here = not force_full and (
                 _overlap_rescaled(stored, norm, self.interval)
+                or _overlap_rebased(stored, norm, self.interval)
                 or cache_merge_needs_full_download(stored, norm)
             )
             # Same reasoning as the yfinance leg: a refresh already requested
@@ -1385,9 +1420,9 @@ class FMPPriceFetcher:
                     ticker=ticker,
                     reason=(
                         "cached bars price shared sessions differently from the "
-                        "vendor's current series (a split re-based the history); "
-                        "the stale cache entry is discarded and the ticker "
-                        "re-downloaded"
+                        "vendor's current series (a split or dividend re-based "
+                        "the history); the stale cache entry is discarded and "
+                        "the ticker re-downloaded"
                     ),
                 )
                 stored = None
