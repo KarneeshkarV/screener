@@ -189,6 +189,7 @@ class _DailyRankingSource:
         warnings: list[str],
         exit_signals: dict[str, pd.Series | str],
         frame_caches: dict[str, _FrameCache],
+        master_dates: tuple[pd.Timestamp, ...] = (),
     ) -> None:
         self.candidate_matrices = candidate_matrices
         self.bars_by_tv = bars_by_tv
@@ -220,6 +221,7 @@ class _DailyRankingSource:
             exit_signals=dict(exit_signals),
             exit_signal_values=exit_signal_values,
             frames=frame_caches,
+            market_index=pd.DatetimeIndex(master_dates) if cfg.intraday_only else None,
         )
 
     def _fill_pending(self, day: pd.Timestamp, *, at_close: bool) -> None:
@@ -454,6 +456,7 @@ def _assemble_results(
         max(cfg.top, 1),
         periods_per_year=periods_per_year_for_interval(cfg.interval, cfg.market),
         risk_free_rate=float(cfg.risk_free_rate),
+        benchmark_marks=benchmark.reindex(calendar),
         holdings_value=portfolio_curve["holdings_value"],
     )
     metrics["unique_tickers"] = len({trade.ticker for trade in trades})
@@ -489,6 +492,29 @@ def _assemble_results(
     )
 
 
+def _historical_only_setting_warnings(cfg: BacktestConfig) -> list[str]:
+    """Name every non-default setting only the historical engine applies.
+
+    The mirror of ``historical._rolling_only_gate_warnings``. Reserve rotation,
+    slot re-entry and ``reinvest`` belong to the one-date engine; the rolling
+    engine refills a freed slot from each day's ranking. A rolling run must
+    say it ignored them rather than report numbers that look configured.
+    """
+    defaults = BacktestConfig.model_fields
+    ignored = [
+        name
+        for name in ("reserve_multiple", "reinvest", "allow_reentry", "max_reentries")
+        if getattr(cfg, name) != defaults[name].default
+    ]
+    if not ignored:
+        return []
+    return [
+        "rolling backtest ignores historical-only settings: "
+        + ", ".join(ignored)
+        + "; use the historical backtest to apply them"
+    ]
+
+
 def prepare_rolling_backtest(
     cfg: BacktestConfig,
     fetcher: PriceFetcher,
@@ -511,7 +537,7 @@ def prepare_rolling_backtest(
     """
     if cfg.fundamentals_provider and fundamental_fetcher is None:
         raise ValueError("fundamentals_provider requires a resolved FundamentalFetcher")
-    warnings: list[str] = []
+    warnings: list[str] = _historical_only_setting_warnings(cfg)
     start_ts, end_ts = _window_bounds(cfg, start_date, end_date)
 
     signal_inputs = SignalPanelInputs.from_config(cfg)
@@ -606,6 +632,7 @@ def run_prepared_rolling_backtest(
         warnings=warnings,
         exit_signals=prepared.exit_signals,
         frame_caches=prepared.frame_caches,
+        master_dates=prepared.master_dates,
     )
     run_day_loop(prepared.master_dates, book.day_loop, source)
 

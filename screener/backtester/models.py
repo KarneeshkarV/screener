@@ -247,6 +247,12 @@ class BacktestConfig(BaseModel):
     def _validate_after(self) -> BacktestConfig:
         if self.intraday_only and self.interval == "1d":
             raise ValueError("intraday_only requires an intraday interval (got '1d')")
+        if self.max_concurrent_per_ticker != 1:
+            # No engine reads this field. A value other than 1 would run as 1
+            # and report numbers for a book that was never simulated.
+            raise ValueError(
+                "max_concurrent_per_ticker is not implemented; only 1 is supported"
+            )
 
         def consumes_estimated_spread(model: SlippageModel) -> bool:
             if isinstance(model, EstimatedHalfSpreadSlippage):

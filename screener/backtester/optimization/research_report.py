@@ -30,6 +30,7 @@ from rich.table import Table
 
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fundamentals import FundamentalFetcher
+from screener.backtester.metrics import position_count
 from screener.backtester.models import BacktestConfig
 from screener.backtester.optimization.grid import (
     GridSearchResult,
@@ -505,7 +506,7 @@ def run_research_report(
         )
     console.print(
         f"OOS equity bars: {equity_bars}  "
-        f"OOS trades: {len(walk_forward.oos_trades)}  "
+        f"OOS trades: {position_count(walk_forward.oos_trades)}  "
         f"MC source: {mc_source}  method: {mc_method}  "
         f"MC p05 return: {monte_carlo.return_p05:.4f}  "
         f"P(profit): {monte_carlo.probability_of_profit:.3f}  "
@@ -611,7 +612,7 @@ def run_research_report(
             "method": mc_method,
             "equity_bars": equity_bars,
             "oos_return_count": n_returns,
-            "trade_count": len(walk_forward.oos_trades),
+            "trade_count": position_count(walk_forward.oos_trades),
             "requested_block": int(mc_block),
             "reason": "; ".join(mc_reasons) if mc_reasons else None,
             # Compatibility alias: previous payloads used trade_source.

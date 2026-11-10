@@ -12,7 +12,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 import pandas as pd
 
 from screener.backtester.costs import corwin_schultz_half_spread
-from screener.backtester.data import PriceFetcher
+from screener.backtester.data import PriceFetcher, close_series_from_panel
 from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import (
@@ -22,7 +22,11 @@ from screener.backtester.pine import (
     panel_index_key,
 )
 from screener.backtester.portfolio import Portfolio
-from screener.backtester.sessions import is_session_last, market_timezone
+from screener.backtester.sessions import (
+    is_session_last,
+    market_timezone,
+    session_dates,
+)
 from screener.ledger import ExitReason
 
 if TYPE_CHECKING:
@@ -171,6 +175,8 @@ class _FrameCache:
     # Lazily filled session-last mask (see ``sessions.is_session_last``); None
     # until the first ``intraday_only`` slot open on this frame.
     session_last: np.ndarray | None = None
+    # Session-date label per bar, filled with ``session_last``.
+    session_labels: np.ndarray | None = None
     # Lazily filled sizing indicator series, keyed by (rule kind, window). A
     # sizing rule reads one scalar at the signal bar but computes the whole
     # causal series to get it, so without this the rolling engine recomputes
@@ -236,6 +242,9 @@ class _RunCaches:
     exit_signals: dict[str, pd.Series | str] = field(default_factory=dict)
     exit_signal_values: dict[str, np.ndarray] = field(default_factory=dict)
     frames: dict[str, _FrameCache] = field(default_factory=dict)
+    # The run's calendar (union of every ticker's bars). ``intraday_only``
+    # reads session ends from it; see ``sessions.is_session_last``.
+    market_index: pd.DatetimeIndex | None = None
 
     def frame(self, ticker: str, bars: pd.DataFrame) -> _FrameCache:
         cache = self.frames.get(ticker)
@@ -517,6 +526,10 @@ class _SlotState:
     exit_signal_values: np.ndarray | None = None
     # Session-last mask aligned to ``bars.index`` when ``cfg.intraday_only``.
     session_last: np.ndarray | None = None
+    # Session-date label per bar. A position still open on a bar of a later
+    # session than its entry (its ticker had no bar at the market's session
+    # end) is flattened at that bar's open.
+    session_labels: np.ndarray | None = None
     # Pre-impact quote capped by exact affordability at the fixed fill price.
     # See docs/adr/0005-causal-entry-orders-and-exact-affordability.md.
     entry_shares: float | None = None
@@ -597,15 +610,23 @@ def _make_slot_state(
     if entry_idx is None or entry_fill is None:
         return None, entry_warn
     session_last = None
+    session_labels = None
     if cfg.intraday_only:
         if frame_cache is not None and frame_cache.session_last is not None:
             session_last = frame_cache.session_last
+            session_labels = frame_cache.session_labels
         else:
+            bar_index = cast(pd.DatetimeIndex, bars.index)
+            market_tz = market_timezone(cfg.market)
             session_last = is_session_last(
-                cast(pd.DatetimeIndex, bars.index), market_timezone(cfg.market)
+                bar_index,
+                market_tz,
+                caches.market_index if caches is not None else None,
             )
+            session_labels = session_dates(bar_index, market_tz)
             if frame_cache is not None:
                 frame_cache.session_last = session_last
+                frame_cache.session_labels = session_labels
         if session_last[entry_idx]:
             return None, "entry skipped: session-last bar (intraday-only)"
     exit_signal = None
@@ -636,9 +657,9 @@ def _make_slot_state(
             if caches is not None:
                 caches.exit_signal_values[ticker] = exit_signal_values
     stop_ref = entry_fill * (1.0 - cfg.stop_loss) if cfg.stop_loss else None
-    target_ref = entry_fill * (1.0 + cfg.take_profit) if cfg.take_profit else None
+    target_ref = _target_level(entry_fill, cfg.take_profit) if cfg.take_profit else None
     partial_targets = tuple(
-        entry_fill * (1.0 + pct) for pct, _frac in cfg.partial_exits
+        _target_level(entry_fill, pct) for pct, _frac in cfg.partial_exits
     )
     partial_fractions = tuple(frac for _pct, frac in cfg.partial_exits)
     return (
@@ -663,6 +684,7 @@ def _make_slot_state(
             frame_cache=frame_cache,
             exit_signal_values=exit_signal_values,
             session_last=session_last,
+            session_labels=session_labels,
             entry_shares=(
                 entry_shares
                 if fills.needs_liquidity_inputs or cfg.market.lower() == "india"
@@ -742,6 +764,19 @@ def _exit_expr_due(state: _SlotState, i: int) -> bool:
     return bool(state.exit_signal.iloc[i - 1])
 
 
+def _target_level(entry_fill: float, pct: float) -> float:
+    """Profit-target price for a fractional gain over the entry fill.
+
+    ``100 * (1 + 0.10)`` is ``110.00000000000001`` in binary floating point,
+    so a bar whose high printed exactly 110 never reached its own 10% target.
+    The level snaps to its 10-decimal value only when the two differ by
+    representation error (a few ulp), so no real level moves.
+    """
+    level = entry_fill * (1.0 + pct)
+    snapped = round(level, 10)
+    return snapped if abs(snapped - level) <= 4 * math.ulp(level) else level
+
+
 def _fire_partial_exits_at_bar(
     state: _SlotState,
     bars: pd.DataFrame,
@@ -779,6 +814,10 @@ def _fire_partial_exits_at_bar(
     if state.target_ref is not None:
         targets.append((state.target_ref, -1))
     reach = bar_open if at_open else high
+    if not np.isfinite(reach):
+        # ``NaN < target`` is False, so a bar with a missing open or high
+        # would pass the reach test below and fill every target at its level.
+        return
     for target_price, tier_idx in sorted(targets):
         if reach < target_price:
             break
@@ -870,6 +909,11 @@ def _check_exit_at_bar(
         )
 
     if exit_phase != "remaining":
+        labels = state.session_labels
+        if labels is not None and labels[i] != labels[state.entry_idx]:
+            # The ticker printed no bar at its entry session's end, so the
+            # flat could not happen there. It happens at the first print.
+            return _sell("session", at_open=True), "session"
         # An expression using a completed bar is actionable at the next open.
         # Execute it before this bar's range is available.
         if _exit_expr_due(state, i):
@@ -1045,14 +1089,31 @@ def _benchmark_series_from_panel(
     Shared by both the single-pass (``historical``) and rolling backtest flows so
     the fix applies identically on whichever path a strategy runs.
     """
+    return close_series_from_panel(price_panel, symbol)
+
+
+def _benchmark_dividend_warning(
+    price_panel: dict[str, pd.DataFrame], symbol: str, price_adjustment: str
+) -> str | None:
+    """Warn when the book earns dividends and the benchmark curve does not.
+
+    Outside ``full`` mode the portfolio is credited cash dividends, but the
+    benchmark is its close series. Benchmark return is then understated by
+    its yield, and alpha overstated by the same amount.
+    """
+    if price_adjustment == "full":
+        return None
     frame = price_panel.get(symbol)
-    if frame is None or frame.empty:
-        return pd.Series(
-            index=pd.DatetimeIndex([], name="date"), dtype=float, name=symbol
-        )
-    series = frame["close"].astype(float).copy()
-    series.name = symbol
-    return series
+    if frame is None or "dividend" not in frame.columns:
+        return None
+    if not (frame["dividend"] > 0).any():
+        return None
+    return (
+        f"benchmark {symbol} is price-only under price_adjustment="
+        f"{price_adjustment!r} while the portfolio is credited dividends; "
+        "benchmark_return is understated and alpha overstated by the "
+        "benchmark's dividend yield"
+    )
 
 
 def _eligible_reserve_signal_idx(

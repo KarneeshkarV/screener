@@ -457,6 +457,21 @@ def _build_rolling_candidate_matrices(
         if dynamic_universe_size is not None
         else None
     )
+    # The window can open in the middle of a rebalance period. Membership for
+    # that first part-period is the one a longer run would still be holding:
+    # the ranking on the period's first session, read from the warm-up bars.
+    anchor_ts = (
+        _period_first_session(
+            [bars_by_tv[tv].index for tv in valid_tickers],
+            master_ix[0],
+            dynamic_universe_rebalance,
+        )
+        if lagged_advs is not None and n_days
+        else None
+    )
+    anchor_scores = (
+        np.full(n_tickers, np.nan, dtype=float) if anchor_ts is not None else None
+    )
     for column, tv in enumerate(valid_tickers):
         bars = bars_by_tv[tv]
         close = _float_values(bars["close"])
@@ -488,6 +503,14 @@ def _build_rolling_candidate_matrices(
             dynamic_score_np[:, column] = np.where(
                 still_listed, lagged_adv[pos], np.nan
             )
+            if (
+                anchor_scores is not None
+                and anchor_ts is not None
+                and anchor_ts <= bars.index.max()
+            ):
+                anchor_pos = int(bars.index.searchsorted(anchor_ts, side="right")) - 1
+                if anchor_pos >= 0:
+                    anchor_scores[column] = lagged_adv[anchor_pos]
         if "rank_score" in bars.columns:
             any_score = True
             score = _float_values(bars["rank_score"])
@@ -532,6 +555,7 @@ def _build_rolling_candidate_matrices(
             dynamic_score_mat,
             size=dynamic_universe_size,
             rebalance=dynamic_universe_rebalance,
+            anchor_scores=anchor_scores,
         ).to_numpy(dtype=bool)
     signal_mat = pd.DataFrame(
         signal_np, index=master_ix, columns=valid_tickers, copy=False
@@ -593,10 +617,48 @@ def _build_rolling_candidate_matrices(
     )
 
 
+_REBALANCE_FREQ = {"weekly": "W-FRI", "monthly": "M", "quarterly": "Q"}
+
+
+def _period_first_session(
+    indexes: list[pd.Index], window_start: pd.Timestamp, rebalance: str
+) -> pd.Timestamp | None:
+    """First session of ``window_start``'s rebalance period, if before it.
+
+    ``None`` when the window opens on the period's first session (or the
+    rebalance is daily), so the window's own first row is the rebalance row.
+    Also ``None`` when the bars the run holds do not reach back past the
+    period start (a short intraday warm-up): the earliest held bar is then
+    not known to be the period's first session, and the window's first row
+    stays the rebalance row.
+    """
+    freq = _REBALANCE_FREQ.get(rebalance)
+    if freq is None:
+        return None
+    period_start = window_start.to_period(freq).start_time
+    if not any(len(index) and index[0] < period_start for index in indexes):
+        return None
+    first: pd.Timestamp | None = None
+    for index in indexes:
+        lo = int(index.searchsorted(period_start, side="left"))
+        if lo < len(index) and index[lo] < window_start:
+            first = index[lo] if first is None else min(first, index[lo])
+    return first
+
+
 def _dynamic_eligibility_mask(
-    scores: pd.DataFrame, *, size: int, rebalance: str
+    scores: pd.DataFrame,
+    *,
+    size: int,
+    rebalance: str,
+    anchor_scores: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """Select the top lagged scores on each rebalance date and hold membership.
+
+    ``anchor_scores`` are the scores on the first session of the period the
+    window opens in, when that session is before the window. They rank the
+    first part-period; without them row 0 was always a rebalance row, so a
+    run starting mid-month held a universe no longer run ever held.
 
     Membership is written one rebalance period at a time into a raw block. The
     old row-by-row ``mask.iloc[row] = selected`` assignment cost a pandas
@@ -608,7 +670,7 @@ def _dynamic_eligibility_mask(
     if rebalance == "daily":
         rebalance_rows = np.arange(len(scores), dtype=int)
     else:
-        freq = {"weekly": "W-FRI", "monthly": "M", "quarterly": "Q"}[rebalance]
+        freq = _REBALANCE_FREQ[rebalance]
         periods = pd.DatetimeIndex(scores.index).to_period(freq)
         rebalance_rows = np.flatnonzero(
             np.r_[True, periods[1:].to_numpy() != periods[:-1].to_numpy()]
@@ -616,9 +678,17 @@ def _dynamic_eligibility_mask(
     raw = scores.to_numpy(dtype=float)
     period_ends = np.r_[rebalance_rows[1:], len(scores)]
     for row, period_end in zip(rebalance_rows, period_ends, strict=True):
-        finite = np.flatnonzero(np.isfinite(raw[row]))
+        ranked = raw[row]
+        if (
+            row == 0
+            and anchor_scores is not None
+            and rebalance != "daily"
+            and np.isfinite(anchor_scores).any()
+        ):
+            ranked = anchor_scores
+        finite = np.flatnonzero(np.isfinite(ranked))
         if finite.size:
-            order = np.argsort(-raw[row, finite], kind="stable")
+            order = np.argsort(-ranked[finite], kind="stable")
             mask[row:period_end, finite[order[:size]]] = True
     return pd.DataFrame(mask, index=scores.index, columns=scores.columns)
 

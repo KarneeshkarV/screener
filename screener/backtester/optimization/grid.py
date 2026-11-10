@@ -22,6 +22,7 @@ from screener.backtester.metrics import (
     apply_trial_context_to_metrics,
     dsr_unavailable_reason,
     periods_per_year_for_interval,
+    position_count,
     sharpe_moments_from_equity,
 )
 from screener.backtester.models import BacktestConfig, BacktestResult
@@ -227,7 +228,7 @@ def _run_one(
     else:
         result = run_backtest(test_cfg, fetcher)
     metrics = optimization_metrics(result)
-    trade_count = len(result.trades)
+    trade_count = position_count(result.trades)
     score = score_result(result, metric) if trade_count >= min_trades else float("-inf")
     return (
         GridSearchResult(
@@ -250,7 +251,7 @@ def _run_one_prepared(
     test_cfg = cfg.validated_update(params)
     result = run_prepared_rolling_backtest(prepared, test_cfg)
     metrics = optimization_metrics(result)
-    trade_count = len(result.trades)
+    trade_count = position_count(result.trades)
     score = score_result(result, metric) if trade_count >= min_trades else float("-inf")
     return (
         GridSearchResult(

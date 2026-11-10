@@ -39,14 +39,33 @@ def session_dates(index: pd.DatetimeIndex, market_tz: str) -> np.ndarray:
     return np.asarray(localized.date)
 
 
-def is_session_last(index: pd.DatetimeIndex, market_tz: str) -> np.ndarray:
-    """Boolean mask: True where a bar is the last bar of its trading session."""
+def is_session_last(
+    index: pd.DatetimeIndex,
+    market_tz: str,
+    market_index: pd.DatetimeIndex | None = None,
+) -> np.ndarray:
+    """Boolean mask: True where a bar is the last bar of its trading session.
+
+    ``market_index`` is the run's calendar: the union of every ticker's bars.
+    With it, a bar is session-last when no ticker has a later bar in that
+    session. Without it the test is the ticker's own next bar, and that is
+    future data: a name halted at 11:30 was flattened at 11:30 because its
+    next bar, a day later, was already in the frame. A session the calendar
+    does not cover falls back to the ticker's own bars.
+    """
     if len(index) == 0:
         return np.zeros(0, dtype=bool)
     labels = session_dates(index, market_tz)
     mask = np.empty(len(labels), dtype=bool)
     mask[:-1] = labels[:-1] != labels[1:]
     mask[-1] = True
+    if market_index is None or len(market_index) == 0:
+        return mask
+    market_labels = session_dates(market_index, market_tz)
+    last_stamp = pd.Series(market_index, index=market_labels).groupby(level=0).max()
+    market_last = last_stamp.reindex(labels).to_numpy()
+    covered = ~pd.isna(market_last)
+    mask[covered] = index.to_numpy()[covered] >= market_last[covered]
     return mask
 
 
