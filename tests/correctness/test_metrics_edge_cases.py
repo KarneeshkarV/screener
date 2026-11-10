@@ -163,13 +163,13 @@ def test_psr_all_zero_long():
 # ---------------------------------------------------------------------------
 
 
-def test_sortino_all_positive_returns_zero():
-    """No negative excess returns → downside empty → guard fires → 0.0.
+def test_sortino_all_positive_is_unbounded():
+    """No return below the hurdle and a positive mean: unbounded, not 0.0.
 
-    Source guard: `if downside.empty or downside.std(ddof=0) == 0: return 0.0`
+    0.0 ranked a run that never lost below every run that did.
     """
     all_pos = pd.Series([0.005, 0.01, 0.015, 0.02, 0.025])
-    assert _sortino(all_pos) == 0.0
+    assert _sortino(all_pos) == float("inf")
 
 
 def test_sortino_single_negative_computes_correctly():

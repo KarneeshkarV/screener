@@ -35,6 +35,7 @@ from screener.backtester.metrics import (
     compute_cost_metrics,
     compute_metrics,
     periods_per_year_for_interval,
+    position_count,
 )
 from screener.backtester.models import BacktestConfig, BacktestResult, Trade
 from screener.backtester.fundamentals import FundamentalFetcher
@@ -615,7 +616,7 @@ def walk_forward_optimize(
             )
 
         fold_metrics = optimization_metrics(test_result)
-        count = len(test_result.trades)
+        count = position_count(test_result.trades)
         oos_trades.extend(test_result.trades)
         results.append(
             WalkForwardResult(
@@ -716,7 +717,7 @@ def walk_forward_optimize(
 
     adequate = oos_evidence_adequate(
         equity=combined_equity if not combined_equity.empty else None,
-        trade_count=len(oos_trades),
+        trade_count=position_count(oos_trades),
         min_trades=min_trades,
         missing_eligible_folds=missing_eligible_folds,
         generated_folds=len(windows),
@@ -738,7 +739,7 @@ def walk_forward_optimize(
         "eligible_folds": len(results),
         "missing_eligible_folds": missing_eligible_folds,
         "skipped_folds": skipped_fold_details,
-        "oos_trade_count": len(oos_trades),
+        "oos_trade_count": position_count(oos_trades),
         "min_trades": min_trades,
         "trade_floor": trade_floor,
         "oos_equity_bars": int(len(combined_equity)),

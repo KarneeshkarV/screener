@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 import screener.earnings_backtest.engine as engine_module
-from screener.backtester.execution import net_round_trip_return
+from screener.backtester.costs import net_round_trip_return
 from screener.earnings_backtest.engine import run_earnings_backtest
 from screener.earnings_backtest.metrics import compute_backtest_summary
 

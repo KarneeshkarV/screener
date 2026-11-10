@@ -98,7 +98,11 @@ def apply_full_price_adjustment(frame: pd.DataFrame) -> pd.DataFrame:
     adjusted = frame.copy()
     for column in ("open", "high", "low", "close"):
         adjusted[column] = adjusted[column] * factor
-    return adjusted
+    # A missing ``adj_close`` (or a zero raw close) makes the factor NaN and
+    # with it the whole bar. ``normalize_price_frame`` dropped NaN bars before
+    # this ran, and the cache reader drops them on the next run, so keeping
+    # them here made a first run differ from every cached one.
+    return adjusted[factor.notna().to_numpy()]
 
 
 def apply_splits_only_adjustment(

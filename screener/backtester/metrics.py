@@ -265,8 +265,10 @@ def bar_returns(equity: pd.Series) -> pd.Series:
     equity = equity.dropna()
     if len(equity) < 2:
         return pd.Series(dtype=float)
-    # A move from a zero balance has no percentage return: drop it, as before.
-    return equity.pct_change().iloc[1:].dropna()
+    # A move from a zero balance has no percentage return: drop it. pandas
+    # reports that move as inf, not NaN, so ``dropna`` alone kept it.
+    returns = equity.pct_change().iloc[1:]
+    return returns.replace([np.inf, -np.inf], np.nan).dropna()
 
 
 def _cagr(equity: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
@@ -283,7 +285,11 @@ def _cagr(equity: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> f
     # horizon is (N-1)/periods_per_year years. Using len(equity)/... overstated
     # the horizon by one bar and understated CAGR; matches empyrical's convention.
     years = max((len(equity) - 1) / periods_per_year, 1e-9)
-    return float((end / start) ** (1.0 / years) - 1.0)
+    try:
+        return float((end / start) ** (1.0 / years) - 1.0)
+    except OverflowError:
+        # A few intraday bars annualize to an exponent of thousands.
+        return float("inf") if end > start else float("-inf")
 
 
 def _calendar_cagr(equity: pd.Series) -> float:
@@ -378,7 +384,16 @@ def _session_returns(equity: pd.Series) -> pd.Series:
     """Per-calendar-day returns, so tail risk does not scale with bar size."""
     if equity.empty or not isinstance(equity.index, pd.DatetimeIndex):
         return bar_returns(equity)
-    last = equity.groupby(equity.index.normalize()).last()
+    sessions = equity.index.normalize()
+    last = equity.groupby(sessions).last()
+    if len(equity) > 1 and sessions[0] == sessions[1]:
+        # The first session's return runs from its first mark to its last.
+        # Without that base an intraday run lost its first day, and a
+        # one-session run reported no tail risk at all.
+        base = pd.Series(
+            [float(equity.iloc[0])], index=[last.index[0] - pd.Timedelta(days=1)]
+        )
+        last = pd.concat([base, last])
     return bar_returns(last)
 
 
@@ -570,7 +585,10 @@ def _sortino(
     # periods (target = per-period rf). Matches empyrical.sortino_ratio.
     downside_dev = float(np.sqrt(np.mean(np.minimum(excess, 0.0) ** 2)))
     if downside_dev == 0:
-        return 0.0
+        # No return fell below the hurdle. The ratio is unbounded when the
+        # mean excess is positive, as ``profit_factor`` is with no losing
+        # trade. 0.0 ranked such a run below every run that lost money.
+        return float("inf") if float(excess.mean()) > 0 else 0.0
     return float(excess.mean() / downside_dev * np.sqrt(periods_per_year))
 
 
@@ -578,9 +596,11 @@ def _calmar(equity: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) ->
     if equity.empty or len(equity) < 2:
         return 0.0
     mdd = _max_drawdown(equity)
+    cagr = _cagr(equity, periods_per_year)
     if mdd >= 0:
-        return 0.0
-    return float(_cagr(equity, periods_per_year) / abs(mdd))
+        # No drawdown: unbounded for a gain, as in :func:`_sortino`.
+        return float("inf") if cagr > 0 else 0.0
+    return float(cagr / abs(mdd))
 
 
 def _phi(x: float) -> float:
@@ -888,20 +908,56 @@ def _invested_return(trades: Iterable[Trade]) -> float:
     return total_pnl / total_cost
 
 
+def position_results(trades: Iterable[Trade]) -> list[tuple[float, float]]:
+    """``(pnl, entry_cost)`` per POSITION, in ledger order of first tranche.
+
+    ``--partial-exit`` emits one ``Trade`` per scale-out tranche. Counting
+    each tranche as a trade let one position add several wins to the hit
+    rate and pass a ``min_trades`` floor alone. Tranches are joined on the lot
+    key ``(ticker, open_seq)``, as :func:`_position_intervals` does; a trade
+    with ``open_seq == 0`` has no lot identity and stays one position. The
+    entry stamp is part of the key because a walk-forward ledger joins folds
+    that each number their lots from 1.
+    """
+    results: list[list[float]] = []
+    slot_of_lot: dict[tuple[str, int, Any], int] = {}
+    for trade in trades:
+        lot = (trade.ticker, trade.open_seq, trade.entry_date)
+        slot = slot_of_lot.get(lot) if trade.open_seq else None
+        if slot is None:
+            if trade.open_seq:
+                slot_of_lot[lot] = len(results)
+            results.append([float(trade.pnl), float(trade.entry_cost)])
+        else:
+            results[slot][0] += float(trade.pnl)
+            results[slot][1] += float(trade.entry_cost)
+    return [(pnl, cost) for pnl, cost in results]
+
+
+def position_count(trades: Iterable[Trade]) -> int:
+    """Number of positions in a trade ledger; see :func:`position_results`."""
+    return len(position_results(trades))
+
+
 def positive_pnl_rate(trades: Iterable[Trade]) -> float:
-    """Return the fractional share of accounting trades with positive cash PnL."""
-    trades = list(trades)
+    """Return the fractional share of positions with positive cash PnL."""
+    positions = position_results(trades)
     return (
-        float(sum(1 for trade in trades if trade.pnl > 0) / len(trades))
-        if trades
+        float(sum(1 for pnl, _cost in positions if pnl > 0) / len(positions))
+        if positions
         else 0.0
     )
 
 
 def _trade_return_stats(trades: Iterable[Trade]) -> dict[str, float | int]:
-    """Return realized trade-level diagnostics."""
-    trades = list(trades)
-    if not trades:
+    """Return realized position-level diagnostics.
+
+    Every figure reads the same ``pnl``, dividends included. ``return_pct`` on
+    a ``Trade`` is capital-only, so in ``splits_only``/``none`` mode a trade
+    that won on its dividend counted as a winner here with a negative return.
+    """
+    positions = position_results(trades)
+    if not positions:
         return {
             "median_trade_return": 0.0,
             "avg_trade_return": 0.0,
@@ -912,9 +968,9 @@ def _trade_return_stats(trades: Iterable[Trade]) -> dict[str, float | int]:
             "winning_trades": 0,
             "losing_trades": 0,
         }
-    returns = [float(t.return_pct) for t in trades]
-    profits = [float(t.pnl) for t in trades if t.pnl > 0]
-    losses = [abs(float(t.pnl)) for t in trades if t.pnl < 0]
+    returns = [pnl / cost if cost else 0.0 for pnl, cost in positions]
+    profits = [pnl for pnl, _cost in positions if pnl > 0]
+    losses = [abs(pnl) for pnl, _cost in positions if pnl < 0]
     gross_profit = sum(profits)
     gross_loss = sum(losses)
     if gross_loss > 0:
@@ -930,8 +986,8 @@ def _trade_return_stats(trades: Iterable[Trade]) -> dict[str, float | int]:
         "worst_trade_return": float(min(returns)),
         "profit_factor": float(profit_factor),
         "expectancy": float(np.mean(returns)),
-        "winning_trades": sum(1 for t in trades if t.pnl > 0),
-        "losing_trades": sum(1 for t in trades if t.pnl < 0),
+        "winning_trades": len(profits),
+        "losing_trades": len(losses),
     }
 
 
@@ -996,6 +1052,7 @@ def compute_metrics(
     *,
     risk_free_rate: float = 0.0,
     holdings_value: pd.Series | None = None,
+    benchmark_marks: pd.Series | None = None,
 ) -> dict:
     """Compute portfolio metrics from an equity curve and trade ledger.
 
@@ -1003,9 +1060,17 @@ def compute_metrics(
     PSR, and DSR. It does not credit interest on cash. Default ``0.0`` preserves
     legacy zero-hurdle numbers. ``cagr`` stays bar-count annualized; see
     ``calendar_cagr`` for wall-clock years. ``exposure`` is slot occupancy.
+
+    ``benchmark`` is the display curve, usually forward-filled onto the book's
+    calendar. ``benchmark_marks`` is the same series without the fill. Alpha
+    and beta need it: a filled gap reads as a 0% benchmark bar followed by a
+    multi-bar one, and :func:`_paired_returns` cannot see a gap that was
+    filled before it ran.
     """
     daily = bar_returns(equity)
-    paired_daily, paired_bench = _paired_returns(equity, benchmark)
+    paired_daily, paired_bench = _paired_returns(
+        equity, benchmark if benchmark_marks is None else benchmark_marks
+    )
     starting_equity = float(equity.iloc[0]) if not equity.empty else 0.0
     final_equity = float(equity.iloc[-1]) if not equity.empty else 0.0
     total_return = (
@@ -1048,7 +1113,7 @@ def compute_metrics(
         "exposure": _exposure(cast(pd.DatetimeIndex, equity.index), trades, slot_count),
         "risk_free_rate": rf,
         "benchmark_return": bench_return,
-        "trade_count": len(trades),
+        "trade_count": position_count(trades),
         "invested_return": _invested_return(trades),
     }
     # One trial cannot be deflated. A search reports DSR; missing dispersion

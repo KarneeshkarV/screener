@@ -11,6 +11,7 @@ import pandas as pd
 from screener.backtester.book import fill_pending_entries
 from screener.backtester.core import (
     _bar_label,
+    _benchmark_dividend_warning,
     _benchmark_series_from_panel,
     _eligible_reserve_signal_idx,
     _passes_entry_filters,
@@ -704,6 +705,15 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         as_of_ts = signal_bar
 
     caches = _RunCaches()
+    if cfg.intraday_only:
+        caches.market_index = pd.DatetimeIndex(
+            np.unique(
+                np.concatenate(
+                    [bars.index.to_numpy() for bars in bars_by_tv.values() if len(bars)]
+                    or [np.empty(0, dtype="datetime64[ns]")]
+                )
+            )
+        )
     selection, sel_warnings = select_candidates(
         bars_by_tv, entry_ast, as_of_ts, cfg.top, lookback, cfg, caches=caches
     )
@@ -786,6 +796,11 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
     equity = portfolio_curve["equity"].rename(None)
 
     benchmark = _benchmark_series_from_panel(price_panel, cfg.benchmark)
+    dividend_warning = _benchmark_dividend_warning(
+        price_panel, cfg.benchmark, cfg.price_adjustment
+    )
+    if dividend_warning is not None:
+        warnings.append(dividend_warning)
     benchmark_aligned = benchmark.reindex(calendar, method="ffill").dropna()
     metrics = compute_metrics(
         equity,
@@ -794,6 +809,7 @@ def run_backtest(cfg: BacktestConfig, fetcher: PriceFetcher) -> BacktestResult:
         slot_count,
         periods_per_year=periods_per_year_for_interval(cfg.interval, cfg.market),
         risk_free_rate=float(cfg.risk_free_rate),
+        benchmark_marks=benchmark.reindex(calendar),
         holdings_value=portfolio_curve["holdings_value"],
     )
     metrics["unique_tickers"] = len({trade.ticker for trade in trades})

@@ -1126,6 +1126,36 @@ def build_fundamental_fetcher(
     return cast(FundamentalFetcher, definition.fetcher_type(**fetcher_args))
 
 
+# A fundamental value stays usable for this long after its effective date.
+# Annual filers report once in about 12 months and may file late, so 18 months
+# keeps every live series unbroken. Past it the provider has stopped serving
+# the field, and the last value is not a current observation.
+MAX_FUNDAMENTAL_AGE = pd.Timedelta(days=548)
+
+
+def _expire_stale_fundamentals(
+    aligned: pd.DataFrame, events: pd.DataFrame
+) -> pd.DataFrame:
+    """Blank each forward-filled value older than :data:`MAX_FUNDAMENTAL_AGE`.
+
+    The fill had no age limit, so a field whose feed stopped in 2019 still
+    ranked the name on its 2019 value in 2024. Age is measured per field from
+    the effective date of the value the bar carries.
+    """
+    if aligned.empty or not isinstance(aligned.index, pd.DatetimeIndex):
+        return aligned
+    stamps = pd.Series(events.index, index=events.index)
+    out = aligned.copy()
+    for column in aligned.columns:
+        observed = stamps.where(events[column].notna()).ffill()
+        observed = observed[~observed.index.duplicated(keep="last")]
+        last_seen = observed.reindex(aligned.index, method="ffill")
+        stale = (aligned.index - pd.DatetimeIndex(last_seen)) > MAX_FUNDAMENTAL_AGE
+        if stale.any():
+            out[column] = aligned[column].mask(stale)
+    return out
+
+
 def merge_fundamentals_into_bars(
     bars_by_tv: dict[str, pd.DataFrame],
     fundamentals_by_yf: Mapping[str, pd.DataFrame],
@@ -1162,7 +1192,9 @@ def merge_fundamentals_into_bars(
             out[tv_symbol] = bars
             continue
         # Fill sparse events per field before aligning to the bar calendar.
-        aligned = fundamentals.sort_index().ffill().reindex(bars.index, method="ffill")
+        events = fundamentals.sort_index()
+        aligned = events.ffill().reindex(bars.index, method="ffill")
+        aligned = _expire_stale_fundamentals(aligned, events)
         merged = bars.join(aligned, how="left")
         out[tv_symbol] = stamp_fundamentals(
             merged,

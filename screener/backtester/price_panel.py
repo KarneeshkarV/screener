@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from screener.backtester.core import (
+    _benchmark_dividend_warning,
     _benchmark_series_from_panel,
     _resolve_universe,
     prepare_strategy_bars,
@@ -300,6 +301,11 @@ def build_price_panel(
     # ``splits_only`` mode). Fetching it raw here would reintroduce the phantom
     # split jump into the regime gate, the aligned curve, and regime metrics.
     benchmark = _benchmark_series_from_panel(price_panel, inputs.benchmark)
+    dividend_warning = _benchmark_dividend_warning(
+        price_panel, inputs.benchmark, inputs.price_adjustment
+    )
+    if dividend_warning is not None:
+        warnings.append(dividend_warning)
 
     return PricePanel(
         tv_symbols=tv_symbols,

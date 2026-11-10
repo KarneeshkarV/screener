@@ -1481,10 +1481,24 @@ class ExchangeFallbackPriceFetcher:
 
         bse_results = self.inner.fetch(retry.values(), start, end)
         merged = dict(results)
+        swapped: list[str] = []
         for ns_symbol, bo_symbol in retry.items():
             frame = bse_results.get(bo_symbol)
             if frame is not None and not frame.empty:
                 merged[ns_symbol] = frame
+                swapped.append(ns_symbol)
+        if swapped:
+            # BSE prints its own prices and far less volume than NSE, so a
+            # liquidity filter or an ADV rank reads a different number. The
+            # swap was silent; an empty ``.NS`` answer can also be a transient
+            # vendor failure, so the run must say which names it applies to.
+            from screener.logging_config import get_logger
+
+            get_logger(__name__).warning(
+                "nse_symbols_served_from_bse",
+                count=len(swapped),
+                tickers=sorted(swapped)[:20],
+            )
         return merged
 
 
@@ -1582,15 +1596,17 @@ def fetch_benchmark(
     Uses the same ``PriceFetcher`` as the portfolio so tests can inject a stub.
     Returns an empty Series if the symbol has no data.
     """
-    data = fetcher.fetch([symbol], start, end)
-    frame = data.get(symbol)
+    return close_series_from_panel(fetcher.fetch([symbol], start, end), symbol)
+
+
+def close_series_from_panel(panel: dict[str, pd.DataFrame], symbol: str) -> pd.Series:
+    """``symbol``'s close prices from a fetched panel; empty when it has none."""
+    frame = panel.get(symbol)
     if frame is None or frame.empty:
         return pd.Series(
             index=pd.DatetimeIndex([], name="date"), dtype=float, name=symbol
         )
-    series = frame["close"].astype(float).copy()
-    series.name = symbol
-    return series
+    return frame["close"].astype(float).rename(symbol)
 
 
 def ensure_date(value) -> date:

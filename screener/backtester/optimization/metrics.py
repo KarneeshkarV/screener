@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from screener.backtester.metrics import deflated_sharpe
+from screener.backtester.metrics import deflated_sharpe, position_count
 from screener.backtester.models import BacktestResult
 
 
@@ -30,7 +30,7 @@ def optimization_metrics(result: BacktestResult, n_trials: int = 1) -> dict[str,
     if "hit_rate" in values:
         values.setdefault("win_rate", float(values["hit_rate"]))
     values.setdefault("risk_adjusted_return", risk_adjusted_return(result))
-    values.setdefault("trade_count", float(len(result.trades)))
+    values.setdefault("trade_count", float(position_count(result.trades)))
     if n_trials > 1 and not result.equity_curve.empty:
         values["dsr"] = deflated_sharpe(
             result.equity_curve,
@@ -43,6 +43,13 @@ def optimization_metrics(result: BacktestResult, n_trials: int = 1) -> dict[str,
 
 def score_result(result: BacktestResult, metric: str) -> float:
     metrics = optimization_metrics(result)
+    if metric not in metrics and metric != "dsr":
+        # ``dsr`` is absent on purpose at one trial; the search rewrites it.
+        # Any other missing name is a typo, and 0.0 ranked it as a real score.
+        raise ValueError(
+            f"Unknown optimization metric {metric!r}; "
+            f"available: {', '.join(sorted(metrics))}"
+        )
     score = float(metrics.get(metric, 0.0))
     if np.isnan(score):
         return float("-inf")
