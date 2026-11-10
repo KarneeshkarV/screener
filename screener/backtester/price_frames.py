@@ -85,8 +85,36 @@ def normalize_price_frame(
         out["stock_splits"] = splits
     out.index = naive_normalized_index(out.index, interval)
     out = out[~out.index.duplicated(keep="last")].sort_index()
-    price_columns = [column for column in OHLCV_COLUMNS if column in out.columns]
-    return out.dropna(subset=price_columns) if price_columns else out
+    return drop_incomplete_bars(out)
+
+
+def drop_incomplete_bars(frame: pd.DataFrame) -> pd.DataFrame:
+    """Drop bars with a missing OHLCV value, and say when volume alone did it.
+
+    A bar with all four prices and no volume is a session that traded, so
+    dropping it leaves a hole the engine fills with the bar before. It stays
+    dropped because every rolling volume reader (ADV, ``sma(volume, n)``)
+    would turn one missing value into ``n`` missing bars. A 190-name, 10-year
+    Yahoo sample held none in 322,619 bars, so the count is logged instead:
+    if a vendor starts serving them, this is where it shows.
+    """
+    price_columns = [column for column in OHLCV_COLUMNS if column in frame.columns]
+    if not price_columns:
+        return frame
+    kept = frame.dropna(subset=price_columns)
+    if len(kept) != len(frame) and "volume" in price_columns:
+        ohlc = [column for column in price_columns if column != "volume"]
+        volume_only = frame[ohlc].notna().all(axis=1) & frame["volume"].isna()
+        if volume_only.any():
+            from screener.logging_config import get_logger
+
+            get_logger(__name__).warning(
+                "price_bars_dropped_for_missing_volume",
+                count=int(volume_only.sum()),
+                first=str(frame.index[volume_only][0]),
+                last=str(frame.index[volume_only][-1]),
+            )
+    return kept
 
 
 def apply_full_price_adjustment(frame: pd.DataFrame) -> pd.DataFrame:

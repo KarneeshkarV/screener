@@ -258,11 +258,11 @@ def test_fmp_stale_tail_without_scale_overlap_reloads_window(tmp_path, monkeypat
 def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_path):
     """A forced re-download must not replace the stored frame with only its window.
 
-    The fresh close is a small step off the cached one rather than a multiple
-    of it. A uniform multiple across every shared session is the signature of a
-    split, and split detection discards the stale entry on purpose - see
-    ``test_fmp_rescaled_cache_is_discarded_on_refresh``. This test is about the
-    ordinary case, where the vendor revises values without re-basing them.
+    The fresh prices equal the cached ones and only the volume is revised. A
+    uniform price step across every shared session is the signature of a split
+    or a dividend re-base, and that detection discards the stale entry on
+    purpose - see ``test_fmp_rescaled_cache_is_discarded_on_refresh``. This
+    test is about the ordinary case, where the vendor has not re-based.
     """
     wide = pd.DataFrame(
         {
@@ -280,12 +280,12 @@ def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_pat
         "historical": [
             {
                 "date": day.date().isoformat(),
-                "open": 100.2,
-                "high": 101.4,
-                "low": 99.3,
-                "close": 100.9,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
                 # adjClose == close so the adjusted close equals the raw one.
-                "adjClose": 100.9,
+                "adjClose": 100.5,
                 "volume": 2000,
             }
             for day in pd.bdate_range("2023-06-01", "2023-06-30")
@@ -311,8 +311,8 @@ def test_fmp_refresh_merges_into_stored_history_instead_of_truncating_it(tmp_pat
 
     # Overlapping dates carry the freshly downloaded values.
     first_fresh = out.index[0]
-    assert float(out.loc[first_fresh, "close"]) == pytest.approx(100.9)
-    assert float(stored.loc[first_fresh, "close"]) == pytest.approx(100.9)
+    assert float(out.loc[first_fresh, "volume"]) == pytest.approx(2000)
+    assert float(stored.loc[first_fresh, "volume"]) == pytest.approx(2000)
 
     # Bars outside the refreshed window stay as they were.
     sample = wide.index[20]
