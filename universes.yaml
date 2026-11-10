@@ -25,3 +25,29 @@ universes:
     #   screener universes sync nifty500 \
     #     --output data/universes/nifty500_pit_snapshots.csv
     path: data/universes/nifty500_pit_snapshots.csv
+
+  # Survivorship-free liquidity universes built from NSE's own daily bhavcopy:
+  # on each month's first session, the top N EQ/BE names by median traded
+  # value over the prior 126 sessions. Delisted and merged names stay in, and
+  # renamed names carry their latest symbol. Their full history needs the
+  # bhavcopy price frames (scripts/india_pit_bhavcopy.py, BhavcopyPriceFetcher);
+  # yfinance has no bars for most of the delisted names. Rebuild with:
+  #   uv run python -m scripts.india_pit_bhavcopy universe --top 500 --top 750
+  india_turnover500_pit:
+    type: snapshots
+    market: india
+    benchmark: "^NSEI"
+    path: data/universes/india_turnover_top500.csv.gz
+  india_turnover750_pit:
+    type: snapshots
+    market: india
+    benchmark: "^NSEI"
+    path: data/universes/india_turnover_top750.csv.gz
+  # nifty500_pit with each symbol renamed to its latest NSE symbol, so a
+  # renamed member (ZOMATO -> ETERNAL) reads the bhavcopy frame that carries
+  # its full history.
+  nifty500_pit_entity:
+    type: snapshots
+    market: india
+    benchmark: "^NSEI"
+    path: data/universes/nifty500_pit_entity.csv.gz
