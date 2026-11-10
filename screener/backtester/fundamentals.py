@@ -107,6 +107,20 @@ def _increased_last_n_quarters(
     return 1.0 if all(a > b for a, b in zip(numeric, numeric[1:])) else 0.0
 
 
+def _below_prior_n_quarters(
+    rows: list[dict[str, Any]], current_pos: int, field: str, quarters: int
+) -> float | None:
+    """1.0 when the current quarter is below each of the prior ``quarters``."""
+    end = current_pos + quarters + 1
+    if end > len(rows):
+        return None
+    values = [first_number(row, field) for row in rows[current_pos:end]]
+    if any(value is None for value in values):
+        return None
+    current, *prior = cast(list[float], values)
+    return 1.0 if all(current < value for value in prior) else 0.0
+
+
 def _first_revenue(row: Mapping[str, Any]) -> float | None:
     return first_number(
         row,
@@ -392,6 +406,11 @@ def _normalize_fmp_payload(
         publish(
             "revenue_up_3q",
             _increased_last_n_quarters(income_rows, current_pos, "revenue", 3),
+            income_rows[current_pos : current_pos + 3],
+        )
+        publish(
+            "revenue_down_2q",
+            _below_prior_n_quarters(income_rows, current_pos, "revenue", 2),
             income_rows[current_pos : current_pos + 3],
         )
 

@@ -237,6 +237,45 @@ _RUN_OPTION_DECORATORS: tuple[OptionDecorator, ...] = (
         show_default=True,
         help="Top-N ranked candidates a holding must stay in under --rank-exit.",
     ),
+    click.option(
+        "--stop-reentry-cooldown",
+        type=click.IntRange(min=0),
+        default=0,
+        show_default=True,
+        help=(
+            "Trading bars after a stop-loss exit during which that ticker is "
+            "not a refill candidate. 0 lets the next bar buy it again."
+        ),
+    ),
+    click.option(
+        "--stop-reentry-block-entries",
+        type=click.IntRange(min=0),
+        default=0,
+        show_default=True,
+        help=(
+            "After a stop-loss exit, the ticker is not a refill candidate "
+            "until the book has opened this many other entries."
+        ),
+    ),
+    click.option(
+        "--stop-reentry-require-recovery/--no-stop-reentry-require-recovery",
+        default=False,
+        show_default=True,
+        help=(
+            "After a stop-loss exit, the ticker is not a refill candidate "
+            "until a signal bar closes above its stop fill price."
+        ),
+    ),
+    click.option(
+        "--exit-min-loss",
+        "exit_expr_min_loss",
+        type=click.FloatRange(min=0.0, max=1.0, min_open=True, max_open=True),
+        default=None,
+        help=(
+            "Fire --exit only while the prior bar closes at least this "
+            "fraction below the entry fill (e.g. 0.10)."
+        ),
+    ),
     backtest_options("rolling", "earnings-blackout", "refresh"),
     click.option(
         "--fundamentals-provider",
