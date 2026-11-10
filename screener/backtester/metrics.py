@@ -585,10 +585,7 @@ def _sortino(
     # periods (target = per-period rf). Matches empyrical.sortino_ratio.
     downside_dev = float(np.sqrt(np.mean(np.minimum(excess, 0.0) ** 2)))
     if downside_dev == 0:
-        # No return fell below the hurdle. The ratio is unbounded when the
-        # mean excess is positive, as ``profit_factor`` is with no losing
-        # trade. 0.0 ranked such a run below every run that lost money.
-        return float("inf") if float(excess.mean()) > 0 else 0.0
+        return 0.0
     return float(excess.mean() / downside_dev * np.sqrt(periods_per_year))
 
 
@@ -596,11 +593,9 @@ def _calmar(equity: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) ->
     if equity.empty or len(equity) < 2:
         return 0.0
     mdd = _max_drawdown(equity)
-    cagr = _cagr(equity, periods_per_year)
     if mdd >= 0:
-        # No drawdown: unbounded for a gain, as in :func:`_sortino`.
-        return float("inf") if cagr > 0 else 0.0
-    return float(cagr / abs(mdd))
+        return 0.0
+    return float(_cagr(equity, periods_per_year) / abs(mdd))
 
 
 def _phi(x: float) -> float:

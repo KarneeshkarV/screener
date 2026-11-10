@@ -627,13 +627,17 @@ def _period_first_session(
 
     ``None`` when the window opens on the period's first session (or the
     rebalance is daily), so the window's own first row is the rebalance row.
-    Sessions are read from the bars the run already holds; with a warm-up
-    shorter than the period this is the earliest session available.
+    Also ``None`` when the bars the run holds do not reach back past the
+    period start (a short intraday warm-up): the earliest held bar is then
+    not known to be the period's first session, and the window's first row
+    stays the rebalance row.
     """
     freq = _REBALANCE_FREQ.get(rebalance)
     if freq is None:
         return None
     period_start = window_start.to_period(freq).start_time
+    if not any(len(index) and index[0] < period_start for index in indexes):
+        return None
     first: pd.Timestamp | None = None
     for index in indexes:
         lo = int(index.searchsorted(period_start, side="left"))
@@ -674,11 +678,14 @@ def _dynamic_eligibility_mask(
     raw = scores.to_numpy(dtype=float)
     period_ends = np.r_[rebalance_rows[1:], len(scores)]
     for row, period_end in zip(rebalance_rows, period_ends, strict=True):
-        ranked = (
-            anchor_scores
-            if row == 0 and anchor_scores is not None and rebalance != "daily"
-            else raw[row]
-        )
+        ranked = raw[row]
+        if (
+            row == 0
+            and anchor_scores is not None
+            and rebalance != "daily"
+            and np.isfinite(anchor_scores).any()
+        ):
+            ranked = anchor_scores
         finite = np.flatnonzero(np.isfinite(ranked))
         if finite.size:
             order = np.argsort(-ranked[finite], kind="stable")

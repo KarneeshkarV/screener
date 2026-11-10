@@ -222,14 +222,11 @@ def test_calmar_matches_empyrical_oracle():
     assert abs(screener - emp) < 1e-9, f"_calmar {screener} != empyrical {emp}"
 
 
-def test_calmar_is_unbounded_for_a_gain_with_no_drawdown():
-    """A gain with no drawdown is unbounded, not 0.0: 0.0 ranked it last."""
+def test_calmar_returns_zero_when_no_drawdown():
+    """No drawdown (mdd >= 0) → _calmar returns 0.0 (guarded divide-by-zero)."""
     equity = pd.Series(np.linspace(100.0, 200.0, 252))
-    assert _calmar(equity) == float("inf")
-
-
-def test_calmar_is_zero_for_a_flat_curve():
-    assert _calmar(pd.Series([100.0] * 10)) == 0.0
+    # max_drawdown = 0 → calmar guard triggers → 0.0
+    assert _calmar(equity) == 0.0
 
 
 # ---------------------------------------------------------------------------

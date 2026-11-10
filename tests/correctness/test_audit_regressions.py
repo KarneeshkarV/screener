@@ -331,3 +331,50 @@ def test_nse_symbol_served_from_bse_is_logged(monkeypatch) -> None:
     assert events == [
         ("nse_symbols_served_from_bse", {"count": 1, "tickers": ["AAA.NS"]})
     ]
+
+
+def test_overdue_session_flat_sells_the_whole_position_before_a_gap_target() -> None:
+    stamps = pd.DatetimeIndex(
+        [f"2024-01-02 {hour}:30" for hour in range(14, 21)]
+        + ["2024-01-03 14:30", "2024-01-03 15:30"]
+    )
+    halted = _bars(stamps[:3].append(stamps[7:]), volume=200.0)
+    # AAA reopens above the 5% partial target. The flat was due a session
+    # ago, so the whole position goes at the open as one "session" exit.
+    halted.loc["2024-01-03":, ["open", "high", "low", "close"]] = 120.0
+    config = _cfg(
+        tickers=("AAA", "BBB"),
+        interval="1h",
+        intraday_only=True,
+        partial_exits=((0.05, 0.5),),
+    )
+
+    result = _run({"AAA": halted, "BBB": _bars(stamps)}, config)
+
+    first_lot = [t for t in result.trades if t.open_seq == result.trades[0].open_seq]
+    assert [(t.ticker, t.exit_reason) for t in first_lot] == [("AAA", "session")]
+
+
+def test_short_intraday_warmup_does_not_anchor_the_universe_on_its_first_bar() -> None:
+    # The fetch reaches back about two weeks, not to 1 January, so the first
+    # held bar is not the month's first session and has no lagged ADV.
+    days = pd.bdate_range("2024-01-01", "2024-01-31")
+    stamps = pd.DatetimeIndex(
+        [
+            day + pd.Timedelta(hours=hour, minutes=30)
+            for day in days
+            for hour in range(14, 21)
+        ]
+    )
+    config = _cfg(
+        tickers=("AAA", "BBB"),
+        interval="1h",
+        dynamic_universe_size=1,
+        dynamic_universe_lookback=2,
+        dynamic_universe_rebalance="monthly",
+    )
+    frames = {"AAA": _bars(stamps, volume=1000.0), "BBB": _bars(stamps)}
+
+    result = _run(frames, config, start=date(2024, 1, 22))
+
+    assert result.trades and result.trades[0].ticker == "AAA"

@@ -136,7 +136,16 @@ def _close_slot_at_day(
     targets_allowed = not entry_bar or state.entry_at_open
     # A gap through a target fills at the open, the bar's first print, so it
     # precedes a stop reached later in the bar.
-    if targets_allowed and cfg.gap_fills and not _exit_expr_due(state, i):
+    # An overdue session flat is also an open fill and sells the whole
+    # position, so no target tranche is sold ahead of it.
+    labels = state.session_labels
+    session_overdue = labels is not None and labels[i] != labels[state.entry_idx]
+    if (
+        targets_allowed
+        and cfg.gap_fills
+        and not session_overdue
+        and not _exit_expr_due(state, i)
+    ):
         _fire_partial_exits_at_bar(
             state, bars, i, cfg, portfolio, fill_model, at_open=True
         )
