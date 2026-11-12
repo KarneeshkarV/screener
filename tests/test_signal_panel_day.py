@@ -9,6 +9,7 @@ the same matrices, not a parallel path that happens to agree.
 
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import datetime
 
 import numpy as np
@@ -539,3 +540,182 @@ def test_one_day_read_does_not_evaluate_the_exit_expression(window, monkeypatch)
     assert with_exit == without_exit
     assert with_exit.candidates
     assert all(exit_ast not in asts for asts in seen)
+
+
+def _panel_with_lagging_ticker(
+    window: tuple[SignalPanelInputs, PricePanel, SignalProgram],
+    *,
+    sessions: int,
+    max_stale_sessions: int,
+) -> tuple[SignalPanel, str, pd.Timestamp, pd.Timestamp]:
+    """A window whose newest ``sessions`` bars one candidate has not got yet.
+
+    The live shape behind a 132-of-185 India screen: the vendor has served the
+    previous session to most of the field but not to this name, so its own
+    last bar is ``sessions`` rows behind the as-of row.
+    """
+    inputs, price_panel, program = window
+    full = _panel(window)
+    dates = price_panel.master_dates
+    as_of = dates[-1]
+    last_own = dates[-1 - sessions]
+    lagging = next(
+        c.ticker
+        for c in day_candidates_from_panel(full, last_own).candidates
+        if c.ticker != _TICKERS[0]
+    )
+    bars_by_tv = dict(price_panel.bars_by_tv)
+    bars_by_tv[lagging] = bars_by_tv[lagging].loc[:last_own]
+    lagging_panel = PricePanel(
+        tv_symbols=price_panel.tv_symbols,
+        yf_by_tv=price_panel.yf_by_tv,
+        bars_by_tv=bars_by_tv,
+        benchmark=price_panel.benchmark,
+        lookback=price_panel.lookback,
+        master_dates=list(dates),
+    )
+    signals = build_signal_panel(
+        inputs,
+        lagging_panel,
+        program=program,
+        start_ts=dates[0],
+        end_ts=as_of,
+        warnings=[],
+        require_next_bar=False,
+        max_stale_sessions=max_stale_sessions,
+    )
+    return signals, lagging, as_of, last_own
+
+
+def test_a_name_one_session_behind_is_ranked_on_its_own_last_bar(window) -> None:
+    """The name stays in the run, on its previous close, and the run says so.
+
+    Without the carry it is dropped from the ranking, which a held-position
+    rank exit then reads as "fell out of the top N".
+    """
+    _inputs, price_panel, _program = window
+    signals, lagging, as_of, last_own = _panel_with_lagging_ticker(
+        window, sessions=1, max_stale_sessions=1
+    )
+    warnings: list[str] = []
+    day = day_candidates_from_panel(signals, as_of, warnings=warnings)
+
+    carried = {c.ticker: c for c in day.candidates}
+    assert lagging in carried
+    own_bars = price_panel.bars_by_tv[lagging].loc[:last_own]
+    assert carried[lagging].as_of_close == float(own_bars["close"].iloc[-1])
+    assert carried[lagging].signal_idx == len(own_bars) - 1
+    stale = [w for w in warnings if "previous session" in w]
+    assert len(stale) == 1
+    assert lagging in stale[0]
+    assert str(as_of.date()) in stale[0]
+
+    # Every carried name is listed, not a preview: each one's close is old.
+    signals_many = _panel_with_many_lagging(window)
+    many: list[str] = []
+    day_many = day_candidates_from_panel(signals_many, as_of, warnings=many)
+    carried_many = [w for w in many if "previous session" in w]
+    assert len(carried_many) == 1
+    lagging_many = {c.ticker for c in day_many.candidates} - {"NSE:N0"}
+    assert len(lagging_many) > 5
+    assert carried_many[0].endswith(", ".join(sorted(lagging_many)))
+
+    dropped, _, _, _ = _panel_with_lagging_ticker(
+        window, sessions=1, max_stale_sessions=0
+    )
+    assert lagging not in {
+        c.ticker for c in day_candidates_from_panel(dropped, as_of).candidates
+    }
+
+
+def _panel_with_many_lagging(
+    window: tuple[SignalPanelInputs, PricePanel, SignalProgram],
+) -> SignalPanel:
+    """Eight names, seven of them one session behind and one with the bar.
+
+    More than the five a preview warning would show.
+    """
+    _inputs, price_panel, _program = window
+    dates = pd.DatetimeIndex(price_panel.master_dates)
+    tickers = [f"NSE:N{i}" for i in range(8)]
+    bars_by_tv = {
+        tv: _bars(i, dates) if i == 0 else _bars(i, dates)[:-1]
+        for i, tv in enumerate(tickers)
+    }
+    for bars in bars_by_tv.values():
+        bars["close"] = np.linspace(50.0, 150.0, len(bars))
+    panel = PricePanel(
+        tv_symbols=tickers,
+        yf_by_tv={tv: tv.split(":")[-1] for tv in tickers},
+        bars_by_tv=bars_by_tv,
+        benchmark=bars_by_tv[tickers[0]]["close"],
+        lookback=5,
+        master_dates=list(dates),
+    )
+    inputs, _, program = window
+    return build_signal_panel(
+        inputs,
+        panel,
+        program=program,
+        start_ts=dates[0],
+        end_ts=dates[-1],
+        warnings=[],
+        require_next_bar=False,
+        max_stale_sessions=1,
+    )
+
+
+def test_a_gap_longer_than_the_cap_is_not_carried(window) -> None:
+    """A name two sessions behind is a halt or a delisting, not a feed lag."""
+    signals, lagging, as_of, _ = _panel_with_lagging_ticker(
+        window, sessions=2, max_stale_sessions=1
+    )
+    warnings: list[str] = []
+    day = day_candidates_from_panel(signals, as_of, warnings=warnings)
+    assert lagging not in {c.ticker for c in day.candidates}
+    assert not [w for w in warnings if "previous session" in w]
+
+
+def test_the_carry_leaves_a_complete_field_alone(window) -> None:
+    """With every name on every row, carry on and carry off rank the same."""
+    inputs, price_panel, program = window
+    carried = build_signal_panel(
+        inputs,
+        price_panel,
+        program=program,
+        start_ts=price_panel.master_dates[0],
+        end_ts=price_panel.master_dates[-1],
+        warnings=[],
+        max_stale_sessions=1,
+    )
+    plain = _panel(window)
+    for day in price_panel.master_dates:
+        warnings: list[str] = []
+        assert day_candidates_from_panel(
+            carried, day, warnings=warnings
+        ) == day_candidates_from_panel(plain, day)
+        assert not [w for w in warnings if "previous session" in w]
+
+
+def test_a_lagging_name_keeps_its_dynamic_universe_seat(window) -> None:
+    """On a rebalance day the carried name is still a member of the top-N field.
+
+    Without this the dynamic universe drops it as delisted - a name one session
+    behind is a feed lag, not an ended history - and no warning names it.
+    """
+    inputs, price_panel, program = window
+    dynamic = SignalPanelInputs(
+        **{
+            **{f.name: getattr(inputs, f.name) for f in fields(inputs)},
+            "dynamic_universe_size": len(_TICKERS),
+            "dynamic_universe_lookback": 5,
+            "dynamic_universe_rebalance": "daily",
+        }
+    )
+    signals, lagging, as_of, _ = _panel_with_lagging_ticker(
+        (dynamic, price_panel, program), sessions=1, max_stale_sessions=1
+    )
+    warnings: list[str] = []
+    day = day_candidates_from_panel(signals, as_of, warnings=warnings)
+    assert lagging in {c.ticker for c in day.candidates}
+    assert any(lagging in w for w in warnings if "previous session" in w)

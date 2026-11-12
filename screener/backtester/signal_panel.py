@@ -18,7 +18,7 @@ callers cannot disagree about who is a candidate.
 from __future__ import annotations
 
 import math
-from collections.abc import Collection
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, fields
 from datetime import date, datetime
 from typing import Literal
@@ -230,12 +230,13 @@ def build_signal_panel(
     warnings: list[str],
     earnings_blackout: dict[str, list[date]] | None = None,
     require_next_bar: bool = True,
+    max_stale_sessions: int = 0,
 ) -> SignalPanel:
     """Evaluate signals over ``panel`` and rank them into candidate matrices.
 
-    ``require_next_bar`` is forwarded to
+    ``require_next_bar`` and ``max_stale_sessions`` are forwarded to
     :func:`~screener.backtester.rolling_candidates._build_rolling_candidate_matrices`;
-    see there for why a screen turns it off.
+    see there for why a screen sets them.
     """
     bars_by_tv = panel.bars_by_tv
     exit_signals_by_tv: dict[str, pd.Series | str] = {}
@@ -314,6 +315,7 @@ def build_signal_panel(
         sector_by_tv=sector_by_tv,
         require_next_bar=require_next_bar,
         min_score=inputs.min_score,
+        max_stale_sessions=max_stale_sessions,
     )
     return SignalPanel(
         exit_signals=exit_signals_by_tv,
@@ -374,6 +376,15 @@ class DayCandidates:
 #: A completed session covers the field; half of the fullest session is far
 #: below any real session and far above an incomplete one.
 DEFAULT_MIN_AS_OF_COVERAGE = 0.5
+
+#: How many master rows a screen lets a name's own last bar stand in for a
+#: missing as-of bar. The coverage floor above accepts a session most of the
+#: field has; for a while after the open the vendor has served that session to
+#: only part of the field, and a name it has not reached yet would otherwise
+#: drop out of the ranking and out of the sector field the others are scored
+#: in. One session covers that lag. A longer gap is a halt or a delisting, and
+#: ranking such a name on a price it no longer trades at would be wrong.
+DEFAULT_MAX_STALE_SESSIONS = 1
 
 
 def _row_coverage(matrices: _RollingCandidateMatrices) -> np.ndarray:
@@ -469,6 +480,37 @@ def _resolve_as_of_bar(
     return pd.Timestamp(calendar[position])
 
 
+def _warn_stale_candidates(
+    matrices: _RollingCandidateMatrices,
+    day: pd.Timestamp,
+    rows: Sequence[Mapping[str, object]],
+    warnings: list[str],
+) -> None:
+    """Name the candidates ranked on a bar older than ``day``.
+
+    Such a name had no bar of its own on ``day`` and was scored on its last
+    one - see :data:`DEFAULT_MAX_STALE_SESSIONS`. Its ``as_of_close`` is that
+    older close, so the run must say which names it is.
+    """
+    if matrices.bar_age_np is None or not rows:
+        return
+    ages = matrices.bar_age_np[matrices.row_by_day[day]]
+    stale = [
+        str(row["ticker"])
+        for row in rows
+        if ages[matrices.col_by_ticker[str(row["ticker"])]] > 0
+    ]
+    if not stale:
+        return
+    # Every name, not a five-name preview: each one's close is a session old,
+    # and the reader has no other way to tell which rows those are.
+    warnings.append(
+        f"{len(stale)} candidate(s) had no bar dated {day.date()} yet and were "
+        "ranked on their previous session's bar, so their close and score are "
+        f"one session old: {', '.join(sorted(stale))}"
+    )
+
+
 def _as_of_is_within(as_of: date | pd.Timestamp, end_ts: pd.Timestamp) -> bool:
     """True when ``as_of`` falls at or before the window the panel was built on.
 
@@ -514,6 +556,7 @@ def day_candidates_from_panel(
     )
     if warnings is not None:
         warnings.extend(day_warnings)
+        _warn_stale_candidates(matrices, day, rows, warnings)
 
     rank_score_np = matrices.rank_score_np
     rank_basis: Literal["rank_score", "as_of_dollar_vol"] = (
@@ -558,6 +601,7 @@ def build_day_candidates(
     limit: int | None = None,
     min_coverage: float | None = None,
     require_next_bar: bool = True,
+    max_stale_sessions: int = 0,
 ) -> DayCandidates:
     """Rank the candidates for a single as-of date.
 
@@ -592,6 +636,7 @@ def build_day_candidates(
         warnings=warnings,
         earnings_blackout=earnings_blackout,
         require_next_bar=require_next_bar,
+        max_stale_sessions=max_stale_sessions,
     )
     return day_candidates_from_panel(
         signals,

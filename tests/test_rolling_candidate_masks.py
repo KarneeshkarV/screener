@@ -20,7 +20,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from screener.backtester.rolling_candidates import _signal_mask_matrix
+from screener.backtester.rolling_candidates import (
+    _bar_age_block,
+    _carry_stale_rows,
+    _signal_mask_matrix,
+)
 
 
 def _reindex_reference(
@@ -165,3 +169,35 @@ def test_an_array_that_does_not_match_its_bars_is_rejected() -> None:
         _signal_mask_matrix({"T": np.ones(6, dtype=bool)}, bars, MASTER, ["T"])
     with pytest.raises(ValueError, match="2 values against 4 bars"):
         _signal_mask_matrix({"T": np.ones(2, dtype=bool)}, bars, MASTER, ["T"])
+
+
+def test_bar_age_counts_rows_since_each_tickers_own_last_bar() -> None:
+    """0 on a row the ticker traded, then 1, 2, ...; no bar yet is older than any cap."""
+    bar_idx = np.array(
+        [
+            [0, -1],
+            [1, -1],
+            [1, 0],
+            [1, 1],
+            [2, 1],
+        ]
+    )
+    assert _bar_age_block(bar_idx).tolist() == [
+        [0, 5],
+        [0, 5],
+        [1, 0],
+        [2, 0],
+        [0, 1],
+    ]
+
+
+def test_carry_fills_only_rows_within_the_cap() -> None:
+    """A row one past the ticker's last bar takes that bar's value; older rows do not."""
+    block = np.array([[True], [False], [False], [False]])
+    age = np.array([[0], [1], [2], [4]])
+    assert _carry_stale_rows(block, age, 1).tolist() == [
+        [True],
+        [True],
+        [False],
+        [False],
+    ]

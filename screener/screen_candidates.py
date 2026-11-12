@@ -544,6 +544,7 @@ def screen_candidates(
     from screener.backtester.data import build_price_fetcher
     from screener.backtester.price_panel import PricePanelInputs, build_price_panel
     from screener.backtester.signal_panel import (
+        DEFAULT_MAX_STALE_SESSIONS,
         DEFAULT_MIN_AS_OF_COVERAGE,
         SignalPanelInputs,
         build_day_candidates,
@@ -659,6 +660,11 @@ def screen_candidates(
         # reject every name. A screen names today's triggers; the fill is
         # tomorrow's problem, and tomorrow's bar does not exist yet.
         require_next_bar=False,
+        # The coverage floor accepts a session most of the field has, but for
+        # a while after the open the vendor has served it to only part of the
+        # field. A name it has not reached yet is ranked on its own previous
+        # bar rather than dropped from the run and from its sector's field.
+        max_stale_sessions=DEFAULT_MAX_STALE_SESSIONS,
     )
     _warn_thin_field(
         panel.bars_by_tv,
