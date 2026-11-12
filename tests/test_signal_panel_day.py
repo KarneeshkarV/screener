@@ -539,3 +539,111 @@ def test_one_day_read_does_not_evaluate_the_exit_expression(window, monkeypatch)
     assert with_exit == without_exit
     assert with_exit.candidates
     assert all(exit_ast not in asts for asts in seen)
+
+
+def _panel_with_lagging_ticker(
+    window: tuple[SignalPanelInputs, PricePanel, SignalProgram],
+    *,
+    sessions: int,
+    max_stale_sessions: int,
+) -> tuple[SignalPanel, str, pd.Timestamp, pd.Timestamp]:
+    """A window whose newest ``sessions`` bars one candidate has not got yet.
+
+    The live shape behind a 132-of-185 India screen: the vendor has served the
+    previous session to most of the field but not to this name, so its own
+    last bar is ``sessions`` rows behind the as-of row.
+    """
+    inputs, price_panel, program = window
+    full = _panel(window)
+    dates = price_panel.master_dates
+    as_of = dates[-1]
+    last_own = dates[-1 - sessions]
+    lagging = next(
+        c.ticker
+        for c in day_candidates_from_panel(full, last_own).candidates
+        if c.ticker != _TICKERS[0]
+    )
+    bars_by_tv = dict(price_panel.bars_by_tv)
+    bars_by_tv[lagging] = bars_by_tv[lagging].loc[:last_own]
+    lagging_panel = PricePanel(
+        tv_symbols=price_panel.tv_symbols,
+        yf_by_tv=price_panel.yf_by_tv,
+        bars_by_tv=bars_by_tv,
+        benchmark=price_panel.benchmark,
+        lookback=price_panel.lookback,
+        master_dates=list(dates),
+    )
+    signals = build_signal_panel(
+        inputs,
+        lagging_panel,
+        program=program,
+        start_ts=dates[0],
+        end_ts=as_of,
+        warnings=[],
+        require_next_bar=False,
+        max_stale_sessions=max_stale_sessions,
+    )
+    return signals, lagging, as_of, last_own
+
+
+def test_a_name_one_session_behind_is_ranked_on_its_own_last_bar(window) -> None:
+    """The name stays in the run, on its previous close, and the run says so.
+
+    Without the carry it is dropped from the ranking, which a held-position
+    rank exit then reads as "fell out of the top N".
+    """
+    _inputs, price_panel, _program = window
+    signals, lagging, as_of, last_own = _panel_with_lagging_ticker(
+        window, sessions=1, max_stale_sessions=1
+    )
+    warnings: list[str] = []
+    day = day_candidates_from_panel(signals, as_of, warnings=warnings)
+
+    carried = {c.ticker: c for c in day.candidates}
+    assert lagging in carried
+    own_bars = price_panel.bars_by_tv[lagging].loc[:last_own]
+    assert carried[lagging].as_of_close == float(own_bars["close"].iloc[-1])
+    assert carried[lagging].signal_idx == len(own_bars) - 1
+    stale = [w for w in warnings if "previous session" in w]
+    assert len(stale) == 1
+    assert lagging in stale[0]
+    assert str(as_of.date()) in stale[0]
+
+    dropped, _, _, _ = _panel_with_lagging_ticker(
+        window, sessions=1, max_stale_sessions=0
+    )
+    assert lagging not in {
+        c.ticker for c in day_candidates_from_panel(dropped, as_of).candidates
+    }
+
+
+def test_a_gap_longer_than_the_cap_is_not_carried(window) -> None:
+    """A name two sessions behind is a halt or a delisting, not a feed lag."""
+    signals, lagging, as_of, _ = _panel_with_lagging_ticker(
+        window, sessions=2, max_stale_sessions=1
+    )
+    warnings: list[str] = []
+    day = day_candidates_from_panel(signals, as_of, warnings=warnings)
+    assert lagging not in {c.ticker for c in day.candidates}
+    assert not [w for w in warnings if "previous session" in w]
+
+
+def test_the_carry_leaves_a_complete_field_alone(window) -> None:
+    """With every name on every row, carry on and carry off rank the same."""
+    inputs, price_panel, program = window
+    carried = build_signal_panel(
+        inputs,
+        price_panel,
+        program=program,
+        start_ts=price_panel.master_dates[0],
+        end_ts=price_panel.master_dates[-1],
+        warnings=[],
+        max_stale_sessions=1,
+    )
+    plain = _panel(window)
+    for day in price_panel.master_dates:
+        warnings: list[str] = []
+        assert day_candidates_from_panel(
+            carried, day, warnings=warnings
+        ) == day_candidates_from_panel(plain, day)
+        assert not [w for w in warnings if "previous session" in w]

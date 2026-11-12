@@ -59,6 +59,45 @@ class _RollingCandidateMatrices:
     # on the per-day call so every caller of :func:`_candidate_rows_for_day`
     # gets the run's gate without having to remember to pass it.
     min_score: float | None = None
+    # Master rows since each ticker's own last bar: 0 on a row the ticker
+    # traded. Built only when ``max_stale_sessions`` is on, so the rolling
+    # engine carries no extra block. See :func:`_bar_age_block`.
+    bar_age_np: np.ndarray | None = None
+    max_stale_sessions: int = 0
+
+
+def _bar_age_block(bar_idx: np.ndarray) -> np.ndarray:
+    """Master rows since each ticker's own last bar; 0 on a row it has a bar.
+
+    ``bar_idx`` holds each ticker's last bar position at or before the row, so
+    the ticker traded on a row exactly when that position advanced - the same
+    reading :func:`screener.backtester.signal_panel._row_coverage` uses. A
+    column with no bar yet has no age; it gets ``n_days``, older than any cap.
+    """
+    n_days = bar_idx.shape[0]
+    rows = np.arange(n_days)[:, None]
+    fresh = np.empty(bar_idx.shape, dtype=bool)
+    if n_days:
+        fresh[0] = bar_idx[0] >= 0
+        fresh[1:] = bar_idx[1:] > bar_idx[:-1]
+    last_fresh = np.maximum.accumulate(np.where(fresh, rows, -1), axis=0)
+    return np.where(last_fresh >= 0, rows - last_fresh, n_days)
+
+
+def _carry_stale_rows(
+    block: np.ndarray, bar_age: np.ndarray, max_stale_sessions: int
+) -> np.ndarray:
+    """``block`` with each row a ticker missed read off its own last bar.
+
+    Only rows at most ``max_stale_sessions`` past that bar are filled; an older
+    gap keeps what the exact-date alignment gave it (no signal), so a halted or
+    delisted name is not ranked on a price it no longer has.
+    """
+    carry = (bar_age > 0) & (bar_age <= max_stale_sessions)
+    if not carry.any():
+        return block
+    source = np.arange(block.shape[0])[:, None] - np.where(carry, bar_age, 0)
+    return np.where(carry, np.take_along_axis(block, source, axis=0), block)
 
 
 def _sector_neutralize_scores(
@@ -321,6 +360,7 @@ def _build_rolling_candidate_matrices(
     sector_by_tv: dict[str, str] | None = None,
     require_next_bar: bool = True,
     min_score: float | None = None,
+    max_stale_sessions: int = 0,
 ) -> _RollingCandidateMatrices:
     """Build once-per-run matrices for daily candidate scans.
 
@@ -329,6 +369,15 @@ def _build_rolling_candidate_matrices(
     opposite question - "who fires on the newest bar I have?" - and for it the
     signal bar is always the last one, so the rule would reject every answer.
     Screens pass ``False``; every backtest path keeps the default.
+
+    ``max_stale_sessions`` lets a ticker with no bar on a row take its entry
+    and filter signals from its own last bar, when that bar is at most this
+    many master rows old. The vendor serves the previous session to only part
+    of the field for a while after the open; without the carry, every name it
+    has not reached yet drops out of that day's ranking and out of the
+    sector-neutral field the others are scored against. Screens turn it on;
+    every backtest path keeps ``0``, the exact-date alignment, because a
+    backtest walks completed history where a missing bar is a real no-trade.
     """
     master_ix = pd.DatetimeIndex(master_dates)
     valid_tickers = [
@@ -341,6 +390,20 @@ def _build_rolling_candidate_matrices(
     signal_np = _signal_mask_block(
         entry_signals_by_tv, bars_by_tv, master_ix, valid_tickers
     )
+    master_ticks = _master_ticks(master_ix)
+    n_days = len(master_ix)
+    n_tickers = len(valid_tickers)
+    bar_idx_np = np.empty((n_days, n_tickers), dtype=np.int64)
+    for j, tv in enumerate(valid_tickers):
+        pos = _last_positions(bars_by_tv[tv].index, master_ix, master_ticks)
+        bar_idx_np[:, j] = np.where(pos < 0, -1, pos)
+    # Before every gate, so the gates still judge the row itself: a carried
+    # signal is the name's own last-bar answer, and the regime, membership and
+    # blackout of the as-of day still apply to it.
+    bar_age_np: np.ndarray | None = None
+    if max_stale_sessions > 0:
+        bar_age_np = _bar_age_block(bar_idx_np)
+        signal_np = _carry_stale_rows(signal_np, bar_age_np, max_stale_sessions)
     col_by_ticker = {tv: j for j, tv in enumerate(valid_tickers)}
     # Point-in-time eligibility: suppress entry signals before a symbol's
     # index "date added" so today's constituents are not backtested through
@@ -417,15 +480,19 @@ def _build_rolling_candidate_matrices(
     # "!= 0"; that shape cannot reach here.
     filter_mat: pd.DataFrame | None
     if filter_signals_by_tv:
-        filter_mat = _signal_mask_matrix(
+        filter_block = _signal_mask_block(
             filter_signals_by_tv, bars_by_tv, master_ix, valid_tickers
+        )
+        if bar_age_np is not None:
+            filter_block = _carry_stale_rows(
+                filter_block, bar_age_np, max_stale_sessions
+            )
+        filter_mat = pd.DataFrame(
+            filter_block, index=master_ix, columns=valid_tickers, copy=False
         )
     else:
         filter_mat = None
 
-    n_days = len(master_ix)
-    n_tickers = len(valid_tickers)
-    bar_idx_np = np.empty((n_days, n_tickers), dtype=np.int64)
     lookback_ok_np = np.empty((n_days, n_tickers), dtype=bool)
     close_np = np.empty((n_days, n_tickers), dtype=float)
     volume_np = np.empty((n_days, n_tickers), dtype=float)
@@ -440,7 +507,6 @@ def _build_rolling_candidate_matrices(
     )
     any_score = False
     missing_score: list[str] = []
-    master_ticks = _master_ticks(master_ix)
     # A later session on the master calendar is known on the signal day; a
     # later bar for this one ticker is not. Gating on the ticker's own history
     # length dropped a name on its last recorded bar (a delisting, a feed
@@ -477,11 +543,9 @@ def _build_rolling_candidate_matrices(
         close = _float_values(bars["close"])
         volume = _float_values(bars["volume"])
         dollar_volume = dollar_volumes[column]
-        pos = _last_positions(bars.index, master_ix, master_ticks)
-        pos = np.where(pos < 0, -1, pos)
+        pos = bar_idx_np[:, column]
         n = len(bars)
         has_bar = pos >= 0
-        bar_idx_np[:, column] = pos
         enough_history = (pos + 1 >= lookback_required + 1) & has_bar
         lookback_ok_np[:, column] = (
             (enough_history & (later_session | (pos + 1 < n)))
@@ -614,6 +678,8 @@ def _build_rolling_candidate_matrices(
         bar_idx_np=bar_idx_np,
         rank_score_np=final_rank_score_np,
         min_score=min_score,
+        bar_age_np=bar_age_np,
+        max_stale_sessions=max_stale_sessions,
     )
 
 
