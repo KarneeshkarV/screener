@@ -38,7 +38,6 @@ from screener.backtester.rolling_candidates import (
     _build_rolling_candidate_matrices,
     _candidate_rows_for_day,
     _RollingCandidateMatrices,
-    _preview_warning,
 )
 from screener.regime import classify_regimes
 from screener.strategies.spec import StrategyProfile
@@ -503,13 +502,12 @@ def _warn_stale_candidates(
     ]
     if not stale:
         return
+    # Every name, not a five-name preview: each one's close is a session old,
+    # and the reader has no other way to tell which rows those are.
     warnings.append(
-        _preview_warning(
-            stale,
-            f"{{count}} candidate(s) had no bar dated {day.date()} yet and were "
-            "ranked on their previous session's bar, so their close and score "
-            "are one session old: {preview}",
-        )
+        f"{len(stale)} candidate(s) had no bar dated {day.date()} yet and were "
+        "ranked on their previous session's bar, so their close and score are "
+        f"one session old: {', '.join(sorted(stale))}"
     )
 
 

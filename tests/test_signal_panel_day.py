@@ -609,12 +609,59 @@ def test_a_name_one_session_behind_is_ranked_on_its_own_last_bar(window) -> None
     assert lagging in stale[0]
     assert str(as_of.date()) in stale[0]
 
+    # Every carried name is listed, not a preview: each one's close is old.
+    signals_many = _panel_with_many_lagging(window)
+    many: list[str] = []
+    day_many = day_candidates_from_panel(signals_many, as_of, warnings=many)
+    carried_many = [w for w in many if "previous session" in w]
+    assert len(carried_many) == 1
+    lagging_many = {c.ticker for c in day_many.candidates} - {"NSE:N0"}
+    assert len(lagging_many) > 5
+    assert carried_many[0].endswith(", ".join(sorted(lagging_many)))
+
     dropped, _, _, _ = _panel_with_lagging_ticker(
         window, sessions=1, max_stale_sessions=0
     )
     assert lagging not in {
         c.ticker for c in day_candidates_from_panel(dropped, as_of).candidates
     }
+
+
+def _panel_with_many_lagging(
+    window: tuple[SignalPanelInputs, PricePanel, SignalProgram],
+) -> SignalPanel:
+    """Eight names, seven of them one session behind and one with the bar.
+
+    More than the five a preview warning would show.
+    """
+    _inputs, price_panel, _program = window
+    dates = pd.DatetimeIndex(price_panel.master_dates)
+    tickers = [f"NSE:N{i}" for i in range(8)]
+    bars_by_tv = {
+        tv: _bars(i, dates) if i == 0 else _bars(i, dates)[:-1]
+        for i, tv in enumerate(tickers)
+    }
+    for bars in bars_by_tv.values():
+        bars["close"] = np.linspace(50.0, 150.0, len(bars))
+    panel = PricePanel(
+        tv_symbols=tickers,
+        yf_by_tv={tv: tv.split(":")[-1] for tv in tickers},
+        bars_by_tv=bars_by_tv,
+        benchmark=bars_by_tv[tickers[0]]["close"],
+        lookback=5,
+        master_dates=list(dates),
+    )
+    inputs, _, program = window
+    return build_signal_panel(
+        inputs,
+        panel,
+        program=program,
+        start_ts=dates[0],
+        end_ts=dates[-1],
+        warnings=[],
+        require_next_bar=False,
+        max_stale_sessions=1,
+    )
 
 
 def test_a_gap_longer_than_the_cap_is_not_carried(window) -> None:
