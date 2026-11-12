@@ -564,6 +564,11 @@ def _build_rolling_candidate_matrices(
             # forever and held a top-N seat no candidate could ever use. It
             # is in the dynamic universe only while it still has bars.
             still_listed = has_bar & np.asarray(master_ix <= bars.index.max())
+            if bar_age_np is not None:
+                # A screen's one-session feed lag is not an ended history: the
+                # name keeps its seat while its signals are carried.
+                age = bar_age_np[:, column]
+                still_listed |= has_bar & (age <= max_stale_sessions)
             dynamic_score_np[:, column] = np.where(
                 still_listed, lagged_adv[pos], np.nan
             )

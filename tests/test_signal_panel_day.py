@@ -9,6 +9,7 @@ the same matrices, not a parallel path that happens to agree.
 
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import datetime
 
 import numpy as np
@@ -694,3 +695,27 @@ def test_the_carry_leaves_a_complete_field_alone(window) -> None:
             carried, day, warnings=warnings
         ) == day_candidates_from_panel(plain, day)
         assert not [w for w in warnings if "previous session" in w]
+
+
+def test_a_lagging_name_keeps_its_dynamic_universe_seat(window) -> None:
+    """On a rebalance day the carried name is still a member of the top-N field.
+
+    Without this the dynamic universe drops it as delisted - a name one session
+    behind is a feed lag, not an ended history - and no warning names it.
+    """
+    inputs, price_panel, program = window
+    dynamic = SignalPanelInputs(
+        **{
+            **{f.name: getattr(inputs, f.name) for f in fields(inputs)},
+            "dynamic_universe_size": len(_TICKERS),
+            "dynamic_universe_lookback": 5,
+            "dynamic_universe_rebalance": "daily",
+        }
+    )
+    signals, lagging, as_of, _ = _panel_with_lagging_ticker(
+        (dynamic, price_panel, program), sessions=1, max_stale_sessions=1
+    )
+    warnings: list[str] = []
+    day = day_candidates_from_panel(signals, as_of, warnings=warnings)
+    assert lagging in {c.ticker for c in day.candidates}
+    assert any(lagging in w for w in warnings if "previous session" in w)
