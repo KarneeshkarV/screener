@@ -35,6 +35,7 @@ FUNDAMENTAL_COLUMNS: tuple[str, ...] = (
     "revenue_growth_yoy",
     "eps_growth_yoy",
     "revenue_up_3q",
+    "revenue_down_2q",
     "market_cap",
 )
 

@@ -207,6 +207,17 @@ class _DailyRankingSource:
         self._day_count = 0
         self._prev_day: pd.Timestamp | None = None
         self.pending_entry_orders: dict[int, PendingEntryOrder] = {}
+        # Stop re-entry cooldown: bar index of the window, the closed-trade
+        # count already scanned, and the last bar index on which each stopped
+        # ticker is still barred from being a signal.
+        self._bar_idx = -1
+        self._trades_seen = 0
+        self._stop_barred_until: dict[str, int] = {}
+        # Entry-count block: entries opened so far, and the count each
+        # stopped ticker must wait for. Recovery block: stop fill prices.
+        self._entries_opened = 0
+        self._stop_barred_until_entries: dict[str, int] = {}
+        self._stop_recovery_price: dict[str, float] = {}
         # Per-run memo: exit-AST evaluations and frame primitives are computed
         # once per ticker instead of once per slot open. Exit signals are filled
         # up front in one panel pass rather than one interpreted AST walk per
@@ -265,7 +276,39 @@ class _DailyRankingSource:
                 }
             )
 
+    def _note_stop_exits(self) -> None:
+        cooldown = int(self.cfg.stop_reentry_cooldown)
+        block_entries = int(self.cfg.stop_reentry_block_entries)
+        trades = self.portfolio.closed_trades()
+        for trade in trades[self._trades_seen :]:
+            if trade.exit_reason != "stop":
+                continue
+            if block_entries:
+                self._stop_barred_until_entries[trade.ticker] = (
+                    self._entries_opened + block_entries
+                )
+            if self.cfg.stop_reentry_require_recovery:
+                self._stop_recovery_price[trade.ticker] = float(trade.exit_price)
+            if cooldown:
+                # A signal on bar t fills on bar t + 1, so barring signals on
+                # the exit bar through t + cooldown - 1 keeps the ticker out
+                # of the book for the ``cooldown`` bars after the exit.
+                self._stop_barred_until[trade.ticker] = self._bar_idx + cooldown - 1
+        self._trades_seen = len(trades)
+
+    def _stop_barred(self) -> set[str]:
+        return {
+            ticker
+            for ticker, last in self._stop_barred_until.items()
+            if self._bar_idx <= last
+        } | {
+            ticker
+            for ticker, needed in self._stop_barred_until_entries.items()
+            if self._entries_opened < needed
+        }
+
     def before_exits(self, day: pd.Timestamp) -> None:
+        self._bar_idx += 1
         self._fill_pending(day, at_close=False)
         if self.cfg.rank_exit_every is not None:
             self._day_count += 1
@@ -291,6 +334,7 @@ class _DailyRankingSource:
         cfg = self.cfg
         portfolio = self.portfolio
         self._fill_pending(day, at_close=True)
+        self._note_stop_exits()
         slot_states = self.slot_states
         # Treat every slot that is now empty (whether already idle or freed
         # today) as available for refill. Order is slot-id ascending, matching
@@ -325,7 +369,7 @@ class _DailyRankingSource:
         # Keep the rank field fixed across batches. Newly opened names are in
         # already-consumed prefixes, so excluding them from later batches would
         # shift every offset and skip one unconsumed candidate per open.
-        rank_exclude = set(active_tickers)
+        rank_exclude = set(active_tickers) | self._stop_barred()
 
         # Rank the full eligible set but materialise dictionaries in stable
         # batches. Most days need only one batch; failed opens can continue
@@ -365,6 +409,11 @@ class _DailyRankingSource:
                     ticker in active_tickers
                 ):  # pragma: no cover - candidates pre-excluded
                     continue
+                recovery = self._stop_recovery_price.get(ticker)
+                if recovery is not None:
+                    if float(row["as_of_close"]) <= recovery:
+                        continue
+                    del self._stop_recovery_price[ticker]
                 # No default: dict.get evaluates its default eagerly, so passing
                 # pd.DataFrame() built and threw away a frame on every candidate
                 # popped. The guard below already treats missing as empty.
@@ -405,6 +454,7 @@ class _DailyRankingSource:
                     signal_date=_bar_label(day, cfg),
                 )
                 active_tickers.add(ticker)
+                self._entries_opened += 1
                 opened = True
                 if cfg.entry_order_type == "limit":
                     continue

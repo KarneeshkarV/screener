@@ -36,7 +36,12 @@ _SNAPSHOT_ONLY = (
     "intraday_momentum",
     "mark_minervini",
 )
-_BAR_DERIVED = ("ha_momentum", "momentum_12_1", "momentum_12_1_ema10")
+_BAR_DERIVED = (
+    "dist_from_52w_high",
+    "ha_momentum",
+    "momentum_12_1",
+    "momentum_12_1_ema10",
+)
 
 
 def test_every_scorer_is_classified() -> None:
