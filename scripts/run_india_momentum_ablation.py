@@ -15,6 +15,12 @@ with a top-50 hold buffer. Each stage adds one rule to the one before it.
 ``stages`` writes ``<out>/<stage>.json`` (metrics and equity curve) and
 ``<stage>_trades.csv``. ``allocate`` blends one stage's equity curve with gold,
 REITs and a flat 6% debt proxy.
+
+``--stop-loss 0.4`` sells a name when its low touches 40% under the entry fill
+(the open if it gaps through). ``--lower-circuit-exit`` sells at the next open
+after a close locked at the lower band, and blocks a new buy of a name that
+had a lower lock in the last month. Each option adds a suffix to the output
+name, for example ``s1_roc__sl40_lc``.
 """
 
 from __future__ import annotations
@@ -39,13 +45,15 @@ CIRCUIT_WINDOW = 126
 CIRCUIT_MAX_DAYS = 3
 NEAR_HIGH = 0.80
 LOCK_MOVE = 0.049
+#: Sessions a lower lock blocks a new buy, one monthly rank cycle.
+LOWER_LOCK_COOLDOWN = 21
 DRAWDOWN_TRIGGERS = (-0.10, -0.20, -0.30)
 ALLOCATION_ASSETS = ("GOLDBEES.NS", "EMBASSY.NS", "MINDSPACE.NS", "^NSEI")
 DEBT_YIELD = 0.06
 
 
-def circuit_hits(bars: pd.DataFrame, window: int = CIRCUIT_WINDOW) -> pd.Series:
-    """Trailing count of sessions that look like a price-band lock.
+def band_locks(bars: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Sessions that look like an upper and a lower price-band lock.
 
     A lock closes at least 4.9% away from the prior close and on the day's
     high (upper band) or low (lower band). A 2% band lock is not caught, which
@@ -56,6 +64,12 @@ def circuit_hits(bars: pd.DataFrame, window: int = CIRCUIT_WINDOW) -> pd.Series:
     tolerance = 0.001 * close
     upper = (move >= LOCK_MOVE) & ((bars["high"] - close).abs() <= tolerance)
     lower = (move <= -LOCK_MOVE) & ((close - bars["low"]).abs() <= tolerance)
+    return upper, lower
+
+
+def circuit_hits(bars: pd.DataFrame, window: int = CIRCUIT_WINDOW) -> pd.Series:
+    """Trailing count of sessions that look like a price-band lock."""
+    upper, lower = band_locks(bars)
     return (upper | lower).astype(float).rolling(window, min_periods=window).sum()
 
 
@@ -117,6 +131,11 @@ def prepare_bars(kind: str, momentum: str = "roc_12m") -> Callable:
             )
             frame["near_hi"] = (close / high).where(live)
             frame["circuit_hits"] = circuit_hits(frame)
+            lower = band_locks(frame)[1].astype(float)
+            frame["lower_lock"] = lower
+            frame["lower_lock_recent"] = lower.rolling(
+                LOWER_LOCK_COOLDOWN, min_periods=1
+            ).sum()
             for name, column in (
                 ("momentum", momentum),
                 ("vol", "vol_12m"),
@@ -206,6 +225,16 @@ STAGES: dict[str, Stage] = {
 }
 
 
+def output_name(stage: str, args: argparse.Namespace) -> str:
+    """Stage name plus a suffix for each exit option, ``s1_roc__sl40_lc``."""
+    parts = []
+    if args.stop_loss:
+        parts.append(f"sl{round(args.stop_loss * 100)}")
+    if args.lower_circuit_exit:
+        parts.append("lc")
+    return f"{stage}__{'_'.join(parts)}" if parts else stage
+
+
 def make_request(stage: str, args: argparse.Namespace):
     from screener.backtester.workflow import BacktestRequest
     from screener.strategies.spec import (
@@ -214,11 +243,14 @@ def make_request(stage: str, args: argparse.Namespace):
     )
 
     spec = STAGES[stage]
-    name = f"india_mom_{stage}"
+    name = f"india_mom_{output_name(stage, args)}"
+    entry, exit_ = spec.entry, None
+    if args.lower_circuit_exit:
+        entry, exit_ = f"{entry} and lower_lock_recent == 0", "lower_lock > 0"
     register_expression_strategy(
         name,
-        entry=spec.entry,
-        exit=None,
+        entry=entry,
+        exit=exit_,
         prepare_bars=prepare_bars(spec.rank, spec.momentum),
         required_lookback=lambda: LOOKBACK + 8,
         profile=DEFAULT_STRATEGY_PROFILE,
@@ -232,7 +264,7 @@ def make_request(stage: str, args: argparse.Namespace):
         entry_expr=None,
         exit_expr=None,
         strategy_name=name,
-        stop_loss=None,
+        stop_loss=args.stop_loss,
         take_profit=None,
         trailing_stop=None,
         slippage_bps=10.0,
@@ -307,14 +339,17 @@ def run_stage(stage: str, args: argparse.Namespace) -> None:
         if isinstance(value, int | float | np.floating | str)
     }
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    out = output_name(stage, args)
     pd.DataFrame([vars(trade) for trade in result.trades]).to_csv(
-        args.out_dir / f"{stage}_trades.csv", index=False
+        args.out_dir / f"{out}_trades.csv", index=False
     )
-    (args.out_dir / f"{stage}.json").write_text(
+    (args.out_dir / f"{out}.json").write_text(
         json.dumps(
             {
                 "stage": stage,
                 "description": STAGES[stage].description,
+                "stop_loss": args.stop_loss,
+                "lower_circuit_exit": args.lower_circuit_exit,
                 "universe": args.universe,
                 "bhavcopy_prices": args.bhavcopy_prices,
                 "start": str(run.start_date),
@@ -329,7 +364,7 @@ def run_stage(stage: str, args: argparse.Namespace) -> None:
         )
     )
     print(
-        f"{stage:15s} CAGR {metrics['cagr']:6.1%}  Sharpe {metrics['sharpe']:5.2f}  "
+        f"{out:15s} CAGR {metrics['cagr']:6.1%}  Sharpe {metrics['sharpe']:5.2f}  "
         f"MaxDD {metrics['max_drawdown']:6.1%}  trades {int(metrics['trade_count'])}",
         flush=True,
     )
@@ -480,6 +515,17 @@ def main(argv: list[str] | None = None) -> None:
         "--bhavcopy-prices",
         action="store_true",
         help="read .NS bars from scripts.india_pit_bhavcopy output (includes delisted names)",
+    )
+    stages.add_argument(
+        "--stop-loss",
+        type=float,
+        default=None,
+        help="sell when the low is this fraction under the entry fill, e.g. 0.4",
+    )
+    stages.add_argument(
+        "--lower-circuit-exit",
+        action="store_true",
+        help="sell at the next open after a lower-band lock; block a re-buy for a month",
     )
     blend = commands.add_parser(
         "allocate", help="blend a stage's equity with gold/REIT/debt"

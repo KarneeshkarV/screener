@@ -22,10 +22,14 @@ from scripts.india_pit_bhavcopy import (
     remap_snapshots,
     turnover_snapshots,
 )
+import argparse
+
 from scripts.run_india_momentum_ablation import (
+    band_locks,
     circuit_hits,
     dry_powder,
     fixed_mix,
+    output_name,
     prepare_bars,
 )
 from screener.strategies.spec import PrepareCtx
@@ -408,6 +412,25 @@ def test_circuit_hits_counts_band_locks():
         }
     )
     np.testing.assert_allclose(circuit_hits(bars, window=5).iloc[-1], 2)
+    upper, lower = band_locks(bars)
+    assert upper.tolist() == [False, True, False, False, False]
+    assert lower.tolist() == [False, False, False, True, False]
+
+
+@pytest.mark.parametrize(
+    ("stop_loss", "lower_circuit_exit", "expected"),
+    [
+        (None, False, "s1_roc"),
+        (0.4, False, "s1_roc__sl40"),
+        (None, True, "s1_roc__lc"),
+        (0.5, True, "s1_roc__sl50_lc"),
+    ],
+)
+def test_output_name_tags_exit_options(stop_loss, lower_circuit_exit, expected):
+    args = argparse.Namespace(
+        stop_loss=stop_loss, lower_circuit_exit=lower_circuit_exit
+    )
+    assert output_name("s1_roc", args) == expected
 
 
 def test_prepare_bars_ranks_12_1_momentum_and_skips_last_month():
