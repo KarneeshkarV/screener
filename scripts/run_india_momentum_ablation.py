@@ -6,6 +6,8 @@ The model (from a retail momentum video): stage-2 trend (close above the 30,
 change divided by 12-month volatility, skip names stuck in price-band locks,
 blend in distance to the 52-week high, top 20 equal weight, monthly rank exit
 with a top-50 hold buffer. Each stage adds one rule to the one before it.
+The stages are strategies in ``screener.strategies.plugins.india_momentum``;
+this script runs them with the rank exit, hold buffer and costs they need.
 
     uv run python -m scripts.india_pit_bhavcopy ...   # build data first
     uv run python -m scripts.run_india_momentum_ablation stages \
@@ -28,201 +30,19 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from screener.strategies.plugins.india_momentum import TOP, STAGES, strategy_name
+
 ROOT = Path(__file__).resolve().parent.parent
-TOP = 20
-LOOKBACK = 252
-#: Sessions 12-1 momentum skips, as in ``screener.factors.momentum_12_1``.
-SKIP = 21
-CIRCUIT_WINDOW = 126
-CIRCUIT_MAX_DAYS = 3
-NEAR_HIGH = 0.80
-LOCK_MOVE = 0.049
-#: Sessions a lower lock blocks a new buy, one monthly rank cycle.
-LOWER_LOCK_COOLDOWN = 21
 DRAWDOWN_TRIGGERS = (-0.10, -0.20, -0.30)
 ALLOCATION_ASSETS = ("GOLDBEES.NS", "EMBASSY.NS", "MINDSPACE.NS", "^NSEI")
 DEBT_YIELD = 0.06
-
-
-def band_locks(bars: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    """Sessions that look like an upper and a lower price-band lock.
-
-    A lock closes at least 4.9% away from the prior close and on the day's
-    high (upper band) or low (lower band). A 2% band lock is not caught, which
-    errs toward keeping names.
-    """
-    close = bars["close"].astype(float)
-    move = close.pct_change()
-    tolerance = 0.001 * close
-    upper = (move >= LOCK_MOVE) & ((bars["high"] - close).abs() <= tolerance)
-    lower = (move <= -LOCK_MOVE) & ((close - bars["low"]).abs() <= tolerance)
-    return upper, lower
-
-
-def circuit_hits(bars: pd.DataFrame, window: int = CIRCUIT_WINDOW) -> pd.Series:
-    """Trailing count of sessions that look like a price-band lock."""
-    upper, lower = band_locks(bars)
-    return (upper | lower).astype(float).rolling(window, min_periods=window).sum()
-
-
-def rank_score(
-    kind: str, momentum: pd.DataFrame, vol: pd.DataFrame, near_high: pd.DataFrame
-) -> pd.DataFrame:
-    """Cross-sectional score per date (higher ranks first)."""
-    if kind == "near_hi":
-        return near_high
-    if kind == "momentum":
-        return momentum
-    risk_adjusted = momentum / vol.replace(0, np.nan)
-    if kind == "momentum_vol":
-        return risk_adjusted
-    if kind == "composite":
-        return 0.5 * risk_adjusted.rank(axis=1, pct=True) + 0.5 * near_high.rank(
-            axis=1, pct=True
-        )
-    raise ValueError(f"unknown rank kind: {kind}")
-
-
-def prepare_bars(kind: str, momentum: str = "roc_12m") -> Callable:
-    """``prepare_bars`` hook: add the factor columns and ``rank_score``.
-
-    ``momentum`` is the column the rank reads: ``roc_12m`` (the last 12
-    months) or ``mom_12_1`` (12 months back to 1 month back).
-    """
-    from screener.tradeable import tradeable_span
-
-    def prepare(ctx):
-        factors: dict[str, dict[str, pd.Series]] = {
-            "momentum": {},
-            "vol": {},
-            "near_hi": {},
-        }
-        out: dict[str, pd.DataFrame] = {}
-        for ticker, bars in ctx.bars_by_tv.items():
-            if bars is None or bars.empty:
-                out[ticker] = bars
-                continue
-            frame = bars.copy()
-            close = frame["close"].astype(float)
-            live = tradeable_span(close, frame.get("volume"), window=LOOKBACK)
-            high = (
-                frame["high"]
-                .astype(float)
-                .rolling(LOOKBACK, min_periods=LOOKBACK)
-                .max()
-            )
-            frame["roc_12m"] = (close / close.shift(LOOKBACK) - 1).where(live)
-            frame["mom_12_1"] = (close.shift(SKIP) / close.shift(LOOKBACK) - 1).where(
-                live
-            )
-            frame["vol_12m"] = (
-                close.pct_change()
-                .rolling(LOOKBACK, min_periods=LOOKBACK)
-                .std()
-                .where(live)
-            )
-            frame["near_hi"] = (close / high).where(live)
-            frame["circuit_hits"] = circuit_hits(frame)
-            lower = band_locks(frame)[1].astype(float)
-            frame["lower_lock"] = lower
-            frame["lower_lock_recent"] = lower.rolling(
-                LOWER_LOCK_COOLDOWN, min_periods=1
-            ).sum()
-            for name, column in (
-                ("momentum", momentum),
-                ("vol", "vol_12m"),
-                ("near_hi", "near_hi"),
-            ):
-                factors[name][ticker] = frame[column]
-            out[ticker] = frame
-        if not factors["momentum"]:
-            return out
-        momentum_frame, vol, near_high = (
-            ctx.mask_rank_reference(pd.DataFrame(factors[name]))
-            for name in ("momentum", "vol", "near_hi")
-        )
-        score = rank_score(kind, momentum_frame, vol, near_high)
-        for ticker, frame in out.items():
-            if frame is not None and not frame.empty and ticker in score.columns:
-                frame["rank_score"] = score[ticker].reindex(frame.index)
-        return out
-
-    return prepare
-
-
-@dataclass(frozen=True)
-class Stage:
-    rank: str
-    entry: str
-    hold_buffer: int
-    description: str
-    momentum: str = "roc_12m"
-
-
-BASE = "roc_12m > -10 and vol_12m > 0"
-TREND = f"{BASE} and close > sma(close, 30) and close > sma(close, 50) and close > sma(close, 100)"
-NEAR = f"{TREND} and near_hi >= {NEAR_HIGH}"
-NO_LOCKS = f"{NEAR} and circuit_hits <= {CIRCUIT_MAX_DAYS}"
-STAGES: dict[str, Stage] = {
-    "s0_52wh": Stage("near_hi", BASE, TOP, "Rank by closeness to the 52-week high"),
-    "s1_roc": Stage("momentum", BASE, TOP, "Rank by 12-month rate of change"),
-    "s1b_roc_buf50": Stage("momentum", BASE, 50, "s1 + hold while in the top 50"),
-    "s2_stage2": Stage("momentum", TREND, TOP, "+ close above the 30/50/100-day SMA"),
-    "s3_near52": Stage("momentum", NEAR, TOP, "+ within 20% of the 52-week high"),
-    "s4_volpen": Stage("momentum_vol", NEAR, TOP, "+ rank by ROC / volatility"),
-    "s5_circuit": Stage(
-        "momentum_vol", NO_LOCKS, TOP, "+ at most 3 band-lock days in 126"
-    ),
-    "s6_buffer50": Stage("momentum_vol", NO_LOCKS, 50, "+ hold while in the top 50"),
-    "s7_composite": Stage(
-        "composite", NO_LOCKS, 50, "+ 52-week-high distance in the rank"
-    ),
-    "s8_dma200": Stage(
-        "composite",
-        f"{NO_LOCKS} and close > sma(close, 200)",
-        50,
-        "+ close above the 200-day SMA",
-    ),
-    # 12-1 variants: the same stages ranked on 12-1 momentum, which skips the
-    # last month's short-term reversal. ``mom_12_1 > 0`` is the floor the
-    # repo's momentum_12_1 recipe uses.
-    "m1_mom121": Stage(
-        "momentum",
-        f"{BASE} and mom_12_1 > 0",
-        TOP,
-        "s1 ranked by 12-1 momentum",
-        "mom_12_1",
-    ),
-    "m4_mom121_volpen": Stage(
-        "momentum_vol",
-        f"{NEAR} and mom_12_1 > 0",
-        TOP,
-        "s4 ranked by 12-1 momentum / volatility",
-        "mom_12_1",
-    ),
-    "m6_mom121_buffer50": Stage(
-        "momentum_vol",
-        f"{NO_LOCKS} and mom_12_1 > 0",
-        50,
-        "s6 ranked by 12-1 momentum / volatility",
-        "mom_12_1",
-    ),
-    "m7_mom121_composite": Stage(
-        "composite",
-        f"{NO_LOCKS} and mom_12_1 > 0",
-        50,
-        "s7 with 12-1 momentum in the composite",
-        "mom_12_1",
-    ),
-}
 
 
 def output_name(stage: str, args: argparse.Namespace) -> str:
@@ -237,24 +57,9 @@ def output_name(stage: str, args: argparse.Namespace) -> str:
 
 def make_request(stage: str, args: argparse.Namespace):
     from screener.backtester.workflow import BacktestRequest
-    from screener.strategies.spec import (
-        DEFAULT_STRATEGY_PROFILE,
-        register_expression_strategy,
-    )
 
     spec = STAGES[stage]
-    name = f"india_mom_{output_name(stage, args)}"
-    entry, exit_ = spec.entry, None
-    if args.lower_circuit_exit:
-        entry, exit_ = f"{entry} and lower_lock_recent == 0", "lower_lock > 0"
-    register_expression_strategy(
-        name,
-        entry=entry,
-        exit=exit_,
-        prepare_bars=prepare_bars(spec.rank, spec.momentum),
-        required_lookback=lambda: LOOKBACK + 8,
-        profile=DEFAULT_STRATEGY_PROFILE,
-    )
+    name = strategy_name(stage, lower_circuit_exit=args.lower_circuit_exit)
     return BacktestRequest(
         mode="rolling",
         context_obj=None,

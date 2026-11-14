@@ -24,12 +24,10 @@ from scripts.india_pit_bhavcopy import (
 )
 import argparse
 
-from scripts.run_india_momentum_ablation import (
+from scripts.run_india_momentum_ablation import dry_powder, fixed_mix, output_name
+from screener.strategies.plugins.india_momentum import (
     band_locks,
     circuit_hits,
-    dry_powder,
-    fixed_mix,
-    output_name,
     prepare_bars,
 )
 from screener.strategies.spec import PrepareCtx
