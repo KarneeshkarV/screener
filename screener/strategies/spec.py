@@ -598,6 +598,7 @@ def discover_plugins() -> None:
         ema_trend,
         ha_momentum,
         heikin_ashi,
+        india_momentum,
         low_volatility,
         ma_cross,
         ma_cross_regime,
