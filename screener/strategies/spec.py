@@ -610,6 +610,7 @@ def discover_plugins() -> None:
         minervini_filtered,
         mom_lowvol_combo,
         momentum_12_1,
+        momentum_12_1_tsmom,
         parabolic_sar,
         rs_breakout,
         rs_momentum_regime,
