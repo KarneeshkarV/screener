@@ -111,6 +111,20 @@ class BacktestConfig(BaseModel):
     rank_exit_every: int | None = Field(default=None, ge=1)
     rank_universe_size: int = Field(default=50, ge=1)
 
+    # Stop re-entry cooldown (rolling engine only). A ticker closed by its
+    # stop loss is not a refill candidate for this many trading bars after
+    # the exit bar. 0 keeps the legacy rule: the next bar may buy it again.
+    stop_reentry_cooldown: int = Field(default=0, ge=0)
+    # A stopped ticker is not a refill candidate until the book has opened
+    # this many other entries since the stop. 0 disables the rule.
+    stop_reentry_block_entries: int = Field(default=0, ge=0)
+    # A stopped ticker is not a refill candidate until a signal bar closes
+    # above the price its stop filled at.
+    stop_reentry_require_recovery: bool = False
+    # The exit expression fires only while the prior completed bar closes at
+    # least this fraction below the entry fill. ``None`` keeps it unconditional.
+    exit_expr_min_loss: float | None = Field(default=None, gt=0.0, lt=1.0)
+
     # Portfolio
     top: int = Field(ge=1)
     initial_capital: float = Field(gt=0.0)

@@ -19,7 +19,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from screener.factors.recipes import PERF_Y_LOOKBACK, perf_y
+from screener.factors.recipes import (
+    PERF_Y_LOOKBACK,
+    perf_y,
+    dist_from_52w_high,
+)
 from screener.relative_strength import (
     RS_RANK_WINDOW,
     RS_RATIO_WINDOW,
@@ -209,6 +213,30 @@ class TestLowVolatility:
         )
         got = realized_volatility(close, _traded())
         assert got.iloc[-1] > 0.0
+
+
+class TestDistFrom52wHigh:
+    def test_stub_inside_the_window_yields_no_reading(self):
+        """The window's max reads every close, so one stub sets a fake high."""
+        close = _real().copy()
+        close.iloc[-10] = 0.0001
+        got = dist_from_52w_high(close, _traded())
+        assert pd.isna(got.iloc[-1])
+
+    def test_real_series_still_scores(self):
+        close = _real()
+        got = dist_from_52w_high(close, _traded())
+        assert got.iloc[-1] == pytest.approx(0.0)
+
+    def test_untraded_series_yields_no_reading(self):
+        got = dist_from_52w_high(_real(), _mostly_untraded())
+        assert pd.isna(got.iloc[-1])
+
+    def test_a_flat_shell_is_not_at_its_high(self):
+        """A stub line is always at its own high; the gate must refuse it."""
+        flat_stub = pd.Series(0.0001, index=_index())
+        got = dist_from_52w_high(flat_stub, pd.Series(0.0, index=_index()))
+        assert pd.isna(got.iloc[-1])
 
 
 class TestMinerviniQualityFeatures:
