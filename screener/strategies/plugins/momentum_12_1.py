@@ -107,7 +107,7 @@ def risk_adjusted_momentum(
     ``mom/vol`` is NaN wherever either leg is missing or vol is non-positive.
     """
     mom = momentum_12_1_score(close, volume)
-    vol = realized_volatility(close)
+    vol = realized_volatility(close, volume=volume)
     score = mom / vol
     score = score.where(vol > 0)
     return mom, vol, score
