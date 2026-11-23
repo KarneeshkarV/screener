@@ -33,6 +33,7 @@ from screener.financials import as_percent as _as_percent
 from screener.financials import first_number, pct_change
 from screener.provider_utils import fmp_get
 from screener.providers import CachedProvider, ProviderSpec
+from screener.resilience import RetryConfig, call_with_resilience
 
 LOG = logging.getLogger(__name__)
 
@@ -287,6 +288,16 @@ def _fmp_row_effective_date(
 
 _FMP_TIMEOUT = 30.0
 
+# Returned by a section request whose retries are exhausted, so
+# ``_fetch_fmp_sections`` can tell a provider failure apart from a vendor that
+# legitimately answered with nothing.
+_FMP_SECTION_FAILED = object()
+
+# Resilience now lives on each section request, so the provider seam wrapped
+# around the whole payload must not retry it: a retry there re-ran every
+# endpoint that had already answered.
+_FMP_PAYLOAD_RETRY = RetryConfig(attempts=1)
+
 
 def _fmp_get(
     session: requests.Session,
@@ -299,6 +310,28 @@ def _fmp_get(
     )
 
 
+def _fmp_section(
+    session: requests.Session,
+    symbol: str,
+    section: str,
+    params: Mapping[str, Any],
+    api_key: str,
+) -> Any:
+    """Fetch one FMP endpoint with its own retry budget and rate-limit slot.
+
+    Wrapping all five sequential requests in a single ``call_with_resilience``
+    charged ``ProviderRateLimiter`` once for five HTTP calls - five times the
+    configured FMP rate, which is how a cold fundamentals fetch earned 429s -
+    and made a failure on the last endpoint re-fetch the first four.
+    """
+    return call_with_resilience(
+        "fmp",
+        f"backtest fundamentals {symbol} {section}",
+        lambda: _fmp_get(session, f"{section}/{symbol}", params, api_key),
+        fallback=_FMP_SECTION_FAILED,
+    )
+
+
 def _fetch_fmp_sections(
     symbol: str,
     *,
@@ -308,28 +341,31 @@ def _fetch_fmp_sections(
     fields: tuple[str, ...] = DEFAULT_FUNDAMENTAL_FIELDS,
 ) -> dict[str, Any]:
     params = {"period": "quarter", "limit": limit}
-    payload: dict[str, Any] = {
-        "income": _fmp_get(session, f"income-statement/{symbol}", params, api_key),
-    }
+    payload: dict[str, Any] = {}
+
+    def load(key: str, section: str) -> None:
+        value = _fmp_section(session, symbol, section, params, api_key)
+        if value is _FMP_SECTION_FAILED:
+            # Fail the ticker rather than cache a partial payload as complete:
+            # the provider seam then serves a stale entry, or the empty
+            # fallback, exactly as it did when one failure failed the whole set.
+            raise RuntimeError(f"FMP {section} request failed for {symbol}")
+        payload[key] = value
+
+    load("income", "income-statement")
     # Ratio, key-metric and enterprise-value rows carry no filing date of
     # their own; they are dated from the income and balance statements of the
     # same fiscal period, so the balance sheet is fetched whenever they are.
     if any(field in fields for field in _FMP_STATEMENT_DATED_FIELDS):
-        payload["balance"] = _fmp_get(
-            session, f"balance-sheet-statement/{symbol}", params, api_key
-        )
+        load("balance", "balance-sheet-statement")
     if any(
         field in fields for field in ("pe_ttm", "pb_ttm", "roe_ttm", "debt_to_equity")
     ):
-        payload["ratios"] = _fmp_get(session, f"ratios/{symbol}", params, api_key)
+        load("ratios", "ratios")
     if any(field in fields for field in ("pe_ttm", "pb_ttm")):
-        payload["key_metrics"] = _fmp_get(
-            session, f"key-metrics/{symbol}", params, api_key
-        )
+        load("key_metrics", "key-metrics")
     if "market_cap" in fields:
-        payload["enterprise_values"] = _fmp_get(
-            session, f"enterprise-values/{symbol}", params, api_key
-        )
+        load("enterprise_values", "enterprise-values")
     return payload
 
 
@@ -754,6 +790,9 @@ class FMPFundamentalFetcher:
                 fallback=fallback,
                 ttl_seconds=self.cache_ttl,
                 operation=f"backtest fundamentals {symbol}",
+                # Each section already retries on its own; retrying the whole
+                # payload here would re-fetch every endpoint that succeeded.
+                retry=_FMP_PAYLOAD_RETRY,
             )
             frame = _normalize_fmp_payload(
                 payload,

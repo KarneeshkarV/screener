@@ -14,7 +14,7 @@
 # $REPLAY_AGE_DAYS days after install only accumulate history.
 #
 # Cron example (also documented in README.md):
-#   30 11 * * 1-5 /root/screneer_main/screener/scripts/daily_screen_replay.sh >> "$HOME/.screener/replay-logs/cron.log" 2>&1
+#   30 11 * * 1-5 /root/screener_main/screener/scripts/daily_screen_replay.sh >> "$HOME/.screener/replay-logs/cron.log" 2>&1
 set -uo pipefail
 
 REPO_DIR="${SCREENER_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
