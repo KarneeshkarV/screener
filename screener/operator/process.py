@@ -124,7 +124,12 @@ def build_dataset(
     avg_deliv = _five_day_avg_delivery(today)
 
     fo_today_raw = fetch_fo_bhavcopy(today)
-    options_confirmation = _options_oi_confirmation(load_bhavcopy_chains(today))
+    # The OI confirmation only reads OI/premium deltas from the near-spot
+    # writing metrics — no IV or greeks — so skip the Black-Scholes inversion
+    # over the whole F&O bhavcopy on every operator-scan run.
+    options_confirmation = _options_oi_confirmation(
+        load_bhavcopy_chains(today, derive_iv=False)
+    )
     fo_today = near_month_oi(fo_today_raw)
     prev_day = _trailing_trading_days(today, 1)[0]
     fo_prev = near_month_oi(fetch_fo_bhavcopy(prev_day))[["SYMBOL", "Cumulative_OI"]]
