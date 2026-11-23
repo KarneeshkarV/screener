@@ -10,6 +10,11 @@ strictly causal: day-D chain data is never used to fill a day-D signal.
 P&L always uses observed chain prices. Black-Scholes is used only inside
 strike selection (delta targeting) via :mod:`screener.options.structures`.
 
+Expiry settlement prefers the expiring leg's bhavcopy ``settle`` price, then
+intrinsic against the chain's (unadjusted) spot, and only then intrinsic
+against the underlying close. The underlying series may be split/bonus
+adjusted while NSE strikes are nominal, so it is deliberately the last resort.
+
 ``screen_criterion`` is a thin alias: criterion names map to panel-column
 boolean Pine expressions (``CRITERION_EXPRS``). The full options screening
 pipeline is **not** replayed.
@@ -18,6 +23,7 @@ pipeline is **not** replayed.
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
@@ -304,6 +310,55 @@ def _mark_legs(
     return marks, updated, fresh
 
 
+def _expiry_settlement_marks(
+    pos: _OpenPosition,
+    chain: OptionChain | None,
+    *,
+    as_of: date,
+    underlying_close: float | None,
+    marks: list[float],
+) -> tuple[list[float], bool]:
+    """Settle legs expiring on/before ``as_of`` and keep the rest at MTM.
+
+    An expiring leg is valued at, in order: today's bhavcopy ``settle`` for
+    that contract, intrinsic against today's chain spot, then intrinsic
+    against the underlying close. The last fallback is weakest because the
+    underlying series can be split/bonus adjusted while NSE strikes are
+    nominal. Legs with a later expiry keep their MTM mark.
+
+    Returns the marks and whether any expiring leg had no settle, spot, or
+    underlying close and therefore kept a carried or entry mark.
+    """
+    settled = list(marks)
+    carried = False
+    spot = chain.spot if chain is not None else None
+    spot_ok = spot is not None and math.isfinite(spot) and spot > 0
+    close_ok = (
+        underlying_close is not None
+        and math.isfinite(underlying_close)
+        and underlying_close > 0
+    )
+    for index, leg in enumerate(pos.legs):
+        if leg.expiry > as_of:
+            continue
+        contract = _find_contract(
+            chain, right=leg.right, strike=leg.strike, expiry=leg.expiry
+        )
+        settle = contract.settle if contract is not None else None
+        if settle is not None and math.isfinite(settle) and settle > 0:
+            settled[index] = float(settle)
+            continue
+        if spot_ok and spot is not None:
+            settled[index] = _intrinsic(leg.right, leg.strike, float(spot))
+            continue
+        if close_ok and underlying_close is not None:
+            settled[index] = _intrinsic(leg.right, leg.strike, underlying_close)
+            continue
+        if _mark_price(contract) is None:
+            carried = True
+    return settled, carried
+
+
 def _close_position(
     pos: _OpenPosition,
     marks: list[float],
@@ -368,8 +423,15 @@ def _check_exit(
 
     if dte <= 0:
         # The position cannot be held past expiry. The caller settles at
-        # intrinsic when it has a spot; marks already prefer settle.
+        # settle/spot intrinsic when it has one.
         return "expiry", True
+
+    if day <= pos.entry_date:
+        # A structure opened on this bar cannot also be judged on it. The
+        # entry fill already paid slippage and commission, so marking to mid
+        # alone can look like a stop/target/DTE hit and churn the same bar.
+        # True expiry above is the only same-bar exit.
+        return None
 
     mark_premium = _mtm_premium(pos.legs, marks)
     ret = _position_return_pct(pos.entry_premium, mark_premium, pos.gross_premium)
@@ -579,9 +641,10 @@ def run_options_position_backtest(
         # 2) MTM + exits for open positions.
         for sym, pos in list(open_positions.items()):
             u_close = _underlying_close(sym, day)
-            marks, carry_marks[sym], fresh = _mark_legs(
+            chain = chains.get(sym)  # only today's chain for fresh marks
+            marks, carry_marks[sym], _ = _mark_legs(
                 pos,
-                chains.get(sym),  # only today's chain for fresh marks
+                chain,
                 as_of=day,
                 underlying_close=u_close,
                 carry=carry_marks.get(sym, {}),
@@ -594,28 +657,32 @@ def run_options_position_backtest(
             exit_sig = (
                 _signal_on(sym, day, exit_signals) if exit_ast is not None else False
             )
-            # Don't exit on the entry day via exit_expr/time before marks settle.
             decision = _check_exit(
                 pos,
                 marks,
                 day=day,
                 underlying_close=u_close,
-                exit_signal=exit_sig and day > pos.entry_date,
+                exit_signal=exit_sig,
                 cfg=cfg,
             )
             if decision is not None:
                 reason, at_expiry = decision
-                if at_expiry and u_close is not None:
-                    marks = [
-                        _intrinsic(leg.right, leg.strike, u_close) for leg in pos.legs
-                    ]
-                # No settle price and no spot on expiry day: the exit uses a
-                # carried mark. Label it, so it is not read as a settle.
-                carried_exit = at_expiry and u_close is None and not fresh
+                carried_exit = False
+                if at_expiry:
+                    marks, carried_exit = _expiry_settlement_marks(
+                        pos,
+                        chain,
+                        as_of=day,
+                        underlying_close=u_close,
+                        marks=marks,
+                    )
+                # No settle price, chain spot, or underlying close on expiry
+                # day: the exit uses a carried mark. Label it, so it is not
+                # read as a settle.
                 if carried_exit:
                     warnings.append(
-                        f"{sym}: no settle price or underlying close on expiry "
-                        f"{day}; settled at the last known mark"
+                        f"{sym}: no settle price, chain spot, or underlying "
+                        f"close on expiry {day}; settled at the last known mark"
                     )
                 trade = _close_position(
                     pos,
