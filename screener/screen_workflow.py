@@ -504,6 +504,19 @@ def _finish_screen(
     if request.earnings or request.earnings_buffer is not None:
         df = enrich_days_to_earnings(df, request.market)
     if request.earnings_buffer is not None:
+        # Unknown dates are deliberately kept (a missing date is not a known
+        # imminent report). On India the upcoming-date source can be empty for
+        # every row, which would make the buffer look like it ran and matched
+        # nothing. Say so instead of silently passing everything through.
+        no_known_dates = not df.empty and (
+            "days_to_earnings" not in df.columns or df["days_to_earnings"].isna().all()
+        )
+        if request.market == "india" and no_known_dates:
+            LOG.warning(
+                "--earnings-buffer %d on india had no upcoming earnings dates "
+                "for any row, so nothing was filtered.",
+                request.earnings_buffer,
+            )
         df = filter_earnings_buffer(df, request.earnings_buffer)
 
     if request.output_csv:
