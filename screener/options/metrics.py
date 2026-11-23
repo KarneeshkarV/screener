@@ -261,21 +261,24 @@ def _near_spot_writing(
 def _notional_totals(
     contracts: Iterable[OptionContract], spot: float | None
 ) -> tuple[float | None, float | None]:
+    """Rupee notional of open interest and traded volume.
+
+    ``volume`` is reported in contracts (lots) by every provider, so it is
+    always scaled by ``lot_size``. ``oi`` is scaled by ``lot_size`` only when
+    the source reports it in contracts; NSE bhavcopy already reports OI in
+    underlying units, and scaling those by ``lot_size`` again would inflate
+    ``notional_oi`` by a factor of the lot size.
+    """
     rows = [contract for contract in contracts if contract.lot_size is not None]
     if spot is None or not rows:
         return None, None
-    oi = sum(
-        contract.oi
-        * (contract.lot_size if contract.lot_size is not None else 0.0)
-        * spot
-        for contract in rows
-    )
-    volume = sum(
-        contract.volume
-        * (contract.lot_size if contract.lot_size is not None else 0.0)
-        * spot
-        for contract in rows
-    )
+    oi = 0.0
+    volume = 0.0
+    for contract in rows:
+        lot_size = contract.lot_size if contract.lot_size is not None else 0.0
+        oi_multiplier = 1.0 if contract.oi_unit == "units" else lot_size
+        oi += contract.oi * oi_multiplier * spot
+        volume += contract.volume * lot_size * spot
     return oi, volume
 
 

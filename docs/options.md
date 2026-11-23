@@ -112,7 +112,9 @@ the feed.
 Aggregates cover all unexpired contracts in a snapshot:
 
 - OI PCR, volume PCR, and call/put OI ratio;
-- call/put OI and volume, their daily change, and India notionals using lot size;
+- call/put OI and volume, their daily change, and India notionals. NSE
+  bhavcopy `OpnIntrst` is already underlying shares, while traded volume is in
+  contracts, so only volume is scaled by the lot size;
 - IV median, expanding IV rank/percentile, and per-symbol trailing option volume;
 - snapshot-difference OI changes for US rows when the source has no daily change.
 

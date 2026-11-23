@@ -182,8 +182,15 @@ def test_core_metrics_from_real_bhavcopy(sample_frame: pd.DataFrame):
     assert metrics.resistance_strikes[0] == 1300.0
     assert metrics.call_oi_change == 3_150_000
     assert metrics.put_oi_change == 1_144_500
+    # UDiff ``OpnIntrst`` is already in underlying shares (contracts * lot
+    # size), so notional OI is shares * spot — multiplying by the lot size
+    # again would inflate it ~500x. ``TtlTradgVol`` is in contracts, so
+    # notional volume does need the lot size.
     assert metrics.notional_oi == pytest.approx(
-        (metrics.call_oi + metrics.put_oi) * 500 * 1275.9
+        (metrics.call_oi + metrics.put_oi) * 1275.9
+    )
+    assert metrics.notional_volume == pytest.approx(
+        (metrics.call_volume + metrics.put_volume) * 500 * 1275.9
     )
     # IV is now inverted point-in-time from the bhavcopy settle price.
     assert metrics.median_iv is not None and 0 < metrics.median_iv < 5.0

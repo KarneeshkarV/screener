@@ -110,12 +110,18 @@ def select_strike(
     rule: str,
     *,
     as_of: date | None = None,
+    anchor_strike: float | None = None,
 ) -> OptionContract | None:
     """Select a contract by strike rule.
 
     Rules:
     * ``atm`` — nearest strike to spot
     * ``moneyness:<±pct>`` — nearest to ``spot * (1 + pct)`` (pct as decimal, e.g. 0.05)
+    * ``anchor:<±pct>`` — nearest to ``anchor_strike * (1 + pct)``, restricted to
+      strikes strictly beyond ``anchor_strike`` in the direction of ``pct``
+      (higher for positive, lower for negative). Requires ``anchor_strike``;
+      returns ``None`` when the chain has no strike in that wing, so a spread
+      never collapses to one strike or inverts.
     * ``delta:<abs>`` — nearest |delta| via IV solve + BS delta; falls back to
       moneyness with a warning when no IV solves
     """
@@ -140,6 +146,25 @@ def select_strike(
         except ValueError:
             return None
         return _nearest_strike(contracts, float(spot) * (1.0 + pct))
+
+    if normalized.startswith("anchor:"):
+        try:
+            pct = float(normalized.split(":", 1)[1])
+        except ValueError:
+            return None
+        if anchor_strike is None or anchor_strike <= 0 or pct == 0:
+            return None
+        if pct > 0:
+            wing = [
+                contract for contract in contracts if contract.strike > anchor_strike
+            ]
+        else:
+            wing = [
+                contract for contract in contracts if contract.strike < anchor_strike
+            ]
+        if not wing:
+            return None
+        return _nearest_strike(wing, anchor_strike * (1.0 + pct))
 
     if normalized.startswith("delta:"):
         try:
@@ -295,12 +320,16 @@ def _vertical(
 
     ``long_side_near`` True → long the near (strike_rule) leg and short the far
     wing; False → short near / long far (credit spreads).
+
+    The wing is anchored to the resolved near strike rather than spot: a
+    spot-relative ``moneyness`` wing collapses onto the near strike (or lands
+    on the wrong side of it) whenever the near leg is not ATM.
     """
     w = abs(width_pct)
     if right == "call":
-        far_rule = f"moneyness:{w:g}"
+        far_rule = f"anchor:{w:g}"
     else:
-        far_rule = f"moneyness:{-w:g}"
+        far_rule = f"anchor:{-w:g}"
     near_side = 1 if long_side_near else -1
     far_side = -near_side
     return StructureSpec(
@@ -319,6 +348,7 @@ def _vertical(
                 lots=lots,
                 strike_rule=far_rule,
                 expiry_rule=expiry_rule,
+                anchor_leg=0,
             ),
         ),
     )
