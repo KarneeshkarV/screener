@@ -97,12 +97,16 @@ def fii_dii_metric_series(panel: pd.DataFrame) -> pd.DataFrame:
         dii_5d = float(dii.tail(5).sum()) if not dii.empty else None
         fii_trend: float | None = None
         if len(fii) >= 5:
-            baseline = float(fii.tail(20).mean())
+            # Normalize by the average *magnitude* of the prior 20 sessions,
+            # not their signed mean. Dividing by a signed baseline flips the
+            # sign when FIIs are net sellers: -3000 / -1000 would read as +3.0
+            # even though selling accelerated, and a +2000 buying reversal
+            # would read as -2.0. The absolute baseline also keeps the ratio
+            # finite when inflows and outflows would otherwise cancel to zero.
+            baseline_abs = float(fii.iloc[:-1].tail(20).abs().mean())
             today = float(fii.iloc[-1])
-            # A negative baseline preserves the sign of the ratio; only a zero
-            # or NaN baseline is undefined.
-            if baseline != 0.0 and not pd.isna(baseline):
-                fii_trend = round(today / baseline, 4)
+            if baseline_abs != 0.0 and not pd.isna(baseline_abs):
+                fii_trend = round(today / baseline_abs, 4)
         rows.append(
             {
                 "date": current,

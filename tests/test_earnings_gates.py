@@ -231,6 +231,7 @@ def test_fetch_next_earnings_dates_india_stub():
         ["RELIANCE", "NSE:TCS", "INFY"],
         "india",
         as_of=date(2024, 6, 1),
+        yf_fetcher=lambda _ticker: None,
         nse_fetcher=lambda: nse,
     )
     assert out["RELIANCE"] == date(2024, 7, 10)
@@ -244,7 +245,11 @@ def test_fetch_next_earnings_dates_provider_failure():
         raise RuntimeError("offline")
 
     out = fetch_next_earnings_dates(
-        ["AAA"], "india", as_of=date(2024, 1, 1), nse_fetcher=boom
+        ["AAA"],
+        "india",
+        as_of=date(2024, 1, 1),
+        yf_fetcher=lambda _ticker: None,
+        nse_fetcher=boom,
     )
     assert out == {"AAA": None}
 
@@ -252,7 +257,10 @@ def test_fetch_next_earnings_dates_provider_failure():
 def test_fetch_next_earnings_dates_empty_and_provider_edge_cases():
     assert fetch_next_earnings_dates([], "us") == {}
     assert fetch_next_earnings_dates(
-        ["AAA"], "india", nse_fetcher=lambda: pd.DataFrame()
+        ["AAA"],
+        "india",
+        yf_fetcher=lambda _ticker: None,
+        nse_fetcher=lambda: pd.DataFrame(),
     ) == {"AAA": None}
 
     def yf_boom(_ticker):

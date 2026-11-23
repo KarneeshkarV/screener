@@ -838,6 +838,31 @@ def next_earnings_date(
     return min(upcoming) if upcoming else None
 
 
+def _next_yf_earnings_date(
+    symbol: str,
+    market: str,
+    as_of: date,
+    fetch_yf: Any,
+) -> tuple[str, date | None]:
+    """Resolve one symbol's next Yahoo earnings date, never raising."""
+    from screener.symbols import tv_to_yf
+
+    yf_sym = tv_to_yf(str(symbol), market)
+    try:
+        ed = fetch_yf(yf_sym)
+    except Exception as exc:
+        logger.warning(
+            "yf_next_earnings_failed",
+            extra={"ticker": yf_sym, "error": str(exc)},
+        )
+        return symbol, None
+    if ed is None or (isinstance(ed, pd.DataFrame) and ed.empty):
+        return symbol, None
+    if isinstance(ed, pd.DataFrame):
+        return symbol, next_earnings_date(list(ed.index), as_of)
+    return symbol, next_earnings_date(ed, as_of)
+
+
 def fetch_next_earnings_dates(
     symbols: list[str],
     market: str,
@@ -848,7 +873,12 @@ def fetch_next_earnings_dates(
 ) -> dict[str, date | None]:
     """Map screen symbols to their next known earnings date (or ``None``).
 
-    Market-aware: yfinance for US, NSE corporate announcements for India.
+    US symbols resolve per-ticker from yfinance. Indian symbols try Yahoo
+    first (``.NS``/``.BO`` earnings dates include future board-meeting dates),
+    then fall back to NSE corporate announcements for symbols Yahoo could not
+    resolve. NSE only publishes *filed* results, so on its own it can never
+    return an upcoming date; when neither source yields a future date the
+    limitation is logged rather than silently pretending the symbol is clear.
     Provider failures are logged and yield ``None`` for affected symbols so a
     live screen never aborts on earnings data.
     """
@@ -857,52 +887,59 @@ def fetch_next_earnings_dates(
     if not symbols:
         return result
 
-    if market == "india":
-        fetch_nse = nse_fetcher if nse_fetcher is not None else fetch_earnings_dates_nse
-        try:
-            nse_df = fetch_nse()
-        except Exception as exc:
-            logger.warning("nse_next_earnings_failed", extra={"error": str(exc)})
-            return result
-        if nse_df is None or nse_df.empty:
-            return result
-        # Build yf-style ticker -> next date, then map back to input symbols.
-        by_yf: dict[str, date | None] = {}
-        for ticker, group in nse_df.groupby("ticker", sort=False):
-            by_yf[str(ticker)] = next_earnings_date(group["earnings_date"], as_of_d)
-        from screener.symbols import tv_to_yf
+    fetch_yf = yf_fetcher if yf_fetcher is not None else fetch_earnings_dates_yf
+    max_workers = min(MAX_WORKERS, len(symbols))
 
-        for sym in symbols:
-            yf_sym = tv_to_yf(str(sym), "india")
-            result[sym] = by_yf.get(yf_sym)
-            if result[sym] is None:
-                # Also try bare / .NS variants for name-only screen rows.
-                bare = str(sym).replace(".NS", "").replace(".BO", "")
-                result[sym] = by_yf.get(f"{bare}.NS") or by_yf.get(bare)
+    if market == "india":
+        # Yahoo's earnings_dates carries the next scheduled board meeting for
+        # Indian listings, which NSE announcements do not expose.
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for sym, earnings_date in executor.map(
+                lambda sym: _next_yf_earnings_date(sym, market, as_of_d, fetch_yf),
+                symbols,
+            ):
+                result[sym] = earnings_date
+
+        unresolved = [sym for sym in symbols if result[sym] is None]
+        if unresolved:
+            fetch_nse = (
+                nse_fetcher if nse_fetcher is not None else fetch_earnings_dates_nse
+            )
+            try:
+                nse_df = fetch_nse()
+            except Exception as exc:
+                logger.warning("nse_next_earnings_failed", extra={"error": str(exc)})
+                nse_df = None
+            if nse_df is not None and not nse_df.empty:
+                # Build yf-style ticker -> next date, then map back.
+                by_yf: dict[str, date | None] = {}
+                for ticker, group in nse_df.groupby("ticker", sort=False):
+                    by_yf[str(ticker)] = next_earnings_date(
+                        group["earnings_date"], as_of_d
+                    )
+                from screener.symbols import tv_to_yf
+
+                for sym in unresolved:
+                    yf_sym = tv_to_yf(str(sym), "india")
+                    next_date = by_yf.get(yf_sym)
+                    if next_date is None:
+                        # Also try bare / .NS variants for name-only rows.
+                        bare = str(sym).replace(".NS", "").replace(".BO", "")
+                        next_date = by_yf.get(f"{bare}.NS") or by_yf.get(bare)
+                    result[sym] = next_date
+
+        if all(value is None for value in result.values()):
+            logger.warning(
+                "india_upcoming_earnings_unavailable",
+                extra={"n_tickers": len(symbols), "as_of": as_of_d.isoformat()},
+            )
         return result
 
     # US (and other non-india): per-ticker yfinance earnings_dates (cached).
-    fetch_yf = yf_fetcher if yf_fetcher is not None else fetch_earnings_dates_yf
-    from screener.symbols import tv_to_yf
-
-    def _fetch_one(sym: str) -> tuple[str, date | None]:
-        yf_sym = tv_to_yf(str(sym), market)
-        try:
-            ed = fetch_yf(yf_sym)
-        except Exception as exc:
-            logger.warning(
-                "yf_next_earnings_failed",
-                extra={"ticker": yf_sym, "error": str(exc)},
-            )
-            return sym, None
-        if ed is None or (isinstance(ed, pd.DataFrame) and ed.empty):
-            return sym, None
-        if isinstance(ed, pd.DataFrame):
-            return sym, next_earnings_date(list(ed.index), as_of_d)
-        return sym, next_earnings_date(ed, as_of_d)
-
-    max_workers = min(MAX_WORKERS, len(symbols))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for sym, earnings_date in executor.map(_fetch_one, symbols):
+        for sym, earnings_date in executor.map(
+            lambda sym: _next_yf_earnings_date(sym, market, as_of_d, fetch_yf),
+            symbols,
+        ):
             result[sym] = earnings_date
     return result
