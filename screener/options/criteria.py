@@ -209,6 +209,21 @@ def realized_earnings_moves(
     return out
 
 
+def _upcoming_earnings_dates(
+    symbols: list[str],
+    *,
+    market: str,
+    as_of: date,
+    fetcher: Callable[..., Mapping[str, date | None]] | None,
+) -> dict[str, date | None]:
+    """Next known earnings date per symbol on/after ``as_of`` (best effort)."""
+    if fetcher is None:
+        from screener.earnings_backtest.earnings_dates import fetch_next_earnings_dates
+
+        fetcher = fetch_next_earnings_dates
+    return dict(fetcher(symbols, market, as_of=as_of))
+
+
 def _cheap_earnings_vol(
     latest: pd.DataFrame,
     *,
@@ -216,6 +231,7 @@ def _cheap_earnings_vol(
     as_of: date,
     earnings_fetcher: Callable[..., pd.DataFrame] | None,
     price_fetcher: Callable[..., Mapping[str, pd.DataFrame]] | None,
+    next_earnings_fetcher: Callable[..., Mapping[str, date | None]] | None = None,
 ) -> OptionsCriterionResult:
     implied = _numeric(latest, "implied_move_pct")
     candidates = latest[implied.notna() & implied.gt(0)].copy()
@@ -224,6 +240,69 @@ def _cheap_earnings_vol(
             candidates,
             "No front-expiry ATM straddle quotes are available for cheap_earnings_vol.",
         )
+
+    # A cheap straddle is only an earnings trade if an earnings event lands
+    # inside the front expiry. Without this gate any quiet short-dated weekly
+    # looks cheap against historical earnings moves.
+    as_of_ts = pd.Timestamp(as_of).normalize()
+    if "front_expiry" in candidates.columns:
+        front_expiry = pd.to_datetime(candidates["front_expiry"], errors="coerce")
+    else:
+        front_expiry = pd.Series(pd.NaT, index=candidates.index, dtype="datetime64[ns]")
+    if not isinstance(front_expiry, pd.Series):
+        front_expiry = pd.Series(pd.NaT, index=candidates.index, dtype="datetime64[ns]")
+    candidates["front_expiry_ts"] = front_expiry.dt.tz_localize(None).dt.normalize()
+    candidates = candidates[
+        candidates["front_expiry_ts"].notna()
+        & candidates["front_expiry_ts"].ge(as_of_ts)
+    ].copy()
+    if candidates.empty:
+        return OptionsCriterionResult(
+            candidates.iloc[0:0].copy(),
+            "cheap_earnings_vol needs a front expiry on or after the panel date; "
+            "no quoted expiry covers the screen date.",
+        )
+
+    symbols = candidates["SYMBOL"].astype(str).tolist()
+    try:
+        upcoming = _upcoming_earnings_dates(
+            symbols,
+            market=market,
+            as_of=as_of,
+            fetcher=next_earnings_fetcher,
+        )
+    except Exception as exc:  # noqa: BLE001 - optional overlay degrades cleanly
+        LOG.warning("upcoming earnings dates unavailable: %s", exc)
+        return OptionsCriterionResult(
+            candidates.iloc[0:0].copy(),
+            f"Upcoming earnings dates are unavailable: {exc}.",
+        )
+
+    def _next_date(symbol: str) -> date | None:
+        return upcoming.get(symbol)
+
+    next_earnings = pd.to_datetime(
+        candidates["SYMBOL"].astype(str).map(_next_date), errors="coerce"
+    )
+    if not isinstance(next_earnings, pd.Series):
+        next_earnings = pd.Series(
+            pd.NaT, index=candidates.index, dtype="datetime64[ns]"
+        )
+    next_earnings = next_earnings.dt.normalize()
+    gated = (
+        next_earnings.notna()
+        & next_earnings.ge(as_of_ts)
+        & next_earnings.le(candidates["front_expiry_ts"])
+    )
+    candidates = candidates[gated].copy()
+    if candidates.empty:
+        return OptionsCriterionResult(
+            candidates.iloc[0:0].copy(),
+            "No known earnings event falls between the panel date and the front "
+            "expiry; cheap_earnings_vol only fires on earnings expiries.",
+        )
+    candidates["next_earnings_date"] = next_earnings[gated]
+
     try:
         realized = realized_earnings_moves(
             candidates["SYMBOL"].astype(str).tolist(),
@@ -254,8 +333,9 @@ def _cheap_earnings_vol(
     selected["coverage_days"] = selected["earnings_events"].astype(int)
     return OptionsCriterionResult(
         selected.sort_values("vol_edge_pct", ascending=False),
-        "Implied move is the front ATM straddle/spot; realized baseline is the "
-        "median absolute close-to-next-close move across past earnings (2+ events).",
+        "Implied move is the front ATM straddle/spot on an expiry that contains "
+        "a known earnings event; realized baseline is the median absolute "
+        "close-to-next-close move across past earnings (2+ events).",
     )
 
 
@@ -293,6 +373,7 @@ def screen_options_criterion(
     panel: pd.DataFrame | None = None,
     earnings_fetcher: Callable[..., pd.DataFrame] | None = None,
     price_fetcher: Callable[..., Mapping[str, pd.DataFrame]] | None = None,
+    next_earnings_fetcher: Callable[..., Mapping[str, date | None]] | None = None,
 ) -> OptionsCriterionResult:
     """Evaluate one registered options criterion without Click/provider coupling."""
     effective_date = as_of or date.today()
@@ -314,6 +395,7 @@ def screen_options_criterion(
         as_of=effective_date,
         earnings_fetcher=earnings_fetcher,
         price_fetcher=price_fetcher,
+        next_earnings_fetcher=next_earnings_fetcher,
     )
     if limit > 0:
         return OptionsCriterionResult(result.frame.head(limit), result.message)

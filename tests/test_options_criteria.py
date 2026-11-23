@@ -43,6 +43,9 @@ def _panel() -> pd.DataFrame:
                     "put_writing_near_spot": 80.0 if symbol == "AAA" else None,
                     "implied_move_pct": 4.0 if symbol == "AAA" else 10.0,
                     "pcr": 1.2,
+                    # cheap_earnings_vol requires an earnings event inside the
+                    # front expiry; this fixture's expiries sit after its as_of.
+                    "front_expiry": "2026-07-17",
                 }
             )
     return pd.DataFrame(rows)
@@ -168,6 +171,16 @@ def _prices_fixture(tickers, _start, _end):
     }
 
 
+def _next_earnings_fixture(tickers, market, *, as_of=None):
+    assert market == "us"
+    assert as_of == date(2026, 7, 6)
+    # AAA reports inside the fixture's 2026-07-17 front expiry; BBB has no
+    # known upcoming event, so it must never surface as cheap earnings vol.
+    return {
+        ticker: date(2026, 7, 10) if ticker == "AAA" else None for ticker in tickers
+    }
+
+
 def test_realized_earnings_moves_and_cheap_vol_screen():
     moves = realized_earnings_moves(
         ["AAA"],
@@ -189,6 +202,7 @@ def test_realized_earnings_moves_and_cheap_vol_screen():
         panel=panel,
         earnings_fetcher=_earnings_fixture,
         price_fetcher=_prices_fixture,
+        next_earnings_fetcher=_next_earnings_fixture,
     )
     assert result.frame["SYMBOL"].tolist() == ["AAA"]
     assert result.frame.iloc[0]["realized_earnings_move_pct"] == pytest.approx(6)
@@ -226,9 +240,11 @@ def test_realized_moves_and_cheap_vol_degrade_cleanly():
         "cheap_earnings_vol",
         market="us",
         limit=10,
+        as_of=date(2026, 7, 6),
         panel=_panel(),
         earnings_fetcher=fail,
         price_fetcher=_prices_fixture,
+        next_earnings_fetcher=_next_earnings_fixture,
     )
     assert "unavailable: offline" in failed.message
 
