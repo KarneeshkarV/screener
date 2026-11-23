@@ -55,7 +55,9 @@ def mark_minervini(
         cache_ttl=cache_ttl,
         refresh=refresh,
         fetcher=get_price_fetcher(
-            click.get_current_context().obj, builder=build_price_fetcher
+            click.get_current_context().obj,
+            builder=build_price_fetcher,
+            refresh=refresh,
         ),
     )
     render_rows(rows, console, market)
