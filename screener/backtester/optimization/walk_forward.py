@@ -381,6 +381,35 @@ def _combine_equity_pieces(pieces: list[pd.Series]) -> pd.Series:
     return pd.Series(combined.astype(float))
 
 
+def _aggregate_trial_count(
+    results: list[WalkForwardResult],
+    *,
+    n_combos: int,
+    n_trials_effective: int | None,
+) -> int:
+    """Trials behind the selected folds, for the combined OOS Deflated Sharpe.
+
+    Each training period runs its own trial-register scope over the same grid,
+    so a fold's recorded ``dsr_trials`` is the count its own DSR used. Reusing
+    that number keeps the aggregate on the same convention instead of
+    defaulting to one trial, which would omit ``dsr`` entirely. Fall back to
+    the explicit correlated-trial estimate, then the nominal grid size.
+    """
+    for result in results:
+        recorded = result.best_train.metrics.get("dsr_trials")
+        if recorded is None:
+            continue
+        try:
+            value = float(recorded)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value >= 2:
+            return int(round(value))
+    if n_trials_effective is not None:
+        return max(int(n_trials_effective), 1)
+    return max(int(n_combos), 1)
+
+
 def _sum_fold_fee_metrics(
     results: list[WalkForwardResult],
 ) -> dict[str, float]:
@@ -425,7 +454,9 @@ def walk_forward_optimize(
     """Walk-forward with per-fold train selection only.
 
     Trial register / DSR context uses training-window ``grid_search`` calls
-    only. Test-fold scores are never written into the trial register.
+    only. Test-fold scores are never written into the trial register. The
+    combined OOS Deflated Sharpe reuses the fold's trial count so
+    ``metric="dsr"`` has a finite aggregate objective.
     Aggregate excess-return metrics use the selected constant risk-free hurdle.
     Different selected hurdles across folds are rejected as ambiguous.
     Reuse the same explicit ``experiment_id`` and ``trial_db_path`` across
@@ -651,7 +682,11 @@ def walk_forward_optimize(
 
     benchmark = fetch_benchmark(cfg.benchmark, start_date, end_date, fetcher)
     if not combined_equity.empty and not benchmark.empty:
-        benchmark_aligned = benchmark.reindex(combined_equity.index, method="ffill")
+        # Display curve fills benchmark gaps; a benchmark that begins after the
+        # OOS path has no prior mark, and those leading NaNs are not 0% bars.
+        benchmark_aligned = benchmark.reindex(
+            combined_equity.index, method="ffill"
+        ).dropna()
     elif not combined_equity.empty:
         benchmark_aligned = pd.Series(
             initial_capital,
@@ -660,6 +695,19 @@ def walk_forward_optimize(
         )
     else:
         benchmark_aligned = pd.Series(dtype=float)
+    # Alpha and beta pair one-bar returns on the book calendar, so they need the
+    # unabridged benchmark marks: a pre-filled gap reads as one 0% bar plus a
+    # multi-bar jump and biases the regression (historical/rolling do the same).
+    benchmark_marks = (
+        benchmark.reindex(combined_equity.index)
+        if not combined_equity.empty and not benchmark.empty
+        else None
+    )
+    aggregate_trials = _aggregate_trial_count(
+        results,
+        n_combos=n_combos,
+        n_trials_effective=n_trials_effective,
+    )
 
     aggregate_hurdle = next(iter(selected_hurdles), float(cfg.risk_free_rate))
     if not combined_equity.empty:
@@ -670,6 +718,7 @@ def walk_forward_optimize(
             slot_count,
             periods_per_year=periods_per_year_for_interval(SUPPORTED_INTERVAL),
             risk_free_rate=aggregate_hurdle,
+            benchmark_marks=benchmark_marks,
         )
         if exposure_reason is not None:
             combined_metrics["exposure"] = float("nan")
@@ -686,7 +735,8 @@ def walk_forward_optimize(
                 equity_curve=combined_equity,
                 benchmark_curve=benchmark_aligned,
                 metrics=combined_metrics,
-            )
+            ),
+            n_trials=aggregate_trials,
         )
     else:
         aggregate = {}
@@ -750,6 +800,7 @@ def walk_forward_optimize(
         "fold_boundary_policy": FOLD_BOUNDARY_POLICY,
         "capital_policy": CAPITAL_POLICY,
         "aggregate_risk_free_rate": aggregate_hurdle,
+        "aggregate_dsr_trials": aggregate_trials if aggregate_trials > 1 else None,
         "risk_free_policy": "selected_constant_hurdle_reject_varying_folds",
         "window_length_unit": WINDOW_LENGTH_UNIT,
         "train_days": train_days,
