@@ -1494,6 +1494,12 @@ class ExchangeFallbackPriceFetcher:
     symbol identity they asked for; only the wire request changes exchange.
     Symbols the caller already pinned to ``.BO`` are left alone, and the
     ``.NS`` test makes this a no-op for US universes.
+
+    A strict refresh (``strict=True, refresh=True``) makes the inner fetcher
+    raise ``StaleDataError`` for the whole batch instead of returning leftover
+    cache. That refusal must not bypass the exchange retry: a name whose NSE
+    history is stale may still trade freshly on BSE, so the ``.NS`` symbols
+    are retried there before the error is considered final.
     """
 
     def __init__(self, inner: PriceFetcher) -> None:
@@ -1503,7 +1509,14 @@ class ExchangeFallbackPriceFetcher:
         self, tickers: Iterable[str], start: date, end: date
     ) -> dict[str, pd.DataFrame]:
         ticker_list = [ticker for ticker in tickers if ticker]
-        results = self.inner.fetch(ticker_list, start, end)
+        stale_error: StaleDataError | None = None
+        try:
+            results = self.inner.fetch(ticker_list, start, end)
+        except StaleDataError as exc:
+            # No partial panel survives this exception, so the retry below
+            # covers every ``.NS`` symbol in the batch.
+            stale_error = exc
+            results = {}
 
         retry = {
             ticker: f"{ticker[: -len('.NS')]}.BO"
@@ -1512,9 +1525,16 @@ class ExchangeFallbackPriceFetcher:
             and (results.get(ticker) is None or results[ticker].empty)
         }
         if not retry:
+            if stale_error is not None:
+                raise stale_error
             return results
 
-        bse_results = self.inner.fetch(retry.values(), start, end)
+        bse_error: StaleDataError | None = None
+        try:
+            bse_results = self.inner.fetch(retry.values(), start, end)
+        except StaleDataError as exc:
+            bse_error = exc
+            bse_results = {}
         merged = dict(results)
         swapped: list[str] = []
         for ns_symbol, bo_symbol in retry.items():
@@ -1534,11 +1554,31 @@ class ExchangeFallbackPriceFetcher:
                 count=len(swapped),
                 tickers=sorted(swapped)[:20],
             )
+        if stale_error is not None:
+            # Only the stale refusal is final when a requested name still has
+            # no fresh frame after the exchange retry. A symbol that came back
+            # from BSE is fresh data and clears it.
+            still_stale = [
+                ticker
+                for ticker in dict.fromkeys(ticker_list)
+                if merged.get(ticker) is None or merged[ticker].empty
+            ]
+            if still_stale:
+                raise stale_error
+        elif bse_error is not None:
+            raise bse_error
         return merged
 
 
 class FallbackPriceFetcher:
-    """Use a primary fetcher first and fill missing ticker frames from fallback."""
+    """Use a primary fetcher first and fill missing ticker frames from fallback.
+
+    Under ``strict=True, refresh=True`` the primary refuses to serve leftover
+    cache and raises ``StaleDataError``. That is the case where a fallback
+    provider is most valuable, so the refusal is caught and the fallback is
+    tried for the tickers the primary could not serve fresh. The stale error is
+    re-raised only when the fallback cannot supply fresh data either.
+    """
 
     def __init__(self, primary: PriceFetcher, fallback: PriceFetcher) -> None:
         self.primary = primary
@@ -1548,7 +1588,14 @@ class FallbackPriceFetcher:
         self, tickers: Iterable[str], start: date, end: date
     ) -> dict[str, pd.DataFrame]:
         ticker_list = [ticker for ticker in tickers if ticker]
-        primary_results = self.primary.fetch(ticker_list, start, end)
+        stale_error: StaleDataError | None = None
+        try:
+            primary_results = self.primary.fetch(ticker_list, start, end)
+        except StaleDataError as exc:
+            # The primary returns no partial panel with this exception, so the
+            # fallback is asked for the whole batch rather than a subset.
+            stale_error = exc
+            primary_results = {}
         missing = [
             ticker
             for ticker in ticker_list
@@ -1559,7 +1606,12 @@ class FallbackPriceFetcher:
         if not missing:
             return primary_results
 
-        fallback_results = self.fallback.fetch(missing, start, end)
+        try:
+            fallback_results = self.fallback.fetch(missing, start, end)
+        except StaleDataError as exc:
+            if stale_error is not None:
+                raise stale_error from exc
+            raise
         results = dict(primary_results)
         for ticker in missing:
             frame = fallback_results.get(ticker)
@@ -1567,6 +1619,14 @@ class FallbackPriceFetcher:
                 results[ticker] = frame
             else:
                 results.setdefault(ticker, pd.DataFrame(columns=OHLCV_COLUMNS))
+        if stale_error is not None:
+            still_stale = [
+                ticker
+                for ticker in missing
+                if results.get(ticker) is None or results[ticker].empty
+            ]
+            if still_stale:
+                raise stale_error
         return results
 
 

@@ -45,7 +45,11 @@ from screener.backtester.models import (
 )
 from screener.backtester.pine import PineError, parse, required_lookback
 from screener.backtester.rolling_candidates import _apply_min_score, _setup_scores
-from screener.backtester.portfolio import Portfolio, build_portfolio_curve
+from screener.backtester.portfolio import (
+    Portfolio,
+    affordable_buy_shares,
+    build_portfolio_curve,
+)
 from screener.backtester.sizing import (
     entry_budget_for,
     marked_portfolio_equity,
@@ -268,8 +272,13 @@ class _ReserveRotationSource:
         )
         # A queued order dropped without a fill (no bar left, a non-finite
         # reference price, no affordable share) never held the name, so the
-        # name goes back to the pool and a reserve back to the queue front.
-        # Otherwise a reserve cancelled once could never be rotated in again.
+        # name goes back to the pool and the reserve back into the queue.
+        # It goes to the back, not the front: a reserve that cannot fill at
+        # its execution bar would otherwise be popped again by the same day's
+        # reserve rotation and block every reserve behind it for the rest of
+        # the run. The scan-time whole-share check in ``after_exits`` is the
+        # first line of defence; this keeps a gap-up or missing execution bar
+        # from re-starving the queue. The back still keeps it in rotation.
         # A dropped re-entry waits for its next signal again: it never fired,
         # so it keeps the re-entry count it took when the slot freed.
         for slot_id, ticker in queued.items():
@@ -285,7 +294,7 @@ class _ReserveRotationSource:
                 self.taken.discard(ticker)
                 reserve = self._reserve_rows.get(ticker)
                 if reserve is not None and reserve not in self.reserve_queue:
-                    self.reserve_queue.appendleft(reserve)
+                    self.reserve_queue.append(reserve)
 
     def before_exits(self, day: pd.Timestamp) -> None:
         cfg = self.cfg
@@ -416,6 +425,24 @@ class _ReserveRotationSource:
                     series_cache=self.caches.frame(ticker, reserve_bars).sizing_series,
                 )
                 if entry_budget <= 0:
+                    deferred.append(reserve)
+                    continue
+                if (
+                    cfg.entry_order_type != "limit"
+                    and cfg.market.lower() == "india"
+                    and affordable_buy_shares(
+                        portfolio.cost_model,
+                        float(reserve_bars["close"].iloc[reserve_signal_idx]),
+                        entry_budget,
+                        whole_shares=True,
+                    )
+                    <= 0
+                ):
+                    # Reject using only the completed signal close. A whole
+                    # share this budget cannot buy now would be cancelled on
+                    # its later execution bar (ADR 0005), and even demoted to
+                    # the back it would be re-scanned every day. Keeping it
+                    # deferred lets a later signal close promote it instead.
                     deferred.append(reserve)
                     continue
                 self.pending_entry_orders[slot_id] = PendingEntryOrder(
