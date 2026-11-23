@@ -516,11 +516,16 @@ def _position_intervals(
     property of the position, not of the fill, so all tranches of one position
     collapse into ``[entry_date, last tranche's exit_date]``.
 
-    Tranches are identified by the portfolio lot key ``(ticker, open_seq)``
-    that ``Portfolio`` stamps on every trade it emits. Grouping on the lot -
-    not on the ticker, and not on ``(ticker, entry_date)`` - keeps genuinely
-    separate positions separate: ``--allow-reentry`` re-entries and pyramided
-    lots each own a distinct ``open_seq``.
+    Tranches are identified by the portfolio lot key ``(ticker, open_seq,
+    entry_date)`` that ``Portfolio`` stamps on every trade it emits. Grouping on
+    the lot - not on the ticker alone - keeps genuinely separate positions
+    separate: ``--allow-reentry`` re-entries and pyramided lots each own a
+    distinct ``open_seq``. The ``entry_date`` is part of the key because a
+    stitched walk-forward ledger concatenates folds that each number their lots
+    from 1, so ``(ticker, open_seq)`` alone would merge the same slot across
+    disjoint folds into one continuous interval and inflate OOS exposure. All
+    tranches of one position share its ``entry_date``, so partial exits still
+    collapse together.
 
     ``open_seq == 0`` marks a trade with no lot identity (hand-built, or
     rebuilt from a CSV ledger that does not carry the column). Those are left
@@ -528,11 +533,11 @@ def _position_intervals(
     """
     entries: list[pd.Timestamp] = []
     exits: list[pd.Timestamp] = []
-    slot_of_lot: dict[tuple[str, int], int] = {}
+    slot_of_lot: dict[tuple[str, int, pd.Timestamp], int] = {}
     for trade in trades:
         entry = pd.Timestamp(trade.entry_date)
         exit_ = pd.Timestamp(trade.exit_date)
-        lot = (trade.ticker, trade.open_seq)
+        lot = (trade.ticker, trade.open_seq, entry)
         slot = slot_of_lot.get(lot) if trade.open_seq else None
         if slot is not None:
             entries[slot] = min(entries[slot], entry)

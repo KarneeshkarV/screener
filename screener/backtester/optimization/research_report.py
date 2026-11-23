@@ -251,8 +251,13 @@ def _verdict(
         return INSUFFICIENT_DATA_VERDICT
     if overfit_flag or degradation >= 0.75:
         return "FAIL: severe IS→OOS degradation / overfit risk"
-    if mc_return_p05 < 0 and oos_metric <= 0:
-        return "FAIL: weak OOS and left-tail MC returns negative"
+    if oos_metric <= 0:
+        # A non-positive OOS metric is never a pass, even when a positive raw
+        # return keeps the MC 5th percentile above zero (e.g. the return clears
+        # the risk-free hurdle in levels but not after it).
+        if mc_return_p05 < 0:
+            return "FAIL: weak OOS and left-tail MC returns negative"
+        return "FAIL: non-positive OOS performance"
     if degradation >= 0.40 or mc_return_p05 < 0:
         return "CAUTION: material degradation or negative MC 5th-percentile"
     return PASS_VERDICT
