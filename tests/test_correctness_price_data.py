@@ -287,6 +287,30 @@ def test_fmp_undated_sections_wait_for_both_period_statements():
     assert frame.market_cap.dropna().tolist() == [1000000]
 
 
+def test_fmp_enterprise_value_source_uses_statement_date():
+    # fcf_yield reads market cap from the undated enterprise_values row.
+    payload = {
+        "income": [
+            {
+                "date": "2023-12-31",
+                "acceptedDate": "2024-02-05",
+                "revenue": 100,
+                "netIncome": 10,
+            }
+        ],
+        "balance": [{"date": "2023-12-31", "acceptedDate": "2024-02-20"}],
+        "cashflow": [
+            {"date": "2023-12-31", "acceptedDate": "2024-02-10", "freeCashFlow": 50}
+        ],
+        "enterprise_values": [{"date": "2023-12-31", "marketCapitalization": 1000}],
+    }
+    frame = fundamentals._normalize_fmp_payload(
+        payload, fields=("fcf_yield",), lag_days=1
+    )
+    assert frame.fcf_yield.first_valid_index() == pd.Timestamp("2024-02-21")
+    assert frame.loc["2024-02-21", "fcf_yield"] == 0.05
+
+
 def test_fmp_placeholder_filing_stamp_uses_estimated_period_end_lag():
     # FMP India stamps acceptedDate at the period end itself.
     payload = {
