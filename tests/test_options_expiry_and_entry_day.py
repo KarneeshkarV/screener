@@ -224,6 +224,47 @@ def test_expiry_settlement_uses_underlying_close_only_as_last_resort():
     assert "exit_mark" not in trade.details
 
 
+def test_otm_expiry_settle_of_zero_beats_split_adjusted_close():
+    # A long put that expires OTM settles at 0.0. With no chain spot, the
+    # split-adjusted close (640, below the 1270 strike) would otherwise
+    # fabricate a huge 630 intrinsic payout for the put.
+    expiry, d0, d1 = date(2026, 7, 10), date(2026, 7, 8), date(2026, 7, 9)
+    schedule = {
+        d1: _chain(
+            d1,
+            _contract(d1, right="put", expiry=expiry, last=10.0, settle=10.0),
+        ),
+        expiry: _chain(
+            expiry,
+            _contract(expiry, right="put", expiry=expiry, last=0.5, settle=0.0),
+            spot=None,
+        ),
+    }
+    bars = _bars(d0, expiry, expiry_day=expiry, expiry_close=640.0)
+    cfg = OptionsBacktestConfig(
+        tickers=("RELIANCE",),
+        start=d0,
+        end=expiry,
+        structure="long_put",
+        entry_expr="true",
+        exit_dte=1,
+        max_hold=None,
+    )
+    result = _run(
+        cfg,
+        chain_loader=_loader(schedule),
+        price_fetcher=StubPriceFetcher({"RELIANCE.NS": bars}),
+    )
+
+    trade = result.trades[0]
+    assert trade.exit_reason == "expiry"
+    assert trade.legs[0].exit_price == pytest.approx(0.0)
+    assert trade.exit_premium == pytest.approx(0.0)
+    # Paid 10 * 500 = 5,000 for a worthless put.
+    assert trade.pnl == pytest.approx(-5_000.0)
+    assert "exit_mark" not in trade.details
+
+
 def test_multi_expiry_only_the_expiring_leg_settles(monkeypatch):
     # A diagonal whose near leg expires on d2 while the far leg still has a
     # month to run. Only the near leg settles; the far leg keeps its MTM mark
@@ -282,6 +323,64 @@ def test_multi_expiry_only_the_expiring_leg_settles(monkeypatch):
     assert by_expiry[far].exit_price == pytest.approx(40.0)
     # Near leg 12 vs 10 and far leg 40 vs 40, 500 shares each.
     assert trade.pnl == pytest.approx(1_000.0)
+    assert "exit_mark" not in trade.details
+
+
+def test_multi_expiry_carried_far_leg_labels_the_exit_carried(monkeypatch):
+    # The near leg settles, but the far leg has no quote on the expiry-day
+    # chain, so its MTM mark is carried. The exit must still be labelled.
+    near, far = date(2026, 7, 8), date(2026, 7, 30)
+    d0, d1 = date(2026, 7, 6), date(2026, 7, 7)
+    spec = StructureSpec(
+        name="diagonal",
+        legs=(
+            LegSpec(
+                right="call", side=1, lots=1, strike_rule="atm", expiry_rule="front"
+            ),
+            LegSpec(
+                right="call", side=1, lots=1, strike_rule="atm", expiry_rule="next"
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "screener.options.position_backtest.build_structure",
+        lambda *_args, **_kwargs: spec,
+    )
+    schedule = {
+        d1: _chain(
+            d1,
+            _contract(d1, right="call", expiry=near, last=10.0, settle=10.0),
+            _contract(d1, right="call", expiry=far, last=40.0, settle=40.0),
+        ),
+        # No far-expiry contract in today's chain: its 40 mark is carried.
+        near: _chain(
+            near,
+            _contract(near, right="call", expiry=near, last=11.0, settle=12.0),
+            spot=1300.0,
+        ),
+    }
+    bars = _bars(d0, near, expiry_day=near, expiry_close=1300.0)
+    cfg = OptionsBacktestConfig(
+        tickers=("RELIANCE",),
+        start=d0,
+        end=near,
+        structure="diagonal",
+        entry_expr="true",
+        exit_dte=1,
+    )
+    result = _run(
+        cfg,
+        chain_loader=_loader(schedule),
+        price_fetcher=StubPriceFetcher({"RELIANCE.NS": bars}),
+    )
+
+    trade = result.trades[0]
+    by_expiry = {leg.expiry: leg for leg in trade.legs}
+    assert trade.exit_reason == "expiry"
+    assert by_expiry[near].exit_price == pytest.approx(12.0)
+    assert by_expiry[far].exit_price == pytest.approx(40.0)
+    assert trade.details["exit_mark"] == "carried"
+    assert any("settled at the last known mark" in w for w in result.warnings)
 
 
 def test_dte_one_entry_is_not_closed_on_its_own_bar():

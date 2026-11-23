@@ -296,9 +296,14 @@ def _mark_legs(
             chain, right=leg.right, strike=leg.strike, expiry=leg.expiry
         )
         px = _mark_price(contract)
-        if px is None and underlying_close is not None and leg.expiry <= as_of:
-            # On/after expiry use intrinsic against underlying close.
-            px = _intrinsic(leg.right, leg.strike, underlying_close)
+        if px is None and leg.expiry <= as_of:
+            # On/after expiry use intrinsic. Prefer today's unadjusted chain
+            # spot; the underlying close may be split/bonus adjusted.
+            spot = chain.spot if chain is not None else None
+            if spot is not None and math.isfinite(spot) and spot > 0:
+                px = _intrinsic(leg.right, leg.strike, float(spot))
+            elif underlying_close is not None and math.isfinite(underlying_close):
+                px = _intrinsic(leg.right, leg.strike, underlying_close)
         if px is None:
             fresh = False
             px = updated.get(key)
@@ -321,13 +326,15 @@ def _expiry_settlement_marks(
     """Settle legs expiring on/before ``as_of`` and keep the rest at MTM.
 
     An expiring leg is valued at, in order: today's bhavcopy ``settle`` for
-    that contract, intrinsic against today's chain spot, then intrinsic
-    against the underlying close. The last fallback is weakest because the
-    underlying series can be split/bonus adjusted while NSE strikes are
-    nominal. Legs with a later expiry keep their MTM mark.
+    that contract (a legitimate OTM settle of ``0.0`` included), intrinsic
+    against today's chain spot, then intrinsic against the underlying close.
+    The last fallback is weakest because the underlying series can be
+    split/bonus adjusted while NSE strikes are nominal. Legs with a later
+    expiry keep their MTM mark.
 
-    Returns the marks and whether any expiring leg had no settle, spot, or
-    underlying close and therefore kept a carried or entry mark.
+    Returns the marks and whether any leg kept a carried or entry mark: an
+    expiring leg with no settle, spot, or underlying close, or a non-expiring
+    leg with no fresh quote on today's chain.
     """
     settled = list(marks)
     carried = False
@@ -339,13 +346,17 @@ def _expiry_settlement_marks(
         and underlying_close > 0
     )
     for index, leg in enumerate(pos.legs):
-        if leg.expiry > as_of:
-            continue
         contract = _find_contract(
             chain, right=leg.right, strike=leg.strike, expiry=leg.expiry
         )
+        if leg.expiry > as_of:
+            # This leg keeps its MTM mark from _mark_legs; flag a carried
+            # mark so the exit is not read as fully fresh.
+            if _mark_price(contract) is None:
+                carried = True
+            continue
         settle = contract.settle if contract is not None else None
-        if settle is not None and math.isfinite(settle) and settle > 0:
+        if settle is not None and math.isfinite(settle) and settle >= 0:
             settled[index] = float(settle)
             continue
         if spot_ok and spot is not None:
