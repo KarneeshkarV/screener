@@ -760,6 +760,39 @@ def _parse_param_specs(params: tuple[str, ...]) -> dict[str, list[Any]]:
     return grid
 
 
+def pit_active_membership(
+    symbols: tuple[str, ...],
+    windows: tuple[tuple[str, date, date | None], ...],
+    *,
+    start_date: date,
+    end_date: date,
+) -> tuple[tuple[str, ...], tuple[tuple[str, date, date | None], ...]]:
+    """Restrict a point-in-time universe to the requested run window.
+
+    ``windows`` are half-open ``[from, until)`` eligibility intervals and
+    ``symbols`` is ordered by first appearance, so names that left the index
+    before ``start_date`` come *before* every name added during the run. A flat
+    ``symbols[:max_universe]`` slice would therefore spend the whole cap on dead
+    listings and drop all later additions. Dropping windows that end before the
+    run (or start after it) first makes a later cap spend its slots on names
+    that can actually trade.
+
+    Returns ``(active_symbols, active_windows)`` in the input symbol order.
+    """
+    if not windows:
+        return symbols, windows
+    known = set(symbols)
+    active_windows = tuple(
+        window
+        for window in windows
+        if window[0] in known
+        and window[1] <= end_date
+        and (window[2] is None or window[2] > start_date)
+    )
+    active = {symbol for symbol, _from, _until in active_windows}
+    return tuple(symbol for symbol in symbols if symbol in active), active_windows
+
+
 def _resolve_universe_tickers(
     *,
     market: str,
@@ -937,15 +970,40 @@ def research_report(
         except ValueError as exc:
             raise click.UsageError(str(exc)) from exc
         symbols = selection.symbols
-        if int(kwargs["max_universe"]) > 0:
-            symbols = symbols[: int(kwargs["max_universe"])]
+        universe_warnings = selection.warnings
+        membership_windows = selection.membership_windows
+        if membership_windows:
+            # Only the windows that can trade inside the run; exited-before-start
+            # names must not consume --max-universe slots ahead of late additions.
+            symbols, membership_windows = pit_active_membership(
+                symbols,
+                membership_windows,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if not symbols:
+                raise click.UsageError(
+                    f"Universe {universe!r} had no point-in-time member eligible "
+                    f"between {start_date.isoformat()} and {end_date.isoformat()}."
+                )
+        max_universe = int(kwargs["max_universe"])
+        if max_universe > 0:
+            if membership_windows and len(symbols) > max_universe:
+                # Mirror backtest-rolling: membership windows already narrow the
+                # pool per date, and capping this flat list would keep only the
+                # oldest listings while dropping later index additions.
+                universe_warnings += (
+                    f"--max-universe {max_universe} ignored for point-in-time "
+                    f"membership; kept all {len(symbols)} symbols with windows "
+                    f"overlapping {start_date.isoformat()}..{end_date.isoformat()} "
+                    "because capping would drop later index additions.",
+                )
+            else:
+                symbols = symbols[:max_universe]
         if not symbols:
             raise click.UsageError(f"Universe {universe!r} resolved to zero symbols.")
         tickers_csv = ",".join(symbols)
-        membership_windows = tuple(
-            w for w in selection.membership_windows if w[0] in symbols
-        )
-        universe_warnings = selection.warnings
+        membership_windows = tuple(w for w in membership_windows if w[0] in symbols)
         if not point_in_time:
             universe_warnings += (
                 "Point-in-time membership is off; using a static universe with survivorship bias.",
