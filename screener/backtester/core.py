@@ -27,6 +27,7 @@ from screener.backtester.sessions import (
     market_timezone,
     session_dates,
 )
+from screener.backtester.stops import entry_stop_price
 from screener.ledger import ExitReason
 
 if TYPE_CHECKING:
@@ -656,7 +657,13 @@ def _make_slot_state(
             exit_signal_values = np.asarray(exit_signal.to_numpy(), dtype=bool)
             if caches is not None:
                 caches.exit_signal_values[ticker] = exit_signal_values
-    stop_ref = entry_fill * (1.0 - cfg.stop_loss) if cfg.stop_loss else None
+    stop_ref = entry_stop_price(
+        cfg,
+        entry_fill,
+        bars,
+        signal_idx,
+        frame_cache.sizing_series if frame_cache is not None else None,
+    )
     target_ref = _target_level(entry_fill, cfg.take_profit) if cfg.take_profit else None
     partial_targets = tuple(
         _target_level(entry_fill, pct) for pct, _frac in cfg.partial_exits
