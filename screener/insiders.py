@@ -475,9 +475,11 @@ def filter_promoter_increased(
 ) -> pd.DataFrame:
     """Keep tickers where holdings increased.
 
-    For India: require ``promoter_change >= min_promoter_change_pct`` from
+    For India: require ``promoter_change > min_promoter_change_pct`` from
     openscreener. If ``require_both`` is set, also require positive yfinance
-    net buys.
+    net buys. A yfinance-only fallback has no ``promoter_change`` column, so
+    the missing metric is treated as unknown and fails the gate instead of
+    raising ``KeyError``.
 
     For US: require ``yf_net_shares_6m > 0`` (and optional ``min_yf_net_pct``).
     """
@@ -490,7 +492,9 @@ def filter_promoter_increased(
         return pd.to_numeric(insiders[column], errors="coerce")
 
     if market == "india":
-        change = pd.to_numeric(insiders["promoter_change"], errors="coerce")
+        change = optional_numeric("promoter_change")
+        # Strict ``>`` keeps the default ``--min-change 0`` from admitting rows
+        # whose promoter holding did not move at all.
         mask = change > min_promoter_change_pct
         if require_both:
             yf_net = optional_numeric("yf_net_shares_6m")

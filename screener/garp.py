@@ -24,6 +24,9 @@ from screener.scanner import scan
 from screener.symbols import tv_to_nse, tv_to_yf
 
 INDIA_MIN_CRORE = 1000.0
+# TradingView reports India's ``market_cap_basic`` in raw INR, while the
+# fundamentals path (openscreener) reports crores. 1 crore = 1e7 rupees.
+INDIA_MIN_MARKET_CAP_INR = INDIA_MIN_CRORE * 1e7
 US_MIN_USD = 1_000_000_000.0
 logger = get_logger(__name__)
 
@@ -101,6 +104,28 @@ def _cagr(latest: float | None, oldest: float | None, years: float) -> float | N
     if latest is None or oldest is None or latest <= 0 or oldest <= 0 or years <= 0:
         return None
     return float(((latest / oldest) ** (1.0 / years) - 1.0) * 100.0)
+
+
+def _series_cagr(series: pd.Series, max_years: int = 4) -> float | None:
+    """CAGR across the span the newest-first series actually covers.
+
+    yfinance returns four annual columns (three intervals) and FMP returns
+    five (four intervals). A fixed fourth root silently understates a
+    three-interval ratio (a true 20% 3y CAGR reads as 14.65%), so the exponent
+    must match the data: ``len - 1`` periods, capped at ``max_years``. A
+    single period has no growth rate at all and yields ``None``.
+    """
+    if len(series) < 2:
+        return None
+    span = min(len(series) - 1, max_years)
+    return _cagr(to_number(series.iloc[0]), to_number(series.iloc[span]), float(span))
+
+
+def _series_yoy_growth(series: pd.Series) -> float | None:
+    """Newest period against the prior one, or ``None`` without a prior period."""
+    if len(series) < 2:
+        return None
+    return pct_change(to_number(series.iloc[0]), to_number(series.iloc[1]))
 
 
 def _series_from_statement(statement: pd.DataFrame, row_names: list[str]) -> pd.Series:
@@ -317,7 +342,7 @@ def load_garp_universe(
         filters = [
             col("type") == "stock",
             col("close") >= market_meta.screen_min_close,
-            col("market_cap_basic") >= INDIA_MIN_CRORE,
+            col("market_cap_basic") >= INDIA_MIN_MARKET_CAP_INR,
         ]
     else:
         filters = [
@@ -593,24 +618,9 @@ def _us_row(symbol: str, description: str | None) -> NormalizedGarpRow:
         quarterly_eps_growth = pct_change(expected_eps, year_ago_eps)
 
     latest_revenue = to_number(revenue.iloc[0]) if not revenue.empty else None
-    oldest_revenue = (
-        to_number(revenue.iloc[min(len(revenue) - 1, 4)]) if len(revenue) else None
-    )
-    latest_op = to_number(operating.iloc[0]) if not operating.empty else None
-    old_op = (
-        to_number(operating.iloc[min(len(operating) - 1, 1)])
-        if len(operating)
-        else None
-    )
-    latest_ni = to_number(net_income.iloc[0]) if not net_income.empty else None
-    old_ni = (
-        to_number(net_income.iloc[min(len(net_income) - 1, 4)])
-        if len(net_income)
-        else None
-    )
-
     tax = to_number(tax_rate.iloc[0]) if not tax_rate.empty else 0.21
-    nopat = ebit * (1.0 - float(tax or 0.21))
+    effective_tax = 0.21 if tax is None else float(tax)
+    nopat = ebit * (1.0 - effective_tax)
     invested_capital = debt.add(equity, fill_value=0)
     roic = _average_ratio(nopat, invested_capital, 3)
 
@@ -620,9 +630,9 @@ def _us_row(symbol: str, description: str | None) -> NormalizedGarpRow:
         market_cap=to_number(info.get("marketCap")),
         sales=latest_revenue,
         peg=to_number(info.get("trailingPegRatio") or info.get("pegRatio")),
-        sales_growth_5y=_cagr(latest_revenue, oldest_revenue, 4),
-        operating_profit_growth=pct_change(latest_op, old_op),
-        eps_growth_5y=_cagr(latest_ni, old_ni, 4),
+        sales_growth_5y=_series_cagr(revenue),
+        operating_profit_growth=_series_yoy_growth(operating),
+        eps_growth_5y=_series_cagr(net_income),
         roe_5y=_average_ratio(net_income, equity, 5),
         roce_or_roic=roic,
         expected_quarterly_profit=expected_eps,
@@ -785,26 +795,12 @@ def _fmp_us_row(
     pretax = to_number(income[0].get("incomeBeforeTax"))
     if tax_expense is not None and pretax not in (None, 0):
         tax = tax_expense / float(pretax or 1.0)
-    nopat = ebit * (1.0 - float(tax or 0.21))
+    effective_tax = 0.21 if tax is None else float(tax)
+    nopat = ebit * (1.0 - effective_tax)
     invested_capital = debt.add(equity, fill_value=0)
     roic = _average_ratio(nopat, invested_capital, 3)
 
     latest_revenue = to_number(revenue.iloc[0]) if not revenue.empty else None
-    oldest_revenue = (
-        to_number(revenue.iloc[min(len(revenue) - 1, 4)]) if len(revenue) else None
-    )
-    latest_op = to_number(operating.iloc[0]) if not operating.empty else None
-    old_op = (
-        to_number(operating.iloc[min(len(operating) - 1, 1)])
-        if len(operating)
-        else None
-    )
-    latest_ni = to_number(net_income.iloc[0]) if not net_income.empty else None
-    old_ni = (
-        to_number(net_income.iloc[min(len(net_income) - 1, 4)])
-        if len(net_income)
-        else None
-    )
 
     expected_eps, year_ago_eps = _fmp_quarterly_eps(estimates, quarterly)
 
@@ -814,9 +810,9 @@ def _fmp_us_row(
         market_cap=first_number(profile, "mktCap", "marketCap"),
         sales=latest_revenue,
         peg=first_number(ratios, "priceEarningsToGrowthRatioTTM", "pegRatioTTM"),
-        sales_growth_5y=_cagr(latest_revenue, oldest_revenue, 4),
-        operating_profit_growth=pct_change(latest_op, old_op),
-        eps_growth_5y=_cagr(latest_ni, old_ni, 4),
+        sales_growth_5y=_series_cagr(revenue),
+        operating_profit_growth=_series_yoy_growth(operating),
+        eps_growth_5y=_series_cagr(net_income),
         roe_5y=_average_ratio(net_income, equity, 5),
         roce_or_roic=roic,
         expected_quarterly_profit=expected_eps,
