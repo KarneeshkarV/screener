@@ -29,7 +29,6 @@ from screener.factors.fundamentals import (
     FUNDAMENTAL_COLUMNS,
     stamp_fundamentals,
 )
-from screener.financials import as_percent as _as_percent
 from screener.financials import first_number, pct_change
 from screener.provider_utils import fmp_get
 from screener.providers import CachedProvider, ProviderSpec
@@ -433,8 +432,13 @@ def _normalize_fmp_payload(
                 continue
             for field, keys in field_keys.items():
                 value = first_number(row, *keys)
-                if field == "roe_ttm":
-                    value = _as_percent(value)
+                if field == "roe_ttm" and value is not None:
+                    # FMP's ratios/key-metrics returnOnEquity is always a
+                    # decimal ratio (0.15 is 15%), never a percentage. Scale it
+                    # unconditionally: as_percent's mixed-unit heuristic would
+                    # leave a |ROE| above 200% (e.g. 2.05) as 2.05 instead of
+                    # publishing the true 205%.
+                    value = value * 100.0
                 publish(field, value, [row], effective=row_effective)
     for current_pos, row in enumerate(income_rows):
         row_date = row.get("date")
