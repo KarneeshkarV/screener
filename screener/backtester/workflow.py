@@ -106,6 +106,10 @@ class BacktestRequest:
     sector_neutral: bool = False
     rank_exit: str | None = None
     rank_universe_size: int = 50
+    stop_reentry_cooldown: int = 0
+    stop_reentry_block_entries: int = 0
+    stop_reentry_require_recovery: bool = False
+    exit_expr_min_loss: float | None = None
     earnings_blackout_days: int | None = None
     fundamentals_provider: str | None = None
     fundamental_field_args: tuple[str, ...] = ()
@@ -538,6 +542,10 @@ def _resolve_rolling(request: BacktestRequest) -> BacktestRun:
         min_score=gates.min_score,
         rank_exit_every=(rank_exit[0] if rank_exit is not None else None),
         rank_universe_size=int(request.rank_universe_size),
+        stop_reentry_cooldown=int(request.stop_reentry_cooldown),
+        stop_reentry_block_entries=int(request.stop_reentry_block_entries),
+        stop_reentry_require_recovery=bool(request.stop_reentry_require_recovery),
+        exit_expr_min_loss=request.exit_expr_min_loss,
     )
     return BacktestRun(
         config=config,

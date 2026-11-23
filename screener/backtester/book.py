@@ -165,6 +165,10 @@ BOOK_CONFIG_FIELDS = frozenset(
         # Rank-based exit rebalance.
         "rank_exit_every",
         "rank_universe_size",
+        "stop_reentry_cooldown",
+        "stop_reentry_block_entries",
+        "stop_reentry_require_recovery",
+        "exit_expr_min_loss",
         # Fills and costs.
         "slippage_bps",
         "commission_bps",

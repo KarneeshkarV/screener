@@ -125,6 +125,16 @@ register_bar_scorer(
     "active uptrend (same recipe as the ha_momentum backtest strategy)",
 )
 
+# Distinct from the snapshot ``near_52_high`` criterion above: that one is a
+# breakout composite over vendor columns, this one is the pure price-only
+# distance-from-high factor ranked on bars.
+register_bar_scorer(
+    "dist_from_52w_high",
+    "dist_from_52w_high",
+    description="Percent below the trailing 52-week closing high, from bars "
+    "(same recipe as the dist_from_52w_high backtest strategy)",
+)
+
 
 @scorer(
     "mark_minervini",

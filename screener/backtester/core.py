@@ -539,6 +539,10 @@ class _SlotState:
     rank_exit: bool = False
     # An intrabar limit fill cannot claim the bar's earlier high as profit.
     entry_at_open: bool = True
+    # Close ceiling below which the exit expression may fire, from
+    # ``cfg.exit_expr_min_loss``; with it, the bar closes it is checked against.
+    exit_expr_max_close: float | None = None
+    close_values: np.ndarray | None = None
 
 
 def _half_spread_at_signal(
@@ -683,6 +687,16 @@ def _make_slot_state(
             partial_fired=[False] * len(partial_targets),
             frame_cache=frame_cache,
             exit_signal_values=exit_signal_values,
+            exit_expr_max_close=(
+                entry_fill * (1.0 - cfg.exit_expr_min_loss)
+                if cfg.exit_expr_min_loss
+                else None
+            ),
+            close_values=(
+                np.asarray(bars["close"].to_numpy(), dtype=float)
+                if cfg.exit_expr_min_loss
+                else None
+            ),
             session_last=session_last,
             session_labels=session_labels,
             entry_shares=(
@@ -758,6 +772,11 @@ def refresh_exit_liquidity(
 def _exit_expr_due(state: _SlotState, i: int) -> bool:
     """Whether the prior completed bar's exit expression fires at this open."""
     if i <= state.entry_idx or state.exit_signal is None:
+        return False
+    if state.exit_expr_max_close is not None and not (
+        state.close_values is not None
+        and state.close_values[i - 1] <= state.exit_expr_max_close
+    ):
         return False
     if state.exit_signal_values is not None:
         return bool(state.exit_signal_values[i - 1])
