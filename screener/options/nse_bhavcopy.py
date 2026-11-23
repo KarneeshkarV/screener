@@ -126,6 +126,11 @@ def normalize_bhavcopy_options(
     which carry no ``UndrlygPric``; it is used only when the per-contract
     underlying price yields nothing for an underlying.
 
+    Open interest is kept exactly as reported (UDiff ``OpnIntrst`` and legacy
+    ``OPEN_INT`` are both underlying units, i.e. contracts * lot size) and
+    tagged ``oi_unit="units"``; ``TtlTradgVol``/legacy ``CONTRACTS`` is in
+    contracts. ``lot_size`` is still recorded for per-contract premium notionals.
+
     Bhavcopy has no IV, so when ``derive_iv`` is set (default) a point-in-time
     IV (decimal) and greeks are inverted from the settle/close price for live
     contracts (positive OI or volume) once spot is known.
@@ -174,6 +179,8 @@ def normalize_bhavcopy_options(
             mapped_lot = _positive((lot_sizes or {}).get(underlying))
             contract_as_of = _row_date(row, as_of)
             right: OptionRight = "call" if right_raw == "CE" else "put"
+            # UDiff ``OpnIntrst`` is already in underlying units
+            # (contracts * NewBrdLotQty); ``TtlTradgVol`` is in contracts.
             oi = nonnegative_or_zero(row.get("OpnIntrst"))
             volume = nonnegative_or_zero(row.get("TtlTradgVol"))
             settle = _positive(row.get("SttlmPric"))
@@ -199,6 +206,7 @@ def normalize_bhavcopy_options(
                     strike=strike,
                     right=right,
                     oi=oi,
+                    oi_unit="units",
                     oi_change=_as_number(row.get("ChngInOpnIntrst")),
                     volume=volume,
                     iv=iv,

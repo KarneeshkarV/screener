@@ -2,7 +2,10 @@
 
 Implied volatility is normalized to a decimal throughout this package
 (``0.25`` means 25%). Prices and greeks retain the units supplied by the
-underlying venue after numeric normalization.
+underlying venue after numeric normalization. Open interest records its
+reporting unit in ``OptionContract.oi_unit`` because venues disagree: NSE's
+UDiff bhavcopy reports ``OpnIntrst`` in underlying shares while live and
+delayed US feeds report contracts.
 """
 
 from __future__ import annotations
@@ -41,6 +44,11 @@ class OptionContract(BaseModel):
     strike: float = Field(ge=0)
     right: OptionRight
     oi: float = Field(default=0.0, ge=0)
+    # Reporting unit of ``oi``: "contracts" (lots) for sources that report open
+    # interest in lots, or "units" for venues such as NSE UDiff bhavcopy whose
+    # ``OpnIntrst`` is already underlying shares (contracts * lot size).
+    # ``volume`` is always reported in contracts.
+    oi_unit: Literal["contracts", "units"] = "contracts"
     oi_change: float | None = None
     volume: float = Field(default=0.0, ge=0)
     iv: float | None = Field(default=None, ge=0)

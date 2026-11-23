@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from screener.ledger import ExitReason, Trade
 from screener.options.models import OptionRight
 
-StrikeRule = str  # "atm" | "moneyness:<±pct>" | "delta:<abs>"
+StrikeRule = str  # "atm" | "moneyness:<±pct>" | "anchor:<±pct>" | "delta:<abs>"
 ExpiryRule = str  # "front" | "next" | "dte:<n>"
 
 
@@ -29,6 +29,9 @@ class LegSpec:
     lots: int = 1
     strike_rule: StrikeRule = "atm"
     expiry_rule: ExpiryRule = "front"
+    # Index of an earlier leg whose resolved strike anchors this leg's
+    # "anchor:<±pct>" strike rule (used for vertical wings).
+    anchor_leg: int | None = None
 
 
 @dataclass(frozen=True)

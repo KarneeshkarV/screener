@@ -225,6 +225,7 @@ def _open_structure(
     warnings: list[str],
 ) -> list[LegFill] | None:
     fills: list[LegFill] = []
+    resolved_strikes: list[float] = []
     for leg in structure.legs:
         expiry = select_expiry(chain, leg.expiry_rule, as_of)
         if expiry is None:
@@ -232,7 +233,23 @@ def _open_structure(
                 f"{chain.underlying} {as_of}: no expiry for rule {leg.expiry_rule!r}"
             )
             return None
-        contract = select_strike(chain, expiry, leg.right, leg.strike_rule, as_of=as_of)
+        anchor_strike: float | None = None
+        if leg.anchor_leg is not None:
+            if not 0 <= leg.anchor_leg < len(resolved_strikes):
+                warnings.append(
+                    f"{chain.underlying} {as_of}: leg {leg.right} "
+                    f"{leg.strike_rule!r} anchors to unresolved leg {leg.anchor_leg}"
+                )
+                return None
+            anchor_strike = resolved_strikes[leg.anchor_leg]
+        contract = select_strike(
+            chain,
+            expiry,
+            leg.right,
+            leg.strike_rule,
+            as_of=as_of,
+            anchor_strike=anchor_strike,
+        )
         if contract is None:
             warnings.append(
                 f"{chain.underlying} {as_of}: no strike for {leg.right} "
@@ -267,6 +284,7 @@ def _open_structure(
                 entry_iv=contract.iv,
             )
         )
+        resolved_strikes.append(float(contract.strike))
     return fills
 
 

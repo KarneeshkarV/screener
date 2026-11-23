@@ -107,7 +107,11 @@ def _contracts_from_frame(
                     previous_close=previous_close,
                     as_of=as_of,
                     source="yfinance",
-                    **greeks,
+                    delta=greeks.get("delta"),
+                    gamma=greeks.get("gamma"),
+                    theta=greeks.get("theta"),
+                    vega=greeks.get("vega"),
+                    rho=greeks.get("rho"),
                 )
             )
         except ValueError:
