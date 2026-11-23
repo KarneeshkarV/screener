@@ -521,12 +521,11 @@ def _read_sp500_html() -> list[pd.DataFrame]:
     resp = call_with_resilience(
         "wikipedia",
         "sp500 constituents",
-        lambda: requests.get(_SP500_SOURCE, headers=headers, timeout=30),
+        lambda: _checked_get(_SP500_SOURCE, headers=headers, timeout=30),
         fallback=None,
     )
     if resp is None:
         raise RuntimeError("S&P 500 constituents unavailable")
-    resp.raise_for_status()
     from io import StringIO
 
     tables = pd.read_html(StringIO(resp.text))
@@ -885,12 +884,11 @@ def _fetch_nifty50() -> tuple[list[str], str]:
     resp = call_with_resilience(
         "nse",
         "nifty50 constituents",
-        lambda: requests.get(source, headers=NSE_REQUEST_HEADERS, timeout=30),
+        lambda: _checked_get(source, headers=NSE_REQUEST_HEADERS, timeout=30),
         fallback=None,
     )
     if resp is None:
         raise RuntimeError("Nifty 50 constituents unavailable")
-    resp.raise_for_status()
     return parse_nse_index_csv(resp.text, label="Nifty 50 constituents"), source
 
 
@@ -905,12 +903,11 @@ def _fetch_nifty500() -> tuple[list[str], str]:
     resp = call_with_resilience(
         "nse",
         "nifty500 constituents",
-        lambda: requests.get(_NIFTY500_SOURCE, headers=NSE_REQUEST_HEADERS, timeout=30),
+        lambda: _checked_get(_NIFTY500_SOURCE, headers=NSE_REQUEST_HEADERS, timeout=30),
         fallback=None,
     )
     if resp is None:
         raise RuntimeError("Nifty 500 constituents unavailable")
-    resp.raise_for_status()
     symbols = parse_nse_index_csv(
         resp.text,
         label="Nifty 500 constituents",
@@ -939,12 +936,11 @@ def _fetch_sensex() -> tuple[list[str], str]:
     resp = call_with_resilience(
         "wikipedia",
         "sensex constituents",
-        lambda: requests.get(_SENSEX_SOURCE, headers=headers, timeout=30),
+        lambda: _checked_get(_SENSEX_SOURCE, headers=headers, timeout=30),
         fallback=None,
     )
     if resp is None:
         raise RuntimeError("Sensex constituents unavailable")
-    resp.raise_for_status()
     from io import StringIO
 
     tables = pd.read_html(StringIO(resp.text))
