@@ -1014,25 +1014,49 @@ def compute_cost_metrics(
 
 
 def compute_regime_metrics(benchmark: pd.Series, trades: list[Trade]) -> dict:
-    """Per-regime trade stats keyed by each trade's signal-date regime.
+    """Per-regime POSITION stats keyed by each position's signal-date regime.
 
     The regime is classified from the (point-in-time) benchmark close curve;
-    each trade is bucketed by the benchmark regime in force on its signal date
-    (most recent benchmark date at or before the signal), the regime the
+    each position is bucketed by the benchmark regime in force on its signal
+    date (most recent benchmark date at or before the signal), the regime the
     decision was made in. The rolling regime gate reads the same bar, so a
-    trade the gate admitted is never reported under a regime it would block. Returns keys of the form
-    ``regime_<label>_trades`` / ``regime_<label>_win_rate`` /
-    ``regime_<label>_avg_return`` for each label with at least one trade.
+    trade the gate admitted is never reported under a regime it would block.
+    Returns keys of the form ``regime_<label>_trades`` /
+    ``regime_<label>_win_rate`` / ``regime_<label>_avg_return`` for each label
+    with at least one position.
+
+    Counts are positions, not ledger rows, so a ``--partial-exit`` position's
+    scale-out tranches do not inflate the bucket. Tranches are joined on the
+    same lot identity :func:`position_results` uses; a trade with
+    ``open_seq == 0`` has no lot identity and stays one position. Returns are
+    total return ``pnl / entry_cost``, so dividends count the same way they do
+    in ``hit_rate`` and ``avg_trade_return``; ``Trade.return_pct`` is
+    capital-only and would disagree in ``splits_only``/``none`` mode.
     """
     if benchmark is None or benchmark.empty or not trades:
         return {}
     regimes = classify_regimes(benchmark)
     idx = regimes.index
+    slots: dict[tuple[str, int, Any], int] = {}
+    # [signal_date, pnl, entry_cost] per position, in first-tranche order.
+    positions: list[list[Any]] = []
+    for trade in trades:
+        lot = (trade.ticker, trade.open_seq, trade.entry_date)
+        slot = slots.get(lot) if trade.open_seq else None
+        if slot is None:
+            if trade.open_seq:
+                slots[lot] = len(positions)
+            positions.append(
+                [trade.signal_date, float(trade.pnl), float(trade.entry_cost)]
+            )
+        else:
+            positions[slot][1] += float(trade.pnl)
+            positions[slot][2] += float(trade.entry_cost)
     by_label: dict[str, list[float]] = {}
-    for t in trades:
-        pos = int(idx.searchsorted(pd.Timestamp(t.signal_date), side="right")) - 1
+    for signal_date, pnl, entry_cost in positions:
+        pos = int(idx.searchsorted(pd.Timestamp(signal_date), side="right")) - 1
         label = str(regimes.iloc[pos]) if pos >= 0 else "unknown"
-        by_label.setdefault(label, []).append(float(t.return_pct))
+        by_label.setdefault(label, []).append(pnl / entry_cost if entry_cost else 0.0)
     out: dict = {}
     for label, rets in by_label.items():
         out[f"regime_{label}_trades"] = len(rets)

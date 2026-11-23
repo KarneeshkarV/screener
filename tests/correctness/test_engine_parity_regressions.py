@@ -249,7 +249,13 @@ def test_regime_metrics_bucket_by_signal_date():
     )
     signal_day, entry_day = benchmark.index[-2], benchmark.index[-1]
     trade = SimpleNamespace(
-        signal_date=signal_day, entry_date=entry_day, return_pct=0.1
+        ticker="AAA",
+        open_seq=0,
+        signal_date=signal_day,
+        entry_date=entry_day,
+        pnl=100.0,
+        entry_cost=1000.0,
+        return_pct=0.1,
     )
     metrics = compute_regime_metrics(benchmark, [trade])
     assert metrics["regime_bull_trades"] == 1
