@@ -168,12 +168,13 @@ def run_promoter_buys(
         universe = _dedupe_listings(universe)
 
     if universe.empty:
-        click.echo("No tickers returned from the base universe scan.")
+        click.echo("No tickers returned from the base universe scan.", err=output_csv)
         return
 
     click.echo(
         f"Universe: {len(universe)} liquid tickers (out of {total} in "
-        f"{market}). Enriching..."
+        f"{market}). Enriching...",
+        err=output_csv,
     )
 
     yf_df = fetch_yfinance_insiders(
@@ -190,7 +191,10 @@ def run_promoter_buys(
             refresh=refresh,
         )
         if os_df.empty:
-            click.echo("No openscreener data returned. Falling back to yfinance only.")
+            click.echo(
+                "No openscreener data returned. Falling back to yfinance only.",
+                err=output_csv,
+            )
             insiders = yf_df
         else:
             insiders = (
@@ -222,7 +226,7 @@ def run_promoter_buys(
             insiders = fmp_df.merge(yf_df, on="name", how="outer")
 
     if insiders.empty:
-        click.echo("No insider data returned for this universe.")
+        click.echo("No insider data returned for this universe.", err=output_csv)
         return
 
     matches = filter_promoter_increased(
@@ -233,7 +237,7 @@ def run_promoter_buys(
         require_both=bool(require_both),
     )
     if matches.empty:
-        click.echo("No tickers passed the holding-increase filter.")
+        click.echo("No tickers passed the holding-increase filter.", err=output_csv)
         return
 
     enriched = matches.merge(
@@ -244,15 +248,16 @@ def run_promoter_buys(
         how="left",
     )
     if market == "india":
-        enriched = enriched.sort_values(
-            ["promoter_change", "yf_net_pct_6m"], ascending=False, na_position="last"
-        )
+        sort_cols = [
+            c for c in ("promoter_change", "yf_net_pct_6m") if c in enriched.columns
+        ]
     else:
         sort_cols = [
             c
             for c in ("fmp_net_shares_6m", "yf_net_pct_6m", "yf_net_shares_6m")
             if c in enriched.columns
         ]
+    if sort_cols:
         enriched = enriched.sort_values(sort_cols, ascending=False, na_position="last")
     enriched = enriched.head(limit)
 
