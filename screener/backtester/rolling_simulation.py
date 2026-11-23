@@ -71,10 +71,17 @@ from screener.backtester.sizing import (
 # stale panels. Here the cost of forgetting is a rebuild, not a wrong number.
 _PREPARED_CONFIG_FIELDS = PRICE_PANEL_CONFIG_FIELDS | SIGNAL_PANEL_CONFIG_FIELDS
 
+# Book fields that no panel module claims. They are excluded at dump time, not
+# after, because Pydantic cannot serialize every value a book field may hold:
+# ``slippage_model`` is a duck-typed ``SlippageModel`` protocol implementation
+# (see ``models.py``), so a custom non-``BaseModel`` model raised
+# ``PydanticSerializationError`` before the strip could drop it.
+_BOOK_ONLY_CONFIG_FIELDS = BOOK_CONFIG_FIELDS - _PREPARED_CONFIG_FIELDS
+
 
 def _preparation_fingerprint(cfg: BacktestConfig) -> dict[str, Any]:
     """Return the reuse key: prepared-panel inputs plus anything unclassified."""
-    dumped = cfg.model_dump(mode="json")
+    dumped = cfg.model_dump(mode="json", exclude=set(_BOOK_ONLY_CONFIG_FIELDS))
     return {
         name: value
         for name, value in sorted(dumped.items())
