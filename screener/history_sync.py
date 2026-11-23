@@ -263,7 +263,14 @@ def _local_run_keys() -> set[tuple[str, str, str]]:
 
 
 def restore_history(client: SyncClient) -> RestoreSummary:
-    """Pull remote runs whose natural key is missing locally into the local DB."""
+    """Pull remote runs whose natural key is missing locally into the local DB.
+
+    Every remote row fetch happens *before* the local SQLite write transaction
+    opens. Doing them interleaved (as an older version did) held the local
+    write lock across N Turso HTTPS round-trips, starving concurrent
+    ``screener screen`` writers until they hit ``database is locked``. Fetching
+    first also means a network failure mid-restore leaves the local DB untouched.
+    """
     ensure_remote_tables(client)
     local_keys = _local_run_keys()
 
@@ -276,17 +283,29 @@ def restore_history(client: SyncClient) -> RestoreSummary:
         key=lambda r: str(r[0]),
     )
 
+    # Collect all remote payloads first — no local write lock is held here.
+    fetched: list[tuple[str, str, str, int, list[tuple[object, ...]]]] = []
+    for run in missing:
+        run_ts, market, criteria, total = (
+            str(run[0]),
+            str(run[1]),
+            str(run[2]),
+            int(run[3]),
+        )
+        remote_rows = client.execute(
+            f"SELECT {', '.join(_ROW_COLUMNS)} FROM {REMOTE_ROWS_TABLE} "
+            "WHERE run_ts = ? AND market = ? AND criteria = ? ORDER BY rank",
+            [run_ts, market, criteria],
+        ).rows
+        fetched.append(
+            (run_ts, market, criteria, total, [tuple(row) for row in remote_rows])
+        )
+
     runs_restored = 0
     rows_restored = 0
     conn = history._connect()
     try:
-        for run in missing:
-            run_ts, market, criteria, total = (
-                str(run[0]),
-                str(run[1]),
-                str(run[2]),
-                int(run[3]),
-            )
+        for run_ts, market, criteria, total, remote_rows in fetched:
             conn.execute(
                 "INSERT INTO runs (run_ts, market, criteria, total_matches) "
                 "VALUES (?, ?, ?, ?) ON CONFLICT(run_ts, market, criteria) DO NOTHING",
@@ -298,18 +317,13 @@ def restore_history(client: SyncClient) -> RestoreSummary:
             ).fetchone()
             local_id = int(id_row[0])
 
-            remote_rows = client.execute(
-                f"SELECT {', '.join(_ROW_COLUMNS)} FROM {REMOTE_ROWS_TABLE} "
-                "WHERE run_ts = ? AND market = ? AND criteria = ? ORDER BY rank",
-                [run_ts, market, criteria],
-            ).rows
             conn.executemany(
                 f"""
                 INSERT OR REPLACE INTO run_rows
                     (run_id, {", ".join(_ROW_COLUMNS)})
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                [(local_id, *tuple(row)) for row in remote_rows],
+                [(local_id, *row) for row in remote_rows],
             )
             runs_restored += 1
             rows_restored += len(remote_rows)

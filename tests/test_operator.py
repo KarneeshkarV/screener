@@ -447,7 +447,7 @@ def test_process_build_dataset_computes_derived_columns(monkeypatch):
         )
 
     monkeypatch.setattr(process, "fetch_fo_bhavcopy", fake_fo)
-    monkeypatch.setattr(process, "load_bhavcopy_chains", lambda d: {})
+    monkeypatch.setattr(process, "load_bhavcopy_chains", lambda d, **kwargs: {})
     monkeypatch.setattr(
         process,
         "fifty_two_week_hl",
