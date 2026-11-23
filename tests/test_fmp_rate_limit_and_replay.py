@@ -224,13 +224,35 @@ def test_bare_criteria_find_the_default_universe_alias(history_db):
     assert snap.tickers == ["AAA", "BBB"]
 
 
-def test_an_exact_run_always_wins_over_its_aliases(history_db):
-    """The exact label is tried first, so ordering by alias cannot shadow it."""
-    bare = _seed_run("india", "ema", ["OLD"], date(2024, 2, 1))
-    _seed_run("india", "ema@tv#deadbeef", ["NEW"], date(2024, 4, 1))
+def test_a_newer_alias_wins_over_an_older_pre_cutover_bare_run(history_db):
+    """An old bare ``ema`` row must not shadow every newer daily alias run.
+
+    A database upgraded from the pre-cutover schema holds bare rows; the daily
+    cron writes ``ema@tv#<hash>`` from then on. Ordering the two as one stream
+    is what lets ``--from-run india:ema --run-age-days 7`` replay last week's
+    run instead of replaying a months-old one forever.
+    """
+    _seed_run("india", "ema", ["OLD"], date(2024, 2, 1))
+    aliased = _seed_run("india", "ema@tv#deadbeef", ["NEW"], date(2024, 4, 1))
+
+    assert history_mod.find_run("india", "ema") == aliased
+    assert history_mod.resolve_replay_run("india:ema").run_id == aliased
+
+
+def test_a_newer_bare_run_wins_over_an_older_alias(history_db):
+    """The same newest-wins rule applies in the other direction."""
+    _seed_run("india", "ema@tv#deadbeef", ["OLD"], date(2024, 2, 1))
+    bare = _seed_run("india", "ema", ["NEW"], date(2024, 4, 1))
 
     assert history_mod.find_run("india", "ema") == bare
-    assert history_mod.resolve_replay_run("india:ema").run_id == bare
+
+
+def test_a_default_universe_run_beats_a_newer_custom_universe_one(history_db):
+    """``--universe`` aliases are the last resort, never preferred by recency."""
+    _seed_run("india", "ema@universe:sp500#deadbeef", ["CUSTOM"], date(2024, 4, 1))
+    default = _seed_run("india", "ema@tv#deadbeef", ["DEFAULT"], date(2024, 1, 1))
+
+    assert history_mod.find_run("india", "ema") == default
 
 
 def test_a_newer_default_universe_alias_wins_over_older_ones(history_db):

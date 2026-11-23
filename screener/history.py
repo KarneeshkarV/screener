@@ -208,13 +208,13 @@ def _newest_run_id(
     conn: sqlite3.Connection,
     market: str,
     match_sql: str,
-    match_value: str,
+    match_params: tuple[str, ...],
     on_or_before: date | None,
 ) -> int | None:
     cursor = conn.execute(
         f"SELECT id, run_ts FROM runs WHERE market = ? AND {match_sql} "
         "ORDER BY run_ts DESC, id DESC",
-        (market, match_value),
+        (market, *match_params),
     )
     if on_or_before is None:
         row = cursor.fetchone()
@@ -228,13 +228,16 @@ def _newest_run_id(
     return int(row[0]) if row is not None else None
 
 
-def _default_universe_alias_patterns(criteria: str) -> tuple[str, ...]:
-    """``LIKE`` patterns for the label a bare criterion persists under.
+def _default_universe_alias_patterns(criteria: str) -> tuple[str, str]:
+    """``LIKE`` patterns for the labels a bare criterion persists under.
 
     A strategy-aliased criterion records the question in its label, e.g.
     ``ema@tv#deadbeef`` for the default TradingView universe, so the bare
     spelling never appears. Escape LIKE's metacharacters first: criterion
     names carry ``_`` (``momentum_12_1``).
+
+    Returns the default-universe pattern first, then the broader one that
+    catches ``--universe`` runs.
     """
     escaped = criteria.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return (f"{escaped}@tv#%", f"{escaped}@%")
@@ -248,24 +251,38 @@ def find_run(
     With ``on_or_before``, only runs whose date is on or before it qualify —
     the lookup used to replay "the screen as of N days ago".
 
-    A strategy-aliased criterion persists under a label carrying its universe
-    and settings fingerprint (``ema@tv#deadbeef``). When no bare row exists, a
-    bare spec falls back to those aliases so ``--from-run india:ema`` reaches
-    the run the daily screen actually wrote. A spec that already names a label
-    is matched exactly: replay must never cross fingerprints (D28).
+    A bare criterion and its aliases are one stream: a strategy-aliased run
+    persists under a label carrying its universe and settings fingerprint
+    (``ema@tv#deadbeef``), and a database can hold both pre-cutover bare rows
+    and post-cutover aliased ones. The newest of the two wins by ``run_ts``, so
+    an old bare row cannot shadow every newer daily run forever. Only when
+    neither exists does a bare spec fall back to ``--universe`` aliases. A spec
+    that already names a label is matched exactly: replay must never cross
+    fingerprints (D28).
     """
     conn = _connect()
     try:
-        run_id = _newest_run_id(conn, market, "criteria = ?", criteria, on_or_before)
-        if run_id is not None or "@" in criteria or "#" in criteria:
-            return run_id
-        for pattern in _default_universe_alias_patterns(criteria):
-            run_id = _newest_run_id(
-                conn, market, "criteria LIKE ? ESCAPE '\\'", pattern, on_or_before
+        if "@" in criteria or "#" in criteria:
+            return _newest_run_id(
+                conn, market, "criteria = ?", (criteria,), on_or_before
             )
-            if run_id is not None:
-                return run_id
-        return None
+        default_alias, any_alias = _default_universe_alias_patterns(criteria)
+        run_id = _newest_run_id(
+            conn,
+            market,
+            "(criteria = ? OR criteria LIKE ? ESCAPE '\\')",
+            (criteria, default_alias),
+            on_or_before,
+        )
+        if run_id is not None:
+            return run_id
+        return _newest_run_id(
+            conn,
+            market,
+            "criteria LIKE ? ESCAPE '\\'",
+            (any_alias,),
+            on_or_before,
+        )
     finally:
         conn.close()
 
