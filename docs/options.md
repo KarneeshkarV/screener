@@ -168,7 +168,8 @@ uv run screener screen -m us -c cheap_earnings_vol -n 20
 - `high_iv_rank` / `low_iv_rank`: expanding rank at or above 80 / at or below
   20, with the usable IV-day count emitted on every row.
 - `cheap_earnings_vol`: front-straddle implied move below the median absolute
-  historical earnings move, requiring at least two prior events. Earnings dates
+  historical earnings move, requiring at least two prior events and a known
+  earnings date between the panel date and the front expiry. Earnings dates
   and OHLCV come from the existing earnings-backtest providers.
 
 Thin or missing panels produce an actionable message instead of silently

@@ -14,6 +14,7 @@ Strategies:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -232,17 +233,35 @@ def iv_sentiment(
             {"reason": "no_options_data"},
         )
 
-    pc_ratio = iv_data["pc_ratio"]
-    # median_iv is in % terms (e.g. 40.11 for 40.11% IV, 22.23 for 22.23% IV)
-    median_iv = iv_data.get("median_iv", float("nan"))
+    # Coerce defensively: providers may emit ``None`` (NSE has no valid IV) or
+    # an unexpected type. Non-finite P/C falls back to the neutral ratio of 1.0.
+    raw_pc = iv_data.get("pc_ratio")
+    try:
+        pc_ratio = float(raw_pc) if raw_pc is not None else float("nan")
+    except (TypeError, ValueError):
+        pc_ratio = float("nan")
+    if not math.isfinite(pc_ratio):
+        pc_ratio = 1.0
 
-    # P/C ratio signal: < 0.7 → bullish (score > 0.5), > 1.0 → bearish
+    # median_iv is in % terms (e.g. 40.11 for 40.11% IV, 22.23 for 22.23% IV).
+    # A missing/None/non-finite value stays NaN so the neutral IV branch runs.
+    raw_median_iv = iv_data.get("median_iv")
+    try:
+        median_iv = float(raw_median_iv) if raw_median_iv is not None else float("nan")
+    except (TypeError, ValueError):
+        median_iv = float("nan")
+    if not math.isfinite(median_iv):
+        median_iv = float("nan")
+
+    # P/C ratio signal: < 0.7 → bullish (score > 0.5), > 1.0 → bearish.
+    # The curve descends 1.0 → 0.5 across [0.7, 1.0] and 0.5 → 0.0 across
+    # [1.0, 2.0], so it is continuous at 1.0 and never rewards a bearish ratio.
     if pc_ratio < 0.7:
         pc_score = 1.0
     elif pc_ratio < 1.0:
         pc_score = 1.0 - (pc_ratio - 0.7) / 0.3 * 0.5
     else:
-        pc_score = max(0.0, 1.0 - (pc_ratio - 1.0) * 0.5)
+        pc_score = max(0.0, 0.5 - (pc_ratio - 1.0) * 0.5)
 
     # Median IV score: higher IV → more drift potential.
     # Scale: IV < 20% → low (0.3), 20-50% → moderate (0.5), > 50% → high (0.7-1.0).
