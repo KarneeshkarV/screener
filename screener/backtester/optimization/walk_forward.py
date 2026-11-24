@@ -30,7 +30,13 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
-from screener.backtester.data import PriceFetcher, fetch_benchmark
+from screener.backtester.data import (
+    PriceFetcher,
+    apply_splits_only_adjustment,
+    close_series_from_panel,
+    fetch_benchmark,
+    warn_unadjustable_fmp_frames,
+)
 from screener.backtester.metrics import (
     compute_cost_metrics,
     compute_metrics,
@@ -291,6 +297,21 @@ def holding_period_fold_warnings(
             f"folds use {FOLD_BOUNDARY_POLICY} so long holds cannot behave normally"
         )
     ]
+
+
+def _fetch_walk_forward_benchmark(
+    cfg: BacktestConfig,
+    start_date: date,
+    end_date: date,
+    fetcher: PriceFetcher,
+) -> pd.Series:
+    """Fetch aggregate benchmark closes using the run's price-adjustment policy."""
+    if cfg.price_adjustment == "splits_only":
+        panel = fetcher.fetch([cfg.benchmark], start_date, end_date)
+        warn_unadjustable_fmp_frames(panel)
+        panel = apply_splits_only_adjustment(panel)
+        return close_series_from_panel(panel, cfg.benchmark)
+    return fetch_benchmark(cfg.benchmark, start_date, end_date, fetcher)
 
 
 def _session_calendar(
@@ -680,7 +701,7 @@ def walk_forward_optimize(
             f"{sorted(set(fold_tops))}"
         )
 
-    benchmark = fetch_benchmark(cfg.benchmark, start_date, end_date, fetcher)
+    benchmark = _fetch_walk_forward_benchmark(cfg, start_date, end_date, fetcher)
     if not combined_equity.empty and not benchmark.empty:
         # Display curve fills benchmark gaps; a benchmark that begins after the
         # OOS path has no prior mark, and those leading NaNs are not 0% bars.

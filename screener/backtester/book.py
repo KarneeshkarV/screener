@@ -51,13 +51,19 @@ def fill_pending_entries(
     caches: _RunCaches,
     exit_ast,
     warnings: list[str],
+    is_final_bar: bool = False,
 ) -> list[PendingEntryOrder]:
     """Fill only current-bar orders, sharing cash among fillable orders.
 
     Market-on-close orders run after exits; open and limit orders run before.
+    Market-on-close fills are skipped on the final simulation bar because there
+    is no subsequent session to hold the position (entering at the final close
+    would immediately force-close on the exact same bar).
     Untouched limits reserve slots, but do not reduce this batch's cash share.
     """
     if at_close != (cfg.entry_order_type == "moc"):
+        return []
+    if at_close and is_final_bar:
         return []
     fillable: list[tuple[int, PendingEntryOrder, int]] = []
     for slot_id, order in list(pending_orders.items()):

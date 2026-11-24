@@ -216,6 +216,59 @@ def test_walk_forward_aggregate_passes_raw_benchmark_marks(monkeypatch):
     assert with_marks["beta"] != pytest.approx(without_marks["beta"])
 
 
+def test_walk_forward_aggregate_benchmark_applies_splits_only_adjustment(monkeypatch):
+    """Under price_adjustment='splits_only', the aggregate benchmark is split-adjusted."""
+    wf_mod = _install_fake_search(monkeypatch, metrics={"sharpe": 1.0}, score=1.0)
+    start, end = date(2024, 1, 1), date(2024, 4, 15)
+    full_index = pd.bdate_range(start, end)
+    split_day = pd.Timestamp("2024-02-15")
+    gap_day = pd.Timestamp("2024-02-20")
+    before_split = full_index < split_day
+    raw_close = np.where(before_split, 200.0, 100.0)
+    split_factor = np.where(before_split, 2.0, 1.0)
+    spy_frame = pd.DataFrame(
+        {
+            "open": raw_close,
+            "high": raw_close + 1.0,
+            "low": raw_close - 1.0,
+            "close": raw_close,
+            "volume": 1_000_000.0,
+            "split_factor": split_factor,
+        },
+        index=full_index,
+    ).drop(index=gap_day)
+
+    calls: list[dict] = []
+    real_compute_metrics = compute_metrics
+
+    def capture(*args, **kwargs):
+        calls.append({"args": args, "kwargs": dict(kwargs)})
+        return real_compute_metrics(*args, **kwargs)
+
+    monkeypatch.setattr(wf_mod, "compute_metrics", capture)
+
+    summary = walk_forward_optimize(
+        _config(price_adjustment="splits_only"),
+        StubPriceFetcher({"SPY": spy_frame}),
+        {"hold": [5]},
+        start_date=start,
+        end_date=end,
+        train_days=20,
+        test_days=15,
+        step_days=15,
+        min_trades=1,
+        trial_db_path=None,
+    )
+
+    # After 2:1 split adjustment, SPY is flat at 100.0 (0% return, not -50%).
+    assert summary.aggregate_metrics["benchmark_return"] == pytest.approx(0.0)
+    assert len(calls) == 1
+    marks = calls[0]["kwargs"]["benchmark_marks"]
+    assert marks is not None
+    assert pd.isna(marks.loc[gap_day])
+    assert marks.dropna().eq(100.0).all()
+
+
 def test_pit_helper_keeps_window_overlap_before_max_universe_slots():
     symbols = ("OLD1", "OLD2", "OLD3", "NEW1", "NEW2", "LATER")
     windows = (

@@ -537,24 +537,24 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         ("OOS trade count", monte_carlo.get("trade_count")),
         (
             "Median return",
-            format_result_value(monte_carlo.get("median_return"), "ratio"),
+            format_result_value(monte_carlo.get("median_return"), "pct"),
         ),
-        ("Return p05", format_result_value(monte_carlo.get("return_p05"), "ratio")),
-        ("Return p95", format_result_value(monte_carlo.get("return_p95"), "ratio")),
+        ("Return p05", format_result_value(monte_carlo.get("return_p05"), "pct")),
+        ("Return p95", format_result_value(monte_carlo.get("return_p95"), "pct")),
         (
             "Median drawdown",
-            format_result_value(monte_carlo.get("median_drawdown"), "ratio"),
+            format_result_value(monte_carlo.get("median_drawdown"), "pct"),
         ),
-        ("Drawdown p05", format_result_value(monte_carlo.get("drawdown_p05"), "ratio")),
+        ("Drawdown p05", format_result_value(monte_carlo.get("drawdown_p05"), "pct")),
         (
             "Worst drawdown",
-            format_result_value(monte_carlo.get("worst_drawdown"), "ratio"),
+            format_result_value(monte_carlo.get("worst_drawdown"), "pct"),
         ),
         (
             "P(profit)",
-            format_result_value(monte_carlo.get("probability_of_profit"), "ratio"),
+            format_result_value(monte_carlo.get("probability_of_profit"), "pct"),
         ),
-        ("Risk of ruin", format_result_value(monte_carlo.get("risk_of_ruin"), "ratio")),
+        ("Risk of ruin", format_result_value(monte_carlo.get("risk_of_ruin"), "pct")),
     ]
     mc_table = _html_table(["Metric", "Value"], mc_rows)
 
@@ -598,7 +598,7 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         ),
         (
             "MC 5th-pct return",
-            format_result_value(summary.get("mc_return_p05"), "ratio"),
+            format_result_value(summary.get("mc_return_p05"), "pct"),
             _sign_status(summary.get("mc_return_p05")),
         ),
         ("MC source", summary.get("mc_source"), None),

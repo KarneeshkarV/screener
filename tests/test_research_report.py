@@ -1768,3 +1768,50 @@ def test_research_report_records_calendar_windows_and_hold_warnings(
     html = (tmp_path / "hold_warn.html").read_text()
     assert "calendar days" in html.lower()
     assert "not validated alpha" in html.lower() or "minimum data check" in html.lower()
+
+
+def test_research_html_report_formats_monte_carlo_metrics_as_percentages(tmp_path):
+    from screener.backtester.optimization.reporting import write_research_html_report
+
+    out = tmp_path / "mc_pct.html"
+    write_research_html_report(
+        {
+            "config": {"metric": "sharpe"},
+            "grid": {},
+            "walk_forward": {},
+            "monte_carlo": {
+                "iterations": 500,
+                "source": "walk_forward_oos_equity",
+                "method": "equity_block_bootstrap",
+                "equity_bars": 60,
+                "block": 10,
+                "trade_count": 12,
+                "median_return": 0.25,
+                "return_p05": -0.10,
+                "return_p95": 0.55,
+                "median_drawdown": -0.12,
+                "drawdown_p05": -0.25,
+                "worst_drawdown": -0.35,
+                "probability_of_profit": 0.80,
+                "risk_of_ruin": 0.05,
+            },
+            "summary": {
+                "mc_return_p05": -0.10,
+                "verdict": PASS_VERDICT,
+            },
+        },
+        out,
+    )
+    html = out.read_text()
+    for label, expected in (
+        ("Median return", "+25.00%"),
+        ("Return p05", "-10.00%"),
+        ("Return p95", "+55.00%"),
+        ("Median drawdown", "-12.00%"),
+        ("Drawdown p05", "-25.00%"),
+        ("Worst drawdown", "-35.00%"),
+        ("P(profit)", "+80.00%"),
+        ("Risk of ruin", "+5.00%"),
+        ("MC 5th-pct return", "-10.00%"),
+    ):
+        assert f"<td>{label}</td><td>{expected}</td>" in html

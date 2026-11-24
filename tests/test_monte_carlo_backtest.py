@@ -734,6 +734,12 @@ def test_cli_help_lists_monte_carlo_and_shared_run_flags():
     # Reporting-only rolling flags stay on backtest-rolling.
     assert "--compare-reinvestment" not in res.output
     assert "--dashboard" not in res.output
+    # --paths help must reflect that bands use all iterations and 0 still draws the chart.
+    collapsed = " ".join(res.output.split())
+    assert "0 skips the chart" not in collapsed
+    assert "fan chart and percentile bands" not in collapsed
+    assert "Percentile bands are computed from all iterations" in collapsed
+    assert "0 omits the individual path lines" in collapsed
 
 
 def _fan_paths(keep_paths: int, *, bars: int = 250, iterations: int = 2000):

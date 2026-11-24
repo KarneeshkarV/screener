@@ -94,8 +94,9 @@ def _flag_message(error: ValueError) -> str:
     default=1000,
     show_default=True,
     help=(
-        "Simulated paths kept for the report's fan chart and percentile bands. "
-        "Higher is smoother but costs memory and HTML size; 0 skips the chart."
+        "Individual simulated paths kept to overlay on the report's fan chart. "
+        "Percentile bands are computed from all iterations; 0 omits the "
+        "individual path lines while still rendering the bands and realized curve."
     ),
 )
 @click.option(
