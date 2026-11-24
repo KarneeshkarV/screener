@@ -115,6 +115,15 @@ def test_entry_applies_buy_slippage_to_reference():
     assert fill == pytest.approx(11.0 * (1.0 + 50.0 / 10_000.0))
 
 
+def test_resolve_entry_quote_preserves_unslipped_entry_ref():
+    fm = FillModel(_cfg(entry_order_type="moo", slippage_bps=200.0))
+    quote = fm.resolve_entry_quote(_bars(), signal_idx=0)
+    assert quote.entry_idx == 1
+    assert quote.entry_ref == pytest.approx(11.0)
+    assert quote.entry_fill == pytest.approx(11.0 * 1.02)
+    assert quote.warning is None
+
+
 # ── gap-aware reference resolution ───────────────────────────────────
 
 
