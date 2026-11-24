@@ -34,7 +34,7 @@ from screener.backtester.optimization.grid import (
 from screener.backtester.optimization.monte_carlo import (
     simulate_monte_carlo,
     validate_equity_monte_carlo_flags,
-    validate_ruin_threshold,
+    validate_trade_monte_carlo_flags,
 )
 from screener.backtester.optimization.reporting import (
     GRID_IN_SAMPLE_DISCLAIMER,
@@ -655,6 +655,26 @@ def _ledger_stamp(value: object) -> date | datetime:
         return datetime.fromisoformat(text)
 
 
+def _opt_float(value: Any, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return default
+    return float(value)
+
+
+def _opt_int(value: Any, default: int = 0) -> int:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return default
+    return int(value)
+
+
 def _load_trades(path: Path) -> list[Trade]:
     rows: list[dict[str, Any]]
     if path.suffix.lower() == ".json":
@@ -668,26 +688,44 @@ def _load_trades(path: Path) -> list[Trade]:
         trades.append(
             Trade(
                 ticker=str(row.get("ticker", "")),
-                rank=int(row.get("rank") or idx),
+                rank=_opt_int(row.get("rank"), idx),
                 signal_date=_ledger_stamp(
                     row.get("signal_date") or row.get("entry_date")
                 ),
                 entry_date=_ledger_stamp(row.get("entry_date")),
-                entry_price=float(row.get("entry_price") or 0.0),
+                entry_price=_opt_float(row.get("entry_price")),
                 exit_date=_ledger_stamp(row.get("exit_date")),
-                exit_price=float(row.get("exit_price") or 0.0),
+                exit_price=_opt_float(row.get("exit_price")),
                 # Trade (pydantic) re-validates this Literal at construction.
                 exit_reason=type_cast(
                     ExitReason, str(row.get("exit_reason") or "time")
                 ),
-                shares=float(row.get("shares") or 0.0),
-                entry_cost=float(row.get("entry_cost") or 0.0),
-                exit_value=float(row.get("exit_value") or 0.0),
-                pnl=float(row.get("pnl") or 0.0),
-                return_pct=float(row.get("return_pct") or 0.0),
+                shares=_opt_float(row.get("shares")),
+                entry_cost=_opt_float(row.get("entry_cost")),
+                exit_value=_opt_float(row.get("exit_value")),
+                pnl=_opt_float(row.get("pnl")),
+                return_pct=_opt_float(row.get("return_pct")),
+                dividend_income=_opt_float(row.get("dividend_income")),
+                open_seq=_opt_int(row.get("open_seq")),
             )
         )
     return trades
+
+
+_VALIDATE_FLAG_FOR_FIELD = {
+    "iterations": "--iterations",
+    "seed": "--seed",
+    "initial_capital": "--initial-capital",
+    "ruin_threshold": "--ruin-threshold",
+}
+
+
+def _validate_flag_message(error: ValueError) -> str:
+    message = str(error)
+    for field, flag in _VALIDATE_FLAG_FOR_FIELD.items():
+        if message.startswith(field):
+            return flag + message[len(field) :]
+    return message
 
 
 @optimize.command(name="validate")
@@ -710,18 +748,25 @@ def optimize_validate(
     from rich.table import Table
 
     try:
-        validate_ruin_threshold(float(ruin_threshold))
+        validate_trade_monte_carlo_flags(
+            iterations=iterations,
+            seed=seed,
+            initial_capital=float(initial_capital),
+            ruin_threshold=float(ruin_threshold),
+        )
     except ValueError as exc:
-        message = str(exc).replace("ruin_threshold", "--ruin-threshold", 1)
-        raise click.UsageError(message) from exc
+        raise click.UsageError(_validate_flag_message(exc)) from exc
 
-    result = simulate_monte_carlo(
-        _load_trades(trades_path),
-        iterations=iterations,
-        seed=seed,
-        initial_capital=initial_capital,
-        ruin_threshold=ruin_threshold,
-    )
+    try:
+        result = simulate_monte_carlo(
+            _load_trades(trades_path),
+            iterations=iterations,
+            seed=seed,
+            initial_capital=initial_capital,
+            ruin_threshold=ruin_threshold,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
     table = Table(title="Monte Carlo Validation", show_header=True, header_style="bold")
     table.add_column("Metric")
     table.add_column("Value", justify="right")

@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Self
 import numpy as np
 from pydantic import BaseModel, ConfigDict
 
-from screener.backtester.metrics import bar_returns
+from screener.backtester.metrics import bar_returns, position_results
 from screener.backtester.models import Trade
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -74,6 +74,23 @@ def validate_ruin_threshold(ruin_threshold: float) -> None:
         raise ValueError(
             "ruin_threshold must be a fraction of starting capital in (0, 1] and finite"
         )
+
+
+def validate_trade_monte_carlo_flags(
+    *,
+    iterations: int,
+    seed: int,
+    initial_capital: float,
+    ruin_threshold: float,
+) -> None:
+    """Reject an out-of-range trade-bootstrap simulation argument."""
+    if iterations <= 0:
+        raise ValueError("iterations must be positive")
+    if seed < 0:
+        raise ValueError("seed must not be negative")
+    if not np.isfinite(initial_capital) or initial_capital <= 0:
+        raise ValueError("initial_capital must be positive and finite")
+    validate_ruin_threshold(ruin_threshold)
 
 
 def validate_equity_monte_carlo_flags(
@@ -156,6 +173,71 @@ def _path_drawdowns(paths: np.ndarray, initial_capital: float) -> np.ndarray:
     return np.asarray(np.minimum(drawdown.min(axis=1), 0.0), dtype=float)
 
 
+def _position_returns(trades: Sequence[Trade]) -> np.ndarray:
+    """Return finite per-position total returns (including dividends).
+
+    Partial-exit tranches are grouped onto their lot identity via
+    :func:`position_results` so one scaled-out position contributes one
+    position return ``pnl / entry_cost`` rather than ``k`` independent trades.
+    For synthetic fixtures or minimal CSVs with ``entry_cost == 0``, a
+    single-trade position falls back to ``trade.return_pct``.
+    """
+    if not trades:
+        return np.empty(0, dtype=float)
+
+    for idx, trade in enumerate(trades):
+        for field_name, val in (
+            ("pnl", float(trade.pnl)),
+            ("entry_cost", float(trade.entry_cost)),
+            ("return_pct", float(trade.return_pct)),
+        ):
+            if not np.isfinite(val):
+                raise ValueError(
+                    f"trade returns must be finite: {field_name}={val} at position {idx}"
+                )
+
+    positions = position_results(trades)
+    if all(cost > 0.0 for _pnl, cost in positions):
+        returns = np.array([pnl / cost for pnl, cost in positions], dtype=float)
+    else:
+        slot_trades: list[list[Trade]] = []
+        slot_of_lot: dict[tuple[str, int, Any], int] = {}
+        for trade in trades:
+            lot = (trade.ticker, trade.open_seq, trade.entry_date)
+            slot = slot_of_lot.get(lot) if trade.open_seq else None
+            if slot is None:
+                if trade.open_seq:
+                    slot_of_lot[lot] = len(slot_trades)
+                slot_trades.append([trade])
+            else:
+                slot_trades[slot].append(trade)
+
+        computed: list[float] = []
+        for pos_idx, ((pnl, cost), members) in enumerate(
+            zip(positions, slot_trades, strict=True)
+        ):
+            if cost > 0.0:
+                computed.append(pnl / cost)
+            elif cost == 0.0:
+                computed.append(
+                    float(members[0].return_pct) if len(members) == 1 else 0.0
+                )
+            else:
+                raise ValueError(
+                    f"position entry_cost must be non-negative: "
+                    f"{cost} at position {pos_idx}"
+                )
+        returns = np.array(computed, dtype=float)
+
+    non_finite = np.flatnonzero(~np.isfinite(returns))
+    if non_finite.size:
+        first = int(non_finite[0])
+        raise ValueError(
+            f"trade returns must be finite: {returns[first]} at position {first}"
+        )
+    return returns
+
+
 def simulate_monte_carlo(
     trades: Sequence[Trade],
     *,
@@ -164,15 +246,22 @@ def simulate_monte_carlo(
     seed: int = 42,
     ruin_threshold: float = 0.5,
 ) -> MonteCarloResult:
-    if iterations <= 0:
-        raise ValueError("iterations must be positive")
-    if seed < 0:
-        raise ValueError("seed must not be negative")
-    if initial_capital <= 0:
-        raise ValueError("initial_capital must be positive")
-    validate_ruin_threshold(ruin_threshold)
+    """Bootstrap completed position returns with replacement.
+
+    Partial-exit tranches sharing a lot are collapsed via
+    :func:`position_results` and measured by total return ``pnl / entry_cost``
+    (which includes ``dividend_income``). Non-finite returns raise
+    ``ValueError``. Per-trade gross return factors are floored at ``0.0`` so a
+    loss exceeding 100% absorbs at zero equity rather than flipping sign.
+    """
+    validate_trade_monte_carlo_flags(
+        iterations=iterations,
+        seed=seed,
+        initial_capital=initial_capital,
+        ruin_threshold=ruin_threshold,
+    )
     rng = np.random.default_rng(seed)
-    returns = np.array([float(t.return_pct) for t in trades], dtype=float)
+    returns = _position_returns(trades)
     if returns.size == 0:
         return MonteCarloResult.zeroed(
             iterations=iterations,
@@ -192,7 +281,10 @@ def simulate_monte_carlo(
     for lo in range(0, iterations, chunk):
         hi = min(lo + chunk, iterations)
         sampled = rng.choice(returns, size=(hi - lo, sample_size), replace=True)
-        equity = initial_capital * np.cumprod(1.0 + sampled, axis=1)
+        # Floor per-trade gross factor at 0 (limited-liability bankruptcy
+        # absorption) so a return < -1.0 cannot flip equity negative or let a
+        # second < -1.0 draw multiply (-) * (-) back into positive equity.
+        equity = initial_capital * np.cumprod(np.maximum(1.0 + sampled, 0.0), axis=1)
         terminal[lo:hi] = equity[:, -1] / initial_capital - 1.0
         dds[lo:hi] = _path_drawdowns(equity, initial_capital)
         ruin_count += int(np.count_nonzero(equity.min(axis=1) <= ruin_level))
