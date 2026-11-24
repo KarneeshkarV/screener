@@ -150,10 +150,14 @@ def _mark_rank_exits(
     decision; the shared exit sweep then closes flagged slots later today at
     that bar's close, through the normal dividend -> partial -> full-exit
     sequence with stop/trail/target still taking precedence. Strict rule:
-    anything absent from the (possibly short) list is flagged, except a
-    position whose signal bar is ``prev_day`` or later: it was picked from
-    that very ranking (possibly below ``rank_universe_size`` after failed
-    opens), so judging it against the same ranking would sell it unheld.
+    anything absent from the (possibly short) list is flagged, provided the
+    position was already held on or before ``prev_day`` (``entry_date <=
+    prev_day``) and signaled before ``prev_day`` (``signal_date < prev_day``).
+    Positions signaled on ``prev_day`` were picked from that very ranking
+    (possibly below ``rank_universe_size`` after failed opens), and positions
+    entered after ``prev_day`` filled on today's bar (for example a delayed
+    limit order or an MOO order crossing a missing bar/halt), so neither
+    should be liquidated on its entry bar.
     """
     rows, day_warnings = _candidate_rows_for_day(
         prev_day,
@@ -166,7 +170,9 @@ def _mark_rank_exits(
     for state in slot_states.values():
         if state is not None:
             state.rank_exit = (
-                state.ticker not in top and pd.Timestamp(state.signal_date) < prev_day
+                state.ticker not in top
+                and pd.Timestamp(state.signal_date) < prev_day
+                and pd.Timestamp(state.entry_date) <= prev_day
             )
 
 

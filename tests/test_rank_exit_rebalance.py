@@ -19,6 +19,7 @@ from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling_simulation import (
     _DailyRankingSource,
+    _mark_rank_exits,
     run_rolling_backtest,
 )
 from screener.cli import cli
@@ -323,3 +324,165 @@ def test_rank_priority_above_expr_session_time():
 
     unflagged_timed = _slot_state(hold_limit_idx=0, rank_exit=False)
     assert _check(unflagged_timed, _cfg()) == "time"
+
+
+def test_delayed_limit_fill_on_rebalance_day_is_not_liquidated_on_entry_bar():
+    """A limit order filled on a rebalance bar must not rank-exit the same day.
+
+    AAA leads on bar 3 (first eligible signal bar) and queues a 5% below-close
+    limit order. On bar 4 (``prev_day`` for the bar-5 sweep), AAA stays above
+    its limit so the order remains pending, while BBB's higher dollar volume
+    drops AAA out of top-1. On bar 5 (rebalance day, ``_day_count == 6``), AAA
+    dips to fill the limit order. Even though ``signal_date < prev_day`` and
+    AAA was outside top-1 on bar 4, it entered on bar 5 and must not be
+    liquidated on its entry bar; it exits on the next rebalance sweep (bar 8)
+    once held across ``prev_day``.
+    """
+    aaa = _ramp(100.0, 119.0, 500_000.0).copy()
+    # Keep bar 4 above the bar-3 limit (~97.85), dip on bar 5 to trigger fill.
+    aaa.loc[_INDEX[4], "low"] = 102.0
+    aaa.loc[_INDEX[5], "low"] = 90.0
+    # BBB trails AAA through bar 3, then overtakes AAA in dollar volume from
+    # bar 4 onward so AAA is outside top-1 on both bar 4 and bar 7.
+    bbb = _ramp(100.0, 119.0, 200_000.0).copy()
+    bbb.loc[_INDEX[4:], "volume"] = 1_000_000.0
+
+    data = {
+        "AAA": aaa,
+        "BBB": bbb,
+        "SPY": _ramp(400.0, 440.0, 1_000_000.0),
+    }
+    trades = _run(
+        _cfg(
+            tickers=("AAA", "BBB"),
+            top=1,
+            rank_exit_every=3,
+            rank_universe_size=1,
+            entry_order_type="limit",
+            entry_limit_bps=500.0,
+        ),
+        data=data,
+    )
+
+    aaa_trade = trades[0]
+    assert str(aaa_trade.ticker) == "AAA"  # type: ignore[attr-defined]
+    assert pd.Timestamp(aaa_trade.signal_date) == _INDEX[3]  # type: ignore[attr-defined]
+    assert pd.Timestamp(aaa_trade.entry_date) == _INDEX[5]  # type: ignore[attr-defined]
+    assert pd.Timestamp(aaa_trade.exit_date) == _INDEX[8]  # type: ignore[attr-defined]
+    assert str(aaa_trade.exit_reason) == "rank"  # type: ignore[attr-defined]
+
+
+def test_halted_moo_fill_on_rebalance_day_is_not_liquidated_on_entry_bar():
+    """An MOO order delayed by a halt on ``prev_day`` must not exit on entry.
+
+    AAA leads on bar 3 (first eligible signal bar) and queues an MOO order,
+    then has no bar on bar 4 (halted on ``prev_day`` for the bar-5 sweep, so
+    absent from the bar-4 top-1 list). AAA resumes on bar 5 (rebalance day,
+    ``_day_count == 6``) and fills at bar 5's open. It must not be flagged for
+    rank exit on bar 5; because BBB holds top-1 through bar 7, AAA rank-exits
+    on the following rebalance sweep (bar 8).
+    """
+    aaa = _ramp(100.0, 119.0, 500_000.0).drop(index=_INDEX[4])
+    bbb = _ramp(100.0, 119.0, 200_000.0).copy()
+    bbb.loc[_INDEX[4:], "volume"] = 1_000_000.0
+
+    data = {
+        "AAA": aaa,
+        "BBB": bbb,
+        "SPY": _ramp(400.0, 440.0, 1_000_000.0),
+    }
+    trades = _run(
+        _cfg(
+            tickers=("AAA", "BBB"),
+            top=1,
+            rank_exit_every=3,
+            rank_universe_size=1,
+            entry_order_type="moo",
+        ),
+        data=data,
+    )
+
+    aaa_trade = trades[0]
+    assert str(aaa_trade.ticker) == "AAA"  # type: ignore[attr-defined]
+    assert pd.Timestamp(aaa_trade.signal_date) == _INDEX[3]  # type: ignore[attr-defined]
+    assert pd.Timestamp(aaa_trade.entry_date) == _INDEX[5]  # type: ignore[attr-defined]
+    assert pd.Timestamp(aaa_trade.exit_date) == _INDEX[8]  # type: ignore[attr-defined]
+    assert str(aaa_trade.exit_reason) == "rank"  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("signal_earlier", "entry_earlier", "prev_day", "prev_label", "current_day"),
+    [
+        pytest.param(
+            _INDEX[1].date(),
+            _INDEX[2].date(),
+            _INDEX[3],
+            _INDEX[3].date(),
+            _INDEX[4].date(),
+            id="daily-date",
+        ),
+        pytest.param(
+            pd.Timestamp("2024-01-02 14:30:00").to_pydatetime(),
+            pd.Timestamp("2024-01-02 15:00:00").to_pydatetime(),
+            pd.Timestamp("2024-01-02 15:30:00"),
+            pd.Timestamp("2024-01-02 15:30:00").to_pydatetime(),
+            pd.Timestamp("2024-01-02 16:00:00").to_pydatetime(),
+            id="intraday-datetime",
+        ),
+    ],
+)
+def test_mark_rank_exits_spares_same_day_entry_and_flags_prior_holdings(
+    monkeypatch: pytest.MonkeyPatch,
+    signal_earlier: object,
+    entry_earlier: object,
+    prev_day: pd.Timestamp,
+    prev_label: object,
+    current_day: object,
+):
+    """Positions entered on ``current_day`` are spared; held slots still exit."""
+    monkeypatch.setattr(
+        "screener.backtester.rolling_simulation._candidate_rows_for_day",
+        lambda *args, **kwargs: ([], []),
+    )
+    held_prior = _slot_state(
+        ticker="OLD",
+        signal_date=signal_earlier,
+        entry_date=entry_earlier,
+        rank_exit=False,
+    )
+    held_on_prev = _slot_state(
+        ticker="PREV",
+        signal_date=signal_earlier,
+        entry_date=prev_label,
+        rank_exit=False,
+    )
+    entered_today = _slot_state(
+        ticker="TODAY",
+        signal_date=signal_earlier,
+        entry_date=current_day,
+        rank_exit=False,
+    )
+    fresh_signal = _slot_state(
+        ticker="FRESH",
+        signal_date=prev_label,
+        entry_date=current_day,
+        rank_exit=False,
+    )
+
+    _mark_rank_exits(
+        prev_day=prev_day,
+        cfg=_cfg(rank_exit_every=1, rank_universe_size=1),
+        candidate_matrices=None,  # type: ignore[arg-type]
+        slot_states={
+            0: held_prior,
+            1: held_on_prev,
+            2: entered_today,
+            3: fresh_signal,
+        },
+        warnings=[],
+    )
+
+    assert held_prior.rank_exit is True
+    assert held_on_prev.rank_exit is True
+    assert entered_today.rank_exit is False
+    assert fresh_signal.rank_exit is False
