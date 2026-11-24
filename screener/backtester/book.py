@@ -81,7 +81,7 @@ def fill_pending_entries(
         )
         if index is not None and reference is not None and 0 < reference < float("inf"):
             fillable.append((slot_id, order, entry_idx))
-        elif cfg.entry_order_type != "limit":
+        elif index is not None or cfg.entry_order_type != "limit":
             del pending_orders[slot_id]
     grows_slots = sizing_allows_slot_growth(cfg.sizing_rule)
     current_equity = (
@@ -116,8 +116,7 @@ def fill_pending_entries(
         if state is None or entry_opens_no_shares(budget, state.entry_shares):
             if warn:
                 warnings.append(f"{order.ticker}: {warn}")
-            if cfg.entry_order_type != "limit":
-                del pending_orders[slot_id]
+            del pending_orders[slot_id]
             continue
         portfolio.assign(order.ticker, order.rank, order.signal_date)
         position = portfolio.open(

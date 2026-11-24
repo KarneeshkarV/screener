@@ -30,7 +30,7 @@ from screener.backtester.day_loop import (
     _force_close_open_slots,
     run_day_loop,
 )
-from screener.backtester.fills import FillModel
+from screener.backtester.fills import FillModel, signal_reference_price
 from screener.backtester.historical_cli import backtest_historical
 from screener.backtester.metrics import (
     compute_cost_metrics,
@@ -403,6 +403,8 @@ class _ReserveRotationSource:
                 reserve_bars = self.bars_by_tv.get(ticker, pd.DataFrame())
                 if reserve_bars is None or reserve_bars.empty:
                     continue
+                if isinstance(self.caches.exit_signals.get(ticker), str):
+                    continue
                 reserve_signal_idx = _eligible_reserve_signal_idx(
                     reserve_bars,
                     day,
@@ -428,21 +430,24 @@ class _ReserveRotationSource:
                     deferred.append(reserve)
                     continue
                 if (
-                    cfg.entry_order_type != "limit"
-                    and cfg.market.lower() == "india"
+                    cfg.market.lower() == "india"
                     and affordable_buy_shares(
                         portfolio.cost_model,
-                        float(reserve_bars["close"].iloc[reserve_signal_idx]),
+                        signal_reference_price(
+                            float(reserve_bars["close"].iloc[reserve_signal_idx]),
+                            cfg,
+                        ),
                         entry_budget,
                         whole_shares=True,
                     )
                     <= 0
                 ):
-                    # Reject using only the completed signal close. A whole
-                    # share this budget cannot buy now would be cancelled on
-                    # its later execution bar (ADR 0005), and even demoted to
-                    # the back it would be re-scanned every day. Keeping it
-                    # deferred lets a later signal close promote it instead.
+                    # Reject using only completed signal data (signal close or
+                    # causal limit price). A whole share this budget cannot buy
+                    # now would be cancelled on its later execution bar
+                    # (ADR 0005), and even demoted to the back it would be
+                    # re-scanned every day. Keeping it deferred lets a later
+                    # signal close promote it instead.
                     deferred.append(reserve)
                     continue
                 self.pending_entry_orders[slot_id] = PendingEntryOrder(
@@ -521,7 +526,16 @@ def _run_event_driven_sim(
             series_cache=caches.frame(ticker, bars).sizing_series,
         )
         slot_states[slot_id] = None
-        if entry_budget > 0:
+        if entry_budget > 0 and not (
+            cfg.market.lower() == "india"
+            and affordable_buy_shares(
+                portfolio.cost_model,
+                signal_reference_price(float(bars["close"].iloc[signal_idx]), cfg),
+                entry_budget,
+                whole_shares=True,
+            )
+            <= 0
+        ):
             pending_entry_orders[slot_id] = PendingEntryOrder(
                 ticker=ticker,
                 signal_idx=signal_idx,
