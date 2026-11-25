@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import math
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
@@ -56,6 +57,7 @@ from screener.universes import available_universes
 
 P = ParamSpec("P")
 R = TypeVar("R")
+LOG = logging.getLogger(__name__)
 
 
 def _parse_values(
@@ -668,10 +670,23 @@ def _opt_float(value: Any, default: float = 0.0) -> float:
 def _opt_int(value: Any, default: int = 0) -> int:
     if value is None:
         return default
+    if isinstance(value, bool):
+        raise ValueError(f"Expected integer value, got {value!r}")
     if isinstance(value, str):
         value = value.strip()
         if not value:
             return default
+        try:
+            return int(value)
+        except ValueError:
+            parsed = float(value)
+            if math.isfinite(parsed) and parsed.is_integer():
+                return int(parsed)
+            raise ValueError(f"Expected integer value, got {value!r}") from None
+    if isinstance(value, float):
+        if math.isfinite(value) and value.is_integer():
+            return int(value)
+        raise ValueError(f"Expected integer value, got {value!r}")
     return int(value)
 
 
@@ -682,7 +697,16 @@ def _load_trades(path: Path) -> list[Trade]:
         rows = data.get("trades", data) if isinstance(data, dict) else data
     else:
         with path.open(newline="") as fh:
-            rows = list(csv.DictReader(fh))
+            reader = csv.DictReader(fh)
+            fieldnames = reader.fieldnames or []
+            rows = list(reader)
+        if rows and "open_seq" not in fieldnames:
+            LOG.warning(
+                "Trade CSV %s has no 'open_seq' column; partial-exit tranches "
+                "cannot be collapsed into positions and will be treated as "
+                "separate trades.",
+                path,
+            )
     trades: list[Trade] = []
     for idx, row in enumerate(rows, start=1):
         trades.append(
