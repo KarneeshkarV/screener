@@ -14,13 +14,18 @@ from dataclasses import replace
 
 import numpy as np
 import pandas as pd
+import pytest
+from pydantic import ValidationError
 
 from screener.backtester.book import fill_pending_entries, open_book
 from screener.backtester.core import PendingEntryOrder, _RunCaches
-from screener.backtester.historical import run_backtest
+from screener.backtester.day_loop import run_day_loop
+from screener.backtester.historical import _run_event_driven_sim, run_backtest
 from screener.backtester.models import BacktestConfig
 from screener.backtester.pine import PineError, parse
+from screener.backtester.portfolio import Portfolio
 from screener.backtester.rolling_simulation import (
+    _DailyRankingSource,
     prepare_rolling_backtest,
     run_prepared_rolling_backtest,
     run_rolling_backtest,
@@ -190,6 +195,43 @@ def test_rolling_india_affordable_untouched_limit_still_waits_causally() -> None
     )
 
     assert result.trades == []
+    assert result.warnings == []
+    assert result.selection.empty
+
+    # Verify directly that AAA's Day-0 limit stayed pending through the full
+    # window without being cancelled or replaced by BBB.
+    prepared = prepare_rolling_backtest(
+        cfg,
+        StubPriceFetcher(panel),
+        start_date=dates[0].date(),
+        end_date=dates[-1].date(),
+    )
+    assert prepared.candidate_matrices is not None
+    book = open_book(cfg)
+    warnings: list[str] = []
+    source = _DailyRankingSource(
+        candidate_matrices=prepared.candidate_matrices,
+        bars_by_tv=prepared.bars_by_tv,
+        cfg=cfg,
+        exit_ast=prepared.exit_ast,
+        fill_model=book.fill_model,
+        portfolio=book.portfolio,
+        slot_states=book.slot_states,
+        slot_bars=book.slot_bars,
+        end_ts=prepared.end_ts,
+        selection_rows=book.selection_rows,
+        warnings=warnings,
+        exit_signals=prepared.exit_signals,
+        frame_caches=prepared.frame_caches,
+        master_dates=prepared.master_dates,
+    )
+    run_day_loop(prepared.master_dates, book.day_loop, source)
+
+    assert list(source.pending_entry_orders.keys()) == [0]
+    assert source.pending_entry_orders[0].ticker == "AAA"
+    assert source.pending_entry_orders[0].signal_date == dates[0].date()
+    assert book.slot_states[0] is None
+    assert warnings == []
 
 
 def test_rolling_india_limit_becomes_unaffordable_at_fill_frees_slot() -> None:
@@ -405,6 +447,11 @@ def test_historical_india_limit_unaffordable_active_and_reserve_promotes_afforda
 
     assert result.trades, "affordable reserve must fill instead of deadlocking"
     assert {trade.ticker for trade in result.trades} == {"AFFRES"}
+    active_skip_warnings = [
+        w for w in result.warnings if w.startswith("UNAFFACT: entry skipped:")
+    ]
+    assert len(active_skip_warnings) == 1
+    assert "whole share" in active_skip_warnings[0]
 
 
 def test_historical_india_limit_triggered_reserve_failure_demotes_to_back() -> None:
@@ -601,3 +648,200 @@ def test_fill_pending_entries_drops_intraday_only_session_last_limit() -> None:
     assert filled == []
     assert pending == {}
     assert any("session-last bar (intraday-only)" in w for w in warnings)
+
+
+def test_fill_pending_entries_drops_triggered_limit_with_non_finite_open() -> None:
+    """Triggered limit bars with NaN/-inf open yield non-finite ref and free their slot."""
+    dates = pd.bdate_range("2024-01-02", periods=4)
+    nan_open = np.array([100.0, np.nan, 100.0, 100.0])
+    neginf_open = np.array([100.0, -np.inf, 100.0, 100.0])
+    bars_by_ticker = {
+        "NANOPEN": _bars(dates, close=100.0, low=90.0, open_=nan_open, volume=10_000.0),
+        "NEGINFOPEN": _bars(
+            dates, close=100.0, low=90.0, open_=neginf_open, volume=10_000.0
+        ),
+        "UNTOUCHED": _bars(dates, close=100.0, low=98.0, volume=10_000.0),
+    }
+    cfg = BacktestConfig(
+        market="us",
+        as_of=dates[-1].date(),
+        benchmark="SPY",
+        tickers=("NANOPEN", "NEGINFOPEN", "UNTOUCHED"),
+        entry_expr="close > 0",
+        exit_expr=None,
+        hold=2,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        top=3,
+        initial_capital=30_000.0,
+        entry_order_type="limit",
+        entry_limit_bps=500.0,
+        min_price=0.0,
+        min_avg_dollar_volume=0.0,
+    )
+    book = open_book(cfg)
+    pending = {
+        0: PendingEntryOrder("NANOPEN", 0, 1, dates[0].date()),
+        1: PendingEntryOrder("NEGINFOPEN", 0, 2, dates[0].date()),
+        2: PendingEntryOrder("UNTOUCHED", 0, 3, dates[0].date()),
+    }
+    warnings: list[str] = []
+
+    filled = fill_pending_entries(
+        day=dates[1],
+        at_close=False,
+        pending_orders=pending,
+        bars_by_ticker=bars_by_ticker,
+        cfg=cfg,
+        portfolio=book.portfolio,
+        slot_states=book.slot_states,
+        slot_bars=book.slot_bars,
+        fill_model=book.fill_model,
+        caches=_RunCaches(),
+        exit_ast=None,
+        warnings=warnings,
+    )
+
+    assert filled == []
+    assert list(pending.keys()) == [2]
+    assert pending[2].ticker == "UNTOUCHED"
+    assert book.slot_states[0] is None
+    assert book.slot_states[1] is None
+
+
+def test_historical_reserve_cached_exit_failure_warns_once() -> None:
+    """Historical reserve rotation warns once per ticker on cached exit_ast failures."""
+    n = 30
+    dates = pd.bdate_range("2024-01-01", periods=n)
+    as_of_i = 20
+
+    active = _bars(dates, close=100.0, low=90.0, volume=100_000.0)
+    active["custom_flag"] = 0.0
+    bad_res = _bars(dates, close=100.0, low=90.0, volume=50_000.0)
+    good_res = _bars(dates, close=100.0, low=90.0, volume=10_000.0)
+    good_res["custom_flag"] = 0.0
+    spy = _bars(dates, close=100.0, low=99.0, volume=1_000_000.0)
+
+    cfg = BacktestConfig(
+        market="us",
+        as_of=dates[as_of_i].date(),
+        benchmark="SPY",
+        tickers=("ACTIVE", "BADRES", "GOODRES"),
+        entry_expr="close > 0",
+        exit_expr="custom_flag > 0",
+        hold=1,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        top=1,
+        strategy_name=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        initial_capital=10_000.0,
+        reinvest=True,
+        compounding=False,
+        reserve_multiple=3,
+        entry_order_type="limit",
+        entry_limit_bps=500.0,
+        min_price=0.0,
+        min_avg_dollar_volume=0.0,
+    )
+
+    # 1. Pre-cached exit error string in _run_event_driven_sim must emit a warning
+    #    once (matching rolling_simulation.py) instead of silently skipping.
+    actives_df = pd.DataFrame([{"ticker": "ACTIVE", "rank": 1, "role": "active"}])
+    reserves_df = pd.DataFrame(
+        [
+            {"ticker": "BADRES", "rank": 2, "role": "reserve"},
+            {"ticker": "GOODRES", "rank": 3, "role": "reserve"},
+        ]
+    )
+    caches = _RunCaches(
+        exit_signals={"BADRES": "exit eval failed: unknown identifier 'custom_flag'"}
+    )
+    portfolio = Portfolio(cfg.initial_capital, 1, compounding=False)
+    precached_warnings: list[str] = []
+    _run_event_driven_sim(
+        portfolio=portfolio,
+        actives_df=actives_df,
+        reserves_df=reserves_df,
+        bars_by_tv={"ACTIVE": active, "BADRES": bad_res, "GOODRES": good_res},
+        as_of_ts=dates[as_of_i],
+        cfg=cfg,
+        entry_ast=parse("close > 0"),
+        exit_ast=parse("custom_flag > 0"),
+        lookback=1,
+        warnings=precached_warnings,
+        caches=caches,
+    )
+    precached_bad = [
+        w for w in precached_warnings if w.startswith("BADRES: exit eval failed:")
+    ]
+    assert len(precached_bad) == 1
+    assert {t.ticker for t in portfolio.closed_trades()} == {"ACTIVE", "GOODRES"}
+
+    # 2. End-to-end run_backtest: BADRES fails at trigger, is demoted, and emits
+    #    a single warning without starving GOODRES.
+    result = run_backtest(
+        cfg,
+        StubPriceFetcher(
+            {"ACTIVE": active, "BADRES": bad_res, "GOODRES": good_res, "SPY": spy}
+        ),
+    )
+    e2e_bad = [w for w in result.warnings if w.startswith("BADRES: exit eval failed:")]
+    assert len(e2e_bad) == 1
+    assert {t.ticker for t in result.trades} == {"ACTIVE", "GOODRES"}
+
+
+@pytest.mark.parametrize(
+    "bad_bps",
+    [10_000.0, 12_000.0, float("nan"), float("inf"), float("-inf")],
+)
+def test_backtest_config_rejects_invalid_entry_limit_bps(bad_bps: float) -> None:
+    """entry_limit_bps must be finite and strictly below 10_000 bps (positive limit price)."""
+    with pytest.raises(ValidationError):
+        BacktestConfig(
+            market="us",
+            as_of=pd.Timestamp("2024-01-02").date(),
+            benchmark="SPY",
+            tickers=("AAA",),
+            entry_expr="close > 0",
+            exit_expr=None,
+            hold=2,
+            stop_loss=None,
+            take_profit=None,
+            trailing_stop=None,
+            slippage_bps=0.0,
+            commission_bps=0.0,
+            top=1,
+            initial_capital=10_000.0,
+            entry_order_type="limit",
+            entry_limit_bps=bad_bps,
+        )
+
+
+@pytest.mark.parametrize("good_bps", [-50.0, 0.0, 500.0, 9_999.0])
+def test_backtest_config_accepts_valid_entry_limit_bps(good_bps: float) -> None:
+    """Finite entry_limit_bps < 10_000 bps yields a positive causal limit price."""
+    cfg = BacktestConfig(
+        market="us",
+        as_of=pd.Timestamp("2024-01-02").date(),
+        benchmark="SPY",
+        tickers=("AAA",),
+        entry_expr="close > 0",
+        exit_expr=None,
+        hold=2,
+        stop_loss=None,
+        take_profit=None,
+        trailing_stop=None,
+        slippage_bps=0.0,
+        commission_bps=0.0,
+        top=1,
+        initial_capital=10_000.0,
+        entry_order_type="limit",
+        entry_limit_bps=good_bps,
+    )
+    assert cfg.entry_limit_bps == good_bps

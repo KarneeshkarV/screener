@@ -98,7 +98,7 @@ class BacktestConfig(BaseModel):
     spread_proxy: bool = False
     gap_fills: bool = True
     entry_order_type: Literal["moo", "moc", "limit"] = "moo"
-    entry_limit_bps: float | None = None
+    entry_limit_bps: float | None = Field(default=None, lt=10_000.0)
     partial_exits: tuple[tuple[float, float], ...] = ()
 
     # Rank-based exit rebalance (rolling engine only). On every Nth trading
@@ -188,6 +188,7 @@ class BacktestConfig(BaseModel):
         "trailing_stop",
         "slippage_bps",
         "commission_bps",
+        "entry_limit_bps",
         "initial_capital",
     )
     @classmethod

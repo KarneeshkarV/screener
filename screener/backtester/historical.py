@@ -249,6 +249,7 @@ class _ReserveRotationSource:
         self._reserve_rows = {str(row["ticker"]): row for row in reserve_queue}
         # Slots whose queued order is a re-entry, not a reserve rotation.
         self._reentry_orders: set[int] = set()
+        self._warned_exit_failures: set[str] = set()
         self.warnings = warnings
         self.caches = caches
 
@@ -403,7 +404,13 @@ class _ReserveRotationSource:
                 reserve_bars = self.bars_by_tv.get(ticker, pd.DataFrame())
                 if reserve_bars is None or reserve_bars.empty:
                     continue
-                if isinstance(self.caches.exit_signals.get(ticker), str):
+                cached_exit = self.caches.exit_signals.get(ticker)
+                if isinstance(cached_exit, str):
+                    if ticker not in self._warned_exit_failures:
+                        self._warned_exit_failures.add(ticker)
+                        warning = f"{ticker}: {cached_exit}"
+                        if warning not in self.warnings:
+                            self.warnings.append(warning)
                     continue
                 reserve_signal_idx = _eligible_reserve_signal_idx(
                     reserve_bars,
@@ -526,23 +533,29 @@ def _run_event_driven_sim(
             series_cache=caches.frame(ticker, bars).sizing_series,
         )
         slot_states[slot_id] = None
-        if entry_budget > 0 and not (
-            cfg.market.lower() == "india"
-            and affordable_buy_shares(
-                portfolio.cost_model,
-                signal_reference_price(float(bars["close"].iloc[signal_idx]), cfg),
-                entry_budget,
-                whole_shares=True,
-            )
-            <= 0
-        ):
-            pending_entry_orders[slot_id] = PendingEntryOrder(
-                ticker=ticker,
-                signal_idx=signal_idx,
-                rank=int(row["rank"]),
-                signal_date=_bar_label(as_of_ts, cfg),
-            )
-            slot_bars[slot_id] = bars
+        if entry_budget > 0:
+            if (
+                cfg.market.lower() == "india"
+                and affordable_buy_shares(
+                    portfolio.cost_model,
+                    signal_reference_price(float(bars["close"].iloc[signal_idx]), cfg),
+                    entry_budget,
+                    whole_shares=True,
+                )
+                <= 0
+            ):
+                warnings.append(
+                    f"{ticker}: entry skipped: budget {entry_budget:.2f} cannot buy "
+                    "1 whole share at signal reference price"
+                )
+            else:
+                pending_entry_orders[slot_id] = PendingEntryOrder(
+                    ticker=ticker,
+                    signal_idx=signal_idx,
+                    rank=int(row["rank"]),
+                    signal_date=_bar_label(as_of_ts, cfg),
+                )
+                slot_bars[slot_id] = bars
         reentries_left[slot_id] = cfg.max_reentries if cfg.allow_reentry else 0
 
     taken = {state.ticker for state in slot_states.values() if state is not None}
