@@ -124,6 +124,89 @@ def test_resolve_entry_quote_preserves_unslipped_entry_ref():
     assert quote.warning is None
 
 
+def test_resolve_entry_quote_limit_touched_inside_bar_caps_fill_at_limit():
+    idx = pd.date_range("2024-03-01", periods=3, freq="D")
+    # signal close = 100.0, entry_limit_bps = 100 -> limit_price = 99.0.
+    # Bar 1 opens above limit (100.0) and trades down through 99.0 (low = 98.5).
+    bars = pd.DataFrame(
+        {
+            "open": [100.0, 100.0, 100.0],
+            "high": [101.0, 101.0, 101.0],
+            "low": [99.0, 98.5, 99.5],
+            "close": [100.0, 99.5, 100.0],
+            "volume": [1000.0, 1000.0, 1000.0],
+        },
+        index=idx,
+    )
+    fm = FillModel(
+        _cfg(entry_order_type="limit", entry_limit_bps=100.0, slippage_bps=50.0)
+    )
+    quote = fm.resolve_entry_quote(bars, signal_idx=0)
+    assert quote.entry_idx == 1
+    assert quote.entry_ref == pytest.approx(99.0)
+    # Buy slippage cannot push a buy limit fill above the limit price.
+    assert quote.entry_fill == pytest.approx(99.0)
+    assert quote.shares > 0
+    assert quote.warning is None
+
+
+def test_resolve_entry_quote_gap_down_limit_uses_open_ref_and_caps_fill_at_limit():
+    idx = pd.date_range("2024-03-01", periods=3, freq="D")
+    # signal close = 100.0, entry_limit_bps = 100 -> limit_price = 99.0.
+    # Bar 1 gaps down to open = 95.0 (< limit_price).
+    bars = pd.DataFrame(
+        {
+            "open": [100.0, 95.0, 96.0],
+            "high": [101.0, 98.0, 97.0],
+            "low": [99.0, 95.0, 95.5],
+            "close": [100.0, 97.0, 96.5],
+            "volume": [1000.0, 1000.0, 1000.0],
+        },
+        index=idx,
+    )
+    # Moderate slippage stays below limit: ref == open, fill == open * (1 + slip).
+    fm_moderate = FillModel(
+        _cfg(entry_order_type="limit", entry_limit_bps=100.0, slippage_bps=200.0)
+    )
+    quote_moderate = fm_moderate.resolve_entry_quote(bars, signal_idx=0)
+    assert quote_moderate.entry_idx == 1
+    assert quote_moderate.entry_ref == pytest.approx(95.0)
+    assert quote_moderate.entry_fill == pytest.approx(95.0 * 1.02)
+    assert quote_moderate.warning is None
+
+    # Large slippage exceeding the gap improvement is capped at the limit price.
+    fm_large = FillModel(
+        _cfg(entry_order_type="limit", entry_limit_bps=100.0, slippage_bps=600.0)
+    )
+    quote_large = fm_large.resolve_entry_quote(bars, signal_idx=0)
+    assert quote_large.entry_idx == 1
+    assert quote_large.entry_ref == pytest.approx(95.0)
+    assert quote_large.entry_fill == pytest.approx(99.0)
+    assert quote_large.warning is None
+
+
+def test_resolve_entry_quote_moc_uses_close_ref_and_slipped_fill():
+    fm = FillModel(_cfg(entry_order_type="moc", slippage_bps=150.0))
+    quote = fm.resolve_entry_quote(_bars(), signal_idx=0)
+    assert quote.entry_idx == 1
+    assert quote.entry_ref == pytest.approx(11.2)
+    assert quote.entry_fill == pytest.approx(11.2 * 1.015)
+    assert quote.shares > 0
+    assert quote.warning is None
+
+
+def test_resolve_entry_quote_unfilled_limit_returns_none_fields():
+    fm = FillModel(
+        _cfg(entry_order_type="limit", entry_limit_bps=1000.0, slippage_bps=50.0)
+    )
+    quote = fm.resolve_entry_quote(_bars(), signal_idx=0)
+    assert quote.entry_idx is None
+    assert quote.entry_ref is None
+    assert quote.entry_fill is None
+    assert quote.shares == 0.0
+    assert "never filled" in (quote.warning or "")
+
+
 # ── gap-aware reference resolution ───────────────────────────────────
 
 

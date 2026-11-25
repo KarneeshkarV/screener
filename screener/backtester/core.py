@@ -660,12 +660,18 @@ def _make_slot_state(
             exit_signal_values = np.asarray(exit_signal.to_numpy(), dtype=bool)
             if caches is not None:
                 caches.exit_signal_values[ticker] = exit_signal_values
-    # Anchor protective stops and trailing-stop peak to the unslipped market
-    # entry print (``entry_ref``), not the buy-slipped ``entry_fill``. OHLC
-    # bars record market tape prices; anchoring stops to ``entry_fill`` mixes
-    # execution-cost space with market-price space so buy slippage can push
-    # ``stop_ref`` or ``trail_ref`` >= ``bar_open``, falsely stopping out a
-    # rising entry bar.
+    # Anchor protective stops (``stop_ref``) and the initial trailing-stop
+    # ``peak`` to the unslipped market entry print (``entry_ref``), not the
+    # buy-slipped ``entry_fill``. OHLC bars record market-tape prices;
+    # anchoring stops to ``entry_fill`` mixes execution-cost space with
+    # market-price space so buy slippage can push ``stop_ref`` (or the later
+    # ``trail_ref`` derived from ``peak``) >= ``bar_open``, falsely stopping
+    # out a rising entry bar.
+    #
+    # By contrast, profit targets (``target_ref``, ``partial_targets``) and
+    # post-partial breakeven stop raises deliberately remain anchored to
+    # slipped ``entry_fill`` (conservative cost-basis space): targets must
+    # clear entry slippage and breakeven protects actual cost basis.
     stop_ref = entry_ref * (1.0 - cfg.stop_loss) if cfg.stop_loss else None
     target_ref = _target_level(entry_fill, cfg.take_profit) if cfg.take_profit else None
     partial_targets = tuple(
@@ -868,6 +874,8 @@ def _fire_partial_exits_at_bar(
             fraction=state.partial_fractions[tier_idx],
         )
         state.partial_fired[tier_idx] = True
+        # Breakeven stays anchored to slipped ``entry_fill`` (cost-basis space)
+        # so the raised stop protects actual entry cost after buy slippage.
         if state.stop_ref is None or state.stop_ref < state.entry_fill:
             state.stop_ref = state.entry_fill
 

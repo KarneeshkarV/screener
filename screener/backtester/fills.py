@@ -233,7 +233,7 @@ class FillModel:
         reference before returning. ``arrays``, when given, supplies the cached
         NumPy OHLC columns to read prices from instead of ``bars.iloc``.
         """
-        _entry_idx, fill, _shares, quote_warn = self.entry_quote(
+        quote = self.resolve_entry_quote(
             bars,
             signal_idx,
             budget=budget,
@@ -242,7 +242,7 @@ class FillModel:
             half_spread=half_spread,
             arrays=arrays,
         )
-        return _entry_idx, fill, quote_warn
+        return quote.entry_idx, quote.entry_fill, quote.warning
 
     def resolve_entry_quote(
         self,

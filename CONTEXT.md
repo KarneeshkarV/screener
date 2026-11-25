@@ -169,3 +169,6 @@ Intraday caches are namespaced per interval so daily parquet files are never pol
 
 A non-finite close must never pass an entry filter.
 This is stated explicitly because the two filter implementations historically disagreed on `NaN`.
+
+Protective stops (`stop_ref`) and initial trailing-stop `peak` anchor to the unslipped market entry print (`entry_ref`, market-tape space) so buy-side slippage cannot push a stop above the entry bar's open and falsely stop out a rising bar.
+Profit targets (`take_profit`, `partial_exits`) and post-partial breakeven stop raises stay anchored to the slipped `entry_fill` (conservative cost-basis space) so targets must clear entry slippage and breakeven protects actual cost basis.
