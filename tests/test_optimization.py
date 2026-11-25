@@ -123,6 +123,18 @@ def test_trade_monte_carlo_rejects_invalid_ruin_threshold(ruin_threshold):
         )
 
 
+def test_trade_monte_carlo_accepts_ruin_threshold_one():
+    loss_res = simulate_monte_carlo(
+        [_trade(-10.0, -0.10)], ruin_threshold=1.0, iterations=20, seed=1
+    )
+    assert loss_res.risk_of_ruin == 1.0
+
+    gain_res = simulate_monte_carlo(
+        [_trade(10.0, 0.10)], ruin_threshold=1.0, iterations=20, seed=1
+    )
+    assert gain_res.risk_of_ruin == 0.0
+
+
 def test_monte_carlo_bootstrap_has_terminal_return_distribution():
     trades = [
         _trade(10.0, 0.10),
@@ -206,6 +218,463 @@ def test_optimize_validate_reads_an_intraday_ledger(tmp_path):
 
     assert res.exit_code == 0, res.output
     assert "Monte Carlo Validation" in res.output
+
+
+def test_monte_carlo_groups_partial_exit_tranches_into_single_position():
+    """Partial-exit tranches sharing (ticker, open_seq, entry_date) resample as one position."""
+    tranche_1 = Trade(
+        ticker="AAA",
+        rank=1,
+        signal_date=date(2024, 1, 1),
+        entry_date=date(2024, 1, 2),
+        entry_price=100.0,
+        exit_date=date(2024, 1, 4),
+        exit_price=110.0,
+        exit_reason="target",
+        shares=6.0,
+        entry_cost=600.0,
+        exit_value=660.0,
+        pnl=60.0,
+        return_pct=0.10,
+        open_seq=1,
+    )
+    tranche_2 = Trade(
+        ticker="AAA",
+        rank=1,
+        signal_date=date(2024, 1, 1),
+        entry_date=date(2024, 1, 2),
+        entry_price=100.0,
+        exit_date=date(2024, 1, 8),
+        exit_price=95.0,
+        exit_reason="time",
+        shares=4.0,
+        entry_cost=400.0,
+        exit_value=380.0,
+        pnl=-20.0,
+        return_pct=-0.05,
+        open_seq=1,
+    )
+
+    # Combined position has pnl = 40.0 on entry_cost = 1000.0 -> +4.0% total return.
+    # Because sample_size is 1 position (not 2 tranches), every draw yields +0.04.
+    result = simulate_monte_carlo([tranche_1, tranche_2], iterations=200, seed=7)
+    assert result.median_return == pytest.approx(0.04)
+    assert result.return_p05 == pytest.approx(0.04)
+    assert result.return_p95 == pytest.approx(0.04)
+    assert result.probability_of_profit == 1.0
+    assert result.worst_drawdown == 0.0
+
+    # A separate lot (distinct open_seq) stays a separate position.
+    second_lot = Trade(
+        ticker="AAA",
+        rank=2,
+        signal_date=date(2024, 1, 10),
+        entry_date=date(2024, 1, 11),
+        entry_price=100.0,
+        exit_date=date(2024, 1, 15),
+        exit_price=90.0,
+        exit_reason="stop",
+        shares=10.0,
+        entry_cost=1000.0,
+        exit_value=900.0,
+        pnl=-100.0,
+        return_pct=-0.10,
+        open_seq=2,
+    )
+    two_pos = simulate_monte_carlo(
+        [tranche_1, tranche_2, second_lot], iterations=500, seed=7
+    )
+    # Two positions (+4%, -10%): best 2-draw path is (1.04)^2 - 1 = 0.0816,
+    # worst is (0.90)^2 - 1 = -0.19 (each occurs ~25% of draws, not 3-tranche compounding).
+    assert two_pos.return_p95 == pytest.approx(1.04**2 - 1.0)
+    assert two_pos.return_p05 == pytest.approx(0.90**2 - 1.0)
+    assert two_pos.return_p05 < two_pos.return_p95
+
+
+def test_monte_carlo_includes_dividend_income_from_total_pnl():
+    """In splits_only/none mode, dividend-driven gains are reflected in MC returns."""
+    div_winner = Trade(
+        ticker="DIV",
+        rank=1,
+        signal_date=date(2024, 1, 1),
+        entry_date=date(2024, 1, 2),
+        entry_price=100.0,
+        exit_date=date(2024, 1, 10),
+        exit_price=98.0,
+        exit_reason="time",
+        shares=1.0,
+        entry_cost=100.0,
+        exit_value=98.0,
+        pnl=4.0,  # -2.0 capital + 6.0 cash dividend
+        return_pct=-0.02,  # capital-only return is negative
+        dividend_income=6.0,
+        open_seq=1,
+    )
+
+    result = simulate_monte_carlo([div_winner], iterations=100, seed=3)
+    assert result.median_return == pytest.approx(0.04)
+    assert result.return_p05 == pytest.approx(0.04)
+    assert result.return_p95 == pytest.approx(0.04)
+    assert result.probability_of_profit == 1.0
+    assert result.risk_of_ruin == 0.0
+
+
+def test_monte_carlo_falls_back_to_return_pct_for_zero_entry_cost_fixture():
+    synthetic = Trade(
+        ticker="SYN",
+        rank=1,
+        signal_date=date(2024, 1, 1),
+        entry_date=date(2024, 1, 2),
+        entry_price=0.0,
+        exit_date=date(2024, 1, 3),
+        exit_price=0.0,
+        exit_reason="time",
+        shares=0.0,
+        entry_cost=0.0,
+        exit_value=0.0,
+        pnl=0.0,
+        return_pct=0.05,
+    )
+    result = simulate_monte_carlo([synthetic], iterations=50, seed=1)
+    assert result.median_return == pytest.approx(0.05)
+    assert result.probability_of_profit == 1.0
+
+
+def test_monte_carlo_zero_cost_multi_tranche_uses_share_weighted_return():
+    """Zero-cost positions with multiple tranches compute share-weighted return_pct."""
+    tranche_1 = Trade(
+        ticker="SYN",
+        rank=1,
+        signal_date=date(2024, 1, 1),
+        entry_date=date(2024, 1, 2),
+        entry_price=0.0,
+        exit_date=date(2024, 1, 4),
+        exit_price=0.0,
+        exit_reason="target",
+        shares=3.0,
+        entry_cost=0.0,
+        exit_value=0.0,
+        pnl=0.0,
+        return_pct=0.10,
+        open_seq=1,
+    )
+    tranche_2 = Trade(
+        ticker="SYN",
+        rank=1,
+        signal_date=date(2024, 1, 1),
+        entry_date=date(2024, 1, 2),
+        entry_price=0.0,
+        exit_date=date(2024, 1, 6),
+        exit_price=0.0,
+        exit_reason="time",
+        shares=1.0,
+        entry_cost=0.0,
+        exit_value=0.0,
+        pnl=0.0,
+        return_pct=-0.02,
+        open_seq=1,
+    )
+    # Share-weighted return: (3 * 0.10 + 1 * (-0.02)) / 4 = 0.07 (not silent 0.0).
+    result = simulate_monte_carlo([tranche_1, tranche_2], iterations=100, seed=5)
+    assert result.median_return == pytest.approx(0.07)
+    assert result.return_p05 == pytest.approx(0.07)
+    assert result.return_p95 == pytest.approx(0.07)
+    assert result.probability_of_profit == 1.0
+
+    # When total_shares <= 0, fall back to simple mean of finite tranche return_pct.
+    zero_share_1 = tranche_1.model_copy(update={"shares": 0.0})
+    zero_share_2 = tranche_2.model_copy(update={"shares": 0.0})
+    mean_result = simulate_monte_carlo(
+        [zero_share_1, zero_share_2], iterations=100, seed=5
+    )
+    assert mean_result.median_return == pytest.approx(0.04)
+
+    # Non-finite tranche return_pct on a zero-cost multi-tranche position is rejected.
+    bad_tranche = tranche_2.model_copy(update={"return_pct": float("nan")})
+    with pytest.raises(ValueError, match="trade returns must be finite"):
+        simulate_monte_carlo([tranche_1, bad_tranche], iterations=10)
+
+
+def test_monte_carlo_rejects_negative_entry_cost():
+    bad_trade = _trade(10.0, 0.10).model_copy(update={"entry_cost": -100.0})
+    with pytest.raises(ValueError, match="entry_cost must be non-negative"):
+        simulate_monte_carlo([bad_trade], iterations=10)
+
+    # Even if another tranche in the same position has a larger positive entry_cost.
+    t1 = _trade(10.0, 0.10).model_copy(update={"entry_cost": -50.0, "open_seq": 1})
+    t2 = _trade(20.0, 0.10).model_copy(update={"entry_cost": 200.0, "open_seq": 1})
+    with pytest.raises(ValueError, match="entry_cost must be non-negative"):
+        simulate_monte_carlo([t1, t2], iterations=10)
+
+
+def test_monte_carlo_separates_walk_forward_folds_reusing_open_seq():
+    """Walk-forward folds that reuse open_seq with distinct entry_date stay separate."""
+    fold_1 = Trade(
+        ticker="AAA",
+        rank=1,
+        signal_date=date(2024, 1, 1),
+        entry_date=date(2024, 1, 2),
+        entry_price=100.0,
+        exit_date=date(2024, 1, 10),
+        exit_price=110.0,
+        exit_reason="time",
+        shares=1.0,
+        entry_cost=100.0,
+        exit_value=110.0,
+        pnl=10.0,
+        return_pct=0.10,
+        open_seq=1,
+    )
+    fold_2 = Trade(
+        ticker="AAA",
+        rank=1,
+        signal_date=date(2024, 4, 1),
+        entry_date=date(2024, 4, 2),
+        entry_price=100.0,
+        exit_date=date(2024, 4, 10),
+        exit_price=95.0,
+        exit_reason="time",
+        shares=1.0,
+        entry_cost=100.0,
+        exit_value=95.0,
+        pnl=-5.0,
+        return_pct=-0.05,
+        open_seq=1,
+    )
+    # Two distinct positions (+10%, -5%): 2-draw bootstrap has best (1.10^2 - 1) and
+    # worst (0.95^2 - 1), rather than collapsing into a single +2.5% position.
+    result = simulate_monte_carlo([fold_1, fold_2], iterations=500, seed=7)
+    assert result.return_p95 == pytest.approx(1.10**2 - 1.0)
+    assert result.return_p05 == pytest.approx(0.95**2 - 1.0)
+    assert result.return_p05 < result.return_p95
+
+
+def test_monte_carlo_absorbs_bankruptcy_on_returns_below_negative_one():
+    """Returns < -1.0 absorb at 0 equity without sign-flip resurrection."""
+    wipeouts = [_trade(-150.0, -1.5), _trade(-150.0, -1.5)]
+    result = simulate_monte_carlo(wipeouts, iterations=200, seed=11)
+
+    assert result.median_return == pytest.approx(-1.0)
+    assert result.return_p05 == pytest.approx(-1.0)
+    assert result.return_p95 == pytest.approx(-1.0)
+    assert result.worst_drawdown == pytest.approx(-1.0)
+    assert result.worst_drawdown >= -1.0
+    assert result.probability_of_profit == 0.0
+    assert result.risk_of_ruin == 1.0
+
+    # Even mixed with a big winner, no path can exceed -100% drawdown.
+    mixed = [_trade(-150.0, -1.5), _trade(200.0, 2.0)]
+    mixed_result = simulate_monte_carlo(mixed, iterations=500, seed=11)
+    assert mixed_result.worst_drawdown >= -1.0
+    assert mixed_result.return_p05 >= -1.0
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+def test_monte_carlo_rejects_non_finite_trade_returns(bad_value):
+    with pytest.raises(ValueError, match="trade returns must be finite"):
+        simulate_monte_carlo([_trade(bad_value, bad_value)], iterations=10)
+
+    # Also reject non-finite return_pct on a zero-cost synthetic fixture.
+    zero_cost = Trade(
+        ticker="BAD",
+        rank=1,
+        signal_date=date(2024, 1, 1),
+        entry_date=date(2024, 1, 2),
+        entry_price=0.0,
+        exit_date=date(2024, 1, 3),
+        exit_price=0.0,
+        exit_reason="time",
+        shares=0.0,
+        entry_cost=0.0,
+        exit_value=0.0,
+        pnl=0.0,
+        return_pct=bad_value,
+    )
+    with pytest.raises(ValueError, match="trade returns must be finite"):
+        simulate_monte_carlo([zero_cost], iterations=10)
+
+
+@pytest.mark.parametrize("bad_capital", [0.0, -1000.0, float("nan"), float("inf")])
+def test_monte_carlo_rejects_invalid_initial_capital(bad_capital):
+    with pytest.raises(ValueError, match="initial_capital must be positive"):
+        simulate_monte_carlo(
+            [_trade(10.0, 0.10)], initial_capital=bad_capital, iterations=10
+        )
+
+
+def test_load_trades_preserves_dividend_income_and_open_seq(tmp_path):
+    from screener.backtester.optimization.cli import _load_trades
+
+    ledger = tmp_path / "ledger.csv"
+    ledger.write_text(
+        "ticker,rank,signal_date,entry_date,entry_price,exit_date,exit_price,"
+        "exit_reason,shares,entry_cost,exit_value,pnl,return_pct,dividend_income,open_seq\n"
+        "AAA,1,2024-03-01,2024-03-04,100,2024-03-06,110,target,6,600,660,63,0.10,3.0,2\n"
+        "AAA,1,2024-03-01,2024-03-04,100,2024-03-10,95,time,4,400,380,-18,-0.05,2.0,2\n"
+    )
+    trades = _load_trades(ledger)
+    assert len(trades) == 2
+    assert trades[0].dividend_income == pytest.approx(3.0)
+    assert trades[0].open_seq == 2
+    assert trades[1].dividend_income == pytest.approx(2.0)
+    assert trades[1].open_seq == 2
+
+    # Legacy CSV without dividend_income / open_seq defaults to 0.0 / 0.
+    legacy = tmp_path / "legacy.csv"
+    legacy.write_text(
+        "ticker,rank,signal_date,entry_date,entry_price,exit_date,exit_price,"
+        "exit_reason,shares,entry_cost,exit_value,pnl,return_pct\n"
+        "BBB,1,2024-03-01,2024-03-04,100,2024-03-06,105,time,1,100,105,5,0.05\n"
+    )
+    legacy_trades = _load_trades(legacy)
+    assert legacy_trades[0].dividend_income == 0.0
+    assert legacy_trades[0].open_seq == 0
+
+    # End-to-end optimize validate groups the two tranches into one +4.5% position.
+    out_json = tmp_path / "mc.json"
+    res = CliRunner().invoke(
+        cli,
+        [
+            "optimize",
+            "validate",
+            "--trades",
+            str(ledger),
+            "--iterations",
+            "50",
+            "--json",
+            str(out_json),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    import json
+
+    payload = json.loads(out_json.read_text())
+    assert payload["median_return"] == pytest.approx(45.0 / 1000.0)
+    assert payload["probability_of_profit"] == 1.0
+
+
+def test_load_trades_handles_empty_cells_float_ints_and_legacy_warning(
+    tmp_path, caplog
+):
+    import logging
+
+    from screener.backtester.optimization.cli import _load_trades
+
+    # Empty strings in dividend_income/open_seq default to 0.0/0, and pandas-formatted
+    # float integer strings like "2.0" parse cleanly as integers.
+    ledger = tmp_path / "pandas_ledger.csv"
+    ledger.write_text(
+        "ticker,rank,signal_date,entry_date,entry_price,exit_date,exit_price,"
+        "exit_reason,shares,entry_cost,exit_value,pnl,return_pct,dividend_income,open_seq\n"
+        "AAA,1.0,2024-03-01,2024-03-04,100,2024-03-06,110,target,6,600,660,60,0.10,,2.0\n"
+        "BBB,2,2024-03-01,2024-03-04,100,2024-03-06,105,time,1,100,105,5,0.05,,\n"
+    )
+    with caplog.at_level(
+        logging.WARNING, logger="screener.backtester.optimization.cli"
+    ):
+        trades = _load_trades(ledger)
+    assert len(trades) == 2
+    assert trades[0].rank == 1
+    assert trades[0].dividend_income == 0.0
+    assert trades[0].open_seq == 2
+    assert trades[1].dividend_income == 0.0
+    assert trades[1].open_seq == 0
+    assert not any("open_seq" in rec.message for rec in caplog.records)
+
+    # Non-integer float strings and non-finite strings in open_seq are rejected.
+    for bad_seq in ("2.5", "nan", "inf"):
+        bad_csv = tmp_path / f"bad_{bad_seq}.csv"
+        bad_csv.write_text(
+            "ticker,rank,signal_date,entry_date,entry_price,exit_date,exit_price,"
+            "exit_reason,shares,entry_cost,exit_value,pnl,return_pct,open_seq\n"
+            f"AAA,1,2024-03-01,2024-03-04,100,2024-03-06,105,time,1,100,105,5,0.05,{bad_seq}\n"
+        )
+        with pytest.raises(ValueError, match="Expected integer value"):
+            _load_trades(bad_csv)
+
+    # Legacy CSV without open_seq column logs a warning when rows are present.
+    legacy = tmp_path / "legacy_no_open_seq.csv"
+    legacy.write_text(
+        "ticker,rank,signal_date,entry_date,entry_price,exit_date,exit_price,"
+        "exit_reason,shares,entry_cost,exit_value,pnl,return_pct\n"
+        "AAA,1,2024-03-01,2024-03-04,100,2024-03-06,105,time,1,100,105,5,0.05\n"
+    )
+    caplog.clear()
+    with caplog.at_level(
+        logging.WARNING, logger="screener.backtester.optimization.cli"
+    ):
+        _load_trades(legacy)
+    assert any(
+        "open_seq" in rec.message and "partial-exit" in rec.message
+        for rec in caplog.records
+    )
+
+    # Empty legacy CSV (headers only) does not warn.
+    empty_legacy = tmp_path / "empty_legacy.csv"
+    empty_legacy.write_text(
+        "ticker,rank,signal_date,entry_date,entry_price,exit_date,exit_price,"
+        "exit_reason,shares,entry_cost,exit_value,pnl,return_pct\n"
+    )
+    caplog.clear()
+    with caplog.at_level(
+        logging.WARNING, logger="screener.backtester.optimization.cli"
+    ):
+        assert _load_trades(empty_legacy) == []
+    assert not any("open_seq" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected_message"),
+    [
+        (["--iterations", "0"], "--iterations must be positive"),
+        (["--iterations", "-10"], "--iterations must be positive"),
+        (["--seed", "-1"], "--seed must not be negative"),
+        (["--initial-capital", "0"], "--initial-capital must be positive"),
+        (["--initial-capital", "-500"], "--initial-capital must be positive"),
+        (["--initial-capital", "nan"], "--initial-capital must be positive"),
+        (["--initial-capital", "inf"], "--initial-capital must be positive"),
+        (["--ruin-threshold", "0"], "--ruin-threshold must be a fraction"),
+        (["--ruin-threshold", "-0.1"], "--ruin-threshold must be a fraction"),
+        (["--ruin-threshold", "1.5"], "--ruin-threshold must be a fraction"),
+        (["--ruin-threshold", "nan"], "--ruin-threshold must be a fraction"),
+        (["--ruin-threshold", "inf"], "--ruin-threshold must be a fraction"),
+    ],
+)
+def test_optimize_validate_rejects_invalid_flags_as_usage_error(
+    tmp_path, monkeypatch, flags, expected_message
+):
+    ledger = tmp_path / "ledger.csv"
+    ledger.write_text("not,a,valid,ledger\n")
+
+    def unexpected_load(_path):
+        raise AssertionError("trade file must not be loaded for invalid flags")
+
+    monkeypatch.setattr(
+        "screener.backtester.optimization.cli._load_trades", unexpected_load
+    )
+    res = CliRunner().invoke(
+        cli,
+        ["optimize", "validate", "--trades", str(ledger), *flags],
+    )
+
+    assert res.exit_code == 2, res.output
+    assert expected_message in res.output
+    assert "Traceback" not in res.output
+
+
+def test_optimize_validate_reports_non_finite_csv_return_cleanly(tmp_path):
+    ledger = tmp_path / "bad.csv"
+    ledger.write_text(
+        "ticker,rank,signal_date,entry_date,entry_price,exit_date,exit_price,"
+        "exit_reason,shares,entry_cost,exit_value,pnl,return_pct\n"
+        "AAA,1,2024-03-04,2024-03-05,100,2024-03-06,100,time,1,100,100,nan,nan\n"
+    )
+    res = CliRunner().invoke(
+        cli, ["optimize", "validate", "--trades", str(ledger), "--iterations", "10"]
+    )
+    assert res.exit_code == 1, res.output
+    assert "trade returns must be finite" in res.output
+    assert "Traceback" not in res.output
 
 
 def test_grid_cache_key_includes_min_trades(monkeypatch, tmp_path):

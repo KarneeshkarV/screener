@@ -908,30 +908,46 @@ def _invested_return(trades: Iterable[Trade]) -> float:
     return total_pnl / total_cost
 
 
-def position_results(trades: Iterable[Trade]) -> list[tuple[float, float]]:
-    """``(pnl, entry_cost)`` per POSITION, in ledger order of first tranche.
+def group_position_trades(trades: Iterable[Trade]) -> list[list[Trade]]:
+    """Group trade ledger rows into positions in ledger order of first tranche.
 
-    ``--partial-exit`` emits one ``Trade`` per scale-out tranche. Counting
-    each tranche as a trade let one position add several wins to the hit
-    rate and pass a ``min_trades`` floor alone. Tranches are joined on the lot
-    key ``(ticker, open_seq)``, as :func:`_position_intervals` does; a trade
-    with ``open_seq == 0`` has no lot identity and stays one position. The
-    entry stamp is part of the key because a walk-forward ledger joins folds
-    that each number their lots from 1.
+    ``--partial-exit`` emits one ``Trade`` per scale-out tranche. Tranches are
+    joined on the lot key ``(ticker, open_seq, entry_date)``; a trade with
+    ``open_seq == 0`` has no lot identity and stays its own single-trade
+    position. The entry stamp is part of the key because a walk-forward ledger
+    joins folds that each number their lots from 1.
     """
-    results: list[list[float]] = []
+    groups: list[list[Trade]] = []
     slot_of_lot: dict[tuple[str, int, Any], int] = {}
     for trade in trades:
         lot = (trade.ticker, trade.open_seq, trade.entry_date)
         slot = slot_of_lot.get(lot) if trade.open_seq else None
         if slot is None:
             if trade.open_seq:
-                slot_of_lot[lot] = len(results)
-            results.append([float(trade.pnl), float(trade.entry_cost)])
+                slot_of_lot[lot] = len(groups)
+            groups.append([trade])
         else:
-            results[slot][0] += float(trade.pnl)
-            results[slot][1] += float(trade.entry_cost)
-    return [(pnl, cost) for pnl, cost in results]
+            groups[slot].append(trade)
+    return groups
+
+
+def position_results(trades: Iterable[Trade]) -> list[tuple[float, float]]:
+    """``(pnl, entry_cost)`` per POSITION, in ledger order of first tranche.
+
+    ``--partial-exit`` emits one ``Trade`` per scale-out tranche. Counting
+    each tranche as a trade let one position add several wins to the hit
+    rate and pass a ``min_trades`` floor alone. Tranches are joined via
+    :func:`group_position_trades` on the lot key ``(ticker, open_seq,
+    entry_date)``; a trade with ``open_seq == 0`` has no lot identity and stays
+    one position.
+    """
+    return [
+        (
+            sum(float(trade.pnl) for trade in group),
+            sum(float(trade.entry_cost) for trade in group),
+        )
+        for group in group_position_trades(trades)
+    ]
 
 
 def position_count(trades: Iterable[Trade]) -> int:
@@ -1037,23 +1053,11 @@ def compute_regime_metrics(benchmark: pd.Series, trades: list[Trade]) -> dict:
         return {}
     regimes = classify_regimes(benchmark)
     idx = regimes.index
-    slots: dict[tuple[str, int, Any], int] = {}
-    # [signal_date, pnl, entry_cost] per position, in first-tranche order.
-    positions: list[list[Any]] = []
-    for trade in trades:
-        lot = (trade.ticker, trade.open_seq, trade.entry_date)
-        slot = slots.get(lot) if trade.open_seq else None
-        if slot is None:
-            if trade.open_seq:
-                slots[lot] = len(positions)
-            positions.append(
-                [trade.signal_date, float(trade.pnl), float(trade.entry_cost)]
-            )
-        else:
-            positions[slot][1] += float(trade.pnl)
-            positions[slot][2] += float(trade.entry_cost)
     by_label: dict[str, list[float]] = {}
-    for signal_date, pnl, entry_cost in positions:
+    for group in group_position_trades(trades):
+        signal_date = group[0].signal_date
+        pnl = sum(float(trade.pnl) for trade in group)
+        entry_cost = sum(float(trade.entry_cost) for trade in group)
         pos = int(idx.searchsorted(pd.Timestamp(signal_date), side="right")) - 1
         label = str(regimes.iloc[pos]) if pos >= 0 else "unknown"
         by_label.setdefault(label, []).append(pnl / entry_cost if entry_cost else 0.0)
