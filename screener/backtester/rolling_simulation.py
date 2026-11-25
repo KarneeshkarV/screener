@@ -157,7 +157,10 @@ def _mark_rank_exits(
     (possibly below ``rank_universe_size`` after failed opens), and positions
     entered after ``prev_day`` filled on today's bar (for example a delayed
     limit order or an MOO order crossing a missing bar/halt), so neither
-    should be liquidated on its entry bar.
+    should be liquidated on its entry bar. A position spared on its entry bar
+    (because it filled on a rebalance bar) is next evaluated on the following
+    rebalance cycle (``rank_exit_every`` bars later), which is the intentional
+    causal behavior.
     """
     rows, day_warnings = _candidate_rows_for_day(
         prev_day,

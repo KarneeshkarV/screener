@@ -7,6 +7,8 @@ freed slot, prepared-panel reuse across rank knobs, and CLI flag parsing.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import click
 import numpy as np
 import pandas as pd
@@ -14,7 +16,7 @@ import pytest
 from click.testing import CliRunner
 
 from screener.backtester.cli_common import parse_rank_exit
-from screener.backtester.core import _check_exit_at_bar, _SlotState
+from screener.backtester.core import _bar_label, _check_exit_at_bar, _SlotState
 from screener.backtester.fills import FillModel
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling_simulation import (
@@ -472,6 +474,134 @@ def test_mark_rank_exits_spares_same_day_entry_and_flags_prior_holdings(
     _mark_rank_exits(
         prev_day=prev_day,
         cfg=_cfg(rank_exit_every=1, rank_universe_size=1),
+        candidate_matrices=None,  # type: ignore[arg-type]
+        slot_states={
+            0: held_prior,
+            1: held_on_prev,
+            2: entered_today,
+            3: fresh_signal,
+        },
+        warnings=[],
+    )
+
+    assert held_prior.rank_exit is True
+    assert held_on_prev.rank_exit is True
+    assert entered_today.rank_exit is False
+    assert fresh_signal.rank_exit is False
+
+
+@pytest.mark.parametrize(
+    ("rank_exit_every", "expected_exit_idx"),
+    [
+        pytest.param(3, 8, id="every-3-bars"),
+        pytest.param(1, 6, id="every-1-bar"),
+    ],
+)
+def test_moc_fill_on_rebalance_day_stays_unflagged(
+    monkeypatch: pytest.MonkeyPatch,
+    rank_exit_every: int,
+    expected_exit_idx: int,
+):
+    """A same-bar MOC fill on a rebalance day stays unflagged after ``after_exits``.
+
+    AAA signals on bar 3, is halted on bar 4 (``prev_day`` for bar 5), and
+    fills its MOC order at bar 5's close in ``after_exits`` while BBB already
+    holds top-1. Because ``before_exits`` runs ``_mark_rank_exits`` before
+    ``after_exits`` fills MOC orders, the newly opened slot remains unflagged
+    at the end of bar 5 and is only evaluated on the next rebalance cycle
+    (bar 8 for ``rank_exit_every=3``, bar 6 for ``rank_exit_every=1``).
+    """
+    aaa = _ramp(100.0, 119.0, 500_000.0).drop(index=_INDEX[4])
+    bbb = _ramp(100.0, 119.0, 200_000.0).copy()
+    bbb.loc[_INDEX[4:], "volume"] = 1_000_000.0
+
+    entry_bar_flags: list[bool] = []
+    orig_after_exits = _DailyRankingSource.after_exits
+
+    def _spy_after_exits(self, day: pd.Timestamp, freed) -> None:
+        orig_after_exits(self, day, freed)
+        if day == _INDEX[5]:
+            state = self.slot_states[0]
+            assert state is not None
+            assert pd.Timestamp(state.entry_date) == _INDEX[5]
+            entry_bar_flags.append(state.rank_exit)
+
+    monkeypatch.setattr(_DailyRankingSource, "after_exits", _spy_after_exits)
+
+    data = {
+        "AAA": aaa,
+        "BBB": bbb,
+        "SPY": _ramp(400.0, 440.0, 1_000_000.0),
+    }
+    trades = _run(
+        _cfg(
+            tickers=("AAA", "BBB"),
+            top=1,
+            rank_exit_every=rank_exit_every,
+            rank_universe_size=1,
+            entry_order_type="moc",
+        ),
+        data=data,
+    )
+
+    assert entry_bar_flags == [False]
+    aaa_trade = trades[0]
+    assert str(aaa_trade.ticker) == "AAA"  # type: ignore[attr-defined]
+    assert pd.Timestamp(aaa_trade.signal_date) == _INDEX[3]  # type: ignore[attr-defined]
+    assert pd.Timestamp(aaa_trade.entry_date) == _INDEX[5]  # type: ignore[attr-defined]
+    assert pd.Timestamp(aaa_trade.exit_date) == _INDEX[expected_exit_idx]  # type: ignore[attr-defined]
+    assert str(aaa_trade.exit_reason) == "rank"  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("tz", ["America/New_York", "UTC"])
+def test_mark_rank_exits_tz_aware_intraday_timestamps(
+    monkeypatch: pytest.MonkeyPatch,
+    tz: str,
+):
+    """Tz-aware intraday timestamps compare cleanly without ``TypeError``."""
+    monkeypatch.setattr(
+        "screener.backtester.rolling_simulation._candidate_rows_for_day",
+        lambda *args, **kwargs: ([], []),
+    )
+    intraday_cfg = _cfg(interval="15m", rank_exit_every=1, rank_universe_size=1)
+    bar_index = pd.date_range("2024-01-02 09:30", periods=4, freq="15min", tz=tz)
+    signal_earlier = _bar_label(bar_index[0], intraday_cfg)
+    entry_earlier = _bar_label(bar_index[1], intraday_cfg)
+    prev_day = bar_index[2]
+    prev_label = _bar_label(bar_index[2], intraday_cfg)
+    current_day = _bar_label(bar_index[3], intraday_cfg)
+
+    assert prev_day.tzinfo is not None
+    assert isinstance(current_day, datetime) and current_day.tzinfo is not None
+
+    held_prior = _slot_state(
+        ticker="OLD",
+        signal_date=signal_earlier,
+        entry_date=entry_earlier,
+        rank_exit=False,
+    )
+    held_on_prev = _slot_state(
+        ticker="PREV",
+        signal_date=signal_earlier,
+        entry_date=prev_label,
+        rank_exit=False,
+    )
+    entered_today = _slot_state(
+        ticker="TODAY",
+        signal_date=signal_earlier,
+        entry_date=current_day,
+        rank_exit=False,
+    )
+    fresh_signal = _slot_state(
+        ticker="FRESH",
+        signal_date=prev_label,
+        entry_date=current_day,
+        rank_exit=False,
+    )
+
+    _mark_rank_exits(
+        prev_day=prev_day,
+        cfg=intraday_cfg,
         candidate_matrices=None,  # type: ignore[arg-type]
         slot_states={
             0: held_prior,
