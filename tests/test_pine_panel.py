@@ -108,6 +108,174 @@ def test_panel_matches_per_ticker_for_ragged_bars(expr):
     _assert_matches_per_ticker(expr, bars_by_ticker)
 
 
+def _poison_rows(bars: pd.DataFrame, rows: list[int]) -> pd.DataFrame:
+    """Make selected interior bars unknown across every OHLCV column."""
+    poisoned = bars.copy()
+    for row in rows:
+        poisoned.iloc[row] = np.nan
+    return poisoned
+
+
+def _ragged_bars_with_interior_nans() -> dict[str, pd.DataFrame]:
+    return {
+        "ALIGNED_A": _bars(60, seed=1),
+        "ALIGNED_B": _bars(60, seed=2),
+        "ALIGNED_C": _bars(60, seed=3),
+        # Same calendar as A/B/C so interior NaNs run inside the shared panel.
+        "ALIGNED_D": _poison_rows(_bars(60, seed=7), [4, 19, 38]),
+        "SHORT": _poison_rows(_bars(25, seed=4, start="2024-02-01"), [3, 11, 17]),
+        "OFFSET": _poison_rows(_bars(60, seed=5, start="2023-06-01"), [5, 20, 41]),
+        "GAPPED": _poison_rows(
+            _bars(60, seed=6).drop(
+                index=pd.date_range("2024-01-20", periods=7, freq="D")
+            ),
+            [2, 24, 50],
+        ),
+    }
+
+
+@pytest.mark.parametrize("expr", EXPRESSIONS)
+def test_panel_matches_per_ticker_for_ragged_bars_with_interior_nans(expr):
+    """Interior NaNs must stay isolated to their own ticker in-panel and solo."""
+    bars_by_ticker = _ragged_bars_with_interior_nans()
+    panel = _assert_matches_per_ticker(expr, bars_by_ticker)
+    assert all(not isinstance(result, PineError) for result in panel.values())
+
+
+def test_poisoned_aligned_ticker_shares_panel_without_contaminating_clean_peer():
+    """Confirm ALIGNED_D batches with ALIGNED_A and adds no NaNs to ALIGNED_A."""
+    bars_by_ticker = _ragged_bars_with_interior_nans()
+    node = parse("sma(close, 5)")
+    cols = _panel_column_names(node)
+    assert _group_key(bars_by_ticker["ALIGNED_A"], cols) == _group_key(
+        bars_by_ticker["ALIGNED_D"], cols
+    )
+    sma_panel = evaluate_panel(node, bars_by_ticker)
+    long_result = sma_panel["ALIGNED_A"]
+    assert not isinstance(long_result, PineError)
+    assert long_result.isna().sum() == 4
+
+
+# ── boolean-to-numeric and boolean-arithmetic edge cases ────────────
+
+
+#: ``(close > open) + 0`` is deliberately absent: it is pinned separately
+#: because its solo and panel dtypes already differ today.
+BOOLEAN_PARITY_EXPRESSIONS = [
+    "-(close > open)",
+    "(close > open) + (high > close)",
+    "(close > open) * (high > close)",
+    "sma(close > open, 5)",
+    "ema(close > open, 5)",
+    "highest(close > open, 5)",
+    "(close > open) == 1",
+    "(close > open) > 0",
+]
+
+
+@pytest.mark.parametrize("expr", BOOLEAN_PARITY_EXPRESSIONS)
+def test_boolean_edge_cases_match_between_solo_and_panel(expr):
+    bars_by_ticker = {f"T{i}": _bars(30, seed=i) for i in range(4)}
+    _assert_matches_per_ticker(expr, bars_by_ticker)
+
+
+def test_unary_minus_on_a_comparison_pins_current_logical_not():
+    """Pin current behavior: ``-(close > open)`` acts as logical NOT, not ``0 - x``."""
+    bars = _bars(30, seed=3)
+    result = evaluate(parse("-(close > open)"), bars)
+    assert result.dtype == bool
+    pd.testing.assert_series_equal(
+        result, ~(bars["close"] > bars["open"]), check_names=False
+    )
+
+
+@pytest.mark.parametrize(
+    ("expr", "combine"),
+    [
+        ("(close > open) + (high > close)", lambda a, b: a | b),
+        ("(close > open) * (high > close)", lambda a, b: a & b),
+    ],
+)
+def test_boolean_addition_is_or_and_multiplication_is_and(expr, combine):
+    """Today ``+``/``*`` on two comparisons are OR/AND, not 1+1 and 1*1."""
+    bars = _bars(30, seed=3)
+    result = evaluate(parse(expr), bars)
+    assert result.dtype == bool
+    expected = combine(bars["close"] > bars["open"], bars["high"] > bars["close"])
+    pd.testing.assert_series_equal(result, expected, check_names=False)
+
+
+@pytest.mark.parametrize(
+    ("expr", "expected"),
+    [
+        (
+            "sma(close > open, 5)",
+            lambda truth: truth.astype(float).rolling(5, min_periods=5).mean(),
+        ),
+        (
+            "ema(close > open, 5)",
+            lambda truth: (
+                truth.astype(float).ewm(span=5, adjust=False, min_periods=5).mean()
+            ),
+        ),
+        (
+            "highest(close > open, 5)",
+            lambda truth: truth.astype(float).rolling(5, min_periods=5).max(),
+        ),
+    ],
+)
+def test_rolling_functions_accept_a_boolean_source(expr, expected):
+    bars = _bars(30, seed=3)
+    truth = bars["close"] > bars["open"]
+    result = evaluate(parse(expr), bars)
+    pd.testing.assert_series_equal(result, expected(truth), check_names=False)
+
+
+def test_boolean_plus_zero_pins_known_solo_panel_dtype_divergence():
+    """Phase 0 pins today's behavior; Phase 2 issue #237 owns unifying it.
+
+    Solo evaluation returns pandas' nullable ``Float64`` for
+    ``BooleanDtype + 0``, while a panel of clean all-bool columns returns
+    ``object``. The values agree; only the dtype differs, so this test records
+    the divergence instead of asserting parity that does not yet exist.
+    """
+    bars = _bars(30, seed=3)
+    node = parse("(close > open) + 0")
+    solo = evaluate(node, bars)
+    panel = evaluate_panel(node, {"A": bars, "B": _bars(30, seed=4)})["A"]
+    assert not isinstance(panel, PineError)
+    assert str(solo.dtype) == "Float64"
+    assert panel.dtype == object
+    pd.testing.assert_series_equal(
+        panel.astype("Float64"), solo, check_names=False, check_dtype=True
+    )
+
+
+PHASE_2_BOOLEAN_ERRORS = [
+    pytest.param("rsi(close > open, 5)", TypeError, id="rsi-boolean-source"),
+    pytest.param("(close > open) - (high > close)", TypeError, id="boolean-subtract"),
+    pytest.param(
+        "(close > open) / (high > close)", NotImplementedError, id="boolean-divide"
+    ),
+]
+
+
+@pytest.mark.parametrize(("expr", "error_type"), PHASE_2_BOOLEAN_ERRORS)
+def test_boolean_function_and_arithmetic_failures_are_pinned(expr, error_type):
+    """Pin issue #237's current failures: Phase 0 must not change the evaluator.
+
+    Neither evaluator path may silently reinterpret a boolean source as
+    numeric yet, and both must raise the same exception type and message.
+    """
+    bars = _bars(30, seed=3)
+    node = parse(expr)
+    with pytest.raises(error_type) as solo:
+        evaluate(node, bars)
+    with pytest.raises(error_type) as panel:
+        evaluate_panel(node, {"A": bars, "B": _bars(30, seed=4)})
+    assert str(solo.value) == str(panel.value)
+
+
 def test_panel_many_matches_repeated_panel_evaluation():
     bars_by_ticker = {f"T{i}": _bars(seed=i) for i in range(6)}
     nodes = [
