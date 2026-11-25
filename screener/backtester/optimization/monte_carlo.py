@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Self
 import numpy as np
 from pydantic import BaseModel, ConfigDict
 
-from screener.backtester.metrics import bar_returns
+from screener.backtester.metrics import bar_returns, group_position_trades
 from screener.backtester.models import Trade
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -60,7 +60,7 @@ class MonteCarloOutcome(BaseModel):
 
 
 class MonteCarloResult(MonteCarloOutcome):
-    """Bootstrap of a trade list, resampling completed trades with replacement."""
+    """Bootstrap of a trade list, resampling completed positions with replacement."""
 
 
 # Every message below starts with the field it rejects, so a caller that
@@ -74,6 +74,23 @@ def validate_ruin_threshold(ruin_threshold: float) -> None:
         raise ValueError(
             "ruin_threshold must be a fraction of starting capital in (0, 1] and finite"
         )
+
+
+def validate_trade_monte_carlo_flags(
+    *,
+    iterations: int,
+    seed: int,
+    initial_capital: float,
+    ruin_threshold: float,
+) -> None:
+    """Reject an out-of-range trade-bootstrap simulation argument."""
+    if iterations <= 0:
+        raise ValueError("iterations must be positive")
+    if seed < 0:
+        raise ValueError("seed must not be negative")
+    if not np.isfinite(initial_capital) or initial_capital <= 0:
+        raise ValueError("initial_capital must be positive and finite")
+    validate_ruin_threshold(ruin_threshold)
 
 
 def validate_equity_monte_carlo_flags(
@@ -156,6 +173,72 @@ def _path_drawdowns(paths: np.ndarray, initial_capital: float) -> np.ndarray:
     return np.asarray(np.minimum(drawdown.min(axis=1), 0.0), dtype=float)
 
 
+def _position_returns(trades: Sequence[Trade]) -> np.ndarray:
+    """Return finite per-position total returns (including dividends).
+
+    Partial-exit tranches are grouped onto their lot identity via
+    :func:`group_position_trades` so one scaled-out position contributes one
+    position return ``pnl / entry_cost`` rather than ``k`` independent trades.
+    For synthetic fixtures or minimal CSVs with ``entry_cost == 0``, falls back
+    to ``trade.return_pct`` (share-weighted across tranches when a zero-cost
+    position has multiple tranches and positive total shares, else simple mean).
+    """
+    if not trades:
+        return np.empty(0, dtype=float)
+
+    for idx, trade in enumerate(trades):
+        pnl_val = float(trade.pnl)
+        cost_val = float(trade.entry_cost)
+        for field_name, val in (("pnl", pnl_val), ("entry_cost", cost_val)):
+            if not np.isfinite(val):
+                raise ValueError(
+                    f"trade returns must be finite: {field_name}={val} at position {idx}"
+                )
+        if cost_val < 0.0:
+            raise ValueError(
+                f"position entry_cost must be non-negative: {cost_val} at position {idx}"
+            )
+
+    computed: list[float] = []
+    for pos_idx, group in enumerate(group_position_trades(trades)):
+        pnl = sum(float(trade.pnl) for trade in group)
+        cost = sum(float(trade.entry_cost) for trade in group)
+        if cost > 0.0:
+            computed.append(pnl / cost)
+        else:
+            tranche_returns = [float(trade.return_pct) for trade in group]
+            for val in tranche_returns:
+                if not np.isfinite(val):
+                    raise ValueError(
+                        f"trade returns must be finite: return_pct={val} at position {pos_idx}"
+                    )
+            if len(group) == 1:
+                computed.append(tranche_returns[0])
+            else:
+                shares = [float(trade.shares) for trade in group]
+                total_shares = sum(shares)
+                if (
+                    all(np.isfinite(s) and s >= 0.0 for s in shares)
+                    and np.isfinite(total_shares)
+                    and total_shares > 0.0
+                ):
+                    computed.append(
+                        sum(s * r for s, r in zip(shares, tranche_returns, strict=True))
+                        / total_shares
+                    )
+                else:
+                    computed.append(sum(tranche_returns) / len(tranche_returns))
+
+    returns = np.array(computed, dtype=float)
+    non_finite = np.flatnonzero(~np.isfinite(returns))
+    if non_finite.size:
+        first = int(non_finite[0])
+        raise ValueError(
+            f"trade returns must be finite: {returns[first]} at position {first}"
+        )
+    return returns
+
+
 def simulate_monte_carlo(
     trades: Sequence[Trade],
     *,
@@ -164,15 +247,22 @@ def simulate_monte_carlo(
     seed: int = 42,
     ruin_threshold: float = 0.5,
 ) -> MonteCarloResult:
-    if iterations <= 0:
-        raise ValueError("iterations must be positive")
-    if seed < 0:
-        raise ValueError("seed must not be negative")
-    if initial_capital <= 0:
-        raise ValueError("initial_capital must be positive")
-    validate_ruin_threshold(ruin_threshold)
+    """Bootstrap completed position returns with replacement.
+
+    Partial-exit tranches sharing a lot are collapsed via
+    :func:`group_position_trades` and measured by total return ``pnl / entry_cost``
+    (which includes ``dividend_income``). Non-finite returns raise
+    ``ValueError``. Per-position gross return factors are floored at ``0.0`` so a
+    loss exceeding 100% absorbs at zero equity rather than flipping sign.
+    """
+    validate_trade_monte_carlo_flags(
+        iterations=iterations,
+        seed=seed,
+        initial_capital=initial_capital,
+        ruin_threshold=ruin_threshold,
+    )
     rng = np.random.default_rng(seed)
-    returns = np.array([float(t.return_pct) for t in trades], dtype=float)
+    returns = _position_returns(trades)
     if returns.size == 0:
         return MonteCarloResult.zeroed(
             iterations=iterations,
@@ -192,7 +282,10 @@ def simulate_monte_carlo(
     for lo in range(0, iterations, chunk):
         hi = min(lo + chunk, iterations)
         sampled = rng.choice(returns, size=(hi - lo, sample_size), replace=True)
-        equity = initial_capital * np.cumprod(1.0 + sampled, axis=1)
+        # Floor per-position gross factor at 0 (limited-liability bankruptcy
+        # absorption) so a return < -1.0 cannot flip equity negative or let a
+        # second < -1.0 draw multiply (-) * (-) back into positive equity.
+        equity = initial_capital * np.cumprod(np.maximum(1.0 + sampled, 0.0), axis=1)
         terminal[lo:hi] = equity[:, -1] / initial_capital - 1.0
         dds[lo:hi] = _path_drawdowns(equity, initial_capital)
         ruin_count += int(np.count_nonzero(equity.min(axis=1) <= ruin_level))

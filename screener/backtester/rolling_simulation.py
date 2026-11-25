@@ -150,10 +150,17 @@ def _mark_rank_exits(
     decision; the shared exit sweep then closes flagged slots later today at
     that bar's close, through the normal dividend -> partial -> full-exit
     sequence with stop/trail/target still taking precedence. Strict rule:
-    anything absent from the (possibly short) list is flagged, except a
-    position whose signal bar is ``prev_day`` or later: it was picked from
-    that very ranking (possibly below ``rank_universe_size`` after failed
-    opens), so judging it against the same ranking would sell it unheld.
+    anything absent from the (possibly short) list is flagged, provided the
+    position was already held on or before ``prev_day`` (``entry_date <=
+    prev_day``) and signaled before ``prev_day`` (``signal_date < prev_day``).
+    Positions signaled on ``prev_day`` were picked from that very ranking
+    (possibly below ``rank_universe_size`` after failed opens), and positions
+    entered after ``prev_day`` filled on today's bar (for example a delayed
+    limit order or an MOO order crossing a missing bar/halt), so neither
+    should be liquidated on its entry bar. A position spared on its entry bar
+    (because it filled on a rebalance bar) is next evaluated on the following
+    rebalance cycle (``rank_exit_every`` bars later), which is the intentional
+    causal behavior.
     """
     rows, day_warnings = _candidate_rows_for_day(
         prev_day,
@@ -166,7 +173,9 @@ def _mark_rank_exits(
     for state in slot_states.values():
         if state is not None:
             state.rank_exit = (
-                state.ticker not in top and pd.Timestamp(state.signal_date) < prev_day
+                state.ticker not in top
+                and pd.Timestamp(state.signal_date) < prev_day
+                and pd.Timestamp(state.entry_date) <= prev_day
             )
 
 
@@ -213,6 +222,9 @@ class _DailyRankingSource:
         # membership is judged on the prior completed bar, fires every Nth bar.
         self._day_count = 0
         self._prev_day: pd.Timestamp | None = None
+        self._last_day: pd.Timestamp | None = (
+            pd.Timestamp(master_dates[-1]) if master_dates else None
+        )
         self.pending_entry_orders: dict[int, PendingEntryOrder] = {}
         self._warned_exit_failures: set[str] = set()
         # Per-run memo: exit-AST evaluations and frame primitives are computed
@@ -246,6 +258,7 @@ class _DailyRankingSource:
             caches=self.caches,
             exit_ast=self.exit_ast,
             warnings=self.warnings,
+            is_final_bar=bool(self._last_day is not None and day >= self._last_day),
         )
         for order in filled:
             # Limits keep their existing filled-selection convention.
@@ -321,7 +334,6 @@ class _DailyRankingSource:
             if grows_slots
             else None
         )
-        slots_left = len(free_slots)
 
         # One active-ticker set for the day: exclude at rank time and keep it
         # updated as slots open so the inner loop is an O(1) membership check
@@ -360,8 +372,10 @@ class _DailyRankingSource:
             candidate_offset += len(candidates)
             candidates_exhausted = len(candidates) < batch_size
 
+        # Queueing does not debit portfolio cash until fill time in ``book.py``,
+        # so every slot in this pass shares the same per-slot cash ceiling.
+        total_free_slots = len(free_slots)
         for slot_id in free_slots:
-            slots_left -= 1
             opened = False
             while not opened:
                 fill_candidate_queue()
@@ -395,7 +409,7 @@ class _DailyRankingSource:
                     bars,
                     int(row["signal_idx"]),
                     current_equity=current_equity,
-                    free_slots=slots_left + 1,
+                    free_slots=total_free_slots,
                     series_cache=self.caches.frame(ticker, bars).sizing_series,
                 )
                 if entry_budget <= 0:

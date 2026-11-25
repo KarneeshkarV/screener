@@ -27,6 +27,7 @@ from screener.backtester.optimization.walk_forward import (
     WINDOW_LENGTH_UNIT,
     WalkForwardSummary,
 )
+from screener.format import is_missing
 from screener.html_report import html_page
 from screener.report_theme import bar_chart, chart_html, signed_colors
 
@@ -140,6 +141,16 @@ def _print_table(table: Table, console: Console) -> None:
         agentio.render_table(table, console)
     else:
         console.print(table)
+
+
+def format_unsigned_pct(value: Any) -> str:
+    """Format a non-negative fraction (e.g. a probability) as ``80.00%``."""
+    if is_missing(value):
+        return "-"
+    number = float(value)
+    if not math.isfinite(number):
+        return "-"
+    return f"{number * 100:.2f}%"
 
 
 def _view_cells(metrics: Mapping[str, Any]) -> dict[str, str]:
@@ -537,24 +548,24 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         ("OOS trade count", monte_carlo.get("trade_count")),
         (
             "Median return",
-            format_result_value(monte_carlo.get("median_return"), "ratio"),
+            format_result_value(monte_carlo.get("median_return"), "pct"),
         ),
-        ("Return p05", format_result_value(monte_carlo.get("return_p05"), "ratio")),
-        ("Return p95", format_result_value(monte_carlo.get("return_p95"), "ratio")),
+        ("Return p05", format_result_value(monte_carlo.get("return_p05"), "pct")),
+        ("Return p95", format_result_value(monte_carlo.get("return_p95"), "pct")),
         (
             "Median drawdown",
-            format_result_value(monte_carlo.get("median_drawdown"), "ratio"),
+            format_result_value(monte_carlo.get("median_drawdown"), "pct"),
         ),
-        ("Drawdown p05", format_result_value(monte_carlo.get("drawdown_p05"), "ratio")),
+        ("Drawdown p05", format_result_value(monte_carlo.get("drawdown_p05"), "pct")),
         (
             "Worst drawdown",
-            format_result_value(monte_carlo.get("worst_drawdown"), "ratio"),
+            format_result_value(monte_carlo.get("worst_drawdown"), "pct"),
         ),
         (
             "P(profit)",
-            format_result_value(monte_carlo.get("probability_of_profit"), "ratio"),
+            format_unsigned_pct(monte_carlo.get("probability_of_profit")),
         ),
-        ("Risk of ruin", format_result_value(monte_carlo.get("risk_of_ruin"), "ratio")),
+        ("Risk of ruin", format_unsigned_pct(monte_carlo.get("risk_of_ruin"))),
     ]
     mc_table = _html_table(["Metric", "Value"], mc_rows)
 
@@ -598,7 +609,7 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         ),
         (
             "MC 5th-pct return",
-            format_result_value(summary.get("mc_return_p05"), "ratio"),
+            format_result_value(summary.get("mc_return_p05"), "pct"),
             _sign_status(summary.get("mc_return_p05")),
         ),
         ("MC source", summary.get("mc_source"), None),
