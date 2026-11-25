@@ -56,9 +56,10 @@ def fill_pending_entries(
     """Fill only current-bar orders, sharing cash among fillable orders.
 
     Market-on-close orders run after exits; open and limit orders run before.
-    Market-on-close fills are skipped on the final simulation bar because there
-    is no subsequent session to hold the position (entering at the final close
-    would immediately force-close on the exact same bar).
+    Market-on-close fills are skipped on the final simulation bar and on a
+    ticker's own final bar because there is no subsequent session to hold the
+    position (entering at that close would immediately force-close at the same
+    bar's close).
     Untouched limits reserve slots, but do not reduce this batch's cash share.
     """
     if at_close != (cfg.entry_order_type == "moc"):
@@ -68,7 +69,7 @@ def fill_pending_entries(
     fillable: list[tuple[int, PendingEntryOrder, int]] = []
     for slot_id, order in list(pending_orders.items()):
         bars = bars_by_ticker[order.ticker]
-        if day > bars.index[-1]:
+        if day > bars.index[-1] or (at_close and day >= bars.index[-1]):
             del pending_orders[slot_id]
             continue
         frame_cache = caches.frame(order.ticker, bars)

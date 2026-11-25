@@ -1810,8 +1810,40 @@ def test_research_html_report_formats_monte_carlo_metrics_as_percentages(tmp_pat
         ("Median drawdown", "-12.00%"),
         ("Drawdown p05", "-25.00%"),
         ("Worst drawdown", "-35.00%"),
-        ("P(profit)", "+80.00%"),
-        ("Risk of ruin", "+5.00%"),
+        ("P(profit)", "80.00%"),
+        ("Risk of ruin", "5.00%"),
         ("MC 5th-pct return", "-10.00%"),
     ):
         assert f"<td>{label}</td><td>{expected}</td>" in html
+
+
+def test_research_report_console_formats_mc_percentages_consistently():
+    from rich.console import Console
+
+    from screener.backtester.optimization.reporting import format_unsigned_pct
+    from screener.backtester.optimization.research_report import _print_final_summary
+
+    assert format_unsigned_pct(0.8) == "80.00%"
+    assert format_unsigned_pct(0.0) == "0.00%"
+    assert format_unsigned_pct(None) == "-"
+    assert format_unsigned_pct(float("nan")) == "-"
+    assert format_unsigned_pct(float("inf")) == "-"
+
+    console = Console(record=True, width=120)
+    _print_final_summary(
+        console,
+        {
+            "best_params": {"hold": 10},
+            "is_metric": 1.25,
+            "oos_metric": 1.0,
+            "degradation": 0.2,
+            "mc_return_p05": -0.10,
+            "mc_source": "walk_forward_oos_equity",
+            "mc_method": "equity_block_bootstrap",
+            "insufficient_data": False,
+            "verdict": PASS_VERDICT,
+        },
+        metric="sharpe",
+    )
+    rendered = console.export_text()
+    assert "-10.00%" in rendered

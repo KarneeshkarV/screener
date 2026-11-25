@@ -453,6 +453,56 @@ def test_historical_single_post_signal_bar_skips_final_bar_moc():
     assert result.metrics["final_equity"] == pytest.approx(10_000.0)
 
 
+def test_delisted_ticker_skips_moc_fill_on_its_own_final_bar_and_frees_slot(engine):
+    """A ticker whose history ends before master_dates[-1] must not open a 0-bar MOC trade."""
+    frames = {
+        "DELIST": bars(2, volume=20_000),
+        "ALIVE": bars(5, volume=10_000),
+    }
+    result = run_engine(
+        engine,
+        frames,
+        top=1,
+        hold=10,
+        reinvest=True,
+        reserve_multiple=2,
+        entry_order_type="moc",
+        slippage_bps=50.0,
+        commission_bps=50.0,
+    )
+    assert [t.ticker for t in result.trades] == ["ALIVE"]
+    trade = result.trades[0]
+    assert trade.exit_date == date(2024, 1, 5)
+    assert trade.entry_date < trade.exit_date
+    if engine == "historical":
+        # DELIST's expired MOC order is removed on day 1 (2024-01-02), so
+        # ALIVE rotates in on day 1 and fills MOC on day 2 (2024-01-03).
+        assert trade.signal_date == date(2024, 1, 2)
+        assert trade.entry_date == date(2024, 1, 3)
+
+
+def test_rolling_delisted_ticker_frees_moc_slot_on_its_final_bar():
+    """Removing the expired MOC order on day D frees the slot on day D without waiting a day."""
+    delist = bars(2, volume=20_000)
+    delist["sig"] = [1.0, 0.0]
+    alive = bars(5, volume=10_000)
+    alive["sig"] = [1.0, 1.0, 1.0, 1.0, 1.0]
+    result = run_engine(
+        "rolling",
+        {"DELIST": delist, "ALIVE": alive},
+        top=1,
+        hold=10,
+        entry_expr="sig > 0",
+        entry_order_type="moc",
+        slippage_bps=50.0,
+        commission_bps=50.0,
+    )
+    assert [t.ticker for t in result.trades] == ["ALIVE"]
+    assert result.trades[0].signal_date == date(2024, 1, 2)
+    assert result.trades[0].entry_date == date(2024, 1, 3)
+    assert result.trades[0].exit_date == date(2024, 1, 5)
+
+
 def test_rolling_reinvested_equal_slot_queueing_uses_constant_cash_ceiling():
     """Queueing does not debit cash, so every free slot shares cash / len(free_slots)."""
     idx = pd.bdate_range("2024-01-01", periods=5)

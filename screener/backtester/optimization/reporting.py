@@ -27,6 +27,7 @@ from screener.backtester.optimization.walk_forward import (
     WINDOW_LENGTH_UNIT,
     WalkForwardSummary,
 )
+from screener.format import is_missing
 from screener.html_report import html_page
 from screener.report_theme import bar_chart, chart_html, signed_colors
 
@@ -140,6 +141,16 @@ def _print_table(table: Table, console: Console) -> None:
         agentio.render_table(table, console)
     else:
         console.print(table)
+
+
+def format_unsigned_pct(value: Any) -> str:
+    """Format a non-negative fraction (e.g. a probability) as ``80.00%``."""
+    if is_missing(value):
+        return "-"
+    number = float(value)
+    if not math.isfinite(number):
+        return "-"
+    return f"{number * 100:.2f}%"
 
 
 def _view_cells(metrics: Mapping[str, Any]) -> dict[str, str]:
@@ -552,9 +563,9 @@ def write_research_html_report(data: Mapping[str, Any], path: Path | str) -> Non
         ),
         (
             "P(profit)",
-            format_result_value(monte_carlo.get("probability_of_profit"), "pct"),
+            format_unsigned_pct(monte_carlo.get("probability_of_profit")),
         ),
-        ("Risk of ruin", format_result_value(monte_carlo.get("risk_of_ruin"), "pct")),
+        ("Risk of ruin", format_unsigned_pct(monte_carlo.get("risk_of_ruin"))),
     ]
     mc_table = _html_table(["Metric", "Value"], mc_rows)
 
