@@ -177,7 +177,10 @@ def backtest_monte_carlo(**params: Any) -> None:
     result.metrics.update(equity_monte_carlo_metrics(mc))
 
     generated_report = resolve_report_path(
-        params["report_path"], params["output_csv"], "backtest-monte-carlo"
+        params["report_path"],
+        params["output_csv"],
+        "backtest-monte-carlo",
+        open_report=bool(params["open_report"]),
     )
     if generated_report:
         write_tearsheet(

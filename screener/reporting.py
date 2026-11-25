@@ -129,9 +129,15 @@ def windows_report_path(path: str | Path) -> str | None:
 
 
 def report_path_lines(path: str | Path | None) -> list[str]:
-    """Return the ``Report:`` line, plus the Windows path line when on WSL."""
+    """Return the ``Report:`` line, plus the Windows path line when on WSL.
+
+    An agent-mode screen may legitimately produce no report, so ``None`` has no
+    lines rather than a ``Report: None`` line.
+    """
+    if path is None:
+        return []
     lines = [f"Report: {path}"]
-    windows = windows_report_path(path) if path is not None else None
+    windows = windows_report_path(path)
     if windows:
         lines.append(f"Windows: {windows}")
     return lines

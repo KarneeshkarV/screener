@@ -731,12 +731,26 @@ def build_backtest_fetcher(
 
 
 def resolve_report_path(
-    report_path: Path | None, output_csv: bool, prefix: str
+    report_path: Path | None,
+    output_csv: bool,
+    prefix: str,
+    *,
+    open_report: bool = False,
 ) -> Path | None:
-    """Return the tear-sheet path (a temp path unless CSV output is requested)."""
+    """Return the tear-sheet path (a temp path unless CSV output is requested).
+
+    In agent mode an unrequested temp HTML file is dead weight: it costs a
+    render and a file in a temp directory nobody reads, and the digest already
+    carries the numbers. Explicit ``--report`` and ``--open-report`` requests
+    are always honored.
+    """
     if report_path is not None:
         return report_path
     if output_csv:
+        return None
+    from screener import agentio
+
+    if agentio.is_agent_mode() and not open_report:
         return None
     from screener.reporting import temp_report_path
 

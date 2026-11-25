@@ -138,7 +138,10 @@ def backtest_historical(**params: Any) -> None:
 
     result = historical_engine.run_backtest(run.config, run.price_fetcher)
     generated_report = resolve_report_path(
-        params["report_path"], params["output_csv"], "backtest-historical"
+        params["report_path"],
+        params["output_csv"],
+        "backtest-historical",
+        open_report=bool(params["open_report"]),
     )
     if generated_report:
         if run.replay_note:

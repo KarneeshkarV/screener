@@ -131,6 +131,10 @@ class ScreenRequest:
     # before it can show a result it already has. The CLI sets this and renders
     # after printing; every other caller keeps the report written for it.
     defer_report: bool = False
+    # Skip creating an unsolicited temp HTML report (used by the CLI in agent
+    # mode). Explicit ``report_path`` and ``open_report`` requests still render,
+    # and Python API callers keep the default False so ``persist=True`` renders.
+    skip_temp_report: bool = False
     # The candidate gates the user actually typed, as
     # ``resolve_strategy_profile`` overrides. Empty means "whatever the
     # strategy declares", which is what the rolling backtest would have used.
@@ -541,29 +545,39 @@ def _finish_screen(
 
     # Non-CSV always writes an HTML report (temp path when --report omitted).
     # render_screen_report / temp_report_path are lazy wrappers so the CSV path
-    # (above) never imports the report renderer.
+    # (above) never imports the report renderer. An agent-mode run with neither
+    # --report nor --open-report requested skips the unsolicited temp file: the
+    # bounded digest already carries the result table.
     generated_report = request.report_path
-    if generated_report is None:
+    if generated_report is None and not (
+        request.skip_temp_report and not request.open_report
+    ):
         generated_report = temp_report_path("screen")
 
-    def render() -> Path:
-        return render_screen_report(
-            df,
-            total,
-            request.market,
-            label,
-            generated_report,
-            added=added,
-            removed=removed,
-            first_run=first_run,
-            detail=request.detail,
-            refresh=request.refresh,
-            cache_ttl=request.cache_ttl,
-            order_by=request.order_by,
-        )
+    render_report: Callable[[], Path] | None = None
+    if generated_report is not None:
+        report_path = generated_report
 
-    if not request.defer_report:
-        render()
+        def render() -> Path:
+            return render_screen_report(
+                df,
+                total,
+                request.market,
+                label,
+                report_path,
+                added=added,
+                removed=removed,
+                first_run=first_run,
+                detail=request.detail,
+                refresh=request.refresh,
+                cache_ttl=request.cache_ttl,
+                order_by=request.order_by,
+            )
+
+        if request.defer_report:
+            render_report = render
+        else:
+            render()
 
     return ScreenOutcome(
         mode=ScreenMode.RESULTS,
@@ -576,7 +590,7 @@ def _finish_screen(
         removed=tuple(removed),
         first_run=first_run,
         report_path=generated_report,
-        render_report=render if request.defer_report else None,
+        render_report=render_report,
     )
 
 

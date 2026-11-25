@@ -371,7 +371,10 @@ def backtest_rolling(**params: Any) -> None:
         else None
     )
     generated_report = resolve_report_path(
-        params["report_path"], params["output_csv"], "backtest-rolling"
+        params["report_path"],
+        params["output_csv"],
+        "backtest-rolling",
+        open_report=bool(params["open_report"]),
     )
     if generated_report:
         write_tearsheet(

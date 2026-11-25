@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import date, datetime
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -396,6 +397,13 @@ class _ReserveRotationSource:
         # Queueing does not debit portfolio cash until fill time in ``book.py``,
         # so every slot in this pass shares the same per-slot cash ceiling.
         total_refillable = len(refillable)
+        # A reserve rejected for one empty slot is rejected for every other
+        # slot on the same day: its signal, filters, budget and affordability
+        # all read inputs that are fixed before this slot loop (queueing moves
+        # no cash and ``max_concurrent_per_ticker == 1``). Remember the
+        # rejections so the next empty slot does not rescan the whole deferred
+        # queue. This lives inside one day's call and never crosses days.
+        rejected: set[str] = set()
 
         for slot_id in refillable:
             # A reserve whose signal or budget fails today stays queued for a
@@ -406,7 +414,12 @@ class _ReserveRotationSource:
                 ticker = str(reserve["ticker"])
                 if ticker in self.taken:
                     continue
-                reserve_bars = self.bars_by_tv.get(ticker, pd.DataFrame())
+                if ticker in rejected:
+                    deferred.append(reserve)
+                    continue
+                # No default: dict.get evaluates its default eagerly, so
+                # ``pd.DataFrame()`` built and threw away a frame per reserve.
+                reserve_bars = self.bars_by_tv.get(ticker)
                 if reserve_bars is None or reserve_bars.empty:
                     continue
                 cached_exit = self.caches.exit_signals.get(ticker)
@@ -427,6 +440,7 @@ class _ReserveRotationSource:
                     caches=self.caches,
                 )
                 if reserve_signal_idx is None:
+                    rejected.add(ticker)
                     deferred.append(reserve)
                     continue
                 entry_budget = entry_budget_for(
@@ -439,6 +453,7 @@ class _ReserveRotationSource:
                     series_cache=self.caches.frame(ticker, reserve_bars).sizing_series,
                 )
                 if entry_budget <= 0:
+                    rejected.add(ticker)
                     deferred.append(reserve)
                     continue
                 if (
@@ -460,6 +475,7 @@ class _ReserveRotationSource:
                     # (ADR 0005), and even demoted to the back it would be
                     # re-scanned every day. Keeping it deferred lets a later
                     # signal close promote it instead.
+                    rejected.add(ticker)
                     deferred.append(reserve)
                     continue
                 self.pending_entry_orders[slot_id] = PendingEntryOrder(
@@ -475,6 +491,57 @@ class _ReserveRotationSource:
                     self.reentries_left[slot_id] += 1
                 break
             self.reserve_queue.extendleft(reversed(deferred))
+
+
+_TimeUnit = Literal["s", "ms", "us", "ns"]
+
+
+def _master_calendar(
+    bars_by_tv: dict[str, pd.DataFrame],
+    as_of_ts: pd.Timestamp,
+    horizon_end: pd.Timestamp,
+) -> list[pd.Timestamp]:
+    """Sorted union of every ticker's bar stamps in ``(as_of, horizon_end]``.
+
+    Collecting boxed ``Timestamp`` objects into a Python set pays a hash and an
+    object allocation per bar across the whole universe. When every non-empty
+    index is a naive ``DatetimeIndex`` of one unit, the same answer is two
+    comparisons plus ``np.unique`` over the int64 nanosecond ticks. Anything
+    else (tz-aware, non-datetime, mixed units) keeps the original set path.
+    """
+    day_arrays: list[np.ndarray] = []
+    day_unit: _TimeUnit | None = None
+    naive = True
+    for bars in bars_by_tv.values():
+        if bars is None or bars.empty:
+            continue
+        idx = bars.index
+        if not isinstance(idx, pd.DatetimeIndex) or idx.tz is not None:
+            naive = False
+            break
+        if day_unit is None:
+            day_unit = idx.unit
+        elif idx.unit != day_unit:
+            naive = False
+            break
+        day_arrays.append(
+            idx[(idx > as_of_ts) & (idx <= horizon_end)]
+            .as_unit("ns")
+            .to_numpy()
+            .view("i8")
+        )
+    if naive:
+        if not day_arrays:
+            return []
+        ticks = np.unique(np.concatenate(day_arrays))
+        return list(pd.DatetimeIndex(ticks).as_unit(day_unit or "ns"))
+    day_set: set[pd.Timestamp] = set()
+    for bars in bars_by_tv.values():
+        if bars is None or bars.empty:
+            continue
+        idx = bars.index
+        day_set.update(idx[(idx > as_of_ts) & (idx <= horizon_end)])
+    return sorted(day_set)
 
 
 def _run_event_driven_sim(
@@ -516,7 +583,7 @@ def _run_event_driven_sim(
     for raw_slot_id, row in actives_df.iterrows():
         slot_id = int(str(raw_slot_id))
         ticker = row["ticker"]
-        bars = bars_by_tv.get(ticker, pd.DataFrame())
+        bars = bars_by_tv.get(ticker)
         if bars is None or bars.empty:
             warnings.append(f"no data during sim: {ticker}")
             slot_states[slot_id] = None
@@ -572,13 +639,7 @@ def _run_event_driven_sim(
         )
 
     horizon_end = _historical_horizon_end(as_of_ts, cfg)
-    day_set: set[pd.Timestamp] = set()
-    for bars in bars_by_tv.values():
-        if bars is None or bars.empty:
-            continue
-        idx = bars.index
-        day_set.update(idx[(idx > as_of_ts) & (idx <= horizon_end)])
-    master_dates = sorted(day_set)
+    master_dates = _master_calendar(bars_by_tv, as_of_ts, horizon_end)
 
     day_loop = DayLoop(
         portfolio=portfolio,

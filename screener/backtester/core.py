@@ -172,6 +172,9 @@ class _FrameCache:
     # Lazily filled Corwin-Schultz half-spread series (fraction), aligned to
     # ``bars.index``. None until first ``spread_proxy`` lookup for this frame.
     half_spread_s: pd.Series | None = None
+    # The same values as a float ndarray, so a per-bar lookup is a direct
+    # positional read instead of ``Series.iloc[idx]``.
+    half_spread_arr: np.ndarray | None = None
     # Lazily filled session-last mask (see ``sessions.is_session_last``); None
     # until the first ``intraday_only`` slot open on this frame.
     session_last: np.ndarray | None = None
@@ -456,6 +459,8 @@ def _passes_entry_filters(
     bars: pd.DataFrame,
     as_of_ts: pd.Timestamp,
     cfg: BacktestConfig,
+    *,
+    frame_cache: _FrameCache | None = None,
 ) -> tuple[bool, str | None]:
     """Check min-price and liquidity filters against history up to ``as_of_ts``.
 
@@ -466,8 +471,12 @@ def _passes_entry_filters(
     pos = int(bars.index.searchsorted(as_of_ts, side="right"))
     if pos <= 0:
         return False, "no history"
-    last = bars.iloc[pos - 1]
-    close = float(last["close"])
+    # A whole ``bars.iloc[pos - 1]`` row materialises every column to read one
+    # scalar. The run-wide frame cache already holds ``close`` as an array.
+    if frame_cache is not None:
+        close = float(frame_cache.close_arr[pos - 1])
+    else:
+        close = float(bars["close"].iloc[pos - 1])
     # A non-finite close never passes the price filter, and cannot be rescued
     # by an ADV mean that would otherwise skip its missing value.
     if not np.isfinite(close):
@@ -519,6 +528,11 @@ class _SlotState:
     partial_targets: tuple[float, ...] = ()
     partial_fractions: tuple[float, ...] = ()
     partial_fired: list[bool] = field(default_factory=list)
+    # Fixed ``(price, tier)`` levels sorted once at construction, so the
+    # per-bar partial-target loop iterates and filters instead of rebuilding
+    # and re-sorting the same list on every bar. The tier ``-1`` full target
+    # sorts before partial tiers on equal prices, matching ``sorted()``.
+    target_levels: tuple[tuple[float, int], ...] = ()
     # Optional hot-loop accelerators set by _make_slot_state when a _RunCaches
     # is threaded through; direct constructors (tests) leave them None and the
     # per-bar helpers fall back to the original pandas access paths.
@@ -540,6 +554,16 @@ class _SlotState:
     # An intrabar limit fill cannot claim the bar's earlier high as profit.
     entry_at_open: bool = True
 
+    def __post_init__(self) -> None:
+        # Direct constructors (tests, callers outside ``_make_slot_state``)
+        # get the same pre-sorted target order as the production path.
+        if self.target_levels:
+            return
+        levels = [(price, tier) for tier, price in enumerate(self.partial_targets)]
+        if self.target_ref is not None:
+            levels.append((self.target_ref, -1))
+        self.target_levels = tuple(sorted(levels))
+
 
 def _half_spread_at_signal(
     bars: pd.DataFrame,
@@ -554,6 +578,14 @@ def _half_spread_at_signal(
         return 0.0
     if "high" not in bars.columns or "low" not in bars.columns:
         return 0.0
+    if frame_cache is not None and frame_cache.half_spread_arr is not None:
+        try:
+            value = float(frame_cache.half_spread_arr[signal_idx])
+        except (TypeError, ValueError, IndexError):
+            return 0.0
+        if not np.isfinite(value) or value < 0.0:
+            return 0.0
+        return value
     series: pd.Series | None = None
     if frame_cache is not None and frame_cache.half_spread_s is not None:
         series = frame_cache.half_spread_s
@@ -564,6 +596,10 @@ def _half_spread_at_signal(
             return 0.0
         if frame_cache is not None:
             frame_cache.half_spread_s = series
+            try:
+                frame_cache.half_spread_arr = series.to_numpy(dtype=float)
+            except (TypeError, ValueError):  # pragma: no cover - defensive
+                frame_cache.half_spread_arr = None
     try:
         value = float(series.iloc[signal_idx])
     except (TypeError, ValueError, IndexError):
@@ -808,8 +844,13 @@ def _fire_partial_exits_at_bar(
     With ``at_open`` only levels at or below the open fill. The open is the
     bar's first print, so those targets precede any stop later in the bar.
     """
-    if not state.partial_targets and not at_open:
-        return
+    if not at_open or state.target_ref is None:
+        # The intrabar path never runs this sweep when there is no partial
+        # target: a full target hit is handled by ``_check_exit_at_bar``. At
+        # the open, a full target still needs the sweep even with no partials,
+        # so only skip when no target at all can fill.
+        if not state.partial_targets or all(state.partial_fired):
+            return
     pos = portfolio.get_position(state.ticker)
     if pos is None or pos.shares <= 0:
         return
@@ -821,25 +862,23 @@ def _fire_partial_exits_at_bar(
         bar = bars.iloc[i]
         bar_open = float(bar["open"])
         high = float(bar["high"])
-    bar_date = _bar_label(bars.index[i], cfg)
-    targets = [
-        (price, tier)
-        for tier, price in enumerate(state.partial_targets)
-        if not state.partial_fired[tier]
-    ]
-    if state.target_ref is not None:
-        targets.append((state.target_ref, -1))
     reach = bar_open if at_open else high
     if not np.isfinite(reach):
         # ``NaN < target`` is False, so a bar with a missing open or high
         # would pass the reach test below and fill every target at its level.
         return
-    for target_price, tier_idx in sorted(targets):
+    bar_date: date | datetime | None = None
+    for target_price, tier_idx in state.target_levels:
+        if tier_idx >= 0 and state.partial_fired[tier_idx]:
+            continue
         if reach < target_price:
             break
         pos = portfolio.get_position(state.ticker)
         if pos is None:
             break
+        if bar_date is None:
+            # Only a bar that actually fills pays for the label conversion.
+            bar_date = _bar_label(bars.index[i], cfg)
         if tier_idx == -1:
             fill = fill_model.exit_price(
                 reason="target",
@@ -1163,9 +1202,9 @@ def _eligible_reserve_signal_idx(
         return None
     if pos + 1 < lookback + 1:
         return None
-    passes, _ = _passes_entry_filters(bars, exit_day, cfg)
-    if not passes:
-        return None
+    # Check the (cheap, cached) signal before the price/ADV filters: most
+    # reserves have no signal on a given day, so the filter work would be
+    # wasted on them. Neither check has side effects, so the order is free.
     if caches is not None and ticker is not None:
         signal = caches.entry_signal(ticker, bars, entry_ast)
         if isinstance(signal, PineError):
@@ -1173,6 +1212,7 @@ def _eligible_reserve_signal_idx(
         if signal.empty:  # pragma: no cover - bars are non-empty here
             return None
         last = signal.iloc[pos]
+        frame_cache = caches.frame(ticker, bars)
     else:
         try:
             signal = evaluate(entry_ast, bars.iloc[: pos + 1])
@@ -1181,7 +1221,11 @@ def _eligible_reserve_signal_idx(
         if signal.empty:  # pragma: no cover - history is non-empty here
             return None
         last = signal.iloc[-1]
+        frame_cache = None
     if pd.isna(last) or not bool(last):
+        return None
+    passes, _ = _passes_entry_filters(bars, exit_day, cfg, frame_cache=frame_cache)
+    if not passes:
         return None
     return pos
 
