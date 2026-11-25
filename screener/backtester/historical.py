@@ -30,7 +30,7 @@ from screener.backtester.day_loop import (
     _force_close_open_slots,
     run_day_loop,
 )
-from screener.backtester.fills import FillModel
+from screener.backtester.fills import FillModel, signal_reference_price
 from screener.backtester.historical_cli import backtest_historical
 from screener.backtester.metrics import (
     compute_cost_metrics,
@@ -250,6 +250,7 @@ class _ReserveRotationSource:
         self._reserve_rows = {str(row["ticker"]): row for row in reserve_queue}
         # Slots whose queued order is a re-entry, not a reserve rotation.
         self._reentry_orders: set[int] = set()
+        self._warned_exit_failures: set[str] = set()
         self.warnings = warnings
         self.caches = caches
         self._last_day: pd.Timestamp | None = (
@@ -408,6 +409,14 @@ class _ReserveRotationSource:
                 reserve_bars = self.bars_by_tv.get(ticker, pd.DataFrame())
                 if reserve_bars is None or reserve_bars.empty:
                     continue
+                cached_exit = self.caches.exit_signals.get(ticker)
+                if isinstance(cached_exit, str):
+                    if ticker not in self._warned_exit_failures:
+                        self._warned_exit_failures.add(ticker)
+                        warning = f"{ticker}: {cached_exit}"
+                        if warning not in self.warnings:
+                            self.warnings.append(warning)
+                    continue
                 reserve_signal_idx = _eligible_reserve_signal_idx(
                     reserve_bars,
                     day,
@@ -433,21 +442,24 @@ class _ReserveRotationSource:
                     deferred.append(reserve)
                     continue
                 if (
-                    cfg.entry_order_type != "limit"
-                    and cfg.market.lower() == "india"
+                    cfg.market.lower() == "india"
                     and affordable_buy_shares(
                         portfolio.cost_model,
-                        float(reserve_bars["close"].iloc[reserve_signal_idx]),
+                        signal_reference_price(
+                            float(reserve_bars["close"].iloc[reserve_signal_idx]),
+                            cfg,
+                        ),
                         entry_budget,
                         whole_shares=True,
                     )
                     <= 0
                 ):
-                    # Reject using only the completed signal close. A whole
-                    # share this budget cannot buy now would be cancelled on
-                    # its later execution bar (ADR 0005), and even demoted to
-                    # the back it would be re-scanned every day. Keeping it
-                    # deferred lets a later signal close promote it instead.
+                    # Reject using only completed signal data (signal close or
+                    # causal limit price). A whole share this budget cannot buy
+                    # now would be cancelled on its later execution bar
+                    # (ADR 0005), and even demoted to the back it would be
+                    # re-scanned every day. Keeping it deferred lets a later
+                    # signal close promote it instead.
                     deferred.append(reserve)
                     continue
                 self.pending_entry_orders[slot_id] = PendingEntryOrder(
@@ -526,13 +538,28 @@ def _run_event_driven_sim(
         )
         slot_states[slot_id] = None
         if entry_budget > 0:
-            pending_entry_orders[slot_id] = PendingEntryOrder(
-                ticker=ticker,
-                signal_idx=signal_idx,
-                rank=int(row["rank"]),
-                signal_date=_bar_label(as_of_ts, cfg),
-            )
-            slot_bars[slot_id] = bars
+            if (
+                cfg.market.lower() == "india"
+                and affordable_buy_shares(
+                    portfolio.cost_model,
+                    signal_reference_price(float(bars["close"].iloc[signal_idx]), cfg),
+                    entry_budget,
+                    whole_shares=True,
+                )
+                <= 0
+            ):
+                warnings.append(
+                    f"{ticker}: entry skipped: budget {entry_budget:.2f} cannot buy "
+                    "1 whole share at signal reference price"
+                )
+            else:
+                pending_entry_orders[slot_id] = PendingEntryOrder(
+                    ticker=ticker,
+                    signal_idx=signal_idx,
+                    rank=int(row["rank"]),
+                    signal_date=_bar_label(as_of_ts, cfg),
+                )
+                slot_bars[slot_id] = bars
         reentries_left[slot_id] = cfg.max_reentries if cfg.allow_reentry else 0
 
     taken = {state.ticker for state in slot_states.values() if state is not None}

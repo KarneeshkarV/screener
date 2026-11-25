@@ -61,6 +61,22 @@ class EntryQuote:
     warning: str | None
 
 
+def _limit_price_from_close(signal_close: float, cfg: BacktestConfig) -> float:
+    """Buy limit price derived causally from the completed signal close."""
+    return signal_close * (1.0 - bps_fraction(cfg.entry_limit_bps or 0.0))
+
+
+def signal_reference_price(signal_close: float, cfg: BacktestConfig) -> float:
+    """Causal signal-bar reference price for pre-queue affordability checks.
+
+    Market orders check against the completed signal close; buy limit orders
+    check against their causal limit price ``signal_close * (1 - limit_bps)``.
+    """
+    if cfg.entry_order_type == "limit":
+        return _limit_price_from_close(signal_close, cfg)
+    return signal_close
+
+
 def _limit_price(
     bars: pd.DataFrame,
     signal_idx: int,
@@ -72,7 +88,7 @@ def _limit_price(
         signal_close = float(arrays.close_arr[signal_idx])
     else:
         signal_close = float(bars.iloc[signal_idx]["close"])
-    return signal_close * (1.0 - bps_fraction(cfg.entry_limit_bps or 0.0))
+    return _limit_price_from_close(signal_close, cfg)
 
 
 def _resolve_entry_fill(

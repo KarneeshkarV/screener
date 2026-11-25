@@ -25,7 +25,7 @@ from screener.backtester.day_loop import (
     _force_close_open_slots,
     run_day_loop,
 )
-from screener.backtester.fills import FillModel
+from screener.backtester.fills import FillModel, signal_reference_price
 from screener.backtester.fundamentals import FundamentalFetcher
 from screener.backtester.metrics import (
     compute_cost_metrics,
@@ -226,6 +226,7 @@ class _DailyRankingSource:
             pd.Timestamp(master_dates[-1]) if master_dates else None
         )
         self.pending_entry_orders: dict[int, PendingEntryOrder] = {}
+        self._warned_exit_failures: set[str] = set()
         # Per-run memo: exit-AST evaluations and frame primitives are computed
         # once per ticker instead of once per slot open. Exit signals are filled
         # up front in one panel pass rather than one interpreted AST walk per
@@ -394,6 +395,14 @@ class _DailyRankingSource:
                     bars is None or bars.empty
                 ):  # pragma: no cover - only valid tickers ranked
                     continue
+                cached_exit = self.caches.exit_signals.get(ticker)
+                if isinstance(cached_exit, str):
+                    if ticker not in self._warned_exit_failures:
+                        self._warned_exit_failures.add(ticker)
+                        warning = f"{ticker}: {cached_exit}"
+                        if warning not in self.warnings:
+                            self.warnings.append(warning)
+                    continue
                 entry_budget = entry_budget_for(
                     cfg,
                     portfolio,
@@ -406,18 +415,18 @@ class _DailyRankingSource:
                 if entry_budget <= 0:
                     continue
                 if (
-                    cfg.entry_order_type != "limit"
-                    and cfg.market.lower() == "india"
+                    cfg.market.lower() == "india"
                     and affordable_buy_shares(
                         portfolio.cost_model,
-                        float(row["as_of_close"]),
+                        signal_reference_price(float(row["as_of_close"]), cfg),
                         entry_budget,
                         whole_shares=True,
                     )
                     <= 0
                 ):
-                    # Reject using only the completed signal close. The future
-                    # execution price must not choose a lower-ranked order.
+                    # Reject using only completed signal data (signal close or
+                    # causal limit price). Future execution prices must not
+                    # choose a lower-ranked order.
                     continue
                 self.pending_entry_orders[slot_id] = PendingEntryOrder(
                     ticker=ticker,
