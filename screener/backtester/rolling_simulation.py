@@ -213,6 +213,9 @@ class _DailyRankingSource:
         # membership is judged on the prior completed bar, fires every Nth bar.
         self._day_count = 0
         self._prev_day: pd.Timestamp | None = None
+        self._last_day: pd.Timestamp | None = (
+            pd.Timestamp(master_dates[-1]) if master_dates else None
+        )
         self.pending_entry_orders: dict[int, PendingEntryOrder] = {}
         # Per-run memo: exit-AST evaluations and frame primitives are computed
         # once per ticker instead of once per slot open. Exit signals are filled
@@ -245,6 +248,7 @@ class _DailyRankingSource:
             caches=self.caches,
             exit_ast=self.exit_ast,
             warnings=self.warnings,
+            is_final_bar=bool(self._last_day is not None and day >= self._last_day),
         )
         for order in filled:
             # Limits keep their existing filled-selection convention.
@@ -320,7 +324,6 @@ class _DailyRankingSource:
             if grows_slots
             else None
         )
-        slots_left = len(free_slots)
 
         # One active-ticker set for the day: exclude at rank time and keep it
         # updated as slots open so the inner loop is an O(1) membership check
@@ -359,8 +362,10 @@ class _DailyRankingSource:
             candidate_offset += len(candidates)
             candidates_exhausted = len(candidates) < batch_size
 
+        # Queueing does not debit portfolio cash until fill time in ``book.py``,
+        # so every slot in this pass shares the same per-slot cash ceiling.
+        total_free_slots = len(free_slots)
         for slot_id in free_slots:
-            slots_left -= 1
             opened = False
             while not opened:
                 fill_candidate_queue()
@@ -386,7 +391,7 @@ class _DailyRankingSource:
                     bars,
                     int(row["signal_idx"]),
                     current_equity=current_equity,
-                    free_slots=slots_left + 1,
+                    free_slots=total_free_slots,
                     series_cache=self.caches.frame(ticker, bars).sizing_series,
                 )
                 if entry_budget <= 0:

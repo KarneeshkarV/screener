@@ -231,6 +231,7 @@ class _ReserveRotationSource:
         taken: set[str],
         warnings: list[str],
         caches: _RunCaches,
+        last_day: pd.Timestamp | None = None,
     ) -> None:
         self.portfolio = portfolio
         self.cfg = cfg
@@ -251,6 +252,9 @@ class _ReserveRotationSource:
         self._reentry_orders: set[int] = set()
         self.warnings = warnings
         self.caches = caches
+        self._last_day: pd.Timestamp | None = (
+            pd.Timestamp(last_day) if last_day is not None else None
+        )
 
     def _fill_pending(self, day: pd.Timestamp, *, at_close: bool) -> None:
         queued = {
@@ -269,6 +273,7 @@ class _ReserveRotationSource:
             caches=self.caches,
             exit_ast=self.exit_ast,
             warnings=self.warnings,
+            is_final_bar=bool(self._last_day is not None and day >= self._last_day),
         )
         # A queued order dropped without a fill (no bar left, a non-finite
         # reference price, no affordable share) never held the name, so the
@@ -311,9 +316,8 @@ class _ReserveRotationSource:
                 else None
             )
             pending = list(self.pending_reentry.items())
-            slots_left = len(pending)
+            total_pending = len(pending)
             for slot_id, ticker in pending:
-                slots_left -= 1
                 slot_frame = self.slot_bars.get(slot_id)
                 if (  # pragma: no cover - freed slots always have slot_bars set
                     slot_frame is None or slot_frame.empty
@@ -338,7 +342,7 @@ class _ReserveRotationSource:
                     slot_frame,
                     reentry_signal_idx,
                     current_equity=current_equity,
-                    free_slots=slots_left + 1,
+                    free_slots=total_pending,
                     series_cache=self.caches.frame(ticker, slot_frame).sizing_series,
                 )
                 if entry_budget <= 0:
@@ -388,10 +392,11 @@ class _ReserveRotationSource:
         )
         # The exit day belongs to the re-entry: it is first checked tomorrow.
         refillable = [s for s in freed if s not in held_for_reentry]
-        slots_left = len(refillable)
+        # Queueing does not debit portfolio cash until fill time in ``book.py``,
+        # so every slot in this pass shares the same per-slot cash ceiling.
+        total_refillable = len(refillable)
 
         for slot_id in refillable:
-            slots_left -= 1
             # A reserve whose signal or budget fails today stays queued for a
             # later day; only taken or bar-less names leave the queue.
             deferred: deque[dict] = deque()
@@ -421,7 +426,7 @@ class _ReserveRotationSource:
                     reserve_bars,
                     reserve_signal_idx,
                     current_equity=current_equity,
-                    free_slots=slots_left + 1,
+                    free_slots=total_refillable,
                     series_cache=self.caches.frame(ticker, reserve_bars).sizing_series,
                 )
                 if entry_budget <= 0:
@@ -494,10 +499,9 @@ def _run_event_driven_sim(
         if grows_slots
         else None
     )
-    slots_left = len(actives_df)
+    total_active_slots = len(actives_df)
 
     for raw_slot_id, row in actives_df.iterrows():
-        slots_left -= 1
         slot_id = int(str(raw_slot_id))
         ticker = row["ticker"]
         bars = bars_by_tv.get(ticker, pd.DataFrame())
@@ -517,7 +521,7 @@ def _run_event_driven_sim(
             bars,
             signal_idx,
             current_equity=initial_equity,
-            free_slots=slots_left + 1,
+            free_slots=total_active_slots,
             series_cache=caches.frame(ticker, bars).sizing_series,
         )
         slot_states[slot_id] = None
@@ -574,6 +578,7 @@ def _run_event_driven_sim(
         taken=taken,
         warnings=warnings,
         caches=caches,
+        last_day=master_dates[-1] if master_dates else None,
     )
     run_day_loop(master_dates, day_loop, source)
 

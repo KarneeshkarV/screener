@@ -404,3 +404,197 @@ def test_engines_break_dollar_volume_ties_the_same_way(tickers):
         for engine in ("historical", "rolling")
     }
     assert picks == {"historical": tickers[0], "rolling": tickers[0]}
+
+
+def test_moc_does_not_open_and_force_close_on_final_bar(engine):
+    """A pending MOC order on the final bar has no next session to hold into.
+
+    Filling it at the final bar's close and immediately force-closing at the
+    exact same close would create a phantom 0-bar trade that pays round-trip
+    slippage and commissions.
+    """
+    # 4 bars: d0 signals AAA -> MOC fills on d1 close -> hold=1 exits on d2 close
+    # -> d2 queues a new MOC order (rolling refill or historical reserve BBB)
+    # whose execution bar would be d3 (the final bar).
+    frames = {
+        "AAA": bars(4, volume=20000),
+        "BBB": bars(4, volume=10000),
+    }
+    result = run_engine(
+        engine,
+        frames,
+        top=1,
+        hold=1,
+        reinvest=True,
+        reserve_multiple=2,
+        entry_order_type="moc",
+        slippage_bps=50.0,
+        commission_bps=50.0,
+    )
+    assert len(result.trades) == 1
+    assert result.trades[0].ticker == "AAA"
+    assert result.trades[0].entry_date == date(2024, 1, 2)
+    assert result.trades[0].exit_date == date(2024, 1, 3)
+    assert result.trades[0].exit_reason == "time"
+
+
+def test_historical_single_post_signal_bar_skips_final_bar_moc():
+    """With only one bar after as_of, MOC must not open and close on that bar."""
+    result = run_engine(
+        "historical",
+        {"AAA": bars(2)},
+        top=1,
+        hold=5,
+        entry_order_type="moc",
+        slippage_bps=50.0,
+        commission_bps=50.0,
+    )
+    assert result.trades == []
+    assert result.metrics["final_equity"] == pytest.approx(10_000.0)
+
+
+def test_delisted_ticker_skips_moc_fill_on_its_own_final_bar_and_frees_slot(engine):
+    """A ticker whose history ends before master_dates[-1] must not open a 0-bar MOC trade."""
+    frames = {
+        "DELIST": bars(2, volume=20_000),
+        "ALIVE": bars(5, volume=10_000),
+    }
+    result = run_engine(
+        engine,
+        frames,
+        top=1,
+        hold=10,
+        reinvest=True,
+        reserve_multiple=2,
+        entry_order_type="moc",
+        slippage_bps=50.0,
+        commission_bps=50.0,
+    )
+    assert [t.ticker for t in result.trades] == ["ALIVE"]
+    trade = result.trades[0]
+    assert trade.exit_date == date(2024, 1, 5)
+    assert trade.entry_date < trade.exit_date
+    if engine == "historical":
+        # DELIST's expired MOC order is removed on day 1 (2024-01-02), so
+        # ALIVE rotates in on day 1 and fills MOC on day 2 (2024-01-03).
+        assert trade.signal_date == date(2024, 1, 2)
+        assert trade.entry_date == date(2024, 1, 3)
+
+
+def test_rolling_delisted_ticker_frees_moc_slot_on_its_final_bar():
+    """Removing the expired MOC order on day D frees the slot on day D without waiting a day."""
+    delist = bars(2, volume=20_000)
+    delist["sig"] = [1.0, 0.0]
+    alive = bars(5, volume=10_000)
+    alive["sig"] = [1.0, 1.0, 1.0, 1.0, 1.0]
+    result = run_engine(
+        "rolling",
+        {"DELIST": delist, "ALIVE": alive},
+        top=1,
+        hold=10,
+        entry_expr="sig > 0",
+        entry_order_type="moc",
+        slippage_bps=50.0,
+        commission_bps=50.0,
+    )
+    assert [t.ticker for t in result.trades] == ["ALIVE"]
+    assert result.trades[0].signal_date == date(2024, 1, 2)
+    assert result.trades[0].entry_date == date(2024, 1, 3)
+    assert result.trades[0].exit_date == date(2024, 1, 5)
+
+
+def test_rolling_reinvested_equal_slot_queueing_uses_constant_cash_ceiling():
+    """Queueing does not debit cash, so every free slot shares cash / len(free_slots)."""
+    idx = pd.bdate_range("2024-01-01", periods=5)
+
+    def _frame(closes: list[float], sigs: list[float], volume: float) -> pd.DataFrame:
+        c = pd.Series(closes, index=idx, dtype=float)
+        return pd.DataFrame(
+            {
+                "open": c,
+                "high": c + 1.0,
+                "low": c - 1.0,
+                "close": c,
+                "volume": volume,
+                "sig": sigs,
+            },
+            index=idx,
+        )
+
+    # Day 0: only HOLD signals -> buys 1 share at 100 on day 1 (cash=200).
+    # Day 2: HOLD rallies to 700 -> marked equity=900 (equity/3=300), cash=200,
+    # 2 free slots => fair cash ceiling per slot is 100.
+    # CHEAP1 (80) fits; EXPENSIVE (150) exceeds 100 and must be skipped for
+    # slot 2 too so CHEAP2 (80) is queued instead.
+    frames = {
+        "NSE:HOLD": _frame([100, 100, 700, 700, 700], [1, 0, 0, 0, 0], 40_000),
+        "NSE:CHEAP1": _frame([80, 80, 80, 80, 80], [0, 0, 1, 0, 0], 30_000),
+        "NSE:EXPENSIVE": _frame([150, 150, 150, 150, 150], [0, 0, 1, 0, 0], 12_000),
+        "NSE:CHEAP2": _frame([80, 80, 80, 80, 80], [0, 0, 1, 0, 0], 10_000),
+    }
+    result = run_engine(
+        "rolling",
+        frames,
+        market="india",
+        top=3,
+        initial_capital=300.0,
+        hold=10,
+        entry_expr="sig > 0",
+        sizing_rule="reinvested_equal_slot",
+    )
+    day3_entries = {t.ticker for t in result.trades if t.entry_date == date(2024, 1, 4)}
+    assert day3_entries == {"NSE:CHEAP1", "NSE:CHEAP2"}
+
+
+def test_historical_reserve_queueing_uses_constant_cash_ceiling():
+    """Reserve queueing under reinvested_equal_slot shares cash / len(refillable)."""
+    idx = pd.bdate_range("2024-01-01", periods=5)
+
+    def _frame(price: float, volume: float) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "open": price,
+                "high": price + 1.0,
+                "low": price - 1.0,
+                "close": price,
+                "volume": volume,
+            },
+            index=idx,
+        )
+
+    hold_frame = _frame(100.0, 60_000)
+    hold_frame.loc[idx[2:], ["open", "high", "low", "close"]] = [700, 701, 699, 700]
+
+    stop1 = _frame(100.0, 50_000)
+    stop1.loc[idx[2], ["open", "high", "low", "close"]] = [100, 101, 80, 90]
+
+    stop2 = _frame(100.0, 40_000)
+    stop2.loc[idx[2], ["open", "high", "low", "close"]] = [100, 101, 80, 90]
+
+    # Day 1: HOLD, STOP1, STOP2 each buy 1 share @ 100 (cash=0).
+    # Day 2: STOP1 & STOP2 stop at 90 (cash=180), HOLD marks 700 (equity=880,
+    # equity/3=293.33). Two refillable slots => fair cash ceiling is 180/2=90.
+    # CHEAP1 (80) fits; EXPENSIVE (140) exceeds 90 and must be deferred for
+    # slot 2 too so CHEAP2 (80) is queued instead.
+    frames = {
+        "NSE:HOLD": hold_frame,
+        "NSE:STOP1": stop1,
+        "NSE:STOP2": stop2,
+        "NSE:CHEAP1": _frame(80.0, 30_000),
+        "NSE:EXPENSIVE": _frame(140.0, 12_000),
+        "NSE:CHEAP2": _frame(80.0, 10_000),
+    }
+    result = run_engine(
+        "historical",
+        frames,
+        market="india",
+        top=3,
+        reserve_multiple=2,
+        reinvest=True,
+        initial_capital=300.0,
+        hold=10,
+        stop_loss=0.1,
+        sizing_rule="reinvested_equal_slot",
+    )
+    day3_entries = {t.ticker for t in result.trades if t.entry_date == date(2024, 1, 4)}
+    assert day3_entries == {"NSE:CHEAP1", "NSE:CHEAP2"}

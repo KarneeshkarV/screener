@@ -30,7 +30,7 @@ from rich.table import Table
 
 from screener.backtester.data import PriceFetcher
 from screener.backtester.fundamentals import FundamentalFetcher
-from screener.backtester.metrics import position_count
+from screener.backtester.metrics import format_result_value, position_count
 from screener.backtester.models import BacktestConfig
 from screener.backtester.optimization.grid import (
     GridSearchResult,
@@ -46,6 +46,7 @@ from screener.backtester.optimization.monte_carlo import (
 )
 from screener.backtester.optimization.reporting import (
     GRID_IN_SAMPLE_DISCLAIMER,
+    format_unsigned_pct,
     write_json_report,
     write_research_html_report,
 )
@@ -513,9 +514,9 @@ def run_research_report(
         f"OOS equity bars: {equity_bars}  "
         f"OOS trades: {position_count(walk_forward.oos_trades)}  "
         f"MC source: {mc_source}  method: {mc_method}  "
-        f"MC p05 return: {monte_carlo.return_p05:.4f}  "
-        f"P(profit): {monte_carlo.probability_of_profit:.3f}  "
-        f"risk_of_ruin: {monte_carlo.risk_of_ruin:.3f}"
+        f"MC p05 return: {format_result_value(monte_carlo.return_p05, 'pct')}  "
+        f"P(profit): {format_unsigned_pct(monte_carlo.probability_of_profit)}  "
+        f"risk_of_ruin: {format_unsigned_pct(monte_carlo.risk_of_ruin)}"
     )
     timings["monte_carlo_seconds"] = _stage_done(console, started)
 
@@ -689,7 +690,8 @@ def _print_final_summary(
         f"{float(degradation):.3f}" if isinstance(degradation, (int, float)) else "n/a",
     )
     table.add_row(
-        "MC 5th-pct return", f"{float(summary.get('mc_return_p05', 0.0)):.4f}"
+        "MC 5th-pct return",
+        format_result_value(summary.get("mc_return_p05"), "pct"),
     )
     table.add_row("MC source", str(summary.get("mc_source", "")))
     table.add_row("MC method", str(summary.get("mc_method", "")))
