@@ -597,7 +597,7 @@ def _make_slot_state(
     else:
         adv_shares, sigma_daily = 0.0, 0.0
     half_spread = _half_spread_at_signal(bars, signal_idx, cfg, frame_cache)
-    entry_idx, entry_fill, entry_shares, entry_warn = fills.entry_quote(
+    quote = fills.resolve_entry_quote(
         bars,
         signal_idx,
         budget=entry_budget,
@@ -607,8 +607,12 @@ def _make_slot_state(
         arrays=frame_cache,
         limit_bar_idx=limit_bar_idx,
     )
-    if entry_idx is None or entry_fill is None:
-        return None, entry_warn
+    entry_idx = quote.entry_idx
+    entry_ref = quote.entry_ref
+    entry_fill = quote.entry_fill
+    entry_shares = quote.shares
+    if entry_idx is None or entry_ref is None or entry_fill is None:
+        return None, quote.warning
     session_last = None
     session_labels = None
     if cfg.intraday_only:
@@ -656,7 +660,19 @@ def _make_slot_state(
             exit_signal_values = np.asarray(exit_signal.to_numpy(), dtype=bool)
             if caches is not None:
                 caches.exit_signal_values[ticker] = exit_signal_values
-    stop_ref = entry_fill * (1.0 - cfg.stop_loss) if cfg.stop_loss else None
+    # Anchor protective stops (``stop_ref``) and the initial trailing-stop
+    # ``peak`` to the unslipped market entry print (``entry_ref``), not the
+    # buy-slipped ``entry_fill``. OHLC bars record market-tape prices;
+    # anchoring stops to ``entry_fill`` mixes execution-cost space with
+    # market-price space so buy slippage can push ``stop_ref`` (or the later
+    # ``trail_ref`` derived from ``peak``) >= ``bar_open``, falsely stopping
+    # out a rising entry bar.
+    #
+    # By contrast, profit targets (``target_ref``, ``partial_targets``) and
+    # post-partial breakeven stop raises deliberately remain anchored to
+    # slipped ``entry_fill`` (conservative cost-basis space): targets must
+    # clear entry slippage and breakeven protects actual cost basis.
+    stop_ref = entry_ref * (1.0 - cfg.stop_loss) if cfg.stop_loss else None
     target_ref = _target_level(entry_fill, cfg.take_profit) if cfg.take_profit else None
     partial_targets = tuple(
         _target_level(entry_fill, pct) for pct, _frac in cfg.partial_exits
@@ -673,7 +689,7 @@ def _make_slot_state(
             stop_ref=stop_ref,
             target_ref=target_ref,
             hold_limit_idx=entry_idx + cfg.hold,
-            peak=entry_fill,
+            peak=entry_ref,
             exit_signal=exit_signal,
             adv_shares=adv_shares,
             sigma_daily=sigma_daily,
@@ -858,6 +874,8 @@ def _fire_partial_exits_at_bar(
             fraction=state.partial_fractions[tier_idx],
         )
         state.partial_fired[tier_idx] = True
+        # Breakeven stays anchored to slipped ``entry_fill`` (cost-basis space)
+        # so the raised stop protects actual entry cost after buy slippage.
         if state.stop_ref is None or state.stop_ref < state.entry_fill:
             state.stop_ref = state.entry_fill
 

@@ -26,6 +26,7 @@ is a single implementation of each primitive.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
@@ -47,6 +48,17 @@ class PriceArrays(Protocol):
     open_arr: np.ndarray
     low_arr: np.ndarray
     close_arr: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class EntryQuote:
+    """Resolved entry bar, unslipped market print, slipped fill, shares, and warning."""
+
+    entry_idx: int | None
+    entry_ref: float | None
+    entry_fill: float | None
+    shares: float
+    warning: str | None
 
 
 def _limit_price(
@@ -221,7 +233,7 @@ class FillModel:
         reference before returning. ``arrays``, when given, supplies the cached
         NumPy OHLC columns to read prices from instead of ``bars.iloc``.
         """
-        _entry_idx, fill, _shares, quote_warn = self.entry_quote(
+        quote = self.resolve_entry_quote(
             bars,
             signal_idx,
             budget=budget,
@@ -230,9 +242,9 @@ class FillModel:
             half_spread=half_spread,
             arrays=arrays,
         )
-        return _entry_idx, fill, quote_warn
+        return quote.entry_idx, quote.entry_fill, quote.warning
 
-    def entry_quote(
+    def resolve_entry_quote(
         self,
         bars: pd.DataFrame,
         signal_idx: int,
@@ -243,8 +255,8 @@ class FillModel:
         half_spread: float = 0.0,
         arrays: PriceArrays | None = None,
         limit_bar_idx: int | None = None,
-    ) -> tuple[int | None, float | None, float, str | None]:
-        """Return entry index, slipped fill, pre-impact shares, and warning.
+    ) -> EntryQuote:
+        """Resolve entry bar, unslipped reference print, slipped fill, and shares.
 
         Shares are deliberately sized from the pre-slippage reference and the
         configured buy-side cost model. This breaks the impact/size cycle at a
@@ -256,7 +268,7 @@ class FillModel:
             bars, signal_idx, self.cfg, arrays, limit_bar_idx
         )
         if entry_idx is None or entry_ref is None:
-            return None, None, 0.0, warn
+            return EntryQuote(None, None, None, 0.0, warn)
         if budget is None:
             budget = self.cfg.initial_capital / max(self.cfg.top, 1)
         shares = affordable_buy_shares(
@@ -284,7 +296,32 @@ class FillModel:
             maximum_shares=shares,
             whole_shares=self.cfg.market.lower() == "india",
         )
-        return entry_idx, fill, shares, None
+        return EntryQuote(entry_idx, entry_ref, fill, shares, None)
+
+    def entry_quote(
+        self,
+        bars: pd.DataFrame,
+        signal_idx: int,
+        *,
+        budget: float | None = None,
+        adv_shares: float = 0.0,
+        sigma_daily: float = 0.0,
+        half_spread: float = 0.0,
+        arrays: PriceArrays | None = None,
+        limit_bar_idx: int | None = None,
+    ) -> tuple[int | None, float | None, float, str | None]:
+        """Return entry index, slipped fill, pre-impact shares, and warning."""
+        quote = self.resolve_entry_quote(
+            bars,
+            signal_idx,
+            budget=budget,
+            adv_shares=adv_shares,
+            sigma_daily=sigma_daily,
+            half_spread=half_spread,
+            arrays=arrays,
+            limit_bar_idx=limit_bar_idx,
+        )
+        return quote.entry_idx, quote.entry_fill, quote.shares, quote.warning
 
     # ── exit side ────────────────────────────────────────────────────
     def exit_price(

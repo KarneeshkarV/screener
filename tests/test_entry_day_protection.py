@@ -9,6 +9,7 @@ import pytest
 from screener.backtester.historical import run_backtest
 from screener.backtester.models import BacktestConfig
 from screener.backtester.rolling_simulation import run_rolling_backtest
+from screener.backtester.slippage import VolumeImpactSlippage
 from tests.conftest import StubPriceFetcher
 
 
@@ -175,3 +176,382 @@ def test_exit_liquidity_uses_prior_completed_bars(engine):
     )
     assert model.observed[0] == ("buy", 1_000_000, 0)
     assert model.observed[-1] == ("sell", 2_000_000, 0)
+
+
+def _slippage_stop_run(
+    engine: str,
+    bars: pd.DataFrame,
+    *,
+    as_of: date,
+    stop_kind: str,
+    stop_pct: float = 0.01,
+    slippage_bps: float = 200.0,
+    slippage_model=None,
+    gap_fills: bool = True,
+    hold: int = 2,
+):
+    cfg = BacktestConfig(
+        market="us",
+        as_of=as_of,
+        benchmark="SPY",
+        tickers=("TEST",),
+        entry_expr="entry_signal > 0",
+        exit_expr=None,
+        hold=hold,
+        stop_loss=stop_pct if stop_kind == "stop_loss" else None,
+        take_profit=None,
+        trailing_stop=stop_pct if stop_kind == "trailing_stop" else None,
+        top=1,
+        initial_capital=100_000.0,
+        slippage_bps=slippage_bps,
+        slippage_model=slippage_model,
+        commission_bps=0.0,
+        gap_fills=gap_fills,
+        entry_order_type="moo",
+    )
+    fetcher = StubPriceFetcher({"TEST": bars, "SPY": bars.copy()})
+    if engine == "historical":
+        return run_backtest(cfg, fetcher)
+    return run_rolling_backtest(
+        cfg, fetcher, start_date=bars.index[0].date(), end_date=bars.index[-1].date()
+    )
+
+
+@pytest.mark.parametrize("engine", ["historical", "rolling"])
+@pytest.mark.parametrize("stop_kind", ["stop_loss", "trailing_stop"])
+def test_rally_entry_bar_does_not_false_stop_with_fixed_slippage(engine, stop_kind):
+    """Buy slippage pushing entry_fill*(1-stop) >= bar_open must not stop a rally bar."""
+    idx = pd.bdate_range("2024-01-01", periods=6)
+    bars = pd.DataFrame(
+        {
+            "open": [100.0, 100.0, 110.0, 110.0, 110.0, 110.0],
+            "high": [101.0, 110.0, 110.5, 110.5, 110.5, 110.5],
+            "low": [99.0, 100.0, 109.8, 109.8, 109.8, 109.8],
+            "close": [100.0, 110.0, 110.0, 110.0, 110.0, 110.0],
+            "volume": 1_000_000.0,
+            "entry_signal": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        index=idx,
+    )
+    # 200 bps buy slippage + 1% stop: (1 + 0.02) * (1 - 0.01) = 1.0098 > 1.
+    result = _slippage_stop_run(
+        engine,
+        bars,
+        as_of=idx[0].date(),
+        stop_kind=stop_kind,
+        stop_pct=0.01,
+        slippage_bps=200.0,
+    )
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.entry_date == idx[1].date()
+    assert trade.entry_price == pytest.approx(102.0)
+    assert trade.exit_reason == "time"
+    assert trade.exit_date == idx[3].date()
+    assert trade.exit_price == pytest.approx(110.0 * 0.98)
+    assert trade.pnl > 0
+
+
+@pytest.mark.parametrize("engine", ["historical", "rolling"])
+@pytest.mark.parametrize("stop_kind", ["stop_loss", "trailing_stop"])
+def test_rally_entry_bar_does_not_false_stop_with_volume_impact(engine, stop_kind):
+    """Thin-stock VolumeImpactSlippage pushing stop above open must not stop a rally bar."""
+    idx = pd.bdate_range("2024-01-01", periods=8)
+    # Trailing bars 0..2 have distinct returns (+16.7%, -4.8%) so sigma_daily is
+    # large enough for VolumeImpactSlippage to exceed the 1% stop distance.
+    bars = pd.DataFrame(
+        {
+            "open": [90.0, 105.0, 100.0, 100.0, 110.0, 110.0, 110.0, 110.0],
+            "high": [91.0, 106.0, 101.0, 110.0, 110.5, 110.5, 110.5, 110.5],
+            "low": [89.0, 104.0, 99.0, 100.0, 109.8, 109.8, 109.8, 109.8],
+            "close": [90.0, 105.0, 100.0, 110.0, 110.0, 110.0, 110.0, 110.0],
+            "volume": 500.0,
+            "entry_signal": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        index=idx,
+    )
+    result = _slippage_stop_run(
+        engine,
+        bars,
+        as_of=idx[2].date(),
+        stop_kind=stop_kind,
+        stop_pct=0.01,
+        slippage_bps=0.0,
+        slippage_model=VolumeImpactSlippage(k=0.2),
+    )
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    # Confirm buy impact actually pushed entry_fill * (1 - 0.01) > bar_open (100.0).
+    assert trade.entry_price * (1.0 - 0.01) > 100.0
+    assert trade.entry_date == idx[3].date()
+    assert trade.exit_reason == "time"
+    assert trade.exit_date == idx[5].date()
+
+
+@pytest.mark.parametrize("engine", ["historical", "rolling"])
+@pytest.mark.parametrize("stop_kind", ["stop_loss", "trailing_stop"])
+def test_entry_bar_genuine_drop_still_triggers_stop_with_high_slippage(
+    engine, stop_kind
+):
+    """An entry bar whose low drops below entry_ref*(1-stop) must still stop out."""
+    idx = pd.bdate_range("2024-01-01", periods=6)
+    bars = pd.DataFrame(
+        {
+            "open": [100.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            "high": [101.0, 101.0, 101.0, 101.0, 101.0, 101.0],
+            "low": [99.0, 98.0, 99.5, 99.5, 99.5, 99.5],
+            "close": [100.0, 98.5, 100.0, 100.0, 100.0, 100.0],
+            "volume": 1_000_000.0,
+            "entry_signal": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        index=idx,
+    )
+    result = _slippage_stop_run(
+        engine,
+        bars,
+        as_of=idx[0].date(),
+        stop_kind=stop_kind,
+        stop_pct=0.01,
+        slippage_bps=200.0,
+    )
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    expected_reason = "stop" if stop_kind == "stop_loss" else "trail"
+    assert trade.exit_reason == expected_reason
+    assert trade.exit_date == idx[1].date()
+    # Triggered at unslipped level 99.0 (not bar_open 100.0), then 200 bps sell slip.
+    assert trade.exit_price == pytest.approx(99.0 * 0.98)
+
+
+@pytest.mark.parametrize("engine", ["historical", "rolling"])
+@pytest.mark.parametrize("stop_kind", ["stop_loss", "trailing_stop"])
+def test_subsequent_bar_gap_down_below_stop_fills_at_open_with_high_slippage(
+    engine, stop_kind
+):
+    """After surviving the entry bar, a next-bar gap-down below stop fills at open."""
+    idx = pd.bdate_range("2024-01-01", periods=6)
+    bars = pd.DataFrame(
+        {
+            "open": [100.0, 100.0, 95.0, 95.0, 95.0, 95.0],
+            "high": [101.0, 100.5, 96.0, 96.0, 96.0, 96.0],
+            "low": [99.0, 100.0, 94.0, 94.0, 94.0, 94.0],
+            "close": [100.0, 100.5, 95.0, 95.0, 95.0, 95.0],
+            "volume": 1_000_000.0,
+            "entry_signal": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        index=idx,
+    )
+    result = _slippage_stop_run(
+        engine,
+        bars,
+        as_of=idx[0].date(),
+        stop_kind=stop_kind,
+        stop_pct=0.01,
+        slippage_bps=200.0,
+        gap_fills=True,
+    )
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    expected_reason = "stop" if stop_kind == "stop_loss" else "trail"
+    assert trade.exit_reason == expected_reason
+    assert trade.exit_date == idx[2].date()
+    # Gap-down open (95.0) is below stop_ref (99.0) and trail_ref (99.495) -> open fill.
+    assert trade.exit_price == pytest.approx(95.0 * 0.98)
+
+
+@pytest.mark.parametrize("engine", ["historical", "rolling"])
+@pytest.mark.parametrize("stop_kind", ["stop_loss", "trailing_stop"])
+def test_mild_rally_does_not_false_stop_on_entry_or_next_bar(engine, stop_kind):
+    """A small bar-1 gain below entry_fill*(1-stop) must not stop out on bar 2 open."""
+    idx = pd.bdate_range("2024-01-01", periods=6)
+    bars = pd.DataFrame(
+        {
+            "open": [100.0, 100.0, 100.5, 105.0, 105.0, 105.0],
+            "high": [101.0, 100.5, 105.0, 106.0, 106.0, 106.0],
+            "low": [99.0, 100.0, 100.5, 104.5, 104.5, 104.5],
+            "close": [100.0, 100.5, 105.0, 105.0, 105.0, 105.0],
+            "volume": 1_000_000.0,
+            "entry_signal": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        index=idx,
+    )
+    # entry_fill = 102.0 -> old stop_ref = 100.98 > bar-2 open (100.5).
+    result = _slippage_stop_run(
+        engine,
+        bars,
+        as_of=idx[0].date(),
+        stop_kind=stop_kind,
+        stop_pct=0.01,
+        slippage_bps=200.0,
+    )
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.exit_reason == "time"
+    assert trade.exit_date == idx[3].date()
+
+
+@pytest.mark.parametrize("engine", ["historical", "rolling"])
+@pytest.mark.parametrize("stop_kind", ["stop_loss", "trailing_stop"])
+def test_gap_down_limit_entry_with_slippage_does_not_false_stop(engine, stop_kind):
+    """A buy limit that gaps below limit with buy slippage anchors stops to bar_open."""
+    idx = pd.bdate_range("2024-01-01", periods=6)
+    # Signal bar close = 100.0, entry_limit_bps = 100 -> limit = 99.0.
+    # Entry bar opens at 95.0 (< 99.0) and rallies to 105.0; 200 bps buy slip fills at
+    # min(95.0 * 1.02, 99.0) = 96.9, where 96.9 * 0.99 = 95.931 > bar_open (95.0).
+    bars = pd.DataFrame(
+        {
+            "open": [100.0, 95.0, 105.0, 105.0, 105.0, 105.0],
+            "high": [101.0, 105.0, 105.5, 105.5, 105.5, 105.5],
+            "low": [99.0, 95.0, 104.8, 104.8, 104.8, 104.8],
+            "close": [100.0, 105.0, 105.0, 105.0, 105.0, 105.0],
+            "volume": 1_000_000.0,
+            "entry_signal": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        index=idx,
+    )
+    cfg = BacktestConfig(
+        market="us",
+        as_of=idx[0].date(),
+        benchmark="SPY",
+        tickers=("TEST",),
+        entry_expr="entry_signal > 0",
+        exit_expr=None,
+        hold=2,
+        stop_loss=0.01 if stop_kind == "stop_loss" else None,
+        take_profit=None,
+        trailing_stop=0.01 if stop_kind == "trailing_stop" else None,
+        top=1,
+        initial_capital=100_000.0,
+        slippage_bps=200.0,
+        commission_bps=0.0,
+        gap_fills=True,
+        entry_order_type="limit",
+        entry_limit_bps=100.0,
+    )
+    fetcher = StubPriceFetcher({"TEST": bars, "SPY": bars.copy()})
+    result = (
+        run_backtest(cfg, fetcher)
+        if engine == "historical"
+        else run_rolling_backtest(
+            cfg, fetcher, start_date=idx[0].date(), end_date=idx[-1].date()
+        )
+    )
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.entry_price == pytest.approx(95.0 * 1.02)
+    assert trade.exit_reason == "time"
+    assert trade.exit_date == idx[3].date()
+
+
+@pytest.mark.parametrize("engine", ["historical", "rolling"])
+@pytest.mark.parametrize("stop_kind", ["stop_loss", "trailing_stop"])
+def test_take_profit_anchors_to_entry_fill_while_stop_and_peak_anchor_to_entry_ref(
+    engine, stop_kind
+):
+    """Take-profit clears slipped entry_fill while stop_ref/peak use unslipped entry_ref."""
+    idx = pd.bdate_range("2024-01-01", periods=6)
+    # Entry bar opens at 100.0 with 200 bps buy slip -> entry_ref=100.0, entry_fill=102.0.
+    # 1% stop anchors to entry_ref (99.0), so bar 1 low=100.0 survives.
+    # 10% take_profit anchors to entry_fill (112.2), NOT entry_ref (110.0), so
+    # bar 1 high=111.0 does not exit; bar 2 high=112.5 fills the target.
+    bars = pd.DataFrame(
+        {
+            "open": [100.0, 100.0, 110.5, 111.0, 111.0, 111.0],
+            "high": [101.0, 111.0, 112.5, 112.0, 112.0, 112.0],
+            "low": [99.0, 100.0, 110.5, 110.5, 110.5, 110.5],
+            "close": [100.0, 110.5, 111.0, 111.0, 111.0, 111.0],
+            "volume": 1_000_000.0,
+            "entry_signal": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        index=idx,
+    )
+    cfg = BacktestConfig(
+        market="us",
+        as_of=idx[0].date(),
+        benchmark="SPY",
+        tickers=("TEST",),
+        entry_expr="entry_signal > 0",
+        exit_expr=None,
+        hold=4,
+        stop_loss=0.01 if stop_kind == "stop_loss" else None,
+        take_profit=0.10,
+        trailing_stop=0.01 if stop_kind == "trailing_stop" else None,
+        top=1,
+        initial_capital=100_000.0,
+        slippage_bps=200.0,
+        commission_bps=0.0,
+        gap_fills=True,
+        entry_order_type="moo",
+    )
+    fetcher = StubPriceFetcher({"TEST": bars, "SPY": bars.copy()})
+    result = (
+        run_backtest(cfg, fetcher)
+        if engine == "historical"
+        else run_rolling_backtest(
+            cfg, fetcher, start_date=idx[0].date(), end_date=idx[-1].date()
+        )
+    )
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.entry_price == pytest.approx(102.0)
+    assert trade.exit_reason == "target"
+    assert trade.exit_date == idx[2].date()
+    assert trade.exit_price == pytest.approx(102.0 * 1.10 * 0.98)
+
+
+@pytest.mark.parametrize("engine", ["historical", "rolling"])
+def test_partial_target_and_breakeven_anchor_to_slipped_entry_fill(engine):
+    """Partial targets and post-partial breakeven stops stay anchored to entry_fill."""
+    idx = pd.bdate_range("2024-01-01", periods=6)
+    # entry_ref=100.0, entry_fill=102.0 (200 bps buy slip).
+    # Initial 1% stop uses entry_ref (99.0), so bar 1 low=100.0 survives.
+    # 10% partial target uses entry_fill (112.2), so bar 1 high=111.0 does not fire;
+    # bar 2 high=112.5 fires the partial and raises breakeven stop to entry_fill (102.0).
+    # Bar 3 low=101.0 (above entry_ref=100.0, below entry_fill=102.0) must trigger
+    # the breakeven stop at 102.0.
+    bars = pd.DataFrame(
+        {
+            "open": [100.0, 100.0, 110.5, 111.0, 105.0, 105.0],
+            "high": [101.0, 111.0, 112.5, 111.5, 106.0, 106.0],
+            "low": [99.0, 100.0, 110.5, 101.0, 104.0, 104.0],
+            "close": [100.0, 110.5, 111.0, 105.0, 105.0, 105.0],
+            "volume": 1_000_000.0,
+            "entry_signal": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        index=idx,
+    )
+    cfg = BacktestConfig(
+        market="us",
+        as_of=idx[0].date(),
+        benchmark="SPY",
+        tickers=("TEST",),
+        entry_expr="entry_signal > 0",
+        exit_expr=None,
+        hold=4,
+        stop_loss=0.01,
+        take_profit=None,
+        trailing_stop=None,
+        partial_exits=((0.10, 0.5),),
+        top=1,
+        initial_capital=100_000.0,
+        slippage_bps=200.0,
+        commission_bps=0.0,
+        gap_fills=True,
+        entry_order_type="moo",
+    )
+    fetcher = StubPriceFetcher({"TEST": bars, "SPY": bars.copy()})
+    result = (
+        run_backtest(cfg, fetcher)
+        if engine == "historical"
+        else run_rolling_backtest(
+            cfg, fetcher, start_date=idx[0].date(), end_date=idx[-1].date()
+        )
+    )
+    assert len(result.trades) == 2
+    partial, remainder = result.trades
+    assert partial.exit_reason == "target"
+    assert partial.exit_date == idx[2].date()
+    assert partial.exit_price == pytest.approx(102.0 * 1.10 * 0.98)
+    assert remainder.exit_reason == "stop"
+    assert remainder.exit_date == idx[3].date()
+    assert remainder.exit_price == pytest.approx(102.0 * 0.98)
