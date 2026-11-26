@@ -21,6 +21,7 @@ from screener.backtester.price_frames import (
     drop_index_freq,
     naive_normalized_index,
 )
+from screener.cache import write_json
 
 CACHE_DIR = Path.home() / ".screener" / "prices"
 FMP_CACHE_DIR = Path.home() / ".screener" / "fmp_prices"
@@ -285,10 +286,7 @@ def record_empty_history(
     """
     destination = empty_history_path(ticker, cache_dir)
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        destination.write_text(
-            json.dumps({"first": first.isoformat(), "last": last.isoformat()})
-        )
+        write_json(destination, {"first": first.isoformat(), "last": last.isoformat()})
     except (OSError, ValueError):
         return
 
@@ -451,8 +449,7 @@ def record_coverage(
         if value is not None
     }
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload))
+        write_json(path, payload)
     except (OSError, ValueError):
         return
 
@@ -477,8 +474,7 @@ def record_scale_verified(ticker: str, cache_dir: Path = CACHE_DIR) -> None:
     """Mark this entry as fully re-downloaded under split detection."""
     path = scale_verified_path(ticker, cache_dir)
     try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"verified": pd.Timestamp.now("UTC").isoformat()}))
+        write_json(path, {"verified": pd.Timestamp.now("UTC").isoformat()})
     except (OSError, ValueError):
         return
 
