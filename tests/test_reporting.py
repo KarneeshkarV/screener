@@ -154,4 +154,5 @@ def test_report_path_lines_adds_windows_line(monkeypatch):
 
 def test_report_path_lines_tolerates_no_report(monkeypatch):
     monkeypatch.setattr("screener.reporting._is_wsl", lambda: True)
-    assert report_path_lines(None) == ["Report: None"]
+    # Agent-mode runs may deliberately produce no report.
+    assert report_path_lines(None) == []

@@ -372,6 +372,17 @@ def _snapped(index: pd.DatetimeIndex, bound: pd.Timestamp, side: str) -> pd.Time
     """
     if bound.unit == index.unit:
         return bound
+    # Most bounds already sit on the index's resolution (midnight for a daily
+    # frame, the exact bar label for intraday): converting is lossless and the
+    # ceil/floor round trip only adds an extra unit conversion.
+    try:
+        converted = bound.as_unit(index.unit)
+        lossless = converted == bound
+    except (TypeError, ValueError, OverflowError):
+        converted = None
+        lossless = False
+    if converted is not None and lossless:
+        return converted
     snapped = bound.ceil(index.unit) if side == "left" else bound.floor(index.unit)
     return snapped.as_unit(index.unit)
 

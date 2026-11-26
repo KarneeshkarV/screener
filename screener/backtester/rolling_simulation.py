@@ -50,6 +50,9 @@ from screener.backtester.price_panel import (
 )
 from screener.backtester.rolling_candidates import (
     _candidate_rows_for_day,
+    _DayRanking,
+    _materialize_candidate_rows,
+    _ranked_candidates_for_day,
     _RollingCandidateMatrices,
 )
 from screener.backtester.signal_panel import (
@@ -355,19 +358,32 @@ class _DailyRankingSource:
         candidate_offset = 0
         candidate_queue: deque[dict] = deque()
         candidates_exhausted = False
+        # The day's ranking (eligibility masks, percentiles, sort) is fixed for
+        # every batch: only the materialised dict rows advance. A failed open
+        # walks deeper into the same ranking instead of rerunning the scan.
+        day_ranking: _DayRanking | None = None
 
         def fill_candidate_queue() -> None:
-            nonlocal candidate_offset, candidates_exhausted
+            nonlocal candidate_offset, candidates_exhausted, day_ranking
             if candidate_queue or candidates_exhausted:
                 return
-            candidates, day_warnings = _candidate_rows_for_day(
-                day,
-                self.candidate_matrices,
-                exclude=rank_exclude,
-                limit=batch_size,
-                offset=candidate_offset,
+            if day_ranking is None:
+                day_ranking, day_warnings = _ranked_candidates_for_day(
+                    day,
+                    self.candidate_matrices,
+                    exclude=rank_exclude,
+                )
+                self.warnings.extend(day_warnings)
+            candidates = (
+                []
+                if day_ranking is None
+                else _materialize_candidate_rows(
+                    day_ranking,
+                    self.candidate_matrices,
+                    limit=batch_size,
+                    offset=candidate_offset,
+                )
             )
-            self.warnings.extend(day_warnings)
             candidate_queue.extend(candidates)
             candidate_offset += len(candidates)
             candidates_exhausted = len(candidates) < batch_size

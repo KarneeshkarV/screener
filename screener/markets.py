@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import click
 
-from screener.backtester.data import PriceFetcher, build_price_fetcher
+if TYPE_CHECKING:
+    from screener.backtester.data import PriceFetcher
 
 
 @dataclass(frozen=True)
@@ -107,8 +108,18 @@ def resolve_as_of(as_of_arg: datetime | date | None) -> date:
 def get_price_fetcher(
     ctx_obj_or_none: PriceFetcher | None,
     *,
-    builder: Callable[..., PriceFetcher] = build_price_fetcher,
+    builder: Callable[..., PriceFetcher] | None = None,
     **build_kwargs: Any,
 ) -> PriceFetcher:
-    """Return an injected Click context fetcher or build the production fetcher."""
-    return ctx_obj_or_none or builder(**build_kwargs)
+    """Return an injected Click context fetcher or build the production fetcher.
+
+    ``screener.markets`` is imported by light CLI paths that never fetch
+    prices, so the data-layer import happens only when a builder is needed.
+    """
+    if ctx_obj_or_none:
+        return ctx_obj_or_none
+    if builder is None:
+        from screener.backtester.data import build_price_fetcher
+
+        builder = build_price_fetcher
+    return builder(**build_kwargs)

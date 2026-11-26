@@ -90,6 +90,10 @@ def fill_pending_entries(
             fillable.append((slot_id, order, entry_idx))
         elif index is not None or cfg.entry_order_type != "limit":
             del pending_orders[slot_id]
+    if not fillable:
+        # Nothing to fill, so skip the equity marks (a full mark-to-market pass)
+        # and the sizing loop entirely.
+        return []
     grows_slots = sizing_allows_slot_growth(cfg.sizing_rule)
     current_equity = (
         marked_portfolio_equity(portfolio, bars_by_ticker, day, inclusive=at_close)

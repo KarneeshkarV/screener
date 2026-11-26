@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from screener import history
+from screener import agentio, history
 from screener.criteria import CRITERIA
 from screener.display import print_csv, print_results
 from screener.markets import market_option
@@ -225,6 +225,7 @@ def screen(
         # Print the table first, then render. The report takes about 0.4s that
         # the terminal spent waiting on a result it already had.
         defer_report=True,
+        skip_temp_report=agentio.is_agent_mode(),
         earnings=earnings,
         earnings_buffer=earnings_buffer,
         price_adjustment=price_adjustment,

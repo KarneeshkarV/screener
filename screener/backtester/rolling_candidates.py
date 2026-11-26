@@ -106,41 +106,33 @@ def _sector_neutralize_scores(
 ) -> pd.DataFrame:
     """Z-score ``rank_score`` within each (day, sector) group.
 
-    Vectorized: stack → groupby transform → unstack. Population std (ddof=0);
-    sectors with std 0 or a single non-NaN name get neutralized score 0.
-    NaN input scores stay NaN (still ineligible at selection time).
+    Vectorized: group the transposed (ticker x day) frame by sector, transform,
+    then transpose back. Working with one grouper over whole ticker rows avoids
+    stacking to a (date, ticker) MultiIndex and grouping on two keys.
+    Population std (ddof=0); sectors with std 0 or a single non-NaN name get
+    neutralized score 0. NaN input scores stay NaN (still ineligible at
+    selection time).
     """
     if rank_score_mat.empty:
         return rank_score_mat
-    # Map each column to its sector; missing tickers fall into UNKNOWN.
-    sectors = {col: sector_by_tv.get(col, "UNKNOWN") for col in rank_score_mat.columns}
-    long = pd.Series(
-        rank_score_mat.stack(future_stack=True),
-        dtype=float,
-    )
-    long.index = long.index.set_names(["date", "ticker"])
-    sector = pd.Series(
-        long.index.get_level_values("ticker").map(sectors),
-        index=long.index,
-    )
-    date = pd.Series(long.index.get_level_values("date"), index=long.index)
-    group_keys = [date, sector]
-    mu = long.groupby(group_keys, sort=False).transform("mean")
-    # Population variance via mean of squared deviations (handles n=1 as 0).
-    centered = long - mu
-    var = centered.pow(2).groupby(group_keys, sort=False).transform("mean")
+    # Map each column to its sector; missing or blank entries fall into UNKNOWN.
+    sectors = {
+        col: sector_by_tv.get(col) or "UNKNOWN" for col in rank_score_mat.columns
+    }
+    transposed = rank_score_mat.T
+    sector_codes = transposed.index.map(sectors)
+    # The same mean / population-variance / z-score arithmetic as the stacked
+    # frame, but each date column reduces within its own sector group in
+    # ticker order -- the order the stacked groupby summed in.
+    mu = transposed.groupby(sector_codes, sort=False).transform("mean")
+    centered = transposed - mu
+    var = centered.pow(2).groupby(sector_codes, sort=False).transform("mean")
     sigma = var.pow(0.5)
     zscore = centered / sigma
     # std 0 / single-name / all-equal → 0; preserve NaN inputs.
     zscore = zscore.mask(~(sigma > 0), 0.0)
-    zscore = zscore.mask(long.isna(), np.nan)
-    neutralized = zscore.unstack(level="ticker")
-    # Preserve original column order (unstack may reorder alphabetically).
-    if isinstance(neutralized, pd.Series):
-        neutralized = neutralized.to_frame().T
-    return neutralized.reindex(
-        index=rank_score_mat.index, columns=rank_score_mat.columns
-    )
+    zscore = zscore.mask(transposed.isna(), np.nan)
+    return zscore.T.reindex(index=rank_score_mat.index, columns=rank_score_mat.columns)
 
 
 def _comparable_ticks(index: pd.Index, like: pd.DatetimeIndex) -> np.ndarray | None:
@@ -829,21 +821,33 @@ def _drop_excluded(
             eligible[col] = False
 
 
-def _candidate_rows_for_day(
+@dataclass(frozen=True)
+class _DayRanking:
+    """One scanned day's eligible columns and their full ranked order.
+
+    Ranking (eligibility masks, percentiles, the sort) is the expensive half of
+    the daily candidate scan. A caller that consumes several batches on the
+    same day can compute this once and materialise only the rows it needs,
+    instead of repeating the whole scan for every batch.
+    """
+
+    row: int
+    eligible_cols: np.ndarray
+    order: np.ndarray
+    dollar_vol: np.ndarray
+    setup_score: np.ndarray
+
+
+def _ranked_candidates_for_day(
     day: pd.Timestamp,
     matrices: _RollingCandidateMatrices,
     *,
     exclude: set[str],
-    limit: int | None = None,
-    offset: int = 0,
-) -> tuple[list[dict], list[str]]:
-    """Evaluate entry signals for the full universe on one trading day.
+) -> tuple[_DayRanking | None, list[str]]:
+    """Rank the eligible universe on ``day``; return the ranking, or None.
 
-    ``limit`` caps how many ranked candidates are materialised into ``list[dict]``.
-    ``offset`` skips that many ranked candidates first, so a caller can consume
-    stable batches without building the full eligible set as dictionaries.
-    Ranking and setup scores still consider the whole eligible set. Pass
-    ``None`` and offset 0 to materialise every eligible name.
+    None means no name passed every gate. The caller still gets the warnings
+    the scan produced, so it can surface them even on an empty day.
     """
     warnings: list[str] = []
     row = matrices.row_by_day[day]
@@ -863,7 +867,7 @@ def _candidate_rows_for_day(
         _drop_excluded(eligible, matrices.col_by_ticker, exclude)
         eligible_cols = np.nonzero(eligible)[0]
         if eligible_cols.size == 0:
-            return [], warnings
+            return None, warnings
         # Rank by cross-sectional factor score (descending), breaking ties by
         # signal-day dollar volume so equal-score names resolve by liquidity -
         # a principled deterministic fallback - rather than by arbitrary
@@ -878,27 +882,73 @@ def _candidate_rows_for_day(
         _drop_excluded(eligible, matrices.col_by_ticker, exclude)
         eligible_cols = np.nonzero(eligible)[0]
         if eligible_cols.size == 0:
-            return [], warnings
+            return None, warnings
         # Stable descending sort: names tied on dollar volume keep ascending
         # column order, the same order ``historical._rank_candidates`` keeps.
         # Reversing a stable ascending argsort would flip ties and let the two
         # engines buy different names on the same day.
         order = np.argsort(-dollar_vol[eligible_cols], kind="stable")
+    return (
+        _DayRanking(
+            row=row,
+            eligible_cols=eligible_cols,
+            order=order,
+            dollar_vol=dollar_vol,
+            setup_score=setup_score,
+        ),
+        warnings,
+    )
+
+
+def _materialize_candidate_rows(
+    ranking: _DayRanking,
+    matrices: _RollingCandidateMatrices,
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict]:
+    """Build the ``dict`` rows for one batch of ``ranking``'s ranked order."""
     rank_start = max(offset, 0)
     rank_end = None if limit is None or limit < 0 else rank_start + limit
-    order = order[rank_start:rank_end]
+    order = ranking.order[rank_start:rank_end]
+    row = ranking.row
     rows: list[dict] = []
-    for rank, col in enumerate(eligible_cols[order], start=rank_start + 1):
+    for rank, col in enumerate(ranking.eligible_cols[order], start=rank_start + 1):
         rows.append(
             {
                 "ticker": matrices.tickers[col],
                 "signal_idx": int(matrices.bar_idx_np[row, col]),
                 "as_of_close": float(matrices.close_np[row, col]),
                 "as_of_volume": float(matrices.volume_np[row, col]),
-                "as_of_dollar_vol": float(dollar_vol[col]),
+                "as_of_dollar_vol": float(ranking.dollar_vol[col]),
                 "rank": rank,
                 "role": "active",
-                "setup_score": float(setup_score[col]),
+                "setup_score": float(ranking.setup_score[col]),
             }
         )
-    return rows, warnings
+    return rows
+
+
+def _candidate_rows_for_day(
+    day: pd.Timestamp,
+    matrices: _RollingCandidateMatrices,
+    *,
+    exclude: set[str],
+    limit: int | None = None,
+    offset: int = 0,
+) -> tuple[list[dict], list[str]]:
+    """Evaluate entry signals for the full universe on one trading day.
+
+    ``limit`` caps how many ranked candidates are materialised into ``list[dict]``.
+    ``offset`` skips that many ranked candidates first, so a caller can consume
+    stable batches without building the full eligible set as dictionaries.
+    Ranking and setup scores still consider the whole eligible set. Pass
+    ``None`` and offset 0 to materialise every eligible name.
+    """
+    ranking, warnings = _ranked_candidates_for_day(day, matrices, exclude=exclude)
+    if ranking is None:
+        return [], warnings
+    return (
+        _materialize_candidate_rows(ranking, matrices, limit=limit, offset=offset),
+        warnings,
+    )
