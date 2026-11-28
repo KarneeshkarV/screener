@@ -618,6 +618,7 @@ def discover_plugins() -> None:
         rsi_pattern,
         rsi_reversion,
         shooting_star,
+        stage2stocks,
         supertrend,
         supertrend_flip,
         supertrend_rsi,
